@@ -43,6 +43,8 @@ pub struct BackendInfo {
 #[serde(rename_all = "camelCase")]
 pub struct Bootstrap {
     pub vault_exists: bool,
+    /// The vault location in play: the one last opened if it is still there,
+    /// otherwise where a new vault would be created.
     pub default_path: PathBuf,
     pub backends: Vec<BackendInfo>,
     pub status: Option<VaultStatus>,
@@ -50,7 +52,14 @@ pub struct Bootstrap {
 
 #[tauri::command]
 pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
-    let path = everyday_vault::default_vault_dir();
+    // Prefer the vault this user last had open. Only fall back to the default
+    // location when nothing was recorded or what was recorded is gone -- an
+    // external disk that is not plugged in should show the setup screen, not
+    // an error about a path the user cannot see.
+    let path = state
+        .last_path()
+        .filter(|p| everyday_vault::exists(p))
+        .unwrap_or_else(everyday_vault::default_vault_dir);
     let backends = everyday_vault::available_backends()
         .into_iter()
         .map(|(id, description)| BackendInfo {

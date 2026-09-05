@@ -23,7 +23,7 @@ impl AppState {
     }
 
     pub fn set(&self, vault: Vault) -> Arc<Vault> {
-        *self.last_path.write().unwrap() = Some(vault.path().to_path_buf());
+        self.remember(vault.path());
         let vault = Arc::new(vault);
         *self.vault.write().unwrap() = Some(vault.clone());
         vault
@@ -38,11 +38,22 @@ impl AppState {
         self.get().ok_or_else(|| CommandError::new("no_vault", "no vault is open"))
     }
 
+    /// The vault to open on startup: the one this session already touched,
+    /// or the one the previous session left behind.
     pub fn last_path(&self) -> Option<PathBuf> {
-        self.last_path.read().unwrap().clone()
+        let in_memory = self.last_path.read().unwrap().clone();
+        in_memory.or_else(everyday_vault::last_vault)
     }
 
+    /// Record `path` as the vault to reopen, in memory and on disk.
+    ///
+    /// Failing to write the pointer is not worth failing the open that
+    /// prompted it: the vault is fine, the next launch just starts at the
+    /// default location.
     pub fn remember(&self, path: &Path) {
         *self.last_path.write().unwrap() = Some(path.to_path_buf());
+        if let Err(e) = everyday_vault::remember_vault(path) {
+            tracing::warn!(error = %e, "could not record the last vault path");
+        }
     }
 }

@@ -46,6 +46,51 @@ pub fn default_vault_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".everyday"))
 }
 
+/// Where the shell records the vault it last had open.
+///
+/// A vault need not live in [`default_vault_dir`] -- someone may keep theirs
+/// on an external disk or in a synced folder -- and being sent back to the
+/// default location on every launch would make that unusable. This file is a
+/// pointer and nothing else: it holds a path, never a key, a password or any
+/// entry content. The default location is public knowledge anyway.
+fn last_vault_pointer() -> Option<PathBuf> {
+    directories::ProjectDirs::from("app", "Every Day", "EveryDay")
+        .map(|d| d.config_dir().join("last-vault"))
+}
+
+/// The vault the previous session left open, if one was recorded.
+///
+/// The path comes back exactly as it was recorded. Whether a vault is still
+/// there is the caller's question to ask -- an unplugged drive is not an
+/// error here, it just means the default location should be used instead.
+pub fn last_vault() -> Option<PathBuf> {
+    read_pointer(&last_vault_pointer()?)
+}
+
+/// Record `path` as the vault to reopen on the next launch.
+pub fn remember_vault(path: &Path) -> Result<()> {
+    let file = last_vault_pointer().ok_or_else(|| {
+        Error::Invalid("this platform has no config directory to record the vault in".into())
+    })?;
+    write_pointer(&file, path)
+}
+
+fn read_pointer(file: &Path) -> Option<PathBuf> {
+    let recorded = std::fs::read_to_string(file).ok()?;
+    let recorded = recorded.trim();
+    if recorded.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(recorded))
+}
+
+fn write_pointer(file: &Path, path: &Path) -> Result<()> {
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+    }
+    std::fs::write(file, path.to_string_lossy().as_bytes()).map_err(|e| Error::io(file, e))
+}
+
 /// Open the vault at `path`, or report that there is nothing there.
 ///
 /// An encrypted vault comes back **locked**; call
@@ -114,6 +159,37 @@ mod tests {
     #[test]
     fn the_default_backend_is_actually_registered() {
         assert!(registry().ids().contains(&DEFAULT_BACKEND));
+    }
+
+    #[test]
+    fn a_recorded_vault_path_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("last-vault");
+        let vault = dir.path().join("somewhere else/my vault");
+
+        write_pointer(&file, &vault).unwrap();
+        assert_eq!(read_pointer(&file), Some(vault));
+    }
+
+    #[test]
+    fn recording_creates_the_config_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("never/made/yet/last-vault");
+
+        write_pointer(&file, Path::new("/tmp/vault")).unwrap();
+        assert!(file.exists(), "parent directories should be created");
+    }
+
+    #[test]
+    fn nothing_recorded_means_no_last_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_pointer(&dir.path().join("absent")), None);
+
+        // A truncated or hand-emptied pointer is "nothing recorded", not a
+        // vault at the empty path.
+        let blank = dir.path().join("blank");
+        std::fs::write(&blank, "  \n").unwrap();
+        assert_eq!(read_pointer(&blank), None);
     }
 
     #[test]
