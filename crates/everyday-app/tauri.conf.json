@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../../ui/dist",
     "devUrl": "http://localhost:5273",
-    "beforeDevCommand": "npm --prefix ../../ui run dev",
-    "beforeBuildCommand": "npm --prefix ../../ui run build"
+    "beforeDevCommand": { "script": "npm run dev", "cwd": "../../ui" },
+    "beforeBuildCommand": { "script": "npm run build", "cwd": "../../ui" }
   },
   "app": {
     "withGlobalTauri": false,
@@ -56,7 +56,7 @@
     "shortDescription": "A private journal",
     "longDescription": "Every Day is a private journal with rich text, photos and video, pluggable storage and end-to-end encryption at rest.",
     "copyright": "",
-    "licenses": ["MIT", "Apache-2.0"],
+    "license": "MIT OR Apache-2.0",
     "linux": {
       "deb": {
         "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]

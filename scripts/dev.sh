@@ -8,6 +8,12 @@ cd "$(dirname "$0")/.."
 
 MEM="${EVERYDAY_DEV_MEM:-8G}"
 
+# `cargo install` drops binaries in ~/.cargo/bin. rustup puts that on PATH;
+# a distro-packaged cargo (/usr/bin/cargo) does not, so add it ourselves.
+if [ -d "$HOME/.cargo/bin" ]; then
+    PATH="$PATH:$HOME/.cargo/bin"
+fi
+
 if ! command -v cargo-tauri >/dev/null 2>&1; then
     echo "The Tauri CLI is not installed. Run:" >&2
     echo "  cargo install tauri-cli --version '^2' --locked" >&2
