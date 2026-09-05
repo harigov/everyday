@@ -225,7 +225,12 @@ new entry.
 
 ## Licence
 
-MIT OR Apache-2.0.
+[MIT](LICENSE). Do what you like with it; keep the copyright notice.
+
+MIT rather than Apache-2.0 because it asks less of you: Apache additionally
+requires that modified files be marked as changed and that a NOTICE file be
+carried along, and it terminates on patent litigation. The one thing MIT does
+not give you is Apache's express patent grant.
 
 The bundled typefaces are third-party and keep their own licences, both the
 SIL Open Font License 1.1: Inter (© The Inter Project Authors) and Source

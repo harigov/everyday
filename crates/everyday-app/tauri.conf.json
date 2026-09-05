@@ -57,8 +57,8 @@
     "category": "Productivity",
     "shortDescription": "A private journal",
     "longDescription": "Every Day is a private journal with rich text, photos and video, pluggable storage and end-to-end encryption at rest.",
-    "copyright": "",
-    "license": "MIT OR Apache-2.0",
+    "copyright": "Copyright (c) 2026 Hari Govardhanam",
+    "license": "MIT",
     "linux": {
       "deb": {
         "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]

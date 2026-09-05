@@ -1,6 +1,6 @@
 # Third-party notices
 
-Every Day itself is MIT OR Apache-2.0 (see README). It also ships two
+Every Day itself is MIT (see LICENSE). It also ships two
 typefaces, embedded in the application binary as woff2 and declared in
 `ui/src/styles/fonts.css`. Both are under the SIL Open Font License 1.1,
 which requires this notice to travel with them.
