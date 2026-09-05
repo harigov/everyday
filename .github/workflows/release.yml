@@ -1,0 +1,311 @@
+# Build the desktop app for Linux, macOS and Windows, and optionally attach
+# the bundles to a GitHub Release.
+#
+# Cost: this repository is public, and every runner used below is a *standard*
+# GitHub-hosted runner (ubuntu-22.04, macos-latest, windows-latest). Standard
+# runners, and the artifact/log storage they produce, are free and unmetered
+# on public repositories. The things that do cost money are larger runners
+# (the `-4-core`/`-xlarge`/`-large` labels, and anything under an org's runner
+# groups) and self-hosted minutes -- none of which appear here. Keep it that
+# way: if you ever change a `runs-on:`, check the label against
+# https://docs.github.com/actions/reference/runners/github-hosted-runners
+# first, because larger runners are billed even on public repositories.
+
+name: Release
+
+# Manual only, on purpose. There is no `push`, `pull_request`, `schedule` or
+# `release` trigger, so nothing here can start a build on its own -- a run
+# only happens when a human clicks "Run workflow" (or calls the API).
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Platforms to build"
+        type: choice
+        default: all
+        options:
+          - all
+          - linux
+          - macos
+          - windows
+      release:
+        description: "What to do with the bundles"
+        type: choice
+        default: none
+        options:
+          - none      # build only; download them from the run's artifacts
+          - draft     # create a draft Release you publish by hand
+          - publish   # create a published Release
+      tag:
+        description: "Release tag (default: v<version> from tauri.conf.json)"
+        type: string
+        default: ""
+
+# The default token is read-only; only the release job widens it.
+permissions:
+  contents: read
+
+env:
+  # Pinned alongside the `tauri` crate in Cargo.lock -- the CLI and the crate
+  # have to agree on their minor version or the build refuses to start.
+  TAURI_CLI: "@tauri-apps/cli@2.11.4"
+
+# One release run at a time per ref. Not cancel-in-progress: interrupting a
+# run halfway through uploading assets is worse than waiting for it.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Resolves the version and turns the `platforms` choice into a build matrix,
+  # so the three build jobs stay one definition rather than three copies.
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: plan
+        # Workflow inputs reach the script through the environment, never
+        # through `${{ }}` interpolation -- interpolation would splice the
+        # caller's text into the shell source itself.
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          version=$(node -p "require('./crates/everyday-app/tauri.conf.json').version")
+          tag=${TAG_INPUT:-v$version}
+
+          # The tag ends up as a git ref and a CLI argument. Refuse anything
+          # that is not plainly a tag rather than finding out later.
+          if ! printf '%s' "$tag" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/+-]*$'; then
+            echo "::error::refusing tag '$tag': expected letters, digits and . _ / + -" >&2
+            exit 1
+          fi
+
+          # macOS builds one universal binary rather than two per-arch ones:
+          # the runner is arm64 and Rust cross-compiles the x86_64 half for
+          # free, which is cheaper than a second job and gives users one DMG.
+          linux='{"name":"linux","os":"ubuntu-22.04","bundles":"deb,rpm,appimage","rust_target":"","bundle_dir":"target/release/bundle"}'
+          macos='{"name":"macos","os":"macos-latest","bundles":"dmg","rust_target":"universal-apple-darwin","bundle_dir":"target/universal-apple-darwin/release/bundle"}'
+          windows='{"name":"windows","os":"windows-latest","bundles":"msi,nsis","rust_target":"","bundle_dir":"target/release/bundle"}'
+
+          case "$PLATFORMS" in
+            all)     include="[$linux,$macos,$windows]" ;;
+            linux)   include="[$linux]" ;;
+            macos)   include="[$macos]" ;;
+            windows) include="[$windows]" ;;
+            *) echo "::error::unknown platforms input '$PLATFORMS'" >&2; exit 1 ;;
+          esac
+
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "matrix={\"include\":$include}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Building $PLATFORMS for $version (tag $tag)" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    # A cold Tauri release build is 15-25 minutes, but this workspace bundles
+    # SQLite from C source and the release profile uses LTO with
+    # codegen-units=1, which roughly doubles that on a 4-core runner. 90
+    # minutes is generous enough not to trip on a slow runner and short enough
+    # that a hung build stops rather than sitting at GitHub's 6-hour ceiling.
+    timeout-minutes: 90
+    strategy:
+      # One platform failing should not throw away the two that worked.
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    defaults:
+      run:
+        # Git Bash on the Windows runner, so the steps below are one dialect.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ui/.nvmrc
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Rust toolchain
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          # universal-apple-darwin is not a rustup target; it is the two real
+          # Apple targets that `tauri build` then lipos together.
+          if [ "$RUST_TARGET" = universal-apple-darwin ]; then
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          elif [ -n "$RUST_TARGET" ]; then
+            rustup target add "$RUST_TARGET"
+          fi
+          rustc --version
+
+      # Only the downloaded crate sources are cached, not `target/`. A release
+      # artifact should come out of a clean compile; caching the registry
+      # saves the slow part (fetching ~400 crates) without that risk.
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # Same set as scripts/setup-linux.sh, plus the three tools linuxdeploy
+      # shells out to when it assembles the AppImage.
+      - name: Linux build dependencies
+        if: matrix.name == 'linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            build-essential curl wget file patchelf desktop-file-utils
+
+      - name: Install interface packages
+        run: npm --prefix ui ci
+
+      # The prebuilt CLI from npm; `cargo install tauri-cli` would compile it
+      # from source on every runner for the same result. Run through `npx`
+      # rather than installed with `npm -g`, because the global npm bin
+      # directory is not reliably on PATH inside Git Bash on the Windows
+      # runner. This step also warms the npx cache and fails loudly here,
+      # rather than 20 minutes into a build, if the download is broken.
+      - name: Check Tauri CLI
+        run: npx --yes "$TAURI_CLI" --version
+
+      - name: Build bundles
+        working-directory: crates/everyday-app
+        env:
+          BUNDLES: ${{ matrix.bundles }}
+          RUST_TARGET: ${{ matrix.rust_target }}
+          # linuxdeploy cannot strip a binary the release profile already
+          # stripped, and the runners have no FUSE for it to mount its own
+          # AppImage with. Both are no-ops off Linux.
+          NO_STRIP: "true"
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          set -euo pipefail
+          args=(build --bundles "$BUNDLES")
+          if [ -n "$RUST_TARGET" ]; then
+            args+=(--target "$RUST_TARGET")
+          fi
+          npx --yes "$TAURI_CLI" "${args[@]}"
+
+      # Nothing is signed or notarised: there are no Apple or Authenticode
+      # certificates in this repository, and adding them means paid developer
+      # accounts and secrets. macOS shows Gatekeeper's "unidentified developer"
+      # warning and Windows shows SmartScreen's. That is expected.
+      - name: Collect bundles
+        env:
+          BUNDLE_DIR: ${{ matrix.bundle_dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # `! -name 'rw.*'` drops the read-write scratch image the dmg
+          # bundler builds the real one from and leaves behind on failure.
+          find "$BUNDLE_DIR" -type f ! -name 'rw.*' \
+            \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
+            -o -name '*.dmg' -o -name '*.msi' -o -name '*-setup.exe' \) \
+            -exec cp {} dist/ \;
+
+          if [ -z "$(ls -A dist)" ]; then
+            echo "::error::$BUNDLE_DIR produced no installers" >&2
+            exit 1
+          fi
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: everyday-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Release
+    needs: [plan, build]
+    # `needs` already requires every build to have succeeded, so a partial
+    # set never reaches a Release.
+    if: ${{ inputs.release != 'none' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: everyday-*
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          ( cd dist && sha256sum -- * ) > SHA256SUMS.txt
+          mv SHA256SUMS.txt dist/
+          cat dist/SHA256SUMS.txt
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # No checkout in this job, so gh cannot infer the repo from a remote.
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          MODE: ${{ inputs.release }}
+        run: |
+          set -euo pipefail
+
+          notes=$(cat <<'EOF'
+          These installers are unsigned. macOS will report an unidentified
+          developer and Windows SmartScreen will warn on first run.
+
+          Verify a download against `SHA256SUMS.txt` before installing it.
+          EOF
+          )
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG exists; replacing its assets"
+            gh release upload "$TAG" dist/* --clobber
+          else
+            flags=(--title "Every Day $VERSION" --target "$GITHUB_SHA"
+                   --notes "$notes" --generate-notes)
+            if [ "$MODE" = draft ]; then
+              flags+=(--draft)
+            fi
+            # 0.x is not a stable release, whatever the tag says.
+            case "$VERSION" in
+              0.*) flags+=(--prerelease) ;;
+            esac
+            gh release create "$TAG" "${flags[@]}" dist/*
+          fi
+
+          {
+            echo "### $TAG"
+            echo
+            gh release view "$TAG" --json url --jq .url
+          } >> "$GITHUB_STEP_SUMMARY"
