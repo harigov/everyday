@@ -196,6 +196,18 @@ pub fn list_journals(state: State<'_, AppState>) -> CommandResult<Vec<Journal>> 
     Ok(state.require()?.journals()?)
 }
 
+/// Mint a journal, without saving it.
+///
+/// The id is the core's to allocate, not the interface's. Ids here are
+/// UUIDv7, which the storage layer relies on to sort chronologically; the
+/// interface had been minting v4 with `crypto.randomUUID`, which is both a
+/// different ordering and unavailable outside a secure context.
+#[tauri::command]
+pub fn new_journal(state: State<'_, AppState>, name: String) -> CommandResult<Journal> {
+    let _ = state.require()?;
+    Ok(Journal::new(name))
+}
+
 #[tauri::command]
 pub fn save_journal(state: State<'_, AppState>, journal: Journal) -> CommandResult<()> {
     Ok(state.require()?.save_journal(&journal)?)

@@ -19,6 +19,7 @@ import type {
   VaultStatus,
 } from './types'
 import { VaultError } from './types'
+import { DEFAULT_COLORS } from './colors'
 
 const PASSWORD = 'everyday'
 
@@ -51,7 +52,7 @@ function swatch(a: string, b: string, label: string): string {
       <stop offset="0%" stop-color="${a}"/><stop offset="100%" stop-color="${b}"/>
     </linearGradient></defs>
     <rect width="1200" height="800" fill="url(#g)"/>
-    <text x="60" y="740" font-family="Georgia,serif" font-size="34"
+    <text x="60" y="740" font-family="system-ui,sans-serif" font-size="34"
           fill="rgba(255,255,255,.72)">${label}</text>
   </svg>`
   return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`
@@ -404,6 +405,21 @@ export const mockInvoke = async <T,>(
     case 'list_journals':
       requireUnlocked()
       return [...journals].sort((a, b) => a.sortOrder - b.sortOrder) as T
+
+    case 'new_journal': {
+      requireUnlocked()
+      const now = new Date().toISOString()
+      return {
+        id: `j-${nextId++}`,
+        name: args.name as string,
+        color: DEFAULT_COLORS[journals.length % DEFAULT_COLORS.length]!,
+        icon: '\u{1f4d3}',
+        description: '',
+        sortOrder: journals.length,
+        createdAt: now,
+        updatedAt: now,
+      } as T
+    }
 
     case 'save_journal': {
       requireUnlocked()

@@ -17,10 +17,14 @@ constraints points fairly firmly at one answer.
 - **Font rendering.** Every platform's text stack — CoreText, DirectWrite,
   Pango/FreeType — is better than anything an app can ship, and it is what the
   OS has already tuned and cached. Tauri renders in the system webview, so
-  text is rasterised by the platform itself. The app ships **no web fonts**: it
-  uses the system UI face for the interface and the platform's best serif for
-  entry bodies. That is sharper than a bundled font *and* faster, because
-  nothing is downloaded or re-hinted.
+  text is rasterised by the platform itself. The *shapes* are ours, though:
+  the app bundles two variable faces — [Inter](https://rsms.me/inter/) for the
+  interface and [Source Sans 3](https://github.com/adobe-fonts/source-sans)
+  for entry bodies — because "the system UI face" means San Francisco on one
+  machine and whatever fontconfig picked on another, and a journal should not
+  look like a different application depending on where it is opened. Nothing
+  is fetched at runtime: the woff2 files are embedded in the binary and load
+  from `'self'`, so the app still starts with no network.
 - **Size and memory.** The webview is already resident on every target OS, so
   the binary is a Rust core plus a few hundred KB of interface, not a bundled
   browser. That is the difference between roughly 10 MB and roughly 150 MB.
@@ -189,6 +193,42 @@ them. Run `./scripts/setup-linux.sh` then `./scripts/dev.sh`.
 Not yet built: sync, mobile shells, calendar and map views, and importers for
 Day One's export format.
 
+## The icon on Linux
+
+If the window shows a generic icon instead of the application's, the app is
+almost certainly running uninstalled -- straight out of `target/`, which is
+what `make run` does.
+
+On X11 a window carries its own icon and Tauri sets it from the bundled PNGs.
+Wayland has no equivalent: the compositor is handed an *application id*, and
+GNOME resolves that to an icon by finding the `.desktop` file that claims it.
+A binary that was never installed has no `.desktop` file, so there is nothing
+to resolve and the window falls back to the generic icon. Nothing the process
+does at runtime can change that.
+
+Installing the package fixes it:
+
+    make build
+    sudo dpkg -i "target/release/bundle/deb/Every Day_0.1.0_amd64.deb"
+
+To keep a locally built binary and still get the icon and the right name in
+the dock and the overview:
+
+    make desktop-entry      # writes ~/.local/share/applications/everyday-app.desktop
+    make undesktop-entry    # to undo it
+
+The entry it writes points `Exec` at the binary in `target/`, so re-run it
+after a `make clean`, and prefer the package for anything but development.
+
+Either way you may need to log out and back in before GNOME Shell notices the
+new entry.
+
 ## Licence
 
 MIT OR Apache-2.0.
+
+The bundled typefaces are third-party and keep their own licences, both the
+SIL Open Font License 1.1: Inter (© The Inter Project Authors) and Source
+Sans 3 (© Adobe). The interface icons follow the geometry conventions of
+[Lucide](https://lucide.dev), which is ISC licensed. Full texts are in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

@@ -2,6 +2,7 @@
   import { app } from '../lib/state.svelte'
   import { api } from '../lib/api'
   import { humanBytes, plural } from '../lib/format'
+  import Icon from './Icon.svelte'
 
   let open = $state(false)
   let changing = $state(false)
@@ -41,7 +42,8 @@
 
 <div class="wrap">
   <button class="trigger" onclick={() => (open = !open)} aria-expanded={open} title="Settings">
-    <span aria-hidden="true">⚙</span> Settings
+    <Icon name="settings" size={15} />
+    Settings
   </button>
 
   {#if open}

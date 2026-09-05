@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from '../lib/state.svelte'
   import { isMock } from '../lib/api'
+  import Logo from './Logo.svelte'
 
   let password = $state('')
   let busy = $state(false)
@@ -27,7 +28,7 @@
 
 <div class="lock">
   <form class="card" class:shake onsubmit={submit}>
-    <div class="mark">✦</div>
+    <div class="mark"><Logo size={46} tile /></div>
     <h1>Every Day</h1>
     <p class="sub">{app.status?.name ?? 'Your journal'} is locked.</p>
 
@@ -73,11 +74,12 @@
     box-shadow: var(--shadow-lg);
   }
 
-  .mark { font-size: 26px; color: var(--accent); margin-bottom: var(--sp-3); }
+  /* The mark is an SVG block now, so it centres by layout, not by text. */
+  .mark { display: flex; justify-content: center; margin-bottom: var(--sp-4); }
 
   h1 {
     font-family: var(--font-read);
-    font-size: var(--text-xl); font-weight: 600; letter-spacing: -0.015em;
+    font-size: var(--text-xl); font-weight: 650; letter-spacing: -0.015em;
   }
   .sub { margin-top: var(--sp-1); margin-bottom: var(--sp-6); font-size: var(--text-sm); color: var(--fg-subtle); }
 

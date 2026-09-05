@@ -44,6 +44,7 @@ pub fn run() {
             commands::touch,
             commands::poll_auto_lock,
             commands::list_journals,
+            commands::new_journal,
             commands::save_journal,
             commands::delete_journal,
             commands::list_entries,

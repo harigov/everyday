@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from '../lib/state.svelte'
+  import Logo from './Logo.svelte'
 
   let name = $state('My Journal')
   let backend = $state('sqlite')
@@ -44,7 +45,7 @@
 
 <div class="setup scroll">
   <form class="card" onsubmit={submit}>
-    <div class="mark">✦</div>
+    <div class="mark"><Logo size={46} tile /></div>
     <h1>Every Day</h1>
     <p class="sub">A private journal. Let's set it up.</p>
 
@@ -130,9 +131,9 @@
     box-shadow: var(--shadow-lg);
   }
 
-  .mark { font-size: 26px; color: var(--accent); text-align: center; }
+  .mark { display: flex; justify-content: center; }
   h1 {
-    font-family: var(--font-read); font-size: var(--text-2xl); font-weight: 600;
+    font-family: var(--font-read); font-size: var(--text-2xl); font-weight: 650;
     letter-spacing: -0.02em; text-align: center; margin-top: var(--sp-2);
   }
   .sub { text-align: center; color: var(--fg-subtle); margin-bottom: var(--sp-8); }

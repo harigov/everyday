@@ -2,6 +2,7 @@
   import { app } from '../lib/state.svelte'
   import { dayNumber, groupLabel, plural, weekdayShort } from '../lib/format'
   import { mediaUrl } from '../lib/api'
+  import Icon from './Icon.svelte'
   import type { EntrySummary } from '../lib/types'
 
   // Group by the label the reader would use ("Today", "March"), preserving
@@ -42,11 +43,13 @@
 <section class="list">
   <header class="top">
     <h1 class="heading">{heading}</h1>
-    <button class="new" onclick={() => app.newEntry()} title="New entry (Ctrl+N)">＋</button>
+    <button class="new" onclick={() => app.newEntry()} title="New entry (Ctrl+N)" aria-label="New entry">
+      <Icon name="plus" size={17} />
+    </button>
   </header>
 
   <div class="searchbar">
-    <span class="glass" aria-hidden="true">⌕</span>
+    <span class="glass"><Icon name="search" size={15} /></span>
     <input
       class="search"
       type="search"
@@ -106,14 +109,16 @@
 
             <div class="body">
               <div class="title">
-                {#if row.pinned}<span class="pin" title="Pinned">▮</span>{/if}
-                {row.title || 'Untitled entry'}
-                {#if row.starred}<span class="star" title="Starred">★</span>{/if}
+                {#if row.pinned}<span class="pin" title="Pinned"><Icon name="pin" size={12} weight={1.7} /></span>{/if}
+                <span class="titletext">{row.title || 'Untitled entry'}</span>
+                {#if row.starred}<span class="star" title="Starred"><Icon name="star" size={12} filled /></span>{/if}
               </div>
               {#if row.excerpt}<div class="excerpt">{row.excerpt}</div>{/if}
               {#if row.tags.length || row.place}
                 <div class="chips">
-                  {#if row.place}<span class="place">◉ {row.place}</span>{/if}
+                  {#if row.place}
+                    <span class="place"><Icon name="place" size={12} weight={1.6} /> {row.place}</span>
+                  {/if}
                   {#each row.tags.slice(0, 3) as tag (tag)}<span class="chip">{tag}</span>{/each}
                 </div>
               {/if}
@@ -144,22 +149,21 @@
     height: 46px; padding: 0 var(--sp-3) 0 var(--sp-4); flex: none;
   }
   .heading {
-    font-family: var(--font-read);
-    font-size: var(--text-lg);
-    font-weight: 600;
-    letter-spacing: -0.01em;
+    font-size: var(--text-md);
+    font-weight: 620;
+    letter-spacing: -0.008em;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .new {
-    width: 28px; height: 28px; display: grid; place-items: center;
-    border-radius: var(--radius-sm); color: var(--fg-muted); font-size: var(--text-md);
+    width: 30px; height: 30px; display: grid; place-items: center;
+    border-radius: var(--radius-sm); color: var(--fg-muted);
   }
   .new:hover { background: var(--bg-hover); color: var(--fg); }
 
   .searchbar { position: relative; padding: 0 var(--sp-3) var(--sp-3); flex: none; }
   .glass {
-    position: absolute; left: calc(var(--sp-3) + 9px); top: 7px;
-    color: var(--fg-faint); font-size: var(--text-md); pointer-events: none;
+    position: absolute; left: calc(var(--sp-3) + 9px); top: 8px;
+    color: var(--fg-faint); pointer-events: none;
   }
   .search {
     width: 100%; height: 30px; padding: 0 var(--sp-3) 0 30px;
@@ -210,13 +214,13 @@
   .body { flex: 1; min-width: 0; }
 
   .title {
+    display: flex; align-items: center; gap: 5px;
     font-size: var(--text-base); font-weight: 600; line-height: var(--leading-snug);
     color: var(--fg);
-    display: -webkit-box; -webkit-line-clamp: 1; line-clamp: 1;
-    -webkit-box-orient: vertical; overflow: hidden;
   }
-  .star { color: #e0a92b; font-size: var(--text-xs); }
-  .pin { color: var(--fg-faint); font-size: 9px; vertical-align: 1px; }
+  .titletext { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .star { color: #e0a92b; display: flex; }
+  .pin { color: var(--fg-faint); display: flex; }
 
   .excerpt {
     margin-top: 2px;
@@ -230,7 +234,10 @@
     font-size: 10px; font-weight: 500; color: var(--fg-faint);
     padding: 1px var(--sp-2); border-radius: 99px; background: var(--bg-sunken);
   }
-  .place { background: none; padding-left: 0; }
+  .place {
+    display: inline-flex; align-items: center; gap: 3px;
+    background: none; padding-left: 0;
+  }
 
   .thumb {
     width: 42px; height: 42px; flex: none;

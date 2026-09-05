@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from '../lib/state.svelte'
+  import Icon from './Icon.svelte'
 
   let retrying = $state(false)
 
@@ -15,7 +16,7 @@
 
 <div class="wrap">
   <div class="card">
-    <div class="mark">⚠</div>
+    <div class="mark"><Icon name="alert" size={28} weight={1.7} /></div>
     <h1>Every Day could not start</h1>
 
     {#if app.error}<p class="detail">{app.error}</p>{/if}
@@ -52,11 +53,11 @@
     box-shadow: var(--shadow-lg);
   }
 
-  .mark { font-size: 26px; color: var(--danger); margin-bottom: var(--sp-3); }
+  .mark { display: flex; justify-content: center; color: var(--danger); margin-bottom: var(--sp-4); }
 
   h1 {
     font-family: var(--font-read);
-    font-size: var(--text-xl); font-weight: 600; letter-spacing: -0.015em;
+    font-size: var(--text-xl); font-weight: 650; letter-spacing: -0.015em;
   }
 
   .detail {

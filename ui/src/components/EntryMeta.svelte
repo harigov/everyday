@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { Entry } from '../lib/types'
   import { app } from '../lib/state.svelte'
+  import { focusOnMount } from '../lib/focus'
+  import Icon from './Icon.svelte'
 
   let { entry }: { entry: Entry } = $props()
 
@@ -25,22 +27,24 @@
 
 <div class="meta">
   {#if entry.location?.placeName || entry.location?.locality}
-    <span class="place">◉ {entry.location.placeName ?? entry.location.locality}</span>
+    <span class="place">
+      <Icon name="place" size={13} weight={1.6} />
+      {entry.location.placeName ?? entry.location.locality}
+    </span>
   {/if}
 
   {#each entry.tags as tag (tag)}
     <button class="tag chip" onclick={() => removeTag(tag)} title="Remove tag">
-      {tag}<span class="x">×</span>
+      {tag}<span class="x"><Icon name="close" size={11} weight={1.8} /></span>
     </button>
   {/each}
 
   {#if adding}
-    <!-- svelte-ignore a11y_autofocus -->
     <input
       class="tag-input"
       placeholder="tag"
       bind:value={draft}
-      autofocus
+      use:focusOnMount
       onblur={commitTag}
       onkeydown={(e) => {
         if (e.key === 'Enter') commitTag()
@@ -48,7 +52,9 @@
       }}
     />
   {:else}
-    <button class="add" onclick={() => (adding = true)}>+ Tag</button>
+    <button class="add" onclick={() => (adding = true)}>
+      <Icon name="plus" size={11} weight={1.8} /> Tag
+    </button>
   {/if}
 </div>
 
@@ -61,14 +67,21 @@
     margin-top: var(--sp-3);
   }
 
-  .place { font-size: var(--text-sm); color: var(--fg-subtle); }
+  .place {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: var(--text-sm); color: var(--fg-subtle);
+  }
 
   .chip { cursor: pointer; transition: all var(--fast) var(--ease); }
   .chip:hover { border-color: var(--danger); color: var(--danger); }
-  .x { margin-left: 4px; opacity: 0; transition: opacity var(--fast) var(--ease); }
+  .x {
+    display: flex; margin-left: 3px;
+    opacity: 0; transition: opacity var(--fast) var(--ease);
+  }
   .chip:hover .x { opacity: 1; }
 
   .add {
+    display: inline-flex; align-items: center; gap: 3px;
     font-size: var(--text-xs);
     font-weight: 500;
     color: var(--fg-faint);

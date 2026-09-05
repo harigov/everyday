@@ -3,23 +3,26 @@
 :root {
   /* Type.
    *
-   * No web fonts. The platform's own UI face is the one the text engine is
-   * tuned for -- hinted, subpixel-positioned and cached by the OS -- so it
-   * renders sharper than anything we could ship, and it costs nothing to
-   * load. San Francisco on macOS, Segoe UI Variable on Windows, and whatever
-   * the desktop is configured for on Linux.
+   * Two bundled variable faces (see fonts.css), each with a platform stack
+   * behind it for the codepoints we do not ship and for the seconds before
+   * the woff2 is decoded.
+   *
+   * No serif anywhere. The reading face is a humanist sans, which keeps the
+   * separation between chrome and prose without asking small UI text and
+   * long-form writing to come from the same drawing.
    */
-  --font-ui:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI',
-    system-ui, 'Ubuntu', 'Cantarell', 'Noto Sans', sans-serif;
 
-  /* The reading face. A journal is prose, and prose wants a serif with real
-   * italics and old-style figures. New York ships with macOS; Windows has
-   * Georgia; most Linux desktops have at least one of the rest. */
+  /* Interface: menus, lists, buttons, labels. */
+  --font-ui:
+    'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text',
+    'Segoe UI', system-ui, 'Ubuntu', 'Cantarell', 'Noto Sans', sans-serif;
+
+  /* Writing: entry bodies, titles, and the few places that should feel like
+   * the journal rather than the application around it. */
   --font-read:
-    'New York', 'Iowan Old Style', 'Palatino Linotype', 'Palatino',
-    'Source Serif 4', 'Charter', 'Bitstream Charter', 'Sitka Text',
-    Georgia, 'Noto Serif', serif;
+    'Source Sans 3 Variable', 'Source Sans Pro', 'Seravek', 'Ubuntu',
+    'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont,
+    system-ui, 'Noto Sans', sans-serif;
 
   --font-mono:
     ui-monospace, 'SF Mono', 'Cascadia Mono', 'JetBrains Mono', 'Menlo',
@@ -36,10 +39,15 @@
   --text-2xl: 27px;
   --text-3xl: 33px;
 
+  /* Entry bodies. */
+  --text-prose: 17px;
+
   --leading-tight: 1.25;
   --leading-snug: 1.4;
   --leading-normal: 1.6;
-  --leading-prose: 1.72;
+  /* Serif prose wants air between lines; this sans has a larger x-height and
+     shorter extenders, so the same ratio reads as double-spaced. */
+  --leading-prose: 1.58;
 
   /* 4px base. Everything is a multiple, which is what makes rhythm read as
    * deliberate rather than accidental. */
@@ -54,8 +62,11 @@
 
   --sidebar-w: 232px;
   --list-w: 340px;
-  /* ~68 characters: the span where the eye reliably finds the next line. */
-  --measure: 34rem;
+  /* The width of the *text*, not of the box around it -- the page adds its
+     padding on top. About 75 characters at --text-prose, which is the top of
+     the range where the eye still finds the next line reliably, and a good
+     deal more of the window than the 60 characters this used to allow. */
+  --measure: 38rem;
 
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
   --fast: 120ms;

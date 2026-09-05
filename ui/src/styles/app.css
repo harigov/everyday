@@ -1,3 +1,4 @@
+@import './fonts.css';
 @import './theme.css';
 
 /* ── Reset ─────────────────────────────────────────────────────────────── */
@@ -20,13 +21,23 @@ body {
    * what makes small UI text look crisp on the non-Retina displays most
    * Windows and Linux users have; forcing greyscale is a macOS-centric habit
    * that thins text everywhere else. Left to the platform.
+   *
+   * `font-synthesis: none` is safe now that the faces are bundled: both ship
+   * a real italic and a continuous weight axis, so there is never a reason to
+   * accept the browser's sheared-and-smeared imitation of either.
+   *
+   * `text-rendering: optimizeLegibility` is deliberately NOT set. It buys
+   * nothing here -- the kerning and ligatures it turns on are requested
+   * explicitly below -- and it makes the engine re-shape runs it would
+   * otherwise cache, which is felt as scroll judder on a long entry.
    */
-  text-rendering: optimizeLegibility;
   font-synthesis: none;
   -webkit-tap-highlight-color: transparent;
 
-  /* Contextual alternates and kerning on; the platform faces have real ones. */
+  /* Kerning, standard ligatures and contextual alternates. Inter's `calt` is
+   * what disambiguates sequences like `Il1` and `rn` at sidebar sizes. */
   font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1;
+  /* Drives Inter's optical-size axis: heavier and wider small, finer large. */
   font-optical-sizing: auto;
 
   overflow: hidden;
@@ -89,6 +100,13 @@ button { background: none; border: none; padding: 0; cursor: pointer; }
 
 .btn-ghost-danger:hover { background: color-mix(in oklab, var(--danger) 12%, transparent); color: var(--danger); }
 
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+  box-shadow: var(--shadow-sm);
+}
+.btn-danger:hover { background: color-mix(in oklab, var(--danger) 88%, #000); color: #fff; }
+
 .field {
   width: 100%;
   height: 36px;
@@ -149,6 +167,41 @@ button { background: none; border: none; padding: 0; cursor: pointer; }
 }
 
 .sep { height: 1px; background: var(--border); border: none; }
+
+/* ── Dialogs ───────────────────────────────────────────────────────────
+   Shared by every in-app sheet. The point of having these at all is that
+   `window.alert`/`confirm`/`prompt` cannot be styled, block the webview
+   while they are open, and are titled by the embedder -- which in a Tauri
+   window on Linux means a dialog that calls itself "javascript tauri host". */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgb(0 0 0 / 0.18);
+}
+
+.sheet {
+  position: fixed;
+  z-index: 61;
+  top: 22%;
+  left: 50%;
+  translate: -50% 0;
+  width: min(420px, calc(100vw - var(--sp-8)));
+  padding: var(--sp-4);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+.sheet-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+.sheet-row .spacer { flex: 1; }
 
 /* Respect the platform's reduced-motion preference. */
 @media (prefers-reduced-motion: reduce) {

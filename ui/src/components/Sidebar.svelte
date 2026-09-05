@@ -1,7 +1,11 @@
 <script lang="ts">
   import { app } from '../lib/state.svelte'
   import { DEFAULT_COLORS } from '../lib/colors'
+  import { focusOnMount } from '../lib/focus'
+  import Icon from './Icon.svelte'
+  import Logo from './Logo.svelte'
   import SettingsMenu from './SettingsMenu.svelte'
+  import ConfirmDialog from './ConfirmDialog.svelte'
   import type { Journal } from '../lib/types'
 
   let creating = $state(false)
@@ -12,28 +16,26 @@
     draft = ''
     creating = false
     if (!name) return
-    const now = new Date().toISOString()
-    const journal: Journal = {
-      id: crypto.randomUUID(),
-      name,
-      color: DEFAULT_COLORS[app.journals.length % DEFAULT_COLORS.length]!,
-      icon: '\u{1f4d3}',
-      description: '',
-      sortOrder: app.journals.length,
-      createdAt: now,
-      updatedAt: now,
-    }
-    await app.saveJournal(journal)
-    await app.selectJournal(journal.id)
+    // The id, timestamps and defaults come from the core. Minting them here
+    // meant depending on `crypto.randomUUID`, which needs a secure context
+    // the packaged webview does not always provide -- and when it is missing
+    // the journal is silently never created.
+    await app.newJournal(name, DEFAULT_COLORS[app.journals.length % DEFAULT_COLORS.length]!, app.journals.length)
   }
 
-  async function remove(j: Journal) {
+  let pendingDelete = $state<Journal | null>(null)
+
+  async function remove() {
+    const j = pendingDelete
+    pendingDelete = null
+    if (j) await app.deleteJournal(j.id)
+  }
+
+  function deleteDetail(j: Journal): string {
     const n = app.entries.filter((e) => e.journalId === j.id).length
-    const msg =
-      n > 0
-        ? `Delete “${j.name}” and its ${n} ${n === 1 ? 'entry' : 'entries'}? This cannot be undone.`
-        : `Delete “${j.name}”?`
-    if (window.confirm(msg)) await app.deleteJournal(j.id)
+    return n > 0
+      ? `Its ${n} ${n === 1 ? 'entry' : 'entries'} will be removed too. This cannot be undone.`
+      : 'This cannot be undone.'
   }
 
   const total = $derived(app.status?.stats?.entries ?? 0)
@@ -41,7 +43,7 @@
 
 <aside class="sidebar">
   <div class="brand">
-    <span class="mark">✦</span>
+    <Logo size={20} tile />
     <span class="name">Every Day</span>
   </div>
 
@@ -51,7 +53,7 @@
       class:sel={app.selectedJournal === null && !app.showStarredOnly}
       onclick={() => { app.showStarredOnly = false; app.selectJournal(null) }}
     >
-      <span class="icon">◈</span>
+      <span class="icon"><Icon name="layers" /></span>
       <span class="text">All entries</span>
       <span class="count">{total}</span>
     </button>
@@ -61,13 +63,15 @@
       class:sel={app.showStarredOnly}
       onclick={() => { app.showStarredOnly = true; app.selectJournal(null) }}
     >
-      <span class="icon star">★</span>
+      <span class="icon star"><Icon name="star" size={15} filled /></span>
       <span class="text">Starred</span>
     </button>
 
     <div class="head">
       <span class="eyebrow">Journals</span>
-      <button class="plus" title="New journal" onclick={() => (creating = true)}>+</button>
+      <button class="plus" title="New journal" aria-label="New journal" onclick={() => (creating = true)}>
+        <Icon name="plus" size={15} />
+      </button>
     </div>
 
     {#each app.journals as j (j.id)}
@@ -76,7 +80,7 @@
         class:sel={app.selectedJournal === j.id && !app.showStarredOnly}
         style="--dot: {j.color}"
         onclick={() => { app.showStarredOnly = false; app.selectJournal(j.id) }}
-        oncontextmenu={(e) => { e.preventDefault(); remove(j) }}
+        oncontextmenu={(e) => { e.preventDefault(); pendingDelete = j }}
         title={j.description || j.name}
       >
         <span class="icon">{j.icon}</span>
@@ -86,12 +90,11 @@
     {/each}
 
     {#if creating}
-      <!-- svelte-ignore a11y_autofocus -->
       <input
         class="new"
         placeholder="Journal name"
         bind:value={draft}
-        autofocus
+        use:focusOnMount
         onblur={create}
         onkeydown={(e) => {
           if (e.key === 'Enter') create()
@@ -104,10 +107,21 @@
   <div class="foot">
     <SettingsMenu />
     <button class="lock" onclick={() => app.lock()} title="Lock now (Ctrl+L)">
-      <span aria-hidden="true">⌁</span> Lock
+      <Icon name="lock" size={15} />
+      Lock
     </button>
   </div>
 </aside>
+
+{#if pendingDelete}
+  <ConfirmDialog
+    title={'Delete “' + pendingDelete.name + '”?'}
+    detail={deleteDetail(pendingDelete)}
+    confirmLabel="Delete journal"
+    onconfirm={remove}
+    oncancel={() => (pendingDelete = null)}
+  />
+{/if}
 
 <style>
   .sidebar {
@@ -129,8 +143,7 @@
     /* Room for the traffic lights on macOS. */
     padding-left: max(var(--sp-4), env(titlebar-area-x, var(--sp-4)));
   }
-  .mark { color: var(--accent); font-size: var(--text-md); }
-  .name { font-weight: 650; letter-spacing: -0.01em; }
+  .name { font-weight: 620; letter-spacing: -0.006em; font-size: var(--text-md); }
 
   .nav { flex: 1; padding: var(--sp-2) var(--sp-2) var(--sp-4); }
 
@@ -141,12 +154,10 @@
     padding: var(--sp-5) var(--sp-2) var(--sp-2);
   }
   .plus {
-    width: 18px; height: 18px;
+    width: 20px; height: 20px;
     display: grid; place-items: center;
     border-radius: var(--radius-sm);
     color: var(--fg-faint);
-    font-size: var(--text-md);
-    line-height: 1;
   }
   .plus:hover { background: var(--bg-hover); color: var(--fg); }
 
@@ -166,7 +177,13 @@
   .row:hover { background: var(--bg-hover); color: var(--fg); }
   .row.sel { background: var(--bg-active); color: var(--fg); font-weight: 550; }
 
-  .icon { width: 16px; text-align: center; font-size: var(--text-sm); flex: none; }
+  /* Holds an inline icon for the fixed rows and an emoji for user journals,
+     so it is a centred box of a known size rather than a run of text. */
+  .icon {
+    width: 16px; height: 16px; flex: none;
+    display: grid; place-items: center;
+    font-size: var(--text-sm); line-height: 1;
+  }
   .star { color: #e0a92b; }
   .text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .count { font-size: var(--text-xs); color: var(--fg-faint); font-variant-numeric: tabular-nums; }
@@ -192,6 +209,7 @@
   .foot { padding: var(--sp-2); border-top: 1px solid var(--border); }
   .lock {
     display: flex; align-items: center; gap: var(--sp-2);
+    /* Matches the settings trigger above it. */
     width: 100%; height: 28px; padding: 0 var(--sp-2);
     border-radius: var(--radius-sm);
     font-size: var(--text-sm); color: var(--fg-subtle);

@@ -6,6 +6,7 @@
   import LockScreen from './components/LockScreen.svelte'
   import Setup from './components/Setup.svelte'
   import ErrorScreen from './components/ErrorScreen.svelte'
+  import Logo from './components/Logo.svelte'
 
   void app.start()
 
@@ -42,7 +43,7 @@
 
 <div class="app" style="--journal-accent: {app.accent}">
   {#if app.screen === 'loading'}
-    <div class="boot"><span class="mark">✦</span></div>
+    <div class="boot"><div class="mark"><Logo size={40} tile /></div></div>
   {:else if app.screen === 'error'}
     <ErrorScreen />
   {:else if app.screen === 'setup'}
@@ -64,6 +65,6 @@
   .main { flex: 1; min-width: 0; }
 
   .boot { display: grid; place-items: center; height: 100%; background: var(--bg); }
-  .mark { font-size: 26px; color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
-  @keyframes pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+  .mark { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
 </style>

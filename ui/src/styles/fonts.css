@@ -1,0 +1,104 @@
+/* ── Every Day: bundled type ───────────────────────────────────────────────
+ *
+ * The faces ship with the application rather than being borrowed from the
+ * host. That is a reversal of the earlier system-font approach, and it is
+ * deliberate: "the platform's own UI face" is only a good default on macOS.
+ * On Windows the stack lands on Segoe UI, which is passable, and on Linux it
+ * lands on whatever fontconfig feels like -- Noto Sans, DejaVu Sans, or in
+ * the unlucky case a face with no real italic at all. The same journal then
+ * looks like three different applications, and one of them looks broken.
+ *
+ * Nothing is fetched at runtime. Vite fingerprints these woff2 files into the
+ * bundle, Tauri embeds the bundle in the binary, and they load from 'self' --
+ * so the content security policy in tauri.conf.json needs no font exception
+ * and the app still works with no network at all.
+ *
+ * Only latin and latin-ext are shipped (~610 KB total, four files). Text
+ * outside those ranges falls through to the platform stacks in theme.css,
+ * which is the correct behaviour: we would rather hand Cyrillic or CJK to a
+ * font the system actually has than to a subset we half-cover.
+ */
+
+/* Inter, for the interface. Chosen for its large x-height and unambiguous
+ * shapes at 12-15px, where the sidebar and lists live. This is the `opsz`
+ * cut, whose optical-size axis thins the strokes and tightens the spacing as
+ * text gets larger -- `font-optical-sizing: auto` in app.css drives it. */
+
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url('@fontsource-variable/inter/files/inter-latin-opsz-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url('@fontsource-variable/inter/files/inter-latin-ext-opsz-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: block;
+  src: url('@fontsource-variable/inter/files/inter-latin-opsz-italic.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: block;
+  src: url('@fontsource-variable/inter/files/inter-latin-ext-opsz-italic.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+
+/* Source Sans 3, for the writing. A humanist sans with calligraphic bones:
+ * the stroke weight varies the way a hand does, the terminals are angled, and
+ * -- the part that matters for a journal -- the italic is a genuinely drawn
+ * cursive rather than a slanted roman. Prose set in it does not read as
+ * interface text, which is the whole job that a serif used to be doing here.
+ * Its narrower fit also buys a few more words per line at the same measure. */
+
+@font-face {
+  font-family: 'Source Sans 3 Variable';
+  font-style: normal;
+  font-weight: 200 900;
+  font-display: block;
+  src: url('@fontsource-variable/source-sans-3/files/source-sans-3-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+@font-face {
+  font-family: 'Source Sans 3 Variable';
+  font-style: normal;
+  font-weight: 200 900;
+  font-display: block;
+  src: url('@fontsource-variable/source-sans-3/files/source-sans-3-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'Source Sans 3 Variable';
+  font-style: italic;
+  font-weight: 200 900;
+  font-display: block;
+  src: url('@fontsource-variable/source-sans-3/files/source-sans-3-latin-wght-italic.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+@font-face {
+  font-family: 'Source Sans 3 Variable';
+  font-style: italic;
+  font-weight: 200 900;
+  font-display: block;
+  src: url('@fontsource-variable/source-sans-3/files/source-sans-3-latin-ext-wght-italic.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}

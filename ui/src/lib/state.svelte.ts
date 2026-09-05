@@ -14,6 +14,10 @@ import { VaultError } from './types'
 const AUTOSAVE_MS = 700
 /** How often the backend is asked whether the idle timeout has elapsed. */
 const AUTOLOCK_POLL_MS = 5_000
+/** Floor between "the user is still here" pings to the backend. */
+const TOUCH_MS = 15_000
+/** Floor between list refreshes triggered by an autosave. */
+const LIST_REFRESH_MS = 4_000
 
 export type Screen = 'loading' | 'setup' | 'locked' | 'main' | 'error'
 
@@ -52,6 +56,21 @@ class AppState {
   #saveTimer: ReturnType<typeof setTimeout> | null = null
   #searchTimer: ReturnType<typeof setTimeout> | null = null
   #lockTimer: ReturnType<typeof setInterval> | null = null
+  #lastTouch = 0
+  #locking = false
+  #lastListRefresh = 0
+  #listTimer: ReturnType<typeof setTimeout> | null = null
+
+  /**
+   * How to obtain the entry body, registered by the editor.
+   *
+   * The editor is the owner of the document while it is open. Pushing the
+   * serialised JSON into `entry.body` on every keystroke meant walking and
+   * copying the whole document per character, and -- because `entry` is deep
+   * reactive state -- waking every effect that touches the open entry. The
+   * body is pulled once, at save time, instead.
+   */
+  #bodySource: (() => Entry['body']) | null = null
 
   // ── lifecycle ────────────────────────────────────────────────────────
 
@@ -124,6 +143,21 @@ class AppState {
   }
 
   async lock() {
+    // Re-entrant: `flush` below routes a "locked" failure back here, and the
+    // auto-lock poll can arrive while a manual lock is already in flight.
+    if (this.#locking) return
+    this.#locking = true
+    try {
+      await this.#lock()
+    } finally {
+      this.#locking = false
+    }
+  }
+
+  async #lock() {
+    // Write before dropping the entry, or a lock taken within the autosave
+    // window throws away whatever was typed in it.
+    await this.flush()
     // Drop decrypted content from the interface at the same moment the core
     // drops it from memory; a locked app must not leave the last entry
     // sitting behind the lock screen.
@@ -159,11 +193,30 @@ class AppState {
   stopTimers() {
     if (this.#lockTimer) clearInterval(this.#lockTimer)
     this.#lockTimer = null
+    if (this.#listTimer) clearTimeout(this.#listTimer)
+    this.#listTimer = null
   }
 
   /** Called from real user interaction to defer the idle auto-lock. */
   touch() {
+    // The backend needs to know the user is alive, not how fast they type.
+    // Unthrottled this was one IPC round trip per keystroke.
+    const now = Date.now()
+    if (now - this.#lastTouch < TOUCH_MS) return
+    this.#lastTouch = now
     void api.touch().catch(() => {})
+  }
+
+  // ── the open document ────────────────────────────────────────────────
+
+  /** Register (or with `null`, retire) the editor's document getter. */
+  bindBody(fn: (() => Entry['body']) | null) {
+    this.#bodySource = fn
+  }
+
+  /** Pull the editor's current document into state. Cheap enough per save. */
+  syncBody() {
+    if (this.entry && this.#bodySource) this.entry.body = this.#bodySource()
   }
 
   // ── journals ─────────────────────────────────────────────────────────
@@ -178,6 +231,10 @@ class AppState {
   }
 
   async selectJournal(id: JournalId | null) {
+    // Switching journals can leave nothing open, which discards the editor.
+    // Anything typed in the last 700ms is still sitting on the autosave
+    // timer at that point, so it has to go to disk first.
+    await this.flush()
     this.selectedJournal = id
     this.query = ''
     this.results = []
@@ -189,6 +246,28 @@ class AppState {
     await this.refreshJournals()
   }
 
+  /** Create a journal and select it. Returns false if it could not be made. */
+  async newJournal(name: string, color: string, sortOrder: number): Promise<boolean> {
+    try {
+      const journal = await api.newJournal(name)
+      journal.color = color
+      journal.sortOrder = sortOrder
+      await this.saveJournal(journal)
+      // Only select it once the backend has confirmed it exists, so a
+      // journal can never appear in the sidebar without being on disk.
+      if (!this.journals.some((j) => j.id === journal.id)) {
+        this.error = 'The journal could not be saved.'
+        return false
+      }
+      await this.selectJournal(journal.id)
+      return true
+    } catch (e) {
+      if (isLocked(e)) { await this.lock(); return false }
+      this.error = errorMessage(e)
+      return false
+    }
+  }
+
   async deleteJournal(id: JournalId) {
     await api.deleteJournal(id)
     if (this.selectedJournal === id) this.selectedJournal = null
@@ -198,14 +277,45 @@ class AppState {
 
   // ── entries ──────────────────────────────────────────────────────────
 
+  /**
+   * Ask for a list refresh. Coalescing: repeated calls inside the window
+   * collapse into the single trailing refresh, so a burst of autosaves costs
+   * one re-render rather than one each.
+   */
+  private queueListRefresh() {
+    if (this.#listTimer) return
+    const wait = Math.max(0, LIST_REFRESH_MS - (Date.now() - this.#lastListRefresh))
+    this.#listTimer = setTimeout(() => {
+      this.#listTimer = null
+      this.#lastListRefresh = Date.now()
+      void this.refreshRows().catch(() => {})
+    }, wait)
+  }
+
+  /** Run any queued list refresh now. */
+  private async settleList() {
+    if (!this.#listTimer) return
+    clearTimeout(this.#listTimer)
+    this.#listTimer = null
+    this.#lastListRefresh = Date.now()
+    await this.refreshRows()
+  }
+
+  /** Re-read the list rows for the current filter. */
+  private async refreshRows() {
+    this.entries = await api.entries({
+      journalId: this.selectedJournal,
+      starred: this.showStarredOnly ? true : null,
+      sort: 'dateDesc',
+      limit: 500,
+    })
+  }
+
   async refreshEntries() {
     try {
-      this.entries = await api.entries({
-        journalId: this.selectedJournal,
-        starred: this.showStarredOnly ? true : null,
-        sort: 'dateDesc',
-        limit: 500,
-      })
+      if (this.#listTimer) { clearTimeout(this.#listTimer); this.#listTimer = null }
+      this.#lastListRefresh = Date.now()
+      await this.refreshRows()
       // Keep a selection if it is still in view; otherwise open the newest.
       if (!this.entries.some((e) => e.id === this.selectedEntry)) {
         const first = this.entries[0]
@@ -219,8 +329,11 @@ class AppState {
   }
 
   async openEntry(id: EntryId) {
-    // Never let a pending autosave land after we have switched documents.
+    // Never let a pending autosave land after we have switched documents,
+    // and do not leave the row we are switching away from showing the title
+    // it had a few seconds ago.
     await this.flush()
+    await this.settleList()
     this.selectedEntry = id
     try {
       this.entry = await api.entry(id)
@@ -256,25 +369,28 @@ class AppState {
     }
     const entry = this.entry
     if (!entry) return
+    this.syncBody()
     this.saving = true
     try {
       entry.updatedAt = new Date().toISOString()
       await api.saveEntry($state.snapshot(entry) as Entry)
       this.lastSaved = entry.updatedAt
-      // Refresh the row in place so the list reflects the new title and
-      // excerpt without the flicker of a full reload.
-      const rows = await api.entries({
-        journalId: this.selectedJournal,
-        starred: this.showStarredOnly ? true : null,
-        sort: 'dateDesc',
-        limit: 500,
-      })
-      this.entries = rows
+      // Pick up the new title and excerpt in the list, but not right now.
+      //
+      // This is on the autosave path: while someone is writing it fired every
+      // 700ms, and each one replaced the whole `entries` array, re-rendering
+      // every row in the list beside the text they were typing into. The list
+      // is a secondary view of an entry the author is looking straight at, so
+      // it is allowed to lag -- but the refresh is queued, never dropped, so
+      // it always converges once the typing stops.
     } catch (e) {
       if (isLocked(e)) return void (await this.lock())
       this.error = errorMessage(e)
     } finally {
       this.saving = false
+      // Not after a save that ended in a lock: the refresh would fire four
+      // seconds later against a vault that is no longer open.
+      if (this.screen === 'main') this.queueListRefresh()
     }
   }
 

@@ -84,6 +84,7 @@ export const api = {
   pollAutoLock: () => invoke<boolean>('poll_auto_lock'),
 
   journals: () => invoke<Journal[]>('list_journals'),
+  newJournal: (name: string) => invoke<Journal>('new_journal', { name }),
   saveJournal: (journal: Journal) => invoke<void>('save_journal', { journal }),
   deleteJournal: (id: JournalId) => invoke<void>('delete_journal', { id }),
 

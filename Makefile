@@ -19,7 +19,7 @@ UI_DIR  := ui
 ARGS ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help setup run dev ui build test check fmt cli clean distclean
+.PHONY: help setup run dev ui build test check fmt cli icons desktop-entry undesktop-entry clean distclean
 
 help: ## Show this help
 	@echo "Every Day -- make <target>"
@@ -83,6 +83,25 @@ fmt: ## Format Rust sources
 
 cli: ## Run the everyday CLI, e.g. make cli ARGS="list"
 	cargo run -p everyday-cli -- $(ARGS)
+
+# The PNG/ICO/ICNS set beside the master is generated, not hand-drawn: edit
+# icons/icon.svg and re-run this. The Tauri CLI rasterises the SVG itself
+# (resvg), which is the point -- ImageMagick's built-in SVG renderer silently
+# drops the gradient and hands back a black tile.
+icons: ## Regenerate the app icons from crates/everyday-app/icons/icon.svg
+	cd $(APP_DIR) && cargo tauri icon icons/icon.svg -o icons
+	@# Desktop only: the mobile sets Tauri also emits have no shell to go with.
+	rm -rf $(APP_DIR)/icons/android $(APP_DIR)/icons/ios
+
+# Wayland hands the compositor an app id, not an icon, and GNOME resolves it
+# to an icon through the .desktop file that claims that id. A binary run
+# straight out of target/ has no .desktop file, so it gets the generic icon.
+# Installing the .deb solves that; this is for running a build in place.
+desktop-entry: ## Give a locally built binary its name and icon in the desktop
+	./scripts/desktop-entry.sh
+
+undesktop-entry: ## Undo `make desktop-entry`
+	./scripts/desktop-entry.sh --remove
 
 clean: ## Remove build output
 	cargo clean

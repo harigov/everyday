@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte'
+  import { onDestroy, untrack } from 'svelte'
   import { Editor } from '@tiptap/core'
   import StarterKit from '@tiptap/starter-kit'
   import Placeholder from '@tiptap/extension-placeholder'
@@ -16,6 +16,9 @@
   import { longDate, plural, relativeTime } from '../lib/format'
   import Toolbar from './Toolbar.svelte'
   import EntryMeta from './EntryMeta.svelte'
+  import Logo from './Logo.svelte'
+  import Icon from './Icon.svelte'
+  import ConfirmDialog from './ConfirmDialog.svelte'
 
   let host = $state<HTMLDivElement>()
   let editor = $state<Editor | null>(null)
@@ -23,6 +26,9 @@
   let dropping = $state(false)
   /** Guards against the programmatic `setContent` echoing back as an edit. */
   let loading = false
+  /** Which entry the ProseMirror document currently holds. */
+  let loadedId: string | null = null
+  let wordTimer: ReturnType<typeof setTimeout> | null = null
 
   const entry = $derived(app.entry)
 
@@ -57,15 +63,28 @@
           return insertFiles(Array.from(dt?.files ?? []))
         },
       },
-      onUpdate: ({ editor: ed }) => {
+      // Deliberately does not serialise the document into app state. The
+      // body is pulled from `getJSON()` once per save (see app.bindBody);
+      // doing it per keystroke walked the whole document every character and
+      // was most of the typing latency on a long entry.
+      onUpdate: () => {
         if (loading || !app.entry) return
-        app.entry.body = ed.getJSON() as typeof app.entry.body
-        words = ed.storage.characterCount.words()
         app.scheduleSave()
         app.touch()
+        scheduleWordCount()
       },
     })
     return ed
+  }
+
+  /** Word counting walks the whole document, so it runs on a lull, not on
+   *  every keypress. The reader cannot follow a counter faster than this. */
+  function scheduleWordCount() {
+    if (wordTimer) return
+    wordTimer = setTimeout(() => {
+      wordTimer = null
+      words = editor?.storage.characterCount.words() ?? 0
+    }, 400)
   }
 
   /** Store dropped or pasted files as blobs and insert media nodes. */
@@ -124,25 +143,74 @@
     })
   }
 
+  // Own the editor's lifetime, keyed on the element it lives in.
+  //
+  // The `{#if entry}` above unmounts this whole pane whenever nothing is
+  // open -- switching to an empty journal, locking, deleting the last entry.
+  // The old guard was `if (host && !editor)`, so after such a round trip
+  // `host` was a brand new <div> but `editor` still held a ProseMirror view
+  // attached to the discarded one. Nothing rebuilt, and the pane came back
+  // with no editable element in it at all: no caret, no typing, no way to
+  // tell anything was wrong. Rebuilding when `host` changes is the fix, and
+  // the teardown stops the old view leaking with it.
   $effect(() => {
-    if (host && !editor) editor = build(host)
+    const el = host
+    if (!el) return
+    const ed = build(el)
+    editor = ed
+    loadedId = null
+    app.bindBody(() => ed.getJSON() as never)
+    return () => {
+      // Capture the document while the view is still alive. If the pane is
+      // going away because nothing is open, `syncBody` is a no-op; it can
+      // never write this document into a different entry, because switching
+      // entries does not unmount the pane.
+      app.syncBody()
+      app.bindBody(null)
+      ed.destroy()
+      if (editor === ed) editor = null
+    }
   })
 
-  // Swap the document when the selected entry changes.
+  // Swap the document when the selected entry changes -- and *only* then.
+  //
+  // This used to depend on the whole `entry` object, which meant every write
+  // to any of its fields re-ran it: the autosave stamping `updatedAt`, a
+  // keystroke in the title, adding a tag. Each re-run replaced the entire
+  // ProseMirror document, which threw away the caret and fired transactions
+  // from inside an effect -- and that last part crashed Svelte with
+  // `effect_update_depth_exceeded`, after which every button in the app
+  // stopped responding. Reading only `id` is what keeps it to real swaps.
   $effect(() => {
-    const current = entry
-    if (!editor || !current) return
+    const id = entry?.id ?? null
+    if (!editor) return
+    if (!id) { loadedId = null; return }
+    if (id === loadedId) return
+    loadedId = id
+    // Untracked: reading the document must not subscribe this effect to
+    // every node in it.
+    const body = untrack(() => app.entry?.body)
     loading = true
-    editor.commands.setContent(current.body as never, { emitUpdate: false })
+    editor.commands.setContent(body as never, { emitUpdate: false })
     words = editor.storage.characterCount.words()
     loading = false
   })
 
   onDestroy(() => {
+    if (wordTimer) clearTimeout(wordTimer)
+    // The effect teardown above captures the document; this only has to make
+    // sure it reaches disk.
+    app.syncBody()
     void app.flush()
-    editor?.destroy()
-    editor = null
   })
+
+  let confirmingDelete = $state(false)
+
+  async function deleteEntry() {
+    confirmingDelete = false
+    const id = app.entry?.id
+    if (id) await app.deleteEntry(id)
+  }
 
   function onDragOver(e: DragEvent) {
     if (e.dataTransfer?.types.includes('Files')) { e.preventDefault(); dropping = true }
@@ -152,7 +220,7 @@
 {#if !entry}
   <div class="empty">
     <div class="empty-inner">
-      <div class="empty-mark">✦</div>
+      <div class="empty-mark"><Logo size={40} /></div>
       <h2>Nothing open</h2>
       <p>Choose an entry, or start a new one.</p>
       <button class="btn btn-primary" onclick={() => app.newEntry()}>New entry</button>
@@ -196,22 +264,39 @@
         {:else if app.lastSaved}Saved {relativeTime(app.lastSaved)}
         {:else}Edited {relativeTime(entry.updatedAt)}{/if}
       </span>
+      <span class="spacer"></span>
+      <button class="delete" onclick={() => (confirmingDelete = true)} title="Delete this entry">
+        <Icon name="trash" size={14} weight={1.5} />
+        Delete
+      </button>
     </footer>
 
     {#if dropping}
       <div class="dropzone"><span>Drop to add to this entry</span></div>
     {/if}
   </div>
+
+  {#if confirmingDelete}
+    <ConfirmDialog
+      title="Delete this entry?"
+      detail={'“' + (entry.title || 'Untitled entry') + '” and anything attached to it will be removed. This cannot be undone.'}
+      confirmLabel="Delete entry"
+      onconfirm={deleteEntry}
+      oncancel={() => (confirmingDelete = false)}
+    />
+  {/if}
 {/if}
 
 <style>
   .editor { position: relative; display: flex; flex-direction: column; height: 100%; background: var(--bg-raised); }
   .canvas { flex: 1; }
 
+  /* --measure is the text column; the padding sits outside it. Setting it as
+     the box width instead cost two thirds of an inch of line on every side. */
   .page {
-    max-width: var(--measure);
+    max-width: calc(var(--measure) + var(--sp-8) * 2);
     margin: 0 auto;
-    padding: var(--sp-12) var(--sp-8) 30vh;
+    padding: var(--sp-10) var(--sp-8) 30vh;
   }
 
   .head { margin-bottom: var(--sp-6); }
@@ -231,9 +316,9 @@
     padding: 0;
     font-family: var(--font-read);
     font-size: var(--text-3xl);
-    font-weight: 600;
+    font-weight: 650;
     line-height: var(--leading-tight);
-    letter-spacing: -0.015em;
+    letter-spacing: -0.018em;
     color: var(--fg);
     user-select: text;
   }
@@ -251,6 +336,24 @@
     font-variant-numeric: tabular-nums;
   }
   .dot { opacity: 0.5; }
+  .status .spacer { flex: 1; }
+
+  /* Quiet until wanted: deleting an entry should be findable, not inviting. */
+  .delete {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    height: 22px;
+    padding: 0 var(--sp-2);
+    border-radius: var(--radius-sm);
+    color: var(--fg-faint);
+    font-size: var(--text-xs);
+    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+  }
+  .delete:hover {
+    background: color-mix(in oklab, var(--danger) 12%, transparent);
+    color: var(--danger);
+  }
 
   .dropzone {
     position: absolute;
@@ -268,33 +371,40 @@
 
   .empty { display: grid; place-items: center; height: 100%; background: var(--bg-raised); }
   .empty-inner { text-align: center; max-width: 26ch; }
-  .empty-mark { font-size: 30px; color: var(--fg-faint); margin-bottom: var(--sp-3); }
-  .empty h2 { font-family: var(--font-read); font-size: var(--text-xl); font-weight: 600; margin-bottom: var(--sp-2); }
+  .empty-mark {
+    display: flex; justify-content: center;
+    color: var(--fg-faint); margin-bottom: var(--sp-4);
+  }
+  .empty h2 { font-family: var(--font-read); font-size: var(--text-xl); font-weight: 620; margin-bottom: var(--sp-2); }
   .empty p { color: var(--fg-subtle); margin-bottom: var(--sp-5); line-height: var(--leading-normal); }
 
   /* ── Prose ───────────────────────────────────────────────────────────
      Typography for the entry body. This is the part of the app people
-     actually look at, so it gets a serif face, a generous measure and a
-     line height chosen for continuous reading rather than for UI density. */
+     actually look at, so it gets the reading face, a generous measure and a
+     line height chosen for continuous reading rather than for UI density.
+
+     The face is a humanist sans rather than a serif. It still contrasts with
+     the interface around it -- different drawing, different colour on the
+     page -- without the serif's mismatch against a screen-first UI. */
 
   .prose :global(.ed-content) {
     font-family: var(--font-read);
-    font-size: var(--text-lg);
+    font-size: var(--text-prose);
     line-height: var(--leading-prose);
     color: var(--fg);
     user-select: text;
-    /* Old-style figures sit better in running prose than lining ones. */
-    font-variant-numeric: oldstyle-nums proportional-nums;
+    /* Proportional, but lining: old-style figures are a serif mannerism and
+       look like a mistake in a sans. */
+    font-variant-numeric: proportional-nums lining-nums;
     outline: none;
     -webkit-user-modify: read-write-plaintext-only;
   }
-  .prose :global(.ed-content > * + *) { margin-top: 1.1em; }
-  .prose :global(p) { hanging-punctuation: first last; }
+  .prose :global(.ed-content > * + *) { margin-top: 0.95em; }
 
   .prose :global(h1),
   .prose :global(h2),
   .prose :global(h3) {
-    font-weight: 600;
+    font-weight: 650;
     line-height: var(--leading-tight);
     letter-spacing: -0.012em;
     margin-top: 1.7em;
@@ -303,7 +413,7 @@
   .prose :global(h2) { font-size: 1.28em; }
   .prose :global(h3) { font-size: 1.1em; }
 
-  .prose :global(strong) { font-weight: 650; }
+  .prose :global(strong) { font-weight: 700; }
   .prose :global(em) { font-style: italic; }
   .prose :global(mark) {
     background: color-mix(in oklab, #f5d90a 42%, transparent);
