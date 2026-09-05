@@ -1,0 +1,18 @@
+[package]
+name = "everyday-vault"
+description = "Wires the Every Day core to its storage backends and platform paths"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+everyday-core.workspace = true
+everyday-store-sqlite.workspace = true
+everyday-store-markdown.workspace = true
+serde.workspace = true
+directories = "6"
+
+[dev-dependencies]
+tempfile = "3"

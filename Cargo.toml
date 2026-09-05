@@ -1,0 +1,62 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/everyday-core",
+    "crates/everyday-store-sqlite",
+    "crates/everyday-store-markdown",
+    "crates/everyday-vault",
+    "crates/everyday-cli",
+    "crates/everyday-app",
+]
+
+# `everyday-app` is a workspace member -- it shares the lockfile and can be
+# built with `-p everyday-app` -- but it is not a *default* member, because
+# it links the platform webview (WebKitGTK on Linux) and would otherwise make
+# a plain `cargo test` fail on any machine without those headers installed.
+# Everything except the shell is portable Rust and always builds.
+default-members = [
+    "crates/everyday-core",
+    "crates/everyday-store-sqlite",
+    "crates/everyday-store-markdown",
+    "crates/everyday-vault",
+    "crates/everyday-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["Every Day contributors"]
+
+[workspace.dependencies]
+everyday-core = { path = "crates/everyday-core" }
+everyday-store-sqlite = { path = "crates/everyday-store-sqlite" }
+everyday-store-markdown = { path = "crates/everyday-store-markdown" }
+everyday-vault = { path = "crates/everyday-vault" }
+
+tauri = "2"
+tauri-build = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+jiff = { version = "0.2", features = ["serde"] }
+blake3 = "1"
+rand = "0.9"
+zeroize = { version = "1", features = ["derive"] }
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
+chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
+tracing = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dist]
+inherits = "release"
+lto = "fat"

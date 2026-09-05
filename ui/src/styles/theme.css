@@ -1,0 +1,150 @@
+/* ── Every Day: design tokens ──────────────────────────────────────────── */
+
+:root {
+  /* Type.
+   *
+   * No web fonts. The platform's own UI face is the one the text engine is
+   * tuned for -- hinted, subpixel-positioned and cached by the OS -- so it
+   * renders sharper than anything we could ship, and it costs nothing to
+   * load. San Francisco on macOS, Segoe UI Variable on Windows, and whatever
+   * the desktop is configured for on Linux.
+   */
+  --font-ui:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI',
+    system-ui, 'Ubuntu', 'Cantarell', 'Noto Sans', sans-serif;
+
+  /* The reading face. A journal is prose, and prose wants a serif with real
+   * italics and old-style figures. New York ships with macOS; Windows has
+   * Georgia; most Linux desktops have at least one of the rest. */
+  --font-read:
+    'New York', 'Iowan Old Style', 'Palatino Linotype', 'Palatino',
+    'Source Serif 4', 'Charter', 'Bitstream Charter', 'Sitka Text',
+    Georgia, 'Noto Serif', serif;
+
+  --font-mono:
+    ui-monospace, 'SF Mono', 'Cascadia Mono', 'JetBrains Mono', 'Menlo',
+    'Consolas', 'Liberation Mono', monospace;
+
+  /* A modular scale at 1.2, rounded to whole pixels so glyph rasterisation
+   * lands on the pixel grid rather than between it. */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 15px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+  --text-2xl: 27px;
+  --text-3xl: 33px;
+
+  --leading-tight: 1.25;
+  --leading-snug: 1.4;
+  --leading-normal: 1.6;
+  --leading-prose: 1.72;
+
+  /* 4px base. Everything is a multiple, which is what makes rhythm read as
+   * deliberate rather than accidental. */
+  --sp-1: 4px;   --sp-2: 8px;   --sp-3: 12px;  --sp-4: 16px;
+  --sp-5: 20px;  --sp-6: 24px;  --sp-8: 32px;  --sp-10: 40px;
+  --sp-12: 48px; --sp-16: 64px;
+
+  --radius-sm: 5px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  --sidebar-w: 232px;
+  --list-w: 340px;
+  /* ~68 characters: the span where the eye reliably finds the next line. */
+  --measure: 34rem;
+
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --fast: 120ms;
+  --med: 220ms;
+}
+
+/* ── Light ─────────────────────────────────────────────────────────────── */
+:root,
+[data-theme='light'] {
+  color-scheme: light;
+
+  /* Warm, paper-ish greys. A pure-white journal feels like a spreadsheet. */
+  --bg: #f7f6f3;
+  --bg-sunken: #efede8;
+  --bg-raised: #fffefc;
+  --bg-panel: #fbfaf7;
+  --bg-hover: rgb(0 0 0 / 0.035);
+  --bg-active: rgb(0 0 0 / 0.06);
+  --bg-selected: color-mix(in oklab, var(--accent) 13%, transparent);
+
+  --fg: #1c1a17;
+  --fg-muted: #605c55;
+  --fg-subtle: #8b857c;
+  --fg-faint: #aaa49a;
+  --fg-on-accent: #fff;
+
+  --border: rgb(0 0 0 / 0.09);
+  --border-strong: rgb(0 0 0 / 0.16);
+
+  --accent: #b4530f;
+  --accent-hover: #9c460b;
+  --danger: #b42318;
+
+  --shadow-sm: 0 1px 2px rgb(28 26 23 / 0.06), 0 1px 1px rgb(28 26 23 / 0.04);
+  --shadow: 0 4px 12px -2px rgb(28 26 23 / 0.1), 0 2px 4px -2px rgb(28 26 23 / 0.06);
+  --shadow-lg: 0 18px 40px -12px rgb(28 26 23 / 0.22), 0 4px 10px -4px rgb(28 26 23 / 0.1);
+}
+
+/* ── Dark ──────────────────────────────────────────────────────────────── */
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: #17161a;
+  --bg-sunken: #100f13;
+  --bg-raised: #201f24;
+  --bg-panel: #1b1a1f;
+  --bg-hover: rgb(255 255 255 / 0.045);
+  --bg-active: rgb(255 255 255 / 0.08);
+  --bg-selected: color-mix(in oklab, var(--accent) 22%, transparent);
+
+  --fg: #eceaf0;
+  --fg-muted: #a8a4b0;
+  --fg-subtle: #7d7a86;
+  --fg-faint: #5c5966;
+  --fg-on-accent: #fff;
+
+  --border: rgb(255 255 255 / 0.09);
+  --border-strong: rgb(255 255 255 / 0.17);
+
+  --accent: #e8853f;
+  --accent-hover: #f0975a;
+  --danger: #f87171;
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow: 0 4px 14px -2px rgb(0 0 0 / 0.5);
+  --shadow-lg: 0 20px 44px -12px rgb(0 0 0 / 0.65);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --bg: #17161a;
+    --bg-sunken: #100f13;
+    --bg-raised: #201f24;
+    --bg-panel: #1b1a1f;
+    --bg-hover: rgb(255 255 255 / 0.045);
+    --bg-active: rgb(255 255 255 / 0.08);
+    --bg-selected: color-mix(in oklab, var(--accent) 22%, transparent);
+    --fg: #eceaf0;
+    --fg-muted: #a8a4b0;
+    --fg-subtle: #7d7a86;
+    --fg-faint: #5c5966;
+    --border: rgb(255 255 255 / 0.09);
+    --border-strong: rgb(255 255 255 / 0.17);
+    --accent: #e8853f;
+    --accent-hover: #f0975a;
+    --danger: #f87171;
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+    --shadow: 0 4px 14px -2px rgb(0 0 0 / 0.5);
+    --shadow-lg: 0 20px 44px -12px rgb(0 0 0 / 0.65);
+  }
+}

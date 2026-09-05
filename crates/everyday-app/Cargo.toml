@@ -1,0 +1,34 @@
+[package]
+name = "everyday-app"
+description = "Every Day desktop application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+# Tauri builds mobile targets from a library, so the app lives in `lib.rs`
+# and `main.rs` is a two-line shim. This is what makes an iOS/Android target
+# a matter of `cargo tauri ios init` rather than a restructure.
+name = "everyday_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+everyday-core.workspace = true
+everyday-vault.workspace = true
+tauri.workspace = true
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+# Enabled by `tauri dev`/`tauri build`; keeps devtools out of releases.
+custom-protocol = ["tauri/custom-protocol"]

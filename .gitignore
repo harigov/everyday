@@ -1,0 +1,6 @@
+/target
+**/node_modules
+/ui/dist
+/crates/everyday-app/gen
+*.log
+.DS_Store

@@ -1,0 +1,29 @@
+[package]
+name = "everyday-core"
+description = "Domain model, crypto envelope, storage abstraction and search index for Every Day"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+# Exposes `store::conformance`, the shared backend test battery. Backends
+# enable this in their dev-dependencies.
+testing = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+jiff.workspace = true
+blake3.workspace = true
+rand.workspace = true
+zeroize.workspace = true
+argon2.workspace = true
+chacha20poly1305.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

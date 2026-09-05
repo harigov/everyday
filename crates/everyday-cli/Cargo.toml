@@ -1,0 +1,24 @@
+[package]
+name = "everyday-cli"
+description = "Command line interface to an Every Day journal vault"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "everyday"
+path = "src/main.rs"
+
+[dependencies]
+everyday-core.workspace = true
+everyday-vault.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+clap = { version = "4", features = ["derive", "env"] }
+rpassword = "7"
+mime_guess = "2"
+
+[dev-dependencies]
+tempfile = "3"

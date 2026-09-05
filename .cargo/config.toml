@@ -1,0 +1,16 @@
+# Build settings for Every Day.
+#
+# `jobs` caps how many `rustc` processes cargo runs at once. The default is
+# one per core, which on a many-core machine can mean a dozen simultaneous
+# compilations each holding a full crate graph in memory. Capping it trades a
+# little wall-clock for a much lower peak footprint.
+[build]
+jobs = 4
+
+[profile.dev]
+# Full debuginfo is the largest single contributor to rustc's peak memory and
+# to the size of `target/`. Line tables are enough for a readable backtrace.
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
