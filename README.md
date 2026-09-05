@@ -114,22 +114,24 @@ what makes "swap the backend" a real claim rather than an aspiration.
 
 - Rust 1.85+ (2024 edition)
 - Node 22.12+ (see `ui/.nvmrc`)
-- Linux only: `./scripts/setup-linux.sh` installs the WebKitGTK headers
 
 ### Run it
 
 ```sh
-cargo install tauri-cli --version '^2' --locked
-npm --prefix ui install
-./scripts/dev.sh
+make setup    # WebKitGTK headers on Linux, Tauri CLI, npm packages
+make run      # the desktop app, with hot reload
 ```
+
+`make` on its own lists every target. It is a thin wrapper and not a build
+system of its own: `make run` is `./scripts/dev.sh`, `make test` is
+`./scripts/test.sh`. Use the scripts directly if you prefer them.
 
 ### Test it
 
 ```sh
-./scripts/test.sh                     # whole workspace
-./scripts/test.sh -p everyday-core    # one crate
-npm --prefix ui run check             # typecheck the interface
+make test                          # whole workspace
+make test ARGS="-p everyday-core"  # one crate
+make check                         # fmt, clippy, and the interface typecheck
 ```
 
 `scripts/test.sh` runs the suite inside a systemd scope with a hard memory
@@ -141,7 +143,7 @@ parser was caught. Use it.
 ### Work on the interface without Rust
 
 ```sh
-npm --prefix ui run dev
+make ui
 ```
 
 The interface detects the absence of a Tauri host and falls back to a complete
