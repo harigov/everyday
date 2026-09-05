@@ -15,7 +15,7 @@ const AUTOSAVE_MS = 700
 /** How often the backend is asked whether the idle timeout has elapsed. */
 const AUTOLOCK_POLL_MS = 5_000
 
-export type Screen = 'loading' | 'setup' | 'locked' | 'main'
+export type Screen = 'loading' | 'setup' | 'locked' | 'main' | 'error'
 
 function isLocked(e: unknown): boolean {
   return e instanceof VaultError && e.code === 'locked'
@@ -68,13 +68,25 @@ class AppState {
       const boot = await api.bootstrap()
       this.boot = boot
       this.status = boot.status
+      this.error = null
       if (!boot.vaultExists) this.screen = 'setup'
       else if (boot.status?.unlocked) await this.enterMain()
       else this.screen = 'locked'
     } catch (e) {
+      // Deliberately NOT the setup screen. "Create a journal" in response to
+      // a backend failure invites the user to make a second vault while the
+      // first one is sitting there intact but unreachable -- and it reads as
+      // though their entries are gone. Say what actually happened instead.
       this.error = errorMessage(e)
-      this.screen = 'setup'
+      this.screen = 'error'
     }
+  }
+
+  /** Retry the initial handshake after a failure. */
+  async retry() {
+    this.screen = 'loading'
+    this.error = null
+    await this.start()
   }
 
   applyTheme() {

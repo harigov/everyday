@@ -18,12 +18,26 @@ import type {
 } from './types'
 import { VaultError } from './types'
 
-const MOCK = import.meta.env.VITE_EVERYDAY_MOCK === '1' || !('__TAURI_INTERNALS__' in window)
+// Decided at BUILD time, not run time.
+//
+// `import.meta.env.DEV` is substituted with a literal by Vite, so a
+// production bundle evaluates this to `false` and the mock module below is
+// statically eliminated -- it is not merely unused, it is not shipped.
+//
+// The runtime check is deliberately *inside* the dev guard. A release build
+// that cannot reach Tauri must fail loudly, not quietly serve a fake journal
+// with sample entries in it: for a journal app, that failure mode is
+// indistinguishable from having lost everything.
+const MOCK = import.meta.env.DEV && !('__TAURI_INTERNALS__' in window)
 
 type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>
 
 let invoke: Invoke = async () => {
-  throw new VaultError('unavailable', 'the backend is not available')
+  throw new VaultError(
+    'unavailable',
+    'Every Day could not reach its storage backend. Your journal has not been ' +
+      'touched; this is a problem with the application, not with your data.',
+  )
 }
 
 if (!MOCK) {

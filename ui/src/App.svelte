@@ -5,6 +5,7 @@
   import Editor from './components/Editor.svelte'
   import LockScreen from './components/LockScreen.svelte'
   import Setup from './components/Setup.svelte'
+  import ErrorScreen from './components/ErrorScreen.svelte'
 
   void app.start()
 
@@ -42,6 +43,8 @@
 <div class="app" style="--journal-accent: {app.accent}">
   {#if app.screen === 'loading'}
     <div class="boot"><span class="mark">✦</span></div>
+  {:else if app.screen === 'error'}
+    <ErrorScreen />
   {:else if app.screen === 'setup'}
     <Setup />
   {:else if app.screen === 'locked'}

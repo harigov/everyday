@@ -4,6 +4,10 @@
 // whole app -- lock screen, journals, editor, search, media -- runs in a
 // plain browser. It exists so the interface can be designed and reviewed
 // without a native build, and so a broken Rust build never blocks UI work.
+//
+// It is reachable only from a development build. `api.ts` gates the import
+// on `import.meta.env.DEV`, so this module is eliminated at build time and
+// never reaches a released application.
 
 import type {
   Bootstrap,
