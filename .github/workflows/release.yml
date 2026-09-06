@@ -271,12 +271,24 @@ jobs:
           pattern: everyday-*
           merge-multiple: true
 
+      # GitHub rewrites characters it will not put in an asset name: the
+      # space in "Every Day_0.1.0_amd64.deb" silently becomes a dot on
+      # upload. Do that rename here instead, so the names recorded in
+      # SHA256SUMS.txt are the names the assets actually end up with and
+      # `sha256sum -c SHA256SUMS.txt` verifies a fresh download rather than
+      # reporting six missing files.
       - name: Checksums
         run: |
           set -euo pipefail
-          ( cd dist && sha256sum -- * ) > SHA256SUMS.txt
-          mv SHA256SUMS.txt dist/
-          cat dist/SHA256SUMS.txt
+          cd dist
+          for f in *; do
+            g=$(printf '%s' "$f" | sed 's/[^A-Za-z0-9._-]/./g')
+            [ "$f" = "$g" ] || mv -- "$f" "$g"
+          done
+          # Written outside dist first, so the glob cannot include it.
+          sha256sum -- * > ../SHA256SUMS.txt
+          mv ../SHA256SUMS.txt .
+          cat SHA256SUMS.txt
 
       - name: Create release
         env:
