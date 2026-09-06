@@ -76,12 +76,18 @@ jobs:
         # caller's text into the shell source itself.
         env:
           PLATFORMS: ${{ inputs.platforms }}
+          RELEASE: ${{ inputs.release }}
           TAG_INPUT: ${{ inputs.tag }}
         run: |
           set -euo pipefail
 
           version=$(node -p "require('./crates/everyday-app/tauri.conf.json').version")
           tag=${TAG_INPUT:-v$version}
+
+          # Echoed to the log, not just the summary: the API does not record
+          # what a workflow_dispatch was called with, so without this the only
+          # evidence of the requested inputs is whichever jobs happen to run.
+          echo "requested: platforms=$PLATFORMS release=$RELEASE tag=${TAG_INPUT:-<default>}"
 
           # The tag ends up as a git ref and a CLI argument. Refuse anything
           # that is not plainly a tag rather than finding out later.
@@ -111,7 +117,10 @@ jobs:
             echo "matrix={\"include\":$include}"
           } >> "$GITHUB_OUTPUT"
 
-          echo "Building $PLATFORMS for $version (tag $tag)" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "Building **$PLATFORMS** for $version (tag \`$tag\`)"
+            echo "release=\`$RELEASE\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   build:
     name: Build ${{ matrix.name }}
