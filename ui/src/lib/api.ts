@@ -6,6 +6,10 @@
 // native dependencies. That is what makes the design workable on its own.
 
 import type {
+  BlockId,
+  BlockKind,
+  BlockQuery,
+  BlockSubject,
   Bootstrap,
   Entry,
   EntryId,
@@ -13,7 +17,16 @@ import type {
   EntrySummary,
   Journal,
   JournalId,
+  Project,
+  ProjectId,
   SearchHit,
+  TagCount,
+  Task,
+  TaskId,
+  TaskQuery,
+  TaskStats,
+  TaskStatus,
+  TimeBlock,
   VaultStatus,
 } from './types'
 import { VaultError } from './types'
@@ -103,6 +116,47 @@ export const api = {
 
   /** All tags in use, most frequent first. */
   tags: () => invoke<string[]>('list_tags'),
+
+  // ── The task domain ────────────────────────────────────────────────
+  //
+  // Available only when `status.capabilities.tasks` is true; a Markdown
+  // vault stores journals and nothing else, and the interface hides the
+  // todo app rather than letting these fail at click time.
+
+  projects: () => invoke<Project[]>('list_projects'),
+  newProject: (name: string) => invoke<Project>('new_project', { name }),
+  saveProject: (project: Project) => invoke<void>('save_project', { project }),
+  /** Deletes the project, its tasks and their time blocks. */
+  deleteProject: (id: ProjectId) => invoke<void>('delete_project', { id }),
+
+  tasks: (query: TaskQuery) => invoke<Task[]>('list_tasks', { query }),
+  task: (id: TaskId) => invoke<Task>('get_task', { id }),
+  /** Mints an unsaved task; fill it in and pass it to `saveTask`. */
+  newTask: (opts: {
+    projectId: ProjectId | null
+    parentId: TaskId | null
+    status: TaskStatus | null
+  }) => invoke<Task>('new_task', opts),
+  saveTask: (task: Task) => invoke<void>('save_task', { task }),
+  /** One write for many tasks: what a board reorder is. */
+  saveTasks: (tasks: Task[]) => invoke<void>('save_tasks', { tasks }),
+  /** Deletes the task, its subtasks and their time blocks. */
+  deleteTask: (id: TaskId) => invoke<void>('delete_task', { id }),
+
+  blocks: (query: BlockQuery) => invoke<TimeBlock[]>('list_blocks', { query }),
+  /** Mints an unsaved block, with the machine's own time zone resolved. */
+  newBlock: (opts: {
+    subject: BlockSubject
+    start: string
+    minutes: number
+    kind: BlockKind | null
+  }) => invoke<TimeBlock>('new_block', opts),
+  saveBlock: (block: TimeBlock) => invoke<void>('save_block', { block }),
+  deleteBlock: (id: BlockId) => invoke<void>('delete_block', { id }),
+
+  /** Every tag in the task domain with its usage count, most used first. */
+  taskTags: () => invoke<TagCount[]>('task_tags'),
+  taskStats: () => invoke<TaskStats>('task_stats'),
 }
 
 /**

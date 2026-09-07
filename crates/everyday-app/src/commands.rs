@@ -7,11 +7,16 @@
 //! freeze the window mid-keystroke.
 
 use everyday_core::model::local_date_in;
-use everyday_core::store::{EntryQuery, StoreStats};
-use everyday_core::{
-    BlobId, Entry, EntryId, Journal, JournalId, Vault, VaultConfig, VaultStatus,
-};
 use everyday_core::search::SearchHit;
+use everyday_core::store::tasks::{BlockQuery, TaskQuery};
+use everyday_core::store::{EntryQuery, StoreStats};
+use everyday_core::task::{
+    BlockKind, BlockSubject, Project, Task, TaskStats, TaskStatus, TimeBlock,
+};
+use everyday_core::{
+    BlobId, BlockId, Entry, EntryId, Journal, JournalId, ProjectId, TaskId, Vault, VaultConfig,
+    VaultStatus,
+};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -277,6 +282,157 @@ pub fn list_tags(state: State<'_, AppState>) -> CommandResult<Vec<String>> {
     let mut tags: Vec<(String, usize)> = counts.into_iter().collect();
     tags.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     Ok(tags.into_iter().map(|(t, _)| t).collect())
+}
+
+// ---- projects, tasks and time -------------------------------------------
+//
+// The todo app. Every command here fails with `unsupported` on a vault whose
+// backend stores journals only; the interface reads `capabilities.tasks` from
+// the vault status and hides the app rather than letting that happen.
+//
+// Ids and timestamps are minted by the core, never by the interface, for the
+// same reason journals are: they are UUIDv7, which storage relies on to sort
+// chronologically, and `crypto.randomUUID` is both a different ordering and
+// unavailable outside a secure context.
+
+#[tauri::command]
+pub fn list_projects(state: State<'_, AppState>) -> CommandResult<Vec<Project>> {
+    Ok(state.require()?.projects()?)
+}
+
+/// Mint a project, without saving it.
+#[tauri::command]
+pub fn new_project(state: State<'_, AppState>, name: String) -> CommandResult<Project> {
+    let _ = state.require()?;
+    Ok(Project::new(name))
+}
+
+#[tauri::command]
+pub fn save_project(state: State<'_, AppState>, project: Project) -> CommandResult<()> {
+    Ok(state.require()?.save_project(&project)?)
+}
+
+/// Delete a project, its tasks and every block of time booked against them.
+#[tauri::command]
+pub fn delete_project(state: State<'_, AppState>, id: ProjectId) -> CommandResult<()> {
+    Ok(state.require()?.delete_project(id)?)
+}
+
+#[tauri::command]
+pub fn list_tasks(state: State<'_, AppState>, query: TaskQuery) -> CommandResult<Vec<Task>> {
+    Ok(state.require()?.tasks(&query)?)
+}
+
+#[tauri::command]
+pub fn get_task(state: State<'_, AppState>, id: TaskId) -> CommandResult<Task> {
+    Ok(state.require()?.task(id)?)
+}
+
+/// Mint a task, without saving it.
+///
+/// The interface fills in the title and whatever the quick-add line parsed
+/// out of it, then calls `save_task`. Two round trips rather than one, in
+/// exchange for one shape of task travelling in each direction.
+#[tauri::command]
+pub fn new_task(
+    state: State<'_, AppState>,
+    project_id: Option<ProjectId>,
+    parent_id: Option<TaskId>,
+    status: Option<TaskStatus>,
+) -> CommandResult<Task> {
+    let _ = state.require()?;
+    let mut task = Task::new(String::new()).in_project(project_id).under(parent_id);
+    if let Some(status) = status {
+        task.status = status;
+    }
+    Ok(task)
+}
+
+#[tauri::command]
+pub fn save_task(state: State<'_, AppState>, task: Task) -> CommandResult<()> {
+    Ok(state.require()?.save_task(&task)?)
+}
+
+/// Write several tasks at once. This is what dragging a card across a board
+/// is: two columns renumbered, which must land as one change or not at all.
+#[tauri::command]
+pub fn save_tasks(state: State<'_, AppState>, tasks: Vec<Task>) -> CommandResult<()> {
+    Ok(state.require()?.save_tasks(&tasks)?)
+}
+
+/// Delete a task, its subtasks and their time blocks.
+#[tauri::command]
+pub fn delete_task(state: State<'_, AppState>, id: TaskId) -> CommandResult<()> {
+    Ok(state.require()?.delete_task(id)?)
+}
+
+#[tauri::command]
+pub fn list_blocks(state: State<'_, AppState>, query: BlockQuery) -> CommandResult<Vec<TimeBlock>> {
+    Ok(state.require()?.blocks(&query)?)
+}
+
+/// Mint a block of time, without saving it.
+///
+/// The time zone is the machine's, resolved here rather than in the webview,
+/// so that `local_date` -- the column a calendar's week query scans -- is
+/// decided by the same code that decides an entry's.
+#[tauri::command]
+pub fn new_block(
+    state: State<'_, AppState>,
+    subject: BlockSubject,
+    start: jiff::Timestamp,
+    minutes: u32,
+    kind: Option<BlockKind>,
+) -> CommandResult<TimeBlock> {
+    let _ = state.require()?;
+    let tz = jiff::tz::TimeZone::system().iana_name().unwrap_or("UTC").to_string();
+    let mut block = TimeBlock::new(subject, start, minutes, &tz);
+    if let Some(kind) = kind {
+        block.kind = kind;
+    }
+    Ok(block)
+}
+
+#[tauri::command]
+pub fn save_block(state: State<'_, AppState>, block: TimeBlock) -> CommandResult<()> {
+    Ok(state.require()?.save_block(&block)?)
+}
+
+#[tauri::command]
+pub fn delete_block(state: State<'_, AppState>, id: BlockId) -> CommandResult<()> {
+    Ok(state.require()?.delete_block(id)?)
+}
+
+/// Every tag used anywhere in the task domain, most used first.
+#[tauri::command]
+pub fn task_tags(state: State<'_, AppState>) -> CommandResult<Vec<TagCount>> {
+    Ok(state
+        .require()?
+        .task_tags()?
+        .into_iter()
+        .map(|(tag, count)| TagCount { tag, count })
+        .collect())
+}
+
+/// A tag and how often it is used. A named struct rather than a tuple so the
+/// interface reads `t.count` instead of `t[1]`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagCount {
+    pub tag: String,
+    pub count: u32,
+}
+
+/// Counts for the sidebar, as of the machine's own calendar day.
+///
+/// The day is resolved here rather than in the core, and here rather than in
+/// the webview, so that "overdue" is decided by the same code that decides
+/// which day an entry is filed under.
+#[tauri::command]
+pub fn task_stats(state: State<'_, AppState>) -> CommandResult<TaskStats> {
+    let tz = jiff::tz::TimeZone::system().iana_name().unwrap_or("UTC").to_string();
+    let today = local_date_in(jiff::Timestamp::now(), &tz);
+    Ok(state.require()?.task_stats(today)?)
 }
 
 // ---- media --------------------------------------------------------------

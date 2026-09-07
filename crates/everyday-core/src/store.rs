@@ -27,6 +27,7 @@ use crate::crypto::Cipher;
 use crate::error::{Error, Result};
 use crate::id::{BlobId, EntryId, JournalId};
 use crate::model::{Entry, EntrySummary, Journal};
+use crate::store::tasks::TaskStore;
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -46,6 +47,10 @@ pub struct Capabilities {
     pub human_readable: bool,
     /// Largest attachment the backend will accept, if it has a limit.
     pub max_blob_bytes: Option<u64>,
+    /// Backend implements [`tasks::TaskStore`], so the interface can offer
+    /// the todo app. False means it holds journals and nothing else.
+    #[serde(default)]
+    pub tasks: bool,
 }
 
 /// Everything a backend needs to open a vault directory.
@@ -188,6 +193,17 @@ pub trait JournalStore: Send + Sync {
     fn backend(&self) -> &'static str;
 
     fn capabilities(&self) -> Capabilities;
+
+    /// Storage for the task domain, if this backend has any.
+    ///
+    /// Returning `None` -- the default -- is a backend saying "journals are
+    /// all I do", which the Markdown backend means literally: a kanban board
+    /// is not a thing anyone wants as a tree of files. See
+    /// [`tasks`](crate::store::tasks) for why this is an accessor rather
+    /// than more methods on this trait.
+    fn tasks(&self) -> Option<&dyn TaskStore> {
+        None
+    }
 
     // ---- journals -------------------------------------------------------
 
@@ -342,6 +358,8 @@ impl BackendRegistry {
             .open(ctx)
     }
 }
+
+pub mod tasks;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod conformance;

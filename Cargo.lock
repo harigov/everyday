@@ -1280,6 +1280,7 @@ dependencies = [
  "everyday-core",
  "jiff",
  "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
 ]
@@ -1292,6 +1293,7 @@ dependencies = [
  "everyday-core",
  "everyday-store-markdown",
  "everyday-store-sqlite",
+ "jiff",
  "serde",
  "tempfile",
 ]

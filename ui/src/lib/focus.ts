@@ -10,8 +10,14 @@
  * The focus call is deferred by a frame because the click that created the
  * element has not finished dispatching yet, and the default focus behaviour
  * of that click would otherwise land after ours and undo it.
+ *
+ * Pass `false` to opt out. That is for a field that is always on screen --
+ * the todo app's quick-add bar -- which wants this behaviour only when it is
+ * the reason the view was opened, and stealing focus otherwise would fight
+ * with whatever the user was actually doing.
  */
-export function focusOnMount(node: HTMLElement) {
+export function focusOnMount(node: HTMLElement, enabled: boolean = true) {
+  if (!enabled) return
   const id = requestAnimationFrame(() => node.focus())
   return { destroy: () => cancelAnimationFrame(id) }
 }

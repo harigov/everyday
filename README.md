@@ -1,8 +1,8 @@
 # Every Day
 
-A private journal for macOS, Linux and Windows. Rich text with photos and
-video, multiple journals, pluggable storage, and encryption you actually hold
-the key to.
+A private journal and a todo app for macOS, Linux and Windows. Rich text with
+photos and video, projects and tasks on a list or a board, pluggable storage,
+and encryption you actually hold the key to.
 
 <!-- Screenshots live in docs/ once you have run the app. -->
 
@@ -41,11 +41,55 @@ widgets". In exchange you get native *text*, a mature editor, and one
 codebase. For a journal — an app that is essentially a text canvas — that is
 the right side of the trade.
 
+## Two apps, one vault
+
+The sidebar switches between **Journal** and **Todo** (`Ctrl/Cmd J`). They
+share a vault, a password and a lock; they share nothing else.
+
+The todo app has projects, tasks and subtasks — a subtask is just a task with
+a parent, so the two levels the interface offers are a UI decision rather
+than a schema. Everything carries a title, description, due date and time,
+start date, priority, effort estimate and tags. There is a **list** view,
+grouped by due date, status or priority, and a **kanban board** whose columns
+are the six task statuses. Tags go on projects, tasks and blocks of time
+alike, which is what a later analytics view will count.
+
+Capture is the part that had to be fast, so adding a task is one line and one
+Enter, and the line carries its own fields:
+
+```
+Book the flights #travel !high ~1h30 @fri @16:30
+└── title ──────┘ └tag─┘ └prio┘ └est┘ └── when ──┘
+```
+
+`@` takes `today`, `tomorrow`, a weekday, `3d`/`2w`, `2026-09-12`, or a clock
+time. Anything not understood is left in the title rather than silently
+dropped. The field clears and keeps focus, and submissions queue rather than
+being ignored, so twelve tasks cost twelve lines and twelve Enters.
+
+### Where the time went
+
+A task does not have a "scheduled at" field. It has any number of **time
+blocks** pointing at it, each either *planned* or *actual*:
+
+```
+Project ──┬── Task ──┬── Task (subtask)
+          │          │
+          └──────────┴── TimeBlock   planned, and what actually happened
+```
+
+Keeping plan and record as separate rows is what makes "where did my time
+go" answerable at all — one field overwriting the other cannot be compared
+with itself. A block can also point at a project, or at nothing (a dentist
+appointment), which is the shape a calendar needs. That is deliberate: the
+calendar view is next, and it is a view over records that already exist
+rather than a third storage layer.
+
 ## Layout
 
 ```
 crates/
-  everyday-core/            domain model, crypto, storage trait, search
+  everyday-core/            domain model, crypto, storage traits, search
   everyday-store-sqlite/    SQLite backend (default)
   everyday-store-markdown/  plain Markdown files backend
   everyday-vault/           wires core to backends; platform paths; media serving
@@ -86,6 +130,13 @@ timestamps, and the starred/pinned flags. Titles, bodies, tags, locations,
 file names and media are all sealed. Someone with the database file learns
 *that* you wrote on 14 July and never what you wrote.
 
+The task tables make the same trade for the same reason — a board filters by
+status and a calendar by day, and both would otherwise decrypt every row on
+every draw. In the clear: the shape of the task tree (`project_id`,
+`parent_id`), a task's `status`, `priority` and `due_date`, and a block's
+start, end and day. Sealed: every title, description and tag. The file says
+that four things are blocked and never what they are.
+
 If that trade is unacceptable, the storage abstraction is the answer: a
 backend that seals the index columns too — at the cost of full scans — drops
 in without the rest of the app noticing.
@@ -97,8 +148,16 @@ without touching the app.
 
 | Backend | Good for | Trade |
 |---|---|---|
-| `sqlite` | the default; large journals, fast queries | opaque on disk |
-| `markdown` | grep, git, editing in any editor | slower; readable only when unencrypted |
+| `sqlite` | the default; large journals, fast queries, the todo app | opaque on disk |
+| `markdown` | grep, git, editing in any editor | slower; readable only when unencrypted; no todo app |
+
+The task domain is a *second* trait, `TaskStore`, reached through
+`JournalStore::tasks()`, which returns `None` by default. Folding a kanban
+board into the journal trait would oblige every backend to grow a todo
+implementation it has no opinion about — a board is not a thing anyone wants
+as a tree of files. So SQLite implements it, Markdown does not, and the
+interface reads `capabilities.tasks` and hides the app rather than failing at
+click time. The calendar will arrive through the same door.
 
 The Markdown backend is a genuine two-way format. It writes a readable `.md`
 with TOML frontmatter plus a sidecar `.json` holding the exact rich-text tree.
@@ -110,7 +169,11 @@ Markdown wins over the sidecar.
 (`everyday_core::store::conformance`), so backends do not write their own CRUD
 tests — they inherit ~15 shared behaviours covering round-tripping, filtering,
 pagination, blob dedup, range reads, cascade deletes, GC and Unicode. That is
-what makes "swap the backend" a real claim rather than an aspiration.
+what makes "swap the backend" a real claim rather than an aspiration. A
+backend that answers `tasks()` inherits a further ~15 covering the task
+domain: the tree, the cascades, the date windows, and the rule that deleting
+a task takes the time booked against it too. A backend that does not is told
+it is being skipped, because a silently skipped suite is worse than none.
 
 ## Building
 
@@ -174,7 +237,8 @@ for scripts.
 
 | | |
 |---|---|
-| `Ctrl/Cmd N` | new entry |
+| `Ctrl/Cmd J` | switch between Journal and Todo |
+| `Ctrl/Cmd N` | new entry, or the task capture line |
 | `Ctrl/Cmd F` | search |
 | `Ctrl/Cmd L` | lock now |
 | `Ctrl/Cmd S` | flush pending edits (it autosaves anyway) |
@@ -182,16 +246,21 @@ for scripts.
 ## Status
 
 The core, both storage backends, the vault lifecycle, search, the media
-pipeline and the CLI are implemented and tested — 176 tests, plus a shared
-backend conformance suite. The desktop shell and interface are complete and
-the interface builds and typechecks clean.
+pipeline, the todo app and the CLI are implemented and tested — 221 tests,
+plus two shared backend conformance suites. The desktop shell and interface
+are complete and the interface builds and typechecks clean.
+
+The CLI covers journals only. It is a capture-and-export tool for the journal
+and has not been taught about tasks.
 
 The one thing not verified end-to-end is the assembled desktop app, because
 the machine this was built on has no WebKitGTK headers and no root to install
 them. Run `./scripts/setup-linux.sh` then `./scripts/dev.sh`.
 
-Not yet built: sync, mobile shells, calendar and map views, and importers for
-Day One's export format.
+Not yet built: sync, mobile shells, a map view, task recurrence, and importers
+for Day One's export format. The calendar view is next, and the records it
+needs — `TimeBlock`, with its planned/actual split and its ad-hoc subject —
+already exist and are already tested.
 
 ## The icon on Linux
 

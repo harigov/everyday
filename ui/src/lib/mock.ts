@@ -10,15 +10,24 @@
 // never reaches a released application.
 
 import type {
+  BlockKind,
+  BlockQuery,
+  BlockSubject,
   Bootstrap,
   Entry,
   EntryQuery,
   EntrySummary,
   Journal,
+  Project,
   SearchHit,
+  Task,
+  TaskQuery,
+  TaskStats,
+  TaskStatus,
+  TimeBlock,
   VaultStatus,
 } from './types'
-import { VaultError } from './types'
+import { TASK_STATUSES, VaultError, isOpen, priorityRank } from './types'
 import { DEFAULT_COLORS } from './colors'
 
 const PASSWORD = 'everyday'
@@ -293,6 +302,354 @@ const entries: Entry[] = [
   },
 ]
 
+// ── The task domain ──────────────────────────────────────────────────────
+
+function ahead(days: number): string {
+  return day(-days)
+}
+
+const projects: Project[] = [
+  {
+    id: 'p-house',
+    name: 'Move house',
+    notes: 'Completion is the 12th. Everything hangs off that.',
+    color: '#c2410c',
+    icon: '\u{1f4e6}',
+    status: 'active',
+    priority: 'high',
+    startDate: day(20),
+    dueDate: ahead(12),
+    estimateMinutes: 3_600,
+    tags: ['home'],
+    sortOrder: 0,
+    createdAt: iso(40),
+    updatedAt: iso(1),
+  },
+  {
+    id: 'p-site',
+    name: 'Rebuild the site',
+    notes: 'Static, fast, and no analytics.',
+    color: '#0f766e',
+    icon: '\u{1f5a5}\u{fe0f}',
+    status: 'active',
+    priority: 'medium',
+    dueDate: ahead(30),
+    estimateMinutes: 1_800,
+    tags: ['work'],
+    sortOrder: 1,
+    createdAt: iso(60),
+    updatedAt: iso(3),
+  },
+  {
+    id: 'p-garden',
+    name: 'The garden',
+    notes: '',
+    color: '#15803d',
+    icon: '\u{1f331}',
+    status: 'paused',
+    priority: 'low',
+    tags: ['home'],
+    sortOrder: 2,
+    createdAt: iso(120),
+    updatedAt: iso(30),
+  },
+]
+
+let taskSeq = 0
+
+function seedTask(t: Partial<Task> & { title: string }): Task {
+  taskSeq += 1
+  return {
+    id: `t-${taskSeq}`,
+    projectId: null,
+    parentId: null,
+    notes: '',
+    status: 'todo',
+    priority: 'none',
+    tags: [],
+    sortOrder: 0,
+    createdAt: iso(10),
+    updatedAt: iso(1),
+    ...t,
+  }
+}
+
+const tasks: Task[] = [
+  // Move house: a board with something in most columns.
+  seedTask({
+    id: 't-pack',
+    title: 'Pack the study',
+    projectId: 'p-house',
+    status: 'doing',
+    priority: 'high',
+    dueDate: ahead(2),
+    estimateMinutes: 240,
+    tags: ['moving'],
+    notes: 'The books are the whole job. Everything else is an afternoon.',
+    sortOrder: 0,
+  }),
+  seedTask({
+    id: 't-books',
+    title: 'Box up the books',
+    projectId: 'p-house',
+    parentId: 't-pack',
+    status: 'done',
+    completedAt: iso(1),
+    estimateMinutes: 120,
+    sortOrder: 0,
+  }),
+  seedTask({
+    id: 't-shelves',
+    title: 'Take the shelves down',
+    projectId: 'p-house',
+    parentId: 't-pack',
+    dueDate: ahead(2),
+    estimateMinutes: 60,
+    sortOrder: 1,
+  }),
+  seedTask({
+    id: 't-cables',
+    title: 'Label the cables',
+    projectId: 'p-house',
+    parentId: 't-pack',
+    priority: 'low',
+    sortOrder: 2,
+  }),
+  seedTask({
+    id: 't-van',
+    title: 'Book the van',
+    projectId: 'p-house',
+    priority: 'urgent',
+    dueDate: day(1),
+    dueTime: '17:00:00',
+    estimateMinutes: 30,
+    tags: ['moving', 'money'],
+    notes: 'Two quotes so far. The cheaper one has no tail lift.',
+    sortOrder: 1,
+  }),
+  seedTask({
+    id: 't-meter',
+    title: 'Read the meters on the day',
+    projectId: 'p-house',
+    status: 'backlog',
+    dueDate: ahead(12),
+    sortOrder: 2,
+  }),
+  seedTask({
+    id: 't-broadband',
+    title: 'Chase the broadband transfer',
+    projectId: 'p-house',
+    status: 'blocked',
+    priority: 'high',
+    tags: ['admin'],
+    notes: 'They said 5 working days on the 3rd. It has been nine.',
+    sortOrder: 3,
+  }),
+  seedTask({
+    id: 't-deposit',
+    title: 'Get the deposit back',
+    projectId: 'p-house',
+    status: 'done',
+    completedAt: iso(4),
+    tags: ['money'],
+    sortOrder: 4,
+  }),
+
+  // The site.
+  seedTask({
+    id: 't-type',
+    title: 'Settle the type scale',
+    projectId: 'p-site',
+    status: 'doing',
+    priority: 'medium',
+    dueDate: ahead(1),
+    estimateMinutes: 90,
+    tags: ['design'],
+    sortOrder: 0,
+  }),
+  seedTask({
+    id: 't-build',
+    title: 'Move the build to the new runner',
+    projectId: 'p-site',
+    dueDate: ahead(5),
+    estimateMinutes: 180,
+    tags: ['work'],
+    sortOrder: 1,
+  }),
+  seedTask({
+    id: 't-archive',
+    title: 'Import the old archive',
+    projectId: 'p-site',
+    status: 'backlog',
+    tags: ['work'],
+    sortOrder: 2,
+  }),
+
+  // The inbox: captured, not filed. Including one that has gone past.
+  seedTask({
+    id: 't-dentist',
+    title: 'Ring the dentist back',
+    priority: 'high',
+    dueDate: day(2),
+    tags: ['admin'],
+    sortOrder: 0,
+  }),
+  seedTask({ id: 't-boots', title: 'Resole the walking boots', sortOrder: 1 }),
+  seedTask({
+    id: 't-gift',
+    title: 'Something for Ana\u{2019}s birthday',
+    dueDate: ahead(6),
+    tags: ['family'],
+    sortOrder: 2,
+  }),
+]
+
+function blockAt(
+  id: string,
+  taskId: string,
+  daysAgo: number,
+  hour: number,
+  minutes: number,
+  kind: BlockKind,
+): TimeBlock {
+  const start = new Date()
+  start.setDate(start.getDate() - daysAgo)
+  start.setHours(hour, 0, 0, 0)
+  return {
+    id,
+    subject: { type: 'task', id: taskId },
+    title: '',
+    start: start.toISOString(),
+    end: new Date(start.getTime() + minutes * 60_000).toISOString(),
+    localDate: day(daysAgo),
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    allDay: false,
+    kind,
+    notes: '',
+    tags: [],
+    createdAt: iso(daysAgo),
+    updatedAt: iso(daysAgo),
+  }
+}
+
+const blocks: TimeBlock[] = [
+  blockAt('b-1', 't-books', 1, 10, 150, 'actual'),
+  blockAt('b-2', 't-pack', 0, 9, 120, 'planned'),
+  blockAt('b-3', 't-type', 2, 14, 75, 'actual'),
+  blockAt('b-4', 't-van', -1, 11, 30, 'planned'),
+]
+
+/** Open tasks grouped by project; `null` is the inbox. Mirrors the SQL. */
+function openPerProject(): Map<string | null, number> {
+  const out = new Map<string | null, number>()
+  for (const t of tasks) {
+    if (!isOpen(t.status)) continue
+    const key = t.projectId ?? null
+    out.set(key, (out.get(key) ?? 0) + 1)
+  }
+  return out
+}
+
+function putTask(t: Task) {
+  const i = tasks.findIndex((x) => x.id === t.id)
+  if (i >= 0) tasks[i] = structuredClone(t)
+  else tasks.push(structuredClone(t))
+}
+
+/** `roots` plus every task nested under them, at any depth. */
+function subtreeOf(roots: string[]): Set<string> {
+  const out = new Set(roots)
+  let grew = true
+  while (grew) {
+    grew = false
+    for (const t of tasks) {
+      if (t.parentId && out.has(t.parentId) && !out.has(t.id)) {
+        out.add(t.id)
+        grew = true
+      }
+    }
+  }
+  return out
+}
+
+function dropTasks(doomed: Set<string>) {
+  for (let i = tasks.length - 1; i >= 0; i--) {
+    if (doomed.has(tasks[i]!.id)) tasks.splice(i, 1)
+  }
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const s = blocks[i]!.subject
+    if (s.type === 'task' && doomed.has(s.id)) blocks.splice(i, 1)
+  }
+}
+
+/**
+ * The JavaScript twin of `TaskQuery::matches` and `apply` in the core.
+ *
+ * It has to agree with the Rust, or the interface would be designed against
+ * behaviour the real backend does not have -- which is the one way a mock
+ * this thorough can still mislead.
+ */
+function applyTaskQuery(q: TaskQuery): Task[] {
+  let rows = tasks.filter((t) => {
+    const project = q.project ?? { scope: 'any' }
+    if (project.scope === 'inbox' && t.projectId) return false
+    if (project.scope === 'project' && t.projectId !== project.id) return false
+
+    const parent = q.parent ?? { scope: 'any' }
+    if (parent.scope === 'topLevel' && t.parentId) return false
+    if (parent.scope === 'of' && t.parentId !== parent.id) return false
+
+    if (q.statuses?.length && !q.statuses.includes(t.status)) return false
+    if (q.priorityAtLeast && priorityRank(t.priority) < priorityRank(q.priorityAtLeast)) {
+      return false
+    }
+    if (q.hasDue != null && !!t.dueDate !== q.hasDue) return false
+    // An undated task is outside every date window, not inside all of them.
+    if (q.dueFrom || q.dueTo) {
+      if (!t.dueDate) return false
+      if (q.dueFrom && t.dueDate < q.dueFrom) return false
+      if (q.dueTo && t.dueDate > q.dueTo) return false
+    }
+    if (q.text?.trim()) {
+      const hay = `${t.title}\n${t.notes}\n${t.tags.join(' ')}`.toLowerCase()
+      if (!hay.includes(q.text.trim().toLowerCase())) return false
+    }
+    return (q.tags ?? []).every((want) =>
+      t.tags.some((have) => have.toLowerCase() === want.toLowerCase()),
+    )
+  })
+
+  const byOrder = (a: Task, b: Task) =>
+    a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt)
+  rows = [...rows].sort((a, b) => {
+    switch (q.sort ?? 'manual') {
+      case 'dueAsc':
+        if (!a.dueDate && !b.dueDate) return byOrder(a, b)
+        if (!a.dueDate) return 1
+        if (!b.dueDate) return -1
+        return a.dueDate.localeCompare(b.dueDate) || byOrder(a, b)
+      case 'priorityDesc':
+        return priorityRank(b.priority) - priorityRank(a.priority) || byOrder(a, b)
+      case 'createdDesc':
+        return b.createdAt.localeCompare(a.createdAt)
+      case 'updatedDesc':
+        return b.updatedAt.localeCompare(a.updatedAt)
+      case 'completedDesc':
+        return (b.completedAt ?? '').localeCompare(a.completedAt ?? '')
+      case 'titleAsc':
+        return a.title.localeCompare(b.title)
+      default:
+        return byOrder(a, b)
+    }
+  })
+
+  const from = q.offset ?? 0
+  return rows.slice(from, q.limit ? from + q.limit : undefined).map((t) => structuredClone(t))
+}
+
+// A reference to keep the status list honest against the core's ordering.
+void TASK_STATUSES
+
 // Start unlocked when the URL says so. Only the mock honours this, and it
 // exists so the interface can be opened straight to the main view when
 // reviewing or screenshotting it.
@@ -346,7 +703,7 @@ function status(): VaultStatus {
         }
       : undefined,
     capabilities: unlocked
-      ? { blobs: true, transactional: true, humanReadable: false }
+      ? { blobs: true, transactional: true, humanReadable: false, tasks: true }
       : undefined,
   }
 }
@@ -535,6 +892,194 @@ export const mockInvoke = async <T,>(
     case 'list_tags':
       requireUnlocked()
       return [...new Set(entries.flatMap((e) => e.tags))].sort() as T
+
+    // ── The task domain ──────────────────────────────────────────────
+
+    case 'list_projects':
+      requireUnlocked()
+      return [...projects].sort((a, b) => a.sortOrder - b.sortOrder) as T
+
+    case 'new_project': {
+      requireUnlocked()
+      const now = new Date().toISOString()
+      return {
+        id: `p-${nextId++}`,
+        name: args.name as string,
+        notes: '',
+        color: DEFAULT_COLORS[projects.length % DEFAULT_COLORS.length]!,
+        icon: '\u{1f5c2}\u{fe0f}',
+        status: 'active',
+        priority: 'none',
+        tags: [],
+        sortOrder: projects.length,
+        createdAt: now,
+        updatedAt: now,
+      } satisfies Project as T
+    }
+
+    case 'save_project': {
+      requireUnlocked()
+      const p = args.project as Project
+      const i = projects.findIndex((x) => x.id === p.id)
+      if (i >= 0) projects[i] = structuredClone(p)
+      else projects.push(structuredClone(p))
+      return undefined as T
+    }
+
+    case 'delete_project': {
+      requireUnlocked()
+      const id = args.id as string
+      const doomed = subtreeOf(tasks.filter((t) => t.projectId === id).map((t) => t.id))
+      dropTasks(doomed)
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const subject = blocks[i]!.subject
+        if (subject.type === 'project' && subject.id === id) blocks.splice(i, 1)
+      }
+      projects.splice(projects.findIndex((p) => p.id === id), 1)
+      return undefined as T
+    }
+
+    case 'list_tasks': {
+      requireUnlocked()
+      return applyTaskQuery((args.query ?? {}) as TaskQuery) as T
+    }
+
+    case 'get_task': {
+      requireUnlocked()
+      const t = tasks.find((x) => x.id === args.id)
+      if (!t) throw new VaultError('not_found', 'task not found')
+      return structuredClone(t) as T
+    }
+
+    case 'new_task': {
+      requireUnlocked()
+      const now = new Date().toISOString()
+      return {
+        id: `t-${nextId++}`,
+        projectId: (args.projectId as string | null) ?? null,
+        parentId: (args.parentId as string | null) ?? null,
+        title: '',
+        notes: '',
+        status: (args.status as TaskStatus | null) ?? 'todo',
+        priority: 'none',
+        tags: [],
+        sortOrder: 0,
+        createdAt: now,
+        updatedAt: now,
+      } satisfies Task as T
+    }
+
+    case 'save_task':
+      requireUnlocked()
+      putTask(args.task as Task)
+      return undefined as T
+
+    case 'save_tasks':
+      requireUnlocked()
+      for (const t of args.tasks as Task[]) putTask(t)
+      return undefined as T
+
+    case 'delete_task':
+      requireUnlocked()
+      dropTasks(subtreeOf([args.id as string]))
+      return undefined as T
+
+    case 'list_blocks': {
+      requireUnlocked()
+      const q = (args.query ?? {}) as BlockQuery
+      return blocks
+        .filter((b) => {
+          if (q.from && b.localDate < q.from) return false
+          if (q.to && b.localDate > q.to) return false
+          if (q.kind && b.kind !== q.kind) return false
+          if (q.taskId && !(b.subject.type === 'task' && b.subject.id === q.taskId)) return false
+          if (q.projectId && !(b.subject.type === 'project' && b.subject.id === q.projectId)) {
+            return false
+          }
+          return true
+        })
+        .sort((a, b) => a.start.localeCompare(b.start))
+        .map((b) => structuredClone(b)) as T
+    }
+
+    case 'new_block': {
+      requireUnlocked()
+      const start = new Date(args.start as string)
+      const minutes = args.minutes as number
+      const now = new Date().toISOString()
+      const p = (n: number) => String(n).padStart(2, '0')
+      return {
+        id: `b-${nextId++}`,
+        subject: args.subject as BlockSubject,
+        title: '',
+        start: start.toISOString(),
+        end: new Date(start.getTime() + minutes * 60_000).toISOString(),
+        localDate: `${start.getFullYear()}-${p(start.getMonth() + 1)}-${p(start.getDate())}`,
+        tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        allDay: false,
+        kind: (args.kind as BlockKind | null) ?? 'planned',
+        notes: '',
+        tags: [],
+        createdAt: now,
+        updatedAt: now,
+      } satisfies TimeBlock as T
+    }
+
+    case 'save_block': {
+      requireUnlocked()
+      const b = args.block as TimeBlock
+      const i = blocks.findIndex((x) => x.id === b.id)
+      if (i >= 0) blocks[i] = structuredClone(b)
+      else blocks.push(structuredClone(b))
+      return undefined as T
+    }
+
+    case 'delete_block':
+      requireUnlocked()
+      blocks.splice(blocks.findIndex((b) => b.id === args.id), 1)
+      return undefined as T
+
+    case 'task_tags': {
+      requireUnlocked()
+      const counts = new Map<string, number>()
+      for (const tags of [
+        ...projects.map((p) => p.tags),
+        ...tasks.map((t) => t.tags),
+        ...blocks.map((b) => b.tags),
+      ]) {
+        for (const tag of tags) counts.set(tag, (counts.get(tag) ?? 0) + 1)
+      }
+      return [...counts]
+        .map(([tag, count]) => ({ tag, count }))
+        .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag)) as T
+    }
+
+    case 'task_stats': {
+      requireUnlocked()
+      const minutes = (kind: BlockKind) =>
+        blocks
+          .filter((b) => b.kind === kind)
+          .reduce(
+            (sum, b) => sum + Math.max(0, Math.round((Date.parse(b.end) - Date.parse(b.start)) / 60_000)),
+            0,
+          )
+      return {
+        projects: projects.length,
+        activeProjects: projects.filter((p) => p.status === 'active' || p.status === 'paused').length,
+        tasks: tasks.length,
+        openTasks: tasks.filter((t) => isOpen(t.status)).length,
+        doneTasks: tasks.filter((t) => t.status === 'done').length,
+        blocks: blocks.length,
+        loggedMinutes: minutes('actual'),
+        plannedMinutes: minutes('planned'),
+        dueToday: tasks.filter((t) => isOpen(t.status) && t.dueDate && t.dueDate <= day(0)).length,
+        overdue: tasks.filter((t) => isOpen(t.status) && t.dueDate && t.dueDate < day(0)).length,
+        openByProject: [...openPerProject()].map(([projectId, open]) => ({
+          projectId,
+          open,
+        })),
+      } satisfies TaskStats as T
+    }
 
     default:
       throw new VaultError('unknown', `no mock for command ${cmd}`)

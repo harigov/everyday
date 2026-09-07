@@ -5,9 +5,13 @@
 //!
 //! ```text
 //!   store/
-//!     everyday.db      journals + entries
+//!     everyday.db      journals + entries, projects + tasks + time blocks
 //!     media/           attachment payloads (see everyday_core::blobstore)
 //! ```
+//!
+//! This is also the backend that carries the *task* domain
+//! ([`everyday_core::store::tasks`]), which is why the todo app is offered
+//! on a SQLite vault and not on a Markdown one.
 //!
 //! # What is encrypted, and what is not
 //!
@@ -25,12 +29,20 @@
 //! | `local_date` | which days were written on |
 //! | `created_us`, `updated_us` | when entries were written and last edited |
 //! | `starred`, `pinned` | which entries are flagged |
+//! | `project_id`, `parent_id` | the *shape* of the task tree, not its contents |
+//! | task `status`, `priority`, `due_date` | how much work is outstanding and roughly when |
+//! | block `start_us`, `end_us`, `local_date`, `kind` | that time was booked, never to what |
 //!
 //! Titles, bodies, tags, locations, attachments and file names are all
 //! sealed. Someone with the database file learns *that* you journalled on 14
 //! July 2024 and never what you wrote. This is the same trade Day One makes,
 //! and it is what allows date-range queries and pagination to run as index
 //! scans rather than decrypting the entire vault on every keystroke.
+//!
+//! The task tables make the same trade for the same reason -- a board filters
+//! by status and a calendar by day, and both would otherwise decrypt every
+//! row on every draw. Task titles, descriptions and *tags* stay sealed, so
+//! the file says that four things are blocked and never what they are.
 //!
 //! If that trade is not acceptable, the abstraction is the answer: a backend
 //! that seals the index columns too — at the cost of full scans — plugs in
@@ -39,18 +51,26 @@
 use everyday_core::blobstore::FileBlobStore;
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{BlobId, EntryId, JournalId};
+use everyday_core::id::{BlockId, ProjectId, TaskId};
 use everyday_core::model::{Entry, EntrySummary, Journal};
+use everyday_core::store::tasks::{
+    BlockQuery, ParentScope, ProjectScope, TaskQuery, TaskSort, TaskStore, block_aad, project_aad,
+    task_aad,
+};
 use everyday_core::store::{
     Capabilities, EntryQuery, JournalStore, SortOrder, StoreContext, StoreFactory, StoreStats,
     entry_aad, journal_aad,
 };
-use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
+use everyday_core::task::{
+    BlockKind, Project, ProjectTaskCount, Task, TaskStats, TaskStatus, TimeBlock,
+};
+use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_iter};
 use std::sync::{Arc, Mutex};
 
 pub const BACKEND_ID: &str = "sqlite";
 const DB_FILENAME: &str = "everyday.db";
 const MEDIA_DIRNAME: &str = "media";
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Registers this backend with a [`everyday_core::BackendRegistry`].
 pub struct SqliteFactory;
@@ -120,14 +140,30 @@ impl SqliteStore {
     }
 }
 
+/// Bring the database up to [`SCHEMA_VERSION`].
+///
+/// Stepped rather than all-or-nothing: a vault written by an earlier build
+/// has entries in it, so version 2 must *add* the task tables beside them
+/// rather than recreate the file. Each step is idempotent and runs in its
+/// own transaction, and `user_version` is only advanced once they all land.
 fn migrate(conn: &Connection) -> Result<()> {
     let version: i64 =
         conn.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(Error::backend)?;
     if version >= SCHEMA_VERSION {
         return Ok(());
     }
-    conn.execute_batch(
-        r#"
+    if version < 1 {
+        conn.execute_batch(SCHEMA_V1).map_err(Error::backend)?;
+    }
+    if version < 2 {
+        conn.execute_batch(SCHEMA_V2).map_err(Error::backend)?;
+    }
+    conn.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(Error::backend)?;
+    Ok(())
+}
+
+/// Version 1: the journal domain.
+const SCHEMA_V1: &str = r#"
         BEGIN;
         CREATE TABLE IF NOT EXISTS journals (
             id          TEXT    PRIMARY KEY NOT NULL,
@@ -157,12 +193,76 @@ fn migrate(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS entries_by_updated
             ON entries (updated_us DESC);
         COMMIT;
-        "#,
-    )
-    .map_err(Error::backend)?;
-    conn.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(Error::backend)?;
-    Ok(())
-}
+        "#;
+
+/// Version 2: the task domain -- projects, tasks and time blocks.
+///
+/// No foreign keys between the three, deliberately. `project_id` and
+/// `parent_id` are plain columns because the cascades this domain wants are
+/// not the ones `ON DELETE CASCADE` gives: deleting a task must also take
+/// the *time blocks* pointing at it, which is a rule about a table SQLite
+/// cannot see the link to (the subject is inside the sealed payload; the
+/// columns beside it are a denormalised copy for the indexes). Keeping the
+/// whole cascade in one place in Rust is what stops half of it drifting.
+const SCHEMA_V2: &str = r#"
+        BEGIN;
+        CREATE TABLE IF NOT EXISTS projects (
+            id           TEXT    PRIMARY KEY NOT NULL,
+            status       TEXT    NOT NULL,
+            priority     INTEGER NOT NULL DEFAULT 0,
+            due_date     TEXT,
+            sort_order   INTEGER NOT NULL DEFAULT 0,
+            created_us   INTEGER NOT NULL,
+            updated_us   INTEGER NOT NULL,
+            completed_us INTEGER,
+            data         BLOB    NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS tasks (
+            id           TEXT    PRIMARY KEY NOT NULL,
+            project_id   TEXT,
+            parent_id    TEXT,
+            status       TEXT    NOT NULL,
+            priority     INTEGER NOT NULL DEFAULT 0,
+            start_date   TEXT,
+            due_date     TEXT,
+            sort_order   INTEGER NOT NULL DEFAULT 0,
+            created_us   INTEGER NOT NULL,
+            updated_us   INTEGER NOT NULL,
+            completed_us INTEGER,
+            data         BLOB    NOT NULL
+        );
+
+        -- A board draws one project's top-level cards, split by status and
+        -- in manual order: that is this index, exactly.
+        CREATE INDEX IF NOT EXISTS tasks_by_project
+            ON tasks (project_id, status, sort_order);
+        -- Expanding a task to show its subtasks.
+        CREATE INDEX IF NOT EXISTS tasks_by_parent
+            ON tasks (parent_id, sort_order);
+        -- "What is due this week", across every project.
+        CREATE INDEX IF NOT EXISTS tasks_by_due
+            ON tasks (due_date, status);
+
+        CREATE TABLE IF NOT EXISTS time_blocks (
+            id         TEXT    PRIMARY KEY NOT NULL,
+            task_id    TEXT,
+            project_id TEXT,
+            local_date TEXT    NOT NULL,
+            start_us   INTEGER NOT NULL,
+            end_us     INTEGER NOT NULL,
+            kind       TEXT    NOT NULL,
+            data       BLOB    NOT NULL
+        );
+
+        -- The calendar query: one week, in time order.
+        CREATE INDEX IF NOT EXISTS blocks_by_date
+            ON time_blocks (local_date, start_us);
+        -- "How long did this actually take?"
+        CREATE INDEX IF NOT EXISTS blocks_by_task
+            ON time_blocks (task_id, kind);
+        COMMIT;
+        "#;
 
 /// Microseconds since the Unix epoch. Stored as an integer rather than an
 /// RFC 3339 string because string timestamps only sort correctly if the
@@ -182,7 +282,12 @@ impl JournalStore for SqliteStore {
             transactional: true,
             human_readable: false,
             max_blob_bytes: None,
+            tasks: true,
         }
+    }
+
+    fn tasks(&self) -> Option<&dyn TaskStore> {
+        Some(self)
     }
 
     // ---- journals -------------------------------------------------------
@@ -429,11 +534,549 @@ impl JournalStore for SqliteStore {
     }
 }
 
+// ── The task domain ──────────────────────────────────────────────────────
+
+/// `YYYY-MM-DD`, which sorts lexicographically as it sorts chronologically,
+/// so a text column is a usable index for date ranges.
+fn date_str(d: Option<jiff::civil::Date>) -> Option<String> {
+    d.map(|d| d.to_string())
+}
+
+fn id_str<T: std::fmt::Display>(id: Option<T>) -> Option<String> {
+    id.map(|i| i.to_string())
+}
+
+impl SqliteStore {
+    fn seal<T: serde::Serialize>(&self, aad: &[u8], value: &T) -> Result<Vec<u8>> {
+        self.cipher.seal(aad, &serde_json::to_vec(value)?)
+    }
+
+    fn unseal<T: serde::de::DeserializeOwned>(&self, aad: &[u8], sealed: &[u8]) -> Result<T> {
+        Ok(serde_json::from_slice(&self.cipher.open(aad, sealed)?)?)
+    }
+
+    /// Decrypt a `(id, data)` result set into whole records.
+    fn collect<T, I>(
+        &self,
+        rows: Vec<(String, Vec<u8>)>,
+        aad: impl Fn(I) -> Vec<u8>,
+    ) -> Result<Vec<T>>
+    where
+        T: serde::de::DeserializeOwned,
+        I: std::str::FromStr + Copy,
+        I::Err: std::fmt::Display,
+    {
+        rows.into_iter()
+            .map(|(id, sealed)| {
+                let id: I = id.parse().map_err(|e: I::Err| Error::Invalid(e.to_string()))?;
+                self.unseal(&aad(id), &sealed)
+            })
+            .collect()
+    }
+
+    /// Every task in the subtree rooted at `root`, `root` itself included.
+    ///
+    /// Walked breadth-first in Rust rather than as a recursive CTE so that
+    /// the cascade -- which has to reach the `time_blocks` table too -- is
+    /// one readable rule in one place. Subtrees are tens of rows, not
+    /// millions, so the extra round trips do not signify.
+    fn subtree(tx: &Transaction<'_>, root: TaskId) -> Result<Vec<String>> {
+        let mut out = vec![root.to_string()];
+        let mut frontier = vec![root.to_string()];
+        while !frontier.is_empty() {
+            let mut next = Vec::new();
+            for parent in &frontier {
+                let mut stmt = tx
+                    .prepare_cached("SELECT id FROM tasks WHERE parent_id = ?1")
+                    .map_err(Error::backend)?;
+                let kids = stmt
+                    .query_map(params![parent], |r| r.get::<_, String>(0))
+                    .map_err(Error::backend)?;
+                for kid in kids {
+                    let kid = kid.map_err(Error::backend)?;
+                    // A cycle would be corrupt data, but a corrupt vault
+                    // should not hang the app -- so believe the set, not the
+                    // shape.
+                    if !out.contains(&kid) {
+                        out.push(kid.clone());
+                        next.push(kid);
+                    }
+                }
+            }
+            frontier = next;
+        }
+        Ok(out)
+    }
+
+    /// Delete these tasks and every time block booked against them.
+    fn purge_tasks(tx: &Transaction<'_>, ids: &[String]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let holes = std::iter::repeat_n("?", ids.len()).collect::<Vec<_>>().join(",");
+        let args = params_from_iter(ids.iter());
+        tx.execute(&format!("DELETE FROM time_blocks WHERE task_id IN ({holes})"), args)
+            .map_err(Error::backend)?;
+        tx.execute(
+            &format!("DELETE FROM tasks WHERE id IN ({holes})"),
+            params_from_iter(ids.iter()),
+        )
+        .map_err(Error::backend)?;
+        Ok(())
+    }
+}
+
+impl TaskStore for SqliteStore {
+    // ---- projects -------------------------------------------------------
+
+    fn list_projects(&self) -> Result<Vec<Project>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, data FROM projects ORDER BY sort_order, created_us")
+            .map_err(Error::backend)?;
+        let rows: Vec<(String, Vec<u8>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(Error::backend)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(Error::backend)?;
+        drop(stmt);
+        drop(conn);
+        self.collect(rows, project_aad)
+    }
+
+    fn get_project(&self, id: ProjectId) -> Result<Project> {
+        let conn = self.conn.lock().unwrap();
+        let sealed: Option<Vec<u8>> = conn
+            .query_row("SELECT data FROM projects WHERE id = ?1", params![id.to_string()], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(Error::backend)?;
+        drop(conn);
+        let sealed = sealed.ok_or_else(|| Error::not_found("project", id))?;
+        self.unseal(&project_aad(id), &sealed)
+    }
+
+    fn put_project(&self, p: &Project) -> Result<()> {
+        let data = self.seal(&project_aad(p.id), p)?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO projects
+                (id, status, priority, due_date, sort_order, created_us, updated_us,
+                 completed_us, data)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(id) DO UPDATE SET
+                status = ?2, priority = ?3, due_date = ?4, sort_order = ?5,
+                created_us = ?6, updated_us = ?7, completed_us = ?8, data = ?9",
+            params![
+                p.id.to_string(),
+                p.status.as_str(),
+                p.priority.rank(),
+                date_str(p.due_date),
+                p.sort_order,
+                to_us(p.created_at),
+                to_us(p.updated_at),
+                p.completed_at.map(to_us),
+                data,
+            ],
+        )
+        .map_err(Error::backend)?;
+        Ok(())
+    }
+
+    fn delete_project(&self, id: ProjectId) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(Error::backend)?;
+
+        // Its tasks, plus anything nested under them -- a subtask filed into
+        // a different project is still doomed with its parent.
+        let roots: Vec<String> = {
+            let mut stmt =
+                tx.prepare("SELECT id FROM tasks WHERE project_id = ?1").map_err(Error::backend)?;
+            stmt.query_map(params![id.to_string()], |r| r.get::<_, String>(0))
+                .map_err(Error::backend)?
+                .collect::<rusqlite::Result<_>>()
+                .map_err(Error::backend)?
+        };
+        let mut doomed: Vec<String> = Vec::new();
+        for root in roots {
+            let root = TaskId::parse(&root).map_err(|e| Error::Invalid(e.to_string()))?;
+            for descendant in Self::subtree(&tx, root)? {
+                if !doomed.contains(&descendant) {
+                    doomed.push(descendant);
+                }
+            }
+        }
+        Self::purge_tasks(&tx, &doomed)?;
+
+        // Time booked against the project itself, not against its tasks.
+        tx.execute("DELETE FROM time_blocks WHERE project_id = ?1", params![id.to_string()])
+            .map_err(Error::backend)?;
+        tx.execute("DELETE FROM projects WHERE id = ?1", params![id.to_string()])
+            .map_err(Error::backend)?;
+        tx.commit().map_err(Error::backend)?;
+        Ok(())
+    }
+
+    // ---- tasks ----------------------------------------------------------
+
+    fn list_tasks(&self, query: &TaskQuery) -> Result<Vec<Task>> {
+        // The same split the entry list makes: push down what the indexes
+        // can answer, and finish in memory when a filter or an ordering
+        // depends on something that only exists once decrypted -- here the
+        // tags, the free-text match and the title ordering.
+        let needs_memory_pass = !query.tags.is_empty()
+            || !query.text.trim().is_empty()
+            || query.sort == TaskSort::TitleAsc;
+
+        let mut sql = String::from("SELECT id, data FROM tasks WHERE 1=1");
+        let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        match query.project {
+            ProjectScope::Any => {}
+            ProjectScope::Inbox => sql.push_str(" AND project_id IS NULL"),
+            ProjectScope::Project { id } => {
+                args.push(Box::new(id.to_string()));
+                sql.push_str(&format!(" AND project_id = ?{}", args.len()));
+            }
+        }
+        match query.parent {
+            ParentScope::Any => {}
+            ParentScope::TopLevel => sql.push_str(" AND parent_id IS NULL"),
+            ParentScope::Of { id } => {
+                args.push(Box::new(id.to_string()));
+                sql.push_str(&format!(" AND parent_id = ?{}", args.len()));
+            }
+        }
+        if !query.statuses.is_empty() {
+            let mut holes = Vec::with_capacity(query.statuses.len());
+            for status in &query.statuses {
+                args.push(Box::new(status.as_str()));
+                holes.push(format!("?{}", args.len()));
+            }
+            sql.push_str(&format!(" AND status IN ({})", holes.join(",")));
+        }
+        if let Some(min) = query.priority_at_least {
+            args.push(Box::new(min.rank()));
+            sql.push_str(&format!(" AND priority >= ?{}", args.len()));
+        }
+        if let Some(want) = query.has_due {
+            sql.push_str(if want { " AND due_date IS NOT NULL" } else { " AND due_date IS NULL" });
+        }
+        // NULL compares as neither >= nor <=, so an undated task falls out
+        // of a date window here for the same reason it does in
+        // `TaskQuery::matches`. That agreement is what the conformance suite
+        // pins down.
+        if let Some(from) = query.due_from {
+            args.push(Box::new(from.to_string()));
+            sql.push_str(&format!(" AND due_date >= ?{}", args.len()));
+        }
+        if let Some(to) = query.due_to {
+            args.push(Box::new(to.to_string()));
+            sql.push_str(&format!(" AND due_date <= ?{}", args.len()));
+        }
+
+        if !needs_memory_pass {
+            sql.push_str(" ORDER BY ");
+            sql.push_str(match query.sort {
+                TaskSort::Manual => "sort_order ASC, created_us ASC",
+                // "Undated last" has to be said out loud: SQLite sorts NULL
+                // first on an ASC column, which would put the whole backlog
+                // above the things actually due.
+                TaskSort::DueAsc => "due_date IS NULL, due_date ASC, sort_order ASC",
+                TaskSort::PriorityDesc => "priority DESC, sort_order ASC",
+                TaskSort::CreatedDesc => "created_us DESC",
+                TaskSort::UpdatedDesc => "updated_us DESC",
+                TaskSort::CompletedDesc => "completed_us IS NULL, completed_us DESC",
+                TaskSort::TitleAsc => unreachable!("handled by the in-memory pass"),
+            });
+            // SQLite needs an explicit LIMIT before it will honour OFFSET.
+            sql.push_str(&format!(
+                " LIMIT {} OFFSET {}",
+                query.limit.map_or(-1i64, i64::from),
+                query.offset
+            ));
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(&sql).map_err(Error::backend)?;
+        let rows: Vec<(String, Vec<u8>)> = stmt
+            .query_map(params_from_iter(args.iter().map(|a| a.as_ref())), |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .map_err(Error::backend)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(Error::backend)?;
+        drop(stmt);
+        drop(conn);
+
+        let tasks: Vec<Task> = self.collect(rows, task_aad)?;
+        Ok(if needs_memory_pass { query.apply(tasks) } else { tasks })
+    }
+
+    fn get_task(&self, id: TaskId) -> Result<Task> {
+        let conn = self.conn.lock().unwrap();
+        let sealed: Option<Vec<u8>> = conn
+            .query_row("SELECT data FROM tasks WHERE id = ?1", params![id.to_string()], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(Error::backend)?;
+        drop(conn);
+        let sealed = sealed.ok_or_else(|| Error::not_found("task", id))?;
+        self.unseal(&task_aad(id), &sealed)
+    }
+
+    fn put_task(&self, t: &Task) -> Result<()> {
+        self.put_tasks(std::slice::from_ref(t))
+    }
+
+    fn put_tasks(&self, tasks: &[Task]) -> Result<()> {
+        if tasks.is_empty() {
+            return Ok(());
+        }
+        // Sealed before the lock is taken: encryption is the expensive part
+        // and there is no reason to hold the connection through it.
+        let sealed: Vec<(&Task, Vec<u8>)> =
+            tasks.iter().map(|t| Ok((t, self.seal(&task_aad(t.id), t)?))).collect::<Result<_>>()?;
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(Error::backend)?;
+        for (t, data) in sealed {
+            tx.execute(
+                "INSERT INTO tasks
+                    (id, project_id, parent_id, status, priority, start_date, due_date,
+                     sort_order, created_us, updated_us, completed_us, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                 ON CONFLICT(id) DO UPDATE SET
+                    project_id = ?2, parent_id = ?3, status = ?4, priority = ?5,
+                    start_date = ?6, due_date = ?7, sort_order = ?8, created_us = ?9,
+                    updated_us = ?10, completed_us = ?11, data = ?12",
+                params![
+                    t.id.to_string(),
+                    id_str(t.project_id),
+                    id_str(t.parent_id),
+                    t.status.as_str(),
+                    t.priority.rank(),
+                    date_str(t.start_date),
+                    date_str(t.due_date),
+                    t.sort_order,
+                    to_us(t.created_at),
+                    to_us(t.updated_at),
+                    t.completed_at.map(to_us),
+                    data,
+                ],
+            )
+            .map_err(Error::backend)?;
+        }
+        tx.commit().map_err(Error::backend)?;
+        Ok(())
+    }
+
+    fn delete_task(&self, id: TaskId) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(Error::backend)?;
+        let doomed = Self::subtree(&tx, id)?;
+        Self::purge_tasks(&tx, &doomed)?;
+        tx.commit().map_err(Error::backend)?;
+        Ok(())
+    }
+
+    // ---- time blocks ----------------------------------------------------
+
+    fn list_blocks(&self, query: &BlockQuery) -> Result<Vec<TimeBlock>> {
+        let mut sql = String::from("SELECT id, data FROM time_blocks WHERE 1=1");
+        let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        if let Some(from) = query.from {
+            args.push(Box::new(from.to_string()));
+            sql.push_str(&format!(" AND local_date >= ?{}", args.len()));
+        }
+        if let Some(to) = query.to {
+            args.push(Box::new(to.to_string()));
+            sql.push_str(&format!(" AND local_date <= ?{}", args.len()));
+        }
+        if let Some(task) = query.task_id {
+            args.push(Box::new(task.to_string()));
+            sql.push_str(&format!(" AND task_id = ?{}", args.len()));
+        }
+        if let Some(project) = query.project_id {
+            args.push(Box::new(project.to_string()));
+            sql.push_str(&format!(" AND project_id = ?{}", args.len()));
+        }
+        if let Some(kind) = query.kind {
+            args.push(Box::new(kind.as_str()));
+            sql.push_str(&format!(" AND kind = ?{}", args.len()));
+        }
+        sql.push_str(" ORDER BY start_us ASC, end_us ASC");
+        if let Some(limit) = query.limit {
+            sql.push_str(&format!(" LIMIT {limit}"));
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(&sql).map_err(Error::backend)?;
+        let rows: Vec<(String, Vec<u8>)> = stmt
+            .query_map(params_from_iter(args.iter().map(|a| a.as_ref())), |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .map_err(Error::backend)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(Error::backend)?;
+        drop(stmt);
+        drop(conn);
+        self.collect(rows, block_aad)
+    }
+
+    fn get_block(&self, id: BlockId) -> Result<TimeBlock> {
+        let conn = self.conn.lock().unwrap();
+        let sealed: Option<Vec<u8>> = conn
+            .query_row("SELECT data FROM time_blocks WHERE id = ?1", params![id.to_string()], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(Error::backend)?;
+        drop(conn);
+        let sealed = sealed.ok_or_else(|| Error::not_found("block", id))?;
+        self.unseal(&block_aad(id), &sealed)
+    }
+
+    fn put_block(&self, b: &TimeBlock) -> Result<()> {
+        let data = self.seal(&block_aad(b.id), b)?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO time_blocks
+                (id, task_id, project_id, local_date, start_us, end_us, kind, data)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+                task_id = ?2, project_id = ?3, local_date = ?4, start_us = ?5,
+                end_us = ?6, kind = ?7, data = ?8",
+            params![
+                b.id.to_string(),
+                id_str(b.subject.task_id()),
+                id_str(b.subject.project_id()),
+                b.local_date.to_string(),
+                to_us(b.start),
+                to_us(b.end),
+                b.kind.as_str(),
+                data,
+            ],
+        )
+        .map_err(Error::backend)?;
+        Ok(())
+    }
+
+    fn delete_block(&self, id: BlockId) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM time_blocks WHERE id = ?1", params![id.to_string()])
+            .map_err(Error::backend)?;
+        Ok(())
+    }
+
+    // ---- housekeeping ---------------------------------------------------
+
+    fn task_stats(&self, today: jiff::civil::Date) -> Result<TaskStats> {
+        // Every count here reads a clear column, so the whole panel costs
+        // one pass over the indexes and decrypts nothing.
+        let conn = self.conn.lock().unwrap();
+        let count = |sql: &str| -> Result<u64> {
+            let n: i64 = conn.query_row(sql, [], |r| r.get(0)).map_err(Error::backend)?;
+            Ok(n as u64)
+        };
+        let minutes = |kind: BlockKind| -> Result<u64> {
+            // Truncated to whole minutes per block before summing, so the
+            // total agrees with the per-block figures the UI shows.
+            let secs: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(MAX(end_us - start_us, 0)), 0) / 1000000
+                     FROM time_blocks WHERE kind = ?1",
+                    params![kind.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(Error::backend)?;
+            Ok((secs / 60) as u64)
+        };
+
+        let open: Vec<&str> =
+            TaskStatus::ALL.iter().filter(|s| s.is_open()).map(|s| s.as_str()).collect();
+        let open_list = open.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(",");
+
+        // One grouped scan of `tasks_by_project`, which is exactly the index
+        // this is shaped like. `project_id` and `status` are both clear
+        // columns, so the sidebar's counts cost no decryption at all.
+        let mut open_by_project = Vec::new();
+        {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT project_id, COUNT(*) FROM tasks
+                     WHERE status IN ({open_list}) GROUP BY project_id"
+                ))
+                .map_err(Error::backend)?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?)))
+                .map_err(Error::backend)?;
+            for row in rows {
+                let (id, n) = row.map_err(Error::backend)?;
+                let project_id = match id {
+                    Some(id) => {
+                        Some(ProjectId::parse(&id).map_err(|e| Error::Invalid(e.to_string()))?)
+                    }
+                    None => None,
+                };
+                open_by_project.push(ProjectTaskCount { project_id, open: n as u64 });
+            }
+        }
+
+        // Both bounds compare against a clear `due_date` column, and NULL
+        // compares as neither -- so an undated task is correctly outside
+        // both, exactly as it is outside `TaskQuery`'s date windows.
+        let today = today.to_string();
+        let due_today: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM tasks
+                     WHERE status IN ({open_list}) AND due_date <= ?1"
+                ),
+                params![today],
+                |r| r.get(0),
+            )
+            .map_err(Error::backend)?;
+        let overdue: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM tasks
+                     WHERE status IN ({open_list}) AND due_date < ?1"
+                ),
+                params![today],
+                |r| r.get(0),
+            )
+            .map_err(Error::backend)?;
+
+        Ok(TaskStats {
+            open_by_project,
+            due_today: due_today as u64,
+            overdue: overdue as u64,
+            projects: count("SELECT COUNT(*) FROM projects")?,
+            active_projects: count(
+                "SELECT COUNT(*) FROM projects WHERE status IN ('active', 'paused')",
+            )?,
+            tasks: count("SELECT COUNT(*) FROM tasks")?,
+            open_tasks: count(&format!(
+                "SELECT COUNT(*) FROM tasks WHERE status IN ({open_list})"
+            ))?,
+            done_tasks: count("SELECT COUNT(*) FROM tasks WHERE status = 'done'")?,
+            blocks: count("SELECT COUNT(*) FROM time_blocks")?,
+            planned_minutes: minutes(BlockKind::Planned)?,
+            logged_minutes: minutes(BlockKind::Actual)?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use everyday_core::crypto::{AeadCipher, Cipher, NullCipher, SecretKey};
     use everyday_core::store::conformance;
+    use everyday_core::task::{Project, Task, TimeBlock};
     use everyday_core::{RichDoc, model::Journal};
     use std::path::Path;
 
@@ -602,6 +1245,141 @@ mod tests {
         let db_len = std::fs::metadata(dir.path().join(DB_FILENAME)).unwrap().len();
         assert!(db_len < 200_000, "a 300 KB attachment must not land in the database");
         assert_eq!(store.get_blob(id).unwrap().len(), 300_000);
+    }
+
+    #[test]
+    fn the_database_file_contains_no_readable_task_text() {
+        // The task tables make the same promise the entry table does: the
+        // shape of the work is in the clear, never its contents.
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+
+        let mut p = Project::new("A project nobody should see");
+        p.notes = "project notes nobody should see".into();
+        p.tags = vec!["secretprojecttag".into()];
+        store.put_project(&p).unwrap();
+
+        let mut t = Task::new("A task nobody should see").in_project(p.id);
+        t.notes = "task notes nobody should see".into();
+        t.tags = vec!["secrettasktag".into()];
+        store.put_task(&t).unwrap();
+
+        let start = "2026-06-15T09:00:00Z".parse::<jiff::Timestamp>().unwrap();
+        let mut b =
+            TimeBlock::new(everyday_core::task::BlockSubject::Task { id: t.id }, start, 60, "UTC");
+        b.title = "A block nobody should see".into();
+        b.notes = "block notes nobody should see".into();
+        store.put_block(&b).unwrap();
+        store.flush().unwrap();
+
+        let raw = std::fs::read(dir.path().join(DB_FILENAME)).unwrap();
+        for needle in [
+            b"A project nobody should see".as_slice(),
+            b"project notes nobody should see",
+            b"secretprojecttag",
+            b"A task nobody should see",
+            b"task notes nobody should see",
+            b"secrettasktag",
+            b"A block nobody should see",
+            b"block notes nobody should see",
+        ] {
+            assert!(
+                !raw.windows(needle.len()).any(|w| w == needle),
+                "found {:?} in the database file",
+                String::from_utf8_lossy(needle)
+            );
+        }
+    }
+
+    #[test]
+    fn task_filters_pushed_into_sql_match_the_in_memory_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+        let p = Project::new("Agreement");
+        store.put_project(&p).unwrap();
+
+        for d in 1..=20u8 {
+            let mut t = Task::new(format!("task {d:02}")).in_project(p.id);
+            t.due_date = Some(jiff::civil::date(2026, 1, d as i8));
+            t.sort_order = i32::from(d);
+            t.tags = vec!["everything".into()];
+            store.put_task(&t).unwrap();
+        }
+
+        // No tags and no text -> SQL LIMIT/OFFSET and SQL ordering. With a
+        // tag -> the in-memory pass. Both must return the same window.
+        let sql_path = TaskQuery {
+            sort: TaskSort::DueAsc,
+            offset: 5,
+            limit: Some(4),
+            ..TaskQuery::in_project(p.id)
+        };
+        let memory_path = TaskQuery { tags: vec!["everything".into()], ..sql_path.clone() };
+
+        let titles = |q: &TaskQuery| -> Vec<String> {
+            store.list_tasks(q).unwrap().into_iter().map(|t| t.title).collect()
+        };
+        let a = titles(&sql_path);
+        assert_eq!(a, ["task 06", "task 07", "task 08", "task 09"]);
+        assert_eq!(a, titles(&memory_path), "SQL and in-memory paths must agree");
+    }
+
+    #[test]
+    fn undated_tasks_sort_last_on_both_paths() {
+        // SQLite sorts NULL first on an ASC column, so without the explicit
+        // `due_date IS NULL` term the backlog would bury what is due.
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+
+        let mut soon = Task::new("soon");
+        soon.due_date = Some(jiff::civil::date(2026, 3, 1));
+        let undated = Task::new("someday");
+        store.put_tasks(&[soon, undated]).unwrap();
+
+        let by_due = TaskQuery { sort: TaskSort::DueAsc, ..Default::default() };
+        let titles: Vec<String> =
+            store.list_tasks(&by_due).unwrap().into_iter().map(|t| t.title).collect();
+        assert_eq!(titles, ["soon", "someday"]);
+
+        // And with a tag filter, which routes through `TaskQuery::apply`.
+        let via_memory = TaskQuery { text: "s".into(), ..by_due };
+        let titles: Vec<String> =
+            store.list_tasks(&via_memory).unwrap().into_iter().map(|t| t.title).collect();
+        assert_eq!(titles, ["soon", "someday"], "both paths must agree on undated tasks");
+    }
+
+    #[test]
+    fn a_version_1_database_gains_the_task_tables_without_losing_entries() {
+        // The migration people will actually run: a vault written before the
+        // todo app existed, opened by a build that has it.
+        let dir = tempfile::tempdir().unwrap();
+        let j = Journal::new("Written under v1");
+        let mut e = Entry::new(j.id, "UTC");
+        e.body = RichDoc::from_plain_text("this must survive the migration");
+
+        {
+            let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+            store.put_journal(&j).unwrap();
+            store.put_entry(&e).unwrap();
+            // Rewind to the world as version 1 left it: the task tables gone
+            // and the recorded version behind.
+            let conn = store.conn.lock().unwrap();
+            conn.execute_batch("DROP TABLE tasks; DROP TABLE projects; DROP TABLE time_blocks;")
+                .unwrap();
+            conn.pragma_update(None, "user_version", 1i64).unwrap();
+        }
+
+        let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+        assert_eq!(
+            store.get_entry(e.id).unwrap().body.plain_text(),
+            "this must survive the migration",
+            "migrating must not disturb what was already there"
+        );
+        assert_eq!(store.get_journal(j.id).unwrap().name, "Written under v1");
+
+        let t = Task::new("and the new tables must work");
+        store.put_task(&t).unwrap();
+        assert_eq!(store.get_task(t.id).unwrap(), t);
     }
 
     #[test]

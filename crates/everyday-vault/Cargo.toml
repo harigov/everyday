@@ -15,4 +15,5 @@ serde.workspace = true
 directories = "6"
 
 [dev-dependencies]
+jiff.workspace = true
 tempfile = "3"

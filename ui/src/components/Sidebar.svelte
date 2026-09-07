@@ -6,7 +6,18 @@
   import Logo from './Logo.svelte'
   import SettingsMenu from './SettingsMenu.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
+  import TodoNav from './TodoNav.svelte'
   import type { Journal } from '../lib/types'
+  import type { IconName } from '../lib/icons'
+
+  // One vault, several apps. The switcher is the only chrome above the nav
+  // because the apps are peers -- neither is a mode of the other -- and it
+  // is hidden entirely on a backend that has only one of them, so a Markdown
+  // vault does not offer a tab that cannot work.
+  const APPS: { id: 'journal' | 'todo'; label: string; icon: IconName }[] = [
+    { id: 'journal', label: 'Journal', icon: 'quote' },
+    { id: 'todo', label: 'Todo', icon: 'check' },
+  ]
 
   let creating = $state(false)
   let draft = $state('')
@@ -47,6 +58,26 @@
     <span class="name">Every Day</span>
   </div>
 
+  {#if app.supportsTasks}
+    <div class="apps" role="tablist" aria-label="Apps">
+      {#each APPS as a (a.id)}
+        <button
+          class="app"
+          class:on={app.section === a.id}
+          role="tab"
+          aria-selected={app.section === a.id}
+          onclick={() => app.setSection(a.id)}
+        >
+          <Icon name={a.icon} size={14} />
+          {a.label}
+        </button>
+      {/each}
+    </div>
+  {/if}
+
+  {#if app.section === 'todo'}
+    <TodoNav />
+  {:else}
   <nav class="scroll nav">
     <button
       class="row"
@@ -103,6 +134,7 @@
       />
     {/if}
   </nav>
+  {/if}
 
   <div class="foot">
     <SettingsMenu />
@@ -144,6 +176,38 @@
     padding-left: max(var(--sp-4), env(titlebar-area-x, var(--sp-4)));
   }
   .name { font-weight: 620; letter-spacing: -0.006em; font-size: var(--text-md); }
+
+  /* A segmented control rather than two rows in the nav: these switch what
+     the whole window is, and a thing that looks like a list item reads as
+     "one more place to put a journal". */
+  .apps {
+    display: flex;
+    gap: 2px;
+    flex: none;
+    margin: 0 var(--sp-2) var(--sp-1);
+    padding: 2px;
+    border-radius: var(--radius);
+    background: var(--bg-active);
+  }
+  .app {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    flex: 1;
+    height: 26px;
+    border-radius: calc(var(--radius) - 3px);
+    font-size: var(--text-sm);
+    font-weight: 550;
+    color: var(--fg-subtle);
+    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+  }
+  .app:hover { color: var(--fg); }
+  .app.on {
+    background: var(--bg-raised);
+    color: var(--fg);
+    box-shadow: var(--shadow-sm);
+  }
 
   .nav { flex: 1; padding: var(--sp-2) var(--sp-2) var(--sp-4); }
 

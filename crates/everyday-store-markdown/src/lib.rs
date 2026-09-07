@@ -408,6 +408,7 @@ impl JournalStore for MarkdownStore {
             transactional: false,
             human_readable: !self.cipher.is_encrypting(),
             max_blob_bytes: None,
+            tasks: false,
         }
     }
 

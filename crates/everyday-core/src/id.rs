@@ -77,6 +77,13 @@ macro_rules! typed_id {
 typed_id!(JournalId, "journal");
 typed_id!(EntryId, "entry");
 
+// The task domain. Separate newtypes for the same reason as above: a
+// `TaskId` and a `ProjectId` are both UUIDs and are never interchangeable,
+// and a `BlockId` addresses a span of time rather than a thing to do.
+typed_id!(ProjectId, "project");
+typed_id!(TaskId, "task");
+typed_id!(BlockId, "block");
+
 /// Content address of an attachment payload.
 ///
 /// Blobs are content-addressed with BLAKE3 so that the same photo dropped into

@@ -21,6 +21,16 @@ const LIST_REFRESH_MS = 4_000
 
 export type Screen = 'loading' | 'setup' | 'locked' | 'main' | 'error'
 
+/**
+ * Which app the sidebar is showing.
+ *
+ * A vault holds more than a journal now. The section is the one piece of
+ * chrome state that outlives a lock, so it is remembered locally -- coming
+ * back to the app you were last in is what makes it feel like one program
+ * rather than two bolted together.
+ */
+export type Section = 'journal' | 'todo'
+
 function isLocked(e: unknown): boolean {
   return e instanceof VaultError && e.code === 'locked'
 }
@@ -52,6 +62,18 @@ class AppState {
   saving = $state(false)
   lastSaved = $state<string | null>(null)
   theme = $state<'light' | 'dark' | 'system'>('system')
+  section = $state<Section>('journal')
+
+  /**
+   * Things to drop when the vault locks.
+   *
+   * The todo store registers one of these rather than being imported here.
+   * A lock must clear *every* decrypted thing the interface is holding, and
+   * the alternative -- this file reaching into each app's store -- is a
+   * circular import and a list that is quietly wrong the first time someone
+   * adds an app and forgets to extend it.
+   */
+  #resetHooks: (() => void)[] = []
 
   #saveTimer: ReturnType<typeof setTimeout> | null = null
   #searchTimer: ReturnType<typeof setTimeout> | null = null
@@ -83,6 +105,11 @@ class AppState {
       (localStorage.getItem('everyday.theme') as typeof this.theme) ??
       'system'
     this.applyTheme()
+    // `?section=` alongside `?theme=`, and for the same reason: so the
+    // interface can be opened straight to the app under review.
+    const asked = isMock ? new URLSearchParams(location.search).get('section') : null
+    const remembered = asked ?? localStorage.getItem('everyday.section')
+    if (remembered === 'journal' || remembered === 'todo') this.section = remembered
     try {
       const boot = await api.bootstrap()
       this.boot = boot
@@ -99,6 +126,22 @@ class AppState {
       this.error = errorMessage(e)
       this.screen = 'error'
     }
+  }
+
+  /** Register state to be dropped when the vault locks. */
+  onLock(reset: () => void) {
+    this.#resetHooks.push(reset)
+  }
+
+  /** Does this vault's backend carry the task domain? */
+  get supportsTasks(): boolean {
+    return this.status?.capabilities?.tasks === true
+  }
+
+  setSection(section: Section) {
+    if (section === 'todo' && !this.supportsTasks) return
+    this.section = section
+    localStorage.setItem('everyday.section', section)
   }
 
   /** Retry the initial handshake after a failure. */
@@ -162,6 +205,7 @@ class AppState {
     // drops it from memory; a locked app must not leave the last entry
     // sitting behind the lock screen.
     this.stopTimers()
+    for (const reset of this.#resetHooks) reset()
     this.entry = null
     this.entries = []
     this.journals = []
@@ -174,6 +218,9 @@ class AppState {
 
   private async enterMain() {
     this.screen = 'main'
+    // A vault opened on a backend that stores journals only cannot show the
+    // section the last one left us in.
+    if (this.section === 'todo' && !this.supportsTasks) this.section = 'journal'
     await this.refreshJournals()
     await this.refreshEntries()
     this.startAutoLockPolling()

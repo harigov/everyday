@@ -110,6 +110,61 @@ export const ICONS = {
     '<rect width="16" height="11" x="4" y="10.5" rx="2.5"/>' +
     '<path d="M7.5 10.5V7a4.5 4.5 0 0 1 9 0v3.5"/>',
 
+  // ── The todo app ───────────────────────────────────────────────────────
+
+  // An empty checkbox and a ticked one. Circles rather than squares: the
+  // tick target sits in a text line beside a title, and a round target reads
+  // as "toggle me" where a square reads as part of the layout.
+  circle: '<circle cx="12" cy="12" r="8.5"/>',
+
+  check: '<circle cx="12" cy="12" r="8.5"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
+
+  // A bare tick, for the places that already have their own container.
+  tick: '<path d="M20 6 9 17l-5-5"/>',
+
+  // Three columns with cards stacked to different heights: the shape of a
+  // kanban board rather than of a table.
+  board:
+    '<rect width="5" height="16" x="3" y="4" rx="1.5"/>' +
+    '<rect width="5" height="11" x="9.5" y="4" rx="1.5"/>' +
+    '<rect width="5" height="7" x="16" y="4" rx="1.5"/>',
+
+  // Rows with their checkboxes: a task list, distinct from `bulletList`,
+  // which is a formatting mark in the editor.
+  list:
+    '<path d="M10 6h11"/><path d="M10 12h11"/><path d="M10 18h11"/>' +
+    '<path d="m3 6 1.5 1.5L7 5"/><path d="m3 12 1.5 1.5L7 11"/><path d="m3 18 1.5 1.5L7 17"/>',
+
+  calendar:
+    '<rect width="18" height="17" x="3" y="4" rx="2.5"/>' +
+    '<path d="M3 9.5h18"/><path d="M8 2.5v4"/><path d="M16 2.5v4"/>',
+
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 1.8"/>',
+
+  // Today: a sun over the horizon. Reads at 16px where a calendar with a
+  // number in it does not.
+  sun:
+    '<circle cx="12" cy="12" r="4"/>' +
+    '<path d="M12 3v2"/><path d="M12 19v2"/><path d="M5.6 5.6l1.4 1.4"/>' +
+    '<path d="M17 17l1.4 1.4"/><path d="M3 12h2"/><path d="M19 12h2"/>' +
+    '<path d="M5.6 18.4 7 17"/><path d="M17 7l1.4-1.4"/>',
+
+  // A tray with the lip drawn in: where captured-but-unfiled things land.
+  inbox:
+    '<path d="M21 12v6a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 18v-6"/>' +
+    '<path d="M3 12h5l1.5 2.5h5L16 12h5"/>' +
+    '<path d="M5.5 12 8 4.5a1 1 0 0 1 1-.7h6a1 1 0 0 1 1 .7L18.5 12"/>',
+
+  flag: '<path d="M4 21V4.5"/><path d="M4 5h13l-2.5 4 2.5 4H4"/>',
+
+  tag:
+    '<path d="M11.6 3.5H19a1.5 1.5 0 0 1 1.5 1.5v7.4a2 2 0 0 1-.6 1.4l-6.6 6.6a2 2 0 0 1-2.8 0l-6-6a2 2 0 0 1 0-2.8l6.6-6.6a2 2 0 0 1 1.5-.5"/>' +
+    '<path d="M16.5 7.5h.01"/>',
+
+  // Disclosure. Drawn pointing right; the views rotate it for "open", so
+  // there is one shape and one animation rather than two glyphs.
+  chevron: '<path d="m9.5 5 7 7-7 7"/>',
+
   // Two tracks with a handle on each: legible at 16px in a way that a
   // twelve-toothed cogwheel is not.
   settings:

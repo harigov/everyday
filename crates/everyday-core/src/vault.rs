@@ -28,12 +28,14 @@ use crate::crypto::{
     derive_key, random_salt, unwrap_key, wrap_key,
 };
 use crate::error::{Error, Result};
-use crate::id::{BlobId, EntryId, JournalId};
+use crate::id::{BlobId, BlockId, EntryId, JournalId, ProjectId, TaskId};
 use crate::model::{Entry, EntrySummary, Journal};
 use crate::search::{SearchHit, SearchIndex};
+use crate::store::tasks::{BlockQuery, TaskQuery, TaskStore};
 use crate::store::{
     BackendRegistry, Capabilities, EntryQuery, JournalStore, StoreContext, StoreStats,
 };
+use crate::task::{Project, Task, TaskStats, TimeBlock};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -481,6 +483,137 @@ impl Vault {
         })
     }
 
+    // ---- tasks, projects and time ---------------------------------------
+    //
+    // The second domain. Every method here goes through `with_tasks`, which
+    // fails with `unsupported` on a backend that holds journals only, so a
+    // Markdown vault reports the absence structurally rather than panicking
+    // or silently returning nothing.
+
+    /// Does this vault's backend store tasks at all?
+    pub fn supports_tasks(&self) -> bool {
+        self.read(|u| Ok(u.store.tasks().is_some())).unwrap_or(false)
+    }
+
+    /// Run `f` against the task store, or explain that there isn't one.
+    fn with_tasks<T>(&self, f: impl FnOnce(&dyn TaskStore) -> Result<T>) -> Result<T> {
+        self.read(|u| {
+            let tasks = u
+                .store
+                .tasks()
+                .ok_or(Error::Unsupported("tasks (this vault's backend stores journals only)"))?;
+            f(tasks)
+        })
+    }
+
+    pub fn projects(&self) -> Result<Vec<Project>> {
+        self.with_tasks(|t| {
+            let mut ps = t.list_projects()?;
+            ps.sort_by(|a, b| a.sort_order.cmp(&b.sort_order).then_with(|| a.name.cmp(&b.name)));
+            Ok(ps)
+        })
+    }
+
+    pub fn project(&self, id: ProjectId) -> Result<Project> {
+        self.with_tasks(|t| t.get_project(id))
+    }
+
+    pub fn save_project(&self, project: &Project) -> Result<()> {
+        self.with_tasks(|t| t.put_project(project))
+    }
+
+    /// Delete a project, its tasks and their time blocks.
+    pub fn delete_project(&self, id: ProjectId) -> Result<()> {
+        self.with_tasks(|t| t.delete_project(id))
+    }
+
+    pub fn tasks(&self, query: &TaskQuery) -> Result<Vec<Task>> {
+        self.with_tasks(|t| t.list_tasks(query))
+    }
+
+    pub fn task(&self, id: TaskId) -> Result<Task> {
+        self.with_tasks(|t| t.get_task(id))
+    }
+
+    pub fn save_task(&self, task: &Task) -> Result<()> {
+        if task.title.trim().is_empty() {
+            return Err(Error::Invalid("a task needs a title".into()));
+        }
+        if task.parent_id == Some(task.id) {
+            return Err(Error::Invalid("a task cannot be its own subtask".into()));
+        }
+        self.with_tasks(|t| t.put_task(task))
+    }
+
+    /// Write several tasks as one operation. This is what a board reorder
+    /// is: dragging one card renumbers everything below it in two columns.
+    pub fn save_tasks(&self, tasks: &[Task]) -> Result<()> {
+        for t in tasks {
+            if t.title.trim().is_empty() {
+                return Err(Error::Invalid("a task needs a title".into()));
+            }
+        }
+        self.with_tasks(|s| s.put_tasks(tasks))
+    }
+
+    /// Delete a task, its subtasks and their time blocks.
+    pub fn delete_task(&self, id: TaskId) -> Result<()> {
+        self.with_tasks(|t| t.delete_task(id))
+    }
+
+    pub fn blocks(&self, query: &BlockQuery) -> Result<Vec<TimeBlock>> {
+        self.with_tasks(|t| t.list_blocks(query))
+    }
+
+    pub fn block(&self, id: BlockId) -> Result<TimeBlock> {
+        self.with_tasks(|t| t.get_block(id))
+    }
+
+    pub fn save_block(&self, block: &TimeBlock) -> Result<()> {
+        block.validate()?;
+        self.with_tasks(|t| t.put_block(block))
+    }
+
+    pub fn delete_block(&self, id: BlockId) -> Result<()> {
+        self.with_tasks(|t| t.delete_block(id))
+    }
+
+    /// Counts for the sidebar, as of the calendar day `today`.
+    pub fn task_stats(&self, today: jiff::civil::Date) -> Result<TaskStats> {
+        self.with_tasks(|t| t.task_stats(today))
+    }
+
+    /// Every tag in the task domain with how often it is used, most used
+    /// first, ties broken alphabetically.
+    ///
+    /// Tags are inside the sealed payloads -- the same trade the journal
+    /// makes -- so this is a decrypt-and-count pass rather than an index
+    /// lookup. That is affordable at the scale a person's todo list reaches,
+    /// and it is what keeps the database file from listing what someone is
+    /// working on to anyone who opens it.
+    pub fn task_tags(&self) -> Result<Vec<(String, u32)>> {
+        self.with_tasks(|t| {
+            let mut counts: std::collections::BTreeMap<String, u32> = Default::default();
+            let mut bump = |tags: &[String]| {
+                for tag in tags {
+                    *counts.entry(tag.clone()).or_default() += 1;
+                }
+            };
+            for p in t.list_projects()? {
+                bump(&p.tags);
+            }
+            for task in t.list_tasks(&TaskQuery::default())? {
+                bump(&task.tags);
+            }
+            for b in t.list_blocks(&BlockQuery::default())? {
+                bump(&b.tags);
+            }
+            let mut out: Vec<(String, u32)> = counts.into_iter().collect();
+            out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            Ok(out)
+        })
+    }
+
     pub fn search(
         &self,
         query: &str,
@@ -619,6 +752,7 @@ mod tests {
                 transactional: false,
                 human_readable: false,
                 max_blob_bytes: None,
+                tasks: false,
             }
         }
         fn list_journals(&self) -> Result<Vec<Journal>> {
@@ -1141,6 +1275,44 @@ mod tests {
         assert_eq!(v.entries(&EntryQuery::in_journal(a.id)).unwrap().len(), 2);
         let asc = EntryQuery { sort: SortOrder::DateAsc, limit: Some(1), ..Default::default() };
         assert_eq!(v.entries(&asc).unwrap()[0].local_date, jiff::civil::date(2025, 1, 1));
+    }
+
+    #[test]
+    fn a_backend_without_tasks_says_so_rather_than_failing_obscurely() {
+        // The Markdown vault's situation: journals, and nothing else. The
+        // interface reads `supports_tasks` to hide the todo app; a call that
+        // slips through anyway must name the reason, not panic or return an
+        // empty list that reads as "you have no tasks".
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+        assert!(!v.supports_tasks());
+        assert!(!v.status().capabilities.unwrap().tasks);
+
+        let err = v
+            .tasks(&crate::store::tasks::TaskQuery::default())
+            .unwrap_err();
+        assert_eq!(err.code(), "unsupported", "got {err}");
+        assert_eq!(v.projects().unwrap_err().code(), "unsupported");
+        assert_eq!(
+            v.task_stats(jiff::civil::date(2026, 3, 10)).unwrap_err().code(),
+            "unsupported"
+        );
+    }
+
+    #[test]
+    fn a_locked_vault_refuses_task_reads_before_it_refuses_the_backend() {
+        // "Locked" has to win over "unsupported": which backend is in use is
+        // not something a locked vault should be answering questions about.
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+        v.lock();
+        assert_eq!(
+            v.tasks(&crate::store::tasks::TaskQuery::default())
+                .unwrap_err()
+                .code(),
+            "locked"
+        );
+        assert!(!v.supports_tasks(), "a locked vault supports nothing");
     }
 
     #[test]

@@ -107,3 +107,43 @@ export function humanBytes(n: number): string {
 export function plural(n: number, one: string, many = `${one}s`): string {
   return `${n.toLocaleString(locale())} ${n === 1 ? one : many}`
 }
+
+/**
+ * A duration in minutes, as people say it: `45m`, `2h`, `1h 30m`.
+ *
+ * Compact rather than spelled out, because these appear in list rows beside
+ * a title and have to stay out of the way of it.
+ */
+export function formatMinutes(minutes: number): string {
+  const n = Math.max(0, Math.round(minutes))
+  if (n < 60) return `${n}m`
+  const hours = Math.floor(n / 60)
+  const rest = n % 60
+  return rest === 0 ? `${hours}h` : `${hours}h ${rest}m`
+}
+
+/** `HH:MM:SS` from the core as a local-looking clock time. */
+export function formatClock(hms: string): string {
+  const [h, m] = hms.split(':').map(Number)
+  const at = new Date()
+  at.setHours(h ?? 0, m ?? 0, 0, 0)
+  return new Intl.DateTimeFormat(locale(), { hour: 'numeric', minute: '2-digit' }).format(at)
+}
+
+/** The time of day an instant falls on, for a row of time blocks. */
+export function formatInstantTime(isoTimestamp: string): string {
+  return new Intl.DateTimeFormat(locale(), { hour: 'numeric', minute: '2-digit' }).format(
+    new Date(isoTimestamp),
+  )
+}
+
+/**
+ * `YYYY-MM-DDTHH:MM` for an `<input type="datetime-local">`.
+ *
+ * `toISOString().slice(0, 16)` is the obvious spelling and it is wrong: that
+ * is UTC, so the field would open an hour or ten off wherever the user is.
+ */
+export function toLocalInputValue(at: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${at.getFullYear()}-${p(at.getMonth() + 1)}-${p(at.getDate())}T${p(at.getHours())}:${p(at.getMinutes())}`
+}
