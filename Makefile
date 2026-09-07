@@ -19,7 +19,7 @@ UI_DIR  := ui
 ARGS ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help setup run dev ui build test check fmt cli icons desktop-entry undesktop-entry clean distclean
+.PHONY: help setup run dev ui build test lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
 
 help: ## Show this help
 	@echo "Every Day -- make <target>"
@@ -75,7 +75,18 @@ test: ## Run the test suite under a memory cap
 		./scripts/test.sh -p everyday-app; \
 	fi
 
-check: ## Format check, clippy and interface typecheck
+# The pair to reach for: `lint` says what is wrong, `fix` fixes what it can.
+# They are the same tools in the same order, so anything `fix` silences is
+# something `lint` would have complained about, and what survives a `fix` is
+# the list of things that need a person.
+#
+# Between them, the two jobs in .github/workflows/check.yml run exactly what
+# `lint` runs -- split in two only so the Rust half and the interface half go
+# in parallel. Keep the two in step when you change either: a check you can
+# only discover from a red build ten minutes after pushing is one people
+# learn to ignore.
+
+lint: $(UI_DIR)/node_modules ## Format check, clippy and interface typecheck -- changes nothing
 	cargo fmt --all -- --check
 	cargo clippy --all-targets -- -D warnings
 	@# The shell links the platform webview, so it is not a workspace default
@@ -86,6 +97,24 @@ check: ## Format check, clippy and interface typecheck
 		echo "skipping everyday-app: WebKitGTK headers missing, run make setup"; \
 	fi
 	npm --prefix $(UI_DIR) run check
+
+check: lint ## Alias for `lint`
+
+fix: ## Apply every fix `lint` can make on its own
+	cargo fmt --all
+	@# Only what clippy marks machine-applicable, which is why this is safe to
+	@# run unattended. `--allow-dirty` because a fix target is for exactly the
+	@# uncommitted tree cargo would otherwise refuse to touch -- commit or
+	@# stash first if you want the changes separable.
+	cargo clippy --fix --all-targets --allow-dirty --allow-staged
+	@if [ "$$(uname -s)" != Linux ] || pkg-config --exists webkit2gtk-4.1 2>/dev/null; then \
+		cargo clippy --fix -p everyday-app --all-targets --allow-dirty --allow-staged; \
+	fi
+	@# Formatting a Rust file can leave it in a shape clippy reads differently
+	@# and vice versa, so settle on the formatter.
+	cargo fmt --all
+	@echo
+	@echo "The interface has no formatter or linter -- nothing was run over ui/."
 
 fmt: ## Format Rust sources
 	cargo fmt --all

@@ -304,8 +304,17 @@ system of its own: `make run` is `./scripts/dev.sh`, `make test` is
 ```sh
 make test                          # whole workspace
 make test ARGS="-p everyday-core"  # one crate
-make check                         # fmt, clippy, and the interface typecheck
+make lint                          # fmt, clippy, and the interface typecheck
+make fix                           # apply what `make lint` can fix on its own
 ```
+
+`make lint` runs exactly what CI runs, so a red build never tells you
+something you could not have found locally first. `make fix` runs the same
+tools in write mode: it reformats, and applies the clippy suggestions marked
+machine-applicable. What survives a `fix` is the list that needs a person --
+clippy deliberately will not, for instance, narrow a `&Vec<String>` parameter
+to `&[String]` on its own, because that changes a signature its callers
+depend on.
 
 `scripts/test.sh` runs the suite inside a systemd scope with a hard memory
 ceiling and swap disabled, so a runaway allocation is killed by the cgroup in

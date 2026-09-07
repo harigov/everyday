@@ -8,6 +8,6 @@
 # in it spreads the code twice as thin as the prose describing it.
 #
 # The tree is formatted to this configuration, so `cargo fmt --all -- --check`
-# passes on a clean checkout and CI can gate on it. Run `make fmt` before
+# passes on a clean checkout and CI can gate on it. Run `make fix` before
 # committing rather than reformatting by hand.
 use_small_heuristics = "Max"
