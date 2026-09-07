@@ -28,6 +28,20 @@ serde_json.workspace = true
 jiff.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# The one network dependency in the whole application, and it is here in the
+# shell rather than in the core on purpose: `everyday-core` has no async
+# runtime, no TLS stack and no ability to open a socket, and the calendar
+# feature is built so that stays true. This crate fetches bytes; the core
+# does everything that happens to them afterwards.
+#
+# Default features are rustls, http2, charset and system-proxy, which is the
+# right set: the platform's own trust store and the platform's own proxy
+# settings, because a work calendar behind a corporate proxy is the common
+# case rather than the exotic one. `gzip` on top -- a year of a busy calendar
+# is a large text document, and every publisher serves it compressed if asked.
+# Already in the dependency graph via Tauri, so this adds the TLS backend and
+# not much else.
+reqwest = { version = "0.13", features = ["gzip"] }
 
 [features]
 # Enabled by `tauri dev`/`tauri build`; keeps devtools out of releases.

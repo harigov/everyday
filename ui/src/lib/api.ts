@@ -11,15 +11,23 @@ import type {
   BlockQuery,
   BlockSubject,
   Bootstrap,
+  Calendar,
+  CalendarEvent,
+  CalendarId,
+  CalendarInfo,
   Entry,
   EntryId,
   EntryQuery,
   EntrySummary,
+  EventId,
+  EventQuery,
   Journal,
   JournalId,
   Project,
   ProjectId,
+  ProviderInfo,
   SearchHit,
+  SyncReport,
   TagCount,
   Task,
   TaskId,
@@ -157,6 +165,42 @@ export const api = {
   /** Every tag in the task domain with its usage count, most used first. */
   taskTags: () => invoke<TagCount[]>('task_tags'),
   taskStats: () => invoke<TaskStats>('task_stats'),
+
+  // ── The calendar domain ────────────────────────────────────────────
+  //
+  // Subscribed calendars and their events. Time *you* schedule is a time
+  // block and goes through the task commands above -- there is deliberately
+  // no second way to store an appointment.
+
+  calendars: () => invoke<CalendarInfo[]>('list_calendars'),
+  saveCalendar: (calendar: Calendar) => invoke<void>('save_calendar', { calendar }),
+  /** Unsubscribe: the calendar and every event that came from it. */
+  deleteCalendar: (id: CalendarId) => invoke<void>('delete_calendar', { id }),
+
+  /**
+   * Subscribe to a feed and fetch it once.
+   *
+   * One call rather than save-then-fetch, because the two are not
+   * independent: if the address turns out not to be a calendar, the honest
+   * outcome is that nothing was added.
+   */
+  subscribeCalendar: (opts: { name: string; url: string; color: string }) =>
+    invoke<CalendarInfo>('subscribe_calendar', opts),
+
+  /** Add a calendar from a `.ics` file the browser read for us. */
+  importCalendar: (opts: { name: string; label: string; color: string; ics: string }) =>
+    invoke<CalendarInfo>('import_calendar', opts),
+
+  /** Refetch one feed and replace its events with what comes back. */
+  syncCalendar: (id: CalendarId) => invoke<SyncReport>('sync_calendar', { id }),
+  /** Refetch every feed whose interval has elapsed. `force` ignores it. */
+  syncDueCalendars: (force: boolean) => invoke<SyncReport[]>('sync_due_calendars', { force }),
+
+  events: (query: EventQuery) => invoke<CalendarEvent[]>('list_events', { query }),
+  event: (id: EventId) => invoke<CalendarEvent>('get_event', { id }),
+
+  /** The providers the add sheet offers, with where to find each address. */
+  calendarProviders: () => invoke<ProviderInfo[]>('calendar_providers'),
 }
 
 /**

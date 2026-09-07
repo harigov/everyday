@@ -27,10 +27,12 @@ use crate::crypto::{
     AeadCipher, Cipher, KdfParams, NullCipher, SUITE_NONE, SUITE_XCHACHA20_POLY1305, SecretKey,
     derive_key, random_salt, unwrap_key, wrap_key,
 };
+use crate::calendar::{Calendar, Event, SyncReport};
 use crate::error::{Error, Result};
-use crate::id::{BlobId, BlockId, EntryId, JournalId, ProjectId, TaskId};
+use crate::id::{BlobId, BlockId, CalendarId, EntryId, EventId, JournalId, ProjectId, TaskId};
 use crate::model::{Entry, EntrySummary, Journal};
 use crate::search::{SearchHit, SearchIndex};
+use crate::store::calendars::{CalendarStore, EventQuery};
 use crate::store::tasks::{BlockQuery, TaskQuery, TaskStore};
 use crate::store::{
     BackendRegistry, Capabilities, EntryQuery, JournalStore, StoreContext, StoreStats,
@@ -614,6 +616,130 @@ impl Vault {
         })
     }
 
+    // ---- calendars ------------------------------------------------------
+    //
+    // The third domain, on exactly the terms of the second: everything goes
+    // through `with_calendars`, which fails with `unsupported` on a backend
+    // that holds journals only.
+    //
+    // Note the shape of the sync entry point. This layer takes iCalendar
+    // *text*, never a URL: fetching is the shell's job, because the core has
+    // no async runtime, no TLS stack and -- deliberately -- no ability to
+    // open a socket at all. What the core owns is everything that happens to
+    // those bytes afterwards, which is the part worth testing.
+
+    /// Does this vault's backend store subscribed calendars?
+    pub fn supports_calendars(&self) -> bool {
+        self.read(|u| Ok(u.store.calendars().is_some())).unwrap_or(false)
+    }
+
+    fn with_calendars<T>(&self, f: impl FnOnce(&dyn CalendarStore) -> Result<T>) -> Result<T> {
+        self.read(|u| {
+            let calendars = u.store.calendars().ok_or(Error::Unsupported(
+                "calendars (this vault's backend stores journals only)",
+            ))?;
+            f(calendars)
+        })
+    }
+
+    pub fn calendars(&self) -> Result<Vec<Calendar>> {
+        self.with_calendars(|c| c.list_calendars())
+    }
+
+    pub fn calendar(&self, id: CalendarId) -> Result<Calendar> {
+        self.with_calendars(|c| c.get_calendar(id))
+    }
+
+    pub fn save_calendar(&self, calendar: &Calendar) -> Result<()> {
+        if calendar.name.trim().is_empty() {
+            return Err(Error::Invalid("a calendar needs a name".into()));
+        }
+        // Validate the address on the way in rather than at fetch time, so a
+        // `file://` URL is refused where it was typed instead of quietly
+        // stored and refused an hour later by a background sync nobody is
+        // watching.
+        if calendar.origin.url().is_some() {
+            calendar.fetch_url()?;
+        }
+        self.with_calendars(|c| c.put_calendar(calendar))
+    }
+
+    /// Unsubscribe: the calendar and every event that came from it.
+    pub fn delete_calendar(&self, id: CalendarId) -> Result<()> {
+        self.with_calendars(|c| c.delete_calendar(id))
+    }
+
+    pub fn events(&self, query: &EventQuery) -> Result<Vec<Event>> {
+        self.with_calendars(|c| c.list_events(query))
+    }
+
+    pub fn event(&self, id: EventId) -> Result<Event> {
+        self.with_calendars(|c| c.get_event(id))
+    }
+
+    /// How many events are held for one calendar.
+    pub fn event_count(&self, id: CalendarId) -> Result<u64> {
+        self.with_calendars(|c| c.count_events(id))
+    }
+
+    /// Parse `ics` and make it the whole of what `id` holds.
+    ///
+    /// The window is the days worth materialising: recurring events are
+    /// expanded into it and no further, which is what keeps a decade-old
+    /// daily stand-up from becoming four thousand rows. `default_tz` is the
+    /// zone a floating time is read in — the reader's own.
+    pub fn sync_calendar_from_ics(
+        &self,
+        id: CalendarId,
+        ics: &str,
+        window: (jiff::civil::Date, jiff::civil::Date),
+        default_tz: &str,
+    ) -> Result<SyncReport> {
+        // Refuse anything that is not an iCalendar document *before* it can
+        // replace one, and before the store is touched at all. A captive
+        // portal's login page, an expired link's HTML error, a truncated
+        // download: all of them parse to zero events, and all of them would
+        // otherwise empty a working calendar. A genuine VCALENDAR with no
+        // VEVENTs in it is a different thing -- that is a real answer,
+        // meaning "nothing on here" -- and it is written.
+        if !ics.to_ascii_uppercase().contains("BEGIN:VCALENDAR") {
+            return Err(Error::Invalid(
+                "that address did not return a calendar; the events already here have been kept"
+                    .into(),
+            ));
+        }
+        let mut calendar = self.calendar(id)?;
+        let feed = crate::ics::parse(ics);
+        let (events, skipped) = crate::ics::events_for(&calendar, &feed, window, default_tz);
+
+        self.with_calendars(|c| c.replace_events(id, &events))?;
+
+        calendar.mark_synced();
+        // A calendar that never had a name of its own takes the publisher's,
+        // which spares the subscriber naming something they did not create.
+        if let Some(name) = feed.name.as_deref()
+            && !name.is_empty()
+            && calendar.name.trim().is_empty()
+        {
+            calendar.name = name.to_string();
+        }
+        self.with_calendars(|c| c.put_calendar(&calendar))?;
+
+        Ok(SyncReport {
+            calendar_id: Some(id),
+            events: events.len() as u64,
+            skipped,
+            feed_name: feed.name,
+        })
+    }
+
+    /// Record that a sync failed, keeping the events that are already there.
+    pub fn mark_calendar_failed(&self, id: CalendarId, why: &str) -> Result<()> {
+        let mut calendar = self.calendar(id)?;
+        calendar.mark_failed(why);
+        self.with_calendars(|c| c.put_calendar(&calendar))
+    }
+
     pub fn search(
         &self,
         query: &str,
@@ -753,6 +879,7 @@ mod tests {
                 human_readable: false,
                 max_blob_bytes: None,
                 tasks: false,
+                calendars: false,
             }
         }
         fn list_journals(&self) -> Result<Vec<Journal>> {
@@ -1275,6 +1402,53 @@ mod tests {
         assert_eq!(v.entries(&EntryQuery::in_journal(a.id)).unwrap().len(), 2);
         let asc = EntryQuery { sort: SortOrder::DateAsc, limit: Some(1), ..Default::default() };
         assert_eq!(v.entries(&asc).unwrap()[0].local_date, jiff::civil::date(2025, 1, 1));
+    }
+
+    #[test]
+    fn a_backend_without_calendars_says_so_rather_than_failing_obscurely() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+        assert!(!v.supports_calendars());
+        assert!(!v.status().capabilities.unwrap().calendars);
+
+        assert_eq!(v.calendars().unwrap_err().code(), "unsupported");
+        assert_eq!(
+            v.events(&crate::store::calendars::EventQuery::default()).unwrap_err().code(),
+            "unsupported",
+        );
+    }
+
+    #[test]
+    fn a_calendar_with_an_address_we_would_never_fetch_is_refused_on_the_way_in() {
+        // Refused where it is typed, not an hour later by a background sync
+        // nobody is watching.
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+        let bad = crate::calendar::Calendar::subscribed("Sneaky", "file:///etc/passwd");
+        assert_eq!(v.save_calendar(&bad).unwrap_err().code(), "invalid");
+
+        let nameless = crate::calendar::Calendar::subscribed("  ", "https://example.com/x.ics");
+        assert_eq!(v.save_calendar(&nameless).unwrap_err().code(), "invalid");
+    }
+
+    #[test]
+    fn a_reply_that_is_not_a_calendar_never_replaces_one_that_is() {
+        // The failure mode of an automatic sync that people actually notice:
+        // a captive portal, an expired link, a 200 with an error page in it.
+        // The guard has to fire before any store call, which is what this
+        // asserts -- the in-memory backend here has no calendar store, so a
+        // check made any later would report `unsupported` instead.
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+        let err = v
+            .sync_calendar_from_ics(
+                crate::CalendarId::new(),
+                "<!doctype html><title>Sign in to the wifi</title>",
+                (jiff::civil::date(2026, 1, 1), jiff::civil::date(2026, 12, 31)),
+                "UTC",
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "invalid", "an HTML page is not a calendar; got {err}");
     }
 
     #[test]

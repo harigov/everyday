@@ -84,6 +84,14 @@ typed_id!(ProjectId, "project");
 typed_id!(TaskId, "task");
 typed_id!(BlockId, "block");
 
+// The calendar domain. A `CalendarId` names a subscription -- a feed you
+// added -- and an `EventId` one occurrence read out of it. Events are minted
+// fresh on every sync and are never referred to by anything else, so the id
+// is an addressing detail rather than a durable name; the durable name is
+// the event's `uid`, which comes from the publisher.
+typed_id!(CalendarId, "calendar");
+typed_id!(EventId, "event");
+
 /// Content address of an attachment payload.
 ///
 /// Blobs are content-addressed with BLAKE3 so that the same photo dropped into

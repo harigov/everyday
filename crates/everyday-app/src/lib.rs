@@ -8,6 +8,7 @@
 
 mod commands;
 mod error;
+mod feeds;
 mod protocol;
 mod state;
 
@@ -70,6 +71,16 @@ pub fn run() {
             commands::delete_block,
             commands::task_tags,
             commands::task_stats,
+            commands::list_calendars,
+            commands::save_calendar,
+            commands::delete_calendar,
+            commands::subscribe_calendar,
+            commands::import_calendar,
+            commands::sync_calendar,
+            commands::sync_due_calendars,
+            commands::calendar_providers,
+            commands::list_events,
+            commands::get_event,
             commands::put_blob,
             commands::collect_garbage,
             commands::vault_stats,

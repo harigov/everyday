@@ -1,0 +1,982 @@
+// State for the calendar app.
+//
+// The third store, a sibling of `state.svelte.ts` and `todo.svelte.ts`. The
+// comment at the top of the todo store said the calendar would be a third
+// file rather than a third of one very large one, and this is it.
+//
+// What makes this store different from the other two: it is the only one
+// that *reads across* domains. The grid draws five things at once —
+//
+//   external events    other people's calendars, read-only          (calendar)
+//   planned blocks     what you intend to do                             (task)
+//   actual blocks      what you did                                      (task)
+//   tasks              drawn on the day they are due                     (task)
+//   journal entries    a mark on the days you wrote something         (journal)
+//
+// — and only one of them is new. That is the whole design: a calendar is a
+// *view* over records that already existed, not a fourth place to put an
+// appointment. Everything here that writes, writes a `TimeBlock`.
+
+import { api } from './api'
+import { app, errorMessage } from './state.svelte'
+import { todo } from './todo.svelte'
+import {
+  MIN_BLOCK_MINUTES,
+  SNAP_MINUTES,
+  addDays,
+  addMonths,
+  daysFrom,
+  instantAt,
+  isoDate,
+  localeWeekStart,
+  minutesBetween,
+  monthGrid,
+  offsetInDay,
+  snap,
+  startOfWeek,
+  today,
+} from './time'
+import type {
+  BlockKind,
+  BlockSubject,
+  CalendarEvent,
+  CalendarId,
+  CalendarInfo,
+  EntrySummary,
+  Project,
+  ProjectId,
+  Task,
+  TaskId,
+  TimeBlock,
+} from './types'
+import { TASK_STATUSES, VaultError, isOpen } from './types'
+
+/** How often the backend is asked to refresh calendars whose interval elapsed. */
+const SYNC_POLL_MS = 5 * 60_000
+/** Idle delay before an edited block is written. Matches the other two apps. */
+const AUTOSAVE_MS = 500
+/** Default length of a block created by a click rather than a drag. */
+export const DEFAULT_BLOCK_MINUTES = 60
+/** Where the running timer is remembered across a reload. */
+const TIMER_KEY = 'everyday.calendar.timer'
+/** Statuses with work left in them. Matches `TaskStatus::is_open` in the core. */
+const OPEN_STATUSES = TASK_STATUSES.filter(isOpen)
+
+export type View = 'day' | 'week' | 'month'
+
+/** Which of the two halves of a time block the grid is showing. */
+export type Layer = 'both' | 'planned' | 'actual'
+
+function isLocked(e: unknown): boolean {
+  return e instanceof VaultError && e.code === 'locked'
+}
+
+/**
+ * Anything the grid can draw in a time slot, reduced to what drawing needs.
+ *
+ * A single shape for four different records, because the grid's job — pack
+ * overlapping things into lanes, position them, colour them — is identical
+ * for all of them, and four nearly-identical layout passes is how a calendar
+ * view becomes unmaintainable.
+ */
+export interface Slot {
+  key: string
+  kind: 'planned' | 'actual' | 'event'
+  title: string
+  subtitle: string
+  color: string
+  /** Minutes from the start of the day column it is drawn in. */
+  start: number
+  end: number
+  /** Only your own blocks can be dragged; an event belongs to a server. */
+  movable: boolean
+  block?: TimeBlock
+  event?: CalendarEvent
+  /** A cancelled meeting, drawn struck through rather than hidden. */
+  cancelled?: boolean
+  /** Marked free by the publisher: drawn faintly, does not read as a clash. */
+  free?: boolean
+  /** The timer is running in this one. */
+  live?: boolean
+}
+
+/**
+ * What is being tracked at this moment.
+ *
+ * Held here and in local storage rather than as a record in the vault: see
+ * the timer section of the store for why an unfinished block is not written.
+ */
+export interface Timer {
+  /** RFC 3339 instant the tracking started. */
+  since: string
+  subject: BlockSubject
+  /** What to call it, when the subject does not name itself. */
+  title: string
+}
+
+/** Read the timer back after a reload, ignoring anything malformed. */
+function readTimer(): Timer | null {
+  try {
+    const raw = localStorage.getItem(TIMER_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Timer
+    return parsed && typeof parsed.since === 'string' && Number.isFinite(Date.parse(parsed.since))
+      ? parsed
+      : null
+  } catch {
+    // A note to self is not worth failing a launch over.
+    return null
+  }
+}
+
+/** What the detail panel is showing. */
+export type Selection =
+  | { kind: 'block'; id: string }
+  | { kind: 'event'; id: string }
+  | null
+
+class CalendarState {
+  // ── what is on screen ────────────────────────────────────────────────
+  view = $state<View>('week')
+  /** The day the view is anchored on, `YYYY-MM-DD`. */
+  anchor = $state<string>(today())
+  layer = $state<Layer>('both')
+  weekStart = $state<number>(localeWeekStart())
+
+  // ── what has been loaded for it ──────────────────────────────────────
+  calendars = $state<CalendarInfo[]>([])
+  events = $state<CalendarEvent[]>([])
+  blocks = $state<TimeBlock[]>([])
+  /** Tasks with a due date in range, drawn in the all-day band. */
+  dueTasks = $state<Task[]>([])
+  /**
+   * Every open task, for the unscheduled rail.
+   *
+   * Loaded here rather than read out of the todo store, which holds whatever
+   * *that* app's current scope last asked for -- and is empty entirely if
+   * the todo app has not been opened this session. Two stores over one vault
+   * is fine; one store reading another's view state is not.
+   */
+  openTasks = $state<Task[]>([])
+  /** Projects, for the colour of a block and the "book against" pickers. */
+  projects = $state<Project[]>([])
+  /** Days with a journal entry on them, so the calendar can say so. */
+  entryDays = $state<Set<string>>(new Set())
+
+  selection = $state<Selection>(null)
+  loading = $state(false)
+  syncing = $state(false)
+  /** Set after a manual refresh, cleared on the next navigation. */
+  syncNote = $state<string | null>(null)
+
+  /**
+   * What is being tracked right now, if anything.
+   *
+   * Note what this is *not*: a stored record. See the timer section below.
+   */
+  timer = $state<Timer | null>(null)
+  /** Ticks once a second while the timer runs, so the elapsed figure moves. */
+  now = $state<number>(Date.now())
+  /**
+   * The same clock, rounded down to the minute.
+   *
+   * The grid reads this and the elapsed readout reads `now`, so a running
+   * timer redraws the digits once a second and the week once a minute --
+   * rather than re-packing every lane in seven columns sixty times a minute
+   * for a rectangle that grew by less than a pixel.
+   */
+  tick = $state<number>(Date.now())
+
+  #dirty = new Set<string>()
+  #saveTimer: ReturnType<typeof setTimeout> | null = null
+  #syncTimer: ReturnType<typeof setInterval> | null = null
+  #clock: ReturnType<typeof setInterval> | null = null
+  #started = false
+
+  constructor() {
+    app.onLock(() => this.reset())
+  }
+
+  reset() {
+    if (this.#saveTimer) clearTimeout(this.#saveTimer)
+    if (this.#syncTimer) clearInterval(this.#syncTimer)
+    if (this.#clock) clearInterval(this.#clock)
+    this.#saveTimer = null
+    this.#syncTimer = null
+    this.#clock = null
+    this.#dirty.clear()
+    this.calendars = []
+    this.events = []
+    this.blocks = []
+    this.dueTasks = []
+    this.openTasks = []
+    this.projects = []
+    this.entryDays = new Set()
+    this.selection = null
+    this.syncNote = null
+    // The timer is deliberately *not* cleared: it is a note to self held in
+    // local storage, it names no decrypted content, and a lock taken during
+    // a working session should not silently throw away what you were doing.
+    this.#started = false
+  }
+
+  // ── lifecycle ────────────────────────────────────────────────────────
+
+  async start() {
+    if (this.#started) return
+    this.#started = true
+    const view = localStorage.getItem('everyday.calendar.view')
+    if (view === 'day' || view === 'week' || view === 'month') this.view = view
+    this.timer = readTimer()
+
+    // The clock only runs while something needs it: a per-second re-render
+    // of the whole grid for the sake of a "now" line nobody is watching is
+    // exactly the sort of thing that shows up in a battery report.
+    this.#startClock()
+    await this.refresh()
+
+    // Refreshing subscriptions is polled from here rather than driven by a
+    // timer in the backend, so a locked vault is never fetched into and a
+    // window nobody has opened never wakes the radio.
+    void this.syncDue(false)
+    this.#syncTimer = setInterval(() => void this.syncDue(false), SYNC_POLL_MS)
+  }
+
+  // ── the window on screen ─────────────────────────────────────────────
+
+  /** The days the current view draws, in order. */
+  get days(): string[] {
+    switch (this.view) {
+      case 'day':
+        return [this.anchor]
+      case 'week':
+        return daysFrom(startOfWeek(this.anchor, this.weekStart), 7)
+      case 'month':
+        return monthGrid(this.anchor, this.weekStart)
+    }
+  }
+
+  /** Inclusive bounds of everything loaded, `[from, to]`. */
+  get range(): [string, string] {
+    const days = this.days
+    return [days[0]!, days[days.length - 1]!]
+  }
+
+  setView(view: View) {
+    this.view = view
+    localStorage.setItem('everyday.calendar.view', view)
+    void this.refresh()
+  }
+
+  /** Move one page forward or back, in the unit the view is made of. */
+  step(direction: -1 | 1) {
+    this.anchor =
+      this.view === 'month'
+        ? addMonths(this.anchor, direction)
+        : addDays(this.anchor, direction * (this.view === 'week' ? 7 : 1))
+    this.syncNote = null
+    void this.refresh()
+  }
+
+  goto(iso: string) {
+    this.anchor = iso
+    this.syncNote = null
+    void this.refresh()
+  }
+
+  goToday() {
+    this.goto(today())
+  }
+
+  /** Is `iso` inside the month the view is anchored on? Month view only. */
+  inAnchorMonth(iso: string): boolean {
+    return iso.slice(0, 7) === this.anchor.slice(0, 7)
+  }
+
+  // ── loading ──────────────────────────────────────────────────────────
+
+  async refresh() {
+    if (!app.supportsCalendar) return
+    const [from, to] = this.range
+    this.loading = true
+    try {
+      // One round of queries per navigation, all four in parallel. Each is a
+      // date-range scan over a clear index column, so paging through a year
+      // is cheap even on an encrypted vault.
+      const [calendars, events, blocks, dueTasks, openTasks, projects, entries] =
+        await Promise.all([
+          api.calendars(),
+          api.events({ from, to, visibleOnly: true }),
+          api.blocks({ from, to }),
+          api.tasks({ dueFrom: from, dueTo: to, limit: 500 }),
+          api.tasks({ statuses: OPEN_STATUSES, sort: 'dueAsc', limit: 300 }),
+          api.projects(),
+          api.entries({ from, to, sort: 'dateAsc', limit: 500 }),
+        ])
+      this.calendars = calendars
+      this.events = events
+      this.blocks = blocks
+      this.dueTasks = dueTasks
+      this.openTasks = openTasks
+      this.projects = projects
+      this.entryDays = new Set(entries.map((e: EntrySummary) => e.localDate))
+      // A selection that has scrolled out of the window is not a selection.
+      if (this.selection && !this.selected) this.selection = null
+    } catch (e) {
+      if (isLocked(e)) return void (await app.lock())
+      app.error = errorMessage(e)
+    } finally {
+      this.loading = false
+    }
+  }
+
+  /** Re-read only the blocks. What a write needs; skips four other queries. */
+  private async refreshBlocks() {
+    const [from, to] = this.range
+    try {
+      this.blocks = await api.blocks({ from, to })
+    } catch (e) {
+      if (isLocked(e)) await app.lock()
+    }
+  }
+
+  // ── what the grid draws ──────────────────────────────────────────────
+
+  /** The calendar an event came from, for its colour and its name. */
+  calendarOf(id: CalendarId): CalendarInfo | null {
+    return this.calendars.find((c) => c.id === id) ?? null
+  }
+
+  projectOf(id: ProjectId | null | undefined): Project | null {
+    return this.projects.find((p) => p.id === id) ?? null
+  }
+
+  /** The colour a block should be drawn in: its project's, or the accent. */
+  colorOfBlock(block: TimeBlock): string {
+    return this.colorOfSubject(block.subject)
+  }
+
+  colorOfSubject(subject: BlockSubject): string {
+    const project =
+      subject.type === 'project'
+        ? this.projectOf(subject.id)
+        : subject.type === 'task'
+          ? this.projectOf(this.taskOf(subject.id)?.projectId ?? null)
+          : null
+    return project?.color ?? 'var(--accent)'
+  }
+
+  /** What to call a subject when nothing has given it a title of its own. */
+  titleOfSubject(subject: BlockSubject): string {
+    if (subject.type === 'task') return this.taskOf(subject.id)?.title ?? 'Task'
+    if (subject.type === 'project') return this.projectOf(subject.id)?.name ?? 'Project'
+    return 'Untitled'
+  }
+
+  /** A task the calendar knows about, from either of the lists it loads. */
+  taskOf(id: TaskId): Task | null {
+    return (
+      this.dueTasks.find((t) => t.id === id) ?? this.openTasks.find((t) => t.id === id) ?? null
+    )
+  }
+
+  /** What a block should be called: its own title, or its subject's name. */
+  titleOfBlock(block: TimeBlock): string {
+    return block.title.trim() || this.titleOfSubject(block.subject)
+  }
+
+  /**
+   * Everything to draw in one day's column, laid out in minutes from its
+   * midnight.
+   *
+   * All-day things are *not* here — they go in the band above the grid,
+   * because an event with no time is not a shape in a timeline and drawing
+   * it as a 24-hour bar buries the day underneath it.
+   */
+  slotsOn(iso: string): Slot[] {
+    const out: Slot[] = []
+    const dayStart = 0
+    const dayEnd = 24 * 60
+
+    if (this.layer !== 'actual') out.push(...this.blockSlots(iso, 'planned'))
+    if (this.layer !== 'planned') out.push(...this.blockSlots(iso, 'actual'))
+    const live = this.liveSlot(iso)
+    if (live) out.push(live)
+
+    for (const event of this.events) {
+      if (event.allDay) continue
+      const start = offsetInDay(event.start, iso)
+      const end = offsetInDay(event.end, iso)
+      // Clipped to this column: a meeting running past midnight appears at
+      // the bottom of one day and the top of the next, which is what it did.
+      if (end <= dayStart || start >= dayEnd) continue
+      const calendar = this.calendarOf(event.calendarId)
+      out.push({
+        key: `event:${event.id}`,
+        kind: 'event',
+        title: event.title,
+        subtitle: event.location || calendar?.name || '',
+        color: calendar?.color ?? 'var(--fg-subtle)',
+        start: Math.max(dayStart, start),
+        end: Math.min(dayEnd, end),
+        movable: false,
+        event,
+        cancelled: event.status === 'cancelled',
+        free: !event.busy,
+      })
+    }
+    return out
+  }
+
+  private blockSlots(iso: string, kind: BlockKind): Slot[] {
+    const out: Slot[] = []
+    for (const block of this.blocks) {
+      if (block.kind !== kind || block.allDay) continue
+      const start = offsetInDay(block.start, iso)
+      const end = offsetInDay(block.end, iso)
+      // Clipped to this column, so a block running past midnight appears at
+      // the bottom of one day and the top of the next.
+      if (end <= 0 || start >= 24 * 60) continue
+      out.push({
+        key: `block:${block.id}`,
+        kind,
+        title: this.titleOfBlock(block),
+        subtitle: this.subtitleOfBlock(block),
+        color: this.colorOfBlock(block),
+        start: Math.max(0, start),
+        end: Math.min(24 * 60, Math.max(end, start + MIN_BLOCK_MINUTES)),
+        movable: true,
+        block,
+      })
+    }
+    return out
+  }
+
+  /**
+   * The block being tracked right now, drawn but not stored.
+   *
+   * It has no id, cannot be dragged and is not in `blocks`, because it does
+   * not exist yet — see the timer section below for why.
+   */
+  private liveSlot(iso: string): Slot | null {
+    const timer = this.timer
+    if (!timer || this.layer === 'planned') return null
+    const start = offsetInDay(timer.since, iso)
+    const end = start + Math.max(0, (this.tick - Date.parse(timer.since)) / 60_000)
+    if (end <= 0 || start >= 24 * 60) return null
+    return {
+      key: 'live',
+      kind: 'actual',
+      title: timer.title || this.titleOfSubject(timer.subject),
+      subtitle: 'Tracking now',
+      color: this.colorOfSubject(timer.subject),
+      start: Math.max(0, start),
+      end: Math.min(24 * 60, end),
+      movable: false,
+      live: true,
+    }
+  }
+
+  private subtitleOfBlock(block: TimeBlock): string {
+    if (block.subject.type === 'task') {
+      const task = this.taskOf(block.subject.id)
+      return this.projectOf(task?.projectId ?? null)?.name ?? ''
+    }
+    if (block.subject.type === 'project') return this.projectOf(block.subject.id)?.name ?? ''
+    return block.notes.split('\n')[0] ?? ''
+  }
+
+  /** All-day events and multi-day ones, for the band above the grid. */
+  allDayOn(iso: string): CalendarEvent[] {
+    return this.events.filter(
+      (e) => (e.allDay || e.localDate !== e.endDate) && e.localDate <= iso && e.endDate >= iso,
+    )
+  }
+
+  /** Open tasks due on `iso`, for the band above the grid. */
+  tasksOn(iso: string): Task[] {
+    return this.dueTasks.filter((t) => t.dueDate === iso)
+  }
+
+  /** Was anything written in the journal on `iso`? */
+  hasEntry(iso: string): boolean {
+    return this.entryDays.has(iso)
+  }
+
+  /** Minutes booked on `iso`, split by plan and record. For the day header. */
+  totalsOn(iso: string): { planned: number; logged: number } {
+    let planned = 0
+    let logged = 0
+    for (const b of this.blocks) {
+      if (b.localDate !== iso) continue
+      const mins = minutesBetween(b.start, b.end)
+      if (b.kind === 'actual') logged += mins
+      else planned += mins
+    }
+    // Whatever is running counts towards its day as it happens, or the
+    // header would read "nothing logged" through an afternoon of solid work.
+    if (this.timer && isoDate(new Date(this.timer.since)) === iso) {
+      logged += this.runningMinutes
+    }
+    return { planned, logged }
+  }
+
+  // ── the selection ────────────────────────────────────────────────────
+
+  get selected(): TimeBlock | CalendarEvent | null {
+    if (!this.selection) return null
+    return this.selection.kind === 'block'
+      ? (this.blocks.find((b) => b.id === this.selection!.id) ?? null)
+      : (this.events.find((e) => e.id === this.selection!.id) ?? null)
+  }
+
+  select(slot: Slot | null) {
+    if (!slot) return void (this.selection = null)
+    this.selection = slot.block
+      ? { kind: 'block', id: slot.block.id }
+      : { kind: 'event', id: slot.event!.id }
+  }
+
+  // ── writing ──────────────────────────────────────────────────────────
+
+  /**
+   * Book time.
+   *
+   * The single write this app makes. Dragging a task onto Tuesday afternoon,
+   * clicking an empty slot, and starting the timer are all this call with
+   * different arguments, which is what keeps "the calendar has one kind of
+   * record" true rather than aspirational.
+   */
+  async book(opts: {
+    subject: BlockSubject
+    day: string
+    startMinutes: number
+    minutes: number
+    kind?: BlockKind
+    title?: string
+    select?: boolean
+  }): Promise<TimeBlock | null> {
+    try {
+      const block = await api.newBlock({
+        subject: opts.subject,
+        start: instantAt(opts.day, opts.startMinutes),
+        minutes: Math.max(0, Math.round(opts.minutes)),
+        kind: opts.kind ?? 'planned',
+      })
+      if (opts.title) block.title = opts.title
+      await api.saveBlock(block)
+      this.blocks = [...this.blocks, block]
+      if (opts.select !== false) this.selection = { kind: 'block', id: block.id }
+      void todo.refreshStats()
+      return block
+    } catch (e) {
+      if (isLocked(e)) await app.lock()
+      else app.error = errorMessage(e)
+      return null
+    }
+  }
+
+  /**
+   * Set an hour aside, starting on the next quarter. What Ctrl/Cmd N does.
+   *
+   * The same key that starts an entry in the journal and a task in the todo
+   * app: begin the next thing. Here that is time on the calendar, and the
+   * view moves to today if it was somewhere else, because booking an hour
+   * you cannot see is indistinguishable from nothing happening.
+   */
+  async bookNow() {
+    const at = new Date()
+    const start = snap(at.getHours() * 60 + at.getMinutes(), SNAP_MINUTES)
+    if (!this.days.includes(today())) this.goto(today())
+    await this.book({
+      subject: { type: 'adhoc' },
+      day: today(),
+      startMinutes: start,
+      minutes: DEFAULT_BLOCK_MINUTES,
+    })
+  }
+
+  /** Book a planned block for a task, defaulting to its own estimate. */
+  async scheduleTask(id: TaskId, day: string, startMinutes: number) {
+    const task = this.taskOf(id)
+    return this.book({
+      subject: { type: 'task', id },
+      day,
+      startMinutes,
+      minutes: task?.estimateMinutes || DEFAULT_BLOCK_MINUTES,
+    })
+  }
+
+  /**
+   * Book a task into the first gap that will hold it.
+   *
+   * What the keyboard does instead of dragging. Dragging is the better
+   * gesture and the one the rail is built around, but a feature only a mouse
+   * can reach is a feature half the people using it do not have — so Enter
+   * on a task in the rail finds it a slot rather than doing nothing.
+   *
+   * "First gap" means: today if today is on screen, otherwise the first day
+   * of the window; from now, or from nine in the morning, whichever is
+   * later; and skipping anything already booked or booked *for* you.
+   */
+  async scheduleNext(id: TaskId): Promise<TimeBlock | null> {
+    const task = this.taskOf(id)
+    const length = task?.estimateMinutes || DEFAULT_BLOCK_MINUTES
+    const iso = this.days.includes(today()) ? today() : this.days[0]!
+
+    const at = new Date()
+    const floor =
+      iso === today() ? Math.max(9 * 60, snap(at.getHours() * 60 + at.getMinutes())) : 9 * 60
+
+    // Every day in the window, so a task still lands somewhere when today is
+    // full -- and the last resort is the end of the window rather than
+    // nothing happening.
+    for (const day of this.days.slice(this.days.indexOf(iso))) {
+      const taken = this.slotsOn(day)
+        .map((s) => [s.start, s.end] as const)
+        .sort((a, b) => a[0] - b[0])
+      let start = day === iso ? floor : 9 * 60
+      for (const [from, to] of taken) {
+        if (start + length <= from) break
+        if (to > start) start = snap(to, SNAP_MINUTES)
+      }
+      // Nothing after eight in the evening: a slot nobody will use is not a
+      // slot, and pushing work into the night is not this app's decision.
+      if (start + length <= 20 * 60) return this.scheduleTask(id, day, start)
+    }
+    return this.scheduleTask(id, iso, floor)
+  }
+
+  /**
+   * Apply `changes` to a block and queue the write.
+   *
+   * Mutated in place, like a task in the todo app, so the grid, the detail
+   * panel and the day totals all redraw from the same object without a
+   * reconciliation pass.
+   */
+  patch(id: string, changes: Partial<TimeBlock>) {
+    const block = this.blocks.find((b) => b.id === id)
+    if (!block) return
+    Object.assign(block, changes)
+    block.updatedAt = new Date().toISOString()
+    this.#dirty.add(id)
+    if (this.#saveTimer) clearTimeout(this.#saveTimer)
+    this.#saveTimer = setTimeout(() => void this.flush(), AUTOSAVE_MS)
+  }
+
+  /**
+   * Move a block to a new day and time, keeping its length.
+   *
+   * `localDate` moves with it, and has to: it is the clear column the week
+   * query scans, so a block whose instants said Tuesday and whose filed day
+   * still said Monday would vanish from both.
+   */
+  moveBlock(id: string, day: string, startMinutes: number) {
+    const block = this.blocks.find((b) => b.id === id)
+    if (!block) return
+    const length = minutesBetween(block.start, block.end)
+    this.patch(id, {
+      start: instantAt(day, startMinutes),
+      end: instantAt(day, startMinutes + length),
+      localDate: day,
+    })
+  }
+
+  /** Change a block's length, holding its start. */
+  resizeBlock(id: string, minutes: number) {
+    const block = this.blocks.find((b) => b.id === id)
+    if (!block) return
+    const start = offsetInDay(block.start, block.localDate)
+    this.patch(id, {
+      end: instantAt(block.localDate, start + Math.max(MIN_BLOCK_MINUTES, minutes)),
+    })
+  }
+
+  async flush() {
+    if (this.#saveTimer) {
+      clearTimeout(this.#saveTimer)
+      this.#saveTimer = null
+    }
+    if (this.#dirty.size === 0) return
+    const pending = this.blocks.filter((b) => this.#dirty.has(b.id))
+    this.#dirty.clear()
+    try {
+      for (const block of pending) {
+        await api.saveBlock($state.snapshot(block) as TimeBlock)
+      }
+      void todo.refreshStats()
+    } catch (e) {
+      if (isLocked(e)) return void (await app.lock())
+      app.error = errorMessage(e)
+      await this.refreshBlocks()
+    }
+  }
+
+  async removeBlock(id: string) {
+    this.blocks = this.blocks.filter((b) => b.id !== id)
+    this.#dirty.delete(id)
+    if (this.selection?.kind === 'block' && this.selection.id === id) this.selection = null
+    try {
+      await api.deleteBlock(id)
+      void todo.refreshStats()
+    } catch (e) {
+      if (isLocked(e)) return void (await app.lock())
+      app.error = errorMessage(e)
+      await this.refreshBlocks()
+    }
+  }
+
+  /** Turn a plan into a record, or back. What "I actually did this" is. */
+  toggleKind(id: string) {
+    const block = this.blocks.find((b) => b.id === id)
+    if (!block) return
+    this.patch(id, { kind: block.kind === 'planned' ? 'actual' : 'planned' })
+  }
+
+  /**
+   * Copy a planned block into an actual one covering the same slot.
+   *
+   * The common case at the end of a session: it went roughly to plan. Two
+   * rows rather than one edited row, because the point of the pair is that
+   * they can be compared, and a plan overwritten by its outcome cannot be.
+   */
+  async logAsDone(id: string) {
+    const block = this.blocks.find((b) => b.id === id)
+    if (!block || block.kind !== 'planned') return
+    await this.book({
+      subject: $state.snapshot(block.subject) as BlockSubject,
+      day: block.localDate,
+      startMinutes: offsetInDay(block.start, block.localDate),
+      minutes: minutesBetween(block.start, block.end),
+      kind: 'actual',
+      title: block.title,
+    })
+  }
+
+  // ── the timer ────────────────────────────────────────────────────────
+  //
+  // "What am I doing right now" is a note in local storage, and *one* actual
+  // time block written when you stop. Not a block written on start and
+  // closed on stop, which is the obvious design and is wrong in two ways:
+  //
+  //   * closing the window mid-session leaves a zero-length block on disk
+  //     that nothing will ever tidy up, and
+  //   * an unfinished record is a lie about the past. A block that says
+  //     "09:00 to 09:00" is not a shorter version of what happened; it is a
+  //     claim that nothing did.
+  //
+  // While it runs, the block on the grid is synthetic -- drawn from the
+  // wall clock, not from storage -- so a two-hour session costs one write.
+
+  /** Minutes the timer has been running. */
+  get runningMinutes(): number {
+    if (!this.timer) return 0
+    return Math.max(0, Math.round((this.now - Date.parse(this.timer.since)) / 60_000))
+  }
+
+  /** Start tracking. Anything already running is written out first. */
+  async startTimer(subject: BlockSubject, title = '') {
+    await this.stopTimer()
+    this.timer = {
+      since: new Date().toISOString(),
+      subject: $state.snapshot(subject) as BlockSubject,
+      title,
+    }
+    localStorage.setItem(TIMER_KEY, JSON.stringify(this.timer))
+    this.now = Date.now()
+    this.tick = this.now
+    this.#startClock()
+  }
+
+  /** Stop tracking, writing what happened as a single actual block. */
+  async stopTimer() {
+    const timer = this.timer
+    this.timer = null
+    localStorage.removeItem(TIMER_KEY)
+    this.#startClock()
+    if (!timer) return
+
+    const since = new Date(timer.since)
+    const minutes = Math.round((Date.now() - since.getTime()) / 60_000)
+    // A timer stopped inside the minute it was started is a misclick, not a
+    // record of anything.
+    if (minutes < 1) return
+
+    const written = await this.book({
+      // Filed under the day it *started*: an evening session that runs past
+      // midnight belongs to the evening, and the block's own instants say
+      // where it ended.
+      subject: timer.subject,
+      day: isoDate(since),
+      startMinutes: since.getHours() * 60 + since.getMinutes(),
+      minutes,
+      kind: 'actual',
+      title: timer.title,
+      select: false,
+    })
+    if (!written) {
+      // The write failed -- most likely the vault locked itself while the
+      // work was going on. Put the timer back rather than swallowing an
+      // afternoon: pressing stop again after unlocking will save it.
+      this.timer = timer
+      localStorage.setItem(TIMER_KEY, JSON.stringify(timer))
+      this.#startClock()
+    }
+  }
+
+  /**
+   * One second while something is being timed, half a minute otherwise.
+   *
+   * A per-second re-render of the whole grid for the sake of a "now" line
+   * nobody is watching is exactly the sort of thing that turns up in a
+   * battery report.
+   */
+  #startClock() {
+    if (this.#clock) clearInterval(this.#clock)
+    const period = this.timer ? 1_000 : 30_000
+    this.#clock = setInterval(() => {
+      this.now = Date.now()
+      // The grid only cares about whole minutes; see `tick`.
+      if (this.now - this.tick >= 60_000) this.tick = this.now
+    }, period)
+  }
+
+  // ── unscheduled work ─────────────────────────────────────────────────
+
+  /**
+   * Open tasks with nothing booked against them in this window.
+   *
+   * The right-hand rail's list, and the thing you drag onto the grid.
+   * Deliberately not "every open task": a plan you have already made is not
+   * a thing to be nagged about, so anything with a planned block in view
+   * drops off the list the moment it is scheduled.
+   */
+  get unscheduled(): Task[] {
+    const booked = new Set(
+      this.blocks
+        .filter((b) => b.kind === 'planned')
+        .map((b) => (b.subject.type === 'task' ? b.subject.id : null))
+        .filter(Boolean) as TaskId[],
+    )
+    const [, to] = this.range
+    return this.openTasks
+      .filter((t) => !booked.has(t.id))
+      // Everything due inside the window, plus a fortnight's grace either
+      // side of it, plus everything undated -- which is the backlog, and the
+      // whole reason this rail is worth dragging from.
+      .filter((t) => !t.dueDate || t.dueDate <= addDays(to, 14))
+      .slice(0, 40)
+  }
+
+  // ── subscriptions ────────────────────────────────────────────────────
+
+  /**
+   * Subscribe to a feed. Returns `null` on success, or why it failed.
+   *
+   * The failure is *returned* rather than pushed into `app.error`, unlike
+   * every other write in the interface. It belongs beside the address field
+   * that caused it -- a typo in a URL is answered by fixing the URL, and a
+   * dialog that closes and posts its complaint over the whole window is one
+   * you have to re-open with the address typed in again.
+   */
+  async subscribe(name: string, url: string, color: string): Promise<string | null> {
+    return this.add(() => api.subscribeCalendar({ name: name.trim(), url: url.trim(), color }))
+  }
+
+  /** The same, for a `.ics` file the browser read for us. */
+  async importFile(
+    name: string,
+    label: string,
+    color: string,
+    ics: string,
+  ): Promise<string | null> {
+    return this.add(() => api.importCalendar({ name: name.trim(), label, color, ics }))
+  }
+
+  private async add(run: () => Promise<CalendarInfo>): Promise<string | null> {
+    this.syncing = true
+    try {
+      const added = await run()
+      this.calendars = [...this.calendars, added]
+      await this.refresh()
+      this.syncNote = `${added.name}: ${added.events} ${added.events === 1 ? 'event' : 'events'}.`
+      return null
+    } catch (e) {
+      if (isLocked(e)) {
+        await app.lock()
+        return null
+      }
+      return errorMessage(e)
+    } finally {
+      this.syncing = false
+    }
+  }
+
+  /** Refresh every feed. `force` ignores each one's interval. */
+  async syncDue(force: boolean) {
+    if (!app.supportsCalendar || this.syncing) return
+    if (!this.calendars.some((c) => c.origin.type === 'url')) return
+    this.syncing = true
+    try {
+      const reports = await api.syncDueCalendars(force)
+      if (reports.length > 0) await this.refresh()
+      if (force) {
+        const total = reports.reduce((sum, r) => sum + r.events, 0)
+        this.syncNote =
+          reports.length === 0
+            ? 'Nothing to refresh.'
+            : `Refreshed ${reports.length} ${reports.length === 1 ? 'calendar' : 'calendars'}, ${total} events.`
+      }
+    } catch (e) {
+      // A feed that is down is recorded on the calendar it belongs to and
+      // shown beside it. It is not an error over the whole application.
+      if (isLocked(e)) await app.lock()
+    } finally {
+      this.syncing = false
+    }
+  }
+
+  async toggleVisible(id: CalendarId) {
+    const calendar = this.calendars.find((c) => c.id === id)
+    if (!calendar) return
+    calendar.visible = !calendar.visible
+    try {
+      await api.saveCalendar($state.snapshot(calendar) as CalendarInfo)
+      await this.refresh()
+    } catch (e) {
+      if (isLocked(e)) return void (await app.lock())
+      app.error = errorMessage(e)
+    }
+  }
+
+  async setCalendarColor(id: CalendarId, color: string) {
+    const calendar = this.calendars.find((c) => c.id === id)
+    if (!calendar) return
+    calendar.color = color
+    try {
+      await api.saveCalendar($state.snapshot(calendar) as CalendarInfo)
+    } catch (e) {
+      if (isLocked(e)) return void (await app.lock())
+      app.error = errorMessage(e)
+    }
+  }
+
+  async unsubscribe(id: CalendarId) {
+    this.calendars = this.calendars.filter((c) => c.id !== id)
+    this.events = this.events.filter((e) => e.calendarId !== id)
+    try {
+      await api.deleteCalendar(id)
+    } catch (e) {
+      if (isLocked(e)) return void (await app.lock())
+      app.error = errorMessage(e)
+      await this.refresh()
+    }
+  }
+
+  /** Projects worth offering in a picker: everything not archived. */
+  get liveProjects(): Project[] {
+    return this.projects.filter((p) => p.status !== 'archived')
+  }
+}
+
+export const calendar = new CalendarState()

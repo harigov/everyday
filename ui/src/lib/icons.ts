@@ -165,6 +165,64 @@ export const ICONS = {
   // there is one shape and one animation rather than two glyphs.
   chevron: '<path d="m9.5 5 7 7-7 7"/>',
 
+  // ── The calendar app ───────────────────────────────────────────────────
+
+  // A month grid: the week rows drawn, rather than a page with a number on
+  // it. Distinct from `calendar`, which is the "a date is involved" glyph.
+  month:
+    '<rect width="18" height="17" x="3" y="4" rx="2.5"/>' +
+    '<path d="M3 9.5h18"/><path d="M9 9.5v11"/><path d="M15 9.5v11"/>' +
+    '<path d="M3 15h18"/>',
+
+  // Seven day columns, of which one is emphasised: a week.
+  week:
+    '<rect width="18" height="17" x="3" y="4" rx="2.5"/>' +
+    '<path d="M3 9.5h18"/><path d="M9 9.5v11"/><path d="M15 9.5v11"/>',
+
+  // One column, with the day's hours ruled across it.
+  day:
+    '<rect width="18" height="17" x="3" y="4" rx="2.5"/>' +
+    '<path d="M3 9.5h18"/><path d="M7 13h10"/><path d="M7 16.5h10"/>',
+
+  // Start tracking. A triangle, drawn as a stroke like everything else, so
+  // it carries the same weight as the icons beside it.
+  play: '<path d="M8 5.5v13l11-6.5Z"/>',
+
+  // Stop. A square, so the pair reads as a transport control.
+  stop: '<rect width="12" height="12" x="6" y="6" rx="2"/>',
+
+  // Refresh: an arc with an arrowhead, not a closed circle -- a closed one
+  // reads as "loading" and this is something you press.
+  refresh:
+    '<path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/>' +
+    '<path d="M20.5 4.5V10H15"/>',
+
+  // A subscribed calendar comes from somewhere else. Meridians and a
+  // parallel, which reads as "the network" at 15px where a cloud does not.
+  globe:
+    '<circle cx="12" cy="12" r="8.5"/>' +
+    '<path d="M3.5 12h17"/>' +
+    '<path d="M12 3.5a13 13 0 0 1 0 17a13 13 0 0 1 0-17"/>',
+
+  // Hidden: the eye with the stroke through it. For a calendar that is
+  // still subscribed but not drawn.
+  hidden:
+    '<path d="M10.7 6.2A9 9 0 0 1 12 6c5 0 9 6 9 6a15 15 0 0 1-2.4 2.9"/>' +
+    '<path d="M6.6 6.9A15 15 0 0 0 3 12s4 6 9 6a9 9 0 0 0 3.6-.8"/>' +
+    '<path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>' +
+    '<path d="M3 3l18 18"/>',
+
+  // A file being read in, for importing an .ics.
+  upload:
+    '<path d="M21 15v3.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 18.5V15"/>' +
+    '<path d="M8 8.5 12 4.5l4 4"/><path d="M12 4.5V16"/>',
+
+  // Two dots over two: the handle you grab to drag a card.
+  grip:
+    '<circle cx="9.5" cy="6.5" r="1.1"/><circle cx="14.5" cy="6.5" r="1.1"/>' +
+    '<circle cx="9.5" cy="12" r="1.1"/><circle cx="14.5" cy="12" r="1.1"/>' +
+    '<circle cx="9.5" cy="17.5" r="1.1"/><circle cx="14.5" cy="17.5" r="1.1"/>',
+
   // Two tracks with a handle on each: legible at 16px in a way that a
   // twelve-toothed cogwheel is not.
   settings:

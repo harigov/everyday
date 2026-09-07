@@ -1,8 +1,9 @@
 # Every Day
 
-A private journal and a todo app for macOS, Linux and Windows. Rich text with
-photos and video, projects and tasks on a list or a board, pluggable storage,
-and encryption you actually hold the key to.
+A private journal, a todo app and a calendar for macOS, Linux and Windows.
+Rich text with photos and video, projects and tasks on a list or a board,
+your week with the plan and the record side by side, pluggable storage, and
+encryption you actually hold the key to.
 
 <!-- Screenshots live in docs/ once you have run the app. -->
 
@@ -41,10 +42,12 @@ widgets". In exchange you get native *text*, a mature editor, and one
 codebase. For a journal — an app that is essentially a text canvas — that is
 the right side of the trade.
 
-## Two apps, one vault
+## Three apps, one vault
 
-The sidebar switches between **Journal** and **Todo** (`Ctrl/Cmd J`). They
-share a vault, a password and a lock; they share nothing else.
+The sidebar switches between **Journal**, **Todo** and **Calendar**
+(`Ctrl/Cmd J` cycles). They share a vault, a password and a lock; they share
+nothing else — except that the calendar is a view over what the other two
+already store, which is the whole point of it.
 
 The todo app has projects, tasks and subtasks — a subtask is just a task with
 a parent, so the two levels the interface offers are a UI decision rather
@@ -81,15 +84,103 @@ Project ──┬── Task ──┬── Task (subtask)
 Keeping plan and record as separate rows is what makes "where did my time
 go" answerable at all — one field overwriting the other cannot be compared
 with itself. A block can also point at a project, or at nothing (a dentist
-appointment), which is the shape a calendar needs. That is deliberate: the
-calendar view is next, and it is a view over records that already exist
-rather than a third storage layer.
+appointment), which is the shape a calendar needs.
+
+## The calendar
+
+Day, week and month, with four things drawn on the same grid and told apart
+by weight rather than by colour — colour is already spoken for, it says which
+project or which calendar something belongs to.
+
+```
+  planned block   a wash, dashed rail     you meant to do this
+  actual block    solid fill, solid rail  you did
+  event           outlined, tinted        somebody else's calendar
+  task            an outlined chip        due that day, not booked
+```
+
+A header toggle draws **Plan**, **Record**, or both, and that toggle is the
+reason the storage looks the way it does. It is not a filter bolted on
+afterwards: `TimeBlock` has had a planned/actual split since the todo app
+shipped, precisely so that "two hours booked, forty minutes actually spent"
+would be a comparison rather than a lost field.
+
+Scheduling is dragging. Open tasks with nothing booked against them sit in a
+rail on the right; drag one onto Tuesday afternoon and it becomes a planned
+block pointing at that task, as long as its estimate — and drops off the rail,
+because a plan you have already made is not a thing to be nagged about. Drag
+blocks to move them, drag their bottom edge to resize, drag on empty grid to
+make an event out of nothing. Everything snaps to a quarter hour. (Dragging
+is the better gesture, so Enter on a task in the rail finds it the first free
+slot instead — a feature only a mouse can reach is one half the people using
+it do not have.)
+
+**Where the day actually went.** The rail's top strip answers "what am I
+doing right now": it offers whatever you planned for this minute, or the
+meeting that is on, or a line you type, and starting it writes an *actual*
+block that grows while you work. Stopping puts an end on it. Two writes for a
+two-hour session — between them the length is read off the wall clock rather
+than from storage, so a running timer is not a write every second.
+
+The calendar also knows about the journal: a day you wrote something on
+carries a small mark, in the week header and in the month cell.
+
+### Other people's calendars
+
+Google, Outlook and Apple all publish a calendar as an
+[iCalendar](https://www.rfc-editor.org/rfc/rfc5545) feed at a secret URL, and
+all three let you revoke that URL without touching the account. Paste one in
+and its events appear on the grid, read-only, in a colour you choose. A
+`.ics` file can be imported instead, and any other publisher of a feed works
+the same way — a team calendar, a fixture list, your country's public
+holidays.
+
+Subscriptions rather than accounts, deliberately. There is no OAuth client
+registered with a vendor, no redirect server, no token to refresh and no
+scope that could grow later — which is the only arrangement that keeps
+working for an application that is a binary you built yourself rather than a
+product with a client id. The honest trade: **the sync is one way.** Events
+you create here are yours and stay here.
+
+Some care went into the parts that are easy to get wrong:
+
+- **Recurrence is expanded at sync time, not at draw time.** A weekly
+  stand-up arrives as one `VEVENT` with an `RRULE` and is stored as one row
+  per week within a window of a year back and two forward. That makes the
+  grid a date-range index scan with no recurrence engine near the draw path,
+  at the cost of some rows. `RECURRENCE-ID` overrides — the week the Tuesday
+  stand-up moved to Wednesday — replace exactly the occurrence they name.
+- **Time zones come from the system database, not from the feed.** A
+  `VTIMEZONE` block is read for its `TZID` and its offset rules are ignored,
+  because the machine's tz database knows about the rule change the feed was
+  generated before. Windows zone names (`W. Europe Standard Time`) are
+  mapped; a floating time is read in your own zone, which is what a floating
+  time means.
+- **A failed refresh keeps what was already there.** A captive portal, an
+  expired link, a 200 with an error page in it: all of them parse to zero
+  events, and all of them would otherwise empty a working calendar. Anything
+  that is not an iCalendar document is refused before it can replace one, and
+  the reason is recorded beside the calendar rather than raised as a dialog.
+- **The feed URL is a credential** and is sealed like everything else — never
+  in a clear column, and never in an error message, which is a place error
+  strings have a habit of ending up.
+
+The network. This application has no telemetry, no update check, no crash
+reporter and no analytics: a request leaving the process means somebody
+subscribed to a calendar. The fetch lives in the desktop shell
+(`crates/everyday-app/src/feeds.rs`), which is the only file in the codebase
+that opens a socket; `everyday-core` still has no async runtime, no TLS stack
+and no way to reach the network at all, which is what keeps the difficult
+half — RFC 5545, recurrence, zones — testable offline. The webview's own
+permissions are unchanged and remain none: its content security policy allows
+no outbound connection, so a feed's contents can never cause a request of
+their own.
 
 ## Layout
 
 ```
 crates/
-  everyday-core/            domain model, crypto, storage traits, search
+  everyday-core/            domain model, crypto, storage traits, search, iCalendar
   everyday-store-sqlite/    SQLite backend (default)
   everyday-store-markdown/  plain Markdown files backend
   everyday-vault/           wires core to backends; platform paths; media serving
@@ -137,6 +228,12 @@ every draw. In the clear: the shape of the task tree (`project_id`,
 start, end and day. Sealed: every title, description and tag. The file says
 that four things are blocked and never what they are.
 
+The calendar tables go further in one respect. A subscription URL is a bearer
+credential — anyone holding one can read that calendar until it is revoked —
+so it is sealed along with the calendar's name, and only `calendar_id`, the
+two date columns and the start instant are in the clear. The file says that
+you have three calendars and which days have something on them.
+
 If that trade is unacceptable, the storage abstraction is the answer: a
 backend that seals the index columns too — at the cost of full scans — drops
 in without the rest of the app noticing.
@@ -148,8 +245,8 @@ without touching the app.
 
 | Backend | Good for | Trade |
 |---|---|---|
-| `sqlite` | the default; large journals, fast queries, the todo app | opaque on disk |
-| `markdown` | grep, git, editing in any editor | slower; readable only when unencrypted; no todo app |
+| `sqlite` | the default; large journals, fast queries, the todo app and the calendar | opaque on disk |
+| `markdown` | grep, git, editing in any editor | slower; readable only when unencrypted; journals only |
 
 The task domain is a *second* trait, `TaskStore`, reached through
 `JournalStore::tasks()`, which returns `None` by default. Folding a kanban
@@ -157,7 +254,16 @@ board into the journal trait would oblige every backend to grow a todo
 implementation it has no opinion about — a board is not a thing anyone wants
 as a tree of files. So SQLite implements it, Markdown does not, and the
 interface reads `capabilities.tasks` and hides the app rather than failing at
-click time. The calendar will arrive through the same door.
+click time.
+
+Subscribed calendars are a *third*, `CalendarStore`, on exactly those terms.
+Note how little is in it: the calendar app draws time blocks, which have
+lived in the task domain since the todo app shipped, so this trait owns only
+the part that was genuinely new — the feeds you subscribed to and the events
+read out of them. Events are written one way only, `replace_events`, which
+swaps a calendar's entire set at once. That makes a refresh atomic and total,
+which is what makes it safe to run in the background without asking, and it
+means nothing a sync does can touch a record you made.
 
 The Markdown backend is a genuine two-way format. It writes a readable `.md`
 with TOML frontmatter plus a sidecar `.json` holding the exact rich-text tree.
@@ -237,30 +343,38 @@ for scripts.
 
 | | |
 |---|---|
-| `Ctrl/Cmd J` | switch between Journal and Todo |
-| `Ctrl/Cmd N` | new entry, or the task capture line |
+| `Ctrl/Cmd J` | cycle Journal → Todo → Calendar |
+| `Ctrl/Cmd N` | new entry, the task capture line, or an hour set aside |
 | `Ctrl/Cmd F` | search |
 | `Ctrl/Cmd L` | lock now |
 | `Ctrl/Cmd S` | flush pending edits (it autosaves anyway) |
 
+In the calendar: `D`, `W`, `M` for the three views, `T` for today, `←`/`→` to
+page, `Delete` to remove the selected block.
+
 ## Status
 
 The core, both storage backends, the vault lifecycle, search, the media
-pipeline, the todo app and the CLI are implemented and tested — 221 tests,
-plus two shared backend conformance suites. The desktop shell and interface
-are complete and the interface builds and typechecks clean.
+pipeline, the todo app, the calendar and the CLI are implemented and tested —
+278 tests, plus three shared backend conformance suites and two dependency-free
+interface suites (the quick-add grammar and the calendar's grid arithmetic).
+The desktop shell and interface are complete and the interface builds and
+typechecks clean.
 
 The CLI covers journals only. It is a capture-and-export tool for the journal
-and has not been taught about tasks.
+and has not been taught about tasks or calendars.
 
-The one thing not verified end-to-end is the assembled desktop app, because
-the machine this was built on has no WebKitGTK headers and no root to install
-them. Run `./scripts/setup-linux.sh` then `./scripts/dev.sh`.
+Calendar subscriptions are the one part not exercised against a real server
+here, for the obvious reason: the iCalendar reader, the recurrence expansion
+and the storage are covered offline by fixtures, and what is left untested is
+the HTTP request itself. Point it at a real Google or Outlook feed to finish
+the job. The interface's own mock backend (`make ui`) ships two sample
+calendars, one of them deliberately in a failed state, so both paths through
+the "add a calendar" sheet can be seen without a server.
 
-Not yet built: sync, mobile shells, a map view, task recurrence, and importers
-for Day One's export format. The calendar view is next, and the records it
-needs — `TimeBlock`, with its planned/actual split and its ad-hoc subject —
-already exist and are already tested.
+Not yet built: sync between machines, mobile shells, a map view, task
+recurrence, writing back to a subscribed calendar (see above for why not),
+and importers for Day One's export format.
 
 ## The icon on Linux
 

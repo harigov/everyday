@@ -27,6 +27,7 @@ use crate::crypto::Cipher;
 use crate::error::{Error, Result};
 use crate::id::{BlobId, EntryId, JournalId};
 use crate::model::{Entry, EntrySummary, Journal};
+use crate::store::calendars::CalendarStore;
 use crate::store::tasks::TaskStore;
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,13 @@ pub struct Capabilities {
     /// the todo app. False means it holds journals and nothing else.
     #[serde(default)]
     pub tasks: bool,
+    /// Backend implements [`calendars::CalendarStore`], so subscribed
+    /// calendars can be held. Independent of `tasks` in the type, though in
+    /// practice a backend that carries one carries both: the calendar app
+    /// draws time blocks, which live in the task domain, so the interface
+    /// requires the pair before it offers the app.
+    #[serde(default)]
+    pub calendars: bool,
 }
 
 /// Everything a backend needs to open a vault directory.
@@ -202,6 +210,16 @@ pub trait JournalStore: Send + Sync {
     /// [`tasks`](crate::store::tasks) for why this is an accessor rather
     /// than more methods on this trait.
     fn tasks(&self) -> Option<&dyn TaskStore> {
+        None
+    }
+
+    /// Storage for the calendar domain, if this backend has any.
+    ///
+    /// Same shape and same reasoning as [`JournalStore::tasks`]: a backend
+    /// says what it does rather than failing when asked to do it. See
+    /// [`calendars`](crate::store::calendars) for why a cache of other
+    /// people's meetings is its own trait rather than more methods here.
+    fn calendars(&self) -> Option<&dyn CalendarStore> {
         None
     }
 
@@ -359,6 +377,7 @@ impl BackendRegistry {
     }
 }
 
+pub mod calendars;
 pub mod tasks;
 
 #[cfg(any(test, feature = "testing"))]

@@ -14,6 +14,12 @@ import type {
   BlockQuery,
   BlockSubject,
   Bootstrap,
+  Calendar,
+  CalendarEvent,
+  CalendarInfo,
+  EventQuery,
+  ProviderInfo,
+  SyncReport,
   Entry,
   EntryQuery,
   EntrySummary,
@@ -539,6 +545,97 @@ const blocks: TimeBlock[] = [
   blockAt('b-4', 't-van', -1, 11, 30, 'planned'),
 ]
 
+// ── The calendar domain ──────────────────────────────────────────────────
+//
+// Two subscribed calendars and a week of plausible meetings, so the grid can
+// be designed against something that looks like a real Tuesday rather than
+// against an empty page. One of them is deliberately in a failed state: a
+// feed that cannot be reached is a thing the sidebar has to say well, and it
+// is hard to get right if you never see it.
+
+const calendars: CalendarInfo[] = [
+  {
+    id: 'c-work',
+    name: 'Priya — Work',
+    color: '#0369a1',
+    origin: { type: 'url', url: 'https://calendar.google.com/calendar/ical/…/basic.ics' },
+    provider: 'google',
+    visible: true,
+    refreshMinutes: 60,
+    lastSyncedAt: iso(0),
+    createdAt: iso(30),
+    updatedAt: iso(0),
+    events: 0,
+  },
+  {
+    id: 'c-holidays',
+    name: 'Public holidays',
+    color: '#15803d',
+    origin: { type: 'url', url: 'https://example.com/holidays.ics' },
+    provider: 'other',
+    visible: true,
+    refreshMinutes: 1440,
+    lastSyncedAt: iso(3),
+    lastError: 'there is no calendar at that address any more. It may have been revoked.',
+    createdAt: iso(60),
+    updatedAt: iso(0),
+    events: 0,
+  },
+]
+
+function eventAt(
+  id: string,
+  calendarId: string,
+  daysAhead: number,
+  hour: number,
+  minutes: number,
+  title: string,
+  extra: Partial<CalendarEvent> = {},
+): CalendarEvent {
+  const start = new Date()
+  start.setDate(start.getDate() + daysAhead)
+  start.setHours(hour, 0, 0, 0)
+  const localDate = day(-daysAhead)
+  return {
+    id,
+    calendarId,
+    uid: `${id}@example.com`,
+    title,
+    description: '',
+    location: '',
+    start: start.toISOString(),
+    end: new Date(start.getTime() + minutes * 60_000).toISOString(),
+    localDate,
+    endDate: localDate,
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    allDay: false,
+    status: 'confirmed',
+    organizer: '',
+    url: '',
+    busy: true,
+    updatedAt: iso(1),
+    ...extra,
+  }
+}
+
+const events: CalendarEvent[] = [
+  eventAt('ev-1', 'c-work', 0, 9, 15, 'Stand-up', { location: 'Meeting room 4' }),
+  eventAt('ev-2', 'c-work', 0, 11, 60, 'Design review', {
+    organizer: 'Priya Raman',
+    description: 'Bring the two options and the numbers behind them.',
+  }),
+  eventAt('ev-3', 'c-work', 0, 15, 30, 'One-to-one', { status: 'tentative' }),
+  eventAt('ev-4', 'c-work', 1, 9, 15, 'Stand-up', { location: 'Meeting room 4' }),
+  eventAt('ev-5', 'c-work', 1, 13, 90, 'Quarterly planning'),
+  eventAt('ev-6', 'c-work', 2, 9, 15, 'Stand-up', { location: 'Meeting room 4' }),
+  eventAt('ev-7', 'c-work', 2, 16, 45, 'Retro', { status: 'cancelled', busy: false }),
+  eventAt('ev-8', 'c-work', 3, 10, 120, 'Workshop', { location: 'Off site' }),
+  eventAt('ev-9', 'c-holidays', 4, 0, 1440, 'Spring bank holiday', {
+    allDay: true,
+    busy: false,
+  }),
+]
+
 /** Open tasks grouped by project; `null` is the inbox. Mirrors the SQL. */
 function openPerProject(): Map<string | null, number> {
   const out = new Map<string | null, number>()
@@ -703,7 +800,7 @@ function status(): VaultStatus {
         }
       : undefined,
     capabilities: unlocked
-      ? { blobs: true, transactional: true, humanReadable: false, tasks: true }
+      ? { blobs: true, transactional: true, humanReadable: false, tasks: true, calendars: true }
       : undefined,
   }
 }
@@ -1080,6 +1177,139 @@ export const mockInvoke = async <T,>(
         })),
       } satisfies TaskStats as T
     }
+
+    // ── The calendar domain ──────────────────────────────────────────
+
+    case 'list_calendars':
+      requireUnlocked()
+      return calendars.map((c) => ({
+        ...c,
+        events: events.filter((e) => e.calendarId === c.id).length,
+      })) as T
+
+    case 'save_calendar': {
+      requireUnlocked()
+      const c = args.calendar as Calendar
+      const i = calendars.findIndex((x) => x.id === c.id)
+      const withCount = { ...c, events: events.filter((e) => e.calendarId === c.id).length }
+      if (i >= 0) calendars[i] = withCount
+      else calendars.push(withCount)
+      return undefined as T
+    }
+
+    case 'delete_calendar': {
+      requireUnlocked()
+      const id = args.id as string
+      const i = calendars.findIndex((c) => c.id === id)
+      if (i >= 0) calendars.splice(i, 1)
+      for (let j = events.length - 1; j >= 0; j--) {
+        if (events[j]!.calendarId === id) events.splice(j, 1)
+      }
+      return undefined as T
+    }
+
+    case 'list_events': {
+      requireUnlocked()
+      const q = (args.query ?? {}) as EventQuery
+      const visible = new Set(calendars.filter((c) => c.visible).map((c) => c.id))
+      return events
+        .filter((e) => {
+          // The same overlap test the SQL does: any day the event covers.
+          if (q.from && e.endDate < q.from) return false
+          if (q.to && e.localDate > q.to) return false
+          if (q.calendarId && e.calendarId !== q.calendarId) return false
+          if (q.visibleOnly && !visible.has(e.calendarId)) return false
+          if (q.text?.trim()) {
+            const hay = `${e.title}\n${e.description}\n${e.location}`.toLowerCase()
+            if (!hay.includes(q.text.trim().toLowerCase())) return false
+          }
+          return true
+        })
+        .sort(
+          (a, b) =>
+            Number(b.allDay) - Number(a.allDay) || a.start.localeCompare(b.start),
+        )
+        .slice(0, q.limit ?? undefined) as T
+    }
+
+    case 'get_event': {
+      requireUnlocked()
+      const e = events.find((x) => x.id === args.id)
+      if (!e) throw new VaultError('not_found', `event ${args.id} not found`)
+      return e as T
+    }
+
+    case 'subscribe_calendar':
+    case 'import_calendar': {
+      requireUnlocked()
+      // No network here, obviously. What the mock does provide is the two
+      // shapes the interface has to handle -- a subscription that works and
+      // one that does not -- so both paths through the sheet are reachable
+      // without a server to point at.
+      const address = String(args.url ?? args.label ?? '')
+      if (/fail|nope|localhost/i.test(address)) {
+        throw new VaultError(
+          'network',
+          'there is no calendar at that address any more. It may have been revoked.',
+        )
+      }
+      const added: CalendarInfo = {
+        id: `c-${Math.random().toString(36).slice(2, 8)}`,
+        name: String(args.name || '').trim() || 'Subscribed calendar',
+        color: String(args.color ?? '#4338ca'),
+        origin:
+          cmd === 'import_calendar'
+            ? { type: 'file', label: String(args.label ?? 'calendar.ics') }
+            : { type: 'url', url: address },
+        provider: /google/i.test(address) ? 'google' : /outlook|office/i.test(address) ? 'outlook' : /icloud/i.test(address) ? 'apple' : 'other',
+        visible: true,
+        refreshMinutes: cmd === 'import_calendar' ? 0 : 60,
+        lastSyncedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        events: 0,
+      }
+      calendars.push(added)
+      return added as T
+    }
+
+    case 'sync_calendar':
+    case 'sync_due_calendars': {
+      requireUnlocked()
+      const reports: SyncReport[] = calendars
+        .filter((c) => c.origin.type === 'url' && !c.lastError)
+        .map((c) => ({
+          calendarId: c.id,
+          events: events.filter((e) => e.calendarId === c.id).length,
+          skipped: 0,
+        }))
+      return (cmd === 'sync_calendar' ? reports[0] ?? { events: 0, skipped: 0 } : reports) as T
+    }
+
+    case 'calendar_providers':
+      requireUnlocked()
+      return [
+        {
+          id: 'google',
+          label: 'Google Calendar',
+          hint: 'Settings \u2192 your calendar \u2192 Integrate calendar \u2192 Secret address in iCal format.',
+        },
+        {
+          id: 'outlook',
+          label: 'Outlook',
+          hint: 'Settings \u2192 Calendar \u2192 Shared calendars \u2192 Publish a calendar, then copy the ICS link.',
+        },
+        {
+          id: 'apple',
+          label: 'Apple Calendar',
+          hint: 'iCloud.com \u2192 Calendar \u2192 the share icon beside a calendar \u2192 Public Calendar, then copy the link.',
+        },
+        {
+          id: 'other',
+          label: 'Another calendar',
+          hint: 'Any address publishing an iCalendar (.ics) feed \u2014 a team calendar, a fixture list, your country\u2019s public holidays.',
+        },
+      ] satisfies ProviderInfo[] as T
 
     default:
       throw new VaultError('unknown', `no mock for command ${cmd}`)

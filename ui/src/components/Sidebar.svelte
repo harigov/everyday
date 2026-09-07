@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app } from '../lib/state.svelte'
+  import { app, type Section } from '../lib/state.svelte'
   import { DEFAULT_COLORS } from '../lib/colors'
   import { focusOnMount } from '../lib/focus'
   import Icon from './Icon.svelte'
@@ -7,17 +7,20 @@
   import SettingsMenu from './SettingsMenu.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import TodoNav from './TodoNav.svelte'
+  import CalendarNav from './CalendarNav.svelte'
   import type { Journal } from '../lib/types'
   import type { IconName } from '../lib/icons'
 
-  // One vault, several apps. The switcher is the only chrome above the nav
-  // because the apps are peers -- neither is a mode of the other -- and it
-  // is hidden entirely on a backend that has only one of them, so a Markdown
-  // vault does not offer a tab that cannot work.
-  const APPS: { id: 'journal' | 'todo'; label: string; icon: IconName }[] = [
+  // One vault, three apps. The switcher is the only chrome above the nav
+  // because the apps are peers -- none is a mode of another -- and each tab
+  // is hidden on a backend that cannot carry it, so a Markdown vault does
+  // not offer a tab that cannot work.
+  const APPS: { id: Section; label: string; icon: IconName }[] = [
     { id: 'journal', label: 'Journal', icon: 'quote' },
     { id: 'todo', label: 'Todo', icon: 'check' },
+    { id: 'calendar', label: 'Calendar', icon: 'calendar' },
   ]
+  const shownApps = $derived(APPS.filter((a) => app.canShow(a.id)))
 
   let creating = $state(false)
   let draft = $state('')
@@ -58,9 +61,9 @@
     <span class="name">Every Day</span>
   </div>
 
-  {#if app.supportsTasks}
+  {#if shownApps.length > 1}
     <div class="apps" role="tablist" aria-label="Apps">
-      {#each APPS as a (a.id)}
+      {#each shownApps as a (a.id)}
         <button
           class="app"
           class:on={app.section === a.id}
@@ -77,6 +80,8 @@
 
   {#if app.section === 'todo'}
     <TodoNav />
+  {:else if app.section === 'calendar'}
+    <CalendarNav />
   {:else}
   <nav class="scroll nav">
     <button

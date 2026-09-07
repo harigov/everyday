@@ -653,9 +653,11 @@ class TodoState {
    * Re-read the counts the sidebar draws.
    *
    * Cheap enough to run after every write: the backend answers it entirely
-   * from clear index columns and decrypts nothing.
+   * from clear index columns and decrypts nothing. Public because booking
+   * time in the calendar moves these numbers too -- `blocks` and
+   * `loggedMinutes` are in here -- and the sidebar is shared.
    */
-  private async refreshStats() {
+  async refreshStats() {
     try {
       this.stats = await api.taskStats()
     } catch {

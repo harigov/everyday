@@ -408,7 +408,13 @@ impl JournalStore for MarkdownStore {
             transactional: false,
             human_readable: !self.cipher.is_encrypting(),
             max_blob_bytes: None,
+            // Neither of the other two domains. A kanban board is not a
+            // thing anyone wants as a tree of files, and a cache of somebody
+            // else's meetings is even less so -- it would be a directory
+            // this backend rewrote wholesale every hour, in a format nobody
+            // would ever want to grep.
             tasks: false,
+            calendars: false,
         }
     }
 

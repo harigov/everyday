@@ -27,9 +27,10 @@ export type Screen = 'loading' | 'setup' | 'locked' | 'main' | 'error'
  * A vault holds more than a journal now. The section is the one piece of
  * chrome state that outlives a lock, so it is remembered locally -- coming
  * back to the app you were last in is what makes it feel like one program
- * rather than two bolted together.
+ * rather than three bolted together.
  */
-export type Section = 'journal' | 'todo'
+export const SECTIONS = ['journal', 'todo', 'calendar'] as const
+export type Section = (typeof SECTIONS)[number]
 
 function isLocked(e: unknown): boolean {
   return e instanceof VaultError && e.code === 'locked'
@@ -109,7 +110,9 @@ class AppState {
     // interface can be opened straight to the app under review.
     const asked = isMock ? new URLSearchParams(location.search).get('section') : null
     const remembered = asked ?? localStorage.getItem('everyday.section')
-    if (remembered === 'journal' || remembered === 'todo') this.section = remembered
+    if (remembered === 'journal' || remembered === 'todo' || remembered === 'calendar') {
+      this.section = remembered
+    }
     try {
       const boot = await api.bootstrap()
       this.boot = boot
@@ -138,10 +141,43 @@ class AppState {
     return this.status?.capabilities?.tasks === true
   }
 
+  /**
+   * Can this vault run the calendar app?
+   *
+   * *Both* domains, not just the calendar one. The grid draws time blocks --
+   * which live in the task domain and always have -- underneath events from
+   * subscribed calendars. A backend with one and not the other could not
+   * draw a calendar worth the name, so the app is offered only for the pair.
+   */
+  get supportsCalendar(): boolean {
+    return this.supportsTasks && this.status?.capabilities?.calendars === true
+  }
+
+  /** Is this section available on the vault that is open? */
+  canShow(section: Section): boolean {
+    if (section === 'todo') return this.supportsTasks
+    if (section === 'calendar') return this.supportsCalendar
+    return true
+  }
+
   setSection(section: Section) {
-    if (section === 'todo' && !this.supportsTasks) return
+    if (!this.canShow(section)) return
     this.section = section
     localStorage.setItem('everyday.section', section)
+  }
+
+  /**
+   * Move to the next app the open vault can offer. What Ctrl/Cmd J does.
+   *
+   * A cycle rather than a toggle, now that there are three, and it skips
+   * what the backend does not carry -- so on a Markdown vault the shortcut
+   * is a no-op rather than a way to reach a screen that cannot work.
+   */
+  nextSection() {
+    const available = SECTIONS.filter((s) => this.canShow(s))
+    if (available.length < 2) return
+    const at = available.indexOf(this.section)
+    this.setSection(available[(at + 1) % available.length]!)
   }
 
   /** Retry the initial handshake after a failure. */
@@ -220,7 +256,7 @@ class AppState {
     this.screen = 'main'
     // A vault opened on a backend that stores journals only cannot show the
     // section the last one left us in.
-    if (this.section === 'todo' && !this.supportsTasks) this.section = 'journal'
+    if (!this.canShow(this.section)) this.section = 'journal'
     await this.refreshJournals()
     await this.refreshEntries()
     this.startAutoLockPolling()
