@@ -692,7 +692,7 @@ class CalendarState {
     const pending = this.blocks.filter((b) => ids.has(b.id))
     try {
       for (const block of pending) {
-        await api.saveBlock($state.snapshot(block) as TimeBlock)
+        await api.saveBlock($state.snapshot(block))
       }
       void todo.refreshStats()
     } catch (e) {
@@ -730,7 +730,7 @@ class CalendarState {
     const block = this.blocks.find((b) => b.id === id)
     if (!block || block.kind !== 'planned') return
     await this.book({
-      subject: $state.snapshot(block.subject) as BlockSubject,
+      subject: $state.snapshot(block.subject),
       day: block.localDate,
       startMinutes: offsetInDay(block.start, block.localDate),
       minutes: minutesBetween(block.start, block.end),
@@ -765,7 +765,7 @@ class CalendarState {
     await this.stopTimer()
     this.timer = {
       since: new Date().toISOString(),
-      subject: $state.snapshot(subject) as BlockSubject,
+      subject: $state.snapshot(subject),
       title,
     }
     localStorage.setItem(TIMER_KEY, JSON.stringify(this.timer))
@@ -929,7 +929,7 @@ class CalendarState {
     if (!calendar) return
     calendar.visible = !calendar.visible
     try {
-      await api.saveCalendar($state.snapshot(calendar) as CalendarInfo)
+      await api.saveCalendar($state.snapshot(calendar))
       await this.refresh()
     } catch (e) {
       await handle(e)
@@ -941,7 +941,7 @@ class CalendarState {
     if (!calendar) return
     calendar.color = color
     try {
-      await api.saveCalendar($state.snapshot(calendar) as CalendarInfo)
+      await api.saveCalendar($state.snapshot(calendar))
     } catch (e) {
       await handle(e)
     }

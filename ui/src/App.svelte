@@ -37,6 +37,11 @@
         // is the capture line; in the calendar it is an hour set aside now.
         if (app.screen !== 'main') break
         e.preventDefault()
+        // A component instance obtained by `bind:this` is `any` to
+        // typescript-eslint, which cannot resolve types through a
+        // `.svelte` import the way `svelte-check` does -- and that checker
+        // does verify this call.
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         if (app.section === 'todo') todoView?.focusCapture()
         else if (app.section === 'calendar') void calendar.bookNow()
         else void app.newEntry()

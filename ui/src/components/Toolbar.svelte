@@ -53,7 +53,7 @@
   /** Ordered groups; the gaps between them are the only separators. */
   const groups = (): Tool[][] => {
     if (!editor) return []
-    const c = () => editor!.chain().focus()
+    const c = () => editor.chain().focus()
     return [
       [
         {

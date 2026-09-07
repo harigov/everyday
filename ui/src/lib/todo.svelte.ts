@@ -316,7 +316,7 @@ class TodoState {
     if (pending.length === 0) return
     this.saving = true
     try {
-      await api.saveTasks($state.snapshot(pending) as Task[])
+      await api.saveTasks($state.snapshot(pending))
       // Ticking something off has to move the sidebar counts with it.
       void this.refreshStats()
     } catch (e) {
@@ -385,7 +385,7 @@ class TodoState {
       // into.
       task.sortOrder = this.#nextSortOrder(task.status, opts.parentId ?? null)
 
-      await api.saveTask($state.snapshot(task) as Task)
+      await api.saveTask($state.snapshot(task))
       // Show it immediately rather than waiting for a round trip, and leave
       // it there until the next refresh even if it does not match the
       // current filter -- adding a task in "Upcoming" and watching it
@@ -582,7 +582,7 @@ class TodoState {
       const project = await api.newProject(name)
       project.color = color
       project.sortOrder = this.projects.length
-      await api.saveProject($state.snapshot(project) as Project)
+      await api.saveProject($state.snapshot(project))
       this.projects = [...this.projects, project]
       await this.setScope({ kind: 'project', id: project.id })
       return true
@@ -596,7 +596,7 @@ class TodoState {
     const i = this.projects.findIndex((p) => p.id === project.id)
     if (i >= 0) this.projects[i] = project
     try {
-      await api.saveProject($state.snapshot(project) as Project)
+      await api.saveProject($state.snapshot(project))
     } catch (e) {
       await handle(e)
     }

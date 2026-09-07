@@ -43,7 +43,7 @@
     if (!current) return
     const subject: BlockSubject = current.block?.subject ?? { type: 'adhoc' }
     await calendar.startTimer(
-      $state.snapshot(subject) as BlockSubject,
+      $state.snapshot(subject),
       current.block?.subject.type === 'adhoc' || !current.block ? current.title : '',
     )
   }
@@ -112,7 +112,7 @@
           placeholder="…or what are you doing?"
           bind:value={note}
           onkeydown={(e) => {
-            if (e.key === 'Enter') startNote()
+            if (e.key === 'Enter') void startNote()
           }}
         />
         <button class="go" disabled={!note.trim()} title="Start tracking" onclick={startNote}>

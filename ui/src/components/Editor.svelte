@@ -63,7 +63,7 @@
         attributes: { class: 'ed-content', spellcheck: 'true' },
         handlePaste: (_view, event) => insertFiles(Array.from(event.clipboardData?.files ?? [])),
         handleDrop: (_view, event) => {
-          const dt = (event as DragEvent).dataTransfer
+          const dt = event.dataTransfer
           return insertFiles(Array.from(dt?.files ?? []))
         },
       },
@@ -107,7 +107,7 @@
                 ? 'audio'
                 : 'file'
           const size = kind === 'image' ? await imageSize(file) : null
-          editor!
+          editor
             .chain()
             .focus()
             .insertMedia({

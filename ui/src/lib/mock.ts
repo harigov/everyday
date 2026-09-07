@@ -38,6 +38,19 @@ import { DEFAULT_COLORS } from './colors'
 
 const PASSWORD = 'everyday'
 
+/**
+ * A string argument off the command bridge.
+ *
+ * Arguments arrive as `unknown`, because this file stands in for a process
+ * that receives JSON. `String(x)` on an object does not fail -- it yields
+ * "[object Object]" -- which in a fake backend is a silent wrong answer
+ * rather than a loud one. Narrow, and fall back when the shape is not what
+ * was expected.
+ */
+function str(v: unknown, fallback = ''): string {
+  return typeof v === 'string' ? v : fallback
+}
+
 function iso(daysAgo: number): string {
   const d = new Date()
   d.setDate(d.getDate() - daysAgo)
@@ -765,7 +778,7 @@ let nextId = 100
 function plainText(node: unknown): string {
   if (!node || typeof node !== 'object') return ''
   const n = node as Record<string, unknown>
-  if (n.type === 'text') return String(n.text ?? '')
+  if (n.type === 'text') return str(n.text)
   const caption = (n.attrs as Record<string, unknown> | undefined)?.caption
   const own = n.type === 'media' && typeof caption === 'string' ? caption : ''
   const kids = Array.isArray(n.content) ? n.content.map(plainText).join(' ') : ''
@@ -976,9 +989,7 @@ export const mockInvoke = async <T>(
 
     case 'search': {
       requireUnlocked()
-      const q = String(args.query ?? '')
-        .trim()
-        .toLowerCase()
+      const q = str(args.query).trim().toLowerCase()
       if (!q) return [] as T
       const hits: SearchHit[] = []
       for (const e of entries) {
@@ -1061,7 +1072,7 @@ export const mockInvoke = async <T>(
 
     case 'list_tasks': {
       requireUnlocked()
-      return applyTaskQuery((args.query ?? {}) as TaskQuery) as T
+      return applyTaskQuery(args.query ?? {}) as T
     }
 
     case 'get_task': {
@@ -1260,7 +1271,7 @@ export const mockInvoke = async <T>(
     case 'get_event': {
       requireUnlocked()
       const e = events.find((x) => x.id === args.id)
-      if (!e) throw new VaultError('not_found', `event ${args.id} not found`)
+      if (!e) throw new VaultError('not_found', `event ${str(args.id)} not found`)
       return e as T
     }
 
@@ -1271,7 +1282,7 @@ export const mockInvoke = async <T>(
       // shapes the interface has to handle -- a subscription that works and
       // one that does not -- so both paths through the sheet are reachable
       // without a server to point at.
-      const address = String(args.url ?? args.label ?? '')
+      const address = str(args.url) || str(args.label)
       if (/fail|nope|localhost/i.test(address)) {
         throw new VaultError(
           'network',
@@ -1280,11 +1291,11 @@ export const mockInvoke = async <T>(
       }
       const added: CalendarInfo = {
         id: `c-${Math.random().toString(36).slice(2, 8)}`,
-        name: String(args.name || '').trim() || 'Subscribed calendar',
-        color: String(args.color ?? '#4338ca'),
+        name: str(args.name).trim() || 'Subscribed calendar',
+        color: str(args.color, '#4338ca'),
         origin:
           cmd === 'import_calendar'
-            ? { type: 'file', label: String(args.label ?? 'calendar.ics') }
+            ? { type: 'file', label: str(args.label, 'calendar.ics') }
             : { type: 'url', url: address },
         provider: /google/i.test(address)
           ? 'google'

@@ -114,7 +114,8 @@ jobs:
       - name: Install interface packages
         run: npm --prefix ui ci
 
-      # `svelte-check` over every component, then the two behaviour suites for
-      # the quick-add parser and the calendar grid's arithmetic.
-      - name: Typecheck and test
+      # Prettier, ESLint, `svelte-check` over every component, then the two
+      # behaviour suites for the quick-add parser and the calendar grid's
+      # arithmetic -- the same four `make lint` runs locally.
+      - name: Format, lint, typecheck and test
         run: npm --prefix ui run check

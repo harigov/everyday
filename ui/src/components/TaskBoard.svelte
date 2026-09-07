@@ -89,7 +89,7 @@
       ondragleave={(e) => {
         // Only when the pointer has actually left the column, not when it
         // crosses from the column into a card inside it.
-        if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) over = null
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) over = null
       }}
       ondrop={(e) => drop(e, status)}
       aria-label={LABELS[status]}

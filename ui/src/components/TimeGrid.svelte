@@ -113,7 +113,7 @@
     const slots = calendar.slotsOn(iso).filter((s) => !isDragging(s))
     return packLanes(slots.map((s) => ({ ...s, start: s.start, end: s.end }))).map(
       ({ item, lane, lanes }) => {
-        const slot = item as unknown as Slot
+        const slot = item
         const height = Math.max(
           ((slot.end - slot.start) / 60) * HOUR,
           (MIN_BLOCK_MINUTES / 60) * HOUR,

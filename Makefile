@@ -113,6 +113,8 @@ fix: $(UI_DIR)/node_modules ## Apply every fix `lint` can make on its own
 	@# Formatting a Rust file can leave it in a shape clippy reads differently
 	@# and vice versa, so settle on the formatter.
 	cargo fmt --all
+	@# Same order on this side: lint fixes first, formatter last.
+	npm --prefix $(UI_DIR) run lint:fix
 	npm --prefix $(UI_DIR) run format
 
 fmt: ## Format Rust sources

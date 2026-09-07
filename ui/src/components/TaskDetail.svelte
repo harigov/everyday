@@ -310,7 +310,7 @@
       confirmLabel="Delete task"
       onconfirm={() => {
         confirming = false
-        todo.remove(task.id)
+        void todo.remove(task.id)
       }}
       oncancel={() => (confirming = false)}
     />

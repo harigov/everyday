@@ -20,7 +20,7 @@
 </script>
 
 <svelte:window
-  onkeydown={(e) => {
+  onkeydown={(e: KeyboardEvent) => {
     if (e.key === 'Escape') oncancel()
   }}
 />

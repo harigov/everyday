@@ -527,7 +527,7 @@ class AppState {
     this.saving = true
     try {
       entry.updatedAt = new Date().toISOString()
-      await api.saveEntry($state.snapshot(entry) as Entry)
+      await api.saveEntry($state.snapshot(entry))
       this.lastSaved = entry.updatedAt
       // Pick up the new title and excerpt in the list, but not right now.
       //
@@ -568,7 +568,7 @@ class AppState {
     try {
       const full = this.entry?.id === id ? this.entry : await api.entry(id)
       full.starred = !full.starred
-      await api.saveEntry($state.snapshot(full) as Entry)
+      await api.saveEntry($state.snapshot(full))
       if (this.entry?.id === id) this.entry.starred = full.starred
     } catch (e) {
       return void (await handle(e))

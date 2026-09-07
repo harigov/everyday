@@ -53,6 +53,9 @@
 
   /** Focus the capture line. Bound to Ctrl/Cmd N by the app shell. */
   export function focusCapture() {
+    // As in App.svelte: a `bind:this` component instance is `any` to
+    // typescript-eslint but is checked by `svelte-check`.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     capture?.focus()
   }
 </script>

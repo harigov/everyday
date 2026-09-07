@@ -111,7 +111,7 @@
       use:focusOnMount
       onblur={create}
       onkeydown={(e) => {
-        if (e.key === 'Enter') create()
+        if (e.key === 'Enter') void create()
         if (e.key === 'Escape') {
           draft = ''
           creating = false

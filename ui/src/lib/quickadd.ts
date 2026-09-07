@@ -112,7 +112,7 @@ export function parseDueDate(word: string, today = todayIso()): string | null {
   // An explicit calendar date, and only in the unambiguous spelling.
   if (/^\d{4}-\d{2}-\d{2}$/.test(w)) {
     const [y, m, d] = w.split('-').map(Number)
-    const probe = new Date(y!, m! - 1, d!)
+    const probe = new Date(y!, m! - 1, d)
     // Rejects 2026-02-31, which Date would silently roll into March.
     return probe.getMonth() === m! - 1 && probe.getDate() === d! ? w : null
   }
@@ -129,7 +129,7 @@ export function parseDueDate(word: string, today = todayIso()): string | null {
   const index = WEEKDAYS.findIndex((d) => d === w || (w.length === 3 && d.startsWith(w)))
   if (index >= 0) {
     const [y, m, d] = today.split('-').map(Number)
-    const ahead = (index - new Date(y!, m! - 1, d!).getDay() + 7) % 7
+    const ahead = (index - new Date(y!, m! - 1, d).getDay() + 7) % 7
     return addDays(today, ahead)
   }
 

@@ -93,7 +93,7 @@
         class:sel={app.selectedJournal === null && !app.showStarredOnly}
         onclick={() => {
           app.showStarredOnly = false
-          app.selectJournal(null)
+          void app.selectJournal(null)
         }}
       >
         <span class="icon"><Icon name="layers" /></span>
@@ -106,7 +106,7 @@
         class:sel={app.showStarredOnly}
         onclick={() => {
           app.showStarredOnly = true
-          app.selectJournal(null)
+          void app.selectJournal(null)
         }}
       >
         <span class="icon star"><Icon name="star" size={15} filled /></span>
@@ -132,7 +132,7 @@
           style="--dot: {j.color}"
           onclick={() => {
             app.showStarredOnly = false
-            app.selectJournal(j.id)
+            void app.selectJournal(j.id)
           }}
           oncontextmenu={(e) => {
             e.preventDefault()
@@ -154,7 +154,7 @@
           use:focusOnMount
           onblur={create}
           onkeydown={(e) => {
-            if (e.key === 'Enter') create()
+            if (e.key === 'Enter') void create()
             if (e.key === 'Escape') {
               draft = ''
               creating = false

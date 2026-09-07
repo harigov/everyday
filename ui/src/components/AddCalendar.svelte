@@ -77,7 +77,7 @@
 </script>
 
 <svelte:window
-  onkeydown={(e) => {
+  onkeydown={(e: KeyboardEvent) => {
     if (e.key === 'Escape') onclose()
   }}
 />
@@ -110,7 +110,7 @@
     use:focusOnMount
     oninput={() => (problem = null)}
     onkeydown={(e) => {
-      if (e.key === 'Enter') subscribe()
+      if (e.key === 'Enter') void subscribe()
     }}
   />
 
