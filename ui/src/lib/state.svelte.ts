@@ -5,13 +5,12 @@
 // stay declarative and the save/lock logic lives in one auditable spot.
 
 import { api, isMock } from './api'
+import { AUTOSAVE_MS } from './autosave'
 import type {
   Bootstrap, Entry, EntryId, EntrySummary, Journal, JournalId, SearchHit, VaultStatus,
 } from './types'
 import { VaultError } from './types'
 
-/** Idle delay before an edited entry is written. */
-const AUTOSAVE_MS = 700
 /** How often the backend is asked whether the idle timeout has elapsed. */
 const AUTOLOCK_POLL_MS = 5_000
 /** Floor between "the user is still here" pings to the backend. */
@@ -483,7 +482,16 @@ class AppState {
     this.selectedEntry = entry.id
   }
 
-  /** Queue a save. Repeated edits collapse into one write. */
+  /**
+   * Queue a save. Repeated edits collapse into one write.
+   *
+   * The journal keeps its own timer rather than an `Autosave` like the other
+   * two stores, and the difference is real: there is one open document, and
+   * the editor -- not this store -- holds the truth about it while it is
+   * open. `flush` therefore pulls the body and writes unconditionally
+   * instead of consulting a set of dirty ids that could never see a
+   * keystroke. Only the delay is shared, so all three agree on it.
+   */
   scheduleSave() {
     if (this.#saveTimer) clearTimeout(this.#saveTimer)
     this.#saveTimer = setTimeout(() => void this.flush(), AUTOSAVE_MS)

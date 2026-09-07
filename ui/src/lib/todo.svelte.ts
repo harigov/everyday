@@ -11,6 +11,7 @@
 // same object, and a debounced write puts it on disk.
 
 import { api } from './api'
+import { Autosave } from './autosave'
 import { app, handle } from './state.svelte'
 import { todayIso } from './format'
 import { parseQuickAdd } from './quickadd'
@@ -29,8 +30,6 @@ import type {
 } from './types'
 import { TASK_STATUSES, isOpen } from './types'
 
-/** Idle delay before an edited task is written. Matches the journal's. */
-const AUTOSAVE_MS = 700
 /** How far ahead "Upcoming" looks. */
 const UPCOMING_DAYS = 14
 
@@ -81,9 +80,8 @@ class TodoState {
   loading = $state(false)
   saving = $state(false)
 
-  /** Tasks edited since the last write, by id. */
-  #dirty = new Set<TaskId>()
-  #saveTimer: ReturnType<typeof setTimeout> | null = null
+  /** Tasks edited since the last write, and the timer that writes them. */
+  #saves = new Autosave<TaskId>((ids) => this.#writeTasks(ids))
   #started = false
 
   constructor() {
@@ -92,9 +90,7 @@ class TodoState {
   }
 
   reset() {
-    if (this.#saveTimer) clearTimeout(this.#saveTimer)
-    this.#saveTimer = null
-    this.#dirty.clear()
+    this.#saves.cancel()
     this.projects = []
     this.tasks = []
     this.detailBlocks = []
@@ -315,20 +311,17 @@ class TodoState {
     if (!task) return
     Object.assign(task, changes)
     task.updatedAt = new Date().toISOString()
-    this.#dirty.add(id)
-    if (this.#saveTimer) clearTimeout(this.#saveTimer)
-    this.#saveTimer = setTimeout(() => void this.flush(), AUTOSAVE_MS)
+    this.#saves.touch(id)
   }
 
   /** Write every pending edit now. Safe when nothing is dirty. */
-  async flush() {
-    if (this.#saveTimer) {
-      clearTimeout(this.#saveTimer)
-      this.#saveTimer = null
-    }
-    if (this.#dirty.size === 0) return
-    const pending = this.tasks.filter((t) => this.#dirty.has(t.id))
-    this.#dirty.clear()
+  flush(): Promise<void> {
+    return this.#saves.flush()
+  }
+
+  /** One write for however many tasks were edited. */
+  async #writeTasks(ids: ReadonlySet<TaskId>) {
+    const pending = this.tasks.filter((t) => ids.has(t.id))
     if (pending.length === 0) return
     this.saving = true
     try {
@@ -442,7 +435,7 @@ class TodoState {
       this.selectedTask = null
       this.detailBlocks = []
     }
-    for (const gone of doomed) this.#dirty.delete(gone)
+    for (const gone of doomed) this.#saves.forget(gone)
     try {
       await api.deleteTask(id)
       void this.refreshStats()
@@ -521,7 +514,7 @@ class TodoState {
     }
     renumber(target)
 
-    for (const t of touched) this.#dirty.add(t.id)
+    this.#saves.touchAll(touched.map((t) => t.id))
     await this.flush()
     void this.refreshStats()
   }

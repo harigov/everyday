@@ -18,6 +18,7 @@
 // appointment. Everything here that writes, writes a `TimeBlock`.
 
 import { api } from './api'
+import { Autosave } from './autosave'
 import { app, errorMessage, handle, isLocked } from './state.svelte'
 import { todo } from './todo.svelte'
 import {
@@ -53,8 +54,6 @@ import { TASK_STATUSES, isOpen } from './types'
 
 /** How often the backend is asked to refresh calendars whose interval elapsed. */
 const SYNC_POLL_MS = 5 * 60_000
-/** Idle delay before an edited block is written. Matches the other two apps. */
-const AUTOSAVE_MS = 500
 /** Default length of a block created by a click rather than a drag. */
 export const DEFAULT_BLOCK_MINUTES = 60
 /** Where the running timer is remembered across a reload. */
@@ -183,8 +182,8 @@ class CalendarState {
    */
   tick = $state<number>(Date.now())
 
-  #dirty = new Set<string>()
-  #saveTimer: ReturnType<typeof setTimeout> | null = null
+  /** Blocks edited since the last write, and the timer that writes them. */
+  #saves = new Autosave<string>((ids) => this.#writeBlocks(ids))
   #syncTimer: ReturnType<typeof setInterval> | null = null
   #clock: ReturnType<typeof setInterval> | null = null
   #started = false
@@ -194,13 +193,11 @@ class CalendarState {
   }
 
   reset() {
-    if (this.#saveTimer) clearTimeout(this.#saveTimer)
     if (this.#syncTimer) clearInterval(this.#syncTimer)
     if (this.#clock) clearInterval(this.#clock)
-    this.#saveTimer = null
     this.#syncTimer = null
     this.#clock = null
-    this.#dirty.clear()
+    this.#saves.cancel()
     this.calendars = []
     this.events = []
     this.blocks = []
@@ -653,9 +650,7 @@ class CalendarState {
     if (!block) return
     Object.assign(block, changes)
     block.updatedAt = new Date().toISOString()
-    this.#dirty.add(id)
-    if (this.#saveTimer) clearTimeout(this.#saveTimer)
-    this.#saveTimer = setTimeout(() => void this.flush(), AUTOSAVE_MS)
+    this.#saves.touch(id)
   }
 
   /**
@@ -686,14 +681,19 @@ class CalendarState {
     })
   }
 
-  async flush() {
-    if (this.#saveTimer) {
-      clearTimeout(this.#saveTimer)
-      this.#saveTimer = null
-    }
-    if (this.#dirty.size === 0) return
-    const pending = this.blocks.filter((b) => this.#dirty.has(b.id))
-    this.#dirty.clear()
+  flush(): Promise<void> {
+    return this.#saves.flush()
+  }
+
+  /**
+   * One `save_block` per edited block.
+   *
+   * Not a batch like the task store's: a block is a single record and the
+   * backend has no plural command for it, because nothing in the calendar
+   * renumbers a column the way dragging a card across a board does.
+   */
+  async #writeBlocks(ids: ReadonlySet<string>) {
+    const pending = this.blocks.filter((b) => ids.has(b.id))
     try {
       for (const block of pending) {
         await api.saveBlock($state.snapshot(block) as TimeBlock)
@@ -706,7 +706,7 @@ class CalendarState {
 
   async removeBlock(id: string) {
     this.blocks = this.blocks.filter((b) => b.id !== id)
-    this.#dirty.delete(id)
+    this.#saves.forget(id)
     if (this.selection?.kind === 'block' && this.selection.id === id) this.selection = null
     try {
       await api.deleteBlock(id)
