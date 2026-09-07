@@ -2,26 +2,28 @@
 //
 // Everything is locale-aware via `Intl`, so a journal reads correctly for
 // whoever is keeping it rather than in hard-coded English.
+//
+// This module *presents* a date. The arithmetic on one lives in `time.ts`
+// and is imported from there. That line had been drawn in the comments and
+// then crossed: this file grew its own `parseLocalDate`, its own
+// `startOfDay` and its own `todayIso`, each a second implementation of
+// something `time.ts` already exported under another name. Four spellings
+// of "the local calendar day" is four places for the same off-by-a-timezone
+// bug to be fixed in three of.
+
+import { isoDate, startOfDay } from './time'
 
 const locale = () => navigator.language || 'en'
 
-/** Parse a `YYYY-MM-DD` local date without the UTC shift `new Date(s)` causes. */
-export function parseLocalDate(iso: string): Date {
-  const [y, m, d] = iso.split('-').map(Number)
-  return new Date(y ?? 1970, (m ?? 1) - 1, d ?? 1)
-}
-
-function startOfDay(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate())
-}
-
 export function daysBetween(a: Date, b: Date): number {
-  return Math.round((startOfDay(b).getTime() - startOfDay(a).getTime()) / 86_400_000)
+  return Math.round(
+    (startOfDay(isoDate(b)).getTime() - startOfDay(isoDate(a)).getTime()) / 86_400_000,
+  )
 }
 
 /** "Today", "Yesterday", "Tuesday", or a date — whichever a reader expects. */
 export function friendlyDate(iso: string): string {
-  const d = parseLocalDate(iso)
+  const d = startOfDay(iso)
   const ago = daysBetween(d, new Date())
   if (ago === 0) return 'Today'
   if (ago === 1) return 'Yesterday'
@@ -44,12 +46,12 @@ export function longDate(iso: string): string {
     day: 'numeric',
     month: 'long',
     year: 'numeric',
-  }).format(parseLocalDate(iso))
+  }).format(startOfDay(iso))
 }
 
 /** Heading for a group of entries in the list. */
 export function groupLabel(iso: string): string {
-  const d = parseLocalDate(iso)
+  const d = startOfDay(iso)
   const ago = daysBetween(d, new Date())
   // An entry can legitimately be dated ahead of today -- back-dating works
   // in both directions -- so guard the lower bound too, or a future date
@@ -66,12 +68,12 @@ export function groupLabel(iso: string): string {
 }
 
 export function dayNumber(iso: string): string {
-  return String(parseLocalDate(iso).getDate())
+  return String(startOfDay(iso).getDate())
 }
 
 export function weekdayShort(iso: string): string {
   return new Intl.DateTimeFormat(locale(), { weekday: 'short' })
-    .format(parseLocalDate(iso))
+    .format(startOfDay(iso))
     .replace('.', '')
 }
 
@@ -87,12 +89,6 @@ export function relativeTime(isoTimestamp: string): string {
     if (Math.abs(secs) >= size) return rtf.format(Math.round(secs / size), unit)
   }
   return rtf.format(Math.round(secs), 'second')
-}
-
-export function todayIso(): string {
-  const d = new Date()
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
 export function humanBytes(n: number): string {
@@ -145,5 +141,5 @@ export function formatInstantTime(isoTimestamp: string): string {
  */
 export function toLocalInputValue(at: Date): string {
   const p = (n: number) => String(n).padStart(2, '0')
-  return `${at.getFullYear()}-${p(at.getMonth() + 1)}-${p(at.getDate())}T${p(at.getHours())}:${p(at.getMinutes())}`
+  return `${isoDate(at)}T${p(at.getHours())}:${p(at.getMinutes())}`
 }

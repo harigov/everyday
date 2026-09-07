@@ -6,7 +6,8 @@
   // makes flipping between "by due date" and "by priority" instant.
 
   import { todo } from '../lib/todo.svelte'
-  import { friendlyDate, todayIso } from '../lib/format'
+  import { friendlyDate } from '../lib/format'
+  import { todayIso } from '../lib/time'
   import TaskRow from './TaskRow.svelte'
   import type { TaskNode } from '../lib/todo.svelte'
   import type { Task } from '../lib/types'

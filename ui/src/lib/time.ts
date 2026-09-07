@@ -54,8 +54,14 @@ function daysInMonth(year: number, monthIndex: number): number {
   return new Date(year, monthIndex + 1, 0).getDate()
 }
 
-/** Today, as `YYYY-MM-DD` in local time. */
-export function today(): string {
+/**
+ * Today, as `YYYY-MM-DD` in local time.
+ *
+ * Named for what it returns, not just for what it means: nearly every date
+ * in this interface travels as a `YYYY-MM-DD` string, and telling those
+ * apart from a `Date` at a glance is most of reading this code.
+ */
+export function todayIso(): string {
   return isoDate(new Date())
 }
 

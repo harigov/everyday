@@ -13,7 +13,7 @@
 import { api } from './api'
 import { Autosave } from './autosave'
 import { app, handle } from './state.svelte'
-import { todayIso } from './format'
+import { addDays, todayIso } from './time'
 import { parseQuickAdd } from './quickadd'
 import type {
   BlockKind,
@@ -43,13 +43,6 @@ export type Scope =
 
 export type View = 'list' | 'board'
 export type GroupBy = 'none' | 'status' | 'due' | 'priority'
-
-function addDays(iso: string, days: number): string {
-  const [y, m, d] = iso.split('-').map(Number)
-  const at = new Date(y ?? 1970, (m ?? 1) - 1, (d ?? 1) + days)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
-}
 
 /** A task and the subtasks hanging off it. What the list view draws. */
 export interface TaskNode {

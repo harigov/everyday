@@ -7,7 +7,7 @@
   // day is the cheapest possible answer to "is there anything on then".
 
   import { calendar } from '../lib/calendar.svelte'
-  import { addMonths, daysFrom, monthGrid, startOfWeek, today } from '../lib/time'
+  import { addMonths, daysFrom, monthGrid, startOfWeek, todayIso } from '../lib/time'
   import { relativeTime } from '../lib/format'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
@@ -21,7 +21,7 @@
   let adding = $state(false)
   let pendingDelete = $state<CalendarInfo | null>(null)
   /** The month the small calendar is showing; follows the main view. */
-  let miniAnchor = $state(today())
+  let miniAnchor = $state(todayIso())
 
   // Keep the mini month on the same month as the main view when that moves,
   // but let it be paged independently once you start using it.
@@ -35,12 +35,12 @@
 
   const miniDays = $derived(monthGrid(miniAnchor, calendar.weekStart))
   const initials = $derived(
-    daysFrom(startOfWeek(today(), calendar.weekStart), 7).map((iso) =>
+    daysFrom(startOfWeek(todayIso(), calendar.weekStart), 7).map((iso) =>
       initialFmt.format(new Date(iso + 'T00:00')),
     ),
   )
   const shown = $derived(new Set(calendar.days))
-  const todayIso = $derived(today())
+  const currentDay = $derived(todayIso())
 
   /** Does anything happen on this day? Drives the dot under the number. */
   function busy(iso: string): boolean {
@@ -92,7 +92,7 @@
         class="minday"
         class:out={iso.slice(0, 7) !== miniAnchor.slice(0, 7)}
         class:on={shown.has(iso)}
-        class:today={iso === todayIso}
+        class:today={iso === currentDay}
         onclick={() => calendar.goto(iso)}
       >
         {Number(iso.slice(8, 10))}

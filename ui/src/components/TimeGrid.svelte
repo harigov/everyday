@@ -24,7 +24,7 @@
     minutesOfDay,
     packLanes,
     snap,
-    today,
+    todayIso,
   } from '../lib/time'
   import Icon from './Icon.svelte'
 
@@ -275,7 +275,7 @@
 
   // ── the "now" line ─────────────────────────────────────────────────────
 
-  const todayIso = $derived(today())
+  const currentDay = $derived(todayIso())
   // `calendar.now` ticks, so this recomputes with it and the line creeps
   // down the column without a second timer in here.
   const nowMinutes = $derived.by(() => {
@@ -309,7 +309,7 @@
     <div class="corner"></div>
     {#each days as iso (iso)}
       {@const totals = calendar.totalsOn(iso)}
-      <div class="dayhead" class:now={iso === todayIso}>
+      <div class="dayhead" class:now={iso === currentDay}>
         <button class="daylabel" onclick={() => { calendar.view = 'day'; calendar.goto(iso) }}>
           <span class="weekday">{weekdayFmt.format(new Date(iso + 'T00:00'))}</span>
           <span class="daynum">{Number(iso.slice(8, 10))}</span>
@@ -376,7 +376,7 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="col"
-          class:today={iso === todayIso}
+          class:today={iso === currentDay}
           onpointerdown={(e) => onColumnPointerDown(e, iso)}
           onpointermove={(e) => onColumnPointerMove(e, iso)}
           ondragover={(e) => onDragOver(e, iso)}
@@ -417,7 +417,7 @@
             <div class="dropline" style="top: {(dropAt.minutes / 60) * HOUR}px"></div>
           {/if}
 
-          {#if iso === todayIso}
+          {#if iso === currentDay}
             <div class="nowline" style="top: {(nowMinutes / 60) * HOUR}px">
               <span class="nowdot"></span>
             </div>

@@ -35,7 +35,7 @@ import {
   offsetInDay,
   snap,
   startOfWeek,
-  today,
+  todayIso,
 } from './time'
 import type {
   BlockKind,
@@ -134,7 +134,7 @@ class CalendarState {
   // ── what is on screen ────────────────────────────────────────────────
   view = $state<View>('week')
   /** The day the view is anchored on, `YYYY-MM-DD`. */
-  anchor = $state<string>(today())
+  anchor = $state<string>(todayIso())
   layer = $state<Layer>('both')
   weekStart = $state<number>(localeWeekStart())
 
@@ -278,7 +278,7 @@ class CalendarState {
   }
 
   goToday() {
-    this.goto(today())
+    this.goto(todayIso())
   }
 
   /** Is `iso` inside the month the view is anchored on? Month view only. */
@@ -578,10 +578,10 @@ class CalendarState {
   async bookNow() {
     const at = new Date()
     const start = snap(at.getHours() * 60 + at.getMinutes(), SNAP_MINUTES)
-    if (!this.days.includes(today())) this.goto(today())
+    if (!this.days.includes(todayIso())) this.goto(todayIso())
     await this.book({
       subject: { type: 'adhoc' },
-      day: today(),
+      day: todayIso(),
       startMinutes: start,
       minutes: DEFAULT_BLOCK_MINUTES,
     })
@@ -613,11 +613,11 @@ class CalendarState {
   async scheduleNext(id: TaskId): Promise<TimeBlock | null> {
     const task = this.taskOf(id)
     const length = task?.estimateMinutes || DEFAULT_BLOCK_MINUTES
-    const iso = this.days.includes(today()) ? today() : this.days[0]!
+    const iso = this.days.includes(todayIso()) ? todayIso() : this.days[0]!
 
     const at = new Date()
     const floor =
-      iso === today() ? Math.max(9 * 60, snap(at.getHours() * 60 + at.getMinutes())) : 9 * 60
+      iso === todayIso() ? Math.max(9 * 60, snap(at.getHours() * 60 + at.getMinutes())) : 9 * 60
 
     // Every day in the window, so a task still lands somewhere when today is
     // full -- and the last resort is the end of the window rather than

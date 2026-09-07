@@ -16,7 +16,7 @@
 
   import { calendar } from '../lib/calendar.svelte'
   import { formatMinutes } from '../lib/format'
-  import { minutesOfDay, today } from '../lib/time'
+  import { minutesOfDay, todayIso } from '../lib/time'
   import Icon from './Icon.svelte'
   import type { BlockSubject } from '../lib/types'
 
@@ -25,7 +25,7 @@
   /** The planned block or event covering this minute, if there is one. */
   const current = $derived.by(() => {
     const now = minutesOfDay(new Date(calendar.now))
-    const iso = today()
+    const iso = todayIso()
     return (
       calendar
         .slotsOn(iso)
@@ -79,7 +79,7 @@
     }).format(new Date(timer.since))
   })
 
-  const loggedToday = $derived(calendar.totalsOn(today()).logged)
+  const loggedToday = $derived(calendar.totalsOn(todayIso()).logged)
 </script>
 
 <section class="track" class:on={!!running}>

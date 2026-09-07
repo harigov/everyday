@@ -11,7 +11,7 @@
   // changes as you page through the year makes everything below it jump.
 
   import { calendar } from '../lib/calendar.svelte'
-  import { daysFrom, startOfWeek, today } from '../lib/time'
+  import { daysFrom, startOfWeek, todayIso } from '../lib/time'
   import Icon from './Icon.svelte'
 
   let { days }: { days: string[] } = $props()
@@ -25,7 +25,7 @@
   const MAX_ROWS = 4
 
   const headings = $derived(
-    daysFrom(startOfWeek(today(), calendar.weekStart), 7).map((iso) =>
+    daysFrom(startOfWeek(todayIso(), calendar.weekStart), 7).map((iso) =>
       weekdayFmt.format(new Date(iso + 'T00:00')),
     ),
   )
@@ -81,7 +81,7 @@
     return out
   }
 
-  const todayIso = $derived(today())
+  const currentDay = $derived(todayIso())
 </script>
 
 <div class="month">
@@ -96,7 +96,7 @@
       <div
         class="cell"
         class:outside={!calendar.inAnchorMonth(iso)}
-        class:today={iso === todayIso}
+        class:today={iso === currentDay}
       >
         <div class="cellhead">
           <button

@@ -24,7 +24,7 @@
 // importer want a `Task`, not a line of shorthand.
 
 import type { Priority, TaskStatus } from './types'
-import { todayIso } from './format'
+import { todayIso } from './time'
 
 /** What one quick-add line means. */
 export interface QuickAdd {
