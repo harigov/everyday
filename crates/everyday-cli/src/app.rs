@@ -11,12 +11,7 @@ use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(
-    name = "everyday",
-    about = "A private journal",
-    version,
-    disable_help_subcommand = true
-)]
+#[command(name = "everyday", about = "A private journal", version, disable_help_subcommand = true)]
 pub struct Cli {
     /// Vault directory. Defaults to the platform data directory.
     #[arg(long, short = 'C', global = true, env = "EVERYDAY_VAULT")]
@@ -216,7 +211,9 @@ fn init(
              It is not stored anywhere, and it cannot be reset."
         );
     } else {
-        println!("\nWarning: this vault is NOT encrypted. Anything written to it is stored in the clear.");
+        println!(
+            "\nWarning: this vault is NOT encrypted. Anything written to it is stored in the clear."
+        );
     }
     Ok(())
 }
@@ -536,8 +533,7 @@ fn prompt_password(prompt: &str) -> Result<String> {
     }
     eprint!("{prompt}");
     std::io::stderr().flush()?;
-    rpassword::read_password()
-        .map_err(|e| Error::Invalid(format!("could not read password: {e}")))
+    rpassword::read_password().map_err(|e| Error::Invalid(format!("could not read password: {e}")))
 }
 
 /// Resolve a journal by exact name, case-insensitive name, or id.

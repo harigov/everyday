@@ -23,11 +23,11 @@
 //! content in the process, which is what makes the app-level lock screen
 //! meaningful rather than cosmetic.
 
+use crate::calendar::{Calendar, Event, SyncReport};
 use crate::crypto::{
     AeadCipher, Cipher, KdfParams, NullCipher, SUITE_NONE, SUITE_XCHACHA20_POLY1305, SecretKey,
     derive_key, random_salt, unwrap_key, wrap_key,
 };
-use crate::calendar::{Calendar, Event, SyncReport};
 use crate::error::{Error, Result};
 use crate::id::{BlobId, BlockId, CalendarId, EntryId, EventId, JournalId, ProjectId, TaskId};
 use crate::model::{Entry, EntrySummary, Journal};
@@ -286,9 +286,8 @@ impl Vault {
 
         let store_root = self.root.join(STORE_DIRNAME);
         std::fs::create_dir_all(&store_root).map_err(|e| Error::io(&store_root, e))?;
-        let store = self
-            .registry
-            .open(&header.backend, StoreContext { root: store_root, cipher })?;
+        let store =
+            self.registry.open(&header.backend, StoreContext { root: store_root, cipher })?;
 
         let index = SearchIndex::build(&store.all_entries()?);
 
@@ -435,9 +434,7 @@ impl Vault {
     pub fn journals(&self) -> Result<Vec<Journal>> {
         self.read(|u| {
             let mut js = u.store.list_journals()?;
-            js.sort_by(|a, b| {
-                a.sort_order.cmp(&b.sort_order).then_with(|| a.name.cmp(&b.name))
-            });
+            js.sort_by(|a, b| a.sort_order.cmp(&b.sort_order).then_with(|| a.name.cmp(&b.name)));
             Ok(js)
         })
     }
@@ -996,23 +993,57 @@ mod tests {
     struct Handle(Arc<MemStore>);
 
     impl JournalStore for Handle {
-        fn backend(&self) -> &'static str { self.0.backend() }
-        fn capabilities(&self) -> Capabilities { self.0.capabilities() }
-        fn list_journals(&self) -> Result<Vec<Journal>> { self.0.list_journals() }
-        fn get_journal(&self, id: JournalId) -> Result<Journal> { self.0.get_journal(id) }
-        fn put_journal(&self, j: &Journal) -> Result<()> { self.0.put_journal(j) }
-        fn delete_journal(&self, id: JournalId) -> Result<()> { self.0.delete_journal(id) }
-        fn list_entries(&self, q: &EntryQuery) -> Result<Vec<EntrySummary>> { self.0.list_entries(q) }
-        fn get_entry(&self, id: EntryId) -> Result<Entry> { self.0.get_entry(id) }
-        fn put_entry(&self, e: &Entry) -> Result<()> { self.0.put_entry(e) }
-        fn delete_entry(&self, id: EntryId) -> Result<()> { self.0.delete_entry(id) }
-        fn all_entries(&self) -> Result<Vec<Entry>> { self.0.all_entries() }
-        fn put_blob(&self, b: &[u8]) -> Result<BlobId> { self.0.put_blob(b) }
-        fn get_blob(&self, id: BlobId) -> Result<Vec<u8>> { self.0.get_blob(id) }
-        fn has_blob(&self, id: BlobId) -> Result<bool> { self.0.has_blob(id) }
-        fn delete_blob(&self, id: BlobId) -> Result<()> { self.0.delete_blob(id) }
-        fn list_blobs(&self) -> Result<Vec<BlobId>> { self.0.list_blobs() }
-        fn stats(&self) -> Result<StoreStats> { self.0.stats() }
+        fn backend(&self) -> &'static str {
+            self.0.backend()
+        }
+        fn capabilities(&self) -> Capabilities {
+            self.0.capabilities()
+        }
+        fn list_journals(&self) -> Result<Vec<Journal>> {
+            self.0.list_journals()
+        }
+        fn get_journal(&self, id: JournalId) -> Result<Journal> {
+            self.0.get_journal(id)
+        }
+        fn put_journal(&self, j: &Journal) -> Result<()> {
+            self.0.put_journal(j)
+        }
+        fn delete_journal(&self, id: JournalId) -> Result<()> {
+            self.0.delete_journal(id)
+        }
+        fn list_entries(&self, q: &EntryQuery) -> Result<Vec<EntrySummary>> {
+            self.0.list_entries(q)
+        }
+        fn get_entry(&self, id: EntryId) -> Result<Entry> {
+            self.0.get_entry(id)
+        }
+        fn put_entry(&self, e: &Entry) -> Result<()> {
+            self.0.put_entry(e)
+        }
+        fn delete_entry(&self, id: EntryId) -> Result<()> {
+            self.0.delete_entry(id)
+        }
+        fn all_entries(&self) -> Result<Vec<Entry>> {
+            self.0.all_entries()
+        }
+        fn put_blob(&self, b: &[u8]) -> Result<BlobId> {
+            self.0.put_blob(b)
+        }
+        fn get_blob(&self, id: BlobId) -> Result<Vec<u8>> {
+            self.0.get_blob(id)
+        }
+        fn has_blob(&self, id: BlobId) -> Result<bool> {
+            self.0.has_blob(id)
+        }
+        fn delete_blob(&self, id: BlobId) -> Result<()> {
+            self.0.delete_blob(id)
+        }
+        fn list_blobs(&self) -> Result<Vec<BlobId>> {
+            self.0.list_blobs()
+        }
+        fn stats(&self) -> Result<StoreStats> {
+            self.0.stats()
+        }
     }
 
     impl StoreFactory for Arc<MemFactory> {
@@ -1024,9 +1055,9 @@ mod tests {
         }
         fn open(&self, ctx: StoreContext) -> Result<Box<dyn JournalStore>> {
             let mut g = self.stores.lock().unwrap();
-            let store = g.entry(ctx.root.clone()).or_insert_with(|| {
-                Arc::new(MemStore { cipher: None, ..Default::default() })
-            });
+            let store = g
+                .entry(ctx.root.clone())
+                .or_insert_with(|| Arc::new(MemStore { cipher: None, ..Default::default() }));
             // Rebind the cipher for this session.
             let rebound = Arc::new(MemStore {
                 cipher: Some(ctx.cipher.clone()),
@@ -1175,8 +1206,10 @@ mod tests {
         let j = Journal::new("Daily");
         v.save_journal(&j).unwrap();
 
-        assert_eq!(v.change_password(Some("nope"), Some("new pw")).unwrap_err().code(),
-                   "bad_password");
+        assert_eq!(
+            v.change_password(Some("nope"), Some("new pw")).unwrap_err().code(),
+            "bad_password"
+        );
         v.change_password(Some("old pw"), Some("new pw")).unwrap();
 
         v.lock();
@@ -1379,8 +1412,10 @@ mod tests {
     fn creating_with_an_unknown_backend_fails_before_touching_disk() {
         let dir = tempfile::tempdir().unwrap();
         let bad = VaultConfig { backend: "postgres".into(), ..cfg(Some("pw")) };
-        assert_eq!(Vault::create(dir.path(), bad, registry()).unwrap_err().code(),
-                   "unknown_backend");
+        assert_eq!(
+            Vault::create(dir.path(), bad, registry()).unwrap_err().code(),
+            "unknown_backend"
+        );
         assert!(!Vault::exists(dir.path()));
     }
 
@@ -1462,15 +1497,10 @@ mod tests {
         assert!(!v.supports_tasks());
         assert!(!v.status().capabilities.unwrap().tasks);
 
-        let err = v
-            .tasks(&crate::store::tasks::TaskQuery::default())
-            .unwrap_err();
+        let err = v.tasks(&crate::store::tasks::TaskQuery::default()).unwrap_err();
         assert_eq!(err.code(), "unsupported", "got {err}");
         assert_eq!(v.projects().unwrap_err().code(), "unsupported");
-        assert_eq!(
-            v.task_stats(jiff::civil::date(2026, 3, 10)).unwrap_err().code(),
-            "unsupported"
-        );
+        assert_eq!(v.task_stats(jiff::civil::date(2026, 3, 10)).unwrap_err().code(), "unsupported");
     }
 
     #[test]
@@ -1481,9 +1511,7 @@ mod tests {
         let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
         v.lock();
         assert_eq!(
-            v.tasks(&crate::store::tasks::TaskQuery::default())
-                .unwrap_err()
-                .code(),
+            v.tasks(&crate::store::tasks::TaskQuery::default()).unwrap_err().code(),
             "locked"
         );
         assert!(!v.supports_tasks(), "a locked vault supports nothing");

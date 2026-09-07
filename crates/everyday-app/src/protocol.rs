@@ -66,10 +66,8 @@ fn serve<R: Runtime>(app: &tauri::AppHandle<R>, request: &Request<Vec<u8>>) -> R
         }
     };
 
-    let plan = media::plan(
-        total,
-        request.headers().get(header::RANGE).and_then(|v| v.to_str().ok()),
-    );
+    let plan =
+        media::plan(total, request.headers().get(header::RANGE).and_then(|v| v.to_str().ok()));
 
     let bytes = match crate::commands::read_blob_range(&vault, id, plan.start, plan.len) {
         Ok(b) => b,

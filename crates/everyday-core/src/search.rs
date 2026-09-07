@@ -365,10 +365,8 @@ fn tokenize(s: &str) -> Vec<Token> {
 /// report the highlight ranges relative to that window.
 fn snippet_for(text: &str, terms: &[String]) -> (String, Vec<(usize, usize)>) {
     let tokens = tokenize(text);
-    let matches: Vec<&Token> = tokens
-        .iter()
-        .filter(|t| terms.iter().any(|q| t.text.starts_with(q.as_str())))
-        .collect();
+    let matches: Vec<&Token> =
+        tokens.iter().filter(|t| terms.iter().any(|q| t.text.starts_with(q.as_str()))).collect();
 
     let Some(first) = matches.first() else {
         let head = clamp_to_char_boundary(text, SNIPPET_RADIUS * 2);
@@ -444,14 +442,14 @@ mod tests {
 
     #[test]
     fn tokenizer_splits_on_punctuation_and_lowercases() {
-        let toks: Vec<String> = tokenize("Hello, World! it's 2025").into_iter().map(|t| t.text).collect();
+        let toks: Vec<String> =
+            tokenize("Hello, World! it's 2025").into_iter().map(|t| t.text).collect();
         assert_eq!(toks, ["hello", "world", "it", "s", "2025"]);
     }
 
     #[test]
     fn tokenizer_emits_cjk_unigrams_and_bigrams() {
-        let toks: Vec<String> =
-            tokenize("\u{65e5}\u{8a18}").into_iter().map(|t| t.text).collect();
+        let toks: Vec<String> = tokenize("\u{65e5}\u{8a18}").into_iter().map(|t| t.text).collect();
         assert_eq!(toks, ["\u{65e5}", "\u{8a18}", "\u{65e5}\u{8a18}"]);
     }
 
@@ -473,10 +471,8 @@ mod tests {
 
     #[test]
     fn multiple_terms_are_anded() {
-        let (idx, _, ids) = index_of(&[
-            ("Monday", "heron in the shallows"),
-            ("Tuesday", "heron on the roof"),
-        ]);
+        let (idx, _, ids) =
+            index_of(&[("Monday", "heron in the shallows"), ("Tuesday", "heron on the roof")]);
         let hits = idx.search("heron shallows", 10);
         assert_eq!(hits.len(), 1, "both terms must match the same entry");
         assert_eq!(hits[0].id, ids[0]);
@@ -505,10 +501,7 @@ mod tests {
     fn search_can_be_scoped_to_one_journal() {
         let a = JournalId::new();
         let b = JournalId::new();
-        let idx = SearchIndex::build(&[
-            entry(a, "one", "heron"),
-            entry(b, "two", "heron"),
-        ]);
+        let idx = SearchIndex::build(&[entry(a, "one", "heron"), entry(b, "two", "heron")]);
         assert_eq!(idx.search("heron", 10).len(), 2);
         assert_eq!(idx.search_in("heron", Some(a), 10).len(), 1);
     }
@@ -597,8 +590,7 @@ mod tests {
     fn results_are_capped_by_the_limit() {
         let pairs: Vec<(String, String)> =
             (0..50).map(|i| (format!("e{i}"), "heron".to_string())).collect();
-        let refs: Vec<(&str, &str)> =
-            pairs.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        let refs: Vec<(&str, &str)> = pairs.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
         let (idx, _, _) = index_of(&refs);
         assert_eq!(idx.search("heron", 5).len(), 5);
     }
@@ -607,8 +599,7 @@ mod tests {
     fn ranking_is_deterministic_for_identical_documents() {
         let pairs: Vec<(String, String)> =
             (0..10).map(|i| (format!("t{i}"), "heron".to_string())).collect();
-        let refs: Vec<(&str, &str)> =
-            pairs.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        let refs: Vec<(&str, &str)> = pairs.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
         let (idx, _, _) = index_of(&refs);
         let first: Vec<EntryId> = idx.search("heron", 10).iter().map(|h| h.id).collect();
         for _ in 0..5 {

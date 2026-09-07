@@ -180,7 +180,10 @@ impl MarkdownStore {
 
         let aad = entry_aad(entry.id);
         write_atomic(path, &self.seal_text(&aad, &text)?)?;
-        write_atomic(&path.with_extension("json"), &self.cipher.seal(&aad, &serde_json::to_vec_pretty(entry)?)?)
+        write_atomic(
+            &path.with_extension("json"),
+            &self.cipher.seal(&aad, &serde_json::to_vec_pretty(entry)?)?,
+        )
     }
 
     /// Read an entry back, preferring the sidecar JSON but deferring to the
@@ -246,13 +249,8 @@ impl MarkdownStore {
     /// the index, or from the eight-hex-digit suffix in the file stem matched
     /// against the ids already known.
     fn entry_id_for(&self, path: &Path, raw: &[u8]) -> Result<EntryId> {
-        if let Some(cached) = self
-            .index
-            .read()
-            .unwrap()
-            .iter()
-            .find(|(_, c)| c.path == path)
-            .map(|(id, _)| *id)
+        if let Some(cached) =
+            self.index.read().unwrap().iter().find(|(_, c)| c.path == path).map(|(id, _)| *id)
         {
             return Ok(cached);
         }
@@ -835,11 +833,12 @@ mod tests {
         store.put_journal(&j).unwrap();
         store.put_entry(&entry_in(&j, "Tidy", "no litter please")).unwrap();
 
-        let exts: Vec<String> = std::fs::read_dir(dir.path().join(ENTRIES_DIR).join(j.id.to_string()))
-            .unwrap()
-            .flatten()
-            .filter_map(|f| f.path().extension().map(|e| e.to_string_lossy().into_owned()))
-            .collect();
+        let exts: Vec<String> =
+            std::fs::read_dir(dir.path().join(ENTRIES_DIR).join(j.id.to_string()))
+                .unwrap()
+                .flatten()
+                .filter_map(|f| f.path().extension().map(|e| e.to_string_lossy().into_owned()))
+                .collect();
         assert_eq!(exts.len(), 2, "expected just the .md and .json, got {exts:?}");
         assert!(exts.contains(&"md".to_string()));
         assert!(exts.contains(&"json".to_string()));

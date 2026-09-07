@@ -349,10 +349,8 @@ fn markdown_node(node: &Value, out: &mut String, d: usize, list_depth: usize) {
                 attrs.and_then(|a| a.get("start")).and_then(Value::as_u64).unwrap_or(1) as usize;
             for (i, item) in children(node).iter().enumerate() {
                 let indent = "  ".repeat(list_depth);
-                let checked = item
-                    .get("attrs")
-                    .and_then(|a| a.get("checked"))
-                    .and_then(Value::as_bool);
+                let checked =
+                    item.get("attrs").and_then(|a| a.get("checked")).and_then(Value::as_bool);
                 let bullet = match (ordered, checked) {
                     (_, Some(true)) => "- [x] ".to_string(),
                     (_, Some(false)) => "- [ ] ".to_string(),
@@ -545,10 +543,7 @@ mod tests {
             {"type": "codeBlock", "attrs": {"language": "rust"},
              "content": [{"type": "text", "text": "fn main() {}"}]},
         ]));
-        assert_eq!(
-            d.to_markdown(),
-            "## Notes\n\n> quoted\n\n```rust\nfn main() {}\n```"
-        );
+        assert_eq!(d.to_markdown(), "## Notes\n\n> quoted\n\n```rust\nfn main() {}\n```");
     }
 
     #[test]

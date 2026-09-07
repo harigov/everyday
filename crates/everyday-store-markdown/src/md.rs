@@ -350,13 +350,13 @@ fn inline(text: &str) -> Vec<Value> {
 
         // Two-character delimiters. Resolved with `find_map` rather than a
         // loop containing `continue`, which would bind to the inner loop.
-        let two = [("**", "bold"), ("~~", "strike"), ("==", "highlight")]
-            .into_iter()
-            .find_map(|(delim, mark)| {
+        let two = [("**", "bold"), ("~~", "strike"), ("==", "highlight")].into_iter().find_map(
+            |(delim, mark)| {
                 (starts_with_at(&bytes, i, delim) && opens(&bytes, i, 2))
                     .then(|| find_closer(&bytes, i + 2, delim).map(|end| (end, mark)))
                     .flatten()
-            });
+            },
+        );
         if let Some((end, mark)) = two {
             flush!();
             out.extend(marked(&bytes[i + 2..end].iter().collect::<String>(), mark));
@@ -414,11 +414,8 @@ fn marked(text: &str, mark: &str) -> Vec<Value> {
         .into_iter()
         .map(|mut node| {
             if node.get("type").and_then(Value::as_str) == Some("text") {
-                let marks = node
-                    .get("marks")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
+                let marks =
+                    node.get("marks").and_then(Value::as_array).cloned().unwrap_or_default();
                 let mut marks = marks;
                 marks.push(json!({"type": mark}));
                 node["marks"] = Value::Array(marks);
@@ -505,9 +502,7 @@ mod tests {
     #[test]
     fn every_block_parser_consumes_at_least_one_line() {
         // A direct property check on the invariant fix 2 enforces.
-        for src in [
-            "#hashtag", "#######x", "---", "> q", "- a", "1. a", "```", "text", "#",
-        ] {
+        for src in ["#hashtag", "#######x", "---", "> q", "- a", "1. a", "```", "text", "#"] {
             let lines: Vec<&str> = src.lines().collect();
             if lines.is_empty() {
                 continue;
@@ -555,12 +550,9 @@ mod tests {
 
     #[test]
     fn asterisks_in_ordinary_prose_are_not_markup() {
-        for src in [
-            "a lone * asterisk and ** two",
-            "5 * 3 = 15",
-            "see the footnote *",
-            "trailing ** ",
-        ] {
+        for src in
+            ["a lone * asterisk and ** two", "5 * 3 = 15", "see the footnote *", "trailing ** "]
+        {
             assert_eq!(parse(src).plain_text(), src.trim_end(), "mangled {src:?}");
         }
     }
@@ -691,8 +683,7 @@ mod tests {
     fn deeply_indented_lists_do_not_recurse_without_bound() {
         // Each line indents one step further, so without a depth limit this
         // is one stack frame per line.
-        let src: String =
-            (0..2000).map(|i| format!("{}- item {i}\n", " ".repeat(i))).collect();
+        let src: String = (0..2000).map(|i| format!("{}- item {i}\n", " ".repeat(i))).collect();
         let d = parse(&src);
         assert!(d.plain_text().contains("item 0"));
         assert!(d.plain_text().contains("item 1999"), "content past the limit must survive");

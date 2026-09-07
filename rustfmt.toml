@@ -7,9 +7,7 @@
 # wrap these constructs at 60, which in a codebase with this much doc comment
 # in it spreads the code twice as thin as the prose describing it.
 #
-# This matches how the rest of the tree is already written. It does not make
-# `cargo fmt --all -- --check` pass on a clean checkout: a handful of files
-# were laid out by a different rustfmt release and no single configuration
-# reproduces all of them, which is a pre-existing thing to sort out separately
-# rather than by reflowing files a change has no business touching.
+# The tree is formatted to this configuration, so `cargo fmt --all -- --check`
+# passes on a clean checkout and CI can gate on it. Run `make fmt` before
+# committing rather than reformatting by hand.
 use_small_heuristics = "Max"

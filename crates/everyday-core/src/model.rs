@@ -52,9 +52,8 @@ impl Journal {
     }
 }
 
-pub const DEFAULT_JOURNAL_COLORS: &[&str] = &[
-    "#c2410c", "#0f766e", "#4338ca", "#a21caf", "#b45309", "#15803d", "#0369a1", "#be123c",
-];
+pub const DEFAULT_JOURNAL_COLORS: &[&str] =
+    &["#c2410c", "#0f766e", "#4338ca", "#a21caf", "#b45309", "#15803d", "#0369a1", "#be123c"];
 
 /// Where an entry was written. Optional everywhere.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -254,11 +253,7 @@ impl Entry {
             pinned: self.pinned,
             word_count: plain.split_whitespace().count() as u32,
             attachment_count: self.attachments.len() as u32,
-            cover: self
-                .attachments
-                .iter()
-                .find(|a| a.kind == MediaKind::Image)
-                .map(|a| a.blob),
+            cover: self.attachments.iter().find(|a| a.kind == MediaKind::Image).map(|a| a.blob),
             place: self
                 .location
                 .as_ref()

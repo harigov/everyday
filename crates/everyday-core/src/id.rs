@@ -182,8 +182,7 @@ mod tests {
     fn short_ids_distinguish_ids_minted_together() {
         // The whole point: `id.to_string()[..8]` would be identical here.
         let ids: Vec<EntryId> = (0..64).map(|_| EntryId::new()).collect();
-        let shorts: std::collections::BTreeSet<String> =
-            ids.iter().map(EntryId::short).collect();
+        let shorts: std::collections::BTreeSet<String> = ids.iter().map(EntryId::short).collect();
         assert_eq!(shorts.len(), ids.len(), "short ids collided");
         assert!(shorts.iter().all(|s| s.len() == 8));
 

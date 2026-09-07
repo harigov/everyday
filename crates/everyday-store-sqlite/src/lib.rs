@@ -525,9 +525,9 @@ impl JournalStore for SqliteStore {
 
     fn all_entries(&self) -> Result<Vec<Entry>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT id, data FROM entries ORDER BY local_date DESC, created_us DESC")
-                .map_err(Error::backend)?;
+        let mut stmt = conn
+            .prepare("SELECT id, data FROM entries ORDER BY local_date DESC, created_us DESC")
+            .map_err(Error::backend)?;
         let rows = stmt
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))
             .map_err(Error::backend)?;
@@ -575,18 +575,15 @@ impl JournalStore for SqliteStore {
 
     fn stats(&self) -> Result<StoreStats> {
         let conn = self.conn.lock().unwrap();
-        let journals: i64 =
-            conn.query_row("SELECT COUNT(*) FROM journals", [], |r| r.get(0)).map_err(Error::backend)?;
-        let entries: i64 =
-            conn.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0)).map_err(Error::backend)?;
+        let journals: i64 = conn
+            .query_row("SELECT COUNT(*) FROM journals", [], |r| r.get(0))
+            .map_err(Error::backend)?;
+        let entries: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
+            .map_err(Error::backend)?;
         drop(conn);
         let (blobs, blob_bytes) = self.blobs.stats()?;
-        Ok(StoreStats {
-            journals: journals as u64,
-            entries: entries as u64,
-            blobs,
-            blob_bytes,
-        })
+        Ok(StoreStats { journals: journals as u64, entries: entries as u64, blobs, blob_bytes })
     }
 
     fn flush(&self) -> Result<()> {

@@ -330,9 +330,7 @@ fn list_entries_filters_and_sorts(store: &dyn JournalStore) {
         "tag filter must be case-insensitive"
     );
 
-    assert!(
-        ids(&EntryQuery { tags: vec!["nonexistent".into()], ..Default::default() }).is_empty()
-    );
+    assert!(ids(&EntryQuery { tags: vec!["nonexistent".into()], ..Default::default() }).is_empty());
 
     cleanup(store);
 }
@@ -399,7 +397,11 @@ fn blob_ranges_match_the_full_payload(store: &dyn JournalStore) {
         data.push((x >> 24) as u8);
     }
     let id = store.put_blob(&data).unwrap();
-    assert_eq!(store.blob_len(id).unwrap(), data.len() as u64, "blob_len must be the plaintext length");
+    assert_eq!(
+        store.blob_len(id).unwrap(),
+        data.len() as u64,
+        "blob_len must be the plaintext length"
+    );
 
     for (off, len) in [(0u64, 16u64), (1, 1), (262_143, 4), (262_144, 100), (700_000, 200_000)] {
         assert_eq!(
@@ -409,7 +411,10 @@ fn blob_ranges_match_the_full_payload(store: &dyn JournalStore) {
         );
     }
     // Clamping, not erroring, past the end.
-    assert_eq!(store.get_blob_range(id, data.len() as u64 - 5, 500).unwrap(), data[data.len() - 5..]);
+    assert_eq!(
+        store.get_blob_range(id, data.len() as u64 - 5, 500).unwrap(),
+        data[data.len() - 5..]
+    );
     assert!(store.get_blob_range(id, data.len() as u64, 10).unwrap().is_empty());
 
     store.delete_blob(id).unwrap();
@@ -1176,7 +1181,8 @@ fn replacing_events_is_total_and_scoped_to_one_calendar(store: &dyn CalendarStor
     let first: Vec<Event> = (1..=3)
         .map(|d| sample_event(mine.id, &format!("a{d}"), date(2026, 4, d), date(2026, 4, d)))
         .collect();
-    let others: Vec<Event> = vec![sample_event(theirs.id, "b1", date(2026, 4, 1), date(2026, 4, 1))];
+    let others: Vec<Event> =
+        vec![sample_event(theirs.id, "b1", date(2026, 4, 1), date(2026, 4, 1))];
     store.replace_events(mine.id, &first).expect("replace_events");
     store.replace_events(theirs.id, &others).expect("replace_events");
     assert_eq!(store.count_events(mine.id).unwrap(), 3);
@@ -1246,7 +1252,10 @@ fn deleting_a_calendar_takes_its_events_with_it(store: &dyn CalendarStore) {
     let doomed = seeded_calendar(store, "doomed");
     let kept = seeded_calendar(store, "kept");
     store
-        .replace_events(doomed.id, &[sample_event(doomed.id, "x", date(2026, 5, 1), date(2026, 5, 1))])
+        .replace_events(
+            doomed.id,
+            &[sample_event(doomed.id, "x", date(2026, 5, 1), date(2026, 5, 1))],
+        )
         .expect("replace_events");
     store
         .replace_events(kept.id, &[sample_event(kept.id, "y", date(2026, 5, 1), date(2026, 5, 1))])

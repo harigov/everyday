@@ -171,10 +171,8 @@ pub async fn change_password(
 ) -> CommandResult<()> {
     everyday_vault::validate_password(&next)?;
     let vault = state.require()?;
-    blocking(move || {
-        vault.change_password(Some(&current), Some(&next)).map_err(CommandError::from)
-    })
-    .await
+    blocking(move || vault.change_password(Some(&current), Some(&next)).map_err(CommandError::from))
+        .await
 }
 
 #[tauri::command]

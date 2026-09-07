@@ -435,10 +435,7 @@ mod tests {
         let mut rows = vec![summary(3, "c"), summary(1, "a"), summary(2, "b")];
         rows[1].pinned = true; // the oldest entry is pinned
         sort_summaries(&mut rows, SortOrder::DateDesc);
-        assert_eq!(
-            rows.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
-            ["a", "c", "b"]
-        );
+        assert_eq!(rows.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(), ["a", "c", "b"]);
     }
 
     #[test]

@@ -30,12 +30,7 @@ pub struct ResponsePlan {
 impl ResponsePlan {
     /// The `Content-Range` header value, when partial.
     pub fn content_range(&self) -> String {
-        format!(
-            "bytes {}-{}/{}",
-            self.start,
-            self.start + self.len.saturating_sub(1),
-            self.total
-        )
+        format!("bytes {}-{}/{}", self.start, self.start + self.len.saturating_sub(1), self.total)
     }
 }
 
@@ -161,8 +156,15 @@ mod tests {
     #[test]
     fn rejects_nonsense_ranges_rather_than_erroring() {
         for bad in [
-            "", "items=0-9", "bytes=abc-def", "bytes=500-100", "bytes=",
-            "bytes=0-1,5-6", "bytes=-0", "bytes=9999-", "bytes=1000-1001",
+            "",
+            "items=0-9",
+            "bytes=abc-def",
+            "bytes=500-100",
+            "bytes=",
+            "bytes=0-1,5-6",
+            "bytes=-0",
+            "bytes=9999-",
+            "bytes=1000-1001",
         ] {
             assert_eq!(parse_range(bad, 1000), None, "accepted {bad:?}");
         }

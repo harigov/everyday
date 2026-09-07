@@ -109,11 +109,7 @@ pub fn create(path: &Path, config: VaultConfig) -> Result<Vault> {
 /// Returns the vault and whether it was created, so the caller can show a
 /// welcome screen rather than a password prompt on first run.
 pub fn open_or_create(path: &Path, config: VaultConfig) -> Result<(Vault, bool)> {
-    if Vault::exists(path) {
-        Ok((open(path)?, false))
-    } else {
-        Ok((create(path, config)?, true))
-    }
+    if Vault::exists(path) { Ok((open(path)?, false)) } else { Ok((create(path, config)?, true)) }
 }
 
 /// Does a vault exist at `path`?
@@ -290,7 +286,10 @@ mod tests {
 
         let round = vault.task(task.id).unwrap();
         assert_eq!(round, task, "a task must survive a lock/unlock cycle unchanged");
-        assert_eq!(vault.tasks(&TaskQuery::children_of(task.id)).unwrap(), std::slice::from_ref(&subtask));
+        assert_eq!(
+            vault.tasks(&TaskQuery::children_of(task.id)).unwrap(),
+            std::slice::from_ref(&subtask)
+        );
         assert_eq!(vault.blocks(&BlockQuery::for_task(task.id)).unwrap().len(), 1);
 
         // And the cascade holds through the vault, not just the store.
@@ -388,10 +387,7 @@ mod tests {
             week.iter().any(|e| e.title == "Lisbon"),
             "a trip must show in its own second week",
         );
-        assert!(
-            week.iter().any(|e| e.title == "Morning stand-up"),
-            "folded titles are rejoined",
-        );
+        assert!(week.iter().any(|e| e.title == "Morning stand-up"), "folded titles are rejoined",);
 
         // Syncing again replaces rather than duplicates.
         let report = vault.sync_calendar_from_ics(calendar.id, feed, window, "UTC").unwrap();
@@ -416,11 +412,7 @@ mod tests {
             .sync_calendar_from_ics(calendar.id, "<html>Sign in to the wifi</html>", window, "UTC")
             .unwrap_err();
         assert_eq!(err.code(), "invalid", "got {err}");
-        assert_eq!(
-            vault.event_count(calendar.id).unwrap(),
-            5,
-            "a bad reply must not empty a feed",
-        );
+        assert_eq!(vault.event_count(calendar.id).unwrap(), 5, "a bad reply must not empty a feed",);
         vault.mark_calendar_failed(calendar.id, "that address did not return a calendar").unwrap();
         let after = vault.calendar(calendar.id).unwrap();
         assert!(after.last_error.is_some());

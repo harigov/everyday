@@ -324,8 +324,15 @@ mod tests {
     fn round_trips_small_and_multi_chunk_payloads() {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path(), true);
-        for size in [0usize, 1, 1024, CHUNK_SIZE as usize - 1, CHUNK_SIZE as usize,
-                     CHUNK_SIZE as usize + 1, CHUNK_SIZE as usize * 3 + 77] {
+        for size in [
+            0usize,
+            1,
+            1024,
+            CHUNK_SIZE as usize - 1,
+            CHUNK_SIZE as usize,
+            CHUNK_SIZE as usize + 1,
+            CHUNK_SIZE as usize * 3 + 77,
+        ] {
             let data = pseudorandom(size);
             let id = s.put(&data).unwrap();
             assert_eq!(s.get(id).unwrap(), data, "round trip failed at size {size}");
@@ -353,10 +360,10 @@ mod tests {
         for (off, len) in [
             (0u64, 10u64),
             (1, 1),
-            (CHUNK_SIZE as u64 - 5, 10),          // straddles a chunk boundary
-            (CHUNK_SIZE as u64, 100),             // starts exactly on one
+            (CHUNK_SIZE as u64 - 5, 10), // straddles a chunk boundary
+            (CHUNK_SIZE as u64, 100),    // starts exactly on one
             (CHUNK_SIZE as u64 * 2 + 7, 200_000), // spans two chunks
-            (data.len() as u64 - 1, 1),           // final byte
+            (data.len() as u64 - 1, 1),  // final byte
         ] {
             let got = s.get_range(id, off, len).unwrap();
             let want = &data[off as usize..(off + len) as usize];
