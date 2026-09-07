@@ -20,7 +20,11 @@
   // the journal you are in, the project you are looking at, or -- since the
   // calendar spans every project at once -- the vault's own accent.
   const accent = $derived(
-    app.section === 'todo' ? todo.accent : app.section === 'calendar' ? 'var(--accent)' : app.accent,
+    app.section === 'todo'
+      ? todo.accent
+      : app.section === 'calendar'
+        ? 'var(--accent)'
+        : app.accent,
   )
 
   function onKeydown(e: KeyboardEvent) {
@@ -38,7 +42,10 @@
         else void app.newEntry()
         break
       case 'l':
-        if (app.screen === 'main') { e.preventDefault(); void app.lock() }
+        if (app.screen === 'main') {
+          e.preventDefault()
+          void app.lock()
+        }
         break
       case 'f':
         if (app.screen === 'main') {
@@ -67,7 +74,11 @@
   }
 
   // Persist in-flight edits if the window goes away.
-  function onBeforeUnload() { void app.flush(); void todo.flush(); void calendar.flush() }
+  function onBeforeUnload() {
+    void app.flush()
+    void todo.flush()
+    void calendar.flush()
+  }
 </script>
 
 <svelte:window onkeydown={onKeydown} onbeforeunload={onBeforeUnload} />
@@ -97,11 +108,34 @@
 </div>
 
 <style>
-  .app { height: 100%; }
-  .panes { display: flex; height: 100%; }
-  .main { flex: 1; min-width: 0; }
+  .app {
+    height: 100%;
+  }
+  .panes {
+    display: flex;
+    height: 100%;
+  }
+  .main {
+    flex: 1;
+    min-width: 0;
+  }
 
-  .boot { display: grid; place-items: center; height: 100%; background: var(--bg); }
-  .mark { animation: pulse 1.6s ease-in-out infinite; }
-  @keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+  .boot {
+    display: grid;
+    place-items: center;
+    height: 100%;
+    background: var(--bg);
+  }
+  .mark {
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%,
+    100% {
+      opacity: 0.3;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
 </style>

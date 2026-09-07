@@ -54,7 +54,8 @@
 <nav class="scroll nav">
   {#each SMART as item (item.label)}
     <button class="row" class:sel={selected(item.scope)} onclick={() => todo.setScope(item.scope)}>
-      <span class="icon" class:today={item.icon === 'sun'}><Icon name={item.icon} size={15} /></span>
+      <span class="icon" class:today={item.icon === 'sun'}><Icon name={item.icon} size={15} /></span
+      >
       <span class="text">{item.label}</span>
       {#if item.scope.kind === 'today' && due > 0}
         <span class="count" class:late={overdue > 0}>{due}</span>
@@ -68,7 +69,12 @@
 
   <div class="head">
     <span class="eyebrow">Projects</span>
-    <button class="plus" title="New project" aria-label="New project" onclick={() => (creating = true)}>
+    <button
+      class="plus"
+      title="New project"
+      aria-label="New project"
+      onclick={() => (creating = true)}
+    >
       <Icon name="plus" size={15} />
     </button>
   </div>
@@ -80,7 +86,10 @@
       class:paused={p.status === 'paused'}
       style="--dot: {p.color}"
       onclick={() => todo.setScope({ kind: 'project', id: p.id })}
-      oncontextmenu={(e) => { e.preventDefault(); pendingDelete = p }}
+      oncontextmenu={(e) => {
+        e.preventDefault()
+        pendingDelete = p
+      }}
       title={p.notes || p.name}
     >
       <span class="icon">{p.icon}</span>
@@ -103,7 +112,10 @@
       onblur={create}
       onkeydown={(e) => {
         if (e.key === 'Enter') create()
-        if (e.key === 'Escape') { draft = ''; creating = false }
+        if (e.key === 'Escape') {
+          draft = ''
+          creating = false
+        }
       }}
     />
   {/if}
@@ -112,7 +124,8 @@
     <div class="head"><span class="eyebrow">Time</span></div>
     <p class="logged">
       {Math.round(todo.stats.loggedMinutes / 60)}h logged across
-      {todo.stats.blocks} {todo.stats.blocks === 1 ? 'block' : 'blocks'}
+      {todo.stats.blocks}
+      {todo.stats.blocks === 1 ? 'block' : 'blocks'}
     </p>
   {/if}
 </nav>
@@ -131,7 +144,10 @@
   /* Deliberately the same metrics as the journal nav: the two apps share a
      sidebar, and a row that changed height when you switched would read as
      two applications rather than one. */
-  .nav { flex: 1; padding: var(--sp-2) var(--sp-2) var(--sp-4); }
+  .nav {
+    flex: 1;
+    padding: var(--sp-2) var(--sp-2) var(--sp-4);
+  }
 
   .head {
     display: flex;
@@ -140,12 +156,17 @@
     padding: var(--sp-5) var(--sp-2) var(--sp-2);
   }
   .plus {
-    width: 20px; height: 20px;
-    display: grid; place-items: center;
+    width: 20px;
+    height: 20px;
+    display: grid;
+    place-items: center;
     border-radius: var(--radius-sm);
     color: var(--fg-faint);
   }
-  .plus:hover { background: var(--bg-hover); color: var(--fg); }
+  .plus:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
 
   .row {
     display: flex;
@@ -158,27 +179,59 @@
     font-size: var(--text-base);
     color: var(--fg-muted);
     text-align: left;
-    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
   }
-  .row:hover { background: var(--bg-hover); color: var(--fg); }
-  .row.sel { background: var(--bg-active); color: var(--fg); font-weight: 550; }
+  .row:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .row.sel {
+    background: var(--bg-active);
+    color: var(--fg);
+    font-weight: 550;
+  }
   /* A paused project is still there, just not shouting. */
-  .row.paused .text { opacity: 0.6; }
+  .row.paused .text {
+    opacity: 0.6;
+  }
 
   .icon {
-    width: 16px; height: 16px; flex: none;
-    display: grid; place-items: center;
-    font-size: var(--text-sm); line-height: 1;
+    width: 16px;
+    height: 16px;
+    flex: none;
+    display: grid;
+    place-items: center;
+    font-size: var(--text-sm);
+    line-height: 1;
   }
-  .icon.today { color: #e0a92b; }
-  .text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .count { font-size: var(--text-xs); color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+  .icon.today {
+    color: #e0a92b;
+  }
+  .text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .count {
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+    font-variant-numeric: tabular-nums;
+  }
   /* Something has already slipped, which is worth a colour. */
-  .count.late { color: var(--danger); }
+  .count.late {
+    color: var(--danger);
+  }
 
   .dot {
-    width: 6px; height: 6px; border-radius: 50%;
-    background: var(--dot); flex: none; opacity: 0.85;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--dot);
+    flex: none;
+    opacity: 0.85;
   }
 
   .new {
@@ -192,7 +245,9 @@
     font-size: var(--text-base);
     user-select: text;
   }
-  .new:focus { outline: none; }
+  .new:focus {
+    outline: none;
+  }
 
   .blank {
     padding: var(--sp-2);

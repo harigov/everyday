@@ -50,7 +50,8 @@
     }
     // A week that straddles two months should say so, and one that straddles
     // two years doubly so.
-    const sameMonth = first.getMonth() === last.getMonth() && first.getFullYear() === last.getFullYear()
+    const sameMonth =
+      first.getMonth() === last.getMonth() && first.getFullYear() === last.getFullYear()
     const left = new Intl.DateTimeFormat(locale, {
       day: 'numeric',
       month: 'short',
@@ -87,13 +88,27 @@
     if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return
 
     switch (e.key) {
-      case 'd': calendar.setView('day'); break
-      case 'w': calendar.setView('week'); break
-      case 'm': calendar.setView('month'); break
-      case 't': calendar.goToday(); break
-      case 'ArrowLeft': calendar.step(-1); break
-      case 'ArrowRight': calendar.step(1); break
-      case 'Escape': calendar.selection = null; break
+      case 'd':
+        calendar.setView('day')
+        break
+      case 'w':
+        calendar.setView('week')
+        break
+      case 'm':
+        calendar.setView('month')
+        break
+      case 't':
+        calendar.goToday()
+        break
+      case 'ArrowLeft':
+        calendar.step(-1)
+        break
+      case 'ArrowRight':
+        calendar.step(1)
+        break
+      case 'Escape':
+        calendar.selection = null
+        break
       case 'Backspace':
       case 'Delete':
         if (calendar.selection?.kind === 'block') {
@@ -114,10 +129,17 @@
   <div class="pane">
     <header class="top">
       <div class="nav">
-        <button class="step" title="Previous (←)" aria-label="Previous" onclick={() => calendar.step(-1)}>
+        <button
+          class="step"
+          title="Previous (←)"
+          aria-label="Previous"
+          onclick={() => calendar.step(-1)}
+        >
           <span class="back"><Icon name="chevron" size={15} /></span>
         </button>
-        <button class="today" title="Jump to today (T)" onclick={() => calendar.goToday()}>Today</button>
+        <button class="today" title="Jump to today (T)" onclick={() => calendar.goToday()}
+          >Today</button
+        >
         <button class="step" title="Next (→)" aria-label="Next" onclick={() => calendar.step(1)}>
           <Icon name="chevron" size={15} />
         </button>
@@ -134,8 +156,8 @@
               class:on={calendar.layer === l.id}
               title={l.title}
               aria-pressed={calendar.layer === l.id}
-              onclick={() => (calendar.layer = l.id)}
-            >{l.label}</button>
+              onclick={() => (calendar.layer = l.id)}>{l.label}</button
+            >
           {/each}
         </div>
 
@@ -177,12 +199,29 @@
 </main>
 
 <style>
-  .cal { flex: 1; min-width: 0; display: flex; }
-  .pane { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  .side { display: flex; flex-direction: column; min-height: 0; }
+  .cal {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+  }
+  .pane {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .side {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
   /* The rail is one column: the timer sits above the panel, and the panel
      scrolls under it rather than pushing it off screen. */
-  .side :global(.rail) { flex: 1; min-height: 0; border-top: none; }
+  .side :global(.rail) {
+    flex: 1;
+    min-height: 0;
+    border-top: none;
+  }
 
   .top {
     display: flex;
@@ -194,15 +233,28 @@
     flex: none;
   }
 
-  .nav { display: flex; align-items: center; gap: var(--sp-1); min-width: 0; }
+  .nav {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    min-width: 0;
+  }
   .step {
-    width: 26px; height: 26px;
-    display: grid; place-items: center;
+    width: 26px;
+    height: 26px;
+    display: grid;
+    place-items: center;
     border-radius: var(--radius-sm);
     color: var(--fg-subtle);
   }
-  .step:hover { background: var(--bg-hover); color: var(--fg); }
-  .back { display: flex; rotate: 180deg; }
+  .step:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .back {
+    display: flex;
+    rotate: 180deg;
+  }
 
   .today {
     height: 26px;
@@ -213,19 +265,30 @@
     font-weight: 550;
     color: var(--fg-subtle);
   }
-  .today:hover { background: var(--bg-hover); color: var(--fg); }
+  .today:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
 
   .heading {
     margin-left: var(--sp-2);
     font-size: var(--text-md);
     font-weight: 620;
     letter-spacing: -0.008em;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .tools { display: flex; align-items: center; gap: var(--sp-2); flex: none; }
+  .tools {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex: none;
+  }
 
-  .layers, .views {
+  .layers,
+  .views {
     display: flex;
     gap: 2px;
     padding: 2px;
@@ -239,20 +302,38 @@
     font-size: var(--text-xs);
     font-weight: 550;
     color: var(--fg-subtle);
-    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
   }
-  .layer:hover { color: var(--fg); }
-  .layer.on { background: var(--bg-raised); color: var(--fg); box-shadow: var(--shadow-sm); }
+  .layer:hover {
+    color: var(--fg);
+  }
+  .layer.on {
+    background: var(--bg-raised);
+    color: var(--fg);
+    box-shadow: var(--shadow-sm);
+  }
 
   .view {
-    width: 26px; height: 22px;
-    display: grid; place-items: center;
+    width: 26px;
+    height: 22px;
+    display: grid;
+    place-items: center;
     border-radius: 4px;
     color: var(--fg-subtle);
-    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
   }
-  .view:hover { color: var(--fg); }
-  .view.on { background: var(--bg-raised); color: var(--fg); box-shadow: var(--shadow-sm); }
+  .view:hover {
+    color: var(--fg);
+  }
+  .view.on {
+    background: var(--bg-raised);
+    color: var(--fg);
+    box-shadow: var(--shadow-sm);
+  }
 
   .strip {
     display: flex;
@@ -264,6 +345,12 @@
     color: var(--fg-faint);
     font-variant-numeric: tabular-nums;
   }
-  .summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .note { color: var(--fg-subtle); }
+  .summary {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .note {
+    color: var(--fg-subtle);
+  }
 </style>

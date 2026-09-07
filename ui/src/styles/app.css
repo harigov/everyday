@@ -3,10 +3,20 @@
 
 /* ── Reset ─────────────────────────────────────────────────────────────── */
 
-*, *::before, *::after { box-sizing: border-box; }
-* { margin: 0; }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+* {
+  margin: 0;
+}
 
-html, body, #app { height: 100%; }
+html,
+body,
+#app {
+  height: 100%;
+}
 
 body {
   font-family: var(--font-ui);
@@ -36,7 +46,10 @@ body {
 
   /* Kerning, standard ligatures and contextual alternates. Inter's `calt` is
    * what disambiguates sequences like `Il1` and `rn` at sidebar sizes. */
-  font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1;
+  font-feature-settings:
+    'kern' 1,
+    'liga' 1,
+    'calt' 1;
   /* Drives Inter's optical-size axis: heavier and wider small, finer large. */
   font-optical-sizing: auto;
 
@@ -45,12 +58,29 @@ body {
   user-select: none;
 }
 
-button, input, textarea, select { font: inherit; color: inherit; }
-button { background: none; border: none; padding: 0; cursor: pointer; }
-:where(a) { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+button {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+:where(a) {
+  color: var(--accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
 
 /* Keyboard users get a ring; mouse users do not. */
-:focus { outline: none; }
+:focus {
+  outline: none;
+}
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -59,17 +89,31 @@ button { background: none; border: none; padding: 0; cursor: pointer; }
 
 /* ── Scrollbars ────────────────────────────────────────────────────────── */
 
-.scroll { overflow-y: auto; scrollbar-width: thin; scrollbar-color: transparent transparent; }
-.scroll:hover { scrollbar-color: var(--border-strong) transparent; }
-.scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.scroll {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.scroll:hover {
+  scrollbar-color: var(--border-strong) transparent;
+}
+.scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
 .scroll::-webkit-scrollbar-thumb {
   background: transparent;
   border: 3px solid transparent;
   border-radius: 99px;
   background-clip: content-box;
 }
-.scroll:hover::-webkit-scrollbar-thumb { background-color: var(--border-strong); background-clip: content-box; }
-.scroll::-webkit-scrollbar-corner { background: transparent; }
+.scroll:hover::-webkit-scrollbar-thumb {
+  background-color: var(--border-strong);
+  background-clip: content-box;
+}
+.scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
 
 /* ── Shared primitives ─────────────────────────────────────────────────── */
 
@@ -84,28 +128,47 @@ button { background: none; border: none; padding: 0; cursor: pointer; }
   font-size: var(--text-base);
   font-weight: 500;
   color: var(--fg-muted);
-  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+  transition:
+    background var(--fast) var(--ease),
+    color var(--fast) var(--ease);
   white-space: nowrap;
 }
-.btn:hover { background: var(--bg-hover); color: var(--fg); }
-.btn:active { background: var(--bg-active); }
-.btn[disabled] { opacity: 0.45; pointer-events: none; }
+.btn:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.btn:active {
+  background: var(--bg-active);
+}
+.btn[disabled] {
+  opacity: 0.45;
+  pointer-events: none;
+}
 
 .btn-primary {
   background: var(--accent);
   color: var(--fg-on-accent);
   box-shadow: var(--shadow-sm);
 }
-.btn-primary:hover { background: var(--accent-hover); color: var(--fg-on-accent); }
+.btn-primary:hover {
+  background: var(--accent-hover);
+  color: var(--fg-on-accent);
+}
 
-.btn-ghost-danger:hover { background: color-mix(in oklab, var(--danger) 12%, transparent); color: var(--danger); }
+.btn-ghost-danger:hover {
+  background: color-mix(in oklab, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
 
 .btn-danger {
   background: var(--danger);
   color: #fff;
   box-shadow: var(--shadow-sm);
 }
-.btn-danger:hover { background: color-mix(in oklab, var(--danger) 88%, #000); color: #fff; }
+.btn-danger:hover {
+  background: color-mix(in oklab, var(--danger) 88%, #000);
+  color: #fff;
+}
 
 .field {
   width: 100%;
@@ -115,10 +178,14 @@ button { background: none; border: none; padding: 0; cursor: pointer; }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--fg);
-  transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+  transition:
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease);
   user-select: text;
 }
-.field::placeholder { color: var(--fg-faint); }
+.field::placeholder {
+  color: var(--fg-faint);
+}
 .field:focus {
   outline: none;
   border-color: var(--accent);
@@ -133,7 +200,11 @@ button { background: none; border: none; padding: 0; cursor: pointer; }
   color: var(--fg-muted);
 }
 
-.hint { font-size: var(--text-sm); color: var(--fg-subtle); line-height: var(--leading-normal); }
+.hint {
+  font-size: var(--text-sm);
+  color: var(--fg-subtle);
+  line-height: var(--leading-normal);
+}
 
 .error {
   padding: var(--sp-2) var(--sp-3);
@@ -166,7 +237,11 @@ button { background: none; border: none; padding: 0; cursor: pointer; }
   color: var(--fg-muted);
 }
 
-.sep { height: 1px; background: var(--border); border: none; }
+.sep {
+  height: 1px;
+  background: var(--border);
+  border: none;
+}
 
 /* ── Dialogs ───────────────────────────────────────────────────────────
    Shared by every in-app sheet. The point of having these at all is that
@@ -201,11 +276,15 @@ button { background: none; border: none; padding: 0; cursor: pointer; }
   gap: var(--sp-2);
   margin-top: var(--sp-4);
 }
-.sheet-row .spacer { flex: 1; }
+.sheet-row .spacer {
+  flex: 1;
+}
 
 /* Respect the platform's reduced-motion preference. */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;

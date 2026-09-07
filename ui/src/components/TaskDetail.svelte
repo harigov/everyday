@@ -6,12 +6,7 @@
   // moment where the two disagree about what the task says.
 
   import { todo } from '../lib/todo.svelte'
-  import {
-    formatInstantTime,
-    formatMinutes,
-    friendlyDate,
-    toLocalInputValue,
-  } from '../lib/format'
+  import { formatInstantTime, formatMinutes, friendlyDate, toLocalInputValue } from '../lib/format'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import { PRIORITIES, TASK_STATUSES } from '../lib/types'
@@ -127,11 +122,12 @@
             class="pick"
             type="date"
             value={task.dueDate ?? ''}
-            onchange={(e) => todo.patch(task.id, {
-              dueDate: e.currentTarget.value || null,
-              // A time with no date would be an hour attached to nothing.
-              dueTime: e.currentTarget.value ? task.dueTime : null,
-            })}
+            onchange={(e) =>
+              todo.patch(task.id, {
+                dueDate: e.currentTarget.value || null,
+                // A time with no date would be an hour attached to nothing.
+                dueTime: e.currentTarget.value ? task.dueTime : null,
+              })}
           />
           <input
             class="pick time"
@@ -139,9 +135,10 @@
             aria-label="Due time"
             disabled={!task.dueDate}
             value={task.dueTime?.slice(0, 5) ?? ''}
-            onchange={(e) => todo.patch(task.id, {
-              dueTime: e.currentTarget.value ? `${e.currentTarget.value}:00` : null,
-            })}
+            onchange={(e) =>
+              todo.patch(task.id, {
+                dueTime: e.currentTarget.value ? `${e.currentTarget.value}:00` : null,
+              })}
           />
         </div>
 
@@ -164,9 +161,10 @@
             step="15"
             placeholder="minutes"
             value={task.estimateMinutes ?? ''}
-            onchange={(e) => todo.patch(task.id, {
-              estimateMinutes: minutesFrom(e.currentTarget.value),
-            })}
+            onchange={(e) =>
+              todo.patch(task.id, {
+                estimateMinutes: minutesFrom(e.currentTarget.value),
+              })}
           />
           <span class="unit">
             {task.estimateMinutes ? formatMinutes(task.estimateMinutes) : 'minutes'}
@@ -195,7 +193,10 @@
           bind:value={tagDraft}
           onblur={addTag}
           onkeydown={(e) => {
-            if (e.key === 'Enter') { e.preventDefault(); addTag() }
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              addTag()
+            }
             if (e.key === 'Escape') tagDraft = ''
           }}
           list="known-tags"
@@ -224,7 +225,9 @@
       {#if time.logged > 0 || time.planned > 0}
         <p class="totals">
           {#if time.logged > 0}<strong>{formatMinutes(time.logged)}</strong> logged{/if}
-          {#if time.logged > 0 && time.planned > 0} · {/if}
+          {#if time.logged > 0 && time.planned > 0}
+            ·
+          {/if}
           {#if time.planned > 0}{formatMinutes(time.planned)} planned{/if}
           {#if task.estimateMinutes}
             · estimate {formatMinutes(task.estimateMinutes)}
@@ -280,8 +283,8 @@
 
       {#if todo.detailBlocks.length === 0 && !booking}
         <p class="quiet">
-          Nothing booked yet. Blocks are what the calendar will draw, and what
-          “where did my time go” adds up.
+          Nothing booked yet. Blocks are what the calendar will draw, and what “where did my time
+          go” adds up.
         </p>
       {/if}
 
@@ -292,7 +295,8 @@
 
       <p class="stamp">
         Created {friendlyDate(task.createdAt.slice(0, 10))}
-        {#if task.completedAt} · done {friendlyDate(task.completedAt.slice(0, 10))}{/if}
+        {#if task.completedAt}
+          · done {friendlyDate(task.completedAt.slice(0, 10))}{/if}
       </p>
     </div>
   </aside>
@@ -304,7 +308,10 @@
         ? 'Its subtasks and every block of time booked against them go too. This cannot be undone.'
         : 'Any time booked against it goes too. This cannot be undone.'}
       confirmLabel="Delete task"
-      onconfirm={() => { confirming = false; todo.remove(task.id) }}
+      onconfirm={() => {
+        confirming = false
+        todo.remove(task.id)
+      }}
       oncancel={() => (confirming = false)}
     />
   {/if}
@@ -329,14 +336,22 @@
     flex: none;
   }
   .close {
-    width: 26px; height: 26px;
-    display: grid; place-items: center;
+    width: 26px;
+    height: 26px;
+    display: grid;
+    place-items: center;
     border-radius: var(--radius-sm);
     color: var(--fg-faint);
   }
-  .close:hover { background: var(--bg-hover); color: var(--fg); }
+  .close:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
 
-  .body { flex: 1; padding: 0 var(--sp-4) var(--sp-8); }
+  .body {
+    flex: 1;
+    padding: 0 var(--sp-4) var(--sp-8);
+  }
 
   /* A textarea rather than an input, so a long title wraps instead of
      scrolling sideways past the end of the panel. */
@@ -353,7 +368,9 @@
     color: var(--fg);
     user-select: text;
   }
-  .title:focus { outline: none; }
+  .title:focus {
+    outline: none;
+  }
 
   .grid {
     display: grid;
@@ -362,7 +379,10 @@
     gap: var(--sp-2) var(--sp-2);
     margin-top: var(--sp-4);
   }
-  .lab { font-size: var(--text-sm); color: var(--fg-subtle); }
+  .lab {
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
+  }
 
   .pick {
     width: 100%;
@@ -376,11 +396,22 @@
     font-size: var(--text-sm);
     user-select: text;
   }
-  .pick:focus { outline: none; border-color: var(--accent); }
-  .pick:disabled { opacity: 0.45; }
+  .pick:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .pick:disabled {
+    opacity: 0.45;
+  }
 
-  .pair { display: flex; gap: var(--sp-1); min-width: 0; }
-  .pair .time { flex: 0 0 82px; }
+  .pair {
+    display: flex;
+    gap: var(--sp-1);
+    min-width: 0;
+  }
+  .pair .time {
+    flex: 0 0 82px;
+  }
   .unit {
     display: flex;
     align-items: center;
@@ -396,15 +427,25 @@
     padding: var(--sp-5) 0 var(--sp-2);
   }
   .mini {
-    display: flex; align-items: center; gap: 3px;
+    display: flex;
+    align-items: center;
+    gap: 3px;
     padding: 2px var(--sp-2);
     border-radius: var(--radius-sm);
     font-size: var(--text-xs);
     color: var(--fg-subtle);
   }
-  .mini:hover { background: var(--bg-hover); color: var(--fg); }
+  .mini:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
 
-  .tags { display: flex; flex-wrap: wrap; gap: var(--sp-1); align-items: center; }
+  .tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-1);
+    align-items: center;
+  }
   .tag {
     display: inline-flex;
     align-items: center;
@@ -417,8 +458,16 @@
     font-size: var(--text-xs);
     color: var(--fg-muted);
   }
-  .x { display: flex; color: var(--fg-faint); border-radius: 99px; padding: 2px; }
-  .x:hover { color: var(--danger); background: var(--bg-hover); }
+  .x {
+    display: flex;
+    color: var(--fg-faint);
+    border-radius: 99px;
+    padding: 2px;
+  }
+  .x:hover {
+    color: var(--danger);
+    background: var(--bg-hover);
+  }
   .tagin {
     height: 22px;
     width: 84px;
@@ -429,7 +478,11 @@
     font-size: var(--text-xs);
     user-select: text;
   }
-  .tagin:focus { outline: none; border-style: solid; border-color: var(--accent); }
+  .tagin:focus {
+    outline: none;
+    border-style: solid;
+    border-color: var(--accent);
+  }
 
   .notes {
     width: 100%;
@@ -444,10 +497,20 @@
     resize: vertical;
     user-select: text;
   }
-  .notes:focus { outline: none; border-color: var(--accent); }
+  .notes:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
 
-  .totals { font-size: var(--text-sm); color: var(--fg-subtle); margin-bottom: var(--sp-2); }
-  .totals strong { color: var(--fg); font-weight: 600; }
+  .totals {
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
+    margin-bottom: var(--sp-2);
+  }
+  .totals strong {
+    color: var(--fg);
+    font-weight: 600;
+  }
 
   .booker {
     display: flex;
@@ -458,8 +521,16 @@
     border-radius: var(--radius-sm);
     background: var(--bg-sunken);
   }
-  .bookrow { display: flex; gap: var(--sp-1); justify-content: flex-end; margin-top: 2px; }
-  .bookrow .btn { height: 26px; font-size: var(--text-sm); }
+  .bookrow {
+    display: flex;
+    gap: var(--sp-1);
+    justify-content: flex-end;
+    margin-top: 2px;
+  }
+  .bookrow .btn {
+    height: 26px;
+    font-size: var(--text-sm);
+  }
 
   .block {
     display: flex;
@@ -470,15 +541,41 @@
     color: var(--fg-muted);
     border-radius: var(--radius-sm);
   }
-  .block:hover { background: var(--bg-hover); }
-  .kind { display: flex; color: var(--fg-faint); }
+  .block:hover {
+    background: var(--bg-hover);
+  }
+  .kind {
+    display: flex;
+    color: var(--fg-faint);
+  }
   /* Logged time is the record; planned time is only an intention. */
-  .kind.actual { color: #15803d; }
-  .when { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .len { font-variant-numeric: tabular-nums; color: var(--fg-subtle); }
+  .kind.actual {
+    color: #15803d;
+  }
+  .when {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .len {
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-subtle);
+  }
 
-  .quiet { font-size: var(--text-sm); line-height: var(--leading-normal); color: var(--fg-faint); }
+  .quiet {
+    font-size: var(--text-sm);
+    line-height: var(--leading-normal);
+    color: var(--fg-faint);
+  }
 
-  .wide { width: 100%; }
-  .stamp { margin-top: var(--sp-4); font-size: var(--text-xs); color: var(--fg-faint); }
+  .wide {
+    width: 100%;
+  }
+  .stamp {
+    margin-top: var(--sp-4);
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+  }
 </style>

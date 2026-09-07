@@ -54,5 +54,8 @@
 </svg>
 
 <style>
-  .logo { display: block; flex: none; }
+  .logo {
+    display: block;
+    flex: none;
+  }
 </style>

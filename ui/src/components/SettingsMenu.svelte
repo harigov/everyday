@@ -58,7 +58,8 @@
               class="seg"
               class:on={app.theme === t}
               onclick={() => app.setTheme(t as 'system' | 'light' | 'dark')}
-            >{t[0]!.toUpperCase() + t.slice(1)}</button>
+              >{t[0]!.toUpperCase() + t.slice(1)}</button
+            >
           {/each}
         </div>
       </div>
@@ -71,8 +72,8 @@
               <button
                 class="seg"
                 class:on={status.autoLockSeconds === c.value}
-                onclick={() => setAutoLock(c.value)}
-              >{c.label}</button>
+                onclick={() => setAutoLock(c.value)}>{c.label}</button
+              >
             {/each}
           </div>
         </div>
@@ -80,14 +81,26 @@
         <div class="section">
           {#if changing}
             <form onsubmit={changePassword}>
-              <input class="field sm" type="password" placeholder="Current password"
-                     bind:value={current} autocomplete="current-password" />
+              <input
+                class="field sm"
+                type="password"
+                placeholder="Current password"
+                bind:value={current}
+                autocomplete="current-password"
+              />
               <div class="gap"></div>
-              <input class="field sm" type="password" placeholder="New password"
-                     bind:value={next} autocomplete="new-password" />
+              <input
+                class="field sm"
+                type="password"
+                placeholder="New password"
+                bind:value={next}
+                autocomplete="new-password"
+              />
               <div class="row">
                 <button class="btn" type="button" onclick={() => (changing = false)}>Cancel</button>
-                <button class="btn btn-primary" type="submit" disabled={next.length < 8}>Change</button>
+                <button class="btn btn-primary" type="submit" disabled={next.length < 8}
+                  >Change</button
+                >
               </div>
             </form>
           {:else}
@@ -118,61 +131,140 @@
 </div>
 
 <style>
-  .wrap { position: relative; }
+  .wrap {
+    position: relative;
+  }
 
   .trigger {
-    display: flex; align-items: center; gap: var(--sp-2);
-    width: 100%; height: 28px; padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm); font-size: var(--text-sm); color: var(--fg-subtle);
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    width: 100%;
+    height: 28px;
+    padding: 0 var(--sp-2);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
   }
-  .trigger:hover { background: var(--bg-hover); color: var(--fg); }
+  .trigger:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
 
-  .scrim { position: fixed; inset: 0; z-index: 40; }
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+  }
 
   .panel {
-    position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 41;
-    width: 268px; padding: var(--sp-4);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    z-index: 41;
+    width: 268px;
+    padding: var(--sp-4);
     background: var(--bg-raised);
-    border: 1px solid var(--border); border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
     box-shadow: var(--shadow-lg);
   }
 
-  .section + .section { margin-top: var(--sp-4); }
-  .section .eyebrow { display: block; margin-bottom: var(--sp-2); }
+  .section + .section {
+    margin-top: var(--sp-4);
+  }
+  .section .eyebrow {
+    display: block;
+    margin-bottom: var(--sp-2);
+  }
 
   .segmented {
-    display: flex; gap: 2px; padding: 2px;
-    background: var(--bg-sunken); border-radius: var(--radius-sm);
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    background: var(--bg-sunken);
+    border-radius: var(--radius-sm);
   }
   .seg {
-    flex: 1; height: 24px; border-radius: 4px;
-    font-size: var(--text-xs); font-weight: 500; color: var(--fg-subtle);
-    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+    flex: 1;
+    height: 24px;
+    border-radius: 4px;
+    font-size: var(--text-xs);
+    font-weight: 500;
+    color: var(--fg-subtle);
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
   }
-  .seg:hover { color: var(--fg); }
-  .seg.on { background: var(--bg-raised); color: var(--fg); box-shadow: var(--shadow-sm); }
+  .seg:hover {
+    color: var(--fg);
+  }
+  .seg.on {
+    background: var(--bg-raised);
+    color: var(--fg);
+    box-shadow: var(--shadow-sm);
+  }
 
-  .link { font-size: var(--text-sm); color: var(--accent); }
-  .link:hover { text-decoration: underline; }
+  .link {
+    font-size: var(--text-sm);
+    color: var(--accent);
+  }
+  .link:hover {
+    text-decoration: underline;
+  }
 
-  .field.sm { height: 30px; font-size: var(--text-sm); }
-  .gap { height: var(--sp-2); }
-  .row { display: flex; gap: var(--sp-2); justify-content: flex-end; margin-top: var(--sp-3); }
+  .field.sm {
+    height: 30px;
+    font-size: var(--text-sm);
+  }
+  .gap {
+    height: var(--sp-2);
+  }
+  .row {
+    display: flex;
+    gap: var(--sp-2);
+    justify-content: flex-end;
+    margin-top: var(--sp-3);
+  }
 
-  .notice { margin-top: var(--sp-3); font-size: var(--text-sm); color: var(--fg-muted); }
+  .notice {
+    margin-top: var(--sp-3);
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
+  }
 
-  .sep { margin: var(--sp-4) 0; }
+  .sep {
+    margin: var(--sp-4) 0;
+  }
 
-  .facts { display: grid; gap: var(--sp-1); font-size: var(--text-sm); }
-  .facts div { display: flex; justify-content: space-between; gap: var(--sp-3); }
-  .facts span { color: var(--fg-subtle); }
-  .facts b { font-weight: 550; }
-  .facts b.warn { color: var(--danger); }
+  .facts {
+    display: grid;
+    gap: var(--sp-1);
+    font-size: var(--text-sm);
+  }
+  .facts div {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--sp-3);
+  }
+  .facts span {
+    color: var(--fg-subtle);
+  }
+  .facts b {
+    font-weight: 550;
+  }
+  .facts b.warn {
+    color: var(--danger);
+  }
 
   .path {
     margin-top: var(--sp-3);
-    font-family: var(--font-mono); font-size: 10px; color: var(--fg-faint);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     user-select: text;
   }
 </style>

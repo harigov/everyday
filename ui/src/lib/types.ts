@@ -83,12 +83,7 @@ export interface EntrySummary {
   place?: string
 }
 
-export type SortOrder =
-  | 'dateDesc'
-  | 'dateAsc'
-  | 'updatedDesc'
-  | 'createdDesc'
-  | 'titleAsc'
+export type SortOrder = 'dateDesc' | 'dateAsc' | 'updatedDesc' | 'createdDesc' | 'titleAsc'
 
 export interface EntryQuery {
   journalId?: JournalId | null
@@ -173,14 +168,7 @@ export class VaultError extends Error {
 // time is a record rather than a field.
 
 /** Board columns, in the order they are drawn. */
-export const TASK_STATUSES = [
-  'backlog',
-  'todo',
-  'doing',
-  'blocked',
-  'done',
-  'cancelled',
-] as const
+export const TASK_STATUSES = ['backlog', 'todo', 'doing', 'blocked', 'done', 'cancelled'] as const
 export type TaskStatus = (typeof TASK_STATUSES)[number]
 
 /** Neither done nor cancelled: there is still work in it. */
@@ -246,9 +234,7 @@ export interface Task {
 
 /** What a block of time was spent on. */
 export type BlockSubject =
-  | { type: 'task'; id: TaskId }
-  | { type: 'project'; id: ProjectId }
-  | { type: 'adhoc' }
+  { type: 'task'; id: TaskId } | { type: 'project'; id: ProjectId } | { type: 'adhoc' }
 
 /** Intention or record. The pair is what makes "where did my time go" answerable. */
 export type BlockKind = 'planned' | 'actual'
@@ -274,15 +260,10 @@ export interface TimeBlock {
 
 /** Which project's tasks to look at. "Inbox" is tasks with no project. */
 export type ProjectScope =
-  | { scope: 'any' }
-  | { scope: 'inbox' }
-  | { scope: 'project'; id: ProjectId }
+  { scope: 'any' } | { scope: 'inbox' } | { scope: 'project'; id: ProjectId }
 
 /** Which level of the task tree to look at. */
-export type ParentScope =
-  | { scope: 'any' }
-  | { scope: 'topLevel' }
-  | { scope: 'of'; id: TaskId }
+export type ParentScope = { scope: 'any' } | { scope: 'topLevel' } | { scope: 'of'; id: TaskId }
 
 export type TaskSort =
   | 'manual'
@@ -363,9 +344,7 @@ export interface TagCount {
 export type CalendarProvider = 'google' | 'outlook' | 'apple' | 'other'
 
 /** Where a calendar's events come from. */
-export type CalendarOrigin =
-  | { type: 'url'; url: string }
-  | { type: 'file'; label: string }
+export type CalendarOrigin = { type: 'url'; url: string } | { type: 'file'; label: string }
 
 export interface Calendar {
   id: CalendarId

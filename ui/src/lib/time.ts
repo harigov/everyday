@@ -94,10 +94,10 @@ export function daysFrom(iso: string, count: number): string[] {
 export function localeWeekStart(): number {
   const locale = navigator.language || 'en'
   try {
-    const info = (new Intl.Locale(locale) as unknown as {
+    const info = new Intl.Locale(locale) as unknown as {
       getWeekInfo?: () => { firstDay: number }
       weekInfo?: { firstDay: number }
-    })
+    }
     const first = info.getWeekInfo?.().firstDay ?? info.weekInfo?.firstDay
     // The spec numbers Monday 1 … Sunday 7; `Date#getDay` numbers Sunday 0.
     if (first) return first % 7
@@ -186,7 +186,14 @@ export function packLanes<T extends { start: number; end: number }>(
     // The lowest column not already taken by something this overlaps.
     const taken = new Set(
       cluster
-        .filter((c) => overlaps(item.start, end, c.item.start, Math.max(c.item.end, c.item.start + MIN_BLOCK_MINUTES)))
+        .filter((c) =>
+          overlaps(
+            item.start,
+            end,
+            c.item.start,
+            Math.max(c.item.end, c.item.start + MIN_BLOCK_MINUTES),
+          ),
+        )
         .map((c) => c.lane),
     )
     let lane = 0

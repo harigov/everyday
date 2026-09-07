@@ -29,9 +29,7 @@
   let provider = $state<CalendarProvider>('google')
   let url = $state('')
   let name = $state('')
-  let color = $state(
-    DEFAULT_COLORS[calendar.calendars.length % DEFAULT_COLORS.length]!,
-  )
+  let color = $state(DEFAULT_COLORS[calendar.calendars.length % DEFAULT_COLORS.length]!)
   let busy = $state(false)
   let problem = $state<string | null>(null)
   let file = $state<HTMLInputElement | null>(null)
@@ -78,7 +76,11 @@
   }
 </script>
 
-<svelte:window onkeydown={(e) => { if (e.key === 'Escape') onclose() }} />
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key === 'Escape') onclose()
+  }}
+/>
 
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div class="scrim" onclick={onclose}></div>
@@ -87,11 +89,9 @@
 
   <div class="providers" role="group" aria-label="Where from">
     {#each providers as p (p.id)}
-      <button
-        class="provider"
-        class:on={provider === p.id}
-        onclick={() => (provider = p.id)}
-      >{p.label}</button>
+      <button class="provider" class:on={provider === p.id} onclick={() => (provider = p.id)}
+        >{p.label}</button
+      >
     {/each}
   </div>
 
@@ -109,7 +109,9 @@
     bind:value={url}
     use:focusOnMount
     oninput={() => (problem = null)}
-    onkeydown={(e) => { if (e.key === 'Enter') subscribe() }}
+    onkeydown={(e) => {
+      if (e.key === 'Enter') subscribe()
+    }}
   />
 
   <div class="row">
@@ -143,8 +145,8 @@
   <p class="hint terms">
     <Icon name="lock" size={13} />
     <span>
-      The address is a key: anyone holding it can read that calendar, so it is
-      encrypted with everything else in your vault. Events are fetched
+      The address is a key: anyone holding it can read that calendar, so it is encrypted with
+      everything else in your vault. Events are fetched
       <strong>read-only</strong> — nothing you do here is ever written back to
       {providers.find((p) => p.id === provider)?.label ?? 'the calendar'}.
     </span>
@@ -171,7 +173,9 @@
 </div>
 
 <style>
-  .wide { width: min(520px, calc(100vw - var(--sp-8))); }
+  .wide {
+    width: min(520px, calc(100vw - var(--sp-8)));
+  }
 
   h2 {
     font-size: var(--text-md);
@@ -195,10 +199,18 @@
     font-size: var(--text-sm);
     font-weight: 550;
     color: var(--fg-subtle);
-    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
   }
-  .provider:hover { color: var(--fg); }
-  .provider.on { background: var(--bg-raised); color: var(--fg); box-shadow: var(--shadow-sm); }
+  .provider:hover {
+    color: var(--fg);
+  }
+  .provider.on {
+    background: var(--bg-raised);
+    color: var(--fg);
+    box-shadow: var(--shadow-sm);
+  }
 
   .where {
     margin-bottom: var(--sp-3);
@@ -207,21 +219,46 @@
     background: var(--bg-sunken);
   }
 
-  .row { display: flex; gap: var(--sp-3); margin-top: var(--sp-3); align-items: flex-start; }
-  .grow { flex: 1; min-width: 0; }
-  .opt { font-weight: 400; color: var(--fg-faint); text-transform: none; letter-spacing: 0; }
+  .row {
+    display: flex;
+    gap: var(--sp-3);
+    margin-top: var(--sp-3);
+    align-items: flex-start;
+  }
+  .grow {
+    flex: 1;
+    min-width: 0;
+  }
+  .opt {
+    font-weight: 400;
+    color: var(--fg-faint);
+    text-transform: none;
+    letter-spacing: 0;
+  }
 
-  .swatches { display: flex; gap: 4px; height: 36px; align-items: center; }
+  .swatches {
+    display: flex;
+    gap: 4px;
+    height: 36px;
+    align-items: center;
+  }
   .swatch {
-    width: 18px; height: 18px;
+    width: 18px;
+    height: 18px;
     border-radius: 5px;
     background: var(--c);
     box-shadow: 0 0 0 1px rgb(0 0 0 / 0.08) inset;
     transition: box-shadow var(--fast) var(--ease);
   }
-  .swatch.on { box-shadow: 0 0 0 2px var(--bg-raised), 0 0 0 4px var(--c); }
+  .swatch.on {
+    box-shadow:
+      0 0 0 2px var(--bg-raised),
+      0 0 0 4px var(--c);
+  }
 
-  .error { margin-top: var(--sp-3); }
+  .error {
+    margin-top: var(--sp-3);
+  }
 
   .terms {
     display: flex;
@@ -230,14 +267,20 @@
     margin-top: var(--sp-3);
     font-size: var(--text-xs);
   }
-  .terms :global(svg) { margin-top: 2px; flex: none; }
+  .terms :global(svg) {
+    margin-top: 2px;
+    flex: none;
+  }
 
-  .ghost { color: var(--fg-subtle); }
+  .ghost {
+    color: var(--fg-subtle);
+  }
 
   /* Visually hidden, still reachable: the real file input behind the button. */
   .vh {
     position: absolute;
-    width: 1px; height: 1px;
+    width: 1px;
+    height: 1px;
     overflow: hidden;
     clip-path: inset(50%);
   }

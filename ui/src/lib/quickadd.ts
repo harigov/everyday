@@ -53,18 +53,31 @@ const EMPTY: QuickAdd = {
 export const QUICK_ADD_HINT = '#tag  !high  ~90m  @fri  @16:30'
 
 const PRIORITIES: Record<string, Priority> = {
-  urgent: 'urgent', p1: 'urgent',
-  high: 'high', hi: 'high', p2: 'high',
-  medium: 'medium', med: 'medium', p3: 'medium',
-  low: 'low', lo: 'low', p4: 'low',
-  none: 'none', p5: 'none',
+  urgent: 'urgent',
+  p1: 'urgent',
+  high: 'high',
+  hi: 'high',
+  p2: 'high',
+  medium: 'medium',
+  med: 'medium',
+  p3: 'medium',
+  low: 'low',
+  lo: 'low',
+  p4: 'low',
+  none: 'none',
+  p5: 'none',
 }
 
 const STATUSES: Record<string, TaskStatus> = {
-  backlog: 'backlog', someday: 'backlog',
-  todo: 'todo', next: 'todo',
-  doing: 'doing', wip: 'doing', started: 'doing',
-  blocked: 'blocked', waiting: 'blocked',
+  backlog: 'backlog',
+  someday: 'backlog',
+  todo: 'todo',
+  next: 'todo',
+  doing: 'doing',
+  wip: 'doing',
+  started: 'doing',
+  blocked: 'blocked',
+  waiting: 'blocked',
   done: 'done',
 }
 

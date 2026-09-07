@@ -102,7 +102,10 @@
           <button
             class="num"
             title="Open this day"
-            onclick={() => { calendar.view = 'day'; calendar.goto(iso) }}
+            onclick={() => {
+              calendar.view = 'day'
+              calendar.goto(iso)
+            }}
           >
             <!-- The first of a month names itself, so the boundary between
                  two months is legible without counting back to a heading. -->
@@ -133,8 +136,11 @@
           {#if rows.length > MAX_ROWS}
             <button
               class="more"
-              onclick={() => { calendar.view = 'day'; calendar.goto(iso) }}
-            >{rows.length - MAX_ROWS} more</button>
+              onclick={() => {
+                calendar.view = 'day'
+                calendar.goto(iso)
+              }}>{rows.length - MAX_ROWS} more</button
+            >
           {/if}
         </div>
       </div>
@@ -143,7 +149,12 @@
 </div>
 
 <style>
-  .month { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .month {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
 
   .headings {
     display: grid;
@@ -179,14 +190,27 @@
     border-bottom: 1px solid var(--border);
     overflow: hidden;
   }
-  .cell:nth-child(7n + 1) { border-left: none; }
+  .cell:nth-child(7n + 1) {
+    border-left: none;
+  }
   /* Days spilling in from the neighbouring months are still real days --
      things happen on them -- so they are dimmed rather than emptied. */
-  .cell.outside { background: var(--bg-sunken); }
-  .cell.outside .num { color: var(--fg-faint); }
-  .cell.today { background: color-mix(in oklab, var(--accent) 4.5%, transparent); }
+  .cell.outside {
+    background: var(--bg-sunken);
+  }
+  .cell.outside .num {
+    color: var(--fg-faint);
+  }
+  .cell.today {
+    background: color-mix(in oklab, var(--accent) 4.5%, transparent);
+  }
 
-  .cellhead { display: flex; align-items: center; gap: 4px; flex: none; }
+  .cellhead {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: none;
+  }
   .num {
     display: flex;
     align-items: baseline;
@@ -199,12 +223,31 @@
     font-variant-numeric: tabular-nums;
     color: var(--fg-muted);
   }
-  .num:hover { background: var(--bg-hover); color: var(--fg); }
-  .mon { font-weight: 650; text-transform: uppercase; letter-spacing: 0.03em; opacity: 0.75; }
-  .today .num { color: var(--accent); }
-  .wrote { color: var(--fg-faint); display: flex; }
+  .num:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .mon {
+    font-weight: 650;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    opacity: 0.75;
+  }
+  .today .num {
+    color: var(--accent);
+  }
+  .wrote {
+    color: var(--fg-faint);
+    display: flex;
+  }
 
-  .rows { display: flex; flex-direction: column; gap: 1px; min-height: 0; overflow: hidden; }
+  .rows {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-height: 0;
+    overflow: hidden;
+  }
 
   .row {
     display: flex;
@@ -218,24 +261,46 @@
     color: var(--fg-muted);
     min-width: 0;
   }
-  .row:hover { background: var(--bg-hover); color: var(--fg); }
-  .row.muted { opacity: 0.5; text-decoration: line-through; }
+  .row:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .row.muted {
+    opacity: 0.5;
+    text-decoration: line-through;
+  }
 
   /* The dot carries the whole visual language at this size: filled for a
      record, hollow for a plan, ringed for somebody else's calendar. Four
      shapes in six pixels is more than a month cell can spare, so the rest of
      the distinction is left to the day view. */
   .dot {
-    width: 6px; height: 6px; flex: none;
+    width: 6px;
+    height: 6px;
+    flex: none;
     border-radius: 50%;
     border: 1.5px solid var(--c);
   }
-  .row.actual .dot { background: var(--c); }
-  .row.event .dot { background: color-mix(in oklab, var(--c) 35%, transparent); }
-  .row.task .dot { border-radius: 1.5px; }
+  .row.actual .dot {
+    background: var(--c);
+  }
+  .row.event .dot {
+    background: color-mix(in oklab, var(--c) 35%, transparent);
+  }
+  .row.task .dot {
+    border-radius: 1.5px;
+  }
 
-  .at { font-variant-numeric: tabular-nums; color: var(--fg-faint); flex: none; }
-  .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .at {
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-faint);
+    flex: none;
+  }
+  .what {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   .more {
     height: 16px;
@@ -244,5 +309,7 @@
     color: var(--fg-faint);
     text-align: left;
   }
-  .more:hover { color: var(--fg-muted); }
+  .more:hover {
+    color: var(--fg-muted);
+  }
 </style>

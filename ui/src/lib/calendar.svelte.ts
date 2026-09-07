@@ -125,10 +125,7 @@ function readTimer(): Timer | null {
 }
 
 /** What the detail panel is showing. */
-export type Selection =
-  | { kind: 'block'; id: string }
-  | { kind: 'event'; id: string }
-  | null
+export type Selection = { kind: 'block'; id: string } | { kind: 'event'; id: string } | null
 
 class CalendarState {
   // ── what is on screen ────────────────────────────────────────────────
@@ -296,8 +293,8 @@ class CalendarState {
       // One round of queries per navigation, all four in parallel. Each is a
       // date-range scan over a clear index column, so paging through a year
       // is cheap even on an encrypted vault.
-      const [calendars, events, blocks, dueTasks, openTasks, projects, entries] =
-        await Promise.all([
+      const [calendars, events, blocks, dueTasks, openTasks, projects, entries] = await Promise.all(
+        [
           api.calendars(),
           api.events({ from, to, visibleOnly: true }),
           api.blocks({ from, to }),
@@ -305,7 +302,8 @@ class CalendarState {
           api.tasks({ statuses: OPEN_STATUSES, sort: 'dueAsc', limit: 300 }),
           api.projects(),
           api.entries({ from, to, sort: 'dateAsc', limit: 500 }),
-        ])
+        ],
+      )
       this.calendars = calendars
       this.events = events
       this.blocks = blocks
@@ -367,9 +365,7 @@ class CalendarState {
 
   /** A task the calendar knows about, from either of the lists it loads. */
   taskOf(id: TaskId): Task | null {
-    return (
-      this.dueTasks.find((t) => t.id === id) ?? this.openTasks.find((t) => t.id === id) ?? null
-    )
+    return this.dueTasks.find((t) => t.id === id) ?? this.openTasks.find((t) => t.id === id) ?? null
   }
 
   /** What a block should be called: its own title, or its subject's name. */
@@ -849,13 +845,15 @@ class CalendarState {
         .filter(Boolean) as TaskId[],
     )
     const [, to] = this.range
-    return this.openTasks
-      .filter((t) => !booked.has(t.id))
-      // Everything due inside the window, plus a fortnight's grace either
-      // side of it, plus everything undated -- which is the backlog, and the
-      // whole reason this rail is worth dragging from.
-      .filter((t) => !t.dueDate || t.dueDate <= addDays(to, 14))
-      .slice(0, 40)
+    return (
+      this.openTasks
+        .filter((t) => !booked.has(t.id))
+        // Everything due inside the window, plus a fortnight's grace either
+        // side of it, plus everything undated -- which is the backlog, and the
+        // whole reason this rail is worth dragging from.
+        .filter((t) => !t.dueDate || t.dueDate <= addDays(to, 14))
+        .slice(0, 40)
+    )
   }
 
   // ── subscriptions ────────────────────────────────────────────────────

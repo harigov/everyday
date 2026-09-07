@@ -118,7 +118,10 @@
     </header>
 
     <div class="bar">
-      <QuickAdd bind:this={capture} placeholder={todo.project ? `Add to ${todo.project.name}` : 'Add a task'} />
+      <QuickAdd
+        bind:this={capture}
+        placeholder={todo.project ? `Add to ${todo.project.name}` : 'Add a task'}
+      />
     </div>
 
     <div class="filterbar">
@@ -129,7 +132,9 @@
         placeholder="Filter tasks"
         value={todo.filter}
         oninput={(e) => todo.setFilter(e.currentTarget.value)}
-        onkeydown={(e) => { if (e.key === 'Escape') todo.setFilter('') }}
+        onkeydown={(e) => {
+          if (e.key === 'Escape') todo.setFilter('')
+        }}
       />
       <span class="summary">{summary}</span>
     </div>
@@ -145,8 +150,17 @@
 </main>
 
 <style>
-  .todo { flex: 1; min-width: 0; display: flex; }
-  .pane { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .todo {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+  }
+  .pane {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
 
   .top {
     display: flex;
@@ -165,11 +179,21 @@
     font-size: var(--text-md);
     font-weight: 620;
     letter-spacing: -0.008em;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .mark { font-size: var(--text-base); line-height: 1; }
+  .mark {
+    font-size: var(--text-base);
+    line-height: 1;
+  }
 
-  .tools { display: flex; align-items: center; gap: var(--sp-2); flex: none; }
+  .tools {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex: none;
+  }
 
   .views {
     display: flex;
@@ -179,14 +203,24 @@
     background: var(--bg-active);
   }
   .view {
-    width: 26px; height: 22px;
-    display: grid; place-items: center;
+    width: 26px;
+    height: 22px;
+    display: grid;
+    place-items: center;
     border-radius: 4px;
     color: var(--fg-subtle);
-    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
   }
-  .view:hover { color: var(--fg); }
-  .view.on { background: var(--bg-raised); color: var(--fg); box-shadow: var(--shadow-sm); }
+  .view:hover {
+    color: var(--fg);
+  }
+  .view.on {
+    background: var(--bg-raised);
+    color: var(--fg);
+    box-shadow: var(--shadow-sm);
+  }
 
   .select {
     height: 26px;
@@ -198,20 +232,37 @@
     color: var(--fg-subtle);
     cursor: pointer;
   }
-  .select:hover { background: var(--bg-hover); color: var(--fg); }
-  .select:focus { outline: none; }
+  .select:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .select:focus {
+    outline: none;
+  }
 
   .toggle {
-    display: flex; align-items: center; gap: 5px;
-    height: 26px; padding: 0 var(--sp-2);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    height: 26px;
+    padding: 0 var(--sp-2);
     border-radius: var(--radius-sm);
     font-size: var(--text-sm);
     color: var(--fg-faint);
   }
-  .toggle:hover { background: var(--bg-hover); color: var(--fg-muted); }
-  .toggle.on { background: var(--bg-active); color: var(--fg); }
+  .toggle:hover {
+    background: var(--bg-hover);
+    color: var(--fg-muted);
+  }
+  .toggle.on {
+    background: var(--bg-active);
+    color: var(--fg);
+  }
 
-  .bar { padding: 0 var(--sp-4) var(--sp-2); flex: none; }
+  .bar {
+    padding: 0 var(--sp-4) var(--sp-2);
+    flex: none;
+  }
 
   .filterbar {
     position: relative;
@@ -239,21 +290,32 @@
     color: var(--fg);
     user-select: text;
   }
-  .filter::placeholder { color: var(--fg-faint); }
-  .filter::-webkit-search-cancel-button { -webkit-appearance: none; }
-  .filter:focus { outline: none; border-color: var(--accent); background: var(--bg-raised); }
+  .filter::placeholder {
+    color: var(--fg-faint);
+  }
+  .filter::-webkit-search-cancel-button {
+    -webkit-appearance: none;
+  }
+  .filter:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--bg-raised);
+  }
 
   .summary {
     font-size: var(--text-xs);
     color: var(--fg-faint);
     font-variant-numeric: tabular-nums;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* Visually hidden, still announced. */
   .vh {
     position: absolute;
-    width: 1px; height: 1px;
+    width: 1px;
+    height: 1px;
     overflow: hidden;
     clip-path: inset(50%);
   }

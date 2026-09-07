@@ -128,7 +128,10 @@
 </div>
 
 <style>
-  .list { flex: 1; padding: 0 var(--sp-4) var(--sp-10); }
+  .list {
+    flex: 1;
+    padding: 0 var(--sp-4) var(--sp-10);
+  }
 
   .grouphead {
     display: flex;
@@ -136,11 +139,25 @@
     gap: var(--sp-2);
     padding: var(--sp-5) var(--sp-2) var(--sp-2);
   }
-  .eyebrow.late { color: var(--danger); }
-  .n { font-size: var(--text-xs); color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+  .eyebrow.late {
+    color: var(--danger);
+  }
+  .n {
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+    font-variant-numeric: tabular-nums;
+  }
 
-  .blank { padding: var(--sp-12) var(--sp-4); text-align: center; color: var(--fg-subtle); }
-  .blank .quiet { margin-top: var(--sp-2); font-size: var(--text-sm); color: var(--fg-faint); }
+  .blank {
+    padding: var(--sp-12) var(--sp-4);
+    text-align: center;
+    color: var(--fg-subtle);
+  }
+  .blank .quiet {
+    margin-top: var(--sp-2);
+    font-size: var(--text-sm);
+    color: var(--fg-faint);
+  }
   .blank code {
     font-family: var(--font-mono);
     font-size: var(--text-xs);

@@ -63,7 +63,7 @@ let invoke: Invoke = async () => {
 
 if (!MOCK) {
   const mod = await import('@tauri-apps/api/core')
-  invoke = async <T,>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
+  invoke = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
     try {
       return await mod.invoke<T>(cmd, args)
     } catch (raw) {
@@ -85,12 +85,8 @@ export const isMock = MOCK
 export const api = {
   bootstrap: () => invoke<Bootstrap>('bootstrap'),
 
-  createVault: (opts: {
-    path: string
-    name: string
-    backend: string
-    password: string | null
-  }) => invoke<VaultStatus>('create_vault', opts),
+  createVault: (opts: { path: string; name: string; backend: string; password: string | null }) =>
+    invoke<VaultStatus>('create_vault', opts),
 
   openVault: (path: string) => invoke<VaultStatus>('open_vault', { path }),
   unlock: (password: string) => invoke<VaultStatus>('unlock', { password }),
@@ -119,8 +115,7 @@ export const api = {
     invoke<SearchHit[]>('search', { query, journalId, limit }),
 
   /** Import a file the user dropped or picked; returns its content address. */
-  putBlob: (bytes: Uint8Array) =>
-    invoke<string>('put_blob', { bytes: Array.from(bytes) }),
+  putBlob: (bytes: Uint8Array) => invoke<string>('put_blob', { bytes: Array.from(bytes) }),
 
   /** All tags in use, most frequent first. */
   tags: () => invoke<string[]>('list_tags'),

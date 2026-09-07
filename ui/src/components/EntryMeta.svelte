@@ -48,7 +48,10 @@
       onblur={commitTag}
       onkeydown={(e) => {
         if (e.key === 'Enter') commitTag()
-        if (e.key === 'Escape') { draft = ''; adding = false }
+        if (e.key === 'Escape') {
+          draft = ''
+          adding = false
+        }
       }}
     />
   {:else}
@@ -68,20 +71,35 @@
   }
 
   .place {
-    display: inline-flex; align-items: center; gap: 4px;
-    font-size: var(--text-sm); color: var(--fg-subtle);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
   }
 
-  .chip { cursor: pointer; transition: all var(--fast) var(--ease); }
-  .chip:hover { border-color: var(--danger); color: var(--danger); }
-  .x {
-    display: flex; margin-left: 3px;
-    opacity: 0; transition: opacity var(--fast) var(--ease);
+  .chip {
+    cursor: pointer;
+    transition: all var(--fast) var(--ease);
   }
-  .chip:hover .x { opacity: 1; }
+  .chip:hover {
+    border-color: var(--danger);
+    color: var(--danger);
+  }
+  .x {
+    display: flex;
+    margin-left: 3px;
+    opacity: 0;
+    transition: opacity var(--fast) var(--ease);
+  }
+  .chip:hover .x {
+    opacity: 1;
+  }
 
   .add {
-    display: inline-flex; align-items: center; gap: 3px;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
     font-size: var(--text-xs);
     font-weight: 500;
     color: var(--fg-faint);
@@ -90,7 +108,10 @@
     border-radius: 99px;
     border: 1px dashed var(--border-strong);
   }
-  .add:hover { color: var(--fg-muted); border-color: var(--fg-subtle); }
+  .add:hover {
+    color: var(--fg-muted);
+    border-color: var(--fg-subtle);
+  }
 
   .tag-input {
     height: 20px;
@@ -102,5 +123,7 @@
     font-size: var(--text-xs);
     user-select: text;
   }
-  .tag-input:focus { outline: none; }
+  .tag-input:focus {
+    outline: none;
+  }
 </style>

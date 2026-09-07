@@ -41,8 +41,7 @@
 
   async function startCurrent() {
     if (!current) return
-    const subject: BlockSubject =
-      current.block?.subject ?? { type: 'adhoc' }
+    const subject: BlockSubject = current.block?.subject ?? { type: 'adhoc' }
     await calendar.startTimer(
       $state.snapshot(subject) as BlockSubject,
       current.block?.subject.type === 'adhoc' || !current.block ? current.title : '',
@@ -112,7 +111,9 @@
           class="notefield"
           placeholder="…or what are you doing?"
           bind:value={note}
-          onkeydown={(e) => { if (e.key === 'Enter') startNote() }}
+          onkeydown={(e) => {
+            if (e.key === 'Enter') startNote()
+          }}
         />
         <button class="go" disabled={!note.trim()} title="Start tracking" onclick={startNote}>
           <Icon name="play" size={14} />
@@ -133,29 +134,53 @@
     border-bottom: 1px solid var(--border);
     background: var(--bg-panel);
   }
-  .track.on { background: var(--bg-raised); }
+  .track.on {
+    background: var(--bg-raised);
+  }
 
   /* ── Running ────────────────────────────────────────────────────────── */
 
-  .live { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+  .live {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    min-width: 0;
+  }
   .pulse {
-    width: 8px; height: 8px; flex: none;
+    width: 8px;
+    height: 8px;
+    flex: none;
     border-radius: 50%;
     background: var(--c);
     animation: beat 2s var(--ease) infinite;
   }
   @keyframes beat {
-    0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--c) 55%, transparent); }
-    60% { box-shadow: 0 0 0 6px color-mix(in oklab, var(--c) 0%, transparent); }
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 color-mix(in oklab, var(--c) 55%, transparent);
+    }
+    60% {
+      box-shadow: 0 0 0 6px color-mix(in oklab, var(--c) 0%, transparent);
+    }
   }
 
-  .what { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .what {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
   .title {
     font-size: var(--text-base);
     font-weight: 570;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .since { font-size: var(--text-xs); color: var(--fg-faint); }
+  .since {
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+  }
 
   /* Tabular, and wide enough for `1:02:03`, so the strip does not jitter as
      the seconds tick over. */
@@ -169,16 +194,26 @@
   }
 
   .stop {
-    width: 28px; height: 28px; flex: none;
-    display: grid; place-items: center;
+    width: 28px;
+    height: 28px;
+    flex: none;
+    display: grid;
+    place-items: center;
     border-radius: var(--radius-sm);
     color: var(--fg-subtle);
   }
-  .stop:hover { background: var(--bg-hover); color: var(--danger); }
+  .stop:hover {
+    background: var(--bg-hover);
+    color: var(--danger);
+  }
 
   /* ── Idle ───────────────────────────────────────────────────────────── */
 
-  .idle { display: flex; flex-direction: column; gap: var(--sp-2); }
+  .idle {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
 
   .start {
     display: flex;
@@ -193,11 +228,24 @@
     text-align: left;
     min-width: 0;
   }
-  .start:hover { background: color-mix(in oklab, var(--c) 18%, transparent); }
-  .startlabel { display: flex; flex-direction: column; min-width: 0; }
-  .hint { font-size: var(--text-xs); opacity: 0.75; }
+  .start:hover {
+    background: color-mix(in oklab, var(--c) 18%, transparent);
+  }
+  .startlabel {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .hint {
+    font-size: var(--text-xs);
+    opacity: 0.75;
+  }
 
-  .noterow { display: flex; align-items: center; gap: var(--sp-1); }
+  .noterow {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+  }
   .notefield {
     flex: 1;
     min-width: 0;
@@ -209,17 +257,32 @@
     font-size: var(--text-sm);
     user-select: text;
   }
-  .notefield::placeholder { color: var(--fg-faint); }
-  .notefield:focus { outline: none; border-color: var(--accent); background: var(--bg-raised); }
+  .notefield::placeholder {
+    color: var(--fg-faint);
+  }
+  .notefield:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--bg-raised);
+  }
 
   .go {
-    width: 28px; height: 28px; flex: none;
-    display: grid; place-items: center;
+    width: 28px;
+    height: 28px;
+    flex: none;
+    display: grid;
+    place-items: center;
     border-radius: var(--radius-sm);
     color: var(--fg-subtle);
   }
-  .go:hover { background: var(--bg-hover); color: var(--accent); }
-  .go[disabled] { opacity: 0.35; pointer-events: none; }
+  .go:hover {
+    background: var(--bg-hover);
+    color: var(--accent);
+  }
+  .go[disabled] {
+    opacity: 0.35;
+    pointer-events: none;
+  }
 
   .tally {
     margin-top: var(--sp-2);

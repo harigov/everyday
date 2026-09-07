@@ -256,9 +256,7 @@ class TodoState {
    * the wrong number.
    */
   openCount(id: ProjectId | null): number {
-    return (
-      this.stats?.openByProject.find((c) => (c.projectId ?? null) === id)?.open ?? 0
-    )
+    return this.stats?.openByProject.find((c) => (c.projectId ?? null) === id)?.open ?? 0
   }
 
   /**
@@ -358,15 +356,17 @@ class TodoState {
    * Returns the new task so the caller can keep focus and go straight into
    * the next one, which is the entire point of the input this comes from.
    */
-  async add(line: string, opts: { parentId?: TaskId; status?: TaskStatus } = {}): Promise<Task | null> {
+  async add(
+    line: string,
+    opts: { parentId?: TaskId; status?: TaskStatus } = {},
+  ): Promise<Task | null> {
     const parsed = parseQuickAdd(line)
     if (!parsed.title) return null
 
     // Where a new task lands: inside the project being viewed, or -- in a
     // smart list, where there is no project to speak of -- the inbox.
     const parent = opts.parentId ? this.tasks.find((t) => t.id === opts.parentId) : null
-    const projectId =
-      parent?.projectId ?? (this.scope.kind === 'project' ? this.scope.id : null)
+    const projectId = parent?.projectId ?? (this.scope.kind === 'project' ? this.scope.id : null)
 
     try {
       const task = await api.newTask({
@@ -414,9 +414,11 @@ class TodoState {
 
   /** One past the last task in the column (or under the parent) it joins. */
   #nextSortOrder(status: TaskStatus, parentId: TaskId | null): number {
-    return this.tasks
-      .filter((t) => (t.parentId ?? null) === parentId && t.status === status)
-      .reduce((max, t) => Math.max(max, t.sortOrder), -1) + 1
+    return (
+      this.tasks
+        .filter((t) => (t.parentId ?? null) === parentId && t.status === status)
+        .reduce((max, t) => Math.max(max, t.sortOrder), -1) + 1
+    )
   }
 
   async remove(id: TaskId) {

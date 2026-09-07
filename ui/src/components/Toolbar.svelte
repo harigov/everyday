@@ -20,7 +20,10 @@
     let queued = 0
     const bump = () => {
       if (queued) return
-      queued = requestAnimationFrame(() => { queued = 0; tick += 1 })
+      queued = requestAnimationFrame(() => {
+        queued = 0
+        tick += 1
+      })
     }
     editor.on('transaction', bump)
     editor.on('selectionUpdate', bump)
@@ -53,20 +56,74 @@
     const c = () => editor!.chain().focus()
     return [
       [
-        { label: 'Bold', icon: 'bold', keys: 'B', run: () => c().toggleBold().run(), on: () => active('bold') },
-        { label: 'Italic', icon: 'italic', keys: 'I', run: () => c().toggleItalic().run(), on: () => active('italic') },
-        { label: 'Underline', icon: 'underline', keys: 'U', run: () => c().toggleUnderline().run(), on: () => active('underline') },
-        { label: 'Highlight', icon: 'highlight', run: () => c().toggleHighlight().run(), on: () => active('highlight') },
+        {
+          label: 'Bold',
+          icon: 'bold',
+          keys: 'B',
+          run: () => c().toggleBold().run(),
+          on: () => active('bold'),
+        },
+        {
+          label: 'Italic',
+          icon: 'italic',
+          keys: 'I',
+          run: () => c().toggleItalic().run(),
+          on: () => active('italic'),
+        },
+        {
+          label: 'Underline',
+          icon: 'underline',
+          keys: 'U',
+          run: () => c().toggleUnderline().run(),
+          on: () => active('underline'),
+        },
+        {
+          label: 'Highlight',
+          icon: 'highlight',
+          run: () => c().toggleHighlight().run(),
+          on: () => active('highlight'),
+        },
       ],
       [
-        { label: 'Heading', icon: 'heading', run: () => c().toggleHeading({ level: 2 }).run(), on: () => active('heading', { level: 2 }) },
-        { label: 'Quote', icon: 'quote', run: () => c().toggleBlockquote().run(), on: () => active('blockquote') },
-        { label: 'Code', icon: 'code', keys: 'E', run: () => c().toggleCode().run(), on: () => active('code') },
+        {
+          label: 'Heading',
+          icon: 'heading',
+          run: () => c().toggleHeading({ level: 2 }).run(),
+          on: () => active('heading', { level: 2 }),
+        },
+        {
+          label: 'Quote',
+          icon: 'quote',
+          run: () => c().toggleBlockquote().run(),
+          on: () => active('blockquote'),
+        },
+        {
+          label: 'Code',
+          icon: 'code',
+          keys: 'E',
+          run: () => c().toggleCode().run(),
+          on: () => active('code'),
+        },
       ],
       [
-        { label: 'Bullet list', icon: 'bulletList', run: () => c().toggleBulletList().run(), on: () => active('bulletList') },
-        { label: 'Numbered list', icon: 'orderedList', run: () => c().toggleOrderedList().run(), on: () => active('orderedList') },
-        { label: 'Checklist', icon: 'taskList', run: () => c().toggleTaskList().run(), on: () => active('taskList') },
+        {
+          label: 'Bullet list',
+          icon: 'bulletList',
+          run: () => c().toggleBulletList().run(),
+          on: () => active('bulletList'),
+        },
+        {
+          label: 'Numbered list',
+          icon: 'orderedList',
+          run: () => c().toggleOrderedList().run(),
+          on: () => active('orderedList'),
+        },
+        {
+          label: 'Checklist',
+          icon: 'taskList',
+          run: () => c().toggleTaskList().run(),
+          on: () => active('taskList'),
+        },
       ],
       [
         { label: 'Divider', icon: 'divider', run: () => c().setHorizontalRule().run() },
@@ -158,7 +215,12 @@
         spellcheck="false"
         autocapitalize="off"
         autocomplete="off"
-        onkeydown={(e) => { if (e.key === 'Escape') { e.preventDefault(); closeLink() } }}
+        onkeydown={(e) => {
+          if (e.key === 'Escape') {
+            e.preventDefault()
+            closeLink()
+          }
+        }}
       />
       <div class="sheet-row">
         {#if editor?.isActive('link')}
@@ -189,9 +251,15 @@
     overflow-x: auto;
     scrollbar-width: none;
   }
-  .bar::-webkit-scrollbar { display: none; }
+  .bar::-webkit-scrollbar {
+    display: none;
+  }
 
-  .group { display: flex; align-items: center; gap: 2px; }
+  .group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
 
   /* 32px targets on a 46px bar: comfortably clickable, and the 7px radius
      matches the pill the active state draws. */
@@ -206,8 +274,13 @@
       background var(--fast) var(--ease),
       color var(--fast) var(--ease);
   }
-  .tool:hover { background: var(--bg-hover); color: var(--fg); }
-  .tool:active { background: var(--bg-active); }
+  .tool:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .tool:active {
+    background: var(--bg-active);
+  }
 
   /* Active marks read as accent-on-tint rather than as a grey box, so the
      caret's current formatting is legible at a glance across the row. */
@@ -226,5 +299,4 @@
     background: var(--border);
     flex: none;
   }
-
 </style>

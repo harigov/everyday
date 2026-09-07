@@ -91,7 +91,10 @@
     bind:value
     use:focusOnMount={autofocus}
     onkeydown={(e) => {
-      if (e.key === 'Enter') { e.preventDefault(); submit() }
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        submit()
+      }
       if (e.key === 'Escape') {
         e.preventDefault()
         if (value) value = ''
@@ -104,7 +107,8 @@
 {#if showing}
   <div class="parsed" aria-live="polite">
     {#if parsed.dueDate}
-      <span class="bit"><Icon name="calendar" size={11} />
+      <span class="bit"
+        ><Icon name="calendar" size={11} />
         {friendlyDate(parsed.dueDate)}{parsed.dueTime ? ` ${formatClock(parsed.dueTime)}` : ''}
       </span>
     {/if}
@@ -112,7 +116,9 @@
       <span class="bit p-{parsed.priority}"><Icon name="flag" size={11} /> {parsed.priority}</span>
     {/if}
     {#if parsed.estimateMinutes}
-      <span class="bit"><Icon name="clock" size={11} /> {formatMinutes(parsed.estimateMinutes)}</span>
+      <span class="bit"
+        ><Icon name="clock" size={11} /> {formatMinutes(parsed.estimateMinutes)}</span
+      >
     {/if}
     {#if parsed.status}
       <span class="bit"><Icon name="board" size={11} /> {parsed.status}</span>
@@ -140,7 +146,9 @@
     pointer-events: none;
     transition: color var(--fast) var(--ease);
   }
-  .quickadd:focus-within .mark { color: var(--accent); }
+  .quickadd:focus-within .mark {
+    color: var(--accent);
+  }
 
   .field {
     width: 100%;
@@ -152,9 +160,13 @@
     color: var(--fg);
     font-size: var(--text-md);
     user-select: text;
-    transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+    transition:
+      border-color var(--fast) var(--ease),
+      box-shadow var(--fast) var(--ease);
   }
-  .field::placeholder { color: var(--fg-faint); }
+  .field::placeholder {
+    color: var(--fg-faint);
+  }
   .field:focus {
     outline: none;
     border-color: var(--accent);
@@ -167,7 +179,9 @@
     font-size: var(--text-base);
     background: var(--bg-panel);
   }
-  .compact .mark { left: var(--sp-2); }
+  .compact .mark {
+    left: var(--sp-2);
+  }
 
   .hint {
     margin-top: 5px;
@@ -194,5 +208,8 @@
     font-weight: 550;
     color: var(--fg-muted);
   }
-  .bit.p-high, .bit.p-urgent { color: var(--danger); }
+  .bit.p-high,
+  .bit.p-urgent {
+    color: var(--danger);
+  }
 </style>

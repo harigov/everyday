@@ -175,7 +175,10 @@ const entries: Entry[] = [
         {
           type: 'bulletList',
           content: [
-            { type: 'listItem', content: para('Finished the sourdough, finally got the crumb right') },
+            {
+              type: 'listItem',
+              content: para('Finished the sourdough, finally got the crumb right'),
+            },
             { type: 'listItem', content: para('Walked to the bridge and back') },
             { type: 'listItem', content: para('Did not open the laptop once') },
           ],
@@ -223,7 +226,13 @@ const entries: Entry[] = [
     tags: ['portugal', 'travel'],
     starred: true,
     pinned: true,
-    location: { latitude: 38.7223, longitude: -9.1393, placeName: 'Alfama', locality: 'Lisbon', country: 'Portugal' },
+    location: {
+      latitude: 38.7223,
+      longitude: -9.1393,
+      placeName: 'Alfama',
+      locality: 'Lisbon',
+      country: 'Portugal',
+    },
     attachments: [
       {
         blob: 'a'.repeat(64),
@@ -809,7 +818,7 @@ function requireUnlocked() {
   if (!unlocked) throw new VaultError('locked', 'vault is locked')
 }
 
-export const mockInvoke = async <T,>(
+export const mockInvoke = async <T>(
   cmd: string,
   args: Record<string, unknown> = {},
 ): Promise<T> => {
@@ -822,7 +831,10 @@ export const mockInvoke = async <T,>(
         vaultExists: true,
         defaultPath: '/Users/you/Library/Application Support/EveryDay',
         backends: [
-          { id: 'sqlite', description: 'SQLite database — fastest, best for large journals (recommended)' },
+          {
+            id: 'sqlite',
+            description: 'SQLite database — fastest, best for large journals (recommended)',
+          },
           { id: 'markdown', description: 'Markdown files — readable and syncable with any tool' },
         ],
         status: status(),
@@ -887,7 +899,10 @@ export const mockInvoke = async <T,>(
     case 'delete_journal': {
       requireUnlocked()
       const id = args.id as string
-      journals.splice(journals.findIndex((j) => j.id === id), 1)
+      journals.splice(
+        journals.findIndex((j) => j.id === id),
+        1,
+      )
       for (let i = entries.length - 1; i >= 0; i--) {
         if (entries[i]!.journalId === id) entries.splice(i, 1)
       }
@@ -952,13 +967,18 @@ export const mockInvoke = async <T,>(
 
     case 'delete_entry': {
       requireUnlocked()
-      entries.splice(entries.findIndex((e) => e.id === args.id), 1)
+      entries.splice(
+        entries.findIndex((e) => e.id === args.id),
+        1,
+      )
       return undefined as T
     }
 
     case 'search': {
       requireUnlocked()
-      const q = String(args.query ?? '').trim().toLowerCase()
+      const q = String(args.query ?? '')
+        .trim()
+        .toLowerCase()
       if (!q) return [] as T
       const hits: SearchHit[] = []
       for (const e of entries) {
@@ -1032,7 +1052,10 @@ export const mockInvoke = async <T,>(
         const subject = blocks[i]!.subject
         if (subject.type === 'project' && subject.id === id) blocks.splice(i, 1)
       }
-      projects.splice(projects.findIndex((p) => p.id === id), 1)
+      projects.splice(
+        projects.findIndex((p) => p.id === id),
+        1,
+      )
       return undefined as T
     }
 
@@ -1133,7 +1156,10 @@ export const mockInvoke = async <T,>(
 
     case 'delete_block':
       requireUnlocked()
-      blocks.splice(blocks.findIndex((b) => b.id === args.id), 1)
+      blocks.splice(
+        blocks.findIndex((b) => b.id === args.id),
+        1,
+      )
       return undefined as T
 
     case 'task_tags': {
@@ -1157,12 +1183,14 @@ export const mockInvoke = async <T,>(
         blocks
           .filter((b) => b.kind === kind)
           .reduce(
-            (sum, b) => sum + Math.max(0, Math.round((Date.parse(b.end) - Date.parse(b.start)) / 60_000)),
+            (sum, b) =>
+              sum + Math.max(0, Math.round((Date.parse(b.end) - Date.parse(b.start)) / 60_000)),
             0,
           )
       return {
         projects: projects.length,
-        activeProjects: projects.filter((p) => p.status === 'active' || p.status === 'paused').length,
+        activeProjects: projects.filter((p) => p.status === 'active' || p.status === 'paused')
+          .length,
         tasks: tasks.length,
         openTasks: tasks.filter((t) => isOpen(t.status)).length,
         doneTasks: tasks.filter((t) => t.status === 'done').length,
@@ -1225,10 +1253,7 @@ export const mockInvoke = async <T,>(
           }
           return true
         })
-        .sort(
-          (a, b) =>
-            Number(b.allDay) - Number(a.allDay) || a.start.localeCompare(b.start),
-        )
+        .sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.start.localeCompare(b.start))
         .slice(0, q.limit ?? undefined) as T
     }
 
@@ -1261,7 +1286,13 @@ export const mockInvoke = async <T,>(
           cmd === 'import_calendar'
             ? { type: 'file', label: String(args.label ?? 'calendar.ics') }
             : { type: 'url', url: address },
-        provider: /google/i.test(address) ? 'google' : /outlook|office/i.test(address) ? 'outlook' : /icloud/i.test(address) ? 'apple' : 'other',
+        provider: /google/i.test(address)
+          ? 'google'
+          : /outlook|office/i.test(address)
+            ? 'outlook'
+            : /icloud/i.test(address)
+              ? 'apple'
+              : 'other',
         visible: true,
         refreshMinutes: cmd === 'import_calendar' ? 0 : 60,
         lastSyncedAt: new Date().toISOString(),
@@ -1283,7 +1314,7 @@ export const mockInvoke = async <T,>(
           events: events.filter((e) => e.calendarId === c.id).length,
           skipped: 0,
         }))
-      return (cmd === 'sync_calendar' ? reports[0] ?? { events: 0, skipped: 0 } : reports) as T
+      return (cmd === 'sync_calendar' ? (reports[0] ?? { events: 0, skipped: 0 }) : reports) as T
     }
 
     case 'calendar_providers':

@@ -76,7 +76,12 @@
         <span class="kind {block.kind}">
           {block.kind === 'actual' ? 'What happened' : 'Planned'}
         </span>
-        <button class="x" title="Close" aria-label="Close" onclick={() => (calendar.selection = null)}>
+        <button
+          class="x"
+          title="Close"
+          aria-label="Close"
+          onclick={() => (calendar.selection = null)}
+        >
           <Icon name="close" size={15} />
         </button>
       </header>
@@ -160,7 +165,6 @@
         </button>
       </div>
     </div>
-
   {:else if event}
     {@const cal = calendar.calendarOf(event.calendarId)}
     <div class="panel scroll" style="--c: {cal?.color ?? 'var(--fg-subtle)'}">
@@ -169,7 +173,12 @@
           <span class="cdot" aria-hidden="true"></span>
           {cal?.name ?? 'Subscribed calendar'}
         </span>
-        <button class="x" title="Close" aria-label="Close" onclick={() => (calendar.selection = null)}>
+        <button
+          class="x"
+          title="Close"
+          aria-label="Close"
+          onclick={() => (calendar.selection = null)}
+        >
           <Icon name="close" size={15} />
         </button>
       </header>
@@ -192,7 +201,9 @@
         <p class="meta"><Icon name="inbox" size={14} /><span>{event.organizer}</span></p>
       {/if}
       {#if event.url}
-        <p class="meta"><Icon name="link" size={14} /><a href={event.url} rel="noreferrer">{event.url}</a></p>
+        <p class="meta">
+          <Icon name="link" size={14} /><a href={event.url} rel="noreferrer">{event.url}</a>
+        </p>
       {/if}
       {#if event.description}
         <p class="desc">{event.description}</p>
@@ -220,24 +231,18 @@
           <Icon name="clock" size={14} />
           Set this time aside
         </button>
-        <button
-          class="btn"
-          onclick={() => calendar.startTimer({ type: 'adhoc' }, event.title)}
-        >
+        <button class="btn" onclick={() => calendar.startTimer({ type: 'adhoc' }, event.title)}>
           <Icon name="play" size={14} />
           I'm in it now
         </button>
       </div>
     </div>
-
   {:else}
     <div class="panel scroll">
       <div class="phead">
         <span class="eyebrow">Not scheduled</span>
       </div>
-      <p class="blurb">
-        Drag any of these onto the grid to set time aside for it.
-      </p>
+      <p class="blurb">Drag any of these onto the grid to set time aside for it.</p>
 
       {#each calendar.unscheduled as task (task.id)}
         {@const project = calendar.projectOf(task.projectId)}
@@ -268,8 +273,8 @@
 
       {#if calendar.unscheduled.length === 0}
         <p class="blank">
-          Everything open has time booked against it. That is either very
-          organised or a sign the todo list needs a look.
+          Everything open has time booked against it. That is either very organised or a sign the
+          todo list needs a look.
         </p>
       {/if}
     </div>
@@ -306,7 +311,12 @@
     padding: var(--sp-4);
   }
 
-  .phead { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+  .phead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+  }
 
   .kind {
     display: inline-flex;
@@ -318,16 +328,28 @@
     text-transform: uppercase;
     color: var(--c);
   }
-  .kind.planned { opacity: 0.85; }
-  .cdot { width: 7px; height: 7px; border-radius: 50%; background: var(--c); }
+  .kind.planned {
+    opacity: 0.85;
+  }
+  .cdot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--c);
+  }
 
   .x {
-    width: 24px; height: 24px;
-    display: grid; place-items: center;
+    width: 24px;
+    height: 24px;
+    display: grid;
+    place-items: center;
     border-radius: var(--radius-sm);
     color: var(--fg-faint);
   }
-  .x:hover { background: var(--bg-hover); color: var(--fg); }
+  .x:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
 
   .titlefield {
     width: 100%;
@@ -338,14 +360,32 @@
     letter-spacing: -0.012em;
     user-select: text;
   }
-  .titlefield::placeholder { color: var(--fg-subtle); font-weight: 550; }
-  .titlefield:focus { outline: none; }
+  .titlefield::placeholder {
+    color: var(--fg-subtle);
+    font-weight: 550;
+  }
+  .titlefield:focus {
+    outline: none;
+  }
 
-  .etitle { font-size: var(--text-lg); font-weight: 600; letter-spacing: -0.012em; }
-  .etitle.cancelled { text-decoration: line-through; color: var(--fg-subtle); }
+  .etitle {
+    font-size: var(--text-lg);
+    font-weight: 600;
+    letter-spacing: -0.012em;
+  }
+  .etitle.cancelled {
+    text-decoration: line-through;
+    color: var(--fg-subtle);
+  }
 
-  .when { font-size: var(--text-sm); color: var(--fg-subtle); }
-  .when .dot { opacity: 0.5; margin: 0 3px; }
+  .when {
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
+  }
+  .when .dot {
+    opacity: 0.5;
+    margin: 0 3px;
+  }
 
   .badge {
     align-self: flex-start;
@@ -357,9 +397,21 @@
     font-weight: 600;
   }
 
-  .times { display: flex; gap: var(--sp-2); }
-  .timefield { flex: 1; display: flex; flex-direction: column; gap: 4px; }
-  .lbl { font-size: var(--text-xs); font-weight: 600; color: var(--fg-faint); }
+  .times {
+    display: flex;
+    gap: var(--sp-2);
+  }
+  .timefield {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .lbl {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--fg-faint);
+  }
   .timefield input {
     height: 30px;
     padding: 0 var(--sp-2);
@@ -370,7 +422,10 @@
     font-variant-numeric: tabular-nums;
     user-select: text;
   }
-  .timefield input:focus { outline: none; border-color: var(--accent); }
+  .timefield input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
 
   .subject {
     display: flex;
@@ -383,9 +438,21 @@
     color: var(--fg-muted);
     min-width: 0;
   }
-  .pmark { font-size: var(--text-sm); line-height: 1; }
-  .stitle { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .est { font-size: var(--text-xs); color: var(--fg-faint); flex: none; }
+  .pmark {
+    font-size: var(--text-sm);
+    line-height: 1;
+  }
+  .stitle {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .est {
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+    flex: none;
+  }
 
   .notes {
     width: 100%;
@@ -398,7 +465,10 @@
     resize: vertical;
     user-select: text;
   }
-  .notes:focus { outline: none; border-color: var(--accent); }
+  .notes:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
 
   .meta {
     display: flex;
@@ -408,7 +478,9 @@
     color: var(--fg-muted);
     word-break: break-word;
   }
-  .meta :global(a) { user-select: text; }
+  .meta :global(a) {
+    user-select: text;
+  }
 
   .desc {
     font-size: var(--text-sm);
@@ -427,12 +499,23 @@
     line-height: var(--leading-normal);
   }
 
-  .actions { display: flex; flex-direction: column; gap: var(--sp-1); margin-top: auto; }
-  .actions .btn { justify-content: flex-start; }
+  .actions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+    margin-top: auto;
+  }
+  .actions .btn {
+    justify-content: flex-start;
+  }
 
   /* ── The unscheduled list ───────────────────────────────────────────── */
 
-  .blurb { font-size: var(--text-sm); color: var(--fg-subtle); line-height: var(--leading-normal); }
+  .blurb {
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
+    line-height: var(--leading-normal);
+  }
 
   .todo {
     width: 100%;
@@ -447,21 +530,49 @@
     background: var(--bg-raised);
     cursor: grab;
     min-width: 0;
-    transition: box-shadow var(--fast) var(--ease), border-color var(--fast) var(--ease);
+    transition:
+      box-shadow var(--fast) var(--ease),
+      border-color var(--fast) var(--ease);
   }
-  .todo:hover { box-shadow: var(--shadow-sm); border-color: var(--border-strong); border-left-color: var(--c); }
-  .todo:active { cursor: grabbing; }
-  .todo.overdue .tname { color: var(--danger); }
+  .todo:hover {
+    box-shadow: var(--shadow-sm);
+    border-color: var(--border-strong);
+    border-left-color: var(--c);
+  }
+  .todo:active {
+    cursor: grabbing;
+  }
+  .todo.overdue .tname {
+    color: var(--danger);
+  }
 
-  .grip { color: var(--fg-faint); display: flex; flex: none; }
-  .tinfo { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .grip {
+    color: var(--fg-faint);
+    display: flex;
+    flex: none;
+  }
+  .tinfo {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
   .tname {
     font-size: var(--text-sm);
     font-weight: 550;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .tmeta { display: flex; gap: var(--sp-2); font-size: var(--text-xs); color: var(--fg-faint); }
-  .pname { color: color-mix(in oklab, var(--c) 70%, var(--fg-faint)); }
+  .tmeta {
+    display: flex;
+    gap: var(--sp-2);
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+  }
+  .pname {
+    color: color-mix(in oklab, var(--c) 70%, var(--fg-faint));
+  }
 
   .blank {
     font-size: var(--text-sm);

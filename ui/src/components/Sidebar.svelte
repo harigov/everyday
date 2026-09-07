@@ -34,7 +34,11 @@
     // meant depending on `crypto.randomUUID`, which needs a secure context
     // the packaged webview does not always provide -- and when it is missing
     // the journal is silently never created.
-    await app.newJournal(name, DEFAULT_COLORS[app.journals.length % DEFAULT_COLORS.length]!, app.journals.length)
+    await app.newJournal(
+      name,
+      DEFAULT_COLORS[app.journals.length % DEFAULT_COLORS.length]!,
+      app.journals.length,
+    )
   }
 
   let pendingDelete = $state<Journal | null>(null)
@@ -83,62 +87,82 @@
   {:else if app.section === 'calendar'}
     <CalendarNav />
   {:else}
-  <nav class="scroll nav">
-    <button
-      class="row"
-      class:sel={app.selectedJournal === null && !app.showStarredOnly}
-      onclick={() => { app.showStarredOnly = false; app.selectJournal(null) }}
-    >
-      <span class="icon"><Icon name="layers" /></span>
-      <span class="text">All entries</span>
-      <span class="count">{total}</span>
-    </button>
-
-    <button
-      class="row"
-      class:sel={app.showStarredOnly}
-      onclick={() => { app.showStarredOnly = true; app.selectJournal(null) }}
-    >
-      <span class="icon star"><Icon name="star" size={15} filled /></span>
-      <span class="text">Starred</span>
-    </button>
-
-    <div class="head">
-      <span class="eyebrow">Journals</span>
-      <button class="plus" title="New journal" aria-label="New journal" onclick={() => (creating = true)}>
-        <Icon name="plus" size={15} />
-      </button>
-    </div>
-
-    {#each app.journals as j (j.id)}
+    <nav class="scroll nav">
       <button
         class="row"
-        class:sel={app.selectedJournal === j.id && !app.showStarredOnly}
-        style="--dot: {j.color}"
-        onclick={() => { app.showStarredOnly = false; app.selectJournal(j.id) }}
-        oncontextmenu={(e) => { e.preventDefault(); pendingDelete = j }}
-        title={j.description || j.name}
-      >
-        <span class="icon">{j.icon}</span>
-        <span class="text">{j.name}</span>
-        <span class="dot" aria-hidden="true"></span>
-      </button>
-    {/each}
-
-    {#if creating}
-      <input
-        class="new"
-        placeholder="Journal name"
-        bind:value={draft}
-        use:focusOnMount
-        onblur={create}
-        onkeydown={(e) => {
-          if (e.key === 'Enter') create()
-          if (e.key === 'Escape') { draft = ''; creating = false }
+        class:sel={app.selectedJournal === null && !app.showStarredOnly}
+        onclick={() => {
+          app.showStarredOnly = false
+          app.selectJournal(null)
         }}
-      />
-    {/if}
-  </nav>
+      >
+        <span class="icon"><Icon name="layers" /></span>
+        <span class="text">All entries</span>
+        <span class="count">{total}</span>
+      </button>
+
+      <button
+        class="row"
+        class:sel={app.showStarredOnly}
+        onclick={() => {
+          app.showStarredOnly = true
+          app.selectJournal(null)
+        }}
+      >
+        <span class="icon star"><Icon name="star" size={15} filled /></span>
+        <span class="text">Starred</span>
+      </button>
+
+      <div class="head">
+        <span class="eyebrow">Journals</span>
+        <button
+          class="plus"
+          title="New journal"
+          aria-label="New journal"
+          onclick={() => (creating = true)}
+        >
+          <Icon name="plus" size={15} />
+        </button>
+      </div>
+
+      {#each app.journals as j (j.id)}
+        <button
+          class="row"
+          class:sel={app.selectedJournal === j.id && !app.showStarredOnly}
+          style="--dot: {j.color}"
+          onclick={() => {
+            app.showStarredOnly = false
+            app.selectJournal(j.id)
+          }}
+          oncontextmenu={(e) => {
+            e.preventDefault()
+            pendingDelete = j
+          }}
+          title={j.description || j.name}
+        >
+          <span class="icon">{j.icon}</span>
+          <span class="text">{j.name}</span>
+          <span class="dot" aria-hidden="true"></span>
+        </button>
+      {/each}
+
+      {#if creating}
+        <input
+          class="new"
+          placeholder="Journal name"
+          bind:value={draft}
+          use:focusOnMount
+          onblur={create}
+          onkeydown={(e) => {
+            if (e.key === 'Enter') create()
+            if (e.key === 'Escape') {
+              draft = ''
+              creating = false
+            }
+          }}
+        />
+      {/if}
+    </nav>
   {/if}
 
   <div class="foot">
@@ -180,7 +204,11 @@
     /* Room for the traffic lights on macOS. */
     padding-left: max(var(--sp-4), env(titlebar-area-x, var(--sp-4)));
   }
-  .name { font-weight: 620; letter-spacing: -0.006em; font-size: var(--text-md); }
+  .name {
+    font-weight: 620;
+    letter-spacing: -0.006em;
+    font-size: var(--text-md);
+  }
 
   /* A segmented control rather than two rows in the nav: these switch what
      the whole window is, and a thing that looks like a list item reads as
@@ -205,16 +233,23 @@
     font-size: var(--text-sm);
     font-weight: 550;
     color: var(--fg-subtle);
-    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
   }
-  .app:hover { color: var(--fg); }
+  .app:hover {
+    color: var(--fg);
+  }
   .app.on {
     background: var(--bg-raised);
     color: var(--fg);
     box-shadow: var(--shadow-sm);
   }
 
-  .nav { flex: 1; padding: var(--sp-2) var(--sp-2) var(--sp-4); }
+  .nav {
+    flex: 1;
+    padding: var(--sp-2) var(--sp-2) var(--sp-4);
+  }
 
   .head {
     display: flex;
@@ -223,12 +258,17 @@
     padding: var(--sp-5) var(--sp-2) var(--sp-2);
   }
   .plus {
-    width: 20px; height: 20px;
-    display: grid; place-items: center;
+    width: 20px;
+    height: 20px;
+    display: grid;
+    place-items: center;
     border-radius: var(--radius-sm);
     color: var(--fg-faint);
   }
-  .plus:hover { background: var(--bg-hover); color: var(--fg); }
+  .plus:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
 
   .row {
     display: flex;
@@ -241,25 +281,53 @@
     font-size: var(--text-base);
     color: var(--fg-muted);
     text-align: left;
-    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
   }
-  .row:hover { background: var(--bg-hover); color: var(--fg); }
-  .row.sel { background: var(--bg-active); color: var(--fg); font-weight: 550; }
+  .row:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .row.sel {
+    background: var(--bg-active);
+    color: var(--fg);
+    font-weight: 550;
+  }
 
   /* Holds an inline icon for the fixed rows and an emoji for user journals,
      so it is a centred box of a known size rather than a run of text. */
   .icon {
-    width: 16px; height: 16px; flex: none;
-    display: grid; place-items: center;
-    font-size: var(--text-sm); line-height: 1;
+    width: 16px;
+    height: 16px;
+    flex: none;
+    display: grid;
+    place-items: center;
+    font-size: var(--text-sm);
+    line-height: 1;
   }
-  .star { color: #e0a92b; }
-  .text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .count { font-size: var(--text-xs); color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+  .star {
+    color: #e0a92b;
+  }
+  .text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .count {
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+    font-variant-numeric: tabular-nums;
+  }
 
   .dot {
-    width: 6px; height: 6px; border-radius: 50%;
-    background: var(--dot); flex: none; opacity: 0.85;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--dot);
+    flex: none;
+    opacity: 0.85;
   }
 
   .new {
@@ -273,15 +341,28 @@
     font-size: var(--text-base);
     user-select: text;
   }
-  .new:focus { outline: none; }
-
-  .foot { padding: var(--sp-2); border-top: 1px solid var(--border); }
-  .lock {
-    display: flex; align-items: center; gap: var(--sp-2);
-    /* Matches the settings trigger above it. */
-    width: 100%; height: 28px; padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-sm); color: var(--fg-subtle);
+  .new:focus {
+    outline: none;
   }
-  .lock:hover { background: var(--bg-hover); color: var(--fg); }
+
+  .foot {
+    padding: var(--sp-2);
+    border-top: 1px solid var(--border);
+  }
+  .lock {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    /* Matches the settings trigger above it. */
+    width: 100%;
+    height: 28px;
+    padding: 0 var(--sp-2);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
+  }
+  .lock:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
 </style>

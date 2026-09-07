@@ -131,33 +131,44 @@
             data-card={task.id}
             draggable="true"
             ondragstart={(e) => start(e, task)}
-            ondragend={() => { dragging = null; over = null }}
+            ondragend={() => {
+              dragging = null
+              over = null
+            }}
           >
-            <button class="cardbody" onclick={() => todo.open(todo.selectedTask === task.id ? null : task.id)}>
+            <button
+              class="cardbody"
+              onclick={() => todo.open(todo.selectedTask === task.id ? null : task.id)}
+            >
               <span class="title">{task.title}</span>
               {#if task.dueDate || task.estimateMinutes || task.tags.length || progress(task)[1] > 0 || task.priority !== 'none'}
                 <span class="meta">
                   {#if task.priority !== 'none' && task.priority !== 'low'}
                     <span class="chip p-{task.priority}">
-                      <Icon name="flag" size={10} weight={1.8} /> {task.priority}
+                      <Icon name="flag" size={10} weight={1.8} />
+                      {task.priority}
                     </span>
                   {/if}
                   {#if task.dueDate}
                     <span class="chip due" class:late={todo.overdue(task)}>
-                      <Icon name="calendar" size={10} weight={1.8} /> {friendlyDate(task.dueDate)}
+                      <Icon name="calendar" size={10} weight={1.8} />
+                      {friendlyDate(task.dueDate)}
                     </span>
                   {/if}
                   {#if task.estimateMinutes}
                     <span class="chip">
-                      <Icon name="clock" size={10} weight={1.8} /> {formatMinutes(task.estimateMinutes)}
+                      <Icon name="clock" size={10} weight={1.8} />
+                      {formatMinutes(task.estimateMinutes)}
                     </span>
                   {/if}
                   {#if progress(task)[1] > 0}
                     <span class="chip">
-                      <Icon name="tick" size={10} weight={2} /> {progress(task)[0]}/{progress(task)[1]}
+                      <Icon name="tick" size={10} weight={2} />
+                      {progress(task)[0]}/{progress(task)[1]}
                     </span>
                   {/if}
-                  {#each task.tags.slice(0, 2) as tag (tag)}<span class="chip tag">{tag}</span>{/each}
+                  {#each task.tags.slice(0, 2) as tag (tag)}<span class="chip tag">{tag}</span
+                    >{/each}
                 </span>
               {/if}
             </button>
@@ -197,7 +208,9 @@
     border-radius: var(--radius);
     background: var(--bg-sunken);
     border: 1px solid transparent;
-    transition: border-color var(--fast) var(--ease), background var(--fast) var(--ease);
+    transition:
+      border-color var(--fast) var(--ease),
+      background var(--fast) var(--ease);
   }
   .col.target {
     border-color: color-mix(in oklab, var(--accent) 45%, transparent);
@@ -211,17 +224,34 @@
     padding: var(--sp-1) var(--sp-2) var(--sp-2);
     flex: none;
   }
-  .n { flex: 1; font-size: var(--text-xs); color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+  .n {
+    flex: 1;
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+    font-variant-numeric: tabular-nums;
+  }
   .add {
-    width: 20px; height: 20px;
-    display: grid; place-items: center;
+    width: 20px;
+    height: 20px;
+    display: grid;
+    place-items: center;
     border-radius: var(--radius-sm);
     color: var(--fg-faint);
   }
-  .add:hover { background: var(--bg-hover); color: var(--fg); }
+  .add:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
 
-  .adder { padding: 0 2px var(--sp-2); }
-  .cards { display: flex; flex-direction: column; gap: var(--sp-2); overflow-y: auto; }
+  .adder {
+    padding: 0 2px var(--sp-2);
+  }
+  .cards {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    overflow-y: auto;
+  }
 
   .card {
     border-radius: var(--radius-sm);
@@ -229,16 +259,31 @@
     border: 1px solid var(--border);
     box-shadow: var(--shadow-sm);
     cursor: grab;
-    transition: box-shadow var(--fast) var(--ease), opacity var(--fast) var(--ease);
+    transition:
+      box-shadow var(--fast) var(--ease),
+      opacity var(--fast) var(--ease);
   }
-  .card:hover { box-shadow: var(--shadow); }
-  .card:active { cursor: grabbing; }
+  .card:hover {
+    box-shadow: var(--shadow);
+  }
+  .card:active {
+    cursor: grabbing;
+  }
   /* The card being dragged stays in place, dimmed, so the column does not
      reflow underneath the pointer while the drop target is being chosen. */
-  .card.lifted { opacity: 0.35; }
-  .card.sel { border-color: var(--accent); }
+  .card.lifted {
+    opacity: 0.35;
+  }
+  .card.sel {
+    border-color: var(--accent);
+  }
 
-  .cardbody { display: block; width: 100%; padding: var(--sp-2) var(--sp-3); text-align: left; }
+  .cardbody {
+    display: block;
+    width: 100%;
+    padding: var(--sp-2) var(--sp-3);
+    text-align: left;
+  }
   .title {
     display: block;
     font-size: var(--text-base);
@@ -246,7 +291,12 @@
     color: var(--fg);
   }
 
-  .meta { display: flex; flex-wrap: wrap; gap: var(--sp-1); margin-top: var(--sp-2); }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-1);
+    margin-top: var(--sp-2);
+  }
   .chip {
     display: inline-flex;
     align-items: center;
@@ -259,11 +309,22 @@
     background: var(--bg-sunken);
     white-space: nowrap;
   }
-  .chip.tag { color: var(--fg-subtle); }
-  .chip.due.late { color: var(--danger); background: color-mix(in oklab, var(--danger) 12%, transparent); }
-  .chip.p-high { color: #b45309; }
-  .chip.p-urgent { color: var(--danger); }
-  .chip.p-medium { color: var(--fg-subtle); }
+  .chip.tag {
+    color: var(--fg-subtle);
+  }
+  .chip.due.late {
+    color: var(--danger);
+    background: color-mix(in oklab, var(--danger) 12%, transparent);
+  }
+  .chip.p-high {
+    color: #b45309;
+  }
+  .chip.p-urgent {
+    color: var(--danger);
+  }
+  .chip.p-medium {
+    color: var(--fg-subtle);
+  }
 
   /* Where the card would land. A line, not a gap: a gap would make every
      other card move while you are still deciding. */
@@ -285,5 +346,8 @@
     font-size: var(--text-sm);
     color: var(--fg-faint);
   }
-  .empty:hover { color: var(--fg-muted); background: var(--bg-hover); }
+  .empty:hover {
+    color: var(--fg-muted);
+    background: var(--bg-hover);
+  }
 </style>

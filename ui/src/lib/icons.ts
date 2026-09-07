@@ -77,8 +77,7 @@ export const ICONS = {
     '<path d="m6.08 9.5-3.5 1.6a1 1 0 0 0 0 1.81l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83l-3.5-1.59"/>' +
     '<path d="m6.08 15-3.5 1.6a1 1 0 0 0 0 1.81l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83L17.9 15"/>',
 
-  star:
-    '<path d="M11.53 2.3a.53.53 0 0 1 .94 0l2.6 5.26a.53.53 0 0 0 .4.29l5.81.85a.53.53 0 0 1 .3.9l-4.2 4.1a.53.53 0 0 0-.15.46l.99 5.78a.53.53 0 0 1-.77.56l-5.2-2.73a.53.53 0 0 0-.5 0l-5.2 2.73a.53.53 0 0 1-.76-.56l.99-5.78a.53.53 0 0 0-.16-.47l-4.2-4.09a.53.53 0 0 1 .3-.9l5.8-.85a.53.53 0 0 0 .4-.3Z"/>',
+  star: '<path d="M11.53 2.3a.53.53 0 0 1 .94 0l2.6 5.26a.53.53 0 0 0 .4.29l5.81.85a.53.53 0 0 1 .3.9l-4.2 4.1a.53.53 0 0 0-.15.46l.99 5.78a.53.53 0 0 1-.77.56l-5.2-2.73a.53.53 0 0 0-.5 0l-5.2 2.73a.53.53 0 0 1-.76-.56l.99-5.78a.53.53 0 0 0-.16-.47l-4.2-4.09a.53.53 0 0 1 .3-.9l5.8-.85a.53.53 0 0 0 .4-.3Z"/>',
 
   pin:
     '<path d="M12 17v5"/>' +
@@ -193,9 +192,7 @@ export const ICONS = {
 
   // Refresh: an arc with an arrowhead, not a closed circle -- a closed one
   // reads as "loading" and this is something you press.
-  refresh:
-    '<path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/>' +
-    '<path d="M20.5 4.5V10H15"/>',
+  refresh: '<path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/>' + '<path d="M20.5 4.5V10H15"/>',
 
   // A subscribed calendar comes from somewhere else. Meridians and a
   // parallel, which reads as "the network" at 15px where a cloud does not.

@@ -46,7 +46,11 @@
           placeholder: ({ node }) =>
             node.type.name === 'heading' ? 'Heading' : 'What happened today?',
         }),
-        Link.configure({ openOnClick: true, autolink: true, protocols: ['http', 'https', 'mailto'] }),
+        Link.configure({
+          openOnClick: true,
+          autolink: true,
+          protocols: ['http', 'https', 'mailto'],
+        }),
         Underline,
         Highlight,
         Typography,
@@ -103,21 +107,30 @@
                 ? 'audio'
                 : 'file'
           const size = kind === 'image' ? await imageSize(file) : null
-          editor!.chain().focus().insertMedia({
-            blob,
-            kind,
-            mime: file.type || 'application/octet-stream',
-            filename: file.name,
-            caption: '',
-            width: size?.width ?? null,
-            height: size?.height ?? null,
-          }).run()
+          editor!
+            .chain()
+            .focus()
+            .insertMedia({
+              blob,
+              kind,
+              mime: file.type || 'application/octet-stream',
+              filename: file.name,
+              caption: '',
+              width: size?.width ?? null,
+              height: size?.height ?? null,
+            })
+            .run()
           app.entry!.attachments = [
             ...app.entry!.attachments,
             {
-              blob, kind, mime: file.type || 'application/octet-stream',
-              filename: file.name, byteLen: file.size,
-              width: size?.width, height: size?.height, caption: '',
+              blob,
+              kind,
+              mime: file.type || 'application/octet-stream',
+              filename: file.name,
+              byteLen: file.size,
+              width: size?.width,
+              height: size?.height,
+              caption: '',
             },
           ]
           app.scheduleSave()
@@ -138,7 +151,10 @@
         resolve({ width: img.naturalWidth, height: img.naturalHeight })
         URL.revokeObjectURL(url)
       }
-      img.onerror = () => { resolve(null); URL.revokeObjectURL(url) }
+      img.onerror = () => {
+        resolve(null)
+        URL.revokeObjectURL(url)
+      }
       img.src = url
     })
   }
@@ -184,7 +200,10 @@
   $effect(() => {
     const id = entry?.id ?? null
     if (!editor) return
-    if (!id) { loadedId = null; return }
+    if (!id) {
+      loadedId = null
+      return
+    }
     if (id === loadedId) return
     loadedId = id
     // Untracked: reading the document must not subscribe this effect to
@@ -213,7 +232,10 @@
   }
 
   function onDragOver(e: DragEvent) {
-    if (e.dataTransfer?.types.includes('Files')) { e.preventDefault(); dropping = true }
+    if (e.dataTransfer?.types.includes('Files')) {
+      e.preventDefault()
+      dropping = true
+    }
   }
 </script>
 
@@ -246,7 +268,10 @@
             class="title"
             placeholder="Title"
             bind:value={entry.title}
-            oninput={() => { app.scheduleSave(); app.touch() }}
+            oninput={() => {
+              app.scheduleSave()
+              app.touch()
+            }}
             spellcheck="false"
           />
           <EntryMeta {entry} />
@@ -279,7 +304,9 @@
   {#if confirmingDelete}
     <ConfirmDialog
       title="Delete this entry?"
-      detail={'“' + (entry.title || 'Untitled entry') + '” and anything attached to it will be removed. This cannot be undone.'}
+      detail={'“' +
+        (entry.title || 'Untitled entry') +
+        '” and anything attached to it will be removed. This cannot be undone.'}
       confirmLabel="Delete entry"
       onconfirm={deleteEntry}
       oncancel={() => (confirmingDelete = false)}
@@ -288,8 +315,16 @@
 {/if}
 
 <style>
-  .editor { position: relative; display: flex; flex-direction: column; height: 100%; background: var(--bg-raised); }
-  .canvas { flex: 1; }
+  .editor {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: var(--bg-raised);
+  }
+  .canvas {
+    flex: 1;
+  }
 
   /* --measure is the text column; the padding sits outside it. Setting it as
      the box width instead cost two thirds of an inch of line on every side. */
@@ -299,7 +334,9 @@
     padding: var(--sp-10) var(--sp-8) 30vh;
   }
 
-  .head { margin-bottom: var(--sp-6); }
+  .head {
+    margin-bottom: var(--sp-6);
+  }
 
   .date {
     font-size: var(--text-sm);
@@ -322,7 +359,10 @@
     color: var(--fg);
     user-select: text;
   }
-  .title::placeholder { color: var(--fg-faint); font-weight: 500; }
+  .title::placeholder {
+    color: var(--fg-faint);
+    font-weight: 500;
+  }
 
   .status {
     display: flex;
@@ -335,8 +375,12 @@
     color: var(--fg-faint);
     font-variant-numeric: tabular-nums;
   }
-  .dot { opacity: 0.5; }
-  .status .spacer { flex: 1; }
+  .dot {
+    opacity: 0.5;
+  }
+  .status .spacer {
+    flex: 1;
+  }
 
   /* Quiet until wanted: deleting an entry should be findable, not inviting. */
   .delete {
@@ -348,7 +392,9 @@
     border-radius: var(--radius-sm);
     color: var(--fg-faint);
     font-size: var(--text-xs);
-    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
   }
   .delete:hover {
     background: color-mix(in oklab, var(--danger) 12%, transparent);
@@ -369,14 +415,33 @@
     pointer-events: none;
   }
 
-  .empty { display: grid; place-items: center; height: 100%; background: var(--bg-raised); }
-  .empty-inner { text-align: center; max-width: 26ch; }
-  .empty-mark {
-    display: flex; justify-content: center;
-    color: var(--fg-faint); margin-bottom: var(--sp-4);
+  .empty {
+    display: grid;
+    place-items: center;
+    height: 100%;
+    background: var(--bg-raised);
   }
-  .empty h2 { font-family: var(--font-read); font-size: var(--text-xl); font-weight: 620; margin-bottom: var(--sp-2); }
-  .empty p { color: var(--fg-subtle); margin-bottom: var(--sp-5); line-height: var(--leading-normal); }
+  .empty-inner {
+    text-align: center;
+    max-width: 26ch;
+  }
+  .empty-mark {
+    display: flex;
+    justify-content: center;
+    color: var(--fg-faint);
+    margin-bottom: var(--sp-4);
+  }
+  .empty h2 {
+    font-family: var(--font-read);
+    font-size: var(--text-xl);
+    font-weight: 620;
+    margin-bottom: var(--sp-2);
+  }
+  .empty p {
+    color: var(--fg-subtle);
+    margin-bottom: var(--sp-5);
+    line-height: var(--leading-normal);
+  }
 
   /* ── Prose ───────────────────────────────────────────────────────────
      Typography for the entry body. This is the part of the app people
@@ -399,7 +464,9 @@
     outline: none;
     -webkit-user-modify: read-write-plaintext-only;
   }
-  .prose :global(.ed-content > * + *) { margin-top: 0.95em; }
+  .prose :global(.ed-content > * + *) {
+    margin-top: 0.95em;
+  }
 
   .prose :global(h1),
   .prose :global(h2),
@@ -409,19 +476,31 @@
     letter-spacing: -0.012em;
     margin-top: 1.7em;
   }
-  .prose :global(h1) { font-size: 1.5em; }
-  .prose :global(h2) { font-size: 1.28em; }
-  .prose :global(h3) { font-size: 1.1em; }
+  .prose :global(h1) {
+    font-size: 1.5em;
+  }
+  .prose :global(h2) {
+    font-size: 1.28em;
+  }
+  .prose :global(h3) {
+    font-size: 1.1em;
+  }
 
-  .prose :global(strong) { font-weight: 700; }
-  .prose :global(em) { font-style: italic; }
+  .prose :global(strong) {
+    font-weight: 700;
+  }
+  .prose :global(em) {
+    font-style: italic;
+  }
   .prose :global(mark) {
     background: color-mix(in oklab, #f5d90a 42%, transparent);
     color: inherit;
     border-radius: 2px;
     padding: 0 2px;
   }
-  .prose :global(a) { color: var(--journal-accent, var(--accent)); }
+  .prose :global(a) {
+    color: var(--journal-accent, var(--accent));
+  }
 
   .prose :global(blockquote) {
     margin-left: 0;
@@ -449,16 +528,37 @@
     font-size: var(--text-base);
     line-height: var(--leading-normal);
   }
-  .prose :global(pre code) { background: none; border: none; padding: 0; font-size: inherit; }
+  .prose :global(pre code) {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: inherit;
+  }
 
   .prose :global(ul),
-  .prose :global(ol) { padding-left: 1.3em; }
-  .prose :global(li + li) { margin-top: 0.3em; }
-  .prose :global(li p) { margin: 0; }
+  .prose :global(ol) {
+    padding-left: 1.3em;
+  }
+  .prose :global(li + li) {
+    margin-top: 0.3em;
+  }
+  .prose :global(li p) {
+    margin: 0;
+  }
 
-  .prose :global(ul[data-type='taskList']) { list-style: none; padding-left: 0; }
-  .prose :global(ul[data-type='taskList'] li) { display: flex; gap: 0.6em; align-items: flex-start; }
-  .prose :global(ul[data-type='taskList'] input) { margin-top: 0.45em; accent-color: var(--journal-accent, var(--accent)); }
+  .prose :global(ul[data-type='taskList']) {
+    list-style: none;
+    padding-left: 0;
+  }
+  .prose :global(ul[data-type='taskList'] li) {
+    display: flex;
+    gap: 0.6em;
+    align-items: flex-start;
+  }
+  .prose :global(ul[data-type='taskList'] input) {
+    margin-top: 0.45em;
+    accent-color: var(--journal-accent, var(--accent));
+  }
 
   .prose :global(hr) {
     border: none;
@@ -477,7 +577,9 @@
 
   /* ── Embedded media ───────────────────────────────────────────────── */
 
-  .prose :global(.ed-media) { margin: 1.6em 0; }
+  .prose :global(.ed-media) {
+    margin: 1.6em 0;
+  }
   .prose :global(.ed-media-frame) {
     overflow: hidden;
     border-radius: var(--radius-lg);
@@ -486,8 +588,16 @@
     line-height: 0;
   }
   .prose :global(.ed-media img),
-  .prose :global(.ed-media video) { width: 100%; height: auto; display: block; }
-  .prose :global(.ed-media audio) { width: 100%; display: block; line-height: normal; }
+  .prose :global(.ed-media video) {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+  .prose :global(.ed-media audio) {
+    width: 100%;
+    display: block;
+    line-height: normal;
+  }
   .prose :global(.ed-file) {
     display: block;
     padding: var(--sp-4);

@@ -57,10 +57,15 @@
 
 <style>
   .lock {
-    display: grid; place-items: center; height: 100%;
+    display: grid;
+    place-items: center;
+    height: 100%;
     background:
-      radial-gradient(1000px 520px at 50% -10%,
-        color-mix(in oklab, var(--accent) 11%, transparent), transparent 70%),
+      radial-gradient(
+        1000px 520px at 50% -10%,
+        color-mix(in oklab, var(--accent) 11%, transparent),
+        transparent 70%
+      ),
       var(--bg);
   }
 
@@ -75,31 +80,73 @@
   }
 
   /* The mark is an SVG block now, so it centres by layout, not by text. */
-  .mark { display: flex; justify-content: center; margin-bottom: var(--sp-4); }
+  .mark {
+    display: flex;
+    justify-content: center;
+    margin-bottom: var(--sp-4);
+  }
 
   h1 {
     font-family: var(--font-read);
-    font-size: var(--text-xl); font-weight: 650; letter-spacing: -0.015em;
+    font-size: var(--text-xl);
+    font-weight: 650;
+    letter-spacing: -0.015em;
   }
-  .sub { margin-top: var(--sp-1); margin-bottom: var(--sp-6); font-size: var(--text-sm); color: var(--fg-subtle); }
+  .sub {
+    margin-top: var(--sp-1);
+    margin-bottom: var(--sp-6);
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
+  }
 
-  .pw { text-align: center; letter-spacing: 0.14em; }
-  .pw::placeholder { letter-spacing: normal; }
+  .pw {
+    text-align: center;
+    letter-spacing: 0.14em;
+  }
+  .pw::placeholder {
+    letter-spacing: normal;
+  }
 
-  .error { margin-top: var(--sp-3); }
-  .wide { width: 100%; height: 36px; margin-top: var(--sp-4); }
+  .error {
+    margin-top: var(--sp-3);
+  }
+  .wide {
+    width: 100%;
+    height: 36px;
+    margin-top: var(--sp-4);
+  }
 
-  .demo { margin-top: var(--sp-4); }
+  .demo {
+    margin-top: var(--sp-4);
+  }
   .demo code {
-    font-family: var(--font-mono); font-size: var(--text-xs);
-    background: var(--bg-sunken); padding: 1px 5px; border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    background: var(--bg-sunken);
+    padding: 1px 5px;
+    border-radius: 4px;
   }
 
-  .shake { animation: shake 0.4s var(--ease); }
+  .shake {
+    animation: shake 0.4s var(--ease);
+  }
   @keyframes shake {
-    10%, 90% { transform: translateX(-2px); }
-    20%, 80% { transform: translateX(4px); }
-    30%, 50%, 70% { transform: translateX(-7px); }
-    40%, 60% { transform: translateX(7px); }
+    10%,
+    90% {
+      transform: translateX(-2px);
+    }
+    20%,
+    80% {
+      transform: translateX(4px);
+    }
+    30%,
+    50%,
+    70% {
+      transform: translateX(-7px);
+    }
+    40%,
+    60% {
+      transform: translateX(7px);
+    }
   }
 </style>

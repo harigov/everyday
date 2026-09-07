@@ -19,7 +19,11 @@
   } = $props()
 </script>
 
-<svelte:window onkeydown={(e) => { if (e.key === 'Escape') oncancel() }} />
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key === 'Escape') oncancel()
+  }}
+/>
 
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div class="scrim" onclick={oncancel}></div>
@@ -35,8 +39,8 @@
       class:btn-danger={danger}
       class:btn-primary={!danger}
       use:focusOnMount
-      onclick={onconfirm}
-    >{confirmLabel}</button>
+      onclick={onconfirm}>{confirmLabel}</button
+    >
   </div>
 </div>
 
@@ -46,5 +50,7 @@
     font-weight: 620;
     letter-spacing: -0.008em;
   }
-  h2 + :global(.hint) { margin-top: var(--sp-2); }
+  h2 + :global(.hint) {
+    margin-top: var(--sp-2);
+  }
 </style>

@@ -100,7 +100,7 @@ lint: $(UI_DIR)/node_modules ## Format check, clippy and interface typecheck -- 
 
 check: lint ## Alias for `lint`
 
-fix: ## Apply every fix `lint` can make on its own
+fix: $(UI_DIR)/node_modules ## Apply every fix `lint` can make on its own
 	cargo fmt --all
 	@# Only what clippy marks machine-applicable, which is why this is safe to
 	@# run unattended. `--allow-dirty` because a fix target is for exactly the
@@ -113,8 +113,7 @@ fix: ## Apply every fix `lint` can make on its own
 	@# Formatting a Rust file can leave it in a shape clippy reads differently
 	@# and vice versa, so settle on the formatter.
 	cargo fmt --all
-	@echo
-	@echo "The interface has no formatter or linter -- nothing was run over ui/."
+	npm --prefix $(UI_DIR) run format
 
 fmt: ## Format Rust sources
 	cargo fmt --all

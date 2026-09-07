@@ -135,11 +135,7 @@
 
   /** Is this slot the one currently under the pointer? It is drawn as the draft. */
   function isDragging(slot: Slot): boolean {
-    return (
-      !!drag &&
-      (drag.mode === 'move' || drag.mode === 'resize') &&
-      slot.block?.id === drag.id
-    )
+    return !!drag && (drag.mode === 'move' || drag.mode === 'resize') && slot.block?.id === drag.id
   }
 
   /** The draft rectangle, if a gesture is in flight on `iso`. */
@@ -270,7 +266,11 @@
     dropAt = null
     if (!id) return
     e.preventDefault()
-    await calendar.scheduleTask(id, iso, at?.minutes ?? snap(minutesAt(e.currentTarget as HTMLElement, e.clientY)))
+    await calendar.scheduleTask(
+      id,
+      iso,
+      at?.minutes ?? snap(minutesAt(e.currentTarget as HTMLElement, e.clientY)),
+    )
   }
 
   // ── the "now" line ─────────────────────────────────────────────────────
@@ -293,10 +293,7 @@
     const key = `${days[0]}:${days.length}`
     if (!body || scrolledFor === key) return
     scrolledFor = key
-    const first = Math.min(
-      ...days.flatMap((d) => calendar.slotsOn(d).map((s) => s.start)),
-      8 * 60,
-    )
+    const first = Math.min(...days.flatMap((d) => calendar.slotsOn(d).map((s) => s.start)), 8 * 60)
     body.scrollTop = Math.max(0, ((first - 30) / 60) * HOUR)
   })
 </script>
@@ -310,7 +307,13 @@
     {#each days as iso (iso)}
       {@const totals = calendar.totalsOn(iso)}
       <div class="dayhead" class:now={iso === currentDay}>
-        <button class="daylabel" onclick={() => { calendar.view = 'day'; calendar.goto(iso) }}>
+        <button
+          class="daylabel"
+          onclick={() => {
+            calendar.view = 'day'
+            calendar.goto(iso)
+          }}
+        >
           <span class="weekday">{weekdayFmt.format(new Date(iso + 'T00:00'))}</span>
           <span class="daynum">{Number(iso.slice(8, 10))}</span>
         </button>
@@ -342,7 +345,8 @@
             style="--c: {cal?.color ?? 'var(--fg-subtle)'}"
             title={event.title + (cal ? ` — ${cal.name}` : '')}
             onclick={() => (calendar.selection = { kind: 'event', id: event.id })}
-          >{event.title}</button>
+            >{event.title}</button
+          >
         {/each}
         {#each calendar.tasksOn(iso) as task (task.id)}
           <button
@@ -352,7 +356,7 @@
             title="Due: {task.title}"
             draggable="true"
             ondragstart={(e) => e.dataTransfer?.setData('text/x-everyday-task', task.id)}
-            onclick={() => calendar.selection = null}
+            onclick={() => (calendar.selection = null)}
           >
             <Icon name={task.status === 'done' ? 'check' : 'circle'} size={11} weight={2} />
             {task.title}
@@ -394,8 +398,10 @@
               class:live={p.slot.live}
               class:sel={p.slot.block
                 ? calendar.selection?.kind === 'block' && calendar.selection.id === p.slot.block.id
-                : calendar.selection?.kind === 'event' && calendar.selection.id === p.slot.event?.id}
-              style="top: {p.top}px; height: {p.height}px; left: {p.left}%; width: {p.width}%; --c: {p.slot.color}"
+                : calendar.selection?.kind === 'event' &&
+                  calendar.selection.id === p.slot.event?.id}
+              style="top: {p.top}px; height: {p.height}px; left: {p.left}%; width: {p.width}%; --c: {p
+                .slot.color}"
               onpointerdown={(e) => onSlotPointerDown(e, p, iso)}
             >
               <span class="slottime">{clockOf(p.slot.start)}</span>
@@ -463,7 +469,9 @@
     border-radius: var(--radius-sm);
     padding: 0 3px;
   }
-  .daylabel:hover { background: var(--bg-hover); }
+  .daylabel:hover {
+    background: var(--bg-hover);
+  }
   .weekday {
     font-size: var(--text-xs);
     font-weight: 600;
@@ -480,17 +488,33 @@
   }
   /* Today is marked by weight and colour, not by a filled pill: a solid disc
      in the header competes with the blocks below it for the eye. */
-  .now .weekday, .now .daynum { color: var(--accent); }
-  .now .daynum { font-weight: 700; }
+  .now .weekday,
+  .now .daynum {
+    color: var(--accent);
+  }
+  .now .daynum {
+    font-weight: 700;
+  }
 
-  .daymeta { display: flex; align-items: center; gap: 6px; flex: none; }
-  .wrote { color: var(--fg-faint); display: flex; }
+  .daymeta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+  }
+  .wrote {
+    color: var(--fg-faint);
+    display: flex;
+  }
   .tally {
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
     color: var(--fg-faint);
   }
-  .tally.logged { color: var(--fg-subtle); font-weight: 550; }
+  .tally.logged {
+    color: var(--fg-subtle);
+    font-weight: 550;
+  }
 
   /* ── The all-day band ───────────────────────────────────────────────── */
 
@@ -533,17 +557,34 @@
     color: color-mix(in oklab, var(--c) 72%, var(--fg));
     border-left: 2px solid var(--c);
   }
-  .chip:hover { background: color-mix(in oklab, var(--c) 24%, transparent); }
+  .chip:hover {
+    background: color-mix(in oklab, var(--c) 24%, transparent);
+  }
   /* A task on the band is a deadline, not a booking: outlined rather than
      filled, so it does not read as time that has been set aside. */
-  .chip.task { background: none; border: 1px solid color-mix(in oklab, var(--c) 40%, transparent); border-left-width: 2px; }
-  .chip.task:hover { background: color-mix(in oklab, var(--c) 12%, transparent); }
-  .chip.done { opacity: 0.5; text-decoration: line-through; }
-  .chip.cancelled { opacity: 0.55; text-decoration: line-through; }
+  .chip.task {
+    background: none;
+    border: 1px solid color-mix(in oklab, var(--c) 40%, transparent);
+    border-left-width: 2px;
+  }
+  .chip.task:hover {
+    background: color-mix(in oklab, var(--c) 12%, transparent);
+  }
+  .chip.done {
+    opacity: 0.5;
+    text-decoration: line-through;
+  }
+  .chip.cancelled {
+    opacity: 0.55;
+    text-decoration: line-through;
+  }
 
   /* ── The grid ───────────────────────────────────────────────────────── */
 
-  .body { flex: 1; min-height: 0; }
+  .body {
+    flex: 1;
+    min-height: 0;
+  }
   .canvas {
     position: relative;
     display: grid;
@@ -551,8 +592,13 @@
     height: var(--day-h);
   }
 
-  .gutter { position: relative; }
-  .hour { height: var(--hour); position: relative; }
+  .gutter {
+    position: relative;
+  }
+  .hour {
+    height: var(--hour);
+    position: relative;
+  }
   .hourlabel {
     position: absolute;
     top: -7px;
@@ -570,7 +616,9 @@
     min-width: 0;
     touch-action: none;
   }
-  .col.today { background: color-mix(in oklab, var(--accent) 3.5%, transparent); }
+  .col.today {
+    background: color-mix(in oklab, var(--accent) 3.5%, transparent);
+  }
 
   .rule {
     position: absolute;
@@ -595,19 +643,38 @@
     font-size: var(--text-xs);
     line-height: 1.25;
     cursor: pointer;
-    transition: box-shadow var(--fast) var(--ease), filter var(--fast) var(--ease);
+    transition:
+      box-shadow var(--fast) var(--ease),
+      filter var(--fast) var(--ease);
   }
-  .slot:hover { filter: brightness(1.04); z-index: 3; }
-  .slot.sel { box-shadow: 0 0 0 2px var(--c), var(--shadow); z-index: 4; }
+  .slot:hover {
+    filter: brightness(1.04);
+    z-index: 3;
+  }
+  .slot.sel {
+    box-shadow:
+      0 0 0 2px var(--c),
+      var(--shadow);
+    z-index: 4;
+  }
 
-  .slottime { font-variant-numeric: tabular-nums; opacity: 0.72; font-size: 10px; }
+  .slottime {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.72;
+    font-size: 10px;
+  }
   .slottitle {
     font-weight: 570;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .slotsub { opacity: 0.66; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .slotsub {
+    opacity: 0.66;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
   /* An intention: a wash, and a dashed rail. Deliberately lighter than the
      record beside it -- a plan is a claim about the future, and it should
@@ -626,7 +693,9 @@
     border-left: 3px solid var(--c);
     cursor: grab;
   }
-  .slot.actual .slottitle { font-weight: 620; }
+  .slot.actual .slottitle {
+    font-weight: 620;
+  }
 
   /* Somebody else's: outlined rather than filled, so a busy work calendar
      never drowns out the two hours you set aside for yourself. */
@@ -636,9 +705,16 @@
     border: 1px solid color-mix(in oklab, var(--c) 34%, transparent);
     border-left: 3px solid var(--c);
   }
-  .slot.event.free { border-left-style: dotted; opacity: 0.8; }
-  .slot.cancelled { opacity: 0.55; }
-  .slot.cancelled .slottitle { text-decoration: line-through; }
+  .slot.event.free {
+    border-left-style: dotted;
+    opacity: 0.8;
+  }
+  .slot.cancelled {
+    opacity: 0.55;
+  }
+  .slot.cancelled .slottitle {
+    text-decoration: line-through;
+  }
 
   /* The one being timed right now: a soft pulse, so it is findable in a
      full week without being a flashing light. */
@@ -649,21 +725,29 @@
     cursor: default;
   }
   @keyframes breathe {
-    0%, 100% { box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--c) 50%, transparent); }
-    50% { box-shadow: 0 0 0 3.5px color-mix(in oklab, var(--c) 22%, transparent); }
+    0%,
+    100% {
+      box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--c) 50%, transparent);
+    }
+    50% {
+      box-shadow: 0 0 0 3.5px color-mix(in oklab, var(--c) 22%, transparent);
+    }
   }
 
   /* The bottom few pixels resize instead of moving. */
   .handle {
     position: absolute;
-    left: 0; right: 0; bottom: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
     height: 7px;
     cursor: ns-resize;
   }
 
   .draft {
     position: absolute;
-    left: 0; right: 2px;
+    left: 0;
+    right: 2px;
     display: flex;
     align-items: flex-start;
     padding: 3px 6px;
@@ -681,7 +765,8 @@
   /* Where a dragged task would land. */
   .dropline {
     position: absolute;
-    left: 0; right: 0;
+    left: 0;
+    right: 0;
     height: 2px;
     background: var(--accent);
     border-radius: 2px;
@@ -691,7 +776,8 @@
 
   .nowline {
     position: absolute;
-    left: 0; right: 0;
+    left: 0;
+    right: 0;
     height: 1.5px;
     background: var(--danger);
     pointer-events: none;
@@ -699,8 +785,10 @@
   }
   .nowdot {
     position: absolute;
-    left: -3px; top: -3px;
-    width: 7.5px; height: 7.5px;
+    left: -3px;
+    top: -3px;
+    width: 7.5px;
+    height: 7.5px;
     border-radius: 50%;
     background: var(--danger);
   }

@@ -33,15 +33,18 @@ let failed = 0
 function check(what, got, want) {
   if (JSON.stringify(got) === JSON.stringify(want)) return
   failed += 1
-  console.error(`FAIL  ${what}\n        got  ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`)
+  console.error(
+    `FAIL  ${what}\n        got  ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`,
+  )
 }
 
 // ── Days and weeks ───────────────────────────────────────────────────────
 
-check('a day steps forward and back', [addDays('2026-09-06', 1), addDays('2026-09-06', -1)], [
-  '2026-09-07',
-  '2026-09-05',
-])
+check(
+  'a day steps forward and back',
+  [addDays('2026-09-06', 1), addDays('2026-09-06', -1)],
+  ['2026-09-07', '2026-09-05'],
+)
 check('stepping crosses a month boundary', addDays('2026-09-30', 1), '2026-10-01')
 check('and a year boundary', addDays('2026-12-31', 1), '2027-01-01')
 
@@ -53,24 +56,36 @@ check('a date is read as a local day, not a UTC instant', addDays('2026-09-06', 
 check('a Monday-start week begins on Monday', startOfWeek('2026-09-09', 1), '2026-09-07')
 check('a Sunday-start week begins on Sunday', startOfWeek('2026-09-09', 0), '2026-09-06')
 check('a week that already starts right is left alone', startOfWeek('2026-09-07', 1), '2026-09-07')
-check('the week of a Sunday, counting from Monday, is the one before', [
-  startOfWeek('2026-09-06', 1),
-], ['2026-08-31'])
+check(
+  'the week of a Sunday, counting from Monday, is the one before',
+  [startOfWeek('2026-09-06', 1)],
+  ['2026-08-31'],
+)
 
 check('a week is seven consecutive days', daysFrom('2026-09-07', 7), [
-  '2026-09-07', '2026-09-08', '2026-09-09', '2026-09-10',
-  '2026-09-11', '2026-09-12', '2026-09-13',
+  '2026-09-07',
+  '2026-09-08',
+  '2026-09-09',
+  '2026-09-10',
+  '2026-09-11',
+  '2026-09-12',
+  '2026-09-13',
 ])
 
 // ── Months ───────────────────────────────────────────────────────────────
 
-check('a month steps forward and back', [addMonths('2026-09-15', 1), addMonths('2026-09-15', -1)], [
-  '2026-10-15',
-  '2026-08-15',
-])
+check(
+  'a month steps forward and back',
+  [addMonths('2026-09-15', 1), addMonths('2026-09-15', -1)],
+  ['2026-10-15', '2026-08-15'],
+)
 // The bug this guards: 31 January + 1 month landing on 3 March, so paging
 // forward through the year skips February entirely.
-check('stepping from the 31st clamps to the shorter month', addMonths('2026-01-31', 1), '2026-02-28')
+check(
+  'stepping from the 31st clamps to the shorter month',
+  addMonths('2026-01-31', 1),
+  '2026-02-28',
+)
 check('and does so in a leap year too', addMonths('2028-01-31', 1), '2028-02-29')
 check('stepping a month crosses a year', addMonths('2026-12-10', 1), '2027-01-10')
 
@@ -90,14 +105,11 @@ check('minutes snap to the nearest quarter', [snap(0), snap(7), snap(8), snap(22
 //
 // The rule: things that clash share the width; things that do not, do not.
 
-const lanesOf = (items) =>
-  packLanes(items).map(({ item, lane, lanes }) => [item.id, lane, lanes])
+const lanesOf = (items) => packLanes(items).map(({ item, lane, lanes }) => [item.id, lane, lanes])
 
-check(
-  'one thing alone takes the whole column',
-  lanesOf([{ id: 'a', start: 540, end: 600 }]),
-  [['a', 0, 1]],
-)
+check('one thing alone takes the whole column', lanesOf([{ id: 'a', start: 540, end: 600 }]), [
+  ['a', 0, 1],
+])
 
 check(
   'two clashing things take half each',

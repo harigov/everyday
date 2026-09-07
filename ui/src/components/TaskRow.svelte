@@ -68,7 +68,10 @@
             </span>
           {/if}
           {#if task.estimateMinutes}
-            <span class="chip"><Icon name="clock" size={11} weight={1.7} /> {formatMinutes(task.estimateMinutes)}</span>
+            <span class="chip"
+              ><Icon name="clock" size={11} weight={1.7} />
+              {formatMinutes(task.estimateMinutes)}</span
+            >
           {/if}
           {#each task.tags.slice(0, 3) as tag (tag)}<span class="chip tag">{tag}</span>{/each}
         </span>
@@ -123,7 +126,9 @@
 </div>
 
 <style>
-  .wrap { padding-left: calc(var(--depth) * 26px); }
+  .wrap {
+    padding-left: calc(var(--depth) * 26px);
+  }
 
   .row {
     display: flex;
@@ -133,18 +138,29 @@
     padding: 5px var(--sp-2);
     transition: background var(--fast) var(--ease);
   }
-  .row:hover { background: var(--bg-hover); }
-  .row.sel { background: var(--bg-selected); }
+  .row:hover {
+    background: var(--bg-hover);
+  }
+  .row.sel {
+    background: var(--bg-selected);
+  }
 
   .tick {
     display: flex;
     flex: none;
     margin-top: 1px;
     color: var(--fg-faint);
-    transition: color var(--fast) var(--ease), scale var(--fast) var(--ease);
+    transition:
+      color var(--fast) var(--ease),
+      scale var(--fast) var(--ease);
   }
-  .tick:hover { color: var(--accent); scale: 1.08; }
-  .tick.on { color: var(--accent); }
+  .tick:hover {
+    color: var(--accent);
+    scale: 1.08;
+  }
+  .tick.on {
+    color: var(--accent);
+  }
 
   .body {
     flex: 1;
@@ -161,18 +177,43 @@
     line-height: var(--leading-snug);
     color: var(--fg);
   }
-  .titletext { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .titletext {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   /* Finished work stays legible -- it is the record of what you did -- but
      stops competing with what is left. */
-  .row.done .titletext { color: var(--fg-subtle); text-decoration: line-through; }
-  .row.cancelled .titletext { color: var(--fg-faint); text-decoration: line-through; }
+  .row.done .titletext {
+    color: var(--fg-subtle);
+    text-decoration: line-through;
+  }
+  .row.cancelled .titletext {
+    color: var(--fg-faint);
+    text-decoration: line-through;
+  }
 
-  .flag { display: flex; flex: none; color: var(--fg-faint); }
-  .flag.p-high { color: #d97706; }
-  .flag.p-urgent { color: var(--danger); }
+  .flag {
+    display: flex;
+    flex: none;
+    color: var(--fg-faint);
+  }
+  .flag.p-high {
+    color: #d97706;
+  }
+  .flag.p-urgent {
+    color: var(--danger);
+  }
 
-  .meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1); margin-top: 3px; }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-1);
+    margin-top: 3px;
+  }
   .chip {
     display: inline-flex;
     align-items: center;
@@ -185,14 +226,34 @@
     background: var(--bg-sunken);
     white-space: nowrap;
   }
-  .chip.tag { color: var(--fg-subtle); }
-  .chip.due.late { color: var(--danger); background: color-mix(in oklab, var(--danger) 12%, transparent); }
-  .chip.state.doing { color: #0369a1; background: color-mix(in oklab, #0369a1 13%, transparent); }
-  .chip.state.blocked { color: #b45309; background: color-mix(in oklab, #b45309 15%, transparent); }
-  .chip.project { background: none; padding-left: 0; }
-  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dot); }
+  .chip.tag {
+    color: var(--fg-subtle);
+  }
+  .chip.due.late {
+    color: var(--danger);
+    background: color-mix(in oklab, var(--danger) 12%, transparent);
+  }
+  .chip.state.doing {
+    color: #0369a1;
+    background: color-mix(in oklab, #0369a1 13%, transparent);
+  }
+  .chip.state.blocked {
+    color: #b45309;
+    background: color-mix(in oklab, #b45309 15%, transparent);
+  }
+  .chip.project {
+    background: none;
+    padding-left: 0;
+  }
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--dot);
+  }
 
-  .disclose, .addsub {
+  .disclose,
+  .addsub {
     display: flex;
     align-items: center;
     gap: 3px;
@@ -204,18 +265,36 @@
     font-size: 10px;
     font-variant-numeric: tabular-nums;
   }
-  .disclose:hover, .addsub:hover { background: var(--bg-active); color: var(--fg); }
+  .disclose:hover,
+  .addsub:hover {
+    background: var(--bg-active);
+    color: var(--fg);
+  }
   /* One chevron, rotated, rather than two glyphs that could drift apart. */
-  .disclose :global(svg) { transition: rotate var(--fast) var(--ease); }
-  .disclose.open :global(svg) { rotate: 90deg; }
+  .disclose :global(svg) {
+    transition: rotate var(--fast) var(--ease);
+  }
+  .disclose.open :global(svg) {
+    rotate: 90deg;
+  }
 
   /* The per-row add button appears on hover: it is useful, and it is not
      worth a permanent column of plus signs down the list. */
-  .addsub { opacity: 0; transition: opacity var(--fast) var(--ease); }
-  .row:hover .addsub, .addsub:focus-visible { opacity: 1; }
+  .addsub {
+    opacity: 0;
+    transition: opacity var(--fast) var(--ease);
+  }
+  .row:hover .addsub,
+  .addsub:focus-visible {
+    opacity: 1;
+  }
 
-  .kids { padding: 2px 0 var(--sp-2); }
-  .subadd { padding: 2px 0 0 26px; }
+  .kids {
+    padding: 2px 0 var(--sp-2);
+  }
+  .subadd {
+    padding: 2px 0 0 26px;
+  }
 
   .addsub-inline {
     display: flex;
@@ -227,5 +306,8 @@
     font-size: var(--text-sm);
     color: var(--fg-faint);
   }
-  .addsub-inline:hover { background: var(--bg-hover); color: var(--fg-muted); }
+  .addsub-inline:hover {
+    background: var(--bg-hover);
+    color: var(--fg-muted);
+  }
 </style>

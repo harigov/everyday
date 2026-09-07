@@ -131,7 +131,10 @@ export const Media = Node.create({
       })
       // Enter should end the caption, not insert a newline inside it.
       caption.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); caption.blur() }
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          caption.blur()
+        }
       })
 
       figure.append(frame, caption)

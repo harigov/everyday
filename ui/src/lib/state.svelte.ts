@@ -7,7 +7,14 @@
 import { api, isMock } from './api'
 import { AUTOSAVE_MS } from './autosave'
 import type {
-  Bootstrap, Entry, EntryId, EntrySummary, Journal, JournalId, SearchHit, VaultStatus,
+  Bootstrap,
+  Entry,
+  EntryId,
+  EntrySummary,
+  Journal,
+  JournalId,
+  SearchHit,
+  VaultStatus,
 } from './types'
 import { VaultError } from './types'
 
@@ -234,7 +241,12 @@ class AppState {
     this.applyTheme()
   }
 
-  async createVault(opts: { path: string; name: string; backend: string; password: string | null }) {
+  async createVault(opts: {
+    path: string
+    name: string
+    backend: string
+    password: string | null
+  }) {
     this.error = null
     try {
       this.status = await api.createVault(opts)
@@ -437,14 +449,20 @@ class AppState {
 
   async refreshEntries() {
     try {
-      if (this.#listTimer) { clearTimeout(this.#listTimer); this.#listTimer = null }
+      if (this.#listTimer) {
+        clearTimeout(this.#listTimer)
+        this.#listTimer = null
+      }
       this.#lastListRefresh = Date.now()
       await this.refreshRows()
       // Keep a selection if it is still in view; otherwise open the newest.
       if (!this.entries.some((e) => e.id === this.selectedEntry)) {
         const first = this.entries[0]
         if (first) await this.openEntry(first.id)
-        else { this.selectedEntry = null; this.entry = null }
+        else {
+          this.selectedEntry = null
+          this.entry = null
+        }
       }
     } catch (e) {
       await handle(e)
@@ -530,8 +548,14 @@ class AppState {
   }
 
   async deleteEntry(id: EntryId) {
-    if (this.#saveTimer) { clearTimeout(this.#saveTimer); this.#saveTimer = null }
-    if (this.selectedEntry === id) { this.entry = null; this.selectedEntry = null }
+    if (this.#saveTimer) {
+      clearTimeout(this.#saveTimer)
+      this.#saveTimer = null
+    }
+    if (this.selectedEntry === id) {
+      this.entry = null
+      this.selectedEntry = null
+    }
     try {
       await api.deleteEntry(id)
     } catch (e) {
@@ -588,9 +612,7 @@ class AppState {
   }
 
   get accent(): string {
-    const j = this.entry
-      ? this.journals.find((x) => x.id === this.entry!.journalId)
-      : this.journal
+    const j = this.entry ? this.journals.find((x) => x.id === this.entry!.journalId) : this.journal
     return j?.color ?? 'var(--accent)'
   }
 }

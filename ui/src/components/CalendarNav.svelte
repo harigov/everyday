@@ -74,7 +74,8 @@
       class="ministep"
       aria-label="Previous month"
       onclick={() => (miniAnchor = addMonths(miniAnchor, -1))}
-    ><span class="back"><Icon name="chevron" size={13} /></span></button>
+      ><span class="back"><Icon name="chevron" size={13} /></span></button
+    >
     <button class="minititle" onclick={() => calendar.goto(miniAnchor)}>
       {monthFmt.format(new Date(miniAnchor + 'T00:00'))}
     </button>
@@ -82,7 +83,8 @@
       class="ministep"
       aria-label="Next month"
       onclick={() => (miniAnchor = addMonths(miniAnchor, 1))}
-    ><Icon name="chevron" size={13} /></button>
+      ><Icon name="chevron" size={13} /></button
+    >
   </div>
 
   <div class="mini">
@@ -116,7 +118,12 @@
           <Icon name="refresh" size={14} />
         </button>
       {/if}
-      <button class="plus" title="Add a calendar" aria-label="Add a calendar" onclick={() => (adding = true)}>
+      <button
+        class="plus"
+        title="Add a calendar"
+        aria-label="Add a calendar"
+        onclick={() => (adding = true)}
+      >
         <Icon name="plus" size={15} />
       </button>
     </div>
@@ -136,7 +143,10 @@
       <button
         class="text"
         title={originLabel(cal)}
-        oncontextmenu={(e) => { e.preventDefault(); pendingDelete = cal }}
+        oncontextmenu={(e) => {
+          e.preventDefault()
+          pendingDelete = cal
+        }}
         onclick={() => calendar.toggleVisible(cal.id)}
       >
         <span class="cname">{cal.name}</span>
@@ -144,7 +154,8 @@
           {#if cal.lastError}
             <span class="warn"><Icon name="alert" size={11} weight={2} /></span>
           {/if}
-          {cal.events} {cal.events === 1 ? 'event' : 'events'}
+          {cal.events}
+          {cal.events === 1 ? 'event' : 'events'}
         </span>
       </button>
       {#if cal.origin.type === 'url'}
@@ -162,15 +173,15 @@
 
   {#if calendar.calendars.length === 0}
     <p class="blank">
-      Nothing subscribed. Add the secret address of a Google, Outlook or Apple
-      calendar and its events appear here, read-only, beside your own time.
+      Nothing subscribed. Add the secret address of a Google, Outlook or Apple calendar and its
+      events appear here, read-only, beside your own time.
     </p>
   {/if}
 
   {#if calendar.calendars.some((c) => c.lastError)}
     <p class="blank quiet">
-      A calendar that cannot be reached keeps the events it already had, so a
-      dropped connection never empties one.
+      A calendar that cannot be reached keeps the events it already had, so a dropped connection
+      never empties one.
     </p>
   {/if}
 </nav>
@@ -192,11 +203,19 @@
 <style>
   /* The same metrics as the other two navs: one sidebar, three apps, and a
      row that changed height when you switched would read as three programs. */
-  .nav { flex: 1; padding: var(--sp-2) var(--sp-2) var(--sp-4); }
+  .nav {
+    flex: 1;
+    padding: var(--sp-2) var(--sp-2) var(--sp-4);
+  }
 
   /* ── The small month ────────────────────────────────────────────────── */
 
-  .minihead { display: flex; align-items: center; gap: 2px; padding: 0 2px var(--sp-1); }
+  .minihead {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 2px var(--sp-1);
+  }
   .minititle {
     flex: 1;
     height: 24px;
@@ -208,15 +227,27 @@
     text-align: left;
     color: var(--fg-muted);
   }
-  .minititle:hover { background: var(--bg-hover); color: var(--fg); }
+  .minititle:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
   .ministep {
-    width: 22px; height: 22px; flex: none;
-    display: grid; place-items: center;
+    width: 22px;
+    height: 22px;
+    flex: none;
+    display: grid;
+    place-items: center;
     border-radius: var(--radius-sm);
     color: var(--fg-faint);
   }
-  .ministep:hover { background: var(--bg-hover); color: var(--fg); }
-  .back { display: flex; rotate: 180deg; }
+  .ministep:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .back {
+    display: flex;
+    rotate: 180deg;
+  }
 
   .mini {
     display: grid;
@@ -226,7 +257,8 @@
   }
   .initial {
     height: 18px;
-    display: grid; place-items: center;
+    display: grid;
+    place-items: center;
     font-size: 10px;
     font-weight: 600;
     color: var(--fg-faint);
@@ -234,24 +266,41 @@
   .minday {
     position: relative;
     height: 22px;
-    display: grid; place-items: center;
+    display: grid;
+    place-items: center;
     border-radius: 4px;
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
     color: var(--fg-muted);
-    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
   }
-  .minday:hover { background: var(--bg-hover); color: var(--fg); }
-  .minday.out { color: var(--fg-faint); opacity: 0.6; }
+  .minday:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .minday.out {
+    color: var(--fg-faint);
+    opacity: 0.6;
+  }
   /* The days the main view is currently showing, so the small month says
      where you are as well as where you could go. */
-  .minday.on { background: var(--bg-active); color: var(--fg); font-weight: 600; }
-  .minday.today { color: var(--accent); font-weight: 700; }
+  .minday.on {
+    background: var(--bg-active);
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .minday.today {
+    color: var(--accent);
+    font-weight: 700;
+  }
 
   .bump {
     position: absolute;
     bottom: 2px;
-    width: 3px; height: 3px;
+    width: 3px;
+    height: 3px;
     border-radius: 50%;
     background: currentColor;
     opacity: 0.55;
@@ -265,16 +314,32 @@
     justify-content: space-between;
     padding: var(--sp-5) var(--sp-2) var(--sp-2);
   }
-  .headtools { display: flex; align-items: center; gap: 2px; }
+  .headtools {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
   .plus {
-    width: 20px; height: 20px;
-    display: grid; place-items: center;
+    width: 20px;
+    height: 20px;
+    display: grid;
+    place-items: center;
     border-radius: var(--radius-sm);
     color: var(--fg-faint);
   }
-  .plus:hover { background: var(--bg-hover); color: var(--fg); }
-  .plus.spin { animation: turn 1.1s linear infinite; color: var(--accent); }
-  @keyframes turn { to { rotate: 360deg; } }
+  .plus:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .plus.spin {
+    animation: turn 1.1s linear infinite;
+    color: var(--accent);
+  }
+  @keyframes turn {
+    to {
+      rotate: 360deg;
+    }
+  }
 
   .row {
     display: flex;
@@ -285,23 +350,34 @@
     padding: 0 var(--sp-1) 0 2px;
     border-radius: var(--radius-sm);
   }
-  .row:hover { background: var(--bg-hover); }
-  .row.hidden .cname, .row.hidden .cmeta { opacity: 0.45; }
+  .row:hover {
+    background: var(--bg-hover);
+  }
+  .row.hidden .cname,
+  .row.hidden .cmeta {
+    opacity: 0.45;
+  }
 
   .tick {
-    width: 22px; height: 22px; flex: none;
-    display: grid; place-items: center;
+    width: 22px;
+    height: 22px;
+    flex: none;
+    display: grid;
+    place-items: center;
   }
   /* A filled swatch is shown, a hollow one is hidden -- the same affordance
      as a checkbox, and it doubles as the colour key for the grid. */
   .swatch {
-    width: 11px; height: 11px;
+    width: 11px;
+    height: 11px;
     border-radius: 3.5px;
     border: 1.5px solid var(--dot);
     background: var(--dot);
     transition: background var(--fast) var(--ease);
   }
-  .row.hidden .swatch { background: transparent; }
+  .row.hidden .swatch {
+    background: transparent;
+  }
 
   .text {
     flex: 1;
@@ -315,9 +391,13 @@
   .cname {
     font-size: var(--text-base);
     color: var(--fg-muted);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .row:hover .cname { color: var(--fg); }
+  .row:hover .cname {
+    color: var(--fg);
+  }
   .cmeta {
     display: flex;
     align-items: center;
@@ -326,18 +406,31 @@
     color: var(--fg-faint);
     font-variant-numeric: tabular-nums;
   }
-  .warn { color: var(--danger); display: flex; }
-  .row.failed .cmeta { color: var(--danger); }
+  .warn {
+    color: var(--danger);
+    display: flex;
+  }
+  .row.failed .cmeta {
+    color: var(--danger);
+  }
 
   .mini-action {
-    width: 22px; height: 22px; flex: none;
-    display: grid; place-items: center;
+    width: 22px;
+    height: 22px;
+    flex: none;
+    display: grid;
+    place-items: center;
     border-radius: var(--radius-sm);
     color: var(--fg-faint);
     opacity: 0;
   }
-  .row:hover .mini-action { opacity: 1; }
-  .mini-action:hover { background: var(--bg-active); color: var(--fg); }
+  .row:hover .mini-action {
+    opacity: 1;
+  }
+  .mini-action:hover {
+    background: var(--bg-active);
+    color: var(--fg);
+  }
 
   .blank {
     padding: var(--sp-2);
@@ -345,5 +438,8 @@
     line-height: var(--leading-normal);
     color: var(--fg-faint);
   }
-  .blank.quiet { padding-top: 0; opacity: 0.85; }
+  .blank.quiet {
+    padding-top: 0;
+    opacity: 0.85;
+  }
 </style>

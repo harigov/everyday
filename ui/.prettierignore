@@ -1,0 +1,4 @@
+# Generated or vendored -- nothing here is written by hand.
+dist
+node_modules
+package-lock.json
