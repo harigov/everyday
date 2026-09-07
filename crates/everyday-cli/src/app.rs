@@ -296,7 +296,7 @@ fn new_entry(
         return Err(Error::Invalid("refusing to save an empty entry".into()));
     }
 
-    let mut entry = Entry::new(journal.id, &local_timezone());
+    let mut entry = Entry::new(journal.id, &everyday_core::model::system_tz());
     entry.body = RichDoc::from_plain_text(body.trim_end());
     entry.title = title.unwrap_or_default();
     entry.tags = tags;
@@ -509,11 +509,12 @@ fn demo(vault: &Vault) -> Result<()> {
                 j
             }
         };
-        let mut entry = Entry::new(journal.id, &local_timezone());
+        let mut entry = Entry::new(journal.id, &everyday_core::model::system_tz());
         entry.title = (*title).into();
         entry.body = RichDoc::from_plain_text(body);
         entry.tags = tags.iter().map(|t| t.to_string()).collect();
-        entry.local_date = today_local().saturating_sub(jiff::Span::new().days(created));
+        entry.local_date =
+            everyday_core::model::today_local().saturating_sub(jiff::Span::new().days(created));
         vault.save_entry(&entry)?;
         created += 1;
     }
@@ -573,16 +574,6 @@ fn resolve_entry(vault: &Vault, needle: &str) -> Result<everyday_core::EntryId> 
         0 => Err(Error::not_found("entry", needle)),
         n => Err(Error::Invalid(format!("{needle:?} matches {n} entries; use more characters"))),
     }
-}
-
-/// The system time zone, falling back to UTC. Entries record this so their
-/// local date survives the author moving countries.
-fn local_timezone() -> String {
-    jiff::tz::TimeZone::system().iana_name().unwrap_or("UTC").to_string()
-}
-
-fn today_local() -> Date {
-    everyday_core::model::local_date_in(jiff::Timestamp::now(), &local_timezone())
 }
 
 fn truncate(s: &str, max: usize) -> String {

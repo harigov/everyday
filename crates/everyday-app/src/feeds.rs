@@ -189,17 +189,6 @@ pub fn sync_window(today: jiff::civil::Date) -> (jiff::civil::Date, jiff::civil:
     (back, forward)
 }
 
-/// The machine's own time zone, for reading a feed's floating times.
-pub fn local_tz() -> String {
-    jiff::tz::TimeZone::system().iana_name().unwrap_or("UTC").to_string()
-}
-
-/// Today, in the machine's own zone. Kept here beside [`sync_window`] so the
-/// two always agree about which day it is.
-pub fn today() -> jiff::civil::Date {
-    everyday_core::model::local_date_in(jiff::Timestamp::now(), &local_tz())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

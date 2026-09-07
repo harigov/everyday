@@ -7,7 +7,7 @@
 //! freeze the window mid-keystroke.
 
 use everyday_core::calendar::{Calendar, CalendarProvider, Event, SyncReport};
-use everyday_core::model::local_date_in;
+use everyday_core::model::{local_date_in, system_tz, today_local};
 use everyday_core::search::SearchHit;
 use everyday_core::store::calendars::EventQuery;
 use everyday_core::store::tasks::{BlockQuery, TaskQuery};
@@ -243,7 +243,7 @@ pub fn get_entry(state: State<'_, AppState>, id: EntryId) -> CommandResult<Entry
 #[tauri::command]
 pub fn new_entry(state: State<'_, AppState>, journal_id: JournalId) -> CommandResult<Entry> {
     let _ = state.require()?;
-    let tz = jiff::tz::TimeZone::system().iana_name().unwrap_or("UTC").to_string();
+    let tz = system_tz();
     let mut entry = Entry::new(journal_id, &tz);
     entry.local_date = local_date_in(entry.created_at, &tz);
     Ok(entry)
@@ -273,16 +273,7 @@ pub fn search(
 
 #[tauri::command]
 pub fn list_tags(state: State<'_, AppState>) -> CommandResult<Vec<String>> {
-    let vault = state.require()?;
-    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for e in vault.entries(&EntryQuery::default())? {
-        for t in e.tags {
-            *counts.entry(t).or_default() += 1;
-        }
-    }
-    let mut tags: Vec<(String, usize)> = counts.into_iter().collect();
-    tags.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    Ok(tags.into_iter().map(|(t, _)| t).collect())
+    Ok(state.require()?.entry_tags()?.into_iter().map(|(tag, _)| tag).collect())
 }
 
 // ---- projects, tasks and time -------------------------------------------
@@ -386,7 +377,7 @@ pub fn new_block(
     kind: Option<BlockKind>,
 ) -> CommandResult<TimeBlock> {
     let _ = state.require()?;
-    let tz = jiff::tz::TimeZone::system().iana_name().unwrap_or("UTC").to_string();
+    let tz = system_tz();
     let mut block = TimeBlock::new(subject, start, minutes, &tz);
     if let Some(kind) = kind {
         block.kind = kind;
@@ -431,9 +422,7 @@ pub struct TagCount {
 /// which day an entry is filed under.
 #[tauri::command]
 pub fn task_stats(state: State<'_, AppState>) -> CommandResult<TaskStats> {
-    let tz = jiff::tz::TimeZone::system().iana_name().unwrap_or("UTC").to_string();
-    let today = local_date_in(jiff::Timestamp::now(), &tz);
-    Ok(state.require()?.task_stats(today)?)
+    Ok(state.require()?.task_stats(today_local())?)
 }
 
 // ---- calendars ----------------------------------------------------------
@@ -565,8 +554,8 @@ async fn sync_one(vault: &Arc<Vault>, id: CalendarId) -> CommandResult<SyncRepor
 /// would stall every other command for the duration of a sync that is meant
 /// to be invisible.
 async fn apply_feed(vault: &Arc<Vault>, id: CalendarId, text: String) -> CommandResult<SyncReport> {
-    let window = feeds::sync_window(feeds::today());
-    let tz = feeds::local_tz();
+    let window = feeds::sync_window(today_local());
+    let tz = system_tz();
     let v = vault.clone();
     let outcome = blocking(move || Ok(v.sync_calendar_from_ics(id, &text, window, &tz))).await?;
     match outcome {
@@ -603,35 +592,9 @@ pub async fn subscribe_calendar(
 ) -> CommandResult<CalendarInfo> {
     let vault = state.require()?;
     let url = everyday_core::calendar::normalize_feed_url(&url)?;
-    let mut calendar = Calendar::subscribed(name.trim(), &url).with_color(color);
-
+    let calendar = Calendar::subscribed(name.trim(), &url).with_color(color);
     let text = feeds::fetch(&url).await?;
-    // Name it after the publisher when the person adding it did not: Google,
-    // Outlook and Apple all set `X-WR-CALNAME`, and "Priya — Work" is a
-    // better name than anything a text field would have got out of someone
-    // in a hurry.
-    if calendar.name.is_empty() {
-        calendar.name = everyday_core::ics::parse(&text)
-            .name
-            .filter(|n| !n.trim().is_empty())
-            .unwrap_or_else(|| "Calendar".to_string());
-    }
-    let id = calendar.id;
-    {
-        let vault = vault.clone();
-        let calendar = calendar.clone();
-        blocking(move || Ok(vault.save_calendar(&calendar)?)).await?;
-    }
-
-    match apply_feed(&vault, id, text).await {
-        Ok(report) => Ok(CalendarInfo { calendar: vault.calendar(id)?, events: report.events }),
-        Err(e) => {
-            // Nothing added: see the doc comment. Undoing the save is safe
-            // because nothing else can have pointed at it yet.
-            let _ = vault.delete_calendar(id);
-            Err(e)
-        }
-    }
+    add_calendar(&vault, calendar, text, "Calendar").await
 }
 
 /// Add a calendar from a `.ics` file the user chose.
@@ -649,12 +612,34 @@ pub async fn import_calendar(
     ics: String,
 ) -> CommandResult<CalendarInfo> {
     let vault = state.require()?;
-    let mut calendar = Calendar::imported(name.trim(), label).with_color(color);
+    let calendar = Calendar::imported(name.trim(), label).with_color(color);
+    add_calendar(&vault, calendar, ics, "Imported calendar").await
+}
+
+/// Save a new calendar, fill it from `text`, and add nothing at all if that
+/// does not work.
+///
+/// Both ways in -- a subscription and an imported file -- do exactly this
+/// once they have the iCalendar text in hand, and they differ only in where
+/// the text came from and what to call the result when the document does not
+/// name itself. Keeping the shared half here is what makes the all-or-nothing
+/// guarantee in `subscribe_calendar`'s doc comment one piece of code rather
+/// than two that have to be kept in agreement.
+async fn add_calendar(
+    vault: &Arc<Vault>,
+    mut calendar: Calendar,
+    text: String,
+    fallback_name: &str,
+) -> CommandResult<CalendarInfo> {
+    // Name it after the publisher when the person adding it did not: Google,
+    // Outlook and Apple all set `X-WR-CALNAME`, and "Priya — Work" is a
+    // better name than anything a text field would have got out of someone
+    // in a hurry.
     if calendar.name.is_empty() {
-        calendar.name = everyday_core::ics::parse(&ics)
+        calendar.name = everyday_core::ics::parse(&text)
             .name
             .filter(|n| !n.trim().is_empty())
-            .unwrap_or_else(|| "Imported calendar".to_string());
+            .unwrap_or_else(|| fallback_name.to_string());
     }
     let id = calendar.id;
     {
@@ -662,9 +647,12 @@ pub async fn import_calendar(
         let calendar = calendar.clone();
         blocking(move || Ok(vault.save_calendar(&calendar)?)).await?;
     }
-    match apply_feed(&vault, id, ics).await {
+
+    match apply_feed(vault, id, text).await {
         Ok(report) => Ok(CalendarInfo { calendar: vault.calendar(id)?, events: report.events }),
         Err(e) => {
+            // Nothing added: see `subscribe_calendar`. Undoing the save is
+            // safe because nothing else can have pointed at it yet.
             let _ = vault.delete_calendar(id);
             Err(e)
         }

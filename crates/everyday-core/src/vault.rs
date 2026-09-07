@@ -582,6 +582,27 @@ impl Vault {
         self.with_tasks(|t| t.task_stats(today))
     }
 
+    /// Every tag used on an entry, most used first, ties broken
+    /// alphabetically.
+    ///
+    /// The journal-domain twin of [`Vault::task_tags`], and it lives here for
+    /// the same reason that one does: which tags exist and how often they are
+    /// used is a question about the vault's contents, not about the shell
+    /// asking. It had been a loop in the desktop shell's command handler,
+    /// which meant the CLI could not answer it and the two front ends were
+    /// one copy-paste away from sorting the list differently.
+    pub fn entry_tags(&self) -> Result<Vec<(String, u32)>> {
+        let mut counts: std::collections::BTreeMap<String, u32> = Default::default();
+        for e in self.entries(&EntryQuery::default())? {
+            for tag in e.tags {
+                *counts.entry(tag).or_default() += 1;
+            }
+        }
+        let mut out: Vec<(String, u32)> = counts.into_iter().collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Ok(out)
+    }
+
     /// Every tag in the task domain with how often it is used, most used
     /// first, ties broken alphabetically.
     ///
@@ -1109,6 +1130,38 @@ mod tests {
         assert_eq!(s.backend, "memory");
         assert_eq!(s.name, "Test");
         assert!(dir.path().join(HEADER_FILENAME).is_file());
+    }
+
+    #[test]
+    fn entry_tags_are_counted_most_used_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+        let j = Journal::new("J");
+        v.save_journal(&j).unwrap();
+
+        for tags in [vec!["travel", "spain"], vec!["travel", "food"], vec!["travel"], vec!["food"]]
+        {
+            let mut e = Entry::new(j.id, "UTC");
+            e.title = "x".into();
+            e.tags = tags.into_iter().map(str::to_string).collect();
+            v.save_entry(&e).unwrap();
+        }
+
+        // Most used first; "food" and "spain" tie at the bottom on count and
+        // are broken alphabetically, which is what makes the order stable
+        // enough to drive an autocomplete.
+        assert_eq!(
+            v.entry_tags().unwrap(),
+            vec![("travel".to_string(), 3), ("food".to_string(), 2), ("spain".to_string(), 1),]
+        );
+    }
+
+    #[test]
+    fn entry_tags_needs_an_unlocked_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+        v.lock();
+        assert!(matches!(v.entry_tags().unwrap_err(), Error::Locked));
     }
 
     #[test]
