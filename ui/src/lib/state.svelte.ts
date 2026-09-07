@@ -32,7 +32,15 @@ export type Screen = 'loading' | 'setup' | 'locked' | 'main' | 'error'
 export const SECTIONS = ['journal', 'todo', 'calendar'] as const
 export type Section = (typeof SECTIONS)[number]
 
-function isLocked(e: unknown): boolean {
+/**
+ * Was this the vault locking under us rather than a fault?
+ *
+ * Nearly every caller wants `handle` below instead. This is exported for
+ * the handful that deliberately do something else with the distinction --
+ * a background refresh that swallows everything, or a dialog that returns
+ * its message instead of posting it over the window.
+ */
+export function isLocked(e: unknown): boolean {
   return e instanceof VaultError && e.code === 'locked'
 }
 
@@ -40,6 +48,34 @@ export function errorMessage(e: unknown): string {
   if (e instanceof VaultError) return e.message
   if (e instanceof Error) return e.message
   return String(e)
+}
+
+/**
+ * What every store does when a call into the vault fails.
+ *
+ * There is one policy and it is this: a vault that locked under us is not an
+ * error to report, it is a screen to go to -- the auto-lock can fire in the
+ * middle of any call, and telling somebody "locked" in red at the top of the
+ * window they are about to be taken away from is noise. Anything else is
+ * worth saying.
+ *
+ * It lives here, beside `app`, and not as a copy in each store. This idiom
+ * was written out twenty-six times across the three stores, with three
+ * separate definitions of `isLocked` and several methods that had simply
+ * forgotten to check -- so a lock during those produced an unhandled
+ * rejection instead of the lock screen. The next store to be added gets the
+ * behaviour by calling this rather than by remembering to copy it.
+ *
+ * `revert` re-reads whatever the caller had already changed optimistically,
+ * for the writes that update the screen before the disk.
+ */
+export async function handle(e: unknown, revert?: () => Promise<unknown>): Promise<void> {
+  if (isLocked(e)) {
+    await app.lock()
+    return
+  }
+  app.error = errorMessage(e)
+  if (revert) await revert()
 }
 
 class AppState {
@@ -308,8 +344,7 @@ class AppState {
     try {
       this.journals = await api.journals()
     } catch (e) {
-      if (isLocked(e)) return void (await this.lock())
-      this.error = errorMessage(e)
+      await handle(e)
     }
   }
 
@@ -325,7 +360,11 @@ class AppState {
   }
 
   async saveJournal(journal: Journal) {
-    await api.saveJournal(journal)
+    try {
+      await api.saveJournal(journal)
+    } catch (e) {
+      return void (await handle(e))
+    }
     await this.refreshJournals()
   }
 
@@ -345,14 +384,17 @@ class AppState {
       await this.selectJournal(journal.id)
       return true
     } catch (e) {
-      if (isLocked(e)) { await this.lock(); return false }
-      this.error = errorMessage(e)
+      await handle(e)
       return false
     }
   }
 
   async deleteJournal(id: JournalId) {
-    await api.deleteJournal(id)
+    try {
+      await api.deleteJournal(id)
+    } catch (e) {
+      return void (await handle(e))
+    }
     if (this.selectedJournal === id) this.selectedJournal = null
     await this.refreshJournals()
     await this.refreshEntries()
@@ -406,8 +448,7 @@ class AppState {
         else { this.selectedEntry = null; this.entry = null }
       }
     } catch (e) {
-      if (isLocked(e)) return void (await this.lock())
-      this.error = errorMessage(e)
+      await handle(e)
     }
   }
 
@@ -421,8 +462,7 @@ class AppState {
     try {
       this.entry = await api.entry(id)
     } catch (e) {
-      if (isLocked(e)) return void (await this.lock())
-      this.error = errorMessage(e)
+      await handle(e)
     }
   }
 
@@ -430,8 +470,13 @@ class AppState {
     const journalId = this.selectedJournal ?? this.journals[0]?.id
     if (!journalId) return
     await this.flush()
-    const entry = await api.newEntry(journalId)
-    await api.saveEntry(entry)
+    let entry: Entry
+    try {
+      entry = await api.newEntry(journalId)
+      await api.saveEntry(entry)
+    } catch (e) {
+      return void (await handle(e))
+    }
     this.entry = entry
     this.selectedEntry = entry.id
     await this.refreshEntries()
@@ -467,8 +512,7 @@ class AppState {
       // it is allowed to lag -- but the refresh is queued, never dropped, so
       // it always converges once the typing stops.
     } catch (e) {
-      if (isLocked(e)) return void (await this.lock())
-      this.error = errorMessage(e)
+      await handle(e)
     } finally {
       this.saving = false
       // Not after a save that ended in a lock: the refresh would fire four
@@ -480,15 +524,23 @@ class AppState {
   async deleteEntry(id: EntryId) {
     if (this.#saveTimer) { clearTimeout(this.#saveTimer); this.#saveTimer = null }
     if (this.selectedEntry === id) { this.entry = null; this.selectedEntry = null }
-    await api.deleteEntry(id)
+    try {
+      await api.deleteEntry(id)
+    } catch (e) {
+      return void (await handle(e))
+    }
     await this.refreshEntries()
   }
 
   async toggleStar(id: EntryId) {
-    const full = this.entry?.id === id ? this.entry : await api.entry(id)
-    full.starred = !full.starred
-    await api.saveEntry($state.snapshot(full) as Entry)
-    if (this.entry?.id === id) this.entry.starred = full.starred
+    try {
+      const full = this.entry?.id === id ? this.entry : await api.entry(id)
+      full.starred = !full.starred
+      await api.saveEntry($state.snapshot(full) as Entry)
+      if (this.entry?.id === id) this.entry.starred = full.starred
+    } catch (e) {
+      return void (await handle(e))
+    }
     await this.refreshEntries()
   }
 
@@ -508,8 +560,7 @@ class AppState {
       try {
         this.results = await api.search(q, this.selectedJournal, 50)
       } catch (e) {
-        if (isLocked(e)) return void (await this.lock())
-        this.error = errorMessage(e)
+        await handle(e)
       } finally {
         this.searching = false
       }

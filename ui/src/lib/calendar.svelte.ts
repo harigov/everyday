@@ -18,7 +18,7 @@
 // appointment. Everything here that writes, writes a `TimeBlock`.
 
 import { api } from './api'
-import { app, errorMessage } from './state.svelte'
+import { app, errorMessage, handle, isLocked } from './state.svelte'
 import { todo } from './todo.svelte'
 import {
   MIN_BLOCK_MINUTES,
@@ -49,7 +49,7 @@ import type {
   TaskId,
   TimeBlock,
 } from './types'
-import { TASK_STATUSES, VaultError, isOpen } from './types'
+import { TASK_STATUSES, isOpen } from './types'
 
 /** How often the backend is asked to refresh calendars whose interval elapsed. */
 const SYNC_POLL_MS = 5 * 60_000
@@ -66,10 +66,6 @@ export type View = 'day' | 'week' | 'month'
 
 /** Which of the two halves of a time block the grid is showing. */
 export type Layer = 'both' | 'planned' | 'actual'
-
-function isLocked(e: unknown): boolean {
-  return e instanceof VaultError && e.code === 'locked'
-}
 
 /**
  * Anything the grid can draw in a time slot, reduced to what drawing needs.
@@ -323,8 +319,7 @@ class CalendarState {
       // A selection that has scrolled out of the window is not a selection.
       if (this.selection && !this.selected) this.selection = null
     } catch (e) {
-      if (isLocked(e)) return void (await app.lock())
-      app.error = errorMessage(e)
+      await handle(e)
     } finally {
       this.loading = false
     }
@@ -570,8 +565,7 @@ class CalendarState {
       void todo.refreshStats()
       return block
     } catch (e) {
-      if (isLocked(e)) await app.lock()
-      else app.error = errorMessage(e)
+      await handle(e)
       return null
     }
   }
@@ -706,9 +700,7 @@ class CalendarState {
       }
       void todo.refreshStats()
     } catch (e) {
-      if (isLocked(e)) return void (await app.lock())
-      app.error = errorMessage(e)
-      await this.refreshBlocks()
+      await handle(e, () => this.refreshBlocks())
     }
   }
 
@@ -720,9 +712,7 @@ class CalendarState {
       await api.deleteBlock(id)
       void todo.refreshStats()
     } catch (e) {
-      if (isLocked(e)) return void (await app.lock())
-      app.error = errorMessage(e)
-      await this.refreshBlocks()
+      await handle(e, () => this.refreshBlocks())
     }
   }
 
@@ -944,8 +934,7 @@ class CalendarState {
       await api.saveCalendar($state.snapshot(calendar) as CalendarInfo)
       await this.refresh()
     } catch (e) {
-      if (isLocked(e)) return void (await app.lock())
-      app.error = errorMessage(e)
+      await handle(e)
     }
   }
 
@@ -956,8 +945,7 @@ class CalendarState {
     try {
       await api.saveCalendar($state.snapshot(calendar) as CalendarInfo)
     } catch (e) {
-      if (isLocked(e)) return void (await app.lock())
-      app.error = errorMessage(e)
+      await handle(e)
     }
   }
 
@@ -967,9 +955,7 @@ class CalendarState {
     try {
       await api.deleteCalendar(id)
     } catch (e) {
-      if (isLocked(e)) return void (await app.lock())
-      app.error = errorMessage(e)
-      await this.refresh()
+      await handle(e, () => this.refresh())
     }
   }
 

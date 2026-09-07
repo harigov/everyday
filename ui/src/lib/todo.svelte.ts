@@ -11,7 +11,7 @@
 // same object, and a debounced write puts it on disk.
 
 import { api } from './api'
-import { app, errorMessage } from './state.svelte'
+import { app, handle } from './state.svelte'
 import { todayIso } from './format'
 import { parseQuickAdd } from './quickadd'
 import type {
@@ -27,7 +27,7 @@ import type {
   TaskStatus,
   TimeBlock,
 } from './types'
-import { TASK_STATUSES, VaultError, isOpen } from './types'
+import { TASK_STATUSES, isOpen } from './types'
 
 /** Idle delay before an edited task is written. Matches the journal's. */
 const AUTOSAVE_MS = 700
@@ -44,10 +44,6 @@ export type Scope =
 
 export type View = 'list' | 'board'
 export type GroupBy = 'none' | 'status' | 'due' | 'priority'
-
-function isLocked(e: unknown): boolean {
-  return e instanceof VaultError && e.code === 'locked'
-}
 
 function addDays(iso: string, days: number): string {
   const [y, m, d] = iso.split('-').map(Number)
@@ -140,8 +136,7 @@ class TodoState {
         this.detailBlocks = []
       }
     } catch (e) {
-      if (isLocked(e)) return void (await app.lock())
-      app.error = errorMessage(e)
+      await handle(e)
     } finally {
       this.loading = false
     }
@@ -341,8 +336,7 @@ class TodoState {
       // Ticking something off has to move the sidebar counts with it.
       void this.refreshStats()
     } catch (e) {
-      if (isLocked(e)) return void (await app.lock())
-      app.error = errorMessage(e)
+      await handle(e)
     } finally {
       this.saving = false
     }
@@ -416,8 +410,7 @@ class TodoState {
       void this.refreshTags()
       return task
     } catch (e) {
-      if (isLocked(e)) await app.lock()
-      else app.error = errorMessage(e)
+      await handle(e)
       return null
     }
   }
@@ -455,9 +448,7 @@ class TodoState {
       void this.refreshStats()
       void this.refreshTags()
     } catch (e) {
-      if (isLocked(e)) return void (await app.lock())
-      app.error = errorMessage(e)
-      await this.refresh()
+      await handle(e, () => this.refresh())
     }
   }
 
@@ -544,8 +535,7 @@ class TodoState {
     try {
       this.detailBlocks = await api.blocks({ taskId: id })
     } catch (e) {
-      if (isLocked(e)) return void (await app.lock())
-      app.error = errorMessage(e)
+      await handle(e)
     }
   }
 
@@ -583,8 +573,7 @@ class TodoState {
       )
       void this.refreshStats()
     } catch (e) {
-      if (isLocked(e)) return void (await app.lock())
-      app.error = errorMessage(e)
+      await handle(e)
     }
   }
 
@@ -594,8 +583,7 @@ class TodoState {
       await api.deleteBlock(id)
       void this.refreshStats()
     } catch (e) {
-      if (isLocked(e)) return void (await app.lock())
-      app.error = errorMessage(e)
+      await handle(e)
     }
   }
 
@@ -611,8 +599,7 @@ class TodoState {
       await this.setScope({ kind: 'project', id: project.id })
       return true
     } catch (e) {
-      if (isLocked(e)) return (await app.lock(), false)
-      app.error = errorMessage(e)
+      await handle(e)
       return false
     }
   }
@@ -623,8 +610,7 @@ class TodoState {
     try {
       await api.saveProject($state.snapshot(project) as Project)
     } catch (e) {
-      if (isLocked(e)) return void (await app.lock())
-      app.error = errorMessage(e)
+      await handle(e)
     }
   }
 
@@ -632,8 +618,7 @@ class TodoState {
     try {
       await api.deleteProject(id)
     } catch (e) {
-      if (isLocked(e)) return void (await app.lock())
-      app.error = errorMessage(e)
+      await handle(e)
       return
     }
     this.projects = this.projects.filter((p) => p.id !== id)
