@@ -309,12 +309,15 @@ make fix                           # apply what `make lint` can fix on its own
 ```
 
 `make lint` runs exactly what CI runs, so a red build never tells you
-something you could not have found locally first. `make fix` runs the same
-tools in write mode: it reformats, and applies the clippy suggestions marked
-machine-applicable. What survives a `fix` is the list that needs a person --
-clippy deliberately will not, for instance, narrow a `&Vec<String>` parameter
-to `&[String]` on its own, because that changes a signature its callers
-depend on.
+something you could not have found locally first. It covers both halves:
+rustfmt and clippy over the crates, Prettier, ESLint and `svelte-check` over
+the interface, then both test suites.
+
+`make fix` runs the same tools in write mode -- reformat, then apply the
+suggestions each linter marks as safe to make unattended. What survives a
+`fix` is the list that needs a person: clippy will not, for instance, narrow
+a `&Vec<String>` parameter to `&[String]` on its own, because that changes a
+signature its callers depend on.
 
 `scripts/test.sh` runs the suite inside a systemd scope with a hard memory
 ceiling and swap disabled, so a runaway allocation is killed by the cgroup in
