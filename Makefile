@@ -65,6 +65,15 @@ build: $(UI_DIR)/node_modules ## Build the release desktop app and installers
 
 test: ## Run the test suite under a memory cap
 	./scripts/test.sh $(ARGS)
+	@# The shell is not a workspace default member -- it links the platform
+	@# webview -- so a plain `cargo test` skips it, and its tests would
+	@# otherwise run nowhere at all. That includes the one holding a feed's
+	@# subscription URL, which is a bearer credential, out of error messages
+	@# and logs. Skipped when ARGS names a package, and when the headers to
+	@# build it are missing; CI installs them and runs it unconditionally.
+	@if [ -z "$(ARGS)" ] && { [ "$$(uname -s)" != Linux ] || pkg-config --exists webkit2gtk-4.1 2>/dev/null; }; then \
+		./scripts/test.sh -p everyday-app; \
+	fi
 
 check: ## Format check, clippy and interface typecheck
 	cargo fmt --all -- --check

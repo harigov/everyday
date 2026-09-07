@@ -1,0 +1,120 @@
+# Format, lint, test and typecheck, on every push and pull request.
+#
+# This is the gate `release.yml` deliberately is not. That workflow is manual
+# and builds installers; this one is automatic and builds nothing you keep. It
+# is what makes the checks in the Makefile mean something: before it existed,
+# `cargo test`, `cargo clippy`, `cargo fmt --check` and `npm run check` ran
+# only when somebody remembered to run them, which meant the interface's
+# typecheck could be broken for its entire history without anybody noticing.
+#
+# Cost: one standard `ubuntu-latest` runner. Standard GitHub-hosted runners are
+# free and unmetered on public repositories -- see the note at the top of
+# `release.yml` for which labels are *not*, and check any `runs-on:` you change
+# against that list first.
+
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push supersedes the one before it. Unlike a release run there is
+# nothing here worth finishing once it is out of date.
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Debug info is the bulk of the build output and nothing here reads a
+  # backtrace symbol-by-symbol; turning it off roughly halves the compile.
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --no-self-update \
+            --component rustfmt,clippy
+          rustup default stable
+          rustc --version
+
+      # `everyday-app` links the platform webview. It is not a default
+      # workspace member for that reason, so a plain `cargo test` skips it --
+      # which means its tests and its lints run *nowhere* unless this job
+      # installs the headers and asks for it by name. It is the crate holding
+      # the only network code in the application, so that is worth a minute of
+      # apt.
+      - name: Build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: check-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: check-${{ runner.os }}-
+
+      # First, because it is the cheapest way to fail and needs no compile.
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: |
+          set -euo pipefail
+          cargo clippy --all-targets -- -D warnings
+          cargo clippy -p everyday-app --all-targets -- -D warnings
+
+      - name: Tests
+        run: |
+          set -euo pipefail
+          cargo test
+          cargo test -p everyday-app
+
+  ui:
+    name: Interface
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # The floor is real, not advisory: Vite 8 resolves a native Rolldown
+      # binding that older Node lines do not get, and the failure is an opaque
+      # "Cannot find native binding" rather than a version complaint.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ui/.nvmrc
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install interface packages
+        run: npm --prefix ui ci
+
+      # `svelte-check` over every component, then the two behaviour suites for
+      # the quick-add parser and the calendar grid's arithmetic.
+      - name: Typecheck and test
+        run: npm --prefix ui run check
