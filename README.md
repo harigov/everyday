@@ -255,7 +255,7 @@ crates/
   everyday-store-markdown/  plain Markdown files backend
   everyday-vault/           wires core to backends; platform paths; media serving
   everyday-cli/             `everyday` — scripted capture, export, inspection
-  everyday-app/             Tauri desktop shell (window, commands, media protocol)
+  everyday-app/             Tauri desktop shell (window, commands, media, tray)
 ui/                         Svelte 5 + TipTap interface
 scripts/                    capped test runner, dev runner, Linux setup
 ```
@@ -507,6 +507,65 @@ period if you know there is no such draft.
 
 In the calendar: `D`, `W`, `M` for the three views, `T` for today, `←`/`→` to
 page, `Delete` to remove the selected block.
+
+## Quick actions in the tray
+
+The same three verbs as `Ctrl/Cmd N`, from the menu bar (macOS), the
+notification area (Windows) or the system tray (Linux), without going to the
+window first:
+
+```
+  New journal entry
+  ─────────────────
+  Add a task
+  ─────────────────
+  Set an hour aside
+  ☐ Track time
+  ─────────────────
+  Open Every Day
+  Quit Every Day
+```
+
+Choosing one raises the window and leaves the cursor where the typing goes.
+The list is what the open vault can actually do: a Markdown vault has no task
+domain, so it has no "add a task"; an unencrypted vault has nothing to lock,
+so it has no "lock now"; and a locked vault offers the last two lines and
+nothing else. Turn the icon off in Settings.
+
+**The interface decides what is in the menu, the shell draws it.** An app
+registers what it can offer *right now*, and that is the whole of adding an
+action —
+
+```ts
+// ui/src/lib/todo.svelte.ts
+tray.register('todo', TRAY_ORDER.todo, () => {
+  if (app.screen !== 'main' || !app.supportsTasks) return []
+  return [{ id: 'todo:add', label: 'Add a task', run: () => ... }]
+})
+```
+
+— with no Rust change, no new command and no new capability. The function is
+re-run whenever anything it reads changes, which is what keeps the menu
+honest: an action that has become impossible disappears or greys out rather
+than failing when it is chosen. Handlers never leave the interface; what
+crosses to Rust is labels and ids, and what comes back is the id that was
+picked (`crates/everyday-app/src/tray.rs`).
+
+The last two entries are the shell's own, appended after whatever the
+interface sent. A tray whose only route back to the application is a menu
+built by a webview that might be wedged is a way to lose a running program --
+and on Linux, where a click on the icon raises no event at all, that menu is
+the only route there is.
+
+Closing the window still quits, and still locks the vault on the way out;
+there is no run-in-the-tray mode. Keeping the process alive with a decrypted
+key in memory and no window to show for it is the one thing this application
+is careful not to do, and a tray icon is not a good enough reason to start.
+
+On Linux the icon needs a StatusNotifier host -- GNOME wants the AppIndicator
+extension -- and the `libayatana-appindicator3-1` package the `.deb` depends
+on. Where there is no host, Settings says so rather than leaving a switch
+that appears to do nothing.
 
 ## Status
 

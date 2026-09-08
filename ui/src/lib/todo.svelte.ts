@@ -13,6 +13,7 @@
 import { api } from './api'
 import { Autosave } from './autosave'
 import { app, handle } from './state.svelte'
+import { TRAY_ORDER, tray } from './tray.svelte'
 import { addDays, todayIso } from './time'
 import { parseQuickAdd } from './quickadd'
 import type {
@@ -77,13 +78,49 @@ class TodoState {
   #saves = new Autosave<TaskId>((ids) => this.#writeTasks(ids))
   #started = false
 
+  /**
+   * How to put the cursor in the capture line, registered by the view.
+   *
+   * The same shape as the editor's `bindBody` in the app store, and for the
+   * same reason: the input belongs to a component, but the things that want
+   * to type into it -- Ctrl/Cmd N, and now the tray -- do not have a
+   * reference to that component and should not have to be handed one down
+   * through the view tree.
+   */
+  #capture: (() => void) | null = null
+  /**
+   * A focus asked for before the view was there to take it.
+   *
+   * This is the ordinary case for the tray: the request arrives while the
+   * journal is on screen, and the todo view mounts a frame later. Without
+   * this the first "add a task" from the menu bar would switch apps and
+   * leave the cursor nowhere.
+   */
+  #captureWanted = false
+
   constructor() {
     // A lock must leave nothing decrypted behind in here either.
     app.onLock(() => this.reset())
   }
 
+  /** Register (or with `null`, retire) the capture line's focus. */
+  bindCapture(fn: (() => void) | null) {
+    this.#capture = fn
+    if (fn && this.#captureWanted) {
+      this.#captureWanted = false
+      fn()
+    }
+  }
+
+  /** Put the cursor in the capture line, now or as soon as there is one. */
+  focusCapture() {
+    if (this.#capture) this.#capture()
+    else this.#captureWanted = true
+  }
+
   reset() {
     this.#saves.cancel()
+    this.#captureWanted = false
     this.projects = []
     this.tasks = []
     this.detailBlocks = []
@@ -683,3 +720,24 @@ class TodoState {
 }
 
 export const todo = new TodoState()
+
+// ── Quick actions ──────────────────────────────────────────────────────
+//
+// The shortest example of the tray API, and the reason it exists: capture is
+// the thing you want from the menu bar, and this app gets it for one entry
+// and one line of state.
+
+tray.register('todo', TRAY_ORDER.todo, () => {
+  // A Markdown vault has no task domain at all, so the todo app is not
+  // hidden behind a disabled item -- it is not there.
+  if (app.screen !== 'main' || !app.supportsTasks) return []
+  return [
+    {
+      id: 'todo:add',
+      label: 'Add a task',
+      run: async () => {
+        if (await app.goTo('todo')) todo.focusCapture()
+      },
+    },
+  ]
+})

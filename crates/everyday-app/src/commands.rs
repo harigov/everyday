@@ -22,12 +22,13 @@ use everyday_core::{
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::error::{CommandError, CommandResult};
 use crate::feeds;
 use crate::notify::{self, Notification};
 use crate::state::AppState;
+use crate::tray::{Tray, TrayItem};
 
 /// Run blocking vault work off the async runtime.
 async fn blocking<T, F>(f: F) -> CommandResult<T>
@@ -827,6 +828,36 @@ pub fn ready_to_close(window: tauri::Window, state: State<'_, AppState>) -> Comm
 #[tauri::command]
 pub fn vault_stats(state: State<'_, AppState>) -> CommandResult<StoreStats> {
     Ok(state.require()?.stats()?)
+}
+
+// ── the tray ───────────────────────────────────────────────────────────
+
+/// Put `items` in the tray menu, showing the icon if it is not up yet.
+///
+/// The whole menu is sent every time rather than patched. A quick action's
+/// label, its enabled state and whether it is offered at all are derived
+/// from vault state that moves, so a change is as likely to be "this item is
+/// gone" as "this item's label differs" -- and there is no patch protocol
+/// for that which is simpler than resending six items. The interface only
+/// calls this when the description has actually changed, so "every time" is
+/// a handful of calls per session.
+///
+/// False means the desktop has no tray to put an icon in.
+#[tauri::command]
+pub async fn set_tray_menu(app: tauri::AppHandle, items: Vec<TrayItem>) -> CommandResult<bool> {
+    // Off the async runtime like everything else here, though for a
+    // different reason: building a menu is a series of hops to the main
+    // thread, each of which blocks the caller until the event loop answers.
+    blocking(move || app.state::<Tray>().show(&app, &items)).await
+}
+
+#[tauri::command]
+pub async fn hide_tray(app: tauri::AppHandle) -> CommandResult<()> {
+    blocking(move || {
+        app.state::<Tray>().hide();
+        Ok(())
+    })
+    .await
 }
 
 /// Read a blob for the media protocol handler.

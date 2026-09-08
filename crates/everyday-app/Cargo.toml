@@ -20,7 +20,12 @@ tauri-build.workspace = true
 [dependencies]
 everyday-core.workspace = true
 everyday-vault.workspace = true
-tauri.workspace = true
+# `tray-icon` is not a default feature: it pulls in muda and the platform
+# status-item APIs, and an app without a tray should not carry them. See
+# `src/tray.rs`. On Linux it also wants libayatana-appindicator at runtime,
+# which is why the .deb declares it (tauri.conf.json) and `make setup`
+# installs its headers.
+tauri = { workspace = true, features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 # The portability layer for notifications. One API over UserNotifications on

@@ -12,9 +12,11 @@ mod feeds;
 mod notify;
 mod protocol;
 mod state;
+mod tray;
 
 use state::AppState;
 use tauri::{Emitter, Manager, WindowEvent};
+use tray::Tray;
 
 /// Asks the interface to write pending edits and then close the window.
 /// Its other half is `commands::ready_to_close`.
@@ -48,11 +50,7 @@ pub fn run() {
         // be handed when what you wanted was the window you already had. So
         // the second launch raises the first and exits.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(window) = app.webview_windows().values().next() {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            tray::raise_window(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -61,6 +59,12 @@ pub fn run() {
         // side of the bridge only.
         .plugin(tauri_plugin_notification::init())
         .manage(AppState::new())
+        // Empty until the interface asks for a tray. Nothing is put in the
+        // menu bar on a machine where the setting is off, and nothing is put
+        // there before the interface knows what belongs in it -- a tray that
+        // appears at launch holding only "Quit" is worse than one that
+        // appears a moment later holding the actions.
+        .manage(Tray::default())
         .register_asynchronous_uri_scheme_protocol("everyday", |ctx, request, responder| {
             protocol::handle(ctx.app_handle(), request, responder);
         })
@@ -117,6 +121,8 @@ pub fn run() {
             commands::collect_garbage,
             commands::vault_stats,
             commands::ready_to_close,
+            commands::set_tray_menu,
+            commands::hide_tray,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

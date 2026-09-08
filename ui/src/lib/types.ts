@@ -449,3 +449,24 @@ export interface ShellNotification {
   /** Identity for a condition that recurs; replaces rather than stacks. */
   key?: string | null
 }
+
+// ── The tray ───────────────────────────────────────────────────────────
+//
+// The wire form of a tray menu, as `set_tray_menu` takes it. What the
+// interface actually writes is a `TrayEntry` in `lib/tray.svelte.ts`, which
+// carries a handler as well; this is what is left after the handler has been
+// put aside and kept on this side of the bridge.
+
+export type TrayMenuItem =
+  | {
+      kind: 'action'
+      id: string
+      label: string
+      enabled: boolean
+      /** A checkbox rather than a plain item; `null` for a plain one. */
+      checked: boolean | null
+      /** Bring the window forward before the handler runs. */
+      raise: boolean
+    }
+  | { kind: 'separator' }
+  | { kind: 'submenu'; label: string; enabled: boolean; items: TrayMenuItem[] }

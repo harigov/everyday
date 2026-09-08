@@ -21,6 +21,7 @@ import { api } from './api'
 import { Autosave } from './autosave'
 import { app, errorMessage, handle, isLocked } from './state.svelte'
 import { todo } from './todo.svelte'
+import { TRAY_ORDER, tray } from './tray.svelte'
 import {
   MIN_BLOCK_MINUTES,
   SNAP_MINUTES,
@@ -969,3 +970,40 @@ class CalendarState {
 }
 
 export const calendar = new CalendarState()
+
+// ── Quick actions ──────────────────────────────────────────────────────
+
+tray.register('calendar', TRAY_ORDER.calendar, () => {
+  if (app.screen !== 'main' || !app.supportsCalendar) return []
+  return [
+    {
+      id: 'calendar:book-now',
+      label: 'Set an hour aside',
+      run: async () => {
+        if (await app.goTo('calendar')) await calendar.bookNow()
+      },
+    },
+    // One item that is also a state, rather than two that are sometimes
+    // greyed out. A tray is where you glance to find out whether you left
+    // the timer running, so the tick has to be readable without opening
+    // anything further -- and the elapsed figure is deliberately *not* in
+    // the label, because a menu you have to open is not a clock and putting
+    // it there would rebuild this menu once a second.
+    calendar.timer
+      ? {
+          id: 'calendar:stop-timer',
+          label: 'Tracking time',
+          checked: true,
+          // Stopping the timer is a thing you do on your way past.
+          raise: false,
+          run: () => calendar.stopTimer(),
+        }
+      : {
+          id: 'calendar:start-timer',
+          label: 'Track time',
+          checked: false,
+          raise: false,
+          run: () => calendar.startTimer({ type: 'adhoc' }),
+        },
+  ]
+})
