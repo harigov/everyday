@@ -797,7 +797,11 @@ class AppState {
       change(full)
       full.updatedAt = new Date().toISOString()
       await api.saveEntry($state.snapshot(full), base)
-      if (open) this.#baseVersion = full.updatedAt
+      // Re-checked after the await, and by identity: starring one entry and
+      // clicking another while the write is in flight would otherwise stamp
+      // the first one's version token onto the second, and the next autosave
+      // of *that* entry would be refused as a conflict it was never in.
+      if (open && this.entry === open) this.#baseVersion = full.updatedAt
     } catch (e) {
       return void (await handle(e))
     }

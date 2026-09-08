@@ -19,7 +19,14 @@
   import { calendar, DEFAULT_BLOCK_MINUTES, type Slot } from '../lib/calendar.svelte'
   import { formatMinutes } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
-  import { blockMenu, calendarTaskMenu, dayMenu, eventMenu, timeMenu } from '../lib/menus'
+  import {
+    blockMenu,
+    calendarTaskMenu,
+    dayMenu,
+    eventMenu,
+    runningMenu,
+    timeMenu,
+  } from '../lib/menus'
   import {
     MIN_BLOCK_MINUTES,
     SNAP_MINUTES,
@@ -149,6 +156,10 @@
    * another is two answers to the same question.
    */
   function onSlotContextMenu(e: MouseEvent, slot: Slot) {
+    // The live slot is the timer, drawn from the clock rather than from a
+    // record, so there is nothing to select and nothing to edit -- only the
+    // stop.
+    if (!slot.block && !slot.event) return menu.show(e, runningMenu())
     calendar.select(slot)
     menu.show(e, slot.block ? blockMenu(slot.block) : eventMenu(slot.event!))
   }

@@ -713,11 +713,14 @@ class CalendarState {
   }
 
   select(slot: Slot | null) {
-    if (!slot) return void (this.selection = null)
-    // A reading is not a thing with a panel: it is edited where it was
-    // recorded, under the day's entry, which is also where the tracker that
-    // gives it meaning is named.
-    if (slot.reading) return void (this.selection = null)
+    // Two of the four kinds of slot have no panel to select into. A reading
+    // is edited where it was recorded, under the day's entry, which is also
+    // where the tracker that gives it meaning is named; and the live slot is
+    // the timer drawing itself off the wall clock, with nothing written
+    // until it is stopped. Selecting nothing is the honest answer to both,
+    // and testing for what a slot *has* is what keeps this total for every
+    // caller rather than one `!` away from a crash.
+    if (!slot?.block && !slot?.event) return void (this.selection = null)
     this.selection = slot.block
       ? { kind: 'block', id: slot.block.id }
       : { kind: 'event', id: slot.event!.id }

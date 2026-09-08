@@ -123,7 +123,10 @@ export function taskMenu(task: Task, hooks: TaskMenuHooks): MenuItem[] {
     !task.parentId && {
       label: 'Project',
       icon: 'inbox',
-      items: [
+      // Tidied like any other built menu: a vault with no projects in it
+      // would otherwise get "Inbox" with a rule underneath it and nothing
+      // under the rule.
+      items: tidyMenu([
         {
           label: 'Inbox',
           checked: !task.projectId,
@@ -136,7 +139,7 @@ export function taskMenu(task: Task, hooks: TaskMenuHooks): MenuItem[] {
           checked: task.projectId === project.id,
           run: () => todo.setProject(task.id, project.id),
         })),
-      ],
+      ]),
     },
     SEP,
     hooks.onAddSubtask && {
@@ -195,6 +198,24 @@ export function blockMenu(block: TimeBlock): MenuItem[] {
     },
     SEP,
     { label: 'Delete', icon: 'trash', danger: true, run: () => calendar.removeBlock(block.id) },
+  ])
+}
+
+/**
+ * The slot the timer is drawing right now.
+ *
+ * Not a block: while it runs there is no record in the vault at all -- the
+ * rectangle is drawn off the wall clock, and one `actual` block is written
+ * when it stops. So the only thing to offer is the stop.
+ */
+export function runningMenu(): MenuItem[] {
+  return tidyMenu([
+    {
+      label: 'Stop tracking',
+      icon: 'stop',
+      hint: formatMinutes(calendar.runningMinutes),
+      run: () => calendar.stopTimer(),
+    },
   ])
 }
 

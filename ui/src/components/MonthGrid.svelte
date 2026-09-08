@@ -13,7 +13,7 @@
   import { calendar } from '../lib/calendar.svelte'
   import { daysFrom, startOfWeek, todayIso } from '../lib/time'
   import { menu } from '../lib/menu.svelte'
-  import { blockMenu, calendarTaskMenu, dayMenu, eventMenu } from '../lib/menus'
+  import { blockMenu, calendarTaskMenu, dayMenu, eventMenu, runningMenu } from '../lib/menus'
   import Icon from './Icon.svelte'
   import type { MenuItem } from '../lib/menu'
 
@@ -108,7 +108,13 @@
         muted: slot.cancelled,
         onopen: () => calendar.select(slot),
         menu: () =>
-          slot.block ? blockMenu(slot.block) : slot.event ? eventMenu(slot.event) : dayMenu(iso),
+          slot.block
+            ? blockMenu(slot.block)
+            : slot.event
+              ? eventMenu(slot.event)
+              : slot.reading
+                ? dayMenu(iso)
+                : runningMenu(),
         at: slot.start,
       })
     }

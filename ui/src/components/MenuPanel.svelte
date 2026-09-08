@@ -49,12 +49,14 @@
     const size = { width: box.width, height: box.height }
     const viewport = { width: window.innerWidth, height: window.innerHeight }
     pos = anchor ? placeSubmenu(anchor, size, viewport) : at ? placeMenu(at, size, viewport) : null
-    // A panel opened by the keyboard puts the caret on its first item; one
-    // opened by the mouse takes focus itself, so Escape and the arrow keys
-    // work without a row being highlighted under a pointer that is about to
-    // choose a different one anyway.
+    // A panel opened by the keyboard puts the caret on its first item. The
+    // root panel opened by the mouse takes focus itself, so Escape and the
+    // arrow keys work without a row being highlighted under a pointer that
+    // is about to choose a different one anyway. A submenu the pointer
+    // merely hovered open takes nothing: the caret belongs to the row it
+    // opened out of until a key says otherwise.
     if (autofocus) focusAt(0, 1)
-    else panel.focus({ preventScroll: true })
+    else if (!anchor) panel.focus({ preventScroll: true })
   })
 
   function isAction(item: MenuItem): item is MenuAction {
@@ -114,8 +116,14 @@
 
   function hover(item: MenuItem, i: number) {
     if (!isAction(item)) return
+    // Moving the pointer off a row whose submenu is open destroys that
+    // panel, and the focus inside it with it -- which drops the keyboard on
+    // the floor and leaves a menu only the mouse can finish. The row under
+    // the pointer takes the keyboard instead.
+    const leaving = openIndex !== null && openIndex !== i
     if (item.items) openSub(i, false)
     else if (openIndex !== null) openIndex = null
+    if (leaving) (focusable(i) ? rows[i] : panel)?.focus()
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -136,26 +144,37 @@
         break
       case 'ArrowRight':
         if (item && isAction(item) && item.items) openSub(i, true)
-        else return
         break
       case 'ArrowLeft':
-        // Only a submenu goes back; on the root the key belongs to whatever
-        // is behind the menu.
-        if (!anchor) return
-        onclose()
+        // Only a submenu goes back. On the root the key does nothing --
+        // which is not the same as letting it through to page the week
+        // behind the menu.
+        if (anchor) onclose()
         break
       case 'Escape':
         onclose()
+        break
+      case 'Enter':
+      case ' ':
+        // Explicitly, because everything here is prevented below -- and a
+        // prevented keydown is exactly what stops a focused button being
+        // activated by the platform.
+        if (item) choose(item, i)
         break
       case 'Tab':
         onexit()
         break
       default:
-        return
+        // Everything else is swallowed rather than ignored. An open menu has
+        // the keyboard, and the window is listening: `d`, `w` and `m` change
+        // the calendar's view underneath it, and Delete removes the very
+        // block the menu was raised on -- which the menu had just selected.
+        break
     }
     e.preventDefault()
     // Submenus are nested in the panel that owns them, so an unstopped key
-    // would be handled again by every panel above this one.
+    // would be handled again by every panel above this one -- and by the
+    // window behind them all.
     e.stopPropagation()
   }
 </script>
