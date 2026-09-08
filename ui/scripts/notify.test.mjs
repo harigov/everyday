@@ -147,6 +147,25 @@ stack = []
 for (let i = 1; i <= MAX_TOASTS + 1; i++) stack = push(stack, t(i, { timeout: null }))
 assert.equal(stack.length, MAX_TOASTS)
 assert.equal(stack[0].id, 2, 'the oldest goes, because there is no other rule left')
+assert.equal(
+  stack.at(-1).id,
+  MAX_TOASTS + 1,
+  'and the one that just arrived is not the one that goes',
+)
+
+// The toast being pushed is never the one dropped to make room for it. A
+// stack already full of sticky errors would otherwise find the arrival to be
+// its only dismissible toast and drop it before it was ever drawn -- silently,
+// and for the user having the worst time.
+stack = []
+for (let i = 1; i <= MAX_TOASTS; i++) stack = push(stack, t(i, { timeout: null }))
+stack = push(stack, t(99))
+assert.equal(stack.length, MAX_TOASTS)
+assert.ok(
+  stack.some((x) => x.id === 99),
+  'the arriving toast survives even when every toast it joins is sticky',
+)
+assert.equal(stack[0].id, 2, 'and the oldest sticky one is what makes room for it')
 
 await server.close()
 console.log('notify: all checks passed')

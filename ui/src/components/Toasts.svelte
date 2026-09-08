@@ -18,7 +18,7 @@
 -->
 <script lang="ts">
   import { notify } from '../lib/notify.svelte'
-  import type { NotifyLevel } from '../lib/notify-policy'
+  import type { NotifyLevel, Toast } from '../lib/notify-policy'
   import Icon from './Icon.svelte'
   import type { IconName } from '../lib/icons'
 
@@ -28,40 +28,61 @@
     warning: 'alert',
     error: 'alert',
   }
+
+  // Split by how much of an interruption the level is worth, because the two
+  // groups are two live regions -- see the markup below.
+  const urgent = $derived(notify.toasts.filter((t) => t.level === 'error' || t.level === 'warning'))
+  const calm = $derived(notify.toasts.filter((t) => t.level === 'info' || t.level === 'success'))
 </script>
 
 <!--
-  One live region for the whole stack rather than one per toast, because a
-  region announces what changes *inside* it -- a region that is itself added
-  to the page announces nothing, which is the usual way this is got wrong.
+  Two live regions, both present from the first paint and empty most of the
+  time. That emptiness is the point: a region announces what changes *inside*
+  it, so it has to be on the page before the change arrives. Putting
+  `aria-live` on the toast itself -- the element being inserted -- is the
+  usual way this is got wrong, and it announces nothing.
 
-  `assertive` is reserved for the levels that mean something did not happen.
-  A success toast interrupting someone mid-sentence to say their calendar
-  refreshed is precisely the behaviour that gets screen readers turned off.
+  Two rather than one because politeness is a property of the region, not of
+  what goes in it. `assertive` interrupts whatever is being read, which is
+  right for "your journal is not being saved" and completely wrong for a tick
+  saying a calendar refreshed; a success toast that cuts someone off
+  mid-sentence is what gets screen readers turned off.
+
+  The cost is that the two groups are stacked rather than strictly
+  chronological, so an error always sits below the chatter. That is the
+  better end of the trade: the corner of the screen is where the eye lands,
+  and the sticky one belongs there.
 -->
-<div class="stack" role="region" aria-label="Notifications">
-  {#each notify.toasts as toast (toast.id)}
-    <div
-      class="toast {toast.level}"
-      role={toast.level === 'error' || toast.level === 'warning' ? 'alert' : 'status'}
-      aria-live={toast.level === 'error' || toast.level === 'warning' ? 'assertive' : 'polite'}
-    >
-      <span class="mark"><Icon name={ICON[toast.level]} size={17} /></span>
-      <div class="text">
-        <strong>{toast.title}</strong>
-        {#if toast.body}<span>{toast.body}</span>{/if}
-      </div>
-      {#if toast.action}
-        <button class="btn btn-primary" onclick={() => notify.act(toast)}>
-          {toast.action.label}
-        </button>
-      {/if}
-      <button class="dismiss" onclick={() => notify.dismiss(toast.id)} aria-label="Dismiss">
-        <Icon name="close" size={14} />
-      </button>
-    </div>
-  {/each}
+<div class="stack">
+  <div class="group" role="log" aria-live="polite" aria-label="Notifications">
+    {#each calm as toast (toast.id)}
+      {@render row(toast)}
+    {/each}
+  </div>
+  <div class="group" role="log" aria-live="assertive" aria-label="Alerts">
+    {#each urgent as toast (toast.id)}
+      {@render row(toast)}
+    {/each}
+  </div>
 </div>
+
+{#snippet row(toast: Toast)}
+  <div class="toast {toast.level}">
+    <span class="mark"><Icon name={ICON[toast.level]} size={17} /></span>
+    <div class="text">
+      <strong>{toast.title}</strong>
+      {#if toast.body}<span>{toast.body}</span>{/if}
+    </div>
+    {#if toast.action}
+      <button class="btn btn-primary" onclick={() => notify.act(toast)}>
+        {toast.action.label}
+      </button>
+    {/if}
+    <button class="dismiss" onclick={() => notify.dismiss(toast.id)} aria-label="Dismiss">
+      <Icon name="close" size={14} />
+    </button>
+  </div>
+{/snippet}
 
 <style>
   .stack {
@@ -80,6 +101,17 @@
        take their pointer events back. */
     pointer-events: none;
     width: min(380px, calc(100vw - var(--sp-8)));
+  }
+
+  /* The two regions are structural, not visual: they lay their toasts out
+     exactly as the stack itself would, so splitting for the sake of
+     politeness costs nothing on screen. An empty one is zero-height and
+     transparent -- it leaves a gap's worth of nothing, in a stack that does
+     not take pointer events. */
+  .group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
   }
 
   .toast {

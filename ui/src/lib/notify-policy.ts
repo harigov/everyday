@@ -172,7 +172,7 @@ export function toToast(spec: NotifySpec, id: number): Toast {
 export function push(stack: readonly Toast[], toast: Toast): Toast[] {
   const at = toast.key === null ? -1 : stack.findIndex((t) => t.key === toast.key)
   const next = at >= 0 ? stack.map((t, i) => (i === at ? toast : t)) : [...stack, toast]
-  return trim(next)
+  return trim(next, toast.id)
 }
 
 /**
@@ -184,12 +184,20 @@ export function push(stack: readonly Toast[], toast: Toast): Toast[] {
  * underneath it push it off the screen would lose exactly the message that
  * mattered. Only when every toast on screen is sticky does the oldest go,
  * because at that point something has to.
+ *
+ * `arriving` is never dropped, whatever else is true. A stack already full
+ * of sticky errors would otherwise pick the toast that had just been posted
+ * as its "oldest dismissible" one and drop it before it had been drawn --
+ * silently, and specifically for the user who is having the worst time. The
+ * newest message is the one being reacted to; if something has to go, it is
+ * something already read.
  */
-function trim(stack: Toast[]): Toast[] {
+function trim(stack: Toast[], arriving: number): Toast[] {
   const out = [...stack]
   while (out.length > MAX_TOASTS) {
-    const i = out.findIndex((t) => t.timeout !== null)
-    out.splice(i >= 0 ? i : 0, 1)
+    const dismissible = out.findIndex((t) => t.timeout !== null && t.id !== arriving)
+    const oldest = out.findIndex((t) => t.id !== arriving)
+    out.splice(dismissible >= 0 ? dismissible : oldest, 1)
   }
   return out
 }

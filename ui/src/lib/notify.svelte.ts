@@ -53,12 +53,12 @@ export type { NotifyLevel, NotifyReach, NotifySpec, Toast } from './notify-polic
 interface OsChannel {
   /** Permission, requested once and remembered. False if it cannot be had. */
   ready(): Promise<boolean>
-  send(toast: Toast): Promise<void>
+  send(toast: Toast): void
 }
 
 const NO_OS: OsChannel = {
   ready: () => Promise.resolve(false),
-  send: () => Promise.resolve(),
+  send: () => {},
 }
 
 async function tauriChannel(): Promise<OsChannel> {
@@ -72,8 +72,14 @@ async function tauriChannel(): Promise<OsChannel> {
       return granted
     },
     send(toast) {
+      // `sendNotification` is typed as returning nothing -- the plugin fires
+      // its own `invoke` and drops the promise -- so there is no result to
+      // wait for and no rejection to catch here. Permission is therefore the
+      // only thing that can be *checked* before delivery, which is why
+      // `ready` is the gate and why a false from it has to produce a toast
+      // instead. Anything that fails after this point fails silently inside
+      // the plugin, on every platform equally.
       plugin.sendNotification({ title: toast.title, body: toast.body ?? undefined })
-      return Promise.resolve()
     },
   }
 }
@@ -92,7 +98,6 @@ function webChannel(): OsChannel {
     },
     send(toast) {
       new Notification(toast.title, { body: toast.body ?? undefined, tag: toast.key ?? undefined })
-      return Promise.resolve()
     },
   }
 }
@@ -132,22 +137,40 @@ class Notifications {
    * unhandled rejection when they do not -- will not get used.
    */
   post(spec: NotifySpec): number {
-    const channel = channelFor(spec, {
-      focused: focused(),
-      // Routing must be synchronous, so this asks what permission is *known*
-      // to be granted rather than awaiting the ask. The first `reach: 'user'`
-      // notification of a session therefore shows as a toast while the
-      // prompt is still up; that is the right way round, because the
-      // alternative is a message held back behind a dialog the user has not
-      // answered yet.
-      osReady: osGranted,
-    })
+    // Routing has to be synchronous -- `post` is called from `catch` blocks
+    // all over the interface and cannot be made awaitable -- but permission
+    // is not knowable without asking, and asking is deliberately deferred to
+    // the first notification that needs it. So this routes *optimistically*:
+    // `osUsable` means "worth trying", not "granted". Delivery reports back
+    // whether it actually happened, and a message that did not get out falls
+    // back to a toast below. Nothing is lost to an unanswered prompt.
+    const channel = channelFor(spec, { focused: focused(), osReady: osUsable })
 
-    if (channel === 'os' || channel === 'both') {
+    if (channel === 'toast') return this.#show(spec)
+
+    if (channel === 'both') {
+      // The toast is the thing itself here, so it goes up regardless of what
+      // the operating system does with its copy.
+      const id = this.#show(spec)
       void deliverToOs(spec)
-      if (channel === 'os') return 0
+      return id
     }
 
+    // Bound for the notification centre and nowhere else. A keyed
+    // notification still supersedes whatever is on screen under that key:
+    // the key means "this is the current state of this condition", and
+    // leaving the previous state up would contradict the message just sent.
+    // Without this, the toast saying a journal cannot be saved outlived the
+    // notification saying it could again.
+    this.#dismissKey(spec.key)
+    void deliverToOs(spec).then((delivered) => {
+      if (!delivered) this.#show(spec)
+    })
+    return 0
+  }
+
+  /** Put a notification on screen, and arm its dwell timer. */
+  #show(spec: NotifySpec): number {
     const toast = toToast(spec, this.#nextId++)
     // A keyed toast replaces one that may have a dwell timer running against
     // its old id. Clearing every timer that is no longer on screen is the
@@ -161,6 +184,13 @@ class Notifications {
       )
     }
     return toast.id
+  }
+
+  /** Take down whatever is on screen under `key`, if anything is. */
+  #dismissKey(key: string | undefined) {
+    if (key === undefined) return
+    const existing = this.toasts.find((t) => t.key === key)
+    if (existing) this.dismiss(existing.id)
   }
 
   info(title: string, opts: Options = {}): number {
@@ -259,27 +289,36 @@ function focused(): boolean {
 }
 
 /**
- * Whether the OS channel is known to be usable, cached for the synchronous
- * routing decision in `post`. Starts false and is settled by the first
- * `reach: 'user'` notification of the session.
+ * Whether the OS channel is worth trying, for the synchronous routing
+ * decision in `post`.
+ *
+ * Optimistic on purpose. It cannot start as "granted", because finding that
+ * out means asking and asking is deferred until something needs it -- and a
+ * flag that only becomes true inside the delivery path is a flag routing can
+ * never switch on, which is a notification service that never notifies. So
+ * it starts true, the first `reach: 'user'` notification triggers the ask,
+ * and this goes false and stays false the moment the answer is no.
+ * Everything routes to toasts from then on, which is exactly what a refused
+ * permission should mean.
  */
-let osGranted = false
+let osUsable = true
 
-async function deliverToOs(spec: NotifySpec) {
+/** Deliver to the notification centre. False if it did not get out. */
+async function deliverToOs(spec: NotifySpec): Promise<boolean> {
   try {
     const channel = await osChannel
     if (!(await channel.ready())) {
-      osGranted = false
-      return
+      osUsable = false
+      return false
     }
-    osGranted = true
-    await channel.send(toToast(spec, 0))
+    channel.send(toToast(spec, 0))
+    return true
   } catch {
-    // A notification that cannot be delivered is not worth an error about a
-    // notification. The toast copy has already been queued by the router in
-    // every case except a plain `os`, and one lost banner is a better outcome
-    // than an unhandled rejection in a `catch` block somewhere else.
-    osGranted = false
+    // A notification that cannot be delivered is not worth raising an error
+    // about a notification. The caller puts up a toast on a false, so
+    // failing quietly here loses nothing.
+    osUsable = false
+    return false
   }
 }
 
@@ -289,20 +328,3 @@ async function deliverToOs(spec: NotifySpec) {
  *     import { notify } from '../lib/notify.svelte'
  */
 export const notify = new Notifications()
-
-/**
- * Ask for the OS notification permission ahead of the first time it is
- * needed.
- *
- * Not called at startup, deliberately -- see `OsChannel`. This exists for
- * the moment a user turns something on that will need it, so the prompt
- * arrives attached to a thing they just asked for.
- */
-export async function requestOsNotifications(): Promise<boolean> {
-  try {
-    osGranted = await (await osChannel).ready()
-  } catch {
-    osGranted = false
-  }
-  return osGranted
-}
