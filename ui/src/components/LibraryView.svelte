@@ -1,8 +1,12 @@
 <script lang="ts">
-  import { plural } from '../lib/format'
+  import { article, plural } from '../lib/format'
   import { FILTERS, coverRatio, library, type Filter } from '../lib/library.svelte'
-  import type { ItemSort } from '../lib/types'
+  import { menu } from '../lib/menu.svelte'
+  import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { itemMenu } from '../lib/menus'
+  import type { Item, ItemSort } from '../lib/types'
   import AddItem from './AddItem.svelte'
+  import ConfirmDialog from './ConfirmDialog.svelte'
   import Cover from './Cover.svelte'
   import Icon from './Icon.svelte'
   import ItemCard from './ItemCard.svelte'
@@ -32,6 +36,57 @@
     if (filter === 'ahead') return 'To do'
     if (filter === 'all') return 'All'
     return library.label(shelf, filter)
+  }
+
+  let pendingDelete = $state<Item | null>(null)
+
+  /** A card or a row: the same menu, built in one place. */
+  function rowMenu(row: Item): MenuItem[] {
+    return itemMenu(row, { onDelete: () => (pendingDelete = row) })
+  }
+
+  /**
+   * The grid itself, where there is no card under the pointer.
+   *
+   * The same three controls the bar above carries, within reach of where the
+   * pointer already is rather than at the top of a long shelf.
+   */
+  function shelfMenu(): MenuItem[] {
+    return tidyMenu([
+      target && {
+        label: `Add ${article(target.singular)} ${target.singular.toLowerCase()}`,
+        icon: 'plus',
+        hint: 'Ctrl+N',
+        run: () => library.focusCapture(),
+      },
+      SEP,
+      {
+        label: 'Show',
+        icon: 'grid',
+        items: [
+          { label: 'Covers', checked: library.view === 'grid', run: () => library.setView('grid') },
+          { label: 'List', checked: library.view === 'list', run: () => library.setView('list') },
+        ],
+      },
+      {
+        label: 'Sort by',
+        icon: 'layers',
+        items: SORTS.map((s) => ({
+          label: s.label,
+          checked: library.sort === s.id,
+          run: () => library.setSort(s.id),
+        })),
+      },
+      {
+        label: 'Status',
+        icon: 'circle',
+        items: FILTERS.map((f) => ({
+          label: filterLabel(f),
+          checked: library.filter === f,
+          run: () => library.setFilter(f),
+        })),
+      },
+    ])
   }
 
   const heading = $derived(library.favouritesOnly ? 'Favourites' : (shelf?.name ?? 'Everything'))
@@ -118,7 +173,8 @@
       <p class="note">{library.note}</p>
     {/if}
 
-    <div class="scroll body">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="scroll body" oncontextmenu={(e) => menu.show(e, shelfMenu())}>
       {#if library.items.length === 0 && !library.loading}
         <div class="empty">
           {#if library.query.trim()}
@@ -150,6 +206,7 @@
               {ratio}
               selected={library.selected === row.id}
               onopen={() => void library.open(row.id)}
+              onmenu={(e: MouseEvent) => menu.show(e, rowMenu(row))}
             />
           {/each}
         </div>
@@ -161,6 +218,7 @@
               class="row"
               class:sel={library.selected === row.id}
               onclick={() => void library.open(row.id)}
+              oncontextmenu={(e) => menu.show(e, rowMenu(row))}
             >
               <span class="thumb">
                 <Cover
@@ -194,6 +252,20 @@
     <ItemDetail {item} kind={library.kindOf(item)} />
   {/if}
 </div>
+
+{#if pendingDelete}
+  <ConfirmDialog
+    title={'Delete “' + pendingDelete.title + '”?'}
+    detail="Everything recorded about it goes too — your rating, your notes and its history. This cannot be undone."
+    confirmLabel="Delete"
+    onconfirm={() => {
+      const doomed = pendingDelete
+      pendingDelete = null
+      if (doomed) void library.remove(doomed.id)
+    }}
+    oncancel={() => (pendingDelete = null)}
+  />
+{/if}
 
 <style>
   .library {

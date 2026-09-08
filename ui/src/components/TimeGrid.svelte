@@ -20,11 +20,11 @@
   import { formatMinutes } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import {
-    blockMenu,
     calendarTaskMenu,
     dayMenu,
     eventMenu,
-    runningMenu,
+    readingMenu,
+    slotMenu,
     timeMenu,
   } from '../lib/menus'
   import {
@@ -156,12 +156,11 @@
    * another is two answers to the same question.
    */
   function onSlotContextMenu(e: MouseEvent, slot: Slot) {
-    // The live slot is the timer, drawn from the clock rather than from a
-    // record, so there is nothing to select and nothing to edit -- only the
-    // stop.
-    if (!slot.block && !slot.event) return menu.show(e, runningMenu())
+    // `select` is total and knows which of the four kinds of slot have a
+    // panel behind them: a reading and the live timer have none, and asking
+    // for one deselects rather than selecting something else.
     calendar.select(slot)
-    menu.show(e, slot.block ? blockMenu(slot.block) : eventMenu(slot.event!))
+    menu.show(e, slotMenu(slot))
   }
 
   /** The draft rectangle, if a gesture is in flight on `iso`. */
@@ -383,7 +382,13 @@
           >
         {/each}
         {#each calendar.untimedMarksOn(iso) as mark (mark.key)}
-          <span class="chip reading" style="--c: {mark.tracker.color}" title={mark.label}>
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <span
+            class="chip reading"
+            style="--c: {mark.tracker.color}"
+            title={mark.label}
+            oncontextmenu={(e) => menu.show(e, readingMenu(mark.reading, mark.tracker))}
+          >
             <TrackerIcon
               name={mark.tracker.icon}
               color={mark.tracker.color}
@@ -485,10 +490,12 @@
                minutes nobody spent. The rail is 14px, which is enough for a
                mark and not enough to compete with the day. -->
           {#each calendar.marksOn(iso) as mark (mark.key)}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
             <span
               class="mark"
               style="top: {((mark.minute ?? 0) / 60) * HOUR}px; --c: {mark.tracker.color}"
               title="{mark.label} · {clockOf(mark.minute ?? 0)}"
+              oncontextmenu={(e) => menu.show(e, readingMenu(mark.reading, mark.tracker))}
             >
               <TrackerIcon
                 name={mark.tracker.icon}
@@ -804,7 +811,11 @@
     color: var(--c);
     background: var(--bg-raised);
     box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--c) 26%, transparent);
-    pointer-events: none;
+    /* Still not a button -- there is nothing to open, and a pointerdown on
+       one falls through to the column and starts a drag exactly as it did
+       when this was `none`. What it buys is the two things a mark had no way
+       to offer: its own tooltip, and a right-click. */
+    pointer-events: auto;
   }
 
   /* An intention: a wash, and a dashed rail. Deliberately lighter than the

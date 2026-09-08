@@ -17,6 +17,7 @@ import type {
   Journal,
   JournalId,
   SearchHit,
+  TrackerId,
   VaultStatus,
 } from './types'
 import { VaultError } from './types'
@@ -504,6 +505,26 @@ class AppState {
       await handle(e)
       return false
     }
+  }
+
+  /**
+   * Draw a tracker's readings on the calendar, or stop drawing them.
+   *
+   * A tracker is a field on its journal rather than a record of its own --
+   * there is deliberately no `saveTracker` -- so a switch on one is a write
+   * of the whole journal. `JournalSettings` does exactly this; the method is
+   * here because two other places offer the same switch without owning that
+   * dialog: the chip under the day, and a reading already on the grid.
+   */
+  async setTrackerOnCalendar(journalId: JournalId, trackerId: TrackerId, onCalendar: boolean) {
+    const journal = this.journals.find((j) => j.id === journalId)
+    if (!journal) return
+    const next = $state.snapshot(journal)
+    const tracker = next.trackers.find((t) => t.id === trackerId)
+    if (!tracker || tracker.onCalendar === onCalendar) return
+    tracker.onCalendar = onCalendar
+    next.updatedAt = new Date().toISOString()
+    await this.saveJournal(next)
   }
 
   async deleteJournal(id: JournalId) {

@@ -11,6 +11,7 @@
     ratio,
     selected = false,
     onopen,
+    onmenu,
   }: {
     item: Item
     /** The shelf it is on: its colour, its emoji and its verbs. */
@@ -24,6 +25,12 @@
     ratio: string
     selected?: boolean
     onopen: () => void
+    /**
+     * A right-click anywhere on the card. Built by the view rather than
+     * here, because the menu's last item raises a confirmation dialog and
+     * that belongs to whatever is drawing the grid.
+     */
+    onmenu?: (event: MouseEvent) => void
   } = $props()
 
   const color = $derived(kind?.color ?? 'var(--accent)')
@@ -35,7 +42,8 @@
   )
 </script>
 
-<div class="card" class:selected style="--tint: {color}">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="card" class:selected style="--tint: {color}" oncontextmenu={onmenu}>
   <button class="hit" onclick={onopen} aria-label={item.title}>
     <div class="art">
       <Cover blob={item.cover} title={item.title} icon={kind?.icon ?? ''} {color} {ratio} />

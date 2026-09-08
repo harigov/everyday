@@ -14,12 +14,23 @@
 import { DEFAULT_COLORS, colorName } from './colors'
 import { SEP, tidyMenu, type MenuItem } from './menu'
 import { app } from './state.svelte'
-import { calendar, DEFAULT_BLOCK_MINUTES } from './calendar.svelte'
+import { calendar, DEFAULT_BLOCK_MINUTES, type Slot } from './calendar.svelte'
+import { library } from './library.svelte'
 import { todo } from './todo.svelte'
 import { addDays, minutesBetween, offsetInDay, todayIso } from './time'
 import { formatMinutes, friendlyDate } from './format'
-import { PRIORITIES, TASK_STATUSES } from './types'
-import type { CalendarEvent, Priority, Task, TaskStatus, TimeBlock } from './types'
+import { MAX_STARS, fromStars, stars } from './rating'
+import { ITEM_STATUSES, PRIORITIES, TASK_STATUSES } from './types'
+import type {
+  CalendarEvent,
+  Item,
+  Priority,
+  Reading,
+  Task,
+  TaskStatus,
+  TimeBlock,
+  Tracker,
+} from './types'
 
 const STATUS_LABELS: Record<TaskStatus, string> = {
   backlog: 'Backlog',
@@ -356,6 +367,141 @@ export function dayMenu(iso: string): MenuItem[] {
           startMinutes: 9 * 60,
           minutes: DEFAULT_BLOCK_MINUTES,
         }),
+    },
+  ])
+}
+
+/**
+ * A reading of a tracker, seen on the calendar.
+ *
+ * Deliberately short of an edit. A reading is recorded under the day it
+ * belongs to and is changed there, beside the tracker that gives it meaning
+ * -- which is the rule the calendar's own `select` already follows by
+ * refusing to open a panel for one. So this offers the way back to that day,
+ * and the switch that put the reading on the grid in the first place.
+ */
+export function readingMenu(reading: Reading, tracker: Tracker): MenuItem[] {
+  return tidyMenu([
+    !!reading.entryId && {
+      label: 'Open the entry it was recorded under',
+      icon: 'quote',
+      run: async () => {
+        app.setSection('journal')
+        // The journal first: opening an entry the list is not showing leaves
+        // the list pointing at some other day's row.
+        await app.selectJournal(reading.journalId)
+        await app.openEntry(reading.entryId!)
+      },
+    },
+    {
+      label: 'Open this day',
+      icon: 'day',
+      run: () => {
+        calendar.view = 'day'
+        calendar.goto(reading.localDate)
+      },
+    },
+    SEP,
+    {
+      label: `Hide “${tracker.name}” from the calendar`,
+      icon: 'hidden',
+      run: () => app.setTrackerOnCalendar(reading.journalId, tracker.id, false),
+    },
+  ])
+}
+
+/**
+ * Whatever is in a slot on either grid.
+ *
+ * Four kinds of thing share that rectangle and only two of them are records
+ * with a panel, so the dispatch is written once here rather than as a
+ * lengthening ternary in each of the two grids.
+ */
+export function slotMenu(slot: Slot): MenuItem[] {
+  if (slot.block) return blockMenu(slot.block)
+  if (slot.event) return eventMenu(slot.event)
+  if (slot.reading && slot.tracker) return readingMenu(slot.reading, slot.tracker)
+  return runningMenu()
+}
+
+/** What the views that draw an item have to supply themselves. */
+export interface ItemMenuHooks {
+  /** Ask before deleting: the dialog belongs to the view holding the card. */
+  onDelete: () => void
+}
+
+/**
+ * Something on a shelf.
+ *
+ * The status submenu is the reason this exists. Marking a book read is the
+ * single most common thing anybody does to a library item, and before this
+ * it cost opening the item, finding the row of verbs and closing it again --
+ * for something the card already knows how to say in the shelf's own words.
+ */
+export function itemMenu(item: Item, hooks: ItemMenuHooks): MenuItem[] {
+  const kind = library.kindOf(item)
+  const showing = library.selected === item.id
+  const rating = item.rating ?? null
+
+  return tidyMenu([
+    {
+      label: showing ? 'Close' : 'Open',
+      icon: 'book',
+      run: () => (showing ? library.close() : library.open(item.id)),
+    },
+    {
+      label: item.favourite ? 'Remove from favourites' : 'Add to favourites',
+      icon: 'star',
+      run: () => library.toggleFavourite(item.id),
+    },
+    SEP,
+    {
+      // In the shelf's own words: "Read", "Watched", "Played". A menu that
+      // said "done" over a shelf whose buttons say "Cooked" would read as a
+      // different application's menu.
+      label: 'Status',
+      // Not a tick: the rows inside are ticked, and a tick on the row that
+      // opens them reads as one of them already being chosen.
+      icon: 'circle',
+      hint: library.label(kind, item.status),
+      items: ITEM_STATUSES.map((status) => ({
+        label: library.label(kind, status),
+        checked: item.status === status,
+        run: () => library.setStatus(item.id, status),
+      })),
+    },
+    {
+      label: 'Rating',
+      icon: 'star',
+      // Whole stars only. The control offers halves because an opinion of a
+      // film is about that fine; a menu offering eleven rows of them would
+      // be a worse way to say the same thing.
+      items: tidyMenu([
+        ...Array.from({ length: MAX_STARS }, (_, i) => MAX_STARS - i).map((n) => ({
+          label: `${n} ${n === 1 ? 'star' : 'stars'}`,
+          checked: rating !== null && stars(rating) === n,
+          run: () => library.rate(item.id, fromStars(n)),
+        })),
+        SEP,
+        { label: 'No rating', checked: rating === null, run: () => library.rate(item.id, null) },
+      ]),
+    },
+    SEP,
+    // Only where there is one to fetch and nothing fetched yet: a cover that
+    // arrived with the lookup is re-fetched from the item's own panel, where
+    // the picture it would replace is on screen to be compared with.
+    !!item.coverUrl &&
+      !item.cover && {
+        label: 'Fetch the cover',
+        icon: 'image',
+        run: () => library.fetchCover(item.id),
+      },
+    SEP,
+    {
+      label: `Delete ${kind?.singular.toLowerCase() ?? 'item'}…`,
+      icon: 'trash',
+      danger: true,
+      run: hooks.onDelete,
     },
   ])
 }

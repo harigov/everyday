@@ -15,6 +15,8 @@
   import { app } from '../lib/state.svelte'
   import { activeTrackers, dayValue, formatDay, formatValue } from '../lib/tracker'
   import { tracking } from '../lib/tracking.svelte'
+  import { menu } from '../lib/menu.svelte'
+  import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import type { Reading, Tracker } from '../lib/types'
   import { focusOnMount } from '../lib/focus'
   import { todayIso } from '../lib/time'
@@ -71,13 +73,56 @@
       open = null
       return
     }
+    openPanel(tracker, (event.currentTarget as HTMLElement).getBoundingClientRect())
+  }
+
+  /** Open the recording panel beside a chip. */
+  function openPanel(tracker: Tracker, chip: DOMRect) {
     // Open towards whichever side has room. A panel that runs off the right
     // of a narrow editor is a panel with its buttons outside the window.
-    const chip = (event.currentTarget as HTMLElement).getBoundingClientRect()
     const bounds = strip?.getBoundingClientRect()
     flip = !!bounds && chip.left - bounds.left > bounds.width - 280
     draft = String(tracker.defaultValue)
     open = tracker.id
+  }
+
+  /**
+   * What a right-click on a chip offers.
+   *
+   * The chip itself is one gesture and can only mean one thing -- record, or
+   * open the panel that records -- so this is where the other two live: undo
+   * the day, and the switch that decides whether these readings are drawn on
+   * the calendar as well as counted here.
+   *
+   * The chip's rectangle is taken now rather than when an item is chosen,
+   * because by then the menu has closed and there is no event to read it
+   * from.
+   */
+  function chipMenu(tracker: Tracker, chip: DOMRect): MenuItem[] {
+    const readings = readingsOf(tracker)
+    const on = readings.length > 0
+    return tidyMenu([
+      tracker.kind === 'check'
+        ? {
+            label: on ? 'Clear it' : 'Record it',
+            icon: on ? 'close' : 'tick',
+            run: () => (on ? tracking.clear(tracker.id) : tracking.log(tracker, 1)),
+          }
+        : { label: 'Record…', icon: 'plus', run: () => openPanel(tracker, chip) },
+      on &&
+        tracker.kind !== 'check' && {
+          label: readings.length === 1 ? 'Clear it' : `Clear all ${readings.length}`,
+          icon: 'close',
+          hint: formatDay(tracker, readings),
+          run: () => tracking.clear(tracker.id),
+        },
+      SEP,
+      {
+        label: 'Show on the calendar',
+        checked: tracker.onCalendar,
+        run: () => app.setTrackerOnCalendar(journalId, tracker.id, !tracker.onCalendar),
+      },
+    ])
   }
 
   function commit(tracker: Tracker, hhmm: string | null) {
@@ -122,6 +167,8 @@
           aria-expanded={tracker.kind === 'check' ? undefined : open === tracker.id}
           title={on ? formatDay(tracker, readings) : `Record ${tracker.name}`}
           onclick={(e) => toggle(tracker, e)}
+          oncontextmenu={(e) =>
+            menu.show(e, chipMenu(tracker, e.currentTarget.getBoundingClientRect()))}
         >
           {#if fill !== null && on}<span class="meter" aria-hidden="true"></span>{/if}
           <TrackerIcon name={tracker.icon} color={tracker.color} size={22} solid={on} />

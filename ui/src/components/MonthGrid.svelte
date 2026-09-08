@@ -13,7 +13,7 @@
   import { calendar } from '../lib/calendar.svelte'
   import { daysFrom, startOfWeek, todayIso } from '../lib/time'
   import { menu } from '../lib/menu.svelte'
-  import { blockMenu, calendarTaskMenu, dayMenu, eventMenu, runningMenu } from '../lib/menus'
+  import { calendarTaskMenu, dayMenu, eventMenu, readingMenu, slotMenu } from '../lib/menus'
   import Icon from './Icon.svelte'
   import type { MenuItem } from '../lib/menu'
 
@@ -78,7 +78,7 @@
         color: mark.tracker.color,
         kind: 'reading',
         onopen: () => calendar.goto(iso),
-        menu: () => dayMenu(iso),
+        menu: () => readingMenu(mark.reading, mark.tracker),
       })
     }
     for (const task of calendar.tasksOn(iso)) {
@@ -107,14 +107,7 @@
         kind: slot.kind,
         muted: slot.cancelled,
         onopen: () => calendar.select(slot),
-        menu: () =>
-          slot.block
-            ? blockMenu(slot.block)
-            : slot.event
-              ? eventMenu(slot.event)
-              : slot.reading
-                ? dayMenu(iso)
-                : runningMenu(),
+        menu: () => slotMenu(slot),
         at: slot.start,
       })
     }
@@ -126,7 +119,7 @@
         color: mark.tracker.color,
         kind: 'reading',
         onopen: () => calendar.goto(iso),
-        menu: () => dayMenu(iso),
+        menu: () => readingMenu(mark.reading, mark.tracker),
         at: mark.minute ?? 0,
       })
     }
