@@ -58,7 +58,9 @@ everything to the right of it changes completely when one is pressed, and it
 does not. The apps were a segmented control at the top of the sidebar while
 there were two of them, which stopped working at four — the labels no longer
 fitted on a row, and a control that wraps to two rows of two reads as a set
-of filters over the list below it.
+of filters over the list below it. **Settings** and **Lock** are at the foot
+of the bar, under a rule, for the same reason: they belong to the vault
+rather than to whichever app is open.
 
 The todo app has projects, tasks and subtasks — a subtask is just a task with
 a parent, so the two levels the interface offers are a UI decision rather

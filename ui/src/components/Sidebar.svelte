@@ -7,7 +7,6 @@
   import { colourItems } from '../lib/menus'
   import Icon from './Icon.svelte'
   import Logo from './Logo.svelte'
-  import SettingsMenu from './SettingsMenu.svelte'
   import JournalSettings from './JournalSettings.svelte'
   import TodoNav from './TodoNav.svelte'
   import CalendarNav from './CalendarNav.svelte'
@@ -188,14 +187,6 @@
       {/if}
     </nav>
   {/if}
-
-  <div class="foot">
-    <SettingsMenu />
-    <button class="lock" onclick={() => app.lock()} title="Lock now (Ctrl+L)">
-      <Icon name="lock" size={15} />
-      Lock
-    </button>
-  </div>
 </aside>
 
 {#if settingsJournal}
@@ -353,26 +344,5 @@
   }
   .new:focus {
     outline: none;
-  }
-
-  .foot {
-    padding: var(--sp-2);
-    border-top: 1px solid var(--border);
-  }
-  .lock {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    /* Matches the settings trigger above it. */
-    width: 100%;
-    height: 28px;
-    padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
-    color: var(--fg-subtle);
-  }
-  .lock:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
   }
 </style>

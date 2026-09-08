@@ -1,5 +1,6 @@
 <script lang="ts">
-  // The four apps, as a bar down the left edge of the window.
+  // The apps, and the two buttons that are not apps, as a bar down the left
+  // edge of the window.
   //
   // They were a segmented control at the top of the sidebar, which was the
   // right shape for two of them and the wrong one for four: the labels
@@ -18,6 +19,7 @@
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { tray, type TrayEntry } from '../lib/tray.svelte'
   import Icon from './Icon.svelte'
+  import SettingsMenu from './SettingsMenu.svelte'
   import type { IconName } from '../lib/icons'
 
   interface AppEntry {
@@ -78,28 +80,44 @@
   }
 </script>
 
-{#if shown.length > 1}
-  <nav class="bar" aria-label="Apps">
-    <!-- Aligned with the brand row beside it, and empty on purpose: on macOS
-         this is where the window controls sit, and nothing of ours may be
-         drawn under them. -->
-    <div class="cap"></div>
+<div class="bar">
+  <!-- Aligned with the brand row beside it, and empty on purpose: on macOS
+       this is where the window controls sit, and nothing of ours may be
+       drawn under them. -->
+  <div class="cap"></div>
 
-    {#each shown as a (a.id)}
-      {@const on = app.section === a.id}
-      <button
-        class="app"
-        class:on
-        aria-current={on ? 'page' : undefined}
-        onclick={() => app.setSection(a.id)}
-        oncontextmenu={(e) => menu.show(e, appMenu(a))}
-      >
-        <span class="glyph"><Icon name={a.icon} size={21} weight={1.7} /></span>
-        <span class="label">{a.label}</span>
-      </button>
-    {/each}
-  </nav>
-{/if}
+  <!-- A bar with one app on it is a decoration: a Markdown vault stores
+       journals and nothing else, and there is nothing to switch between. The
+       two buttons at the foot are there either way. -->
+  {#if shown.length > 1}
+    <nav aria-label="Apps">
+      {#each shown as a (a.id)}
+        {@const on = app.section === a.id}
+        <button
+          class="barbtn app"
+          class:on
+          aria-current={on ? 'page' : undefined}
+          onclick={() => app.setSection(a.id)}
+          oncontextmenu={(e) => menu.show(e, appMenu(a))}
+        >
+          <span><Icon name={a.icon} size={21} weight={1.7} /></span>
+          <span class="barlabel">{a.label}</span>
+        </button>
+      {/each}
+    </nav>
+  {/if}
+
+  <!-- Settings and the lock live down here rather than under the sidebar's
+       nav, because neither belongs to whichever app is open: they are the
+       vault's, and so is the bar. -->
+  <div class="foot">
+    <SettingsMenu />
+    <button class="barbtn" onclick={() => app.lock()} title="Lock now (Ctrl+L)">
+      <span><Icon name="lock" size={19} weight={1.7} /></span>
+      <span class="barlabel">Lock</span>
+    </button>
+  </div>
+</div>
 
 <style>
   .bar {
@@ -108,8 +126,6 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 2px;
-    padding-bottom: var(--sp-4);
     background: var(--bg-sunken);
     border-right: 1px solid var(--border);
   }
@@ -120,21 +136,24 @@
     flex: none;
   }
 
-  .app {
-    display: grid;
-    justify-items: center;
-    gap: 4px;
-    width: 60px;
-    padding: 8px 2px 7px;
-    border-radius: var(--radius-lg);
-    color: var(--fg-subtle);
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
+  nav {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
   }
-  .app:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
+
+  /* Pushed to the bottom, and ruled off: the same distinction the sidebar's
+     foot drew when these two lived there. */
+  .foot {
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: var(--sp-2) 0;
+    border-top: 1px solid var(--border);
+    width: 100%;
   }
 
   /* The same active treatment the editor's toolbar uses for a mark that is
@@ -143,16 +162,5 @@
   .app.on {
     background: color-mix(in oklab, var(--journal-accent, var(--accent)) 14%, transparent);
     color: var(--journal-accent, var(--accent));
-  }
-
-  .glyph {
-    display: flex;
-  }
-
-  .label {
-    font-size: var(--text-xs);
-    font-weight: 600;
-    letter-spacing: -0.004em;
-    line-height: 1;
   }
 </style>
