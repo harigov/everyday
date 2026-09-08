@@ -112,6 +112,9 @@ pub struct SqliteStore {
     conn: Mutex<Connection>,
     blobs: FileBlobStore,
     cipher: Arc<dyn everyday_core::crypto::Cipher>,
+    /// The directory this store owns, kept so `snapshot` can copy the media
+    /// tree beside the database it writes.
+    root: std::path::PathBuf,
 }
 
 impl SqliteStore {
@@ -121,11 +124,18 @@ impl SqliteStore {
         let conn = Connection::open(&db_path).map_err(Error::backend)?;
 
         // WAL keeps a slow fsync from blocking reads, which is what keeps
-        // typing smooth while an autosave is in flight. `NORMAL` sync is the
-        // documented safe pairing with WAL: durable across process crashes,
-        // and a power loss can lose only the last transaction.
+        // typing smooth while an autosave is in flight.
         conn.pragma_update(None, "journal_mode", "WAL").map_err(Error::backend)?;
-        conn.pragma_update(None, "synchronous", "NORMAL").map_err(Error::backend)?;
+        // `FULL` rather than the usual WAL pairing of `NORMAL`. Under
+        // `NORMAL` the WAL is not fsynced at commit, so a power cut can roll
+        // back not merely the last transaction but everything written since
+        // the last checkpoint -- SQLite guarantees the file stays *intact*,
+        // not that a committed write survives. That is an acceptable trade
+        // for a cache and a poor one for someone's journal, and it costs
+        // nothing here: this store commits on a 700ms autosave timer, not in
+        // a loop, so the extra fsync is unmeasurable against the pauses
+        // between keystrokes.
+        conn.pragma_update(None, "synchronous", "FULL").map_err(Error::backend)?;
         conn.pragma_update(None, "foreign_keys", "ON").map_err(Error::backend)?;
         // Overwrite deleted pages rather than leaving stale ciphertext (and
         // cleartext dates) in the free list.
@@ -138,7 +148,22 @@ impl SqliteStore {
             blobs: FileBlobStore::open(ctx.root.join(MEDIA_DIRNAME), ctx.cipher.clone())?,
             cipher: ctx.cipher,
             conn: Mutex::new(conn),
+            root: ctx.root,
         })
+    }
+
+    /// The connection, whether or not a previous caller panicked holding it.
+    ///
+    /// `lock().unwrap()` would turn one panic anywhere in this crate into a
+    /// permanently unusable store: every later call would panic on the poison
+    /// flag, and in the desktop shell that means a window that still looks
+    /// fine while nothing it does can be saved. Poisoning is also the wrong
+    /// signal here -- the state it warns about cannot arise. A panic can only
+    /// escape mid-statement or mid-transaction, and rusqlite's `Transaction`
+    /// rolls back when it is dropped, so the connection an unwinding thread
+    /// leaves behind is exactly the one it borrowed.
+    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn seal_entry(&self, e: &Entry) -> Result<(Vec<u8>, Vec<u8>)> {

@@ -29,6 +29,7 @@ use crate::crypto::{
     derive_key, random_salt, unwrap_key, wrap_key,
 };
 use crate::error::{Error, Result};
+use crate::fsutil;
 use crate::id::{BlobId, BlockId, CalendarId, EntryId, EventId, JournalId, ProjectId, TaskId};
 use crate::model::{Entry, EntrySummary, Journal};
 use crate::search::{SearchHit, SearchIndex};
@@ -50,6 +51,10 @@ use std::time::Instant;
 pub const FORMAT_VERSION: u32 = 1;
 
 pub const HEADER_FILENAME: &str = "vault.json";
+
+/// The spare copy of the header, kept one write behind the live one.
+pub const HEADER_BACKUP_FILENAME: &str = "vault.json.bak";
+
 const STORE_DIRNAME: &str = "store";
 
 /// Persisted, unencrypted vault metadata.
@@ -117,11 +122,20 @@ pub struct VaultStatus {
     pub encrypted: bool,
     pub auto_lock_seconds: u64,
     pub path: PathBuf,
+    /// False when another process holds the vault's write lock, so this copy
+    /// reads but cannot save. The interface uses it to say so plainly rather
+    /// than letting every write fail one at a time.
+    #[serde(default = "default_true")]
+    pub writable: bool,
     /// `None` while locked — reading it would require decrypting.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stats: Option<StoreStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Capabilities>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Live state that exists only while unlocked.
@@ -139,13 +153,24 @@ pub struct Vault {
     /// Milliseconds since `epoch` at the last user-initiated operation.
     last_activity_ms: AtomicU64,
     epoch: Instant,
+    /// The exclusive write claim on this directory, or `None` if another
+    /// process holds it and this vault is therefore read-only. Dropped with
+    /// the vault, which is what releases it. See [`crate::lockfile`].
+    write_lock: Option<crate::lockfile::VaultLock>,
 }
 
 impl Vault {
     // ---- construction ---------------------------------------------------
 
+    /// Is there a vault here?
+    ///
+    /// The backup header counts. It is what [`Vault::create`] consults before
+    /// refusing to overwrite, and a vault whose live header was lost to a bad
+    /// shutdown is still a vault -- answering "no" would invite creating a
+    /// fresh one on top of it, which is the one mistake this code must never
+    /// make.
     pub fn exists(root: &Path) -> bool {
-        root.join(HEADER_FILENAME).is_file()
+        root.join(HEADER_FILENAME).is_file() || root.join(HEADER_BACKUP_FILENAME).is_file()
     }
 
     /// Create a new vault at `root` and leave it unlocked.
@@ -207,6 +232,12 @@ impl Vault {
             registry,
             last_activity_ms: AtomicU64::new(0),
             epoch: Instant::now(),
+            // A vault nobody could write to is not worth creating, so unlike
+            // `open` this does not fall back to read-only. In practice it is
+            // always ours: `create` refused an existing vault above, and the
+            // only way to lose the race is two processes creating the same
+            // new vault at the same instant.
+            write_lock: crate::lockfile::acquire(root)?,
         };
         vault.activate(dek)?;
         Ok(vault)
@@ -222,6 +253,17 @@ impl Vault {
                 supported: FORMAT_VERSION,
             });
         }
+        // Claim the vault for writing if nobody else has it. Failing to get
+        // it is not an error: the vault opens read-only, so `everyday list`
+        // beside an open window still works and only the writes are refused.
+        let write_lock = crate::lockfile::acquire(root)?;
+        if write_lock.is_none() {
+            tracing::info!(
+                path = %root.display(),
+                "vault is open for writing elsewhere; opening read-only"
+            );
+        }
+
         let encrypted = header.is_encrypted();
         let vault = Self {
             root: root.to_path_buf(),
@@ -230,6 +272,7 @@ impl Vault {
             registry,
             last_activity_ms: AtomicU64::new(0),
             epoch: Instant::now(),
+            write_lock,
         };
         if !encrypted {
             vault.activate(None)?;
@@ -240,7 +283,7 @@ impl Vault {
     // ---- locking --------------------------------------------------------
 
     pub fn is_unlocked(&self) -> bool {
-        self.state.read().unwrap().is_some()
+        self.state_read().is_some()
     }
 
     /// Unlock with a password. Pass `None` for an unencrypted vault.
@@ -252,7 +295,7 @@ impl Vault {
         if self.is_unlocked() {
             return Ok(());
         }
-        let header = self.header.read().unwrap().clone();
+        let header = self.header_read().clone();
 
         let dek = if header.is_encrypted() {
             let password = password.ok_or(Error::BadPassword)?;
@@ -276,7 +319,7 @@ impl Vault {
 
     /// Open the backend and build the search index. Assumes the key is right.
     fn activate(&self, dek: Option<SecretKey>) -> Result<()> {
-        let header = self.header.read().unwrap().clone();
+        let header = self.header_read().clone();
         // The cipher owns the only copy of the key material from here on;
         // `dek` is dropped (and zeroized) at the end of this function.
         let cipher: Arc<dyn Cipher> = match &dek {
@@ -289,9 +332,27 @@ impl Vault {
         let store =
             self.registry.open(&header.backend, StoreContext { root: store_root, cipher })?;
 
+        // Check the store before trusting it, but do not refuse to open on a
+        // bad answer. A damaged vault is precisely the one someone needs to
+        // get into -- to export what still reads, or to see how much of it
+        // survived -- and locking them out would turn recoverable damage
+        // into total loss. Say so loudly instead; `everyday check` reports
+        // the same findings on demand.
+        match store.check_integrity() {
+            Ok(problems) if !problems.is_empty() => {
+                tracing::error!(
+                    count = problems.len(),
+                    first = %problems[0],
+                    "storage integrity check failed -- restore from a backup"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "could not run the integrity check"),
+        }
+
         let index = SearchIndex::build(&store.all_entries()?);
 
-        *self.state.write().unwrap() = Some(Unlocked { store, index });
+        *self.state_write() = Some(Unlocked { store, index });
         self.touch();
         Ok(())
     }
@@ -300,7 +361,7 @@ impl Vault {
     pub fn lock(&self) {
         // Take the state out and drop it outside the lock so that a slow
         // backend shutdown does not hold every reader.
-        let previous = self.state.write().unwrap().take();
+        let previous = self.state_write().take();
         drop(previous); // SecretKey zeroizes here; SearchIndex frees plaintext
     }
 
@@ -309,7 +370,8 @@ impl Vault {
     /// Only the *wrapped data key* is rewritten, so this is instant even for
     /// a vault with tens of thousands of entries.
     pub fn change_password(&self, current: Option<&str>, new: Option<&str>) -> Result<()> {
-        let header = self.header.read().unwrap().clone();
+        self.writable()?;
+        let header = self.header_read().clone();
 
         // Verify the current password by unwrapping, whether or not the
         // vault happens to be unlocked already.
@@ -345,14 +407,15 @@ impl Vault {
         }
 
         write_header(&self.root, &next)?;
-        *self.header.write().unwrap() = next;
+        *self.header_write() = next;
 
         // Same data key, so an unlocked session stays valid.
         Ok(())
     }
 
     pub fn set_auto_lock(&self, seconds: u64) -> Result<()> {
-        let mut header = self.header.write().unwrap();
+        self.writable()?;
+        let mut header = self.header_write();
         header.auto_lock_seconds = seconds;
         write_header(&self.root, &header)
     }
@@ -366,7 +429,7 @@ impl Vault {
     /// Seconds until the idle auto-lock fires, or `None` if it is disabled
     /// or the vault is already locked.
     pub fn seconds_until_auto_lock(&self) -> Option<u64> {
-        let timeout = self.header.read().unwrap().auto_lock_seconds;
+        let timeout = self.header_read().auto_lock_seconds;
         if timeout == 0 || !self.is_unlocked() {
             return None;
         }
@@ -392,12 +455,12 @@ impl Vault {
     }
 
     pub fn header(&self) -> VaultHeader {
-        self.header.read().unwrap().clone()
+        self.header_read().clone()
     }
 
     pub fn status(&self) -> VaultStatus {
-        let header = self.header.read().unwrap().clone();
-        let guard = self.state.read().unwrap();
+        let header = self.header_read().clone();
+        let guard = self.state_read();
         VaultStatus {
             name: header.name,
             backend: header.backend,
@@ -405,16 +468,82 @@ impl Vault {
             encrypted: header.cipher != SUITE_NONE,
             auto_lock_seconds: header.auto_lock_seconds,
             path: self.root.clone(),
+            writable: self.write_lock.is_some(),
             stats: guard.as_ref().and_then(|u| u.store.stats().ok()),
             capabilities: guard.as_ref().map(|u| u.store.capabilities()),
         }
+    }
+
+    // ---- the write claim -------------------------------------------------
+
+    /// May this process write to the vault?
+    ///
+    /// False when another process held the directory's write lock at open
+    /// time. The vault still reads; see [`crate::lockfile`] for why that is
+    /// the right split.
+    pub fn is_writable(&self) -> bool {
+        self.write_lock.is_some()
+    }
+
+    /// Guard at the top of every method that changes something on disk.
+    ///
+    /// Deliberately one call per mutator rather than something clever in
+    /// `write`: the read/write split in this type does not line up with the
+    /// lock helpers -- `save_calendar` goes through `read` because
+    /// `with_calendars` does -- so a central hook would either miss writes or
+    /// refuse reads. A `self.writable()?` on each is greppable, and a new
+    /// mutator that forgets it is a visible omission rather than an invisible
+    /// one.
+    fn writable(&self) -> Result<()> {
+        if self.write_lock.is_some() {
+            return Ok(());
+        }
+        Err(Error::VaultInUse {
+            holder: crate::lockfile::holder(&self.root)
+                .map(|h| h.to_string())
+                .unwrap_or_else(|| "another process".into()),
+        })
+    }
+
+    // ---- lock accessors --------------------------------------------------
+    //
+    // Every lock in this type is taken through the four helpers below, and
+    // none of them treats poisoning as fatal.
+    //
+    // `unwrap()` on a poisoned lock turns a single panic anywhere in the
+    // process into a vault that can never be used again: every later read and
+    // every later *write* panics on the poison flag. For an app whose whole
+    // job is not to lose what someone typed, that is the worst available
+    // response -- the window stays open, the editor keeps accepting text, and
+    // each autosave dies on a flag set minutes ago.
+    //
+    // What poisoning warns about does not really arise here either. The state
+    // it guards is an open store plus a search index; a panic between the two
+    // can leave the index stale, which shows up as a search result pointing
+    // at an edited entry and is repaired by `reindex`. That is worth
+    // continuing through, and losing the session's writing is not.
+
+    fn state_read(&self) -> std::sync::RwLockReadGuard<'_, Option<Unlocked>> {
+        self.state.read().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn state_write(&self) -> std::sync::RwLockWriteGuard<'_, Option<Unlocked>> {
+        self.state.write().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn header_read(&self) -> std::sync::RwLockReadGuard<'_, VaultHeader> {
+        self.header.read().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn header_write(&self) -> std::sync::RwLockWriteGuard<'_, VaultHeader> {
+        self.header.write().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     // ---- data access ----------------------------------------------------
 
     /// Run `f` against the unlocked store, or fail with [`Error::Locked`].
     fn read<T>(&self, f: impl FnOnce(&Unlocked) -> Result<T>) -> Result<T> {
-        let guard = self.state.read().unwrap();
+        let guard = self.state_read();
         let unlocked = guard.as_ref().ok_or(Error::Locked)?;
         let out = f(unlocked);
         drop(guard);
@@ -423,7 +552,7 @@ impl Vault {
     }
 
     fn write<T>(&self, f: impl FnOnce(&mut Unlocked) -> Result<T>) -> Result<T> {
-        let mut guard = self.state.write().unwrap();
+        let mut guard = self.state_write();
         let unlocked = guard.as_mut().ok_or(Error::Locked)?;
         let out = f(unlocked);
         drop(guard);
@@ -444,11 +573,13 @@ impl Vault {
     }
 
     pub fn save_journal(&self, journal: &Journal) -> Result<()> {
+        self.writable()?;
         self.write(|u| u.store.put_journal(journal))
     }
 
     /// Delete a journal and every entry inside it.
     pub fn delete_journal(&self, id: JournalId) -> Result<()> {
+        self.writable()?;
         self.write(|u| {
             for e in u.store.list_entries(&EntryQuery::in_journal(id))? {
                 u.index.remove(e.id);
@@ -465,7 +596,39 @@ impl Vault {
         self.read(|u| u.store.get_entry(id))
     }
 
-    pub fn save_entry(&self, entry: &Entry) -> Result<()> {
+    /// Save `entry`, provided nobody else has written it since `expect`.
+    ///
+    /// `expect` is the `updated_at` the caller loaded, or `None` for a new
+    /// entry; a mismatch is [`Error::Conflict`] and nothing is written. It
+    /// cannot be read off `entry`, because the caller has already stamped a
+    /// fresh `updated_at` on the copy it is trying to save.
+    ///
+    /// This is what stops the second saver of an entry silently overwriting
+    /// the first. The vault write lock already keeps two *processes* from
+    /// both being writers, so what is left for this to catch is the case the
+    /// lock cannot: an editor that has had an entry open since before some
+    /// other change to it -- a CLI edit made while the app was closed, a
+    /// vault in a synced folder written on another machine, or simply a stale
+    /// tab. Losing a paragraph to any of those is the failure this exists to
+    /// prevent, so the conflict is reported and the author decides.
+    pub fn save_entry(&self, entry: &Entry, expect: Option<Timestamp>) -> Result<()> {
+        self.writable()?;
+        entry.body.validate()?;
+        self.write(|u| {
+            u.store.put_entry_if(entry, expect)?;
+            u.index.insert(entry);
+            Ok(())
+        })
+    }
+
+    /// Save `entry` regardless of what is already stored.
+    ///
+    /// The deliberate resolution of a conflict [`Vault::save_entry`]
+    /// reported, and the path an import takes. Separate rather than an
+    /// `Option` flag so that overwriting somebody's work is something a
+    /// caller has to name.
+    pub fn overwrite_entry(&self, entry: &Entry) -> Result<()> {
+        self.writable()?;
         entry.body.validate()?;
         self.write(|u| {
             u.store.put_entry(entry)?;
@@ -475,6 +638,7 @@ impl Vault {
     }
 
     pub fn delete_entry(&self, id: EntryId) -> Result<()> {
+        self.writable()?;
         self.write(|u| {
             u.store.delete_entry(id)?;
             u.index.remove(id);
@@ -518,11 +682,13 @@ impl Vault {
     }
 
     pub fn save_project(&self, project: &Project) -> Result<()> {
+        self.writable()?;
         self.with_tasks(|t| t.put_project(project))
     }
 
     /// Delete a project, its tasks and their time blocks.
     pub fn delete_project(&self, id: ProjectId) -> Result<()> {
+        self.writable()?;
         self.with_tasks(|t| t.delete_project(id))
     }
 
@@ -535,6 +701,7 @@ impl Vault {
     }
 
     pub fn save_task(&self, task: &Task) -> Result<()> {
+        self.writable()?;
         if task.title.trim().is_empty() {
             return Err(Error::Invalid("a task needs a title".into()));
         }
@@ -547,6 +714,7 @@ impl Vault {
     /// Write several tasks as one operation. This is what a board reorder
     /// is: dragging one card renumbers everything below it in two columns.
     pub fn save_tasks(&self, tasks: &[Task]) -> Result<()> {
+        self.writable()?;
         for t in tasks {
             if t.title.trim().is_empty() {
                 return Err(Error::Invalid("a task needs a title".into()));
@@ -557,6 +725,7 @@ impl Vault {
 
     /// Delete a task, its subtasks and their time blocks.
     pub fn delete_task(&self, id: TaskId) -> Result<()> {
+        self.writable()?;
         self.with_tasks(|t| t.delete_task(id))
     }
 
@@ -569,11 +738,13 @@ impl Vault {
     }
 
     pub fn save_block(&self, block: &TimeBlock) -> Result<()> {
+        self.writable()?;
         block.validate()?;
         self.with_tasks(|t| t.put_block(block))
     }
 
     pub fn delete_block(&self, id: BlockId) -> Result<()> {
+        self.writable()?;
         self.with_tasks(|t| t.delete_block(id))
     }
 
@@ -669,6 +840,7 @@ impl Vault {
     }
 
     pub fn save_calendar(&self, calendar: &Calendar) -> Result<()> {
+        self.writable()?;
         if calendar.name.trim().is_empty() {
             return Err(Error::Invalid("a calendar needs a name".into()));
         }
@@ -684,6 +856,7 @@ impl Vault {
 
     /// Unsubscribe: the calendar and every event that came from it.
     pub fn delete_calendar(&self, id: CalendarId) -> Result<()> {
+        self.writable()?;
         self.with_calendars(|c| c.delete_calendar(id))
     }
 
@@ -713,6 +886,7 @@ impl Vault {
         window: (jiff::civil::Date, jiff::civil::Date),
         default_tz: &str,
     ) -> Result<SyncReport> {
+        self.writable()?;
         // Refuse anything that is not an iCalendar document *before* it can
         // replace one, and before the store is touched at all. A captive
         // portal's login page, an expired link's HTML error, a truncated
@@ -753,6 +927,7 @@ impl Vault {
 
     /// Record that a sync failed, keeping the events that are already there.
     pub fn mark_calendar_failed(&self, id: CalendarId, why: &str) -> Result<()> {
+        self.writable()?;
         let mut calendar = self.calendar(id)?;
         calendar.mark_failed(why);
         self.with_calendars(|c| c.put_calendar(&calendar))
@@ -773,6 +948,7 @@ impl Vault {
 
     /// Store attachment bytes, returning their content address.
     pub fn put_blob(&self, bytes: &[u8]) -> Result<BlobId> {
+        self.writable()?;
         self.read(|u| u.store.put_blob(bytes))
     }
 
@@ -785,8 +961,54 @@ impl Vault {
     }
 
     /// Reclaim attachments no entry references any more.
-    pub fn collect_garbage(&self) -> Result<u64> {
-        self.read(|u| u.store.collect_garbage())
+    ///
+    /// Takes the *write* lock, not the read lock it used to. Collection is
+    /// two passes -- walk the entries for live blob ids, then delete
+    /// everything else -- and under a read lock a save landing between them
+    /// stores a blob the first pass could not have seen and the second pass
+    /// deletes. The write lock closes that window inside this process;
+    /// `grace` is what covers the rest, including a draft that has not been
+    /// saved yet and a second process holding one open. See
+    /// [`JournalStore::collect_garbage`].
+    pub fn collect_garbage(&self, grace: std::time::Duration) -> Result<u64> {
+        self.writable()?;
+        self.write(|u| u.store.collect_garbage(grace))
+    }
+
+    /// Report storage-level damage, or an empty list if the vault is sound.
+    ///
+    /// Only checks structure. A vault whose header is intact and whose pages
+    /// are sound can still be one you have forgotten the password to, and
+    /// that is not what this answers.
+    pub fn check_integrity(&self) -> Result<Vec<String>> {
+        self.read(|u| u.store.check_integrity())
+    }
+
+    /// Copy the whole vault into `dir`, sealed exactly as it is.
+    ///
+    /// The result is a vault, not an archive: point `open` at `dir` and it
+    /// unlocks with the same password. That is deliberate. A backup format
+    /// that needs a working copy of this program to restore is a backup that
+    /// fails on the day the program is what broke.
+    ///
+    /// The header is written *last*. `Vault::exists` is what everything else
+    /// tests, so until the header lands the destination is not yet a vault
+    /// and a backup interrupted halfway cannot be mistaken for a whole one.
+    pub fn backup(&self, dir: &Path) -> Result<()> {
+        if Self::exists(dir) {
+            return Err(Error::AlreadyInitialised(dir.to_path_buf()));
+        }
+        // Checkpoint first so the snapshot is not reading around a large WAL
+        // -- but only if this process is the writer. A checkpoint is a write
+        // to the *source*, and a read-only copy has no business making one
+        // behind the back of whoever holds the lock. Skipping it costs a
+        // slower snapshot, not a wrong one.
+        if self.is_writable() {
+            self.read(|u| u.store.flush())?;
+        }
+        self.read(|u| u.store.snapshot(&dir.join(STORE_DIRNAME)))?;
+        write_header(dir, &self.header_read().clone())?;
+        Ok(())
     }
 
     /// Every entry, bodies included. For export.
@@ -819,23 +1041,85 @@ impl std::fmt::Debug for Vault {
 
 // ---- header i/o ---------------------------------------------------------
 
+/// Read the header, falling back to the backup copy if the live one is
+/// unreadable.
+///
+/// This is the single most valuable file in the vault: it holds the wrapped
+/// data key, which exists nowhere else. If it is lost, every entry in the
+/// store is ciphertext under a key nobody can derive any more -- so a
+/// header that fails to parse is worth a second look at the spare before
+/// reporting that there is no vault here.
 fn read_header(root: &Path) -> Result<VaultHeader> {
     let path = root.join(HEADER_FILENAME);
-    if !path.is_file() {
-        return Err(Error::NoVault(root.to_path_buf()));
+    let backup = root.join(HEADER_BACKUP_FILENAME);
+
+    let live = match std::fs::read(&path) {
+        Ok(bytes) => match serde_json::from_slice::<VaultHeader>(&bytes) {
+            Ok(header) => return Ok(header),
+            Err(e) => Some(Error::Serde(e)),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => Some(Error::io(&path, e)),
+    };
+
+    // Either there is no live header or it did not parse. Try the spare.
+    if let Ok(bytes) = std::fs::read(&backup)
+        && let Ok(header) = serde_json::from_slice::<VaultHeader>(&bytes)
+    {
+        tracing::warn!(
+            path = %path.display(),
+            "vault header was unreadable; recovered it from the backup copy"
+        );
+        // Put the recovered copy back so the next open does not have to.
+        let _ = write_header(root, &header);
+        return Ok(header);
     }
-    let bytes = std::fs::read(&path).map_err(|e| Error::io(&path, e))?;
-    serde_json::from_slice(&bytes).map_err(Error::Serde)
+
+    match live {
+        // A header that exists but is corrupt is a different problem from no
+        // vault at all, and saying so is the difference between "you picked
+        // the wrong folder" and "restore your backup".
+        Some(e) => Err(e),
+        None => Err(Error::NoVault(root.to_path_buf())),
+    }
 }
 
-/// Write the header via a temp file + rename, so an interrupted write can
-/// never leave a vault that cannot be opened.
+/// Write the header durably, keeping the previous one as a spare.
+///
+/// Two things beyond a plain write, both because of what this file holds:
+///
+/// * The write goes through [`fsutil::write_atomic`], which fsyncs the bytes
+///   before the rename and the directory after it. A rename alone is atomic
+///   for readers but says nothing about a power cut, and the failure mode
+///   here is not a lost setting -- it is a vault whose data key is gone.
+///
+/// * The header it replaces is copied to `vault.json.bak` first, so there is
+///   always a second copy of a *working* wrapped key on disk. `change_password`
+///   in particular rewrites the salt and the wrapped key together; without the
+///   spare, that one write is the whole vault's single point of failure.
 fn write_header(root: &Path, header: &VaultHeader) -> Result<()> {
     let path = root.join(HEADER_FILENAME);
-    let tmp = root.join(format!("{HEADER_FILENAME}.tmp"));
+    let backup = root.join(HEADER_BACKUP_FILENAME);
+
+    // Only ever promote a header we can actually read back -- copying a
+    // corrupt live file over the last good spare would defeat the point.
+    if let Ok(bytes) = std::fs::read(&path)
+        && serde_json::from_slice::<VaultHeader>(&bytes).is_ok()
+    {
+        let _ = fsutil::write_atomic(&backup, &bytes, &fsutil::unique_tag());
+    }
+
     let json = serde_json::to_vec_pretty(header)?;
-    std::fs::write(&tmp, &json).map_err(|e| Error::io(&tmp, e))?;
-    std::fs::rename(&tmp, &path).map_err(|e| Error::io(&path, e))?;
+    fsutil::write_atomic(&path, &json, &fsutil::unique_tag())?;
+
+    // Seed the spare on the very first write, rather than waiting for a
+    // second one to promote this header into it. Otherwise a vault created
+    // and then not reconfigured -- which is most of them -- runs on a single
+    // copy of its data key for as long as nobody changes a setting, and
+    // that is precisely the window the spare exists to cover.
+    if !backup.is_file() {
+        let _ = fsutil::write_atomic(&backup, &json, &fsutil::unique_tag());
+    }
     Ok(())
 }
 
@@ -877,7 +1161,10 @@ mod tests {
         cipher: Option<Arc<dyn Cipher>>,
         journals: Mutex<BTreeMap<JournalId, Vec<u8>>>,
         entries: Mutex<BTreeMap<EntryId, Vec<u8>>>,
-        blobs: Mutex<BTreeMap<BlobId, Vec<u8>>>,
+        /// Sealed bytes and when they were stored. The timestamp exists
+        /// for the same reason the file stores keep an mtime: GC has to be
+        /// able to tell a settled orphan from a blob written a moment ago.
+        blobs: Mutex<BTreeMap<BlobId, (Vec<u8>, std::time::Instant)>>,
     }
 
     impl MemStore {
@@ -970,16 +1257,19 @@ mod tests {
         fn put_blob(&self, bytes: &[u8]) -> Result<BlobId> {
             let id = BlobId::of(bytes);
             let sealed = self.cipher().seal(&crate::store::blob_aad(id), bytes)?;
-            self.blobs.lock().unwrap().insert(id, sealed);
+            self.blobs.lock().unwrap().insert(id, (sealed, std::time::Instant::now()));
             Ok(id)
         }
         fn get_blob(&self, id: BlobId) -> Result<Vec<u8>> {
             let g = self.blobs.lock().unwrap();
-            let v = g.get(&id).ok_or_else(|| Error::not_found("blob", id))?;
+            let (v, _) = g.get(&id).ok_or_else(|| Error::not_found("blob", id))?;
             self.cipher().open(&crate::store::blob_aad(id), v)
         }
         fn has_blob(&self, id: BlobId) -> Result<bool> {
             Ok(self.blobs.lock().unwrap().contains_key(&id))
+        }
+        fn blob_age(&self, id: BlobId) -> Result<Option<std::time::Duration>> {
+            Ok(self.blobs.lock().unwrap().get(&id).map(|(_, at)| at.elapsed()))
         }
         fn delete_blob(&self, id: BlobId) -> Result<()> {
             self.blobs.lock().unwrap().remove(&id);
@@ -999,7 +1289,7 @@ mod tests {
                 journals,
                 entries,
                 blobs: blobs.len() as u64,
-                blob_bytes: blobs.values().map(|v| v.len() as u64).sum(),
+                blob_bytes: blobs.values().map(|(v, _)| v.len() as u64).sum(),
             })
         }
     }
@@ -1055,6 +1345,9 @@ mod tests {
         }
         fn has_blob(&self, id: BlobId) -> Result<bool> {
             self.0.has_blob(id)
+        }
+        fn blob_age(&self, id: BlobId) -> Result<Option<std::time::Duration>> {
+            self.0.blob_age(id)
         }
         fn delete_blob(&self, id: BlobId) -> Result<()> {
             self.0.delete_blob(id)
@@ -1144,7 +1437,7 @@ mod tests {
             let mut e = Entry::new(j.id, "UTC");
             e.title = "x".into();
             e.tags = tags.into_iter().map(str::to_string).collect();
-            v.save_entry(&e).unwrap();
+            v.save_entry(&e, None).unwrap();
         }
 
         // Most used first; "food" and "spain" tie at the bottom on count and
@@ -1189,7 +1482,7 @@ mod tests {
             v.save_journal(&j).unwrap();
             let mut e = Entry::new(j.id, "UTC");
             e.body = crate::RichDoc::from_plain_text("a secret");
-            v.save_entry(&e).unwrap();
+            v.save_entry(&e, None).unwrap();
         }
 
         let v = Vault::open(dir.path(), reg).unwrap();
@@ -1311,11 +1604,15 @@ mod tests {
 
         let mut e = Entry::new(j.id, "UTC");
         e.body = crate::RichDoc::from_plain_text("kingfisher on the wire");
-        v.save_entry(&e).unwrap();
+        v.save_entry(&e, None).unwrap();
         assert_eq!(v.search("kingfisher", None, 10).unwrap().len(), 1);
 
+        // An edit, so it carries the version it is replacing. `None` here
+        // would be the caller claiming the entry is new, and is a conflict.
+        let loaded = e.updated_at;
         e.body = crate::RichDoc::from_plain_text("heron on the wire");
-        v.save_entry(&e).unwrap();
+        e.updated_at = Timestamp::now();
+        v.save_entry(&e, Some(loaded)).unwrap();
         assert!(v.search("kingfisher", None, 10).unwrap().is_empty(), "edit must reindex");
         assert_eq!(v.search("heron", None, 10).unwrap().len(), 1);
 
@@ -1331,7 +1628,7 @@ mod tests {
         v.save_journal(&j).unwrap();
         let mut e = Entry::new(j.id, "UTC");
         e.body = crate::RichDoc::from_plain_text("kingfisher");
-        v.save_entry(&e).unwrap();
+        v.save_entry(&e, None).unwrap();
 
         v.delete_journal(j.id).unwrap();
         assert!(v.search("kingfisher", None, 10).unwrap().is_empty());
@@ -1347,7 +1644,7 @@ mod tests {
 
         let mut e = Entry::new(j.id, "UTC");
         e.body = crate::RichDoc(serde_json::json!({"type": "paragraph"}));
-        assert_eq!(v.save_entry(&e).unwrap_err().code(), "invalid");
+        assert_eq!(v.save_entry(&e, None).unwrap_err().code(), "invalid");
         assert!(v.entries(&EntryQuery::default()).unwrap().is_empty());
     }
 
@@ -1446,6 +1743,226 @@ mod tests {
     }
 
     #[test]
+    fn a_lost_header_is_recovered_from_the_backup_copy() {
+        // The worst survivable accident: the file holding the wrapped data
+        // key is gone. Every entry in the store is still ciphertext under a
+        // key that exists nowhere else, so the spare is the difference
+        // between a vault that opens and one that never will again.
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+        let j = Journal::new("J");
+        v.save_journal(&j).unwrap();
+        // Creating the vault is enough: the spare is seeded on the first
+        // header write, not the second.
+        assert!(dir.path().join(HEADER_BACKUP_FILENAME).is_file());
+
+        std::fs::remove_file(dir.path().join(HEADER_FILENAME)).unwrap();
+
+        let v = Vault::open(dir.path(), reg).unwrap();
+        v.unlock(Some("pw")).unwrap();
+        assert_eq!(v.journals().unwrap().len(), 1, "the vault still reads");
+        // Recovery also restores the live header, so this is a one-off.
+        assert!(dir.path().join(HEADER_FILENAME).is_file());
+    }
+
+    #[test]
+    fn a_corrupt_header_falls_back_rather_than_reporting_no_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+        v.set_auto_lock(60).unwrap();
+
+        std::fs::write(dir.path().join(HEADER_FILENAME), b"{ this is not json").unwrap();
+
+        let v = Vault::open(dir.path(), reg).unwrap();
+        v.unlock(Some("pw")).unwrap();
+        assert!(v.is_unlocked());
+    }
+
+    #[test]
+    fn a_vault_with_only_a_backup_header_is_not_overwritten_by_create() {
+        // `create` refuses an existing vault, and "existing" has to include
+        // one whose live header was lost -- otherwise the recovery path above
+        // races a fresh vault written on top of the entries it was meant to
+        // save.
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+        v.set_auto_lock(60).unwrap();
+        std::fs::remove_file(dir.path().join(HEADER_FILENAME)).unwrap();
+
+        assert_eq!(
+            Vault::create(dir.path(), cfg(Some("pw")), reg).unwrap_err().code(),
+            "already_initialised"
+        );
+    }
+
+    #[test]
+    fn the_backup_header_is_only_ever_a_readable_one() {
+        // A corrupt live header must not be promoted over the last good
+        // spare, or one bad write destroys both copies.
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+        v.set_auto_lock(60).unwrap();
+        let good = std::fs::read(dir.path().join(HEADER_BACKUP_FILENAME)).unwrap();
+
+        std::fs::write(dir.path().join(HEADER_FILENAME), b"corrupt").unwrap();
+        // Any header write now would otherwise copy the corruption across.
+        write_header(dir.path(), &read_header(dir.path()).unwrap()).unwrap();
+
+        assert_eq!(
+            std::fs::read(dir.path().join(HEADER_BACKUP_FILENAME)).unwrap(),
+            good,
+            "the spare must still be the last header that parsed"
+        );
+    }
+
+    #[test]
+    fn a_second_process_opens_read_only_rather_than_racing_the_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        let first = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+        assert!(first.is_writable(), "the creator holds the write lock");
+
+        // The same vault opened again -- another process, in production.
+        let second = Vault::open(dir.path(), reg).unwrap();
+        second.unlock(Some("pw")).unwrap();
+        assert!(!second.is_writable(), "a second opener must not also be a writer");
+        assert!(!second.status().writable);
+
+        // It still reads. (What it reads is this backend's business: the
+        // in-memory one snapshots its maps per open, so the *cross-instance*
+        // visibility of a write is pinned in the SQLite crate, against a
+        // store two handles genuinely share.)
+        let j = Journal::new("Daily");
+        first.save_journal(&j).unwrap();
+        second.journals().expect("a read-only vault must still read");
+
+        // And refuses every write, naming what is holding it.
+        let err = second.save_journal(&Journal::new("Nope")).unwrap_err();
+        assert_eq!(err.code(), "vault_in_use");
+        assert!(err.to_string().contains("read-only"), "the message must explain itself");
+
+        let e = Entry::new(j.id, "UTC");
+        assert_eq!(second.save_entry(&e, None).unwrap_err().code(), "vault_in_use");
+        assert_eq!(second.delete_entry(e.id).unwrap_err().code(), "vault_in_use");
+        assert_eq!(second.put_blob(b"x").unwrap_err().code(), "vault_in_use");
+        assert_eq!(second.set_auto_lock(30).unwrap_err().code(), "vault_in_use");
+        assert_eq!(
+            second.collect_garbage(std::time::Duration::ZERO).unwrap_err().code(),
+            "vault_in_use"
+        );
+    }
+
+    #[test]
+    fn one_process_reopening_a_path_it_already_holds_gets_a_read_only_vault() {
+        // Pinning the behaviour the desktop shell has to work around: the
+        // lock is on an open file description, not on a process, so a second
+        // `open` of a path this process already holds conflicts with itself.
+        // `AppState::close` exists because of this -- the vault in hand has
+        // to be released before another is opened, even the same one.
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        let held = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+        assert!(held.is_writable());
+
+        let again = Vault::open(dir.path(), reg.clone()).unwrap();
+        assert!(!again.is_writable(), "reopening without closing must not get the lock");
+
+        // Release the first, and a fresh open is writable again.
+        drop(held);
+        drop(again);
+        assert!(Vault::open(dir.path(), reg).unwrap().is_writable());
+    }
+
+    #[test]
+    fn the_write_lock_is_released_when_the_vault_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        {
+            let first = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+            assert!(first.is_writable());
+        }
+        // Closing the app must hand the vault back, or a crash would leave it
+        // read-only until the machine was rebooted.
+        let next = Vault::open(dir.path(), reg).unwrap();
+        assert!(next.is_writable(), "the lock must be reclaimable after a close");
+    }
+
+    #[test]
+    fn a_read_only_vault_can_still_be_backed_up() {
+        // The whole point of degrading to read-only instead of refusing: the
+        // things that cannot lose data still work. Backing up is the one that
+        // matters most, since it is what someone reaches for when they are
+        // worried.
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        let _first = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+
+        let second = Vault::open(dir.path(), reg).unwrap();
+        second.unlock(Some("pw")).unwrap();
+        assert!(!second.is_writable());
+
+        // The in-memory backend has no snapshot, so this asserts on *which*
+        // error: it must be the backend's limitation, not the write lock.
+        let dest = tempfile::tempdir().unwrap();
+        assert_eq!(second.backup(&dest.path().join("copy")).unwrap_err().code(), "unsupported");
+    }
+
+    #[test]
+    fn saving_an_entry_someone_else_changed_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+        let j = Journal::new("Daily");
+        v.save_journal(&j).unwrap();
+
+        let mut e = Entry::new(j.id, "UTC");
+        e.body = crate::RichDoc::from_plain_text("what I wrote");
+        v.save_entry(&e, None).unwrap();
+        let loaded = e.updated_at;
+
+        // Something else writes it -- the CLI, another machine, a stale tab.
+        let mut theirs = e.clone();
+        theirs.body = crate::RichDoc::from_plain_text("what they wrote");
+        theirs.updated_at = Timestamp::now();
+        v.save_entry(&theirs, Some(loaded)).unwrap();
+
+        // Our editor still thinks it holds the current version.
+        e.body = crate::RichDoc::from_plain_text("my later paragraph");
+        e.updated_at = Timestamp::now();
+        assert_eq!(v.save_entry(&e, Some(loaded)).unwrap_err().code(), "conflict");
+        assert_eq!(
+            v.entry(e.id).unwrap().body.plain_text(),
+            "what they wrote",
+            "the refused save must not have touched anything"
+        );
+
+        // "Keep mine" is the deliberate override, and it also has to put the
+        // search index straight.
+        v.overwrite_entry(&e).unwrap();
+        assert_eq!(v.entry(e.id).unwrap().body.plain_text(), "my later paragraph");
+        assert_eq!(v.search("paragraph", None, 10).unwrap().len(), 1);
+        assert!(v.search("they", None, 10).unwrap().is_empty(), "the index must follow the write");
+    }
+
+    // The backup *round trip* is exercised against SQLite, in that crate:
+    // the in-memory backend here has no on-disk form to snapshot, so it
+    // reports `snapshot` as unsupported. What is checkable at this layer is
+    // the guard in front of it.
+    #[test]
+    fn backing_up_over_an_existing_vault_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+        let other = tempfile::tempdir().unwrap();
+        Vault::create(other.path(), cfg(Some("pw")), reg).unwrap();
+
+        assert_eq!(v.backup(other.path()).unwrap_err().code(), "already_initialised");
+    }
+
+    #[test]
     fn a_malformed_header_hex_field_is_an_error_not_a_panic() {
         let dir = tempfile::tempdir().unwrap();
         let reg = registry();
@@ -1484,7 +2001,7 @@ mod tests {
         for (j, day) in [(a.id, 1), (a.id, 2), (b.id, 3)] {
             let mut e = Entry::new(j, "UTC");
             e.local_date = jiff::civil::date(2025, 1, day);
-            v.save_entry(&e).unwrap();
+            v.save_entry(&e, None).unwrap();
         }
         assert_eq!(v.entries(&EntryQuery::default()).unwrap().len(), 3);
         assert_eq!(v.entries(&EntryQuery::in_journal(a.id)).unwrap().len(), 2);

@@ -138,6 +138,12 @@ export interface VaultStatus {
   encrypted: boolean
   autoLockSeconds: number
   path: string
+  /**
+   * False when another process holds this vault's write lock — a second copy
+   * of the app, or the CLI. Reads work; every write is refused with
+   * `vault_in_use`.
+   */
+  writable: boolean
   stats?: StoreStats
   capabilities?: Capabilities
 }

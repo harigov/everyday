@@ -697,6 +697,8 @@ class CalendarState {
       void todo.refreshStats()
     } catch (e) {
       await handle(e, () => this.refreshBlocks())
+      // Rethrown so `Autosave` requeues these blocks -- see `#writeTasks`.
+      throw e
     }
   }
 
@@ -903,6 +905,9 @@ class CalendarState {
   /** Refresh every feed. `force` ignores each one's interval. */
   async syncDue(force: boolean) {
     if (!app.supportsCalendar || this.syncing) return
+    // Nothing a sync fetches can be stored on a read-only vault, so the
+    // background pass would be network traffic for its own sake.
+    if (app.status?.writable === false) return
     if (!this.calendars.some((c) => c.origin.type === 'url')) return
     this.syncing = true
     try {

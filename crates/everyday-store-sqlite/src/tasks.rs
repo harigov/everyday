@@ -27,7 +27,7 @@ impl TaskStore for SqliteStore {
     // ---- projects -------------------------------------------------------
 
     fn list_projects(&self) -> Result<Vec<Project>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn
             .prepare("SELECT id, data FROM projects ORDER BY sort_order, created_us")
             .map_err(Error::backend)?;
@@ -42,7 +42,7 @@ impl TaskStore for SqliteStore {
     }
 
     fn get_project(&self, id: ProjectId) -> Result<Project> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let sealed: Option<Vec<u8>> = conn
             .query_row("SELECT data FROM projects WHERE id = ?1", params![id.to_string()], |r| {
                 r.get(0)
@@ -56,7 +56,7 @@ impl TaskStore for SqliteStore {
 
     fn put_project(&self, p: &Project) -> Result<()> {
         let data = self.seal(&project_aad(p.id), p)?;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "INSERT INTO projects
                 (id, status, priority, due_date, sort_order, created_us, updated_us,
@@ -82,7 +82,7 @@ impl TaskStore for SqliteStore {
     }
 
     fn delete_project(&self, id: ProjectId) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction().map_err(Error::backend)?;
 
         // Its tasks, plus anything nested under them -- a subtask filed into
@@ -195,7 +195,7 @@ impl TaskStore for SqliteStore {
             ));
         }
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(&sql).map_err(Error::backend)?;
         let rows: Vec<(String, Vec<u8>)> = stmt
             .query_map(params_from_iter(args.iter().map(|a| a.as_ref())), |r| {
@@ -212,7 +212,7 @@ impl TaskStore for SqliteStore {
     }
 
     fn get_task(&self, id: TaskId) -> Result<Task> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let sealed: Option<Vec<u8>> = conn
             .query_row("SELECT data FROM tasks WHERE id = ?1", params![id.to_string()], |r| {
                 r.get(0)
@@ -237,7 +237,7 @@ impl TaskStore for SqliteStore {
         let sealed: Vec<(&Task, Vec<u8>)> =
             tasks.iter().map(|t| Ok((t, self.seal(&task_aad(t.id), t)?))).collect::<Result<_>>()?;
 
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction().map_err(Error::backend)?;
         for (t, data) in sealed {
             tx.execute(
@@ -271,7 +271,7 @@ impl TaskStore for SqliteStore {
     }
 
     fn delete_task(&self, id: TaskId) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction().map_err(Error::backend)?;
         let doomed = Self::subtree(&tx, id)?;
         Self::purge_tasks(&tx, &doomed)?;
@@ -310,7 +310,7 @@ impl TaskStore for SqliteStore {
             sql.push_str(&format!(" LIMIT {limit}"));
         }
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(&sql).map_err(Error::backend)?;
         let rows: Vec<(String, Vec<u8>)> = stmt
             .query_map(params_from_iter(args.iter().map(|a| a.as_ref())), |r| {
@@ -325,7 +325,7 @@ impl TaskStore for SqliteStore {
     }
 
     fn get_block(&self, id: BlockId) -> Result<TimeBlock> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let sealed: Option<Vec<u8>> = conn
             .query_row("SELECT data FROM time_blocks WHERE id = ?1", params![id.to_string()], |r| {
                 r.get(0)
@@ -339,7 +339,7 @@ impl TaskStore for SqliteStore {
 
     fn put_block(&self, b: &TimeBlock) -> Result<()> {
         let data = self.seal(&block_aad(b.id), b)?;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "INSERT INTO time_blocks
                 (id, task_id, project_id, local_date, start_us, end_us, kind, data)
@@ -363,7 +363,7 @@ impl TaskStore for SqliteStore {
     }
 
     fn delete_block(&self, id: BlockId) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute("DELETE FROM time_blocks WHERE id = ?1", params![id.to_string()])
             .map_err(Error::backend)?;
         Ok(())
@@ -374,7 +374,7 @@ impl TaskStore for SqliteStore {
     fn task_stats(&self, today: jiff::civil::Date) -> Result<TaskStats> {
         // Every count here reads a clear column, so the whole panel costs
         // one pass over the indexes and decrypts nothing.
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let count = |sql: &str| -> Result<u64> {
             let n: i64 = conn.query_row(sql, [], |r| r.get(0)).map_err(Error::backend)?;
             Ok(n as u64)

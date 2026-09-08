@@ -25,6 +25,14 @@ const TOUCH_MS = 15_000
 /** Floor between list refreshes triggered by an autosave. */
 const LIST_REFRESH_MS = 4_000
 
+/**
+ * Longest gap between retries of an entry save that keeps failing.
+ *
+ * Matches `Autosave`'s ceiling, for the same reason: keep trying, but stop
+ * hammering a disk that is not going to accept the write this second.
+ */
+const MAX_SAVE_RETRY_MS = 30_000
+
 export type Screen = 'loading' | 'setup' | 'locked' | 'main' | 'error'
 
 /**
@@ -48,6 +56,17 @@ export type Section = (typeof SECTIONS)[number]
  */
 export function isLocked(e: unknown): boolean {
   return e instanceof VaultError && e.code === 'locked'
+}
+
+/**
+ * Was this save refused because the entry changed elsewhere?
+ *
+ * Distinct from a failure: nothing is wrong, two people (or two processes)
+ * simply wrote the same entry, and the interface has to ask rather than
+ * pick a winner.
+ */
+export function isConflict(e: unknown): boolean {
+  return e instanceof VaultError && e.code === 'conflict'
 }
 
 export function errorMessage(e: unknown): string {
@@ -104,6 +123,15 @@ class AppState {
   showStarredOnly = $state(false)
   saving = $state(false)
   lastSaved = $state<string | null>(null)
+  /**
+   * Set when a save was refused because the entry changed elsewhere.
+   *
+   * The editor keeps showing what the author typed -- the whole point is not
+   * to lose it -- and autosave stops until they choose. `keepMine` writes
+   * over the other version; `takeTheirs` reloads and discards this window's
+   * copy.
+   */
+  conflict = $state(false)
   theme = $state<'light' | 'dark' | 'system'>('system')
   section = $state<Section>('journal')
 
@@ -119,6 +147,21 @@ class AppState {
   #resetHooks: (() => void)[] = []
 
   #saveTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * Current backoff for a save that is failing, or `null` when the last one
+   * landed. Doubles per failure up to `MAX_SAVE_RETRY_MS`.
+   */
+  #retryDelay: number | null = null
+  /**
+   * The `updatedAt` of the open entry as it was last agreed with the vault:
+   * what was loaded, or what the last successful save wrote.
+   *
+   * This is the version token for the optimistic-concurrency check, and it
+   * cannot be read off `entry` because `flush` stamps a fresh `updatedAt`
+   * before every save. `null` means the open entry is one this window created
+   * and has never successfully written.
+   */
+  #baseVersion: string | null = null
   #searchTimer: ReturnType<typeof setTimeout> | null = null
   #lockTimer: ReturnType<typeof setInterval> | null = null
   #lastTouch = 0
@@ -288,6 +331,13 @@ class AppState {
     // drops it from memory; a locked app must not leave the last entry
     // sitting behind the lock screen.
     this.stopTimers()
+    // A retry scheduled by a failed save has nothing left to write once the
+    // entry below is dropped, and would fire against a locked vault.
+    if (this.#saveTimer) clearTimeout(this.#saveTimer)
+    this.#saveTimer = null
+    this.#retryDelay = null
+    this.#baseVersion = null
+    this.conflict = false
     for (const reset of this.#resetHooks) reset()
     this.entry = null
     this.entries = []
@@ -478,6 +528,9 @@ class AppState {
     this.selectedEntry = id
     try {
       this.entry = await api.entry(id)
+      this.#baseVersion = this.entry.updatedAt
+      // A conflict belongs to the document that had one, not to the window.
+      this.conflict = false
     } catch (e) {
       await handle(e)
     }
@@ -490,10 +543,12 @@ class AppState {
     let entry: Entry
     try {
       entry = await api.newEntry(journalId)
-      await api.saveEntry(entry)
+      await api.saveEntry(entry, null)
     } catch (e) {
       return void (await handle(e))
     }
+    this.#baseVersion = entry.updatedAt
+    this.conflict = false
     this.entry = entry
     this.selectedEntry = entry.id
     await this.refreshEntries()
@@ -523,11 +578,15 @@ class AppState {
     }
     const entry = this.entry
     if (!entry) return
+    // Nothing is written while a conflict is unresolved. Retrying would
+    // only be refused again, and the author has a choice in front of them.
+    if (this.conflict) return
     this.syncBody()
     this.saving = true
     try {
       entry.updatedAt = new Date().toISOString()
-      await api.saveEntry($state.snapshot(entry))
+      await api.saveEntry($state.snapshot(entry), this.#baseVersion)
+      this.#baseVersion = entry.updatedAt
       this.lastSaved = entry.updatedAt
       // Pick up the new title and excerpt in the list, but not right now.
       //
@@ -537,14 +596,86 @@ class AppState {
       // is a secondary view of an entry the author is looking straight at, so
       // it is allowed to lag -- but the refresh is queued, never dropped, so
       // it always converges once the typing stops.
+      this.#retryDelay = null
     } catch (e) {
+      // A conflict is not a failure to retry. Somebody else's version is in
+      // the vault and ours is on screen; both are real, and which one wins is
+      // not a decision this code gets to make on a timer.
+      if (isConflict(e)) {
+        this.conflict = true
+        this.saving = false
+        return
+      }
       await handle(e)
+      // The entry is still only in the editor. Unlike the other two stores
+      // there is no dirty set to put anything back into -- `flush` always
+      // writes whatever the editor currently holds -- so retrying is a
+      // matter of putting the timer back, with a widening gap so a vault on
+      // a full disk is not written to forty times a minute.
+      //
+      // Not after a lock: the entry has been dropped from memory and the
+      // vault is not open, so there is nothing to write and nowhere to
+      // write it.
+      if (!isLocked(e)) {
+        this.#retryDelay = Math.min(
+          this.#retryDelay === null ? AUTOSAVE_MS : this.#retryDelay * 2,
+          MAX_SAVE_RETRY_MS,
+        )
+        this.#saveTimer = setTimeout(() => void this.flush(), this.#retryDelay)
+      }
     } finally {
       this.saving = false
       // Not after a save that ended in a lock: the refresh would fire four
       // seconds later against a vault that is no longer open.
       if (this.screen === 'main') this.queueListRefresh()
     }
+  }
+
+  /** True while a failed save is still being retried. */
+  get saveFailing(): boolean {
+    return this.#retryDelay !== null
+  }
+
+  /**
+   * Resolve a conflict by keeping what is on screen.
+   *
+   * An unconditional write, which is the one place the interface asks for
+   * one. The other version is overwritten because the author looked at the
+   * choice and said so.
+   */
+  async keepMine() {
+    const entry = this.entry
+    if (!entry || !this.conflict) return
+    this.syncBody()
+    this.saving = true
+    try {
+      entry.updatedAt = new Date().toISOString()
+      await api.saveEntryForce($state.snapshot(entry))
+      this.#baseVersion = entry.updatedAt
+      this.lastSaved = entry.updatedAt
+      this.conflict = false
+      this.#retryDelay = null
+    } catch (e) {
+      await handle(e)
+    } finally {
+      this.saving = false
+      if (this.screen === 'main') this.queueListRefresh()
+    }
+  }
+
+  /**
+   * Resolve a conflict by discarding this window's copy and reloading.
+   *
+   * Destructive, so it is the second of the two actions and never the
+   * default. `openEntry` re-reads and resets the version token.
+   */
+  async takeTheirs() {
+    const id = this.entry?.id
+    if (!id || !this.conflict) return
+    this.conflict = false
+    this.entry = null
+    await this.openEntry(id)
+    await this.refreshEntries()
   }
 
   async deleteEntry(id: EntryId) {
@@ -567,9 +698,16 @@ class AppState {
   async toggleStar(id: EntryId) {
     try {
       const full = this.entry?.id === id ? this.entry : await api.entry(id)
+      // For the open entry this window already tracks the agreed version;
+      // for any other row, what we just read is it.
+      const base = this.entry?.id === id ? this.#baseVersion : full.updatedAt
       full.starred = !full.starred
-      await api.saveEntry($state.snapshot(full))
-      if (this.entry?.id === id) this.entry.starred = full.starred
+      full.updatedAt = new Date().toISOString()
+      await api.saveEntry($state.snapshot(full), base)
+      if (this.entry?.id === id) {
+        this.entry.starred = full.starred
+        this.#baseVersion = full.updatedAt
+      }
     } catch (e) {
       return void (await handle(e))
     }

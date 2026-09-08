@@ -472,3 +472,172 @@ fn reopening_does_not_re_run_the_migration() {
         assert_eq!(v, SCHEMA_VERSION);
     }
 }
+
+#[test]
+fn a_database_from_a_newer_build_is_refused_rather_than_written_to() {
+    // The store used to return `Ok` for any version at or above its own,
+    // which meant an older build opened a newer vault, skipped every
+    // migration step and wrote into a schema it did not understand.
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+        let conn = store.conn.lock().unwrap();
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
+    }
+    let Err(err) = SqliteStore::open(ctx(dir.path(), true)) else {
+        panic!("a newer schema version must be refused");
+    };
+    assert_eq!(err.code(), "unsupported_version");
+}
+
+#[test]
+fn a_feed_repeating_an_event_id_still_syncs() {
+    // A publisher reusing a UID broke the primary key, which aborted the
+    // whole transaction -- so that calendar could never sync again, not once.
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let cal =
+        everyday_core::calendar::Calendar::subscribed("Fixtures", "https://example.invalid/f.ics");
+    store.put_calendar(&cal).unwrap();
+
+    let mut first = an_event(cal.id, "kickoff", "the ground");
+    let mut duplicate = an_event(cal.id, "kickoff (again)", "the ground");
+    duplicate.id = first.id;
+    first.uid = "same".into();
+    duplicate.uid = "same".into();
+
+    store.replace_events(cal.id, &[first, duplicate]).unwrap();
+
+    let events = store.list_events(&EventQuery::default()).unwrap();
+    assert_eq!(events.len(), 1, "the repeat collapses onto the first");
+    assert_eq!(events[0].title, "kickoff (again)", "last one wins");
+}
+
+#[test]
+fn an_event_filed_into_another_calendar_agrees_with_itself() {
+    // The clear column was corrected to the calendar being synced while the
+    // sealed payload kept the original, so the event that came back named a
+    // feed it was not stored under.
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let mine =
+        everyday_core::calendar::Calendar::subscribed("Mine", "https://example.invalid/a.ics");
+    let theirs =
+        everyday_core::calendar::Calendar::subscribed("Theirs", "https://example.invalid/b.ics");
+    store.put_calendar(&mine).unwrap();
+    store.put_calendar(&theirs).unwrap();
+
+    // An event claiming to belong to `theirs`, synced as part of `mine`.
+    let stray = an_event(theirs.id, "misfiled", "elsewhere");
+    store.replace_events(mine.id, std::slice::from_ref(&stray)).unwrap();
+
+    let got = store.get_event(stray.id).unwrap();
+    assert_eq!(got.calendar_id, mine.id, "the payload must name where it was stored");
+
+    // And it is reachable by the calendar it was filed under.
+    let by_calendar = store
+        .list_events(&EventQuery { calendar_id: Some(mine.id), ..Default::default() })
+        .unwrap();
+    assert_eq!(by_calendar.len(), 1);
+}
+
+#[test]
+fn quick_check_passes_on_a_healthy_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let j = Journal::new("Daily");
+    store.put_journal(&j).unwrap();
+    store.put_entry(&Entry::new(j.id, "UTC")).unwrap();
+
+    assert!(store.check_integrity().unwrap().is_empty());
+}
+
+#[test]
+fn a_snapshot_is_a_database_that_opens_on_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let j = Journal::new("Daily");
+    store.put_journal(&j).unwrap();
+    let mut e = Entry::new(j.id, "UTC");
+    e.title = "in the snapshot".into();
+    store.put_entry(&e).unwrap();
+    let blob = store.put_blob(b"an attachment").unwrap();
+
+    let dest = tempfile::tempdir().unwrap();
+    let into = dest.path().join("copy");
+    store.snapshot(&into).unwrap();
+
+    // Opened as a store in its own right, under the same key.
+    let copy = SqliteStore::open(ctx(&into, true)).unwrap();
+    assert_eq!(copy.get_entry(e.id).unwrap().title, "in the snapshot");
+    assert_eq!(copy.get_blob(blob).unwrap(), b"an attachment");
+    assert!(copy.check_integrity().unwrap().is_empty());
+
+    // A snapshot, not a live view.
+    let mut later = Entry::new(j.id, "UTC");
+    later.title = "after".into();
+    store.put_entry(&later).unwrap();
+    assert!(copy.get_entry(later.id).is_err());
+}
+
+#[test]
+fn a_snapshot_refuses_to_land_on_an_existing_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    store.snapshot(dest.path()).unwrap();
+    let err = store.snapshot(dest.path()).expect_err("a second snapshot must refuse");
+    assert_eq!(err.code(), "invalid");
+}
+
+#[test]
+fn garbage_collection_spares_a_freshly_stored_attachment() {
+    // The image pasted into a draft that has not been saved yet: it is
+    // unreferenced by every measure GC has, and deleting it loses it.
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let pasted = store.put_blob(b"pixels").unwrap();
+
+    assert_eq!(store.collect_garbage(std::time::Duration::from_secs(60)).unwrap(), 0);
+    assert!(store.has_blob(pasted).unwrap());
+
+    // With no grace it is collectable, which is what `gc --include-recent` is.
+    assert_eq!(store.collect_garbage(std::time::Duration::ZERO).unwrap(), 1);
+}
+
+#[test]
+fn a_second_handle_sees_the_first_ones_writes() {
+    // The premise the vault's write lock and the conditional put both rest
+    // on: two handles on one SQLite file are looking at the same data, so
+    // "someone else changed it since you loaded it" is a real thing that can
+    // happen rather than a hypothetical.
+    let dir = tempfile::tempdir().unwrap();
+    let first = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let second = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+
+    let j = Journal::new("Shared");
+    first.put_journal(&j).unwrap();
+    let mut e = Entry::new(j.id, "UTC");
+    e.title = "written by the first".into();
+    first.put_entry(&e).unwrap();
+
+    assert_eq!(second.get_entry(e.id).unwrap().title, "written by the first");
+
+    // And the conditional put across the two: the second handle saves, so
+    // the first one's version token goes stale.
+    let loaded = second.get_entry(e.id).unwrap().updated_at;
+    let mut theirs = e.clone();
+    theirs.title = "written by the second".into();
+    theirs.updated_at = jiff::Timestamp::now();
+    second.put_entry_if(&theirs, Some(loaded)).unwrap();
+
+    let mut mine = e.clone();
+    mine.title = "and then by the first".into();
+    mine.updated_at = jiff::Timestamp::now();
+    assert_eq!(
+        first.put_entry_if(&mine, Some(loaded)).unwrap_err().code(),
+        "conflict",
+        "the stale writer must be refused, not allowed to clobber"
+    );
+    assert_eq!(first.get_entry(e.id).unwrap().title, "written by the second");
+}

@@ -571,6 +571,30 @@ impl JournalStore for MarkdownStore {
         Ok(self.blobs.has(id))
     }
 
+    fn blob_age(&self, id: BlobId) -> Result<Option<std::time::Duration>> {
+        Ok(self.blobs.age_of(id))
+    }
+
+    /// A copy of the tree.
+    ///
+    /// A Markdown vault *is* its files, and every one of them is written
+    /// atomically, so copying them is a valid snapshot -- there is no
+    /// equivalent of a torn page to work around and no journal to reconcile.
+    /// What it is not is instantaneous: a save landing mid-copy may or may
+    /// not be included, which for a backup is the same guarantee as taking
+    /// it a second earlier.
+    fn snapshot(&self, dir: &std::path::Path) -> Result<()> {
+        if dir.exists() && std::fs::read_dir(dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
+            return Err(Error::Invalid(format!(
+                "{} is not empty; back up into an empty directory",
+                dir.display()
+            )));
+        }
+        everyday_core::fsutil::copy_tree(&self.root, dir)?;
+        everyday_core::fsutil::sync_dir(dir);
+        Ok(())
+    }
+
     fn delete_blob(&self, id: BlobId) -> Result<()> {
         self.blobs.delete(id)
     }
@@ -895,5 +919,46 @@ mod tests {
         let store = MarkdownStore::open(ctx(dir.path(), false)).unwrap();
         store.put_blob(b"pixels").unwrap();
         assert!(dir.path().join(MEDIA_DIR).is_dir());
+    }
+}
+
+#[cfg(test)]
+mod backup_tests {
+    use super::*;
+    use everyday_core::crypto::NullCipher;
+
+    #[test]
+    fn a_snapshot_is_a_vault_that_opens_on_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let cipher: Arc<dyn everyday_core::crypto::Cipher> = Arc::new(NullCipher);
+        let store =
+            MarkdownStore::open(StoreContext { root: dir.path().into(), cipher: cipher.clone() })
+                .unwrap();
+        let j = Journal::new("Daily");
+        store.put_journal(&j).unwrap();
+        let mut e = Entry::new(j.id, "UTC");
+        e.title = "in the snapshot".into();
+        store.put_entry(&e).unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let into = dest.path().join("copy");
+        store.snapshot(&into).unwrap();
+
+        let copy = MarkdownStore::open(StoreContext { root: into, cipher }).unwrap();
+        assert_eq!(copy.get_entry(e.id).unwrap().title, "in the snapshot");
+    }
+
+    #[test]
+    fn a_snapshot_refuses_a_directory_that_is_not_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let cipher: Arc<dyn everyday_core::crypto::Cipher> = Arc::new(NullCipher);
+        let store = MarkdownStore::open(StoreContext { root: dir.path().into(), cipher }).unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        std::fs::write(dest.path().join("something"), b"already here").unwrap();
+        let Err(err) = store.snapshot(dest.path()) else {
+            panic!("a non-empty destination must be refused");
+        };
+        assert_eq!(err.code(), "invalid");
     }
 }

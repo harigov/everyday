@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { api, onSaveAndClose } from './lib/api'
   import { app } from './lib/state.svelte'
   import { todo } from './lib/todo.svelte'
   import { calendar } from './lib/calendar.svelte'
@@ -11,6 +12,7 @@
   import Setup from './components/Setup.svelte'
   import ErrorScreen from './components/ErrorScreen.svelte'
   import Logo from './components/Logo.svelte'
+  import Notices from './components/Notices.svelte'
 
   void app.start()
 
@@ -78,7 +80,31 @@
     }
   }
 
-  // Persist in-flight edits if the window goes away.
+  /**
+   * Write everything outstanding, then let the window close.
+   *
+   * The shell cancels the close and waits for this, because the old approach
+   * -- firing the flushes from `beforeunload` and letting the close proceed
+   * -- did not work. A flush is an async round trip to the backend and it
+   * lost the race against teardown essentially every time, so up to
+   * `AUTOSAVE_MS` of typing went with the window.
+   *
+   * Two attempts. The first failure is usually the transient kind -- a vault
+   * that has just auto-locked, a database busy for a moment -- and the retry
+   * costs milliseconds. If the second fails too the shell closes us on its
+   * own timer regardless; the alternative is an app that refuses to quit.
+   */
+  onSaveAndClose(async () => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await Promise.allSettled([app.flush(), todo.flush(), calendar.flush()])
+      if (!app.saveFailing) break
+    }
+    await api.readyToClose().catch(() => {})
+  })
+
+  // Still worth doing on a plain unload -- a dev reload, a webview the shell
+  // did not close itself. It cannot be awaited here, so it is a second line
+  // of defence behind the handshake above rather than the mechanism.
   function onBeforeUnload() {
     void app.flush()
     void todo.flush()
@@ -98,16 +124,22 @@
   {:else if app.screen === 'locked'}
     <LockScreen />
   {:else}
-    <div class="panes">
-      <Sidebar />
-      {#if app.section === 'todo'}
-        <TodoView bind:this={todoView} />
-      {:else if app.section === 'calendar'}
-        <CalendarView />
-      {:else}
-        <EntryList />
-        <main class="main"><Editor /></main>
-      {/if}
+    <!-- Above the panes, not inside one: a conflict or a read-only vault is
+         a fact about the whole window, and it must be visible whichever of
+         the three apps is open. -->
+    <div class="shell">
+      <Notices />
+      <div class="panes">
+        <Sidebar />
+        {#if app.section === 'todo'}
+          <TodoView bind:this={todoView} />
+        {:else if app.section === 'calendar'}
+          <CalendarView />
+        {:else}
+          <EntryList />
+          <main class="main"><Editor /></main>
+        {/if}
+      </div>
     </div>
   {/if}
 </div>
@@ -116,9 +148,18 @@
   .app {
     height: 100%;
   }
+  /* A column, so a notice takes the height it needs and the panes take the
+     rest -- rather than the notice overlaying the interface or pushing it
+     off the bottom of the window. */
+  .shell {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
   .panes {
     display: flex;
-    height: 100%;
+    flex: 1;
+    min-height: 0;
   }
   .main {
     flex: 1;

@@ -194,6 +194,13 @@ pub struct StoreStats {
     pub blob_bytes: u64,
 }
 
+/// How old an unreferenced blob must be before
+/// [`JournalStore::collect_garbage`] will delete it.
+///
+/// A day. Long enough to cover a draft left open overnight, short enough
+/// that a failed import does not squat on disk indefinitely.
+pub const GC_GRACE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
 /// The persistence contract. See the module docs for the design rationale.
 pub trait JournalStore: Send + Sync {
     /// Stable identifier, e.g. `"sqlite"`. Written into the vault header so
@@ -243,7 +250,42 @@ pub trait JournalStore: Send + Sync {
 
     fn get_entry(&self, id: EntryId) -> Result<Entry>;
 
+    /// Write `entry`, whatever is already there. Import, restore, and the
+    /// deliberate "keep mine" after a conflict.
     fn put_entry(&self, entry: &Entry) -> Result<()>;
+
+    /// Write `entry` only if the stored copy is still the one the caller
+    /// read, failing with [`Error::Conflict`] if it is not.
+    ///
+    /// `expect` is the `updated_at` the caller last saw, or `None` for "this
+    /// entry is new and nothing should be there yet". Note that it cannot be
+    /// taken from `entry` itself: by the time a save happens the caller has
+    /// already stamped a *fresh* `updated_at` on it, so the version being
+    /// replaced has to be carried separately.
+    ///
+    /// This default is a read, a comparison and a write, which is correct
+    /// against another thread -- the vault's own write lock covers that --
+    /// but not against another *process* slipping between the read and the
+    /// write. Backends that can say it in one statement should override it,
+    /// and the SQLite one does.
+    fn put_entry_if(&self, entry: &Entry, expect: Option<jiff::Timestamp>) -> Result<()> {
+        match (self.get_entry(entry.id), expect) {
+            // The happy path: it is there, and it is what we read.
+            (Ok(current), Some(want)) if current.updated_at == want => {}
+            // It is there and it is not. Someone else wrote it.
+            (Ok(_), _) => return Err(Error::Conflict { kind: "entry" }),
+            // Not there. Fine if we were creating it, a conflict if we
+            // thought we were updating one -- it has been deleted under us,
+            // and silently recreating it would undo that deletion.
+            (Err(e), expect) if e.code() == "not_found" => {
+                if expect.is_some() {
+                    return Err(Error::Conflict { kind: "entry" });
+                }
+            }
+            (Err(e), _) => return Err(e),
+        }
+        self.put_entry(entry)
+    }
 
     fn delete_entry(&self, id: EntryId) -> Result<()>;
 
@@ -294,10 +336,57 @@ pub trait JournalStore: Send + Sync {
         Ok(())
     }
 
+    /// Check the store's own consistency, returning what is wrong with it.
+    ///
+    /// An empty vector means healthy. This is about *structural* damage --
+    /// a torn page, a broken index -- not about whether the key is right;
+    /// a store that cannot decrypt is a different failure with a different
+    /// message. Cheap enough to run on unlock.
+    fn check_integrity(&self) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    /// Write a consistent copy of everything this store holds into `dir`.
+    ///
+    /// `dir` must be empty or absent. The copy has to be readable by a
+    /// normal open, so a backend that keeps records in a database writes a
+    /// real database and not a dump: restoring is then a directory move,
+    /// which is a thing someone can do while upset, at night, without
+    /// instructions.
+    ///
+    /// The snapshot stays sealed under the same key. It is a copy of the
+    /// vault, not an export of its contents -- see the CLI's `export` for
+    /// that -- so it is exactly as safe to keep as the vault itself.
+    fn snapshot(&self, _dir: &std::path::Path) -> Result<()> {
+        Err(Error::Unsupported("backing up this storage backend"))
+    }
+
+    /// How long ago `id` was written, or `None` if the backend cannot say.
+    ///
+    /// Only [`collect_garbage`](JournalStore::collect_garbage) needs this, and
+    /// only to tell a genuine orphan from a blob that is about to be
+    /// referenced. A backend that cannot answer collects nothing young,
+    /// because `None` is treated as "too recent to judge".
+    fn blob_age(&self, _id: BlobId) -> Result<Option<std::time::Duration>> {
+        Ok(None)
+    }
+
     /// Delete blobs that no entry references any more, returning how many
-    /// were removed. Default implementation works for every backend; SQLite
-    /// overrides it with a single SQL pass.
-    fn collect_garbage(&self) -> Result<u64> {
+    /// were removed.
+    ///
+    /// `grace` is the age a blob must reach before it can be collected, and
+    /// it is the whole safety story here. Liveness is decided by walking the
+    /// entries, so a blob is "garbage" from the instant it is stored until
+    /// the entry embedding it is saved -- and in the editor those are two
+    /// separate events with a person typing in between. Worse, they can be
+    /// in two *processes*: `everyday gc` on the command line cannot see the
+    /// image you just pasted into the open window.
+    ///
+    /// Anything younger than `grace` is therefore left alone no matter what
+    /// the reference walk says. The cost of keeping an orphan another day is
+    /// a few kilobytes; the cost of collecting a live one is an attachment
+    /// that is gone for good.
+    fn collect_garbage(&self, grace: std::time::Duration) -> Result<u64> {
         let mut live = std::collections::BTreeSet::new();
         for entry in self.all_entries()? {
             live.extend(entry.body.blob_refs());
@@ -305,10 +394,17 @@ pub trait JournalStore: Send + Sync {
         }
         let mut removed = 0;
         for id in self.list_blobs()? {
-            if !live.contains(&id) {
-                self.delete_blob(id)?;
-                removed += 1;
+            if live.contains(&id) {
+                continue;
             }
+            // Unknown age counts as young. A backend that cannot date its
+            // blobs should under-collect, never over-collect.
+            match self.blob_age(id)? {
+                Some(age) if age >= grace => {}
+                _ => continue,
+            }
+            self.delete_blob(id)?;
+            removed += 1;
         }
         Ok(removed)
     }

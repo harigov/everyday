@@ -15,6 +15,9 @@ use crate::error::{CommandError, CommandResult};
 pub struct AppState {
     vault: RwLock<Option<Arc<Vault>>>,
     last_path: RwLock<Option<PathBuf>>,
+    /// Set once the interface has been told to save and close, so the second
+    /// `CloseRequested` -- the one we ask for ourselves -- is let through.
+    closing: std::sync::atomic::AtomicBool,
 }
 
 impl AppState {
@@ -22,11 +25,42 @@ impl AppState {
         Self::default()
     }
 
+    /// Claim the right to run the save-before-close handshake.
+    ///
+    /// True the first time and false afterwards, so the close that follows a
+    /// completed flush is not intercepted a second time and turned into a
+    /// window that will not shut.
+    pub fn begin_closing(&self) -> bool {
+        !self.closing.swap(true, std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub fn set(&self, vault: Vault) -> Arc<Vault> {
         self.remember(vault.path());
         let vault = Arc::new(vault);
         *self.vault.write().unwrap() = Some(vault.clone());
         vault
+    }
+
+    /// Close the open vault, releasing its write lock.
+    ///
+    /// Must happen *before* another vault is opened, and matters even when
+    /// the other vault is the same one. The lock is an OS lock on an open
+    /// file description, so a second `open` of a path this process already
+    /// holds conflicts with itself: without this, choosing the currently-open
+    /// vault from the picker would quietly reopen it read-only.
+    ///
+    /// Only this handle is dropped. A command already running still holds its
+    /// own `Arc`, and the lock goes when that finishes -- which is why the
+    /// open that follows must tolerate losing the race and coming up
+    /// read-only rather than failing.
+    pub fn close(&self) {
+        let previous = self.vault.write().unwrap().take();
+        if let Some(vault) = &previous {
+            // Drop the key and the decrypted index now rather than whenever
+            // the last `Arc` happens to go.
+            vault.lock();
+        }
+        drop(previous);
     }
 
     pub fn get(&self) -> Option<Arc<Vault>> {

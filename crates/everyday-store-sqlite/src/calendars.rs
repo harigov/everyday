@@ -19,7 +19,7 @@ impl CalendarStore for SqliteStore {
     // ---- subscriptions --------------------------------------------------
 
     fn list_calendars(&self) -> Result<Vec<Calendar>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn
             .prepare("SELECT id, data FROM calendars ORDER BY created_us")
             .map_err(Error::backend)?;
@@ -34,7 +34,7 @@ impl CalendarStore for SqliteStore {
     }
 
     fn get_calendar(&self, id: CalendarId) -> Result<Calendar> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let sealed: Option<Vec<u8>> = conn
             .query_row("SELECT data FROM calendars WHERE id = ?1", params![id.to_string()], |r| {
                 r.get(0)
@@ -50,7 +50,7 @@ impl CalendarStore for SqliteStore {
         // Note what is *not* in the clear columns: the name, and above all
         // the URL. A feed address is a bearer credential.
         let data = self.seal(&calendar_aad(c.id), c)?;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "INSERT INTO calendars (id, visible, created_us, updated_us, synced_us, data)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -74,7 +74,7 @@ impl CalendarStore for SqliteStore {
         // on, which `open` sets and which a future refactor could quietly
         // turn off. Deleting them explicitly costs one indexed statement and
         // does not depend on a connection setting staying put.
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction().map_err(Error::backend)?;
         tx.execute("DELETE FROM events WHERE calendar_id = ?1", params![id.to_string()])
             .map_err(Error::backend)?;
@@ -121,7 +121,7 @@ impl CalendarStore for SqliteStore {
             sql.push_str(&format!(" LIMIT {limit}"));
         }
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(&sql).map_err(Error::backend)?;
         let rows: Vec<(String, Vec<u8>)> = stmt
             .query_map(params_from_iter(args.iter().map(|a| a.as_ref())), |r| {
@@ -138,7 +138,7 @@ impl CalendarStore for SqliteStore {
     }
 
     fn get_event(&self, id: EventId) -> Result<Event> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let sealed: Option<Vec<u8>> = conn
             .query_row("SELECT data FROM events WHERE id = ?1", params![id.to_string()], |r| {
                 r.get(0)
@@ -155,27 +155,45 @@ impl CalendarStore for SqliteStore {
         // of occurrences, and holding the connection across that many AEAD
         // seals would stall every other query for the duration of a sync
         // that is meant to be invisible.
+        // An event claiming to belong to another calendar is filed where it
+        // was asked to go -- otherwise it would survive this sync and be
+        // deleted by that other calendar's next one. The correction is made
+        // *before* sealing, so the payload and the clear column agree; doing
+        // it only in the column left `get_event` returning an event whose own
+        // `calendar_id` named a feed it was not stored under.
         let sealed: Vec<(String, Vec<u8>)> = events
             .iter()
-            .map(|e| Ok((e.id.to_string(), self.seal(&event_aad(e.id), e)?)))
+            .map(|e| {
+                let data = if e.calendar_id == calendar {
+                    self.seal(&event_aad(e.id), e)?
+                } else {
+                    let mut filed = e.clone();
+                    filed.calendar_id = calendar;
+                    self.seal(&event_aad(e.id), &filed)?
+                };
+                Ok((e.id.to_string(), data))
+            })
             .collect::<Result<_>>()?;
 
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction().map_err(Error::backend)?;
         tx.execute("DELETE FROM events WHERE calendar_id = ?1", params![calendar.to_string()])
             .map_err(Error::backend)?;
         {
+            // `OR REPLACE`, because a feed is not obliged to be well formed.
+            // Two occurrences deriving the same id -- a publisher repeating a
+            // UID, a recurrence rule that lands twice on one instant -- broke
+            // the primary key and aborted the whole transaction, so that feed
+            // could never sync again. Last one wins is the right answer for a
+            // cache of what a server said.
             let mut stmt = tx
                 .prepare_cached(
-                    "INSERT INTO events
+                    "INSERT OR REPLACE INTO events
                         (id, calendar_id, local_date, end_date, start_us, end_us, all_day, data)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 )
                 .map_err(Error::backend)?;
             for (event, (id, data)) in events.iter().zip(&sealed) {
-                // An event claiming to belong to another calendar would
-                // survive this sync and be deleted by that calendar's next
-                // one. File it where it was asked to go.
                 stmt.execute(params![
                     id,
                     calendar.to_string(),
@@ -194,7 +212,7 @@ impl CalendarStore for SqliteStore {
     }
 
     fn count_events(&self, calendar: CalendarId) -> Result<u64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM events WHERE calendar_id = ?1",

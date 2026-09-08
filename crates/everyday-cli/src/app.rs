@@ -96,8 +96,22 @@ pub enum Command {
     Export { dir: PathBuf },
     /// Change the vault password.
     Passwd,
+    /// Copy the whole vault, sealed as it is, into a directory.
+    ///
+    /// The copy opens with the same password and needs no restore step.
+    Backup { dir: PathBuf },
+    /// Check the vault for storage-level damage.
+    Check,
     /// Delete attachments no entry references.
-    Gc,
+    Gc {
+        /// Also collect attachments written in the last day.
+        ///
+        /// Off by default: an attachment is unreferenced from the moment it
+        /// is stored until the entry embedding it is saved, so a young
+        /// orphan may simply be a draft open in another window.
+        #[arg(long)]
+        include_recent: bool,
+    },
     /// Fill the vault with sample content, for trying the app out.
     Demo,
 }
@@ -153,8 +167,15 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Delete { id } => delete(&vault, &id),
         Command::Export { dir } => export(&vault, &dir),
         Command::Passwd => passwd(&vault, cli.password.as_deref()),
-        Command::Gc => {
-            let n = vault.collect_garbage()?;
+        Command::Backup { dir } => backup(&vault, &dir),
+        Command::Check => check(&vault),
+        Command::Gc { include_recent } => {
+            let grace = if include_recent {
+                std::time::Duration::ZERO
+            } else {
+                everyday_core::store::GC_GRACE
+            };
+            let n = vault.collect_garbage(grace)?;
             println!("reclaimed {n} unreferenced attachment(s)");
             Ok(())
         }
@@ -305,7 +326,7 @@ fn new_entry(
         entry.local_date =
             d.parse::<Date>().map_err(|e| Error::Invalid(format!("bad --date {d:?}: {e}")))?;
     }
-    vault.save_entry(&entry)?;
+    vault.save_entry(&entry, None)?;
     println!("{}", entry.id);
     Ok(())
 }
@@ -380,6 +401,10 @@ fn search(vault: &Vault, query: &str, limit: usize) -> Result<()> {
 fn attach(vault: &Vault, id: &str, file: &std::path::Path) -> Result<()> {
     let bytes = std::fs::read(file).map_err(|e| Error::io(file, e))?;
     let mut entry = vault.entry(resolve_entry(vault, id)?)?;
+    // The version being replaced, captured before the stamp below overwrites
+    // it. Attaching is a read-modify-write, so it is exactly the shape that
+    // loses somebody else's edit if it does not check.
+    let loaded = entry.updated_at;
 
     let mime = mime_guess::from_path(file).first_or_octet_stream().to_string();
     let blob = vault.put_blob(&bytes)?;
@@ -398,7 +423,7 @@ fn attach(vault: &Vault, id: &str, file: &std::path::Path) -> Result<()> {
         caption: String::new(),
     });
     entry.updated_at = jiff::Timestamp::now();
-    vault.save_entry(&entry)?;
+    vault.save_entry(&entry, Some(loaded))?;
     println!("attached {} ({})", file.display(), human_bytes(bytes.len() as u64));
     Ok(())
 }
@@ -408,6 +433,28 @@ fn delete(vault: &Vault, id: &str) -> Result<()> {
     vault.delete_entry(id)?;
     println!("deleted {id}");
     Ok(())
+}
+
+fn backup(vault: &Vault, dir: &std::path::Path) -> Result<()> {
+    vault.backup(dir)?;
+    println!("backed up to {}", dir.display());
+    println!("it opens with the same password: everyday --vault {} list", dir.display());
+    Ok(())
+}
+
+fn check(vault: &Vault) -> Result<()> {
+    let problems = vault.check_integrity()?;
+    if problems.is_empty() {
+        println!("no damage found");
+        return Ok(());
+    }
+    eprintln!("{} problem(s) found:", problems.len());
+    for p in &problems {
+        eprintln!("  {p}");
+    }
+    eprintln!("\nrestore from a backup; `everyday export` may still salvage readable entries");
+    // A non-zero exit so this is usable from a cron line.
+    std::process::exit(1);
 }
 
 fn export(vault: &Vault, dir: &std::path::Path) -> Result<()> {
@@ -515,7 +562,7 @@ fn demo(vault: &Vault) -> Result<()> {
         entry.tags = tags.iter().map(|t| t.to_string()).collect();
         entry.local_date =
             everyday_core::model::today_local().saturating_sub(jiff::Span::new().days(created));
-        vault.save_entry(&entry)?;
+        vault.save_entry(&entry, None)?;
         created += 1;
     }
     println!("added {created} sample entries");

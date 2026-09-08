@@ -13,7 +13,16 @@ mod protocol;
 mod state;
 
 use state::AppState;
-use tauri::{Manager, WindowEvent};
+use tauri::{Emitter, Manager, WindowEvent};
+
+/// Asks the interface to write pending edits and then close the window.
+/// Its other half is `commands::ready_to_close`.
+pub const SAVE_AND_CLOSE: &str = "everyday://save-and-close";
+
+/// How long the window waits for the interface to finish saving before it
+/// closes anyway. Generous for a handful of local writes, and short enough
+/// that a wedged interface does not read as an app that will not quit.
+const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Entry point shared by the desktop binary and the mobile harnesses.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -27,6 +36,23 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        // Must be the first plugin registered: a second launch has to be
+        // turned away before it can build a window or open a vault.
+        //
+        // Without it, launching the app twice gave two windows on one vault,
+        // each with its own in-memory copy of whatever was open, and the
+        // second to autosave silently overwrote the first. The vault's own
+        // write lock now catches that too -- the second process would open
+        // read-only -- but a read-only second window is a confusing thing to
+        // be handed when what you wanted was the window you already had. So
+        // the second launch raises the first and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.webview_windows().values().next() {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::new())
@@ -52,6 +78,7 @@ pub fn run() {
             commands::get_entry,
             commands::new_entry,
             commands::save_entry,
+            commands::save_entry_force,
             commands::delete_entry,
             commands::search,
             commands::list_tags,
@@ -84,9 +111,44 @@ pub fn run() {
             commands::put_blob,
             commands::collect_garbage,
             commands::vault_stats,
+            commands::ready_to_close,
         ])
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { .. } = event {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                // Hold the window open for one round trip.
+                //
+                // The interface autosaves on a timer, so at the moment a
+                // close arrives there is routinely a few hundred milliseconds
+                // of typing that has not been written yet. Firing a flush and
+                // letting the close proceed does not save it: the flush is an
+                // async call across the IPC boundary, and it loses the race
+                // against teardown essentially always. So the close is
+                // cancelled, the interface is asked to finish its writes, and
+                // it closes the window itself when they have landed.
+                if let Some(state) = window.try_state::<AppState>()
+                    && state.begin_closing()
+                {
+                    api.prevent_close();
+                    let _ = window.emit(SAVE_AND_CLOSE, ());
+
+                    // ...but never at the cost of a window that will not
+                    // shut. A wedged or crashed interface never answers, and
+                    // quitting must not depend on it, so the close is made
+                    // unconditional shortly after. The delay is what a save
+                    // takes, generously: the writes are local.
+                    let window = window.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(CLOSE_GRACE);
+                        if let Some(state) = window.try_state::<AppState>()
+                            && let Some(vault) = state.get()
+                        {
+                            vault.lock();
+                        }
+                        let _ = window.destroy();
+                    });
+                    return;
+                }
+
                 // Lock on the way out so the process never lingers with a
                 // decrypted key in memory, and so the search index -- which
                 // holds plaintext -- is dropped.

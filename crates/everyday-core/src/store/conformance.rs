@@ -42,6 +42,7 @@ pub fn run_all(store: &dyn JournalStore) {
     journal_get_missing_is_not_found(store);
     entry_round_trips_every_field(store);
     entry_put_is_idempotent(store);
+    a_conditional_put_refuses_a_stale_write(store);
     entry_get_missing_is_not_found(store);
     list_entries_filters_and_sorts(store);
     list_entries_paginates(store);
@@ -277,6 +278,75 @@ fn entry_put_is_idempotent(store: &dyn JournalStore) {
     cleanup(store);
 }
 
+/// The optimistic-concurrency contract, which every backend must honour.
+///
+/// The scenario is two writers with the same entry open. Both loaded version
+/// `v1`; one saves and the store moves to `v2`; the other saves believing it
+/// is still replacing `v1`. Without the check the second write wins and the
+/// first author's paragraph is gone with no error anywhere.
+fn a_conditional_put_refuses_a_stale_write(store: &dyn JournalStore) {
+    let j = seeded_journal(store, "Contended");
+
+    // A create: nothing should be there, and nothing is.
+    let mut mine = Entry::new(j.id, "UTC");
+    mine.body = RichDoc::from_plain_text("v1");
+    store.put_entry_if(&mine, None).expect("creating a new entry must be allowed");
+
+    // Creating the same id twice is a conflict, not an overwrite.
+    let mut clash = mine.clone();
+    clash.body = RichDoc::from_plain_text("also v1");
+    assert_eq!(
+        store.put_entry_if(&clash, None).unwrap_err().code(),
+        "conflict",
+        "a create must not silently replace an entry that is already there"
+    );
+
+    let v1 = store.get_entry(mine.id).unwrap().updated_at;
+
+    // The other writer saves first, moving the stored version on.
+    let mut theirs = mine.clone();
+    theirs.body = RichDoc::from_plain_text("v2 from the other window");
+    theirs.updated_at = jiff::Timestamp::now();
+    store.put_entry_if(&theirs, Some(v1)).expect("a write from the version we read must land");
+    let v2 = store.get_entry(mine.id).unwrap().updated_at;
+
+    // Now ours, still believing the world is at v1.
+    let mut stale = mine.clone();
+    stale.body = RichDoc::from_plain_text("v2 from this window");
+    stale.updated_at = jiff::Timestamp::now();
+    assert_eq!(
+        store.put_entry_if(&stale, Some(v1)).unwrap_err().code(),
+        "conflict",
+        "a write from a version that has been superseded must be refused"
+    );
+    assert_eq!(
+        store.get_entry(mine.id).unwrap().body.plain_text(),
+        "v2 from the other window",
+        "a refused write must change nothing"
+    );
+
+    // Re-reading and retrying against the current version succeeds, which is
+    // what makes the conflict recoverable rather than a dead end.
+    stale.updated_at = jiff::Timestamp::now();
+    store.put_entry_if(&stale, Some(v2)).expect("a retry from the current version must land");
+
+    // An update whose row has been deleted underneath it is also a conflict:
+    // recreating it silently would undo somebody's deletion.
+    let current = store.get_entry(mine.id).unwrap().updated_at;
+    store.delete_entry(mine.id).unwrap();
+    assert_eq!(
+        store.put_entry_if(&stale, Some(current)).unwrap_err().code(),
+        "conflict",
+        "an update must not resurrect a deleted entry"
+    );
+
+    // And the unconditional write is still available for the deliberate
+    // "keep mine", which is what the interface offers on a conflict.
+    store.put_entry(&stale).expect("an unconditional write must always be allowed");
+
+    cleanup(store);
+}
+
 fn entry_get_missing_is_not_found(store: &dyn JournalStore) {
     let err = store.get_entry(EntryId::new()).unwrap_err();
     assert_eq!(err.code(), "not_found", "missing entry must report not_found, got {err}");
@@ -472,13 +542,24 @@ fn garbage_collection_keeps_referenced_blobs(store: &dyn JournalStore) {
     }));
     store.put_entry(&e).unwrap();
 
-    let removed = store.collect_garbage().unwrap();
+    // A grace period protects blobs younger than it, referenced or not.
+    // Both of these were written a moment ago, so an hour's grace must
+    // collect neither -- this is what keeps GC from eating the image that
+    // has been pasted into a draft but not yet saved.
+    assert_eq!(
+        store.collect_garbage(std::time::Duration::from_secs(3600)).unwrap(),
+        0,
+        "nothing younger than the grace period may be collected"
+    );
+    assert!(store.has_blob(orphan).unwrap(), "a young orphan must survive a graced GC");
+
+    let removed = store.collect_garbage(std::time::Duration::ZERO).unwrap();
     assert_eq!(removed, 1, "exactly the unreferenced blob should be collected");
     assert!(store.has_blob(used).unwrap(), "a referenced blob must survive GC");
     assert!(!store.has_blob(orphan).unwrap(), "an unreferenced blob must be collected");
 
     // GC must be safe to run repeatedly.
-    assert_eq!(store.collect_garbage().unwrap(), 0);
+    assert_eq!(store.collect_garbage(std::time::Duration::ZERO).unwrap(), 0);
 
     cleanup(store);
 }

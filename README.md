@@ -271,6 +271,54 @@ Edit an entry in vim and the app notices — the frontmatter records a hash of
 the body as written, so a mismatch means a human has been at it, and your
 Markdown wins over the sidecar.
 
+### Not losing things
+
+The parts of the design that exist only to keep data:
+
+* **The header is written twice.** `vault.json` holds the wrapped data key,
+  which exists nowhere else — lose it and every entry is ciphertext under a
+  key nobody can derive. It is written fsync-then-rename-then-fsync-the-
+  directory, and the previous one is kept as `vault.json.bak`. A vault whose
+  live header is missing or corrupt opens from the spare and repairs itself.
+
+* **`synchronous = FULL`.** The usual WAL pairing is `NORMAL`, under which a
+  power cut can roll back every transaction since the last checkpoint. That
+  is a fine trade for a cache and a poor one for a journal, and it costs
+  nothing when writes come from a 700ms autosave timer rather than a loop.
+
+* **The window waits for the save.** Closing used to fire the autosave and
+  let the window go; the flush is an async round trip and lost that race
+  essentially every time, taking up to 700ms of typing with it. The shell now
+  cancels its own close, asks the interface to finish writing, and closes when
+  it reports back — or after three seconds regardless, because an app that
+  will not quit is its own bug.
+
+* **A failed save is retried.** The dirty set is put back on failure and the
+  delay widens to 30s, so a full disk or a busy database does not silently
+  discard what was typed while an error banner was on screen.
+
+* **GC will not collect anything young.** See the note under the CLI above.
+
+* **A newer schema is refused.** An older build opening a database from a
+  newer one used to skip every migration and write into a shape it did not
+  understand.
+
+* **One writer at a time.** Opening a vault takes an exclusive OS lock on the
+  directory (`vault.lock`). Whoever has it may write; anyone else — a second
+  copy of the app, or `everyday` on the command line — gets the vault
+  **read-only** rather than being turned away, so listing, searching, `check`
+  and `backup` all still work and only the writes are refused. The lock is
+  the kernel's, held on an open file handle, so a crash releases it; a
+  leftover lock file is never an obstacle. On the desktop a second launch
+  raises the window you already have instead of opening another.
+
+* **Saves check what they are replacing.** Every entry save carries the
+  `updatedAt` it loaded, and the store writes only if that is still what is
+  there. A vault in a synced folder written on another machine, or an editor
+  left open across a change, no longer silently overwrites: the save is
+  refused, the text stays on screen, and the editor offers *keep mine* or
+  *discard mine*.
+
 **Every backend must pass the same conformance suite**
 (`everyday_core::store::conformance`), so backends do not write their own CRUD
 tests — they inherit ~15 shared behaviours covering round-tripping, filtering,
@@ -345,11 +393,31 @@ cargo run -p everyday-cli -- init --name "My Journal"
 echo "It rained all afternoon." | everyday new --journal Daily --tag weather
 everyday list
 everyday search rain
-everyday export ~/journal-backup
+everyday export ~/journal-backup   # readable Markdown, one file per entry
+everyday backup ~/vault-copy       # the vault itself, still sealed
+everyday check                     # look for storage-level damage
 ```
 
 `--help` on any subcommand. Password comes from a prompt, or `EVERYDAY_PASSWORD`
 for scripts.
+
+`backup` and `export` are different things and you probably want both.
+`export` writes readable Markdown that any program can open, which is what
+you want in ten years when this app is gone. `backup` copies the vault as it
+is — sealed, with its attachments and its header — so it opens with the same
+password and needs no restore step; that is what you want at 2am when the
+disk has gone bad. `check` exits non-zero on damage, so it fits in a cron
+line.
+
+While the app has a vault open, the CLI opens it read-only: `list`, `show`,
+`search`, `export`, `check` and `backup` work, and anything that writes says
+which process is holding it. Close the app, or point `--vault` somewhere else.
+
+`gc` deletes attachments no entry references, but only ones written over a
+day ago. An attachment is unreferenced from the moment it is stored until
+the entry embedding it is saved, so a young orphan may simply be an image
+pasted into a draft in another window. `--include-recent` drops the grace
+period if you know there is no such draft.
 
 ## Keyboard
 

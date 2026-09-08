@@ -21,7 +21,21 @@ pub(crate) const SCHEMA_VERSION: i64 = 3;
 pub(crate) fn migrate(conn: &Connection) -> Result<()> {
     let version: i64 =
         conn.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(Error::backend)?;
-    if version >= SCHEMA_VERSION {
+    // A database from a *newer* build is refused rather than opened.
+    //
+    // Nothing here can know what a later version did to the schema, and the
+    // failure is silent in the worst way: the steps below are all skipped,
+    // every query still parses against whatever columns happen to remain,
+    // and writes land in a shape the newer build did not expect. `Vault::open`
+    // already makes exactly this check against the header's format version;
+    // the store had been the one layer that would open anything.
+    if version > SCHEMA_VERSION {
+        return Err(Error::UnsupportedVaultVersion {
+            found: version as u32,
+            supported: SCHEMA_VERSION as u32,
+        });
+    }
+    if version == SCHEMA_VERSION {
         return Ok(());
     }
     if version < 1 {

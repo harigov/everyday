@@ -321,6 +321,11 @@ class TodoState {
       void this.refreshStats()
     } catch (e) {
       await handle(e)
+      // Report it *and* rethrow. `Autosave` reads the rejection as "these
+      // are still unwritten" and puts them back in the dirty set; swallowing
+      // it here would leave the edits in memory only, with nothing left to
+      // write them.
+      throw e
     } finally {
       this.saving = false
     }

@@ -44,7 +44,7 @@ impl JournalStore for SqliteStore {
     // ---- journals -------------------------------------------------------
 
     fn list_journals(&self) -> Result<Vec<Journal>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn
             .prepare("SELECT id, data FROM journals ORDER BY sort_order, id")
             .map_err(Error::backend)?;
@@ -63,7 +63,7 @@ impl JournalStore for SqliteStore {
     }
 
     fn get_journal(&self, id: JournalId) -> Result<Journal> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let sealed: Option<Vec<u8>> = conn
             .query_row("SELECT data FROM journals WHERE id = ?1", params![id.to_string()], |r| {
                 r.get(0)
@@ -77,7 +77,7 @@ impl JournalStore for SqliteStore {
 
     fn put_journal(&self, j: &Journal) -> Result<()> {
         let sealed = self.cipher.seal(&journal_aad(j.id), &serde_json::to_vec(j)?)?;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "INSERT INTO journals (id, sort_order, updated_us, data) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(id) DO UPDATE SET sort_order = ?2, updated_us = ?3, data = ?4",
@@ -88,7 +88,7 @@ impl JournalStore for SqliteStore {
     }
 
     fn delete_journal(&self, id: JournalId) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction().map_err(Error::backend)?;
         tx.execute("DELETE FROM entries WHERE journal_id = ?1", params![id.to_string()])
             .map_err(Error::backend)?;
@@ -149,7 +149,7 @@ impl JournalStore for SqliteStore {
             ));
         }
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(&sql).map_err(Error::backend)?;
         let rows = stmt
             .query_map(params_from_iter(args.iter().map(|a| a.as_ref())), |r| {
@@ -168,7 +168,7 @@ impl JournalStore for SqliteStore {
     }
 
     fn get_entry(&self, id: EntryId) -> Result<Entry> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let sealed: Option<Vec<u8>> = conn
             .query_row("SELECT data FROM entries WHERE id = ?1", params![id.to_string()], |r| {
                 r.get(0)
@@ -181,7 +181,7 @@ impl JournalStore for SqliteStore {
 
     fn put_entry(&self, e: &Entry) -> Result<()> {
         let (data, summary) = self.seal_entry(e)?;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "INSERT INTO entries
                 (id, journal_id, local_date, created_us, updated_us, starred, pinned, data, summary)
@@ -205,15 +205,80 @@ impl JournalStore for SqliteStore {
         Ok(())
     }
 
+    /// One statement, so the check and the write cannot be separated.
+    ///
+    /// The shared default in `everyday_core::store` reads, compares and then
+    /// writes, which leaves a window another *process* can slip through --
+    /// and cross-process is exactly the case this guards. Both forms below
+    /// are conditional in SQL and report the conflict from the row count, so
+    /// there is no window at all.
+    fn put_entry_if(&self, e: &Entry, expect: Option<jiff::Timestamp>) -> Result<()> {
+        let (data, summary) = self.seal_entry(e)?;
+        let conn = self.conn();
+
+        let changed = match expect {
+            // Updating: only if `updated_us` is still what the caller read.
+            // A row that has moved on, or has been deleted, matches nothing
+            // and changes nothing.
+            Some(want) => conn
+                .execute(
+                    "UPDATE entries SET
+                        journal_id = ?2, local_date = ?3, created_us = ?4, updated_us = ?5,
+                        starred = ?6, pinned = ?7, data = ?8, summary = ?9
+                     WHERE id = ?1 AND updated_us = ?10",
+                    params![
+                        e.id.to_string(),
+                        e.journal_id.to_string(),
+                        e.local_date.to_string(),
+                        to_us(e.created_at),
+                        to_us(e.updated_at),
+                        e.starred,
+                        e.pinned,
+                        data,
+                        summary,
+                        to_us(want),
+                    ],
+                )
+                .map_err(Error::backend)?,
+            // Creating: `OR IGNORE` turns the primary-key clash into zero
+            // rows rather than an error, so both branches report a conflict
+            // the same way.
+            None => conn
+                .execute(
+                    "INSERT OR IGNORE INTO entries
+                        (id, journal_id, local_date, created_us, updated_us,
+                         starred, pinned, data, summary)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        e.id.to_string(),
+                        e.journal_id.to_string(),
+                        e.local_date.to_string(),
+                        to_us(e.created_at),
+                        to_us(e.updated_at),
+                        e.starred,
+                        e.pinned,
+                        data,
+                        summary,
+                    ],
+                )
+                .map_err(Error::backend)?,
+        };
+
+        if changed == 0 {
+            return Err(Error::Conflict { kind: "entry" });
+        }
+        Ok(())
+    }
+
     fn delete_entry(&self, id: EntryId) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute("DELETE FROM entries WHERE id = ?1", params![id.to_string()])
             .map_err(Error::backend)?;
         Ok(())
     }
 
     fn all_entries(&self) -> Result<Vec<Entry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn
             .prepare("SELECT id, data FROM entries ORDER BY local_date DESC, created_us DESC")
             .map_err(Error::backend)?;
@@ -252,6 +317,10 @@ impl JournalStore for SqliteStore {
         Ok(self.blobs.has(id))
     }
 
+    fn blob_age(&self, id: BlobId) -> Result<Option<std::time::Duration>> {
+        Ok(self.blobs.age_of(id))
+    }
+
     fn delete_blob(&self, id: BlobId) -> Result<()> {
         self.blobs.delete(id)
     }
@@ -263,7 +332,7 @@ impl JournalStore for SqliteStore {
     // ---- housekeeping ---------------------------------------------------
 
     fn stats(&self) -> Result<StoreStats> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let journals: i64 = conn
             .query_row("SELECT COUNT(*) FROM journals", [], |r| r.get(0))
             .map_err(Error::backend)?;
@@ -276,8 +345,64 @@ impl JournalStore for SqliteStore {
     }
 
     fn flush(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.pragma_update(None, "wal_checkpoint", "TRUNCATE").map_err(Error::backend)?;
+        Ok(())
+    }
+
+    /// `PRAGMA quick_check`, which is the useful three quarters of
+    /// `integrity_check` at a fraction of the cost: it verifies page
+    /// structure and record sanity but skips the index-versus-table
+    /// cross-check. That is the right trade for something that runs on
+    /// unlock -- torn pages are what a bad shutdown produces, and they are
+    /// exactly what this catches.
+    fn check_integrity(&self) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("PRAGMA quick_check").map_err(Error::backend)?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(Error::backend)?
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .map_err(Error::backend)?;
+        // A healthy database answers with the single row "ok".
+        Ok(rows.into_iter().filter(|r| r != "ok").collect())
+    }
+
+    /// `VACUUM INTO`, plus a copy of the media directory.
+    ///
+    /// `VACUUM INTO` runs inside a read transaction, so the file it produces
+    /// is a point-in-time snapshot even while the app keeps writing -- and it
+    /// is a plain database, not a dump, so the backup directory opens as a
+    /// vault without a restore step. Copying `everyday.db` with the
+    /// filesystem would do neither: it would race the WAL and land a torn
+    /// page.
+    ///
+    /// Media is copied after the database, which is the safe order. A blob
+    /// present in the copy that no entry references is reclaimed by the next
+    /// GC; an entry referencing a blob that was missed would be an
+    /// attachment lost in the backup.
+    fn snapshot(&self, dir: &std::path::Path) -> Result<()> {
+        std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
+        let db = dir.join(crate::DB_FILENAME);
+        if db.exists() {
+            return Err(Error::Invalid(format!(
+                "{} already holds a vault; back up into an empty directory",
+                dir.display()
+            )));
+        }
+
+        {
+            let conn = self.conn();
+            // Bound as a parameter: a backup path can contain a quote.
+            conn.execute("VACUUM INTO ?1", params![db.to_string_lossy()])
+                .map_err(Error::backend)?;
+        }
+
+        everyday_core::fsutil::copy_tree(
+            &self.root.join(crate::MEDIA_DIRNAME),
+            &dir.join(crate::MEDIA_DIRNAME),
+        )?;
+        everyday_core::fsutil::sync_dir(dir);
         Ok(())
     }
 }

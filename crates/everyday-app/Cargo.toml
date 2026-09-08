@@ -42,6 +42,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Already in the dependency graph via Tauri, so this adds the TLS backend and
 # not much else.
 reqwest = { version = "0.13", features = ["gzip"] }
+tauri-plugin-single-instance = "2"
 
 [features]
 # Enabled by `tauri dev`/`tauri build`; keeps devtools out of releases.

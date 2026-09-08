@@ -33,6 +33,12 @@ pub enum Error {
     #[error("this backend does not support {0}")]
     Unsupported(&'static str),
 
+    #[error("this vault is open for writing by {holder}; this copy is read-only")]
+    VaultInUse { holder: String },
+
+    #[error("{kind} was changed elsewhere since you loaded it")]
+    Conflict { kind: &'static str },
+
     #[error("invalid data: {0}")]
     Invalid(String),
 
@@ -84,6 +90,8 @@ impl Error {
             Error::NotFound { .. } => "not_found",
             Error::Decrypt => "decrypt_failed",
             Error::Unsupported(_) => "unsupported",
+            Error::VaultInUse { .. } => "vault_in_use",
+            Error::Conflict { .. } => "conflict",
             Error::Invalid(_) => "invalid",
             Error::Io { .. } | Error::RawIo(_) => "io",
             Error::Serde(_) => "serde",

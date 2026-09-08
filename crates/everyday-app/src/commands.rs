@@ -119,6 +119,7 @@ pub async fn create_vault(
         kdf: Default::default(),
         auto_lock_seconds: 15 * 60,
     };
+    state.close();
     let created = {
         let path = path.clone();
         blocking(move || {
@@ -135,6 +136,10 @@ pub async fn create_vault(
 
 #[tauri::command]
 pub async fn open_vault(state: State<'_, AppState>, path: PathBuf) -> CommandResult<VaultStatus> {
+    // Release the vault we already hold first. Its write lock is this
+    // process's, and opening a second vault -- including the same one again
+    // -- while still holding it would come up read-only. See `AppState::close`.
+    state.close();
     let opened = {
         let path = path.clone();
         blocking(move || everyday_vault::open(&path).map_err(CommandError::from)).await?
@@ -249,9 +254,24 @@ pub fn new_entry(state: State<'_, AppState>, journal_id: JournalId) -> CommandRe
     Ok(entry)
 }
 
+/// Save an entry, refusing to overwrite a change made since it was loaded.
+///
+/// `expect` is the `updatedAt` the interface last read for this entry, or
+/// `null` for one it has just created. A mismatch comes back as `conflict`
+/// and nothing is written, which is what the editor's conflict banner is
+/// driven by. `save_entry_force` is the "keep mine" on that banner.
 #[tauri::command]
-pub fn save_entry(state: State<'_, AppState>, entry: Entry) -> CommandResult<()> {
-    Ok(state.require()?.save_entry(&entry)?)
+pub fn save_entry(
+    state: State<'_, AppState>,
+    entry: Entry,
+    expect: Option<jiff::Timestamp>,
+) -> CommandResult<()> {
+    Ok(state.require()?.save_entry(&entry, expect)?)
+}
+
+#[tauri::command]
+pub fn save_entry_force(state: State<'_, AppState>, entry: Entry) -> CommandResult<()> {
+    Ok(state.require()?.overwrite_entry(&entry)?)
 }
 
 #[tauri::command]
@@ -514,6 +534,13 @@ pub async fn sync_due_calendars(
     force: bool,
 ) -> CommandResult<Vec<SyncReport>> {
     let vault = state.require()?;
+    // A read-only vault cannot store what a sync fetches, and `sync_one`
+    // would also try to record the failure on the subscription -- another
+    // write. Fetching feeds over the network to throw the bytes away is not
+    // a useful thing to do on a timer, so the whole pass is skipped.
+    if !vault.is_writable() {
+        return Ok(Vec::new());
+    }
     let now = jiff::Timestamp::now();
     let due: Vec<CalendarId> = vault
         .calendars()?
@@ -738,7 +765,25 @@ pub async fn put_blob(state: State<'_, AppState>, bytes: Vec<u8>) -> CommandResu
 #[tauri::command]
 pub async fn collect_garbage(state: State<'_, AppState>) -> CommandResult<u64> {
     let vault = state.require()?;
-    blocking(move || Ok(vault.collect_garbage()?)).await
+    blocking(move || Ok(vault.collect_garbage(everyday_core::store::GC_GRACE)?)).await
+}
+
+/// The interface reporting that its pending writes have landed.
+///
+/// Second half of the close handshake begun in `run`'s `CloseRequested`
+/// handler: that one cancelled the close and asked for a flush, this one
+/// completes it. Locking here rather than in the window handler is what
+/// makes the ordering right -- the key is dropped after the last write, not
+/// before it.
+#[tauri::command]
+pub fn ready_to_close(window: tauri::Window, state: State<'_, AppState>) -> CommandResult<()> {
+    if let Some(vault) = state.get() {
+        // Best-effort: a checkpoint failing is not a reason to refuse to
+        // quit, and the data is committed either way.
+        let _ = vault.with_store(|s| s.flush());
+        vault.lock();
+    }
+    window.destroy().map_err(|e| CommandError::new("close_failed", e.to_string()))
 }
 
 #[tauri::command]

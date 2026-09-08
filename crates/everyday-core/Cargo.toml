@@ -24,6 +24,7 @@ zeroize.workspace = true
 argon2.workspace = true
 chacha20poly1305.workspace = true
 tracing.workspace = true
+fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 
 [dev-dependencies]
 tempfile = "3"

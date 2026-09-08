@@ -15,6 +15,19 @@
 // silently dropped. Get that ordering wrong in one of three copies and the
 // bug is a keystroke that vanishes under a slow disk, once a fortnight.
 
+import { VaultError } from './types'
+
+/**
+ * The vault locking under a write, as opposed to the write failing.
+ *
+ * Duplicated from `state.svelte.ts`'s `isLocked` rather than imported: that
+ * module imports this one, and a cycle between them is not worth introducing
+ * for one comparison.
+ */
+function isLockedError(e: unknown): boolean {
+  return e instanceof VaultError && e.code === 'locked'
+}
+
 /**
  * Idle delay before an edited record is written.
  *
@@ -24,17 +37,33 @@
 export const AUTOSAVE_MS = 700
 
 /**
+ * Longest gap between retries of a write that keeps failing.
+ *
+ * The delay doubles from `AUTOSAVE_MS` and stops here, so a vault on a full
+ * disk or an unplugged drive is retried about twice a minute -- often enough
+ * to recover the moment the problem goes away, rarely enough not to be a spin
+ * loop behind an error banner.
+ */
+const MAX_RETRY_MS = 30_000
+
+/**
  * A set of records waiting to be written, and the timer that writes them.
  *
  * `write` is handed the ids that changed. It is the store's job to turn those
  * into records and call the backend, because only the store knows where its
  * records live and what a failure should do to the screen.
+ *
+ * `write` must **reject** if the write did not land, after doing whatever it
+ * wants to the screen. That is what lets the ids go back into the dirty set
+ * to be tried again: an edit is only forgotten once it is on disk. A `write`
+ * that swallows its own errors silently discards the edits it was given.
  */
 export class Autosave<Id> {
   #dirty = new Set<Id>()
   #timer: ReturnType<typeof setTimeout> | null = null
   #write: (ids: ReadonlySet<Id>) => Promise<void>
   #delay: number
+  #retryDelay: number | null = null
 
   constructor(write: (ids: ReadonlySet<Id>) => Promise<void>, delay = AUTOSAVE_MS) {
     this.#write = write
@@ -70,18 +99,45 @@ export class Autosave<Id> {
     // write is queued again rather than lost with the set that held it.
     const writing: ReadonlySet<Id> = new Set(this.#dirty)
     this.#dirty.clear()
-    await this.#write(writing)
+    try {
+      await this.#write(writing)
+      this.#retryDelay = null
+    } catch (e) {
+      // The write failed, so these edits are still only in memory. Clearing
+      // the set above was right -- a newer edit to the same record must not
+      // be overwritten by this retry -- but dropping the ids would mean the
+      // text is never written again unless the author happens to touch the
+      // same record. They go back, and the timer starts again.
+      //
+      // Except for a lock. There is nothing to retry against a locked vault,
+      // the records have already been dropped from memory by the reset that
+      // a lock triggers, and rescheduling would leave a timer firing into a
+      // vault that is not open.
+      if (isLockedError(e)) return
+      for (const id of writing) this.#dirty.add(id)
+      this.#retryDelay = Math.min(
+        this.#retryDelay === null ? this.#delay : this.#retryDelay * 2,
+        MAX_RETRY_MS,
+      )
+      this.#restart()
+    }
+  }
+
+  /** Is a previous write being retried? Drives the "not saved" indicator. */
+  get retrying(): boolean {
+    return this.#retryDelay !== null && this.#dirty.size > 0
   }
 
   /** Drop everything outstanding without writing it. What a lock does. */
   cancel() {
     this.#cancelTimer()
     this.#dirty.clear()
+    this.#retryDelay = null
   }
 
   #restart() {
     this.#cancelTimer()
-    this.#timer = setTimeout(() => void this.flush(), this.#delay)
+    this.#timer = setTimeout(() => void this.flush(), this.#retryDelay ?? this.#delay)
   }
 
   #cancelTimer() {

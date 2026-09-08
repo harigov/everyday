@@ -61,7 +61,21 @@ let invoke: Invoke = async () => {
   )
 }
 
+/**
+ * Register the handler for the shell's save-before-close request.
+ *
+ * The window cancels its own close, asks here, and waits for
+ * `api.readyToClose`. Outside Tauri there is no such handshake, so this is a
+ * no-op and the mock interface closes the way a browser tab does.
+ */
+export let onSaveAndClose: (handler: () => void | Promise<void>) => void = () => {}
+
 if (!MOCK) {
+  const { listen } = await import('@tauri-apps/api/event')
+  onSaveAndClose = (handler) => {
+    void listen('everyday://save-and-close', () => void handler())
+  }
+
   const mod = await import('@tauri-apps/api/core')
   invoke = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
     try {
@@ -108,7 +122,17 @@ export const api = {
   entries: (query: EntryQuery) => invoke<EntrySummary[]>('list_entries', { query }),
   entry: (id: EntryId) => invoke<Entry>('get_entry', { id }),
   newEntry: (journalId: JournalId) => invoke<Entry>('new_entry', { journalId }),
-  saveEntry: (entry: Entry) => invoke<void>('save_entry', { entry }),
+  /**
+   * Save an entry, refusing to overwrite a change made since it was loaded.
+   *
+   * `expect` is the `updatedAt` this window last read for the entry, or
+   * `null` for one it has just created. A mismatch rejects with code
+   * `conflict` and writes nothing.
+   */
+  saveEntry: (entry: Entry, expect: string | null) => invoke<void>('save_entry', { entry, expect }),
+
+  /** Save regardless of what is stored. The "keep mine" on a conflict. */
+  saveEntryForce: (entry: Entry) => invoke<void>('save_entry_force', { entry }),
   deleteEntry: (id: EntryId) => invoke<void>('delete_entry', { id }),
 
   search: (query: string, journalId: JournalId | null, limit: number) =>
@@ -116,6 +140,9 @@ export const api = {
 
   /** Import a file the user dropped or picked; returns its content address. */
   putBlob: (bytes: Uint8Array) => invoke<string>('put_blob', { bytes: Array.from(bytes) }),
+
+  /** Tells the shell that pending writes have landed and it may close. */
+  readyToClose: () => invoke<void>('ready_to_close'),
 
   /** All tags in use, most frequent first. */
   tags: () => invoke<string[]>('list_tags'),

@@ -813,6 +813,8 @@ function status(): VaultStatus {
     encrypted: true,
     autoLockSeconds: 900,
     path: '/Users/you/Library/Application Support/EveryDay',
+    // `?readonly=1` to review the read-only banner without a second process.
+    writable: !new URLSearchParams(location.search).has('readonly'),
     stats: unlocked
       ? {
           journals: journals.length,
@@ -972,6 +974,22 @@ export const mockInvoke = async <T>(
     case 'save_entry': {
       requireUnlocked()
       const e = args.entry as Entry
+      const expect = args.expect as string | null
+      const stored = entries.find((x) => x.id === e.id)
+      // The same version check the real backend makes, so the mock can drive
+      // the conflict banner without a Rust build behind it.
+      if (stored ? stored.updatedAt !== expect : expect !== null) {
+        throw new VaultError('conflict', 'entry was changed elsewhere since you loaded it')
+      }
+      const i = entries.findIndex((x) => x.id === e.id)
+      if (i >= 0) entries[i] = structuredClone(e)
+      else entries.unshift(structuredClone(e))
+      return undefined as T
+    }
+
+    case 'save_entry_force': {
+      requireUnlocked()
+      const e = args.entry as Entry
       const i = entries.findIndex((x) => x.id === e.id)
       if (i >= 0) entries[i] = structuredClone(e)
       else entries.unshift(structuredClone(e))
@@ -1016,6 +1034,11 @@ export const mockInvoke = async <T>(
     case 'put_blob':
       requireUnlocked()
       return 'd'.repeat(64) as T
+
+    // There is no window to close in the mock, but the command must exist
+    // so the close handshake does not throw if something calls it.
+    case 'ready_to_close':
+      return undefined as T
 
     case 'list_tags':
       requireUnlocked()

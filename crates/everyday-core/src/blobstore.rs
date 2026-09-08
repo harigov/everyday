@@ -101,7 +101,13 @@ impl FileBlobStore {
         let probe = self.cipher.seal(&chunk_aad(id, 0, count), &bytes[..chunk.min(bytes.len())])?;
         let overhead = (probe.len() - chunk.min(bytes.len())) as u32;
 
-        let tmp = path.with_extension("tmp");
+        // The temp name carries a per-writer tag, not just the blob id.
+        // Deriving it from the id alone meant two threads sealing the *same*
+        // bytes -- the same photo attached twice, an import running beside an
+        // editor -- shared one scratch file: each truncated the other's
+        // partial write, and whichever renamed second failed with `NotFound`
+        // because the first had already moved it away.
+        let tmp = path.with_extension(format!("{}.tmp", crate::fsutil::unique_tag()));
         {
             let mut f = File::create(&tmp).map_err(|e| Error::io(&tmp, e))?;
             let mut header = Vec::with_capacity(HEADER_LEN);
@@ -128,7 +134,14 @@ impl FileBlobStore {
             }
             f.sync_all().map_err(|e| Error::io(&tmp, e))?;
         }
-        std::fs::rename(&tmp, &path).map_err(|e| Error::io(&path, e))?;
+        if let Err(e) = std::fs::rename(&tmp, &path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(Error::io(&path, e));
+        }
+        // The bytes were fsynced above; this is the rename itself reaching
+        // the platter, so the blob cannot vanish out from under an entry that
+        // already references it.
+        crate::fsutil::sync_dir(dir);
         Ok(id)
     }
 
@@ -154,6 +167,18 @@ impl FileBlobStore {
     /// Plaintext length, without decrypting anything.
     pub fn len_of(&self, id: BlobId) -> Result<u64> {
         Ok(self.read_header(id)?.plain_len)
+    }
+
+    /// How long ago this blob was written, for garbage collection.
+    ///
+    /// `None` for a blob that is not there, or whose timestamp the platform
+    /// will not report. A clock that has gone backwards since the write
+    /// yields `Duration::ZERO` rather than an error -- callers use this to
+    /// decide what is *old enough* to delete, so an unreadable age must
+    /// never read as "ancient".
+    pub fn age_of(&self, id: BlobId) -> Option<std::time::Duration> {
+        let modified = std::fs::metadata(self.path_for(id)).and_then(|m| m.modified()).ok()?;
+        Some(modified.elapsed().unwrap_or(std::time::Duration::ZERO))
     }
 
     pub fn delete(&self, id: BlobId) -> Result<()> {
@@ -550,6 +575,33 @@ mod tests {
         std::fs::write(dir.path().join("README.txt"), b"hello").unwrap();
         std::fs::write(s.path_for(id).with_extension("tmp"), b"leftover").unwrap();
         assert_eq!(s.list().unwrap(), [id]);
+    }
+
+    #[test]
+    fn concurrent_puts_of_identical_bytes_all_succeed() {
+        // Regression: the temp file was named from the blob id alone, so
+        // every writer of the same bytes shared it. Three of four concurrent
+        // puts failed with `NotFound` on the rename, which reached the user
+        // as an attachment that would not save.
+        let dir = tempfile::tempdir().unwrap();
+        let s = Arc::new(store(dir.path(), true));
+        let data = Arc::new(pseudorandom(CHUNK_SIZE as usize * 2 + 11));
+
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let (s, data) = (s.clone(), data.clone());
+                std::thread::spawn(move || s.put(&data))
+            })
+            .collect();
+
+        let ids: Vec<BlobId> = handles
+            .into_iter()
+            .map(|h| h.join().unwrap().expect("every concurrent put should succeed"))
+            .collect();
+
+        assert!(ids.windows(2).all(|w| w[0] == w[1]), "content addressing should agree");
+        assert_eq!(s.get(ids[0]).unwrap(), *data);
+        assert_eq!(s.list().unwrap(), [ids[0]], "no scratch files left behind");
     }
 
     #[test]
