@@ -28,6 +28,7 @@ use crate::error::{Error, Result};
 use crate::id::{BlobId, EntryId, JournalId};
 use crate::model::{Entry, EntrySummary, Journal};
 use crate::store::calendars::CalendarStore;
+use crate::store::library::LibraryStore;
 use crate::store::tasks::TaskStore;
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
@@ -59,6 +60,14 @@ pub struct Capabilities {
     /// requires the pair before it offers the app.
     #[serde(default)]
     pub calendars: bool,
+    /// Backend implements [`library::LibraryStore`], so shelves, the things
+    /// on them and the log of what you did with them can be held.
+    ///
+    /// Independent of the other two in the type and in practice: nothing in
+    /// the library app reads a task or an event, so it is offered on any
+    /// backend that carries this alone.
+    #[serde(default)]
+    pub library: bool,
 }
 
 /// Everything a backend needs to open a vault directory.
@@ -230,6 +239,16 @@ pub trait JournalStore: Send + Sync {
         None
     }
 
+    /// Storage for the library domain, if this backend has any.
+    ///
+    /// Same shape and same reasoning as [`JournalStore::tasks`]: a backend
+    /// says what it does rather than failing when asked to do it. See
+    /// [`library`](crate::store::library) for the three records it holds and
+    /// the cascades between them.
+    fn library(&self) -> Option<&dyn LibraryStore> {
+        None
+    }
+
     // ---- journals -------------------------------------------------------
 
     fn list_journals(&self) -> Result<Vec<Journal>>;
@@ -392,6 +411,15 @@ pub trait JournalStore: Send + Sync {
             live.extend(entry.body.blob_refs());
             live.extend(entry.attachments.iter().map(|a| a.blob));
         }
+        // A library cover is a blob like any other, and liveness here is
+        // decided by walking every record that can hold one. Missing this
+        // walk would make the first `everyday gc` after a day's grace delete
+        // the cover of every book on the shelf -- silently, since the item
+        // itself would survive with a blob id pointing at nothing.
+        if let Some(library) = self.library() {
+            let all = crate::store::library::ItemQuery::default();
+            live.extend(library.list_items(&all)?.iter().filter_map(|i| i.cover));
+        }
         let mut removed = 0;
         for id in self.list_blobs()? {
             if live.contains(&id) {
@@ -474,6 +502,7 @@ impl BackendRegistry {
 }
 
 pub mod calendars;
+pub mod library;
 pub mod tasks;
 
 #[cfg(any(test, feature = "testing"))]

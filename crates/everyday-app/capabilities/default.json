@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities granted to the Every Day window. Deliberately narrow: the webview has no network permission at all and its content security policy allows no outbound connection, so nothing it renders -- an entry, a task, or an event fetched from a subscribed calendar -- can cause a request. The only socket in the application is in the Rust shell (see src/feeds.rs), it is opened only for a calendar feed the user pasted in, and it is unreachable from here.",
+  "description": "Capabilities granted to the Every Day window. Deliberately narrow: the webview has no network permission at all and its content security policy allows no outbound connection, so nothing it renders -- an entry, a task, an event fetched from a subscribed calendar, or a book cover downloaded into the vault -- can cause a request. Every socket in the application is opened by the Rust shell through src/http.rs, only for a calendar feed the user pasted in or a metadata lookup they asked for, and none of it is reachable from here.",
   "windows": ["main"],
   "permissions": [
     "core:default",

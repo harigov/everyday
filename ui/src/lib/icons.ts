@@ -226,6 +226,34 @@ export const ICONS = {
 
   // Two tracks with a handle on each: legible at 16px in a way that a
   // twelve-toothed cogwheel is not.
+  // A closed book seen from the spine side, which is what a shelf of them
+  // looks like -- rather than an open one, which reads as "read now".
+  book:
+    '<path d="M4 4.5A1.5 1.5 0 0 1 5.5 3H19a1 1 0 0 1 1 1v13"/>' +
+    '<path d="M4 4.5v13A1.5 1.5 0 0 0 5.5 19H20"/>' +
+    '<path d="M20 17H5.5A1.5 1.5 0 0 0 4 18.5"/>',
+
+  // Four cards. The library's other view, beside the list the todo app uses.
+  grid:
+    '<rect width="7" height="7" x="3.5" y="3.5" rx="1.5"/>' +
+    '<rect width="7" height="7" x="13.5" y="3.5" rx="1.5"/>' +
+    '<rect width="7" height="7" x="3.5" y="13.5" rx="1.5"/>' +
+    '<rect width="7" height="7" x="13.5" y="13.5" rx="1.5"/>',
+
+  // A picture: the frame, the sun and the hill. Stands in for a cover that
+  // has not arrived, and labels the button that goes and gets one.
+  image:
+    '<rect width="17" height="17" x="3.5" y="3.5" rx="2.5"/>' +
+    '<circle cx="8.5" cy="8.5" r="1.5"/>' +
+    '<path d="m20.5 15-4-4L7 20.5"/>',
+
+  // A four-pointed star with a smaller one beside it: the mark every
+  // interface now uses for "go and work this out for me". Not the five-
+  // pointed `star`, which already means "I liked this".
+  sparkle:
+    '<path d="M11 3.5 12.8 8.2 17.5 10 12.8 11.8 11 16.5 9.2 11.8 4.5 10 9.2 8.2Z"/>' +
+    '<path d="m18 15 .9 2.1L21 18l-2.1.9L18 21l-.9-2.1L15 18l2.1-.9Z"/>',
+
   settings:
     '<path d="M20 7h-8"/><path d="M6 7H4"/><path d="M20 17h-2"/><path d="M12 17H4"/>' +
     '<circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',

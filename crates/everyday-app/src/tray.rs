@@ -5,8 +5,9 @@
 //! entry" -- things that are defined by an app inside the window, know
 //! whether they are currently possible, and have to run where the state
 //! lives. Hard-coding them here would mean a Rust change, a capability
-//! change and a rebuild every time one of the three apps grew a fourth
-//! thing worth doing from the menu bar.
+//! change and a rebuild every time one of the apps in the window grew
+//! another thing worth doing from the menu bar -- which is exactly what
+//! adding the library did, and it cost this file nothing.
 //!
 //! So the interface sends a menu *description* ([`TrayItem`]) and the shell
 //! renders it. Choosing an item emits [`TRAY_ACTION`] carrying the item's

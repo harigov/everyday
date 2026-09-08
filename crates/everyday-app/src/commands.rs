@@ -7,17 +7,20 @@
 //! freeze the window mid-keystroke.
 
 use everyday_core::calendar::{Calendar, CalendarProvider, Event, SyncReport};
+use everyday_core::library::{Item, ItemStatus, Kind, LibraryStats, LogEntry, LogEvent, Progress};
 use everyday_core::model::{local_date_in, system_tz, today_local};
 use everyday_core::search::SearchHit;
 use everyday_core::store::calendars::EventQuery;
+use everyday_core::store::library::{ItemQuery, LogQuery};
 use everyday_core::store::tasks::{BlockQuery, TaskQuery};
 use everyday_core::store::{EntryQuery, StoreStats};
 use everyday_core::task::{
     BlockKind, BlockSubject, Project, Task, TaskStats, TaskStatus, TimeBlock,
 };
+use everyday_core::websearch::{SearchRequest, SearchResult, Source};
 use everyday_core::{
-    BlobId, BlockId, CalendarId, Entry, EntryId, EventId, Journal, JournalId, ProjectId, TaskId,
-    Vault, VaultConfig, VaultStatus,
+    BlobId, BlockId, CalendarId, Entry, EntryId, EventId, ItemId, Journal, JournalId, KindId,
+    LogId, ProjectId, TaskId, Vault, VaultConfig, VaultStatus,
 };
 use serde::Serialize;
 use std::path::PathBuf;
@@ -29,6 +32,7 @@ use crate::feeds;
 use crate::notify::{self, Notification};
 use crate::state::AppState;
 use crate::tray::{Tray, TrayItem};
+use crate::websearch;
 
 /// Run blocking vault work off the async runtime.
 async fn blocking<T, F>(f: F) -> CommandResult<T>
@@ -772,6 +776,468 @@ impl ProviderInfo {
         };
         Self { id: p.as_str().to_string(), label: label.into(), hint: hint.into() }
     }
+}
+
+// ---- the library --------------------------------------------------------
+//
+// Shelves, the things on them, and the log of what you did with them. The
+// same division of labour the calendar makes, and for the same reason -- this
+// is the second feature that touches a network:
+//
+//   this file        what to look up, when, and what to do with the answer
+//   websearch.rs     turning a request into bytes -- one of two sockets
+//   everyday-core    building every URL, parsing every reply, and deciding
+//                    what a result may change about an item
+//
+// The last of those is the part with the fiddly logic in it -- five reply
+// formats, five rating scales, and the rule that metadata fills gaps and
+// never argues -- and it is testable offline precisely because it never
+// learns that a network exists.
+
+/// A shelf, and how much is on it.
+///
+/// A named struct rather than widening `Kind` itself: the counts are facts
+/// about storage at this instant, not properties of the shelf, and they must
+/// not be written back when the interface saves one.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KindInfo {
+    #[serde(flatten)]
+    pub kind: Kind,
+    pub items: u64,
+    /// Wishlist, active and paused together: everything still ahead of you.
+    pub open: u64,
+}
+
+/// Every shelf, with its counts, seeding the built-in set into an empty
+/// library on the way.
+///
+/// The seeding is here, in the first call the library app makes, rather than
+/// in `create_vault`. That is what makes it work for a vault somebody
+/// already had before this app existed: the library appears on their next
+/// launch with shelves in it rather than as an empty screen holding a "make
+/// a category" button. It runs at most once per vault -- see
+/// `Vault::seed_library`, which does nothing whenever there is any shelf at
+/// all, so a deleted shelf stays deleted.
+#[tauri::command]
+pub async fn list_kinds(state: State<'_, AppState>) -> CommandResult<Vec<KindInfo>> {
+    let vault = state.require()?;
+    blocking(move || {
+        if let Err(e) = vault.seed_library() {
+            // Not fatal. An unwritable vault cannot be seeded and can still
+            // be read, and a library with no shelves is a screen that says
+            // so rather than an error over the whole window.
+            tracing::warn!(error = %e, "could not seed the library");
+        }
+        let mut out = Vec::new();
+        for kind in vault.kinds()? {
+            // Two `COUNT(*)`s over clear index columns, so listing ten
+            // shelves decrypts ten records and nothing else.
+            let (items, open) = vault
+                .with_store(|s| {
+                    s.library().map(|l| l.count_items(kind.id)).unwrap_or_else(|| Ok((0, 0)))
+                })
+                .unwrap_or((0, 0));
+            out.push(KindInfo { kind, items, open });
+        }
+        Ok(out)
+    })
+    .await
+}
+
+/// Mint a shelf. Unsaved: fill it in and pass it to `save_kind`.
+///
+/// The slug is derived from the name here rather than in the interface,
+/// because it is the key metadata lookups and quick capture match on and it
+/// has to be stable, lower case and free of spaces whatever somebody typed.
+#[tauri::command]
+pub fn new_kind(state: State<'_, AppState>, name: String, singular: String) -> CommandResult<Kind> {
+    let _ = state.require()?;
+    let name = name.trim();
+    let singular = if singular.trim().is_empty() { name } else { singular.trim() };
+    Ok(Kind::new(&slugify(singular), name, singular))
+}
+
+/// A stable, lower-case, hyphenless key for a name somebody typed.
+///
+/// Empty in, `custom` out: a shelf with no slug could never be looked up or
+/// captured into, and refusing to create it over a punctuation-only name is
+/// a worse answer than giving it a dull one.
+fn slugify(name: &str) -> String {
+    let out: String =
+        name.trim().to_lowercase().chars().filter(|c| c.is_alphanumeric()).take(24).collect();
+    if out.is_empty() { "custom".to_string() } else { out }
+}
+
+#[tauri::command]
+pub async fn save_kind(state: State<'_, AppState>, kind: Kind) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.save_kind(&kind)?)).await
+}
+
+/// Delete the shelf, everything on it, and every log row those items had.
+#[tauri::command]
+pub async fn delete_kind(state: State<'_, AppState>, id: KindId) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.delete_kind(id)?)).await
+}
+
+#[tauri::command]
+pub async fn list_items(state: State<'_, AppState>, query: ItemQuery) -> CommandResult<Vec<Item>> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.items(&query)?)).await
+}
+
+#[tauri::command]
+pub async fn get_item(state: State<'_, AppState>, id: ItemId) -> CommandResult<Item> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.item(id)?)).await
+}
+
+#[tauri::command]
+pub async fn save_item(state: State<'_, AppState>, item: Item) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.save_item(&item)?)).await
+}
+
+/// One write for many items: what a re-ordered shelf is.
+#[tauri::command]
+pub async fn save_items(state: State<'_, AppState>, items: Vec<Item>) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.save_items(&items)?)).await
+}
+
+/// Delete the item and its whole log.
+#[tauri::command]
+pub async fn delete_item(state: State<'_, AppState>, id: ItemId) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.delete_item(id)?)).await
+}
+
+/// Add something to a shelf, and — if asked — go and find out what it is.
+///
+/// One command rather than create-then-enrich, because the two are not
+/// independent from the interface's point of view: what it wants back is the
+/// finished card, and a two-step version would either draw a blank card that
+/// changes under the cursor a second later or make the caller sequence two
+/// awaits and handle a failure between them.
+///
+/// The lookup is best-effort by design, and it happens *after* the item is
+/// on disk. A network that is off, a source that is down, a title nothing has
+/// heard of — none of those should stop something being added to a list,
+/// which is the entire job of this app. `looked_up` says whether anything was
+/// found, so the interface can offer to search again rather than silently
+/// implying it tried.
+#[tauri::command]
+pub async fn add_item(
+    state: State<'_, AppState>,
+    kind_id: KindId,
+    title: String,
+    lookup: bool,
+) -> CommandResult<AddedItem> {
+    let vault = state.require()?;
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err(CommandError::new("invalid", "give it a name and it will be added"));
+    }
+    let kind = {
+        let vault = vault.clone();
+        blocking(move || Ok(vault.kind(kind_id)?)).await?
+    };
+    let mut item = Item::new(kind_id, &title);
+
+    // Written *before* the lookup, not after.
+    //
+    // This is the ordering the whole feature turns on. A lookup can take up
+    // to the fetch timeout, and if the item were only minted in memory until
+    // it came back, an app that was quit -- or a machine that ran out of
+    // battery -- during those seconds would lose the thing somebody was
+    // trying not to forget. Enriching costs a second write; getting this
+    // backwards costs the note.
+    {
+        let (vault, saved) = (vault.clone(), item.clone());
+        blocking(move || Ok(vault.save_item(&saved)?)).await?;
+    }
+
+    if !lookup {
+        return Ok(AddedItem { item, looked_up: false });
+    }
+
+    let hit = match websearch::lookup(&title, &kind, 1).await {
+        Ok(hits) => hits.into_iter().next(),
+        // Worth a line in the log and nothing more: the item is already on
+        // disk, and a network that is off is not a reason to refuse to keep
+        // a list. See the doc comment.
+        Err(e) => {
+            tracing::info!(error = %e, "could not look up a new item");
+            None
+        }
+    };
+    let Some(hit) = hit else { return Ok(AddedItem { item, looked_up: false }) };
+
+    websearch::apply_and_cover(&vault, &hit, &kind, &mut item, false).await;
+    let (vault, saved) = (vault.clone(), item.clone());
+    // The second write is the enrichment. If *it* fails, the item is still
+    // there with the title that was typed, which is the outcome to prefer.
+    blocking(move || Ok(vault.save_item(&saved)?)).await?;
+    Ok(AddedItem { item, looked_up: true })
+}
+
+/// What [`add_item`] hands back: the item, and whether the web knew it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddedItem {
+    pub item: Item,
+    pub looked_up: bool,
+}
+
+/// Move an item to `status`, dating it and — optionally — logging it.
+///
+/// The dates and the log row are coupled here rather than left to the
+/// interface because they are the same act. Marking a book read is the
+/// moment "finished on" is known and the moment the log gains the row that
+/// makes "what did I read this year" answerable, and an interface that had
+/// to remember to do all three would eventually do two.
+///
+/// `Vault::save_item` still does the writing, so nothing here can produce an
+/// item the ordinary save path would refuse.
+#[tauri::command]
+pub async fn set_item_status(
+    state: State<'_, AppState>,
+    id: ItemId,
+    status: ItemStatus,
+    log: bool,
+) -> CommandResult<Item> {
+    let vault = state.require()?;
+    let today = today_local();
+    let tz = system_tz();
+    blocking(move || {
+        let mut item = vault.item(id)?;
+        if item.status == status {
+            return Ok(item);
+        }
+        item.set_status(status, today);
+        vault.save_item(&item)?;
+
+        // Only the transitions that mean something happened on a day. Moving
+        // something back to the wishlist is a correction, not an event, and
+        // logging it would put a line in the history saying nothing.
+        let event = match status {
+            ItemStatus::Active => Some(LogEvent::Started),
+            ItemStatus::Done => Some(LogEvent::Finished),
+            ItemStatus::Paused | ItemStatus::Abandoned => Some(LogEvent::Stopped),
+            ItemStatus::Wishlist => None,
+        };
+        if log && let Some(event) = event {
+            vault.save_log(&LogEntry::new(item.id, event, today, &tz))?;
+        }
+        Ok(item)
+    })
+    .await
+}
+
+/// Record where you have got to, and log it.
+///
+/// The log row is what makes a reading pace visible later; the field on the
+/// item is what the card draws now. Both, from one action, for the reason
+/// given on [`set_item_status`].
+#[tauri::command]
+pub async fn set_item_progress(
+    state: State<'_, AppState>,
+    id: ItemId,
+    position: u32,
+    total: Option<u32>,
+    log: bool,
+) -> CommandResult<Item> {
+    let vault = state.require()?;
+    let today = today_local();
+    let tz = system_tz();
+    blocking(move || {
+        let mut item = vault.item(id)?;
+        // The unit comes from the shelf, and is copied onto the item rather
+        // than read live -- see `library::Progress`, which explains why
+        // changing a shelf from pages to minutes must not relabel four
+        // hundred books.
+        let unit = match &item.progress {
+            Some(p) if !p.unit.is_empty() => p.unit.clone(),
+            _ => vault.kind(item.kind_id).map(|k| k.progress_unit).unwrap_or_default(),
+        };
+        let total = total.or_else(|| item.progress.as_ref().and_then(|p| p.total));
+        item.progress = Some(Progress::new(position, total, unit));
+        // Recording progress on something you had only wished for is you
+        // telling us you have started it.
+        if item.status == ItemStatus::Wishlist {
+            item.set_status(ItemStatus::Active, today);
+        }
+        item.updated_at = jiff::Timestamp::now();
+        vault.save_item(&item)?;
+
+        if log {
+            let mut entry = LogEntry::new(item.id, LogEvent::Progress, today, &tz);
+            entry.position = Some(position);
+            vault.save_log(&entry)?;
+        }
+        Ok(item)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_logs(
+    state: State<'_, AppState>,
+    query: LogQuery,
+) -> CommandResult<Vec<LogEntry>> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.logs(&query)?)).await
+}
+
+/// Mint a log row dated today on the machine's own calendar. Unsaved.
+///
+/// The date and the time zone are resolved here rather than in the webview so
+/// that "what did I finish today" is decided by the same code that decides
+/// which day a journal entry is filed under.
+#[tauri::command]
+pub fn new_log(
+    state: State<'_, AppState>,
+    item_id: ItemId,
+    event: LogEvent,
+) -> CommandResult<LogEntry> {
+    let _ = state.require()?;
+    Ok(LogEntry::new(item_id, event, today_local(), system_tz()))
+}
+
+#[tauri::command]
+pub async fn save_log(state: State<'_, AppState>, log: LogEntry) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.save_log(&log)?)).await
+}
+
+#[tauri::command]
+pub async fn delete_log(state: State<'_, AppState>, id: LogId) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.delete_log(id)?)).await
+}
+
+/// Counts for the library sidebar, as of the machine's own calendar year.
+#[tauri::command]
+pub async fn library_stats(state: State<'_, AppState>) -> CommandResult<LibraryStats> {
+    let vault = state.require()?;
+    let year = today_local().year();
+    blocking(move || Ok(vault.library_stats(year)?)).await
+}
+
+// ---- web search ---------------------------------------------------------
+//
+// Exposed as its own pair of commands rather than hidden inside the library,
+// because it is a facility and not a feature of one app. Anything in the
+// interface can call `web_search` -- see `ui/src/lib/websearch.ts`, which is
+// the class components actually use -- and the two library-specific commands
+// below are built on the same core module rather than on a second one.
+
+/// Search the web. The general entry point; any part of the app may call it.
+///
+/// Takes a whole [`SearchRequest`] rather than a bare string so that the
+/// choice of source, the kind hint and the limit are the caller's, and so
+/// that adding a source later is not a new command.
+#[tauri::command]
+pub async fn web_search(
+    state: State<'_, AppState>,
+    request: SearchRequest,
+) -> CommandResult<Vec<SearchResult>> {
+    // A locked vault is not a technical obstacle to a search -- nothing here
+    // touches storage -- but it is the wrong moment for one. The lock screen
+    // must not be a place from which requests leave the machine.
+    let vault = state.require()?;
+    if !vault.is_unlocked() {
+        return Err(CommandError::from(everyday_core::Error::Locked));
+    }
+    websearch::search(&request).await
+}
+
+/// The sources a search can be run against, for the picker.
+#[tauri::command]
+pub fn search_sources() -> Vec<SourceInfo> {
+    Source::ALL.iter().map(|s| SourceInfo::of(*s)).collect()
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceInfo {
+    pub id: String,
+    pub label: String,
+    pub has_images: bool,
+}
+
+impl SourceInfo {
+    fn of(source: Source) -> Self {
+        Self {
+            id: source.slug().to_string(),
+            label: source.label().to_string(),
+            has_images: source.has_images(),
+        }
+    }
+}
+
+/// Look a title up using whatever source a shelf prefers, falling back to a
+/// plain web search when that source draws a blank.
+#[tauri::command]
+pub async fn lookup_metadata(
+    state: State<'_, AppState>,
+    kind_id: KindId,
+    query: String,
+    limit: Option<u32>,
+) -> CommandResult<Vec<SearchResult>> {
+    let vault = state.require()?;
+    let kind = {
+        let vault = vault.clone();
+        blocking(move || Ok(vault.kind(kind_id)?)).await?
+    };
+    websearch::lookup(query.trim(), &kind, limit.unwrap_or(websearch::DEFAULT_LIMIT)).await
+}
+
+/// Apply a chosen result to an item, downloading its cover on the way.
+///
+/// `overwrite` is the "yes, replace what is there" the interface offers on an
+/// explicit re-fetch. Even then it leaves notes, your rating and the status
+/// alone -- see `everyday_core::websearch::apply`, which is where that rule
+/// lives and is tested.
+#[tauri::command]
+pub async fn apply_metadata(
+    state: State<'_, AppState>,
+    id: ItemId,
+    result: SearchResult,
+    overwrite: bool,
+) -> CommandResult<Item> {
+    let vault = state.require()?;
+    let (mut item, kind) = {
+        let vault = vault.clone();
+        blocking(move || {
+            let item = vault.item(id)?;
+            let kind = vault.kind(item.kind_id)?;
+            Ok((item, kind))
+        })
+        .await?
+    };
+    websearch::apply_and_cover(&vault, &result, &kind, &mut item, overwrite).await;
+
+    let saved = item.clone();
+    let vault = vault.clone();
+    blocking(move || Ok(vault.save_item(&saved)?)).await?;
+    Ok(item)
+}
+
+/// Download a picture into the vault and return its content address.
+///
+/// The general entry point, beside `web_search`: anything that has found an
+/// image address can put it in the blob store with this, and it comes back as
+/// a blob id the `everyday://` protocol will serve. Nothing in the interface
+/// ever loads a remote image directly -- see `websearch.rs` for why, and the
+/// content security policy for the check that outlives the reason.
+#[tauri::command]
+pub async fn fetch_image(state: State<'_, AppState>, url: String) -> CommandResult<String> {
+    let vault = state.require()?;
+    let bytes = websearch::fetch_image(&url).await?;
+    blocking(move || Ok(vault.put_blob(&bytes)?.to_hex())).await
 }
 
 // ---- media --------------------------------------------------------------

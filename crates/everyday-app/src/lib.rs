@@ -9,10 +9,12 @@
 mod commands;
 mod error;
 mod feeds;
+mod http;
 mod notify;
 mod protocol;
 mod state;
 mod tray;
+mod websearch;
 
 use state::AppState;
 use tauri::{Emitter, Manager, WindowEvent};
@@ -123,6 +125,28 @@ pub fn run() {
             commands::calendar_providers,
             commands::list_events,
             commands::get_event,
+            commands::list_kinds,
+            commands::new_kind,
+            commands::save_kind,
+            commands::delete_kind,
+            commands::list_items,
+            commands::get_item,
+            commands::add_item,
+            commands::save_item,
+            commands::save_items,
+            commands::delete_item,
+            commands::set_item_status,
+            commands::set_item_progress,
+            commands::list_logs,
+            commands::new_log,
+            commands::save_log,
+            commands::delete_log,
+            commands::library_stats,
+            commands::web_search,
+            commands::search_sources,
+            commands::lookup_metadata,
+            commands::apply_metadata,
+            commands::fetch_image,
             commands::put_blob,
             commands::collect_garbage,
             commands::vault_stats,

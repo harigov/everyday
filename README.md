@@ -1,8 +1,9 @@
 # Every Day
 
-A private journal, a todo app and a calendar for macOS, Linux and Windows.
-Rich text with photos and video, projects and tasks on a list or a board,
-your week with the plan and the record side by side, pluggable storage, and
+A private journal, a todo app, a calendar and a library for macOS, Linux and
+Windows. Rich text with photos and video, projects and tasks on a list or a
+board, your week with the plan and the record side by side, a shelf for
+everything you mean to read and watch and cook, pluggable storage, and
 encryption you actually hold the key to.
 
 <!-- Screenshots live in docs/ once you have run the app. -->
@@ -42,12 +43,12 @@ widgets". In exchange you get native *text*, a mature editor, and one
 codebase. For a journal — an app that is essentially a text canvas — that is
 the right side of the trade.
 
-## Three apps, one vault
+## Four apps, one vault
 
-The sidebar switches between **Journal**, **Todo** and **Calendar**
-(`Ctrl/Cmd J` cycles). They share a vault, a password and a lock; they share
-nothing else — except that the calendar is a view over what the other two
-already store, which is the whole point of it.
+The sidebar switches between **Journal**, **Todo**, **Calendar** and
+**Library** (`Ctrl/Cmd J` cycles). They share a vault, a password and a lock;
+they share nothing else — except that the calendar is a view over what the
+journal and the todo app already store, which is the whole point of it.
 
 The todo app has projects, tasks and subtasks — a subtask is just a task with
 a parent, so the two levels the interface offers are a UI decision rather
@@ -166,15 +167,164 @@ Some care went into the parts that are easy to get wrong:
   strings have a habit of ending up.
 
 The network. This application has no telemetry, no update check, no crash
-reporter and no analytics: a request leaving the process means somebody
-subscribed to a calendar. The fetch lives in the desktop shell
-(`crates/everyday-app/src/feeds.rs`), which is the only file in the codebase
-that opens a socket; `everyday-core` still has no async runtime, no TLS stack
-and no way to reach the network at all, which is what keeps the difficult
-half — RFC 5545, recurrence, zones — testable offline. The webview's own
-permissions are unchanged and remain none: its content security policy allows
-no outbound connection, so a feed's contents can never cause a request of
+reporter and no analytics. There are exactly two features that open a socket
+— refreshing a subscribed calendar, and looking up what a book is called —
+and both do it through one client in `crates/everyday-app/src/http.rs`, so
+the timeout, the redirect limit and the size cap are decided once.
+`everyday-core` still has no async runtime, no TLS stack and no way to reach
+the network at all, which is what keeps the difficult halves — RFC 5545,
+recurrence and zones on one side, five reply formats and five rating scales
+on the other — testable offline. The webview's own permissions are unchanged
+and remain none: its content security policy allows no outbound connection,
+so neither a feed's contents nor a search result can cause a request of
 their own.
+
+## The library
+
+A shelf for the things you mean to get to. Books, films, series, music,
+games, articles, podcasts, restaurants, recipes and places, out of the box —
+and whatever else you keep a list of, because a *kind* is a record in the
+vault rather than a variant in the source.
+
+```
+  Kind ────── Item ────── LogEntry
+ (Books)     (Dune)      started 3 Mar, finished 2 Apr, ★★★★½
+```
+
+It stores metadata and nothing else: not the book, the fact that you want to
+read it, that you started it in March, and what you thought when you finished.
+
+### A kind is data
+
+Adding "Board games" or "Wines" is something you do in the sidebar, not
+something we ship. A [`Kind`] carries its own name, icon, colour, extra
+fields — Author, Pages, ISBN — and, more usefully than it sounds, its own
+**verbs**:
+
+```
+  Books        To read   Reading    Read
+  Films        To watch  Watching   Watched
+  Games        To play   Playing    Played
+  Restaurants  To try    Booked     Been
+```
+
+A person *reads* a book, *watches* a series and *plays* a game, and an
+application that insists on "in progress" for all three reads like a form.
+The filter bar, the cards and the detail panel all speak the open shelf's
+language.
+
+What is deliberately *not* per-kind is the status itself: `wishlist`,
+`active`, `paused`, `done`, `abandoned`, closed, the same five everywhere.
+That is what makes "how long do things sit on my wishlist" a question you can
+ask across every shelf at once — the same argument that keeps the todo app's
+board columns a fixed set. A kind chooses the word, never the state.
+
+### What happened is a record, not a field
+
+An item does not have a "date watched". It has any number of dated log rows
+pointing at it:
+
+```
+  started    3 March
+  progress   page 240, 20 March
+  finished   2 April          ★★★★½   "Holds up."
+  revisited  1 September
+```
+
+One field would overwrite the previous answer every time, and "how many times
+have I been back to that restaurant", "I re-read it and liked it less" and
+"what did I get through this year" would all be unanswerable. It is the same
+shape, and the same argument, as the todo app's time blocks.
+
+Marking something read does all three parts at once: it sets the status, it
+fills in the finish date, and it adds the log row. An interface that had to
+remember to do all three would eventually do two.
+
+### Ratings
+
+Stored out of a hundred, shown out of five, half-stars offered. The wide
+scale is so that somebody else's 82% survives being imported without being
+rounded into your own opinion of it; the narrow one is because ten positions
+is about as fine as an opinion of a film actually is. Your rating and theirs
+sit on separate rows and are never merged.
+
+### Metadata from the web
+
+Type a title and the shelf goes and finds out what it is — the cover, the
+author, the year, the page count, the blurb, an aggregate rating. Which
+source it asks depends on the shelf:
+
+| Shelf | Source | Because |
+|---|---|---|
+| Books | Open Library | covers, page counts, ISBNs, ratings |
+| Films, series, music, podcasts | iTunes Search | artwork at a usable size |
+| Games, and anything general | Wikipedia | a summary and a thumbnail |
+| Restaurants, places | OpenStreetMap | an address, often a cuisine and a phone number |
+| Articles, recipes | a plain web search | there is no catalogue of these |
+
+Every one of them works with no API key, no account and no client id
+registered to a vendor. That is a constraint rather than a coincidence: this
+is an application people build themselves and run offline by default, and a
+feature that stops working the day a free tier changes is a feature that
+should not have shipped.
+
+Four rules hold this together, and the last two are the ones worth stating:
+
+- **Adding never waits on the network.** The item is written first and
+  enriched after, so a train tunnel costs you a cover and not the note you
+  were trying to make. If nothing was found, it says so and the thing is
+  still on the shelf.
+- **Nothing is looked up unless you ask.** There is no background enrichment
+  of a shelf, and the `✨` beside the capture field turns even the as-you-type
+  suggestions off. No identifier of yours is ever sent; the core builds every
+  URL and adds nothing to them.
+- **Metadata fills gaps and never argues.** A title you typed survives a
+  lookup that disagrees with it. Your notes, your rating and the status are
+  not metadata and cannot be touched — not even by the explicit "look this up
+  again", which is allowed to replace the byline and the details and nothing
+  else. The rule lives in `websearch::apply`, in Rust, where it is tested.
+- **A cover is downloaded, never linked.** It goes into the same
+  content-addressed, chunk-encrypted blob store that holds photographs in a
+  journal entry, and is drawn through the `everyday://` protocol. An
+  `<img src="https://covers…">` would have been less code and would have told
+  a stranger's server which books are on your shelf every time you opened the
+  app. It is also not possible: the webview's content security policy allows
+  images from `'self'` and `everyday:` and from nowhere else, which is the
+  check that outlives the reason.
+
+### Web search is a facility, not a feature
+
+Nothing above is private to the library. Searching the web is a core
+capability that any part of the app can reach for, in three layers:
+
+```
+  everyday_core::websearch   builds every URL, parses all five reply
+                             formats, ranks and merges — and cannot open a
+                             socket, which is why it is all under test
+  everyday_app::websearch    opens the socket. Timeout, redirect limit and
+                             size cap shared with the calendar fetcher
+  ui/src/lib/websearch.ts    the `web` object components hold: debouncing,
+                             cancellation, caching, and an error you can
+                             render
+```
+
+```ts
+import { web } from './lib/websearch'
+
+// One-shot: a button was pressed.
+const { results, error } = await web.search('nyquist rate', { source: 'wikipedia' })
+
+// As-you-type: debounced, and every answer that is not the latest is dropped.
+const search = web.live((outcome) => (hits = outcome.results))
+search.type(value, { source: 'openLibrary' })
+```
+
+The second is the one that matters. Without the generation counter behind it,
+typing "dune" fires four requests and the answer to "dun" can arrive after
+the answer to "dune" and win — a race that shows up as a suggestion list
+flickering to the wrong thing and staying there. It is checked in
+`ui/scripts/library.test.mjs`, by making the answers arrive out of order on
+purpose.
 
 ## Notifications
 
@@ -250,7 +400,8 @@ putting a condition in a toast would let it expire while still being true.
 
 ```
 crates/
-  everyday-core/            domain model, crypto, storage traits, search, iCalendar
+  everyday-core/            domain model, crypto, storage traits, search,
+                            iCalendar, web search
   everyday-store-sqlite/    SQLite backend (default)
   everyday-store-markdown/  plain Markdown files backend
   everyday-vault/           wires core to backends; platform paths; media serving
@@ -304,6 +455,14 @@ so it is sealed along with the calendar's name, and only `calendar_id`, the
 two date columns and the start instant are in the clear. The file says that
 you have three calendars and which days have something on them.
 
+The library makes the same trade, and the *names of the shelves themselves*
+are sealed: a database that said "Books" and "Films" would be telling
+somebody what sort of person keeps it. What is clear is what an index scan
+needs — which shelf, what status, your rating, whether you starred it, the
+year, the finish date, and a log row's date and event. So the file says that
+somebody rated eleven things highly in March and never what any of them
+were.
+
 If that trade is unacceptable, the storage abstraction is the answer: a
 backend that seals the index columns too — at the cost of full scans — drops
 in without the rest of the app noticing.
@@ -315,7 +474,7 @@ without touching the app.
 
 | Backend | Good for | Trade |
 |---|---|---|
-| `sqlite` | the default; large journals, fast queries, the todo app and the calendar | opaque on disk |
+| `sqlite` | the default; large journals, fast queries, the todo app, the calendar and the library | opaque on disk |
 | `markdown` | grep, git, editing in any editor | slower; readable only when unencrypted; journals only |
 
 The task domain is a *second* trait, `TaskStore`, reached through
@@ -334,6 +493,16 @@ read out of them. Events are written one way only, `replace_events`, which
 swaps a calendar's entire set at once. That makes a refresh atomic and total,
 which is what makes it safe to run in the background without asking, and it
 means nothing a sync does can touch a record you made.
+
+The library is a *fourth*, `LibraryStore`, and it is the one that stands
+alone: nothing in it reads a task or an event, so it is offered on any
+backend that carries it. What it does add is two cascades that must be
+honoured — deleting a shelf takes its items, deleting an item takes its log —
+and one that deliberately is not: a cover is a shared, content-addressed
+blob, so it is reclaimed by the ordinary garbage collector on its grace
+period rather than deleted by whoever happened to drop the last reference.
+All three rules are in the shared conformance suite, so a backend inherits
+them rather than reimplementing them.
 
 The Markdown backend is a genuine two-way format. It writes a readable `.md`
 with TOML frontmatter plus a sidecar `.json` holding the exact rich-text tree.
@@ -499,8 +668,8 @@ period if you know there is no such draft.
 
 | | |
 |---|---|
-| `Ctrl/Cmd J` | cycle Journal → Todo → Calendar |
-| `Ctrl/Cmd N` | new entry, the task capture line, or an hour set aside |
+| `Ctrl/Cmd J` | cycle Journal → Todo → Calendar → Library |
+| `Ctrl/Cmd N` | new entry, the task capture line, an hour set aside, or the "add to shelf" field |
 | `Ctrl/Cmd F` | search |
 | `Ctrl/Cmd L` | lock now |
 | `Ctrl/Cmd S` | flush pending edits (it autosaves anyway) |
@@ -510,9 +679,8 @@ page, `Delete` to remove the selected block.
 
 ## Quick actions in the tray
 
-The same three verbs as `Ctrl/Cmd N`, from the menu bar (macOS), the
-notification area (Windows) or the system tray (Linux), without going to the
-window first:
+The same verbs as `Ctrl/Cmd N`, from the menu bar (macOS), the notification
+area (Windows) or the system tray (Linux), without going to the window first:
 
 ```
   New journal entry
@@ -522,9 +690,15 @@ window first:
   Set an hour aside
   ☐ Track time
   ─────────────────
+  Add to library
+  ─────────────────
   Open Every Day
   Quit Every Day
 ```
+
+"Add to library" is the one this is really for: something was recommended to
+you while you were doing something else, and it has to land somewhere before
+you forget it.
 
 Choosing one raises the window and leaves the cursor where the typing goes.
 The list is what the open vault can actually do: a Markdown vault has no task

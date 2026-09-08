@@ -5,7 +5,7 @@
 //!
 //! ```text
 //!   store/
-//!     everyday.db      journals + entries, projects + tasks + time blocks
+//!     everyday.db      journals + entries, tasks + time, calendars, library
 //!     media/           attachment payloads (see everyday_core::blobstore)
 //! ```
 //!
@@ -33,6 +33,8 @@
 //! | task `status`, `priority`, `due_date` | how much work is outstanding and roughly when |
 //! | block `start_us`, `end_us`, `local_date`, `kind` | that time was booked, never to what |
 //! | event `calendar_id`, `local_date`, `end_date`, `start_us` | how many calendars, and which days have something on them |
+//! | item `kind_id`, `status`, `rating`, `favourite`, `year`, `finished_on` | how many shelves, how much is on each, and how you scored it |
+//! | log `item_id`, `event`, `local_date` | that something was got to the end of on a day, never what |
 //!
 //! Titles, bodies, tags, locations, attachments and file names are all
 //! sealed. Someone with the database file learns *that* you journalled on 14
@@ -64,16 +66,18 @@
 //!   journals.rs    impl JournalStore -- journals, entries, blobs
 //!   tasks.rs       impl TaskStore    -- projects, tasks, time blocks
 //!   calendars.rs   impl CalendarStore -- subscriptions and their events
+//!   library.rs     impl LibraryStore  -- shelves, items and the log
 //! ```
 //!
-//! One `SqliteStore` implements all three traits; the split is by domain,
-//! the same one `everyday_core::store` makes between the trait and its two
+//! One `SqliteStore` implements all four traits; the split is by domain,
+//! the same one `everyday_core::store` makes between the trait and its three
 //! optional siblings. It replaces a single file that had grown past 1,800
 //! lines, in which finding the four places a task's `sort_order` is written
 //! meant scrolling past the entry queries and the migration SQL.
 
 mod calendars;
 mod journals;
+mod library;
 mod schema;
 mod tasks;
 

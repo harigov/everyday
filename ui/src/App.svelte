@@ -4,12 +4,14 @@
   import { notify } from './lib/notify.svelte'
   import { todo } from './lib/todo.svelte'
   import { calendar } from './lib/calendar.svelte'
+  import { library } from './lib/library.svelte'
   import { tray } from './lib/tray.svelte'
   import Sidebar from './components/Sidebar.svelte'
   import EntryList from './components/EntryList.svelte'
   import Editor from './components/Editor.svelte'
   import TodoView from './components/TodoView.svelte'
   import CalendarView from './components/CalendarView.svelte'
+  import LibraryView from './components/LibraryView.svelte'
   import LockScreen from './components/LockScreen.svelte'
   import Setup from './components/Setup.svelte'
   import ErrorScreen from './components/ErrorScreen.svelte'
@@ -27,19 +29,22 @@
   app.onLock(() => notify.clear())
 
   // Put the quick actions in the menu bar, and keep them in step with the
-  // vault from here on. The three apps have already registered what they
+  // vault from here on. The four apps have already registered what they
   // offer by the time this runs -- the imports above are what does it.
   tray.start()
 
   // Each app tints the window with the accent of whatever it has selected:
-  // the journal you are in, the project you are looking at, or -- since the
-  // calendar spans every project at once -- the vault's own accent.
+  // the journal you are in, the project you are looking at, the shelf you are
+  // browsing, or -- since the calendar spans every project at once -- the
+  // vault's own accent.
   const accent = $derived(
     app.section === 'todo'
       ? todo.accent
       : app.section === 'calendar'
         ? 'var(--accent)'
-        : app.accent,
+        : app.section === 'library'
+          ? library.accent
+          : app.accent,
   )
 
   function onKeydown(e: KeyboardEvent) {
@@ -47,13 +52,15 @@
     if (!mod) return
     switch (e.key.toLowerCase()) {
       case 'n':
-        // The same key in all three apps, meaning the same thing: start the
-        // next thing. In the journal that is a new entry; in the todo app it
-        // is the capture line; in the calendar it is an hour set aside now.
+        // The same key in all four apps, meaning the same thing: start the
+        // next thing. In the journal that is a new entry; in the todo app and
+        // the library it is the capture line; in the calendar it is an hour
+        // set aside now.
         if (app.screen !== 'main') break
         e.preventDefault()
         if (app.section === 'todo') todo.focusCapture()
         else if (app.section === 'calendar') void calendar.bookNow()
+        else if (app.section === 'library') library.focusCapture()
         else void app.newEntry()
         break
       case 'l':
@@ -69,7 +76,7 @@
         }
         break
       case 'j':
-        // Cycle through the apps without reaching for the sidebar. Three of
+        // Cycle through the apps without reaching for the sidebar. Four of
         // them now, so it steps rather than toggles, skipping any the open
         // vault's backend cannot offer.
         if (app.screen === 'main') {
@@ -84,6 +91,7 @@
         void app.flush()
         void todo.flush()
         void calendar.flush()
+        void library.flush()
         break
     }
   }
@@ -104,7 +112,7 @@
    */
   onSaveAndClose(async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
-      await Promise.allSettled([app.flush(), todo.flush(), calendar.flush()])
+      await Promise.allSettled([app.flush(), todo.flush(), calendar.flush(), library.flush()])
       if (!app.saveFailing) break
     }
     await api.readyToClose().catch(() => {})
@@ -117,6 +125,7 @@
     void app.flush()
     void todo.flush()
     void calendar.flush()
+    void library.flush()
   }
 </script>
 
@@ -139,7 +148,7 @@
   {:else}
     <!-- Above the panes, not inside one: a conflict or a read-only vault is
          a fact about the whole window, and it must be visible whichever of
-         the three apps is open. -->
+         the four apps is open. -->
     <div class="shell">
       <Notices />
       <div class="panes">
@@ -148,6 +157,8 @@
           <TodoView />
         {:else if app.section === 'calendar'}
           <CalendarView />
+        {:else if app.section === 'library'}
+          <LibraryView />
         {:else}
           <EntryList />
           <main class="main"><Editor /></main>

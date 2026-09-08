@@ -66,6 +66,7 @@ export const TRAY_ORDER = {
   journal: 10,
   todo: 20,
   calendar: 30,
+  library: 40,
   /** The vault itself -- locking. Last, and away from the capture actions. */
   vault: 90,
 } as const
@@ -160,7 +161,7 @@ class TrayRegistry {
     onTrayAction((id) => void this.#run(id).catch(() => {}))
 
     // A reactive scope with no component to own it: the tray outlives every
-    // view, and its contents depend on state spread across all three stores.
+    // view, and its contents depend on state spread across all four stores.
     // The alternative -- each store calling a `sync()` after every mutation
     // that might matter -- is a list that is quietly wrong the first time
     // somebody forgets one, and a stale menu is worse than no menu because

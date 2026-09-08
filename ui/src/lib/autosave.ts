@@ -1,6 +1,6 @@
 // Debounce-and-write, once.
 //
-// All three apps do the same thing with an edit: mutate the record in place
+// All four apps do the same thing with an edit: mutate the record in place
 // so every view of it redraws from the same object, mark it dirty, and put it
 // on disk a beat after the typing stops. That was written out three times --
 // a private `Set` of ids, a private timer, a `patch` that reset the timer and

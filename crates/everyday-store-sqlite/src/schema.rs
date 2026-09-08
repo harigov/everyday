@@ -9,15 +9,16 @@ use everyday_core::error::{Error, Result};
 use rusqlite::Connection;
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub(crate) const SCHEMA_VERSION: i64 = 3;
+pub(crate) const SCHEMA_VERSION: i64 = 4;
 
 /// Bring the database up to [`SCHEMA_VERSION`].
 ///
 /// Stepped rather than all-or-nothing: a vault written by an earlier build
 /// has entries in it, so version 2 must *add* the task tables beside them
-/// rather than recreate the file, and version 3 the calendar tables beside
-/// both. Each step is idempotent and runs in its own transaction, and
-/// `user_version` is only advanced once they all land.
+/// rather than recreate the file, version 3 the calendar tables beside both,
+/// and version 4 the library tables beside all three. Each step is
+/// idempotent and runs in its own transaction, and `user_version` is only
+/// advanced once they all land.
 pub(crate) fn migrate(conn: &Connection) -> Result<()> {
     let version: i64 =
         conn.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(Error::backend)?;
@@ -46,6 +47,9 @@ pub(crate) fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 3 {
         conn.execute_batch(SCHEMA_V3).map_err(Error::backend)?;
+    }
+    if version < 4 {
+        conn.execute_batch(SCHEMA_V4).map_err(Error::backend)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(Error::backend)?;
     Ok(())
@@ -194,5 +198,78 @@ const SCHEMA_V3: &str = r#"
         -- A sync replaces one feed's rows, and the sidebar counts them.
         CREATE INDEX IF NOT EXISTS events_by_calendar
             ON events (calendar_id);
+        COMMIT;
+        "#;
+
+/// Version 4: the library domain -- shelves, the things on them, and the log.
+///
+/// Foreign keys, as the calendar tables have and the task tables do not, and
+/// for the calendar's reason: here the cascade SQLite offers is exactly the
+/// cascade wanted, and it reaches nothing outside these three tables.
+/// Deleting a shelf takes its items, deleting an item takes its log, and
+/// nothing else in the vault points at either. What is deliberately *not*
+/// cascaded is a cover: covers are content-addressed blobs, shared between
+/// records, and are reclaimed by the ordinary garbage collector on its grace
+/// period rather than deleted by whoever dropped the last reference.
+///
+/// Note what stays in the clear, which is only what an index is built from:
+/// `kind_id`, `status`, `rating`, `favourite`, `finished_on`, `year`, and a
+/// log row's `date` and `event`. Titles, creators, notes, tags, summaries,
+/// addresses, cover ids and the *names of the shelves themselves* are all
+/// sealed -- so the database says that somebody rated eleven things highly
+/// in March and never what any of them were.
+const SCHEMA_V4: &str = r#"
+        BEGIN;
+        CREATE TABLE IF NOT EXISTS kinds (
+            id          TEXT    PRIMARY KEY NOT NULL,
+            sort_order  INTEGER NOT NULL DEFAULT 0,
+            visible     INTEGER NOT NULL DEFAULT 1,
+            created_us  INTEGER NOT NULL,
+            updated_us  INTEGER NOT NULL,
+            data        BLOB    NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS items (
+            id           TEXT    PRIMARY KEY NOT NULL,
+            kind_id      TEXT    NOT NULL
+                                 REFERENCES kinds (id) ON DELETE CASCADE,
+            status       TEXT    NOT NULL,
+            rating       INTEGER,
+            favourite    INTEGER NOT NULL DEFAULT 0,
+            year         INTEGER,
+            started_on   TEXT,
+            finished_on  TEXT,
+            sort_order   INTEGER NOT NULL DEFAULT 0,
+            created_us   INTEGER NOT NULL,
+            updated_us   INTEGER NOT NULL,
+            data         BLOB    NOT NULL
+        );
+
+        -- A shelf draws one kind, split by status, in manual order: that is
+        -- this index, exactly.
+        CREATE INDEX IF NOT EXISTS items_by_kind
+            ON items (kind_id, status, sort_order);
+        -- "What did I get through this year", across every shelf.
+        CREATE INDEX IF NOT EXISTS items_by_finished
+            ON items (finished_on);
+        CREATE INDEX IF NOT EXISTS items_by_updated
+            ON items (updated_us DESC);
+
+        CREATE TABLE IF NOT EXISTS logs (
+            id          TEXT    PRIMARY KEY NOT NULL,
+            item_id     TEXT    NOT NULL
+                                REFERENCES items (id) ON DELETE CASCADE,
+            event       TEXT    NOT NULL,
+            local_date  TEXT    NOT NULL,
+            created_us  INTEGER NOT NULL,
+            data        BLOB    NOT NULL
+        );
+
+        -- One item's history, newest first.
+        CREATE INDEX IF NOT EXISTS logs_by_item
+            ON logs (item_id, local_date DESC);
+        -- The year in review: every completion in a window.
+        CREATE INDEX IF NOT EXISTS logs_by_date
+            ON logs (local_date, event);
         COMMIT;
         "#;

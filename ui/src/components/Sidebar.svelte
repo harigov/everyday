@@ -8,10 +8,11 @@
   import ConfirmDialog from './ConfirmDialog.svelte'
   import TodoNav from './TodoNav.svelte'
   import CalendarNav from './CalendarNav.svelte'
+  import LibraryNav from './LibraryNav.svelte'
   import type { Journal } from '../lib/types'
   import type { IconName } from '../lib/icons'
 
-  // One vault, three apps. The switcher is the only chrome above the nav
+  // One vault, four apps. The switcher is the only chrome above the nav
   // because the apps are peers -- none is a mode of another -- and each tab
   // is hidden on a backend that cannot carry it, so a Markdown vault does
   // not offer a tab that cannot work.
@@ -19,6 +20,7 @@
     { id: 'journal', label: 'Journal', icon: 'quote' },
     { id: 'todo', label: 'Todo', icon: 'check' },
     { id: 'calendar', label: 'Calendar', icon: 'calendar' },
+    { id: 'library', label: 'Library', icon: 'book' },
   ]
   const shownApps = $derived(APPS.filter((a) => app.canShow(a.id)))
 
@@ -86,6 +88,8 @@
     <TodoNav />
   {:else if app.section === 'calendar'}
     <CalendarNav />
+  {:else if app.section === 'library'}
+    <LibraryNav />
   {:else}
     <nav class="scroll nav">
       <button
@@ -215,6 +219,10 @@
      "one more place to put a journal". */
   .apps {
     display: flex;
+    /* Four of them now. At the sidebar's width the labels no longer fit on
+       one row, and a segmented control that wraps to two rows of two reads
+       better than one that ellipsises every tab to "Cale…". */
+    flex-wrap: wrap;
     gap: 2px;
     flex: none;
     margin: 0 var(--sp-2) var(--sp-1);
@@ -227,7 +235,9 @@
     align-items: center;
     justify-content: center;
     gap: 5px;
-    flex: 1;
+    /* `1 1 40%` rather than `1`: two per row when four are shown, and still
+       one row when a Markdown vault offers only two. */
+    flex: 1 1 40%;
     height: 26px;
     border-radius: calc(var(--radius) - 3px);
     font-size: var(--text-sm);

@@ -1,5 +1,4 @@
-//! Fetching a calendar feed. The only code in the application that opens a
-//! socket.
+//! Fetching a calendar feed.
 //!
 //! It lives here, in the shell, rather than in [`everyday_core`], and that is
 //! the whole point of the file existing at all. The core has no async
@@ -11,13 +10,10 @@
 //!
 //! # What this is allowed to talk to
 //!
-//! Exactly the addresses the user pasted in, and nothing else. There is no
-//! telemetry, no update check, no crash reporter and no analytics anywhere in
-//! this application; a request leaving this process means somebody
-//! subscribed to a calendar. The webview's own network permissions are
-//! unchanged and remain none at all — its content security policy still
-//! allows `connect-src 'self' ipc:` — so a feed's contents can never cause a
-//! request of their own.
+//! Exactly the addresses the user pasted in, and nothing else. A request
+//! leaving *this* module means somebody subscribed to a calendar. The client
+//! itself, and the rules about what may leave the process at all, are in
+//! [`crate::http`].
 //!
 //! # Defences
 //!
@@ -32,14 +28,12 @@
 //! * the whole exchange has a wall-clock timeout;
 //! * the body is read in chunks against [`MAX_FEED_BYTES`], so a server that
 //!   streams forever is disconnected rather than believed.
-
-use std::sync::OnceLock;
-use std::time::Duration;
+//!
+//! The last three are [`crate::http`]'s job, shared with the only other
+//! feature that opens a socket.
 
 use crate::error::{CommandError, CommandResult};
-
-/// Longest a single fetch may take, connection included.
-const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+use crate::http;
 
 /// Largest feed accepted.
 ///
@@ -48,40 +42,13 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// server that never stops sending is a server that fills memory.
 pub const MAX_FEED_BYTES: usize = 32 * 1024 * 1024;
 
-/// How many redirects to follow. Publishers do redirect: `webcal://` links
-/// hand out short URLs, and Outlook moves feeds between regional hosts.
-const MAX_REDIRECTS: usize = 5;
-
-fn client() -> CommandResult<&'static reqwest::Client> {
-    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .timeout(FETCH_TIMEOUT)
-                .connect_timeout(Duration::from_secs(10))
-                .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
-                // Publishers vary the document by user agent more often than
-                // you would hope; saying who we are is also the polite thing
-                // to appear in their logs.
-                .user_agent(concat!(
-                    "EveryDay/",
-                    env!("CARGO_PKG_VERSION"),
-                    " (calendar subscription)"
-                ))
-                .build()
-                .map_err(|e| e.to_string())
-        })
-        .as_ref()
-        .map_err(|e| CommandError::new("network", format!("could not start the fetcher: {e}")))
-}
-
 /// GET `url` and return it as text.
 ///
 /// Errors carry prose meant for the line under a calendar's name in the
 /// sidebar, so they say what to do about it rather than quoting a stack of
 /// TLS internals at somebody who pasted a link.
 pub async fn fetch(url: &str) -> CommandResult<String> {
-    let response = client()?
+    let response = http::client()?
         .get(url)
         // Some publishers content-negotiate; ask for what we can read, and
         // accept anything, because a good many of them serve `text/plain`.
@@ -97,17 +64,7 @@ pub async fn fetch(url: &str) -> CommandResult<String> {
 
     // Read in chunks rather than `.text()`, which would allocate whatever the
     // server decided to send.
-    if response.content_length().is_some_and(|n| n as usize > MAX_FEED_BYTES) {
-        return Err(CommandError::new("too_large", too_large()));
-    }
-    let mut response = response;
-    let mut body: Vec<u8> = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(describe)? {
-        if body.len() + chunk.len() > MAX_FEED_BYTES {
-            return Err(CommandError::new("too_large", too_large()));
-        }
-        body.extend_from_slice(&chunk);
-    }
+    let body = http::read_capped(response, MAX_FEED_BYTES, too_large).await?;
 
     // iCalendar is UTF-8 by definition, but feeds written by older systems
     // are not always. Lossy rather than fatal: one mangled character in an
@@ -150,30 +107,9 @@ fn describe(e: reqwest::Error) -> CommandError {
     } else {
         // Deliberately without the URL: an error string ends up in the
         // interface and in logs, and the URL is a credential.
-        format!("the calendar could not be fetched: {}", strip_url(&e.to_string()))
+        format!("the calendar could not be fetched: {}", http::strip_url(&e.to_string()))
     };
     CommandError::new("network", message)
-}
-
-/// Remove anything that looks like a URL from an error message.
-///
-/// `reqwest` interpolates the request URL into most of its `Display` output,
-/// and a subscription URL is a bearer token. It must not end up in
-/// `last_error`, which the interface shows and which is stored in the vault
-/// beside — but separately from — the sealed copy of the URL itself.
-fn strip_url(message: &str) -> String {
-    message
-        .split_whitespace()
-        .map(|word| {
-            let lower = word.to_ascii_lowercase();
-            if lower.contains("http://") || lower.contains("https://") {
-                "(the address)"
-            } else {
-                word
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// The days a sync materialises recurring events into.
@@ -192,19 +128,6 @@ pub fn sync_window(today: jiff::civil::Date) -> (jiff::civil::Date, jiff::civil:
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_error_message_never_carries_the_feed_url() {
-        // The bug this exists to prevent: a subscription token, which is a
-        // bearer credential, ending up in `last_error` -- a field the
-        // interface displays and the logs record.
-        let leaky = "error sending request for url \
-             (https://calendar.example.com/private/secrettoken/basic.ics): timed out";
-        let cleaned = strip_url(leaky);
-        assert!(!cleaned.contains("secrettoken"), "got {cleaned:?}");
-        assert!(!cleaned.contains("calendar.example.com"), "got {cleaned:?}");
-        assert!(cleaned.contains("timed out"), "the useful half must survive: {cleaned:?}");
-    }
 
     #[test]
     fn the_sync_window_reaches_backwards_as_well_as_forwards() {

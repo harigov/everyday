@@ -14,15 +14,18 @@
 //!   JournalStore        trait: sqlite, markdown, ... (crate::store)
 //!     +-- TaskStore     optional second domain (crate::store::tasks)
 //!     +-- CalendarStore optional third domain  (crate::store::calendars)
+//!     +-- LibraryStore  optional fourth domain (crate::store::library)
 //!     |
 //!   Cipher             trait: XChaCha20-Poly1305 or none (crate::crypto)
 //! ```
 //!
 //! ## Domains
 //!
-//! A vault holds three kinds of thing. Journals and entries ([`model`]) are
+//! A vault holds four kinds of thing. Journals and entries ([`model`]) are
 //! the original; projects, tasks and blocks of time ([`task`]) are the todo
-//! app; subscribed calendars and their events ([`calendar`]) are the third.
+//! app; subscribed calendars and their events ([`calendar`]) are the third;
+//! shelves, the things on them and the log of what you did with them
+//! ([`library`]) are the fourth.
 //!
 //! The calendar domain is the smallest of the three on purpose. Time you
 //! schedule for yourself was already a [`TimeBlock`] — a record in its own
@@ -30,6 +33,12 @@
 //! that a calendar would not need a storage layer of its own. What
 //! [`calendar`] adds is the part that genuinely was missing: *other
 //! people's* calendars, read from iCalendar feeds by [`ics`].
+//!
+//! The library is the only domain that reaches outward for *content* rather
+//! than for a feed: [`websearch`] looks a book or a film up and fills in the
+//! metadata. It is built on the same principle as [`ics`] — this crate
+//! composes the request and parses the reply, and something above it owns
+//! the socket — so the whole of it is testable offline.
 
 pub mod blobstore;
 pub mod calendar;
@@ -38,6 +47,7 @@ pub mod error;
 pub mod fsutil;
 pub mod ics;
 pub mod id;
+pub mod library;
 pub mod lockfile;
 pub mod model;
 pub mod richtext;
@@ -45,14 +55,23 @@ pub mod search;
 pub mod store;
 pub mod task;
 pub mod vault;
+pub mod websearch;
 
 pub use blobstore::FileBlobStore;
 pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatus, SyncReport};
 pub use error::{Error, Result};
-pub use id::{BlobId, BlockId, CalendarId, EntryId, EventId, JournalId, ProjectId, TaskId};
+pub use id::{
+    BlobId, BlockId, CalendarId, EntryId, EventId, ItemId, JournalId, KindId, LogId, ProjectId,
+    TaskId,
+};
+pub use library::{
+    ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,
+    LogEntry, LogEvent, Progress, Verbs,
+};
 pub use model::{Attachment, Entry, EntrySummary, Journal, Location, MediaKind, Weather};
 pub use richtext::RichDoc;
 pub use store::calendars::{CalendarStore, EventQuery};
+pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
 pub use store::tasks::{BlockQuery, ParentScope, ProjectScope, TaskQuery, TaskSort, TaskStore};
 pub use store::{
     BackendRegistry, Capabilities, EntryQuery, JournalStore, SortOrder, StoreContext, StoreFactory,
@@ -63,3 +82,4 @@ pub use task::{
     TaskStatus, TimeBlock,
 };
 pub use vault::{Vault, VaultConfig, VaultHeader, VaultStatus};
+pub use websearch::{Fetcher, SearchRequest, SearchResult, Source, WebSearch};

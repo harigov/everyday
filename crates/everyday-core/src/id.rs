@@ -92,6 +92,15 @@ typed_id!(BlockId, "block");
 typed_id!(CalendarId, "calendar");
 typed_id!(EventId, "event");
 
+// The library domain. A `KindId` names a shelf -- Books, Films, the one you
+// invented for wines -- an `ItemId` one thing on it, and a `LogId` one
+// occasion on which you did something about that thing. Three newtypes for
+// the same reason as everywhere above: they are all UUIDs and none of them
+// is interchangeable with another.
+typed_id!(KindId, "kind");
+typed_id!(ItemId, "item");
+typed_id!(LogId, "log");
+
 /// Content address of an attachment payload.
 ///
 /// Blobs are content-addressed with BLAKE3 so that the same photo dropped into

@@ -406,13 +406,16 @@ impl JournalStore for MarkdownStore {
             transactional: false,
             human_readable: !self.cipher.is_encrypting(),
             max_blob_bytes: None,
-            // Neither of the other two domains. A kanban board is not a
-            // thing anyone wants as a tree of files, and a cache of somebody
+            // None of the other three domains. A kanban board is not a
+            // thing anyone wants as a tree of files, a cache of somebody
             // else's meetings is even less so -- it would be a directory
             // this backend rewrote wholesale every hour, in a format nobody
-            // would ever want to grep.
+            // would ever want to grep -- and a watch list is a grid of
+            // covers and half-star ratings, which is a database's job and
+            // not a text file's.
             tasks: false,
             calendars: false,
+            library: false,
         }
     }
 

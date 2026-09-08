@@ -44,9 +44,9 @@ export type Screen = 'loading' | 'setup' | 'locked' | 'main' | 'error'
  * A vault holds more than a journal now. The section is the one piece of
  * chrome state that outlives a lock, so it is remembered locally -- coming
  * back to the app you were last in is what makes it feel like one program
- * rather than three bolted together.
+ * rather than four bolted together.
  */
-export const SECTIONS = ['journal', 'todo', 'calendar'] as const
+export const SECTIONS = ['journal', 'todo', 'calendar', 'library'] as const
 export type Section = (typeof SECTIONS)[number]
 
 /**
@@ -141,7 +141,8 @@ class AppState {
   /**
    * Things to drop when the vault locks.
    *
-   * The todo store registers one of these rather than being imported here.
+   * The todo and library stores register one of these rather than being
+   * imported here.
    * A lock must clear *every* decrypted thing the interface is holding, and
    * the alternative -- this file reaching into each app's store -- is a
    * circular import and a list that is quietly wrong the first time someone
@@ -209,8 +210,8 @@ class AppState {
     // interface can be opened straight to the app under review.
     const asked = isMock ? new URLSearchParams(location.search).get('section') : null
     const remembered = asked ?? localStorage.getItem('everyday.section')
-    if (remembered === 'journal' || remembered === 'todo' || remembered === 'calendar') {
-      this.section = remembered
+    if (SECTIONS.includes(remembered as Section)) {
+      this.section = remembered as Section
     }
     try {
       const boot = await api.bootstrap()
@@ -252,10 +253,22 @@ class AppState {
     return this.supportsTasks && this.status?.capabilities?.calendars === true
   }
 
+  /**
+   * Does this vault's backend carry the library?
+   *
+   * One capability, not a pair as the calendar needs. Nothing in the library
+   * reads a task or an event -- a shelf is its own three records -- so it is
+   * offered on any backend that carries the domain.
+   */
+  get supportsLibrary(): boolean {
+    return this.status?.capabilities?.library === true
+  }
+
   /** Is this section available on the vault that is open? */
   canShow(section: Section): boolean {
     if (section === 'todo') return this.supportsTasks
     if (section === 'calendar') return this.supportsCalendar
+    if (section === 'library') return this.supportsLibrary
     return true
   }
 
@@ -284,7 +297,7 @@ class AppState {
   /**
    * Move to the next app the open vault can offer. What Ctrl/Cmd J does.
    *
-   * A cycle rather than a toggle, now that there are three, and it skips
+   * A cycle rather than a toggle, now that there are four, and it skips
    * what the backend does not carry -- so on a Markdown vault the shortcut
    * is a no-op rather than a way to reach a screen that cannot work.
    */

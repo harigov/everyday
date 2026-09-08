@@ -10,6 +10,7 @@
 // never reaches a released application.
 
 import type {
+  AddedItem,
   BlockKind,
   BlockQuery,
   BlockSubject,
@@ -18,7 +19,19 @@ import type {
   CalendarEvent,
   CalendarInfo,
   EventQuery,
+  Item,
+  ItemQuery,
+  ItemStatus,
+  Kind,
+  KindInfo,
+  LibraryStats,
+  LogEntry,
+  LogEvent,
+  LogQuery,
   ProviderInfo,
+  SearchRequest,
+  SearchResult,
+  SourceInfo,
   SyncReport,
   Entry,
   EntryQuery,
@@ -33,7 +46,7 @@ import type {
   TimeBlock,
   VaultStatus,
 } from './types'
-import { TASK_STATUSES, VaultError, isOpen, priorityRank } from './types'
+import { TASK_STATUSES, VaultError, isAhead, isOpen, priorityRank } from './types'
 import { DEFAULT_COLORS } from './colors'
 
 const PASSWORD = 'everyday'
@@ -90,6 +103,534 @@ const BLOBS: Record<string, string> = {
   ['a'.repeat(64)]: swatch('#f0a35e', '#b8434f', 'the harbour at dusk'),
   ['b'.repeat(64)]: swatch('#4a7fb5', '#1c2f4a', 'the train window'),
   ['c'.repeat(64)]: swatch('#7ba05b', '#2f4a2f', 'first frost'),
+}
+
+// ── The library domain ───────────────────────────────────────────────────
+//
+// Enough of a shelf to design against: covers in four ratios, every status,
+// rated and unrated items side by side, and a history with more than one
+// line in it. The metadata lookup is faked further down -- see `web_search`
+// -- so the add sheet can be exercised in a browser with no network.
+
+/** A portrait "cover", so the grid has something to be a grid of. */
+function jacket(a: string, b: string, label: string): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="900">
+    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="${a}"/><stop offset="100%" stop-color="${b}"/>
+    </linearGradient></defs>
+    <rect width="600" height="900" fill="url(#g)"/>
+    <text x="48" y="820" font-family="Georgia,serif" font-size="46"
+          fill="rgba(255,255,255,.86)">${label}</text>
+  </svg>`
+  return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`
+}
+
+const COVERS: Record<string, string> = {
+  ['1'.repeat(64)]: jacket('#c98a3a', '#5b3410', 'Dune'),
+  ['2'.repeat(64)]: jacket('#3f6f8f', '#16283a', 'Arrival'),
+  ['3'.repeat(64)]: jacket('#7a5aa8', '#2c1b46', 'Pnin'),
+  ['4'.repeat(64)]: jacket('#4d7c4a', '#1e3320', 'Outer Wilds'),
+  ['5'.repeat(64)]: jacket('#a6455e', '#3d1522', 'Kind of Blue'),
+}
+
+function verbs(wishlist: string, active: string, done: string, log: string) {
+  return { wishlist, active, done, log }
+}
+
+function field(key: string, label: string, fieldType: Kind['fields'][number]['fieldType']) {
+  return { key, label, fieldType, placeholder: '' }
+}
+
+const kinds: KindInfo[] = [
+  {
+    id: 'k-book',
+    slug: 'book',
+    name: 'Books',
+    singular: 'Book',
+    icon: '\u{1f4d9}',
+    color: '#b4530f',
+    verbs: verbs('To read', 'Reading', 'Read', 'read'),
+    fields: [
+      field('author', 'Author', 'text'),
+      field('pages', 'Pages', 'number'),
+      field('publisher', 'Publisher', 'text'),
+      field('isbn', 'ISBN', 'text'),
+    ],
+    source: 'openLibrary',
+    progressUnit: 'page',
+    sortOrder: 0,
+    builtin: true,
+    visible: true,
+    createdAt: iso(300),
+    updatedAt: iso(300),
+    items: 0,
+    open: 0,
+  },
+  {
+    id: 'k-film',
+    slug: 'film',
+    name: 'Films',
+    singular: 'Film',
+    icon: '\u{1f3ac}',
+    color: '#0f766e',
+    verbs: verbs('To watch', 'Watching', 'Watched', 'watched'),
+    fields: [field('director', 'Director', 'text'), field('runtime', 'Runtime (min)', 'number')],
+    source: 'itunes',
+    progressUnit: 'minute',
+    sortOrder: 1,
+    builtin: true,
+    visible: true,
+    createdAt: iso(300),
+    updatedAt: iso(300),
+    items: 0,
+    open: 0,
+  },
+  {
+    id: 'k-game',
+    slug: 'game',
+    name: 'Games',
+    singular: 'Game',
+    icon: '\u{1f3ae}',
+    color: '#7c3aed',
+    verbs: verbs('To play', 'Playing', 'Played', 'played'),
+    fields: [field('developer', 'Developer', 'text'), field('platform', 'Platform', 'text')],
+    source: 'wikipedia',
+    progressUnit: 'hour',
+    sortOrder: 2,
+    builtin: true,
+    visible: true,
+    createdAt: iso(300),
+    updatedAt: iso(300),
+    items: 0,
+    open: 0,
+  },
+  {
+    id: 'k-music',
+    slug: 'music',
+    name: 'Music',
+    singular: 'Album',
+    icon: '\u{1f3b5}',
+    color: '#b91c5c',
+    verbs: verbs('To hear', 'Listening', 'Heard', 'listened to'),
+    fields: [field('artist', 'Artist', 'text'), field('label', 'Label', 'text')],
+    source: 'itunes',
+    progressUnit: '',
+    sortOrder: 3,
+    builtin: true,
+    visible: true,
+    createdAt: iso(300),
+    updatedAt: iso(300),
+    items: 0,
+    open: 0,
+  },
+  {
+    id: 'k-restaurant',
+    slug: 'restaurant',
+    name: 'Restaurants',
+    singular: 'Restaurant',
+    icon: '\u{1f37d}\u{fe0f}',
+    color: '#1d4ed8',
+    verbs: verbs('To try', 'Booked', 'Been', 'ate at'),
+    fields: [
+      field('cuisine', 'Cuisine', 'text'),
+      field('address', 'Address', 'multiline'),
+      field('url', 'Website', 'url'),
+    ],
+    source: 'nominatim',
+    progressUnit: '',
+    sortOrder: 4,
+    builtin: true,
+    visible: true,
+    createdAt: iso(300),
+    updatedAt: iso(300),
+    items: 0,
+    open: 0,
+  },
+]
+
+function seedItem(partial: Partial<Item> & { kindId: string; title: string }): Item {
+  return {
+    id: `i-${Math.random().toString(36).slice(2, 10)}`,
+    subtitle: '',
+    creator: '',
+    year: null,
+    status: 'wishlist',
+    rating: null,
+    external: [],
+    cover: null,
+    coverUrl: '',
+    summary: '',
+    notes: '',
+    tags: [],
+    facts: {},
+    links: [],
+    progress: null,
+    favourite: false,
+    startedOn: null,
+    finishedOn: null,
+    source: '',
+    sortOrder: 0,
+    createdAt: iso(30),
+    updatedAt: iso(30),
+    ...partial,
+  }
+}
+
+const items: Item[] = [
+  seedItem({
+    id: 'i-dune',
+    kindId: 'k-book',
+    title: 'Dune',
+    creator: 'Frank Herbert',
+    year: 1965,
+    status: 'done',
+    rating: 90,
+    external: [{ source: 'Open Library', score: 84, count: 1204, url: 'https://openlibrary.org' }],
+    cover: '1'.repeat(64),
+    summary: 'A desert planet, the spice that comes from it, and the empire that wants it.',
+    notes: 'Better than I remembered. The ecology holds up; the politics more so.',
+    tags: ['sci-fi', 'reread'],
+    facts: { author: 'Frank Herbert', pages: '412', publisher: 'Chilton Books' },
+    progress: { position: 412, total: 412, unit: 'page' },
+    favourite: true,
+    startedOn: day(58),
+    finishedOn: day(24),
+    source: 'openLibrary',
+    createdAt: iso(60),
+  }),
+  seedItem({
+    id: 'i-pnin',
+    kindId: 'k-book',
+    title: 'Pnin',
+    creator: 'Vladimir Nabokov',
+    year: 1957,
+    status: 'active',
+    cover: '3'.repeat(64),
+    facts: { author: 'Vladimir Nabokov', pages: '191' },
+    progress: { position: 84, total: 191, unit: 'page' },
+    startedOn: day(9),
+    tags: ['novel'],
+    createdAt: iso(12),
+  }),
+  seedItem({
+    id: 'i-cloud',
+    kindId: 'k-book',
+    title: 'The Cloud Atlas',
+    creator: 'David Mitchell',
+    year: 2004,
+    status: 'wishlist',
+    createdAt: iso(3),
+  }),
+  seedItem({
+    id: 'i-arrival',
+    kindId: 'k-film',
+    title: 'Arrival',
+    creator: 'Denis Villeneuve',
+    year: 2016,
+    status: 'done',
+    rating: 95,
+    external: [{ source: 'iTunes', score: 88, count: 4310, url: 'https://itunes.apple.com' }],
+    cover: '2'.repeat(64),
+    summary: 'A linguist is asked to talk to something that does not experience time as we do.',
+    facts: { director: 'Denis Villeneuve', runtime: '116' },
+    finishedOn: day(140),
+    startedOn: day(140),
+    source: 'itunes',
+    createdAt: iso(150),
+  }),
+  seedItem({
+    id: 'i-past-lives',
+    kindId: 'k-film',
+    title: 'Past Lives',
+    creator: 'Celine Song',
+    year: 2023,
+    status: 'wishlist',
+    createdAt: iso(6),
+  }),
+  seedItem({
+    id: 'i-outer-wilds',
+    kindId: 'k-game',
+    title: 'Outer Wilds',
+    creator: 'Mobius Digital',
+    year: 2019,
+    status: 'active',
+    cover: '4'.repeat(64),
+    facts: { developer: 'Mobius Digital', platform: 'PC' },
+    progress: { position: 11, total: null, unit: 'hour' },
+    startedOn: day(16),
+    createdAt: iso(20),
+  }),
+  seedItem({
+    id: 'i-kob',
+    kindId: 'k-music',
+    title: 'Kind of Blue',
+    creator: 'Miles Davis',
+    year: 1959,
+    status: 'done',
+    rating: 100,
+    cover: '5'.repeat(64),
+    facts: { artist: 'Miles Davis', label: 'Columbia' },
+    favourite: true,
+    finishedOn: day(70),
+    createdAt: iso(200),
+  }),
+  seedItem({
+    id: 'i-somsaa',
+    kindId: 'k-restaurant',
+    title: 'Som Saa',
+    status: 'done',
+    rating: 85,
+    facts: {
+      cuisine: 'Thai',
+      address: '43A Commercial Street, Spitalfields, London',
+      url: 'https://somsaa.example',
+    },
+    notes: 'Go back for the fish. Book weeks ahead.',
+    finishedOn: day(33),
+    createdAt: iso(90),
+  }),
+  seedItem({
+    id: 'i-tsuki',
+    kindId: 'k-restaurant',
+    title: 'Tsukiji-ya',
+    status: 'wishlist',
+    facts: { cuisine: 'Japanese' },
+    createdAt: iso(2),
+  }),
+  seedItem({
+    id: 'i-abandoned',
+    kindId: 'k-book',
+    title: 'Infinite Jest',
+    creator: 'David Foster Wallace',
+    year: 1996,
+    status: 'abandoned',
+    rating: 40,
+    notes: 'Twice. Not this decade.',
+    progress: { position: 210, total: 1079, unit: 'page' },
+    startedOn: day(320),
+    createdAt: iso(330),
+  }),
+]
+
+const logs: LogEntry[] = [
+  {
+    id: 'l-1',
+    itemId: 'i-dune',
+    event: 'started',
+    date: day(58),
+    tz: 'Europe/London',
+    note: 'Picked it up again after fifteen years.',
+    rating: null,
+    position: null,
+    minutes: null,
+    createdAt: iso(58),
+    updatedAt: iso(58),
+  },
+  {
+    id: 'l-2',
+    itemId: 'i-dune',
+    event: 'progress',
+    date: day(40),
+    tz: 'Europe/London',
+    note: '',
+    rating: null,
+    position: 240,
+    minutes: null,
+    createdAt: iso(40),
+    updatedAt: iso(40),
+  },
+  {
+    id: 'l-3',
+    itemId: 'i-dune',
+    event: 'finished',
+    date: day(24),
+    tz: 'Europe/London',
+    note: 'Holds up.',
+    rating: 90,
+    position: 412,
+    minutes: null,
+    createdAt: iso(24),
+    updatedAt: iso(24),
+  },
+  {
+    id: 'l-4',
+    itemId: 'i-arrival',
+    event: 'finished',
+    date: day(140),
+    tz: 'Europe/London',
+    note: '',
+    rating: 95,
+    position: null,
+    minutes: 116,
+    createdAt: iso(140),
+    updatedAt: iso(140),
+  },
+  {
+    id: 'l-5',
+    itemId: 'i-somsaa',
+    event: 'finished',
+    date: day(33),
+    tz: 'Europe/London',
+    note: 'The fish.',
+    rating: 85,
+    position: null,
+    minutes: null,
+    createdAt: iso(33),
+    updatedAt: iso(33),
+  },
+]
+
+/** A log row dated today, as `new_log` mints one. */
+function newLogEntry(itemId: string, event: LogEvent): LogEntry {
+  const now = new Date().toISOString()
+  return {
+    id: `l-${Math.random().toString(36).slice(2, 10)}`,
+    itemId,
+    event,
+    date: day(0),
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    note: '',
+    rating: null,
+    position: null,
+    minutes: null,
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
+/** Shelf counts, recomputed the way the backend does rather than cached. */
+function kindCounts(): KindInfo[] {
+  return kinds.map((k) => ({
+    ...k,
+    items: items.filter((i) => i.kindId === k.id).length,
+    open: items.filter((i) => i.kindId === k.id && isAhead(i.status)).length,
+  }))
+}
+
+function applyItemQuery(q: ItemQuery): Item[] {
+  let rows = items.filter((i) => {
+    if (q.kindId && i.kindId !== q.kindId) return false
+    if (q.statuses?.length && !q.statuses.includes(i.status)) return false
+    if (q.favourite !== null && q.favourite !== undefined && i.favourite !== q.favourite)
+      return false
+    // An unrated item is not a zero-rated one. Same rule as the core.
+    if (q.ratingAtLeast != null && (i.rating == null || i.rating < q.ratingAtLeast)) return false
+    if (q.finishedFrom && (!i.finishedOn || i.finishedOn < q.finishedFrom)) return false
+    if (q.finishedTo && (!i.finishedOn || i.finishedOn > q.finishedTo)) return false
+    if (q.tags?.length) {
+      const have = i.tags.map((t) => t.toLowerCase())
+      if (!q.tags.every((t) => have.includes(t.toLowerCase()))) return false
+    }
+    const needle = (q.text ?? '').trim().toLowerCase()
+    if (!needle) return true
+    const hay = [
+      i.title,
+      i.subtitle,
+      i.creator,
+      i.summary,
+      i.notes,
+      ...i.tags,
+      ...Object.values(i.facts),
+    ]
+      .join('\n')
+      .toLowerCase()
+    return hay.includes(needle)
+  })
+
+  const byTitle = (a: Item, b: Item) => a.title.toLowerCase().localeCompare(b.title.toLowerCase())
+  const nullsLast = <T>(a: T | null | undefined, b: T | null | undefined) =>
+    (a == null ? 1 : 0) - (b == null ? 1 : 0)
+  rows = rows.slice().sort((a, b) => {
+    // Favourites float, exactly as `sort_items` does.
+    const star = Number(b.favourite) - Number(a.favourite)
+    if (star) return star
+    switch (q.sort ?? 'addedDesc') {
+      case 'addedAsc':
+        return a.createdAt.localeCompare(b.createdAt) || byTitle(a, b)
+      case 'updatedDesc':
+        return b.updatedAt.localeCompare(a.updatedAt) || byTitle(a, b)
+      case 'titleAsc':
+        return byTitle(a, b)
+      case 'ratingDesc':
+        return (b.rating ?? 0) - (a.rating ?? 0) || byTitle(a, b)
+      case 'finishedDesc':
+        return (
+          nullsLast(a.finishedOn, b.finishedOn) ||
+          (b.finishedOn ?? '').localeCompare(a.finishedOn ?? '') ||
+          byTitle(a, b)
+        )
+      case 'yearAsc':
+        return nullsLast(a.year, b.year) || (a.year ?? 0) - (b.year ?? 0) || byTitle(a, b)
+      case 'yearDesc':
+        return nullsLast(a.year, b.year) || (b.year ?? 0) - (a.year ?? 0) || byTitle(a, b)
+      case 'manual':
+        return a.sortOrder - b.sortOrder || byTitle(a, b)
+      default:
+        return b.createdAt.localeCompare(a.createdAt) || byTitle(a, b)
+    }
+  })
+
+  const from = q.offset ?? 0
+  return rows.slice(from, q.limit == null ? undefined : from + q.limit)
+}
+
+function libraryStats(): LibraryStats {
+  const year = new Date().getFullYear().toString()
+  const rated = items.filter((i) => i.rating != null)
+  return {
+    kinds: kinds.length,
+    items: items.length,
+    wishlist: items.filter((i) => i.status === 'wishlist').length,
+    active: items.filter((i) => i.status === 'active').length,
+    done: items.filter((i) => i.status === 'done').length,
+    finishedThisYear: logs.filter(
+      (l) => (l.event === 'finished' || l.event === 'revisited') && l.date.startsWith(year),
+    ).length,
+    rated: rated.length,
+    meanRating: rated.length
+      ? Math.round(rated.reduce((sum, i) => sum + (i.rating ?? 0), 0) / rated.length)
+      : null,
+    byKind: kindCounts().map((k) => ({
+      kindId: k.id,
+      items: k.items,
+      open: k.open,
+      active: items.filter((i) => i.kindId === k.id && i.status === 'active').length,
+    })),
+  }
+}
+
+/**
+ * A stand-in for the metadata sources.
+ *
+ * Deliberately not a network call: the point of this file is that the whole
+ * interface runs in a browser with nothing behind it. It answers anything
+ * with something plausible, so the add sheet, the suggestion list and the
+ * "look this up again" panel can all be designed against.
+ */
+function fakeResults(query: string, limit: number): SearchResult[] {
+  const q = query.trim()
+  if (!q) return []
+  const shapes = [
+    { suffix: '', creator: 'Frank Herbert', year: 1965, rating: 84 },
+    { suffix: ' (Messiah)', creator: 'Frank Herbert', year: 1969, rating: 71 },
+    { suffix: ': the annotated edition', creator: 'Various', year: 2019, rating: null },
+    { suffix: ' — a life', creator: 'Anne Carson', year: 2011, rating: 66 },
+  ]
+  return shapes.slice(0, limit).map((shape, i) => ({
+    title: `${q[0]!.toUpperCase()}${q.slice(1)}${shape.suffix}`,
+    subtitle: '',
+    creator: shape.creator,
+    summary: `A plausible blurb for “${q}”, written by the mock backend so the panel has something to lay out.`,
+    year: shape.year,
+    url: `https://example.org/${encodeURIComponent(q)}/${i}`,
+    // No image: nothing in a mock should reach the network either, and the
+    // placeholder is what a real cover-less result looks like anyway.
+    imageUrl: '',
+    rating: shape.rating,
+    ratingCount: shape.rating ? 1200 - i * 137 : null,
+    facts: { author: shape.creator, pages: String(280 + i * 40) },
+    source: 'openLibrary',
+  }))
 }
 
 const journals: Journal[] = [
@@ -819,12 +1360,19 @@ function status(): VaultStatus {
       ? {
           journals: journals.length,
           entries: entries.length,
-          blobs: Object.keys(BLOBS).length,
+          blobs: Object.keys(BLOBS).length + Object.keys(COVERS).length,
           blobBytes: 8_300_000,
         }
       : undefined,
     capabilities: unlocked
-      ? { blobs: true, transactional: true, humanReadable: false, tasks: true, calendars: true }
+      ? {
+          blobs: true,
+          transactional: true,
+          humanReadable: false,
+          tasks: true,
+          calendars: true,
+          library: true,
+        }
       : undefined,
   }
 }
@@ -1376,11 +1924,286 @@ export const mockInvoke = async <T>(
         },
       ] satisfies ProviderInfo[] as T
 
+    // ── The library domain ───────────────────────────────────────────
+
+    case 'list_kinds':
+      requireUnlocked()
+      return kindCounts() as T
+
+    case 'new_kind': {
+      requireUnlocked()
+      const name = str(args.name, 'Shelf')
+      const singular = str(args.singular) || name
+      const now = new Date().toISOString()
+      return {
+        id: `k-${Math.random().toString(36).slice(2, 8)}`,
+        slug:
+          singular
+            .toLowerCase()
+            .replace(/[^a-z0-9]/g, '')
+            .slice(0, 24) || 'custom',
+        name,
+        singular,
+        icon: '\u{1f516}',
+        color: DEFAULT_COLORS[kinds.length % DEFAULT_COLORS.length]!,
+        verbs: verbs('To try', 'Underway', 'Done', 'finished'),
+        fields: [],
+        source: '',
+        progressUnit: '',
+        sortOrder: kinds.length,
+        builtin: false,
+        visible: true,
+        createdAt: now,
+        updatedAt: now,
+      } satisfies Kind as T
+    }
+
+    case 'save_kind': {
+      requireUnlocked()
+      const kind = args.kind as Kind
+      const at = kinds.findIndex((k) => k.id === kind.id)
+      const withCounts: KindInfo = { ...kind, items: 0, open: 0 }
+      if (at >= 0) kinds[at] = { ...kinds[at]!, ...kind }
+      else kinds.push(withCounts)
+      return undefined as T
+    }
+
+    case 'delete_kind': {
+      requireUnlocked()
+      const id = str(args.id)
+      // The cascade the real backend makes: the shelf, its items, their log.
+      const doomed = new Set(items.filter((i) => i.kindId === id).map((i) => i.id))
+      for (let i = logs.length - 1; i >= 0; i--) if (doomed.has(logs[i]!.itemId)) logs.splice(i, 1)
+      for (let i = items.length - 1; i >= 0; i--) if (doomed.has(items[i]!.id)) items.splice(i, 1)
+      const at = kinds.findIndex((k) => k.id === id)
+      if (at >= 0) kinds.splice(at, 1)
+      return undefined as T
+    }
+
+    case 'list_items': {
+      requireUnlocked()
+      const q = (args.query ?? {}) as ItemQuery
+      return applyItemQuery(q) as T
+    }
+
+    case 'get_item': {
+      requireUnlocked()
+      const item = items.find((i) => i.id === args.id)
+      if (!item) throw new VaultError('not_found', 'no such item')
+      return item as T
+    }
+
+    case 'add_item': {
+      requireUnlocked()
+      const title = str(args.title).trim()
+      if (!title) throw new VaultError('invalid', 'give it a name and it will be added')
+      const item = seedItem({
+        kindId: str(args.kindId),
+        title,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      })
+      // The lookup is best-effort in the real backend too: the item lands
+      // either way, and `lookedUp` says whether anything was found.
+      const hit = args.lookup ? fakeResults(title, 1)[0] : undefined
+      if (hit) {
+        item.creator = hit.creator
+        item.year = hit.year ?? null
+        item.summary = hit.summary
+        item.source = hit.source
+        item.external = hit.rating
+          ? [{ source: 'Open Library', score: hit.rating, count: hit.ratingCount, url: hit.url }]
+          : []
+        item.links = [{ label: 'Open Library', url: hit.url }]
+      }
+      items.unshift(item)
+      return { item, lookedUp: Boolean(hit) } satisfies AddedItem as T
+    }
+
+    case 'save_item': {
+      requireUnlocked()
+      const item = args.item as Item
+      const at = items.findIndex((i) => i.id === item.id)
+      if (at >= 0) items[at] = item
+      else items.unshift(item)
+      return undefined as T
+    }
+
+    case 'save_items': {
+      requireUnlocked()
+      for (const item of args.items as Item[]) {
+        const at = items.findIndex((i) => i.id === item.id)
+        if (at >= 0) items[at] = item
+        else items.unshift(item)
+      }
+      return undefined as T
+    }
+
+    case 'delete_item': {
+      requireUnlocked()
+      const id = str(args.id)
+      for (let i = logs.length - 1; i >= 0; i--) if (logs[i]!.itemId === id) logs.splice(i, 1)
+      const at = items.findIndex((i) => i.id === id)
+      if (at >= 0) items.splice(at, 1)
+      return undefined as T
+    }
+
+    case 'set_item_status': {
+      requireUnlocked()
+      const item = items.find((i) => i.id === args.id)
+      if (!item) throw new VaultError('not_found', 'no such item')
+      const status = args.status as ItemStatus
+      const today = day(0)
+      item.status = status
+      // The same date bookkeeping `Item::set_status` does: fill a blank,
+      // never overwrite what somebody set.
+      if (status === 'active' && !item.startedOn) item.startedOn = today
+      if (status === 'done') {
+        item.startedOn ??= today
+        item.finishedOn ??= today
+      }
+      if (status === 'wishlist') {
+        item.startedOn = null
+        item.finishedOn = null
+      }
+      item.updatedAt = new Date().toISOString()
+      const event: LogEvent | null =
+        status === 'active'
+          ? 'started'
+          : status === 'done'
+            ? 'finished'
+            : status === 'paused' || status === 'abandoned'
+              ? 'stopped'
+              : null
+      if (args.log && event) logs.push(newLogEntry(item.id, event))
+      return item as T
+    }
+
+    case 'set_item_progress': {
+      requireUnlocked()
+      const item = items.find((i) => i.id === args.id)
+      if (!item) throw new VaultError('not_found', 'no such item')
+      const position = Number(args.position) || 0
+      const kind = kinds.find((k) => k.id === item.kindId)
+      const total = (args.total as number | null) ?? item.progress?.total ?? null
+      item.progress = { position, total, unit: item.progress?.unit || kind?.progressUnit || 'step' }
+      if (item.status === 'wishlist') {
+        item.status = 'active'
+        item.startedOn ??= day(0)
+      }
+      item.updatedAt = new Date().toISOString()
+      if (args.log) {
+        const entry = newLogEntry(item.id, 'progress')
+        entry.position = position
+        logs.push(entry)
+      }
+      return item as T
+    }
+
+    case 'list_logs': {
+      requireUnlocked()
+      const q = (args.query ?? {}) as LogQuery
+      const rows = logs
+        .filter((l) => {
+          if (q.itemId && l.itemId !== q.itemId) return false
+          if (q.from && l.date < q.from) return false
+          if (q.to && l.date > q.to) return false
+          return !q.events?.length || q.events.includes(l.event)
+        })
+        .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt))
+      return (q.limit == null ? rows : rows.slice(0, q.limit)) as T
+    }
+
+    case 'new_log':
+      requireUnlocked()
+      return newLogEntry(str(args.itemId), args.event as LogEvent) as T
+
+    case 'save_log': {
+      requireUnlocked()
+      const entry = args.log as LogEntry
+      const at = logs.findIndex((l) => l.id === entry.id)
+      if (at >= 0) logs[at] = entry
+      else logs.push(entry)
+      return undefined as T
+    }
+
+    case 'delete_log': {
+      requireUnlocked()
+      const at = logs.findIndex((l) => l.id === args.id)
+      if (at >= 0) logs.splice(at, 1)
+      return undefined as T
+    }
+
+    case 'library_stats':
+      requireUnlocked()
+      return libraryStats() as T
+
+    // ── Web search ───────────────────────────────────────────────────
+
+    case 'web_search': {
+      requireUnlocked()
+      const request = (args.request ?? {}) as SearchRequest
+      return fakeResults(request.query, request.limit || 8) as T
+    }
+
+    case 'lookup_metadata':
+      requireUnlocked()
+      return fakeResults(str(args.query), (args.limit as number) ?? 8) as T
+
+    case 'search_sources':
+      return [
+        { id: 'web', label: 'the web', hasImages: false },
+        { id: 'wikipedia', label: 'Wikipedia', hasImages: true },
+        { id: 'openLibrary', label: 'Open Library', hasImages: true },
+        { id: 'itunes', label: 'iTunes', hasImages: true },
+        { id: 'nominatim', label: 'OpenStreetMap', hasImages: false },
+      ] satisfies SourceInfo[] as T
+
+    case 'apply_metadata': {
+      requireUnlocked()
+      const item = items.find((i) => i.id === args.id)
+      if (!item) throw new VaultError('not_found', 'no such item')
+      const hit = args.result as SearchResult
+      const overwrite = Boolean(args.overwrite)
+      // The rule the core enforces and this has to mirror or the mock lies:
+      // metadata fills gaps, and never touches notes, your rating or status.
+      const fill = (current: string, next: string) =>
+        next.trim() && (overwrite || !current.trim()) ? next.trim() : current
+      item.title = fill(item.title, hit.title)
+      item.creator = fill(item.creator, hit.creator)
+      item.summary = hit.summary || item.summary
+      if (hit.year != null && (overwrite || item.year == null)) item.year = hit.year
+      const kind = kinds.find((k) => k.id === item.kindId)
+      for (const [key, value] of Object.entries(hit.facts)) {
+        if (!kind?.fields.some((f) => f.key === key)) continue
+        if (overwrite || !item.facts[key]) item.facts[key] = value
+      }
+      if (hit.rating != null) {
+        const label = 'Open Library'
+        const existing = item.external.find((r) => r.source === label)
+        const rating = { source: label, score: hit.rating, count: hit.ratingCount, url: hit.url }
+        if (existing) Object.assign(existing, rating)
+        else item.external.push(rating)
+      }
+      if (hit.url && !item.links.some((l) => l.url === hit.url)) {
+        item.links.push({ label: 'Open Library', url: hit.url })
+      }
+      item.source = item.source && !overwrite ? item.source : hit.source
+      item.updatedAt = new Date().toISOString()
+      return item as T
+    }
+
+    case 'fetch_image':
+      requireUnlocked()
+      // Any of the seeded jackets, so the "get the cover" button visibly
+      // does something without a network.
+      return (Object.keys(COVERS)[0] ?? '1'.repeat(64)) as T
+
     default:
       throw new VaultError('unknown', `no mock for command ${cmd}`)
   }
 }
 
 export function mockMediaUrl(blob: string): string {
-  return BLOBS[blob] ?? swatch('#8a8a8a', '#4a4a4a', 'missing media')
+  return BLOBS[blob] ?? COVERS[blob] ?? swatch('#8a8a8a', '#4a4a4a', 'missing media')
 }
