@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from '../lib/state.svelte'
   import { api } from '../lib/api'
+  import { tray } from '../lib/tray.svelte'
   import { humanBytes, plural } from '../lib/format'
   import Icon from './Icon.svelte'
 
@@ -30,6 +31,15 @@
     await api.setAutoLock(seconds)
     app.status = await api.status()
   }
+
+  // The same strip of the screen has three names. Calling it the wrong one
+  // is how a setting becomes unfindable: nobody on macOS goes looking for a
+  // "system tray".
+  const TRAY_WORD = navigator.userAgent.includes('Mac')
+    ? 'menu bar'
+    : navigator.userAgent.includes('Windows')
+      ? 'notification area'
+      : 'system tray'
 
   const LOCK_CHOICES = [
     { label: 'Never', value: 0 },
@@ -63,6 +73,27 @@
           {/each}
         </div>
       </div>
+
+      {#if tray.supported}
+        <div class="section">
+          <span class="eyebrow">Quick actions</span>
+          <label class="toggle">
+            <input
+              type="checkbox"
+              checked={tray.enabled}
+              onchange={(e) => tray.setEnabled(e.currentTarget.checked)}
+            />
+            <span>Show Every Day in the {TRAY_WORD}</span>
+          </label>
+          <p class="aside">
+            {#if tray.unavailable}
+              This desktop session has no {TRAY_WORD} for Every Day to appear in.
+            {:else}
+              Start an entry, a task or an hour without coming back to the window.
+            {/if}
+          </p>
+        </div>
+      {/if}
 
       {#if status?.encrypted}
         <div class="section">
@@ -203,6 +234,25 @@
     background: var(--bg-raised);
     color: var(--fg);
     box-shadow: var(--shadow-sm);
+  }
+
+  .toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    font-size: var(--text-sm);
+    color: var(--fg);
+    cursor: pointer;
+  }
+  .toggle input {
+    flex: none;
+    accent-color: var(--accent);
+  }
+
+  .aside {
+    margin-top: var(--sp-2);
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
   }
 
   .link {

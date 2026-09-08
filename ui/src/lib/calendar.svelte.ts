@@ -21,6 +21,7 @@ import { api } from './api'
 import { Autosave } from './autosave'
 import { app, errorMessage, handle, isLocked } from './state.svelte'
 import { todo } from './todo.svelte'
+import { TRAY_ORDER, tray } from './tray.svelte'
 import {
   MIN_BLOCK_MINUTES,
   SNAP_MINUTES,
@@ -183,10 +184,28 @@ class CalendarState {
   #saves = new Autosave<string>((ids) => this.#writeBlocks(ids))
   #syncTimer: ReturnType<typeof setInterval> | null = null
   #clock: ReturnType<typeof setInterval> | null = null
-  #started = false
+  /**
+   * The first load, once it has been asked for.
+   *
+   * A promise rather than a `started` flag, so a second caller *waits* for
+   * the load instead of being waved through while it is still running.
+   * `bookNow` from the tray is exactly that second caller -- the view has
+   * only just mounted and started loading -- and waved through it wrote its
+   * block into a `blocks` array that the load then replaced with the state
+   * from before the write. The hour was on disk and not on the grid.
+   */
+  #started: Promise<void> | null = null
 
   constructor() {
     app.onLock(() => this.reset())
+    // Read here rather than in `start`, because `start` runs when the
+    // calendar view mounts and the timer is asked about before that: the
+    // tray offers "track time" from launch, and a store that believed
+    // nothing was running would offer to *start* one -- and `startTimer`
+    // stops whatever it thinks is running first, which would drop the
+    // session on disk without ever writing it as a block. Costs a
+    // `localStorage` read; touches no vault and nothing decrypted.
+    this.timer = readTimer()
   }
 
   reset() {
@@ -195,6 +214,7 @@ class CalendarState {
     this.#syncTimer = null
     this.#clock = null
     this.#saves.cancel()
+    this.#started = null
     this.calendars = []
     this.events = []
     this.blocks = []
@@ -207,17 +227,24 @@ class CalendarState {
     // The timer is deliberately *not* cleared: it is a note to self held in
     // local storage, it names no decrypted content, and a lock taken during
     // a working session should not silently throw away what you were doing.
-    this.#started = false
   }
 
   // ── lifecycle ────────────────────────────────────────────────────────
 
+  /** First entry into the calendar. Idempotent, and awaitable by anyone. */
   async start() {
-    if (this.#started) return
-    this.#started = true
+    this.#started ??= this.#start().catch(() => {
+      // Never leave a rejected promise in the slot: every later caller would
+      // inherit that one failure for the rest of the session. Forgetting it
+      // is what lets the next entry into the app try again.
+      this.#started = null
+    })
+    await this.#started
+  }
+
+  async #start() {
     const view = localStorage.getItem('everyday.calendar.view')
     if (view === 'day' || view === 'week' || view === 'month') this.view = view
-    this.timer = readTimer()
 
     // The clock only runs while something needs it: a per-second re-render
     // of the whole grid for the sake of a "now" line nobody is watching is
@@ -572,6 +599,10 @@ class CalendarState {
    * you cannot see is indistinguishable from nothing happening.
    */
   async bookNow() {
+    // The tray can ask for this a frame after the view mounted, with the
+    // first load still in flight; booking into a list that is about to be
+    // replaced loses the block from the grid. Already loaded, this is free.
+    await this.start()
     const at = new Date()
     const start = snap(at.getHours() * 60 + at.getMinutes(), SNAP_MINUTES)
     if (!this.days.includes(todayIso())) this.goto(todayIso())
@@ -969,3 +1000,40 @@ class CalendarState {
 }
 
 export const calendar = new CalendarState()
+
+// ── Quick actions ──────────────────────────────────────────────────────
+
+tray.register('calendar', TRAY_ORDER.calendar, () => {
+  if (app.screen !== 'main' || !app.supportsCalendar) return []
+  return [
+    {
+      id: 'calendar:book-now',
+      label: 'Set an hour aside',
+      run: async () => {
+        if (await app.goTo('calendar')) await calendar.bookNow()
+      },
+    },
+    // One item that is also a state, rather than two that are sometimes
+    // greyed out. A tray is where you glance to find out whether you left
+    // the timer running, so the tick has to be readable without opening
+    // anything further -- and the elapsed figure is deliberately *not* in
+    // the label, because a menu you have to open is not a clock and putting
+    // it there would rebuild this menu once a second.
+    calendar.timer
+      ? {
+          id: 'calendar:stop-timer',
+          label: 'Tracking time',
+          checked: true,
+          // Stopping the timer is a thing you do on your way past.
+          raise: false,
+          run: () => calendar.stopTimer(),
+        }
+      : {
+          id: 'calendar:start-timer',
+          label: 'Track time',
+          checked: false,
+          raise: false,
+          run: () => calendar.startTimer({ type: 'adhoc' }),
+        },
+  ]
+})

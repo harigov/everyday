@@ -51,13 +51,20 @@
     return bits.join(' · ')
   })
 
-  /** Focus the capture line. Bound to Ctrl/Cmd N by the app shell. */
-  export function focusCapture() {
-    // As in App.svelte: a `bind:this` component instance is `any` to
-    // typescript-eslint but is checked by `svelte-check`.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-    capture?.focus()
-  }
+  // Lend the capture line to the store, so Ctrl/Cmd N and the tray's "add a
+  // task" can put the cursor in it without holding a reference to this
+  // component. Retired on unmount: a request that arrives while the journal
+  // is on screen has to wait for the next mount, not focus a dead input.
+  $effect(() => {
+    todo.bindCapture(() => {
+      // A `bind:this` component instance is `any` to typescript-eslint,
+      // which cannot resolve types through a `.svelte` import the way
+      // svelte-check does -- and that checker does verify this call.
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+      capture?.focus()
+    })
+    return () => todo.bindCapture(null)
+  })
 </script>
 
 <main class="todo">

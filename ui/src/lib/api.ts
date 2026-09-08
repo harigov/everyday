@@ -35,6 +35,7 @@ import type {
   TaskStats,
   TaskStatus,
   TimeBlock,
+  TrayMenuItem,
   VaultStatus,
 } from './types'
 import { VaultError } from './types'
@@ -83,6 +84,15 @@ export let onSaveAndClose: (handler: () => void | Promise<void>) => void = () =>
  */
 export let onShellNotification: (handler: (spec: ShellNotification) => void) => void = () => {}
 
+/**
+ * Register the handler for a chosen tray menu item.
+ *
+ * The payload is the id the interface gave the item in `set_tray_menu`; the
+ * routing back to a function lives in `lib/tray.svelte.ts`. A no-op outside
+ * Tauri, where there is no tray to choose anything from.
+ */
+export let onTrayAction: (handler: (id: string) => void) => void = () => {}
+
 if (!MOCK) {
   const { listen } = await import('@tauri-apps/api/event')
   onSaveAndClose = (handler) => {
@@ -90,6 +100,9 @@ if (!MOCK) {
   }
   onShellNotification = (handler) => {
     void listen<ShellNotification>('everyday://notify', (event) => handler(event.payload))
+  }
+  onTrayAction = (handler) => {
+    void listen<string>('everyday://tray-action', (e) => handler(e.payload))
   }
 
   const mod = await import('@tauri-apps/api/core')
@@ -159,6 +172,16 @@ export const api = {
 
   /** Tells the shell that pending writes have landed and it may close. */
   readyToClose: () => invoke<void>('ready_to_close'),
+
+  /**
+   * Put these items in the tray menu, raising the icon if it is not up.
+   *
+   * False means this desktop has nowhere to put one -- a Linux session with
+   * no StatusNotifier host -- rather than that something went wrong.
+   */
+  setTrayMenu: (items: TrayMenuItem[]) => invoke<boolean>('set_tray_menu', { items }),
+  /** Take the tray icon down. */
+  hideTray: () => invoke<void>('hide_tray'),
 
   /** All tags in use, most frequent first. */
   tags: () => invoke<string[]>('list_tags'),

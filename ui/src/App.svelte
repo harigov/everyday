@@ -4,6 +4,7 @@
   import { notify } from './lib/notify.svelte'
   import { todo } from './lib/todo.svelte'
   import { calendar } from './lib/calendar.svelte'
+  import { tray } from './lib/tray.svelte'
   import Sidebar from './components/Sidebar.svelte'
   import EntryList from './components/EntryList.svelte'
   import Editor from './components/Editor.svelte'
@@ -25,7 +26,10 @@
   // reason the search index does.
   app.onLock(() => notify.clear())
 
-  let todoView = $state<ReturnType<typeof TodoView> | null>(null)
+  // Put the quick actions in the menu bar, and keep them in step with the
+  // vault from here on. The three apps have already registered what they
+  // offer by the time this runs -- the imports above are what does it.
+  tray.start()
 
   // Each app tints the window with the accent of whatever it has selected:
   // the journal you are in, the project you are looking at, or -- since the
@@ -48,12 +52,7 @@
         // is the capture line; in the calendar it is an hour set aside now.
         if (app.screen !== 'main') break
         e.preventDefault()
-        // A component instance obtained by `bind:this` is `any` to
-        // typescript-eslint, which cannot resolve types through a
-        // `.svelte` import the way `svelte-check` does -- and that checker
-        // does verify this call.
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-        if (app.section === 'todo') todoView?.focusCapture()
+        if (app.section === 'todo') todo.focusCapture()
         else if (app.section === 'calendar') void calendar.bookNow()
         else void app.newEntry()
         break
@@ -146,7 +145,7 @@
       <div class="panes">
         <Sidebar />
         {#if app.section === 'todo'}
-          <TodoView bind:this={todoView} />
+          <TodoView />
         {:else if app.section === 'calendar'}
           <CalendarView />
         {:else}

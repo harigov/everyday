@@ -4,9 +4,11 @@
 // interface reads, and it is the only place that calls `api`, so components
 // stay declarative and the save/lock logic lives in one auditable spot.
 
+import { tick } from 'svelte'
 import { api, isMock } from './api'
 import { AUTOSAVE_MS } from './autosave'
 import { notify } from './notify.svelte'
+import { TRAY_ORDER, tray } from './tray.svelte'
 import type {
   Bootstrap,
   Entry,
@@ -261,6 +263,22 @@ class AppState {
     if (!this.canShow(section)) return
     this.section = section
     localStorage.setItem('everyday.section', section)
+  }
+
+  /**
+   * Switch to a section and wait until it is actually on screen.
+   *
+   * What a quick action from outside the window needs and a click on the
+   * sidebar does not: an app's view is what starts its store and holds its
+   * capture field, and both are gone until the next render. Returns false
+   * if the open vault cannot show that app at all, so a caller can stop
+   * rather than act on the wrong screen.
+   */
+  async goTo(section: Section): Promise<boolean> {
+    if (this.screen !== 'main' || !this.canShow(section)) return false
+    this.setSection(section)
+    await tick()
+    return true
   }
 
   /**
@@ -793,3 +811,44 @@ class AppState {
 }
 
 export const app = new AppState()
+
+// ── Quick actions ──────────────────────────────────────────────────────
+//
+// The journal's, and the vault's own. Registered at module scope beside the
+// store whose state they read, which is the convention the other two follow
+// -- see `lib/tray.svelte.ts` for what the registration means and
+// `lib/todo.svelte.ts` for the shortest example of adding one.
+//
+// Every group starts by checking the screen. A tray menu is drawn from state
+// that the window is not showing, so "are we past the lock screen" is not
+// implied by anything else here the way it is inside a component.
+
+tray.register('journal', TRAY_ORDER.journal, () => {
+  if (app.screen !== 'main') return []
+  return [
+    {
+      id: 'journal:new-entry',
+      label: 'New journal entry',
+      // A vault with no journal in it has nowhere to put an entry. Greyed
+      // rather than hidden: the action is the app's, not the moment's.
+      enabled: app.journals.length > 0,
+      run: async () => {
+        if (await app.goTo('journal')) await app.newEntry()
+      },
+    },
+  ]
+})
+
+tray.register('vault', TRAY_ORDER.vault, () => {
+  // Nothing to lock on a vault with no password on it.
+  if (app.screen !== 'main' || !app.status?.encrypted) return []
+  return [
+    {
+      id: 'vault:lock',
+      label: 'Lock now',
+      // The one action here that is *about* not coming back to the window.
+      raise: false,
+      run: () => app.lock(),
+    },
+  ]
+})
