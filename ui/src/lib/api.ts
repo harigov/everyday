@@ -6,6 +6,7 @@
 // native dependencies. That is what makes the design workable on its own.
 
 import type {
+  AddedItem,
   BlockId,
   BlockKind,
   BlockQuery,
@@ -21,12 +22,27 @@ import type {
   EntrySummary,
   EventId,
   EventQuery,
+  Item,
+  ItemId,
+  ItemQuery,
+  ItemStatus,
   Journal,
   JournalId,
+  Kind,
+  KindId,
+  KindInfo,
+  LibraryStats,
+  LogEntry,
+  LogEvent,
+  LogId,
+  LogQuery,
   Project,
   ProjectId,
   ProviderInfo,
   SearchHit,
+  SearchRequest,
+  SearchResult,
+  SourceInfo,
   SyncReport,
   TagCount,
   Task,
@@ -262,6 +278,91 @@ export const api = {
 
   /** The providers the add sheet offers, with where to find each address. */
   calendarProviders: () => invoke<ProviderInfo[]>('calendar_providers'),
+
+  // ── The library domain ─────────────────────────────────────────────
+  //
+  // Shelves, the things on them, and the log of what you did with them.
+  // Available only when `status.capabilities.library` is true.
+
+  /**
+   * Every shelf, with its counts.
+   *
+   * Also what seeds the built-in shelves into an empty library, which is why
+   * the library store calls this before anything else — see `list_kinds` in
+   * the Rust shell for why the seeding hangs off a read.
+   */
+  kinds: () => invoke<KindInfo[]>('list_kinds'),
+  /** Mints an unsaved shelf, with a slug derived from the name. */
+  newKind: (name: string, singular: string) => invoke<Kind>('new_kind', { name, singular }),
+  saveKind: (kind: Kind) => invoke<void>('save_kind', { kind }),
+  /** Deletes the shelf, everything on it, and those items' log rows. */
+  deleteKind: (id: KindId) => invoke<void>('delete_kind', { id }),
+
+  items: (query: ItemQuery) => invoke<Item[]>('list_items', { query }),
+  item: (id: ItemId) => invoke<Item>('get_item', { id }),
+
+  /**
+   * Add something to a shelf, and optionally go and find out what it is.
+   *
+   * One call rather than create-then-enrich: what the interface wants back is
+   * the finished card. The lookup is best-effort — a network that is off
+   * never stops something being added — and `lookedUp` says whether anything
+   * was found, so the interface can offer to search again rather than
+   * silently implying it tried.
+   */
+  addItem: (kindId: KindId, title: string, lookup: boolean) =>
+    invoke<AddedItem>('add_item', { kindId, title, lookup }),
+  saveItem: (item: Item) => invoke<void>('save_item', { item }),
+  /** One write for many items: what a re-ordered shelf is. */
+  saveItems: (items: Item[]) => invoke<void>('save_items', { items }),
+  /** Deletes the item and its whole log. */
+  deleteItem: (id: ItemId) => invoke<void>('delete_item', { id }),
+
+  /**
+   * Move an item to a status, dating it and logging it in one act.
+   *
+   * The dates and the log row are coupled in the backend on purpose: marking
+   * a book read is the moment "finished on" is known *and* the moment the
+   * log gains the row that makes "what did I read this year" answerable.
+   */
+  setItemStatus: (id: ItemId, status: ItemStatus, log: boolean) =>
+    invoke<Item>('set_item_status', { id, status, log }),
+  /** Record where you have got to. Starts the item if it was only wished for. */
+  setItemProgress: (id: ItemId, position: number, total: number | null, log: boolean) =>
+    invoke<Item>('set_item_progress', { id, position, total, log }),
+
+  logs: (query: LogQuery) => invoke<LogEntry[]>('list_logs', { query }),
+  /** Mints an unsaved log row dated today on the machine's own calendar. */
+  newLog: (itemId: ItemId, event: LogEvent) => invoke<LogEntry>('new_log', { itemId, event }),
+  saveLog: (log: LogEntry) => invoke<void>('save_log', { log }),
+  deleteLog: (id: LogId) => invoke<void>('delete_log', { id }),
+
+  libraryStats: () => invoke<LibraryStats>('library_stats'),
+
+  // ── Web search ─────────────────────────────────────────────────────
+  //
+  // A facility rather than a feature of one app. `lib/websearch.ts` wraps
+  // these with debouncing, cancellation and a cache; prefer that over
+  // calling them directly.
+
+  /** Search the web. The general entry point; anything may call it. */
+  webSearch: (request: SearchRequest) => invoke<SearchResult[]>('web_search', { request }),
+  /** The sources a search can be run against, for the picker. */
+  searchSources: () => invoke<SourceInfo[]>('search_sources'),
+  /** Look a title up using whatever source a shelf prefers. */
+  lookupMetadata: (kindId: KindId, query: string, limit?: number) =>
+    invoke<SearchResult[]>('lookup_metadata', { kindId, query, limit: limit ?? null }),
+  /** Apply a chosen result to an item, downloading its cover on the way. */
+  applyMetadata: (id: ItemId, result: SearchResult, overwrite: boolean) =>
+    invoke<Item>('apply_metadata', { id, result, overwrite }),
+  /**
+   * Download a picture into the vault and return its blob id.
+   *
+   * Nothing in the interface ever loads a remote image directly: the content
+   * security policy allows images from `'self'` and `everyday:` and nowhere
+   * else, so a cover has to come home before it can be drawn.
+   */
+  fetchImage: (url: string) => invoke<string>('fetch_image', { url }),
 }
 
 /**

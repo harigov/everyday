@@ -108,7 +108,31 @@ export function humanBytes(n: number): string {
 }
 
 export function plural(n: number, one: string, many = `${one}s`): string {
-  return `${n.toLocaleString(locale())} ${n === 1 ? one : many}`
+  return `${n.toLocaleString(locale())} ${pluralWord(n, one, many)}`
+}
+
+/**
+ * The noun alone, agreeing with `n`. What `plural` is built from.
+ *
+ * Worth having separately for the places that have already printed the
+ * number, or are about to print it somewhere else in the sentence: "84 of
+ * 412 pages" wants the word and not a second count, and reaching for
+ * `plural` there produces "84 of 412 412 pages".
+ */
+export function pluralWord(n: number, one: string, many = `${one}s`): string {
+  return n === 1 ? one : many
+}
+
+/**
+ * "a" or "an", for a noun the interface did not write.
+ *
+ * Shelf names are typed by the person using the app, so "Add a book" and
+ * "Add an album" cannot both be hard-coded. Vowel-initial is the rule that
+ * gets it right nearly always; the exceptions ("an hour", "a university")
+ * are rarer in this position than the alternative of writing "Add book".
+ */
+export function article(word: string): string {
+  return /^[aeiou]/i.test(word.trim()) ? 'an' : 'a'
 }
 
 /**

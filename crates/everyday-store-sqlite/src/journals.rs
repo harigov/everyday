@@ -1,14 +1,15 @@
 //! The journal domain: journals, entries, blobs and housekeeping.
 //!
-//! This is [`JournalStore`], the trait every backend must implement. The two
-//! optional domains are in `tasks.rs` and `calendars.rs`, mirroring the split
-//! `everyday_core::store` already makes between the trait and its two
-//! siblings.
+//! This is [`JournalStore`], the trait every backend must implement. The
+//! three optional domains are in `tasks.rs`, `calendars.rs` and
+//! `library.rs`, mirroring the split `everyday_core::store` already makes
+//! between the trait and its three siblings.
 
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{BlobId, EntryId, JournalId};
 use everyday_core::model::{Entry, EntrySummary, Journal};
 use everyday_core::store::calendars::CalendarStore;
+use everyday_core::store::library::LibraryStore;
 use everyday_core::store::tasks::TaskStore;
 use everyday_core::store::{
     Capabilities, EntryQuery, JournalStore, SortOrder, StoreStats, journal_aad,
@@ -30,6 +31,7 @@ impl JournalStore for SqliteStore {
             max_blob_bytes: None,
             tasks: true,
             calendars: true,
+            library: true,
         }
     }
 
@@ -38,6 +40,10 @@ impl JournalStore for SqliteStore {
     }
 
     fn calendars(&self) -> Option<&dyn CalendarStore> {
+        Some(self)
+    }
+
+    fn library(&self) -> Option<&dyn LibraryStore> {
         Some(self)
     }
 

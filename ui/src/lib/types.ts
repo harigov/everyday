@@ -129,6 +129,14 @@ export interface Capabilities {
    * is the pair, and is what the sidebar reads.
    */
   calendars: boolean
+  /**
+   * Backend carries the library domain, so the library app can be offered.
+   *
+   * Independent of the other two, unlike the calendar: nothing in the library
+   * reads a task or an event, so it is offered on any backend that carries
+   * this alone.
+   */
+  library: boolean
 }
 
 export interface VaultStatus {
@@ -470,3 +478,282 @@ export type TrayMenuItem =
     }
   | { kind: 'separator' }
   | { kind: 'submenu'; label: string; enabled: boolean; items: TrayMenuItem[] }
+
+// ── The library domain ───────────────────────────────────────────────────
+//
+// Mirrors `everyday-core`'s `library` module. Three records, and the middle
+// one is the point:
+//
+//   Kind ────── Item ────── LogEntry
+//  (Books)     (Dune)      started 3 Mar, finished 2 Apr, ★★★★½
+//
+// A *kind* is data rather than a variant, so "Board games" is something you
+// add rather than something we ship; a *log entry* is a record rather than a
+// field, so reading something twice does not overwrite the first time. See
+// the core module's docs for both arguments in full.
+
+export type KindId = string
+export type ItemId = string
+export type LogId = string
+
+/** How a shelf's extra fields are written. Presentation, never validation. */
+export type FieldType = 'text' | 'multiline' | 'number' | 'date' | 'url'
+
+export interface FieldDef {
+  /** Stable key into `Item.facts`. Renaming the label never moves this. */
+  key: string
+  label: string
+  fieldType: FieldType
+  placeholder: string
+}
+
+/**
+ * What a shelf calls the states an item can be in.
+ *
+ * A person *reads* a book, *watches* a series and *plays* a game, and an app
+ * that insists on "in progress" for all three reads like a form.
+ */
+export interface Verbs {
+  /** "To read", "To watch". */
+  wishlist: string
+  /** "Reading", "Watching", "Playing". */
+  active: string
+  /** "Read", "Watched", "Played". */
+  done: string
+  /** Lower case, for mid-sentence: "read on 4 March". */
+  log: string
+}
+
+/** Where a shelf's metadata is looked up. Matches `websearch::Source`. */
+export type SearchSource = 'web' | 'wikipedia' | 'openLibrary' | 'itunes' | 'nominatim'
+
+/** A category of thing you keep track of. Data, not a variant. */
+export interface Kind {
+  id: KindId
+  /** Stable machine name — `book`, `film`. What lookups key on. */
+  slug: string
+  /** Plural: it names a shelf. */
+  name: string
+  /** Singular: the buttons say "Add a book". */
+  singular: string
+  icon: string
+  /** `#rrggbb`; tints the shelf and every card on it. */
+  color: string
+  verbs: Verbs
+  fields: FieldDef[]
+  /** A `SearchSource` slug. Anything unrecognised means a plain web search. */
+  source: string
+  /** "page", "episode", "hour". Empty means no notion of being part-way. */
+  progressUnit: string
+  sortOrder: number
+  /** Seeded by the app rather than added by hand. */
+  builtin: boolean
+  visible: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+/** A shelf plus how much is on it. */
+export interface KindInfo extends Kind {
+  items: number
+  /** Wishlist, active and paused together: everything still ahead of you. */
+  open: number
+}
+
+export const ITEM_STATUSES = ['wishlist', 'active', 'paused', 'done', 'abandoned'] as const
+export type ItemStatus = (typeof ITEM_STATUSES)[number]
+
+/** Still something you intend to get to. `abandoned` is not. */
+export function isAhead(status: ItemStatus): boolean {
+  return status === 'wishlist' || status === 'active' || status === 'paused'
+}
+
+/** Somebody else's score, normalised to 0–100 so two sources can be compared. */
+export interface ExternalRating {
+  source: string
+  score: number
+  count?: number | null
+  url: string
+}
+
+export interface Link {
+  label: string
+  url: string
+}
+
+/** How far through you are. `total` is absent when there is no finish line. */
+export interface Progress {
+  position: number
+  total?: number | null
+  unit: string
+}
+
+export interface Item {
+  id: ItemId
+  kindId: KindId
+  title: string
+  subtitle: string
+  /** Author, director, artist, developer, chef. */
+  creator: string
+  year?: number | null
+  status: ItemStatus
+  /** Yours, 0–100. `stars()` in `lib/rating.ts` is the display conversion. */
+  rating?: number | null
+  external: ExternalRating[]
+  /** A blob id. Covers are downloaded into the vault, never hot-linked. */
+  cover?: BlobId | null
+  /** Where the cover came from, kept so it can be fetched again. */
+  coverUrl: string
+  /** The blurb, in the source's words. A re-fetch replaces it. */
+  summary: string
+  /** Yours. Nothing a lookup does can touch this. */
+  notes: string
+  tags: string[]
+  /** The shelf's extra fields, keyed by `FieldDef.key`. */
+  facts: Record<string, string>
+  links: Link[]
+  progress?: Progress | null
+  favourite: boolean
+  /** `YYYY-MM-DD`. Denormalised from the log for the card and the sort. */
+  startedOn?: string | null
+  finishedOn?: string | null
+  /** Which source filled this in; empty for something typed by hand. */
+  source: string
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+}
+
+/** What sort of thing happened, on a day. */
+export const LOG_EVENTS = [
+  'started',
+  'progress',
+  'finished',
+  'revisited',
+  'note',
+  'stopped',
+] as const
+export type LogEvent = (typeof LOG_EVENTS)[number]
+
+/** Both ways of getting to the end of something. */
+export function isCompletion(event: LogEvent): boolean {
+  return event === 'finished' || event === 'revisited'
+}
+
+/** One occasion on which you did something about an item. */
+export interface LogEntry {
+  id: LogId
+  itemId: ItemId
+  event: LogEvent
+  /** `YYYY-MM-DD`, in `tz`. A day, because a day is what a person knows. */
+  date: string
+  tz: string
+  note: string
+  /** What you thought *at the time*, 0–100. */
+  rating?: number | null
+  position?: number | null
+  minutes?: number | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type ItemSort =
+  | 'addedDesc'
+  | 'addedAsc'
+  | 'updatedDesc'
+  | 'titleAsc'
+  | 'ratingDesc'
+  | 'finishedDesc'
+  | 'yearAsc'
+  | 'yearDesc'
+  | 'manual'
+
+export interface ItemQuery {
+  kindId?: KindId | null
+  /** Empty means any status. */
+  statuses?: ItemStatus[]
+  tags?: string[]
+  text?: string
+  favourite?: boolean | null
+  /** 0–100. An unrated item never passes a lower bound. */
+  ratingAtLeast?: number | null
+  finishedFrom?: string | null
+  finishedTo?: string | null
+  sort?: ItemSort
+  offset?: number
+  limit?: number | null
+}
+
+export interface LogQuery {
+  itemId?: ItemId | null
+  from?: string | null
+  to?: string | null
+  /** Empty means any event. */
+  events?: LogEvent[]
+  limit?: number | null
+}
+
+/** What is on one shelf. Counted by the backend over the whole vault. */
+export interface KindCount {
+  kindId: KindId
+  items: number
+  open: number
+  active: number
+}
+
+export interface LibraryStats {
+  kinds: number
+  items: number
+  wishlist: number
+  active: number
+  done: number
+  /** Log rows meaning "got to the end of it" dated in the current year. */
+  finishedThisYear: number
+  rated: number
+  /** Mean of your ratings on the 0–100 scale; absent if you have rated none. */
+  meanRating?: number | null
+  byKind: KindCount[]
+}
+
+/** What `addItem` hands back: the item, and whether the web knew it. */
+export interface AddedItem {
+  item: Item
+  lookedUp: boolean
+}
+
+// ── Web search ───────────────────────────────────────────────────────────
+//
+// A facility rather than a feature of the library: `lib/websearch.ts` is the
+// class any component can reach for. Mirrors `everyday-core`'s `websearch`.
+
+export interface SearchRequest {
+  query: string
+  source: SearchSource
+  /** The `Kind.slug` this is for, when there is one. */
+  hint: string
+  limit: number
+}
+
+/** One answer, from any source, in one shape. Everything is optional. */
+export interface SearchResult {
+  title: string
+  subtitle: string
+  creator: string
+  summary: string
+  year?: number | null
+  url: string
+  imageUrl: string
+  /** Their score, normalised to 0–100. */
+  rating?: number | null
+  ratingCount?: number | null
+  /** Already keyed to match the field keys the seeded shelves use. */
+  facts: Record<string, string>
+  source: string
+}
+
+/** A source, for the picker. */
+export interface SourceInfo {
+  id: SearchSource
+  label: string
+  hasImages: boolean
+}

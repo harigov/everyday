@@ -201,7 +201,7 @@
 {/if}
 
 <style>
-  /* The same metrics as the other two navs: one sidebar, three apps, and a
+  /* The same metrics as the other navs: one sidebar, four apps, and a
      row that changed height when you switched would read as three programs. */
   .nav {
     flex: 1;
