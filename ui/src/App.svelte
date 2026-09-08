@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, onSaveAndClose } from './lib/api'
   import { app } from './lib/state.svelte'
+  import { notify } from './lib/notify.svelte'
   import { todo } from './lib/todo.svelte'
   import { calendar } from './lib/calendar.svelte'
   import Sidebar from './components/Sidebar.svelte'
@@ -13,8 +14,16 @@
   import ErrorScreen from './components/ErrorScreen.svelte'
   import Logo from './components/Logo.svelte'
   import Notices from './components/Notices.svelte'
+  import Toasts from './components/Toasts.svelte'
 
   void app.start()
+  // Let the Rust shell speak. Its background work -- refreshing subscribed
+  // calendars on a timer -- previously had nowhere to report to but the log.
+  notify.listenToShell()
+  // A toast can be quoting an entry title or a project name, which are
+  // decrypted contents of the vault. They go when the key does, for the same
+  // reason the search index does.
+  app.onLock(() => notify.clear())
 
   let todoView = $state<ReturnType<typeof TodoView> | null>(null)
 
@@ -113,6 +122,11 @@
 </script>
 
 <svelte:window onkeydown={onKeydown} onbeforeunload={onBeforeUnload} />
+
+<!-- Outside the screen switch on purpose: a notification is a fact about
+     the application, so it has to arrive on the lock screen and the error
+     screen too. Those are the moments something has gone wrong. -->
+<Toasts />
 
 <div class="app" style="--journal-accent: {accent}">
   {#if app.screen === 'loading'}

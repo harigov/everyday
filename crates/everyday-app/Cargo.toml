@@ -23,6 +23,11 @@ everyday-vault.workspace = true
 tauri.workspace = true
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+# The portability layer for notifications. One API over UserNotifications on
+# macOS, the XDG notification service on Linux, WinRT toasts on Windows, and
+# the two mobile targets when their shells exist -- so `notify.rs` and the
+# interface's notification service contain no per-platform code at all.
+tauri-plugin-notification = "2"
 serde.workspace = true
 serde_json.workspace = true
 jiff.workspace = true

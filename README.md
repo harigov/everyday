@@ -176,6 +176,76 @@ permissions are unchanged and remain none: its content security policy allows
 no outbound connection, so a feed's contents can never cause a request of
 their own.
 
+## Notifications
+
+One service, one call, from anywhere in the interface:
+
+```ts
+import { notify } from './lib/notify.svelte'
+
+notify.success('Calendar refreshed')
+notify.error('Your journal is not being saved', {
+  body: 'Every attempt for the last minute has failed.',
+  reach: 'user',
+})
+```
+
+The caller says **what happened** and **how far it needs to reach**. It does
+not say where the message is drawn, because that answer depends on things no
+call site can know — whether the window is in front of the user, and whether
+this machine will let the app post to its notification centre.
+
+`reach` is the whole design and there are two values. `app`, the default,
+means the message is about something the user is looking at; it never leaves
+the window. `user` means it has to reach a person who may not have this app
+open at all — their writing is not on disk, a subscription they rely on has
+stopped answering — and it is the only reach allowed out to the operating
+system. Defaulting to `app` is what stops a chatty background task becoming a
+chatty notification centre.
+
+From there the routing (`ui/src/lib/notify-policy.ts`) is four rules:
+
+| | window focused | window not focused |
+|---|---|---|
+| `reach: 'app'` | toast | toast |
+| `reach: 'user'` | toast | OS notification |
+
+with two refinements. A `reach: 'user'` notification carrying a **button**, or
+one meant to **stay until dismissed**, goes to *both*: the OS banner has
+nowhere to put a button and a notification centre retires banners on its own
+schedule, so the banner is the summons and the toast is the thing itself. And
+when the OS channel is unavailable — permission refused, no notification
+daemon, an old webview — everything falls back to a toast, which is waiting in
+the window when the user returns. Degrading is the normal case, not the error
+case.
+
+**Every platform the app runs on.** The packaged app posts through
+[`tauri-plugin-notification`](https://v2.tauri.app/plugin/notification/), which
+is one API over UserNotifications on macOS, the XDG notification service on
+Linux, WinRT toasts on Windows, and the two mobile targets when their shells
+exist. The interface running in a browser on its mock backend (`make ui`) posts
+through the web Notification API, so the routing above can be exercised while
+the interface is being designed. There is no per-platform code in either the
+service or the shell.
+
+Permission is asked for **lazily**, the first time something genuinely needs to
+reach a person who is not looking — never at startup, where a system prompt
+over a window nobody has read yet gets a reflex "no" that then sticks.
+
+**The Rust shell can raise one too.** It does work the interface never sees —
+refreshing subscribed calendars on a timer — and before this the only thing it
+could say about a result was a log line. `everyday_app::notify` emits a
+`everyday://notify` event; the interface consumes it and applies exactly the
+routing above. That is the point of one service rather than two: the rule
+about not putting a banner over a focused window is written once.
+
+Distinct from `Notices.svelte`, which stays. A **notice** is a *condition* that
+is true right now and is shown for as long as it holds — a conflict awaiting a
+decision, a read-only vault — so it takes space in the layout. A **toast** is
+an *event* that has happened, so it floats over the layout and leaves. Putting
+an event in the banner would make the window jump under someone's cursor;
+putting a condition in a toast would let it expire while still being true.
+
 ## Layout
 
 ```
@@ -293,9 +363,15 @@ The parts of the design that exist only to keep data:
   it reports back — or after three seconds regardless, because an app that
   will not quit is its own bug.
 
-* **A failed save is retried.** The dirty set is put back on failure and the
-  delay widens to 30s, so a full disk or a busy database does not silently
-  discard what was typed while an error banner was on screen.
+* **A failed save is retried, and then says so out loud.** The dirty set is
+  put back on failure and the delay widens to 30s, so a full disk or a busy
+  database does not silently discard what was typed while an error banner was
+  on screen. Once the backoff has topped out — the retries have been failing
+  for over a minute — it is no longer a hiccup, and the notification service
+  takes it to the operating system so it reaches an author who has walked
+  away from the window. A save that lands afterwards says that too: being
+  told your writing is not on disk and never told that it is leaves you
+  checking.
 
 * **GC will not collect anything young.** See the note under the CLI above.
 

@@ -26,6 +26,7 @@ use tauri::State;
 
 use crate::error::{CommandError, CommandResult};
 use crate::feeds;
+use crate::notify::{self, Notification};
 use crate::state::AppState;
 
 /// Run blocking vault work off the async runtime.
@@ -519,7 +520,12 @@ pub async fn sync_calendar(
     id: CalendarId,
 ) -> CommandResult<SyncReport> {
     let vault = state.require()?;
-    sync_one(&vault, id).await
+    let report = sync_one(&vault, id).await?;
+    // A hand-driven refresh that works ends the outage as much as a
+    // background one does, so the next failure is news again. Without this, a
+    // feed fixed from the sidebar would never notify a second time.
+    state.feed_recovered(id);
+    Ok(report)
 }
 
 /// Fetch every subscription whose refresh interval has elapsed.
@@ -530,6 +536,7 @@ pub async fn sync_calendar(
 /// raised: one calendar being down must not stop the other three.
 #[tauri::command]
 pub async fn sync_due_calendars(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     force: bool,
 ) -> CommandResult<Vec<SyncReport>> {
@@ -542,21 +549,52 @@ pub async fn sync_due_calendars(
         return Ok(Vec::new());
     }
     let now = jiff::Timestamp::now();
-    let due: Vec<CalendarId> = vault
+    // The name travels with the id because the notification below needs it,
+    // and re-reading the subscription after a failed sync to find out what to
+    // call it is a second decrypt for a string we already had.
+    let due: Vec<(CalendarId, String)> = vault
         .calendars()?
         .into_iter()
         .filter(|c| c.origin.url().is_some() && (force || c.is_due(now)))
-        .map(|c| c.id)
+        .map(|c| (c.id, c.name))
         .collect();
 
     let mut out = Vec::new();
-    for id in due {
+    for (id, name) in due {
         match sync_one(&vault, id).await {
-            Ok(report) => out.push(report),
-            // Already recorded on the subscription by `sync_one`; the
-            // interface reads it from there, beside the calendar it belongs
-            // to, rather than as an error over the whole operation.
-            Err(e) => tracing::info!(%id, error = %e, "a calendar could not be refreshed"),
+            Ok(report) => {
+                state.feed_recovered(id);
+                out.push(report);
+            }
+            // The failure itself is already recorded on the subscription by
+            // `sync_one`, and the calendar sidebar shows it there, beside the
+            // calendar it belongs to. That is the right place for it and it
+            // stays -- but it is only the right place if you are looking at
+            // the calendar. This pass runs on a timer whoever is using the
+            // app, so the case worth notifying is somebody who has spent the
+            // week in the journal while a subscription they rely on has been
+            // quietly returning nothing.
+            //
+            // Once per outage, never on a refresh the user asked for by hand
+            // -- they are looking at the calendar, and the sidebar has just
+            // told them.
+            Err(e) => {
+                tracing::info!(%id, error = %e, "a calendar could not be refreshed");
+                if !force && state.feed_failed(id) {
+                    notify::notify(
+                        &app,
+                        Notification::warning(format!("{name} is not refreshing"))
+                            // Deliberately not `e.message`: a feed URL is a
+                            // bearer credential and error text from a fetch
+                            // can quote it. The interface shows the recorded
+                            // detail beside the calendar, where the person
+                            // reading it already has the address.
+                            .body("Its events may be out of date. Open the calendar for details.")
+                            .for_user()
+                            .key(format!("feed:{id}")),
+                    );
+                }
+            }
         }
     }
     Ok(out)
