@@ -18,6 +18,8 @@
 
   import { calendar, DEFAULT_BLOCK_MINUTES, type Slot } from '../lib/calendar.svelte'
   import { formatMinutes } from '../lib/format'
+  import { menu } from '../lib/menu.svelte'
+  import { blockMenu, calendarTaskMenu, dayMenu, eventMenu, timeMenu } from '../lib/menus'
   import {
     MIN_BLOCK_MINUTES,
     SNAP_MINUTES,
@@ -137,6 +139,18 @@
   /** Is this slot the one currently under the pointer? It is drawn as the draft. */
   function isDragging(slot: Slot): boolean {
     return !!drag && (drag.mode === 'move' || drag.mode === 'resize') && slot.block?.id === drag.id
+  }
+
+  /**
+   * The menu for whatever is under the pointer.
+   *
+   * Selecting first, so the rail on the right is showing the same thing the
+   * menu is about -- a menu raised on one block while the panel describes
+   * another is two answers to the same question.
+   */
+  function onSlotContextMenu(e: MouseEvent, slot: Slot) {
+    calendar.select(slot)
+    menu.show(e, slot.block ? blockMenu(slot.block) : eventMenu(slot.event!))
   }
 
   /** The draft rectangle, if a gesture is in flight on `iso`. */
@@ -307,7 +321,12 @@
     <div class="corner"></div>
     {#each days as iso (iso)}
       {@const totals = calendar.totalsOn(iso)}
-      <div class="dayhead" class:now={iso === currentDay}>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="dayhead"
+        class:now={iso === currentDay}
+        oncontextmenu={(e) => menu.show(e, dayMenu(iso))}
+      >
         <button
           class="daylabel"
           onclick={() => {
@@ -346,7 +365,10 @@
             style="--c: {cal?.color ?? 'var(--fg-subtle)'}"
             title={event.title + (cal ? ` — ${cal.name}` : '')}
             onclick={() => (calendar.selection = { kind: 'event', id: event.id })}
-            >{event.title}</button
+            oncontextmenu={(e) => {
+              calendar.selection = { kind: 'event', id: event.id }
+              menu.show(e, eventMenu(event))
+            }}>{event.title}</button
           >
         {/each}
         {#each calendar.untimedMarksOn(iso) as mark (mark.key)}
@@ -369,6 +391,7 @@
             draggable="true"
             ondragstart={(e) => e.dataTransfer?.setData('text/x-everyday-task', task.id)}
             onclick={() => (calendar.selection = null)}
+            oncontextmenu={(e) => menu.show(e, calendarTaskMenu(task))}
           >
             <Icon name={task.status === 'done' ? 'check' : 'circle'} size={11} weight={2} />
             {task.title}
@@ -395,6 +418,8 @@
           class:today={iso === currentDay}
           onpointerdown={(e) => onColumnPointerDown(e, iso)}
           onpointermove={(e) => onColumnPointerMove(e, iso)}
+          oncontextmenu={(e) =>
+            menu.show(e, timeMenu(iso, snap(minutesAt(e.currentTarget, e.clientY))))}
           ondragover={(e) => onDragOver(e, iso)}
           ondragleave={() => (dropAt = null)}
           ondrop={(e) => onDrop(e, iso)}
@@ -415,6 +440,7 @@
               style="top: {p.top}px; height: {p.height}px; left: {p.left}%; width: {p.width}%; --c: {p
                 .slot.color}"
               onpointerdown={(e) => onSlotPointerDown(e, p, iso)}
+              oncontextmenu={(e) => onSlotContextMenu(e, p.slot)}
             >
               {#if p.slot.tracker}
                 <!-- A tracked span is usually short -- 30 minutes is 23px --

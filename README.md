@@ -837,6 +837,21 @@ extension -- and the `libayatana-appindicator3-1` package the `.deb` depends
 on. Where there is no host, Settings says so rather than leaving a switch
 that appears to do nothing.
 
+## Right-click
+
+Every list carries a context menu, and they are all the same menu: one panel
+in the window, opened by whichever row was clicked. An entry offers star, pin
+and which journal it is filed under; a task its status, priority, deadline
+and project; a block of time offers "this is what happened", and somebody
+else's meeting offers to set the same hour aside in your own record. The
+empty part of a list has one too — new entry, new task, how to group, which
+view. Arrow keys walk them, `→` opens a submenu, `Escape` closes one level,
+and the context-menu key opens one on the focused row without a mouse.
+
+Text is the exception, deliberately: a field, a notes box and the editor keep
+the webview's own menu, because that one carries paste, the spelling
+suggestions and the input method, and none of those are ours to reimplement.
+
 ## Status
 
 The core, both storage backends, the vault lifecycle, search, the media

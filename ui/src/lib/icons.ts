@@ -103,6 +103,10 @@ export const ICONS = {
 
   minus: '<path d="M5 12h14"/>',
 
+  // A pencil at the angle every editor draws one, with the ferrule marked so
+  // it still reads as a pencil rather than a stroke at 14px.
+  pencil: '<path d="M17 3a2.83 2.83 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>' + '<path d="m15 5 4 4"/>',
+
   trash:
     '<path d="M3.5 6h17"/>' +
     '<path d="M19 6v13a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 5 19V6"/>' +

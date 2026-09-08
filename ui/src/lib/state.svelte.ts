@@ -776,23 +776,46 @@ class AppState {
     await this.refreshEntries()
   }
 
-  async toggleStar(id: EntryId) {
+  /**
+   * Change one field of an entry that may or may not be the open one, and
+   * write it.
+   *
+   * Every row action in the list has this same two-case shape: the open
+   * entry, whose agreed version this window is already tracking, or any
+   * other row, which has to be read before it can be written -- the list
+   * holds summaries, and writing one back would drop the body.
+   */
+  async #editEntry(id: EntryId, change: (entry: Entry) => void) {
     try {
-      const full = this.entry?.id === id ? this.entry : await api.entry(id)
+      // The same object, when it is the open one: mutating it is what puts
+      // the star on the entry behind the list without a second read.
+      const open = this.entry && this.entry.id === id ? this.entry : null
+      const full = open ?? (await api.entry(id))
       // For the open entry this window already tracks the agreed version;
       // for any other row, what we just read is it.
-      const base = this.entry?.id === id ? this.#baseVersion : full.updatedAt
-      full.starred = !full.starred
+      const base = open ? this.#baseVersion : full.updatedAt
+      change(full)
       full.updatedAt = new Date().toISOString()
       await api.saveEntry($state.snapshot(full), base)
-      if (this.entry?.id === id) {
-        this.entry.starred = full.starred
-        this.#baseVersion = full.updatedAt
-      }
+      if (open) this.#baseVersion = full.updatedAt
     } catch (e) {
       return void (await handle(e))
     }
     await this.refreshEntries()
+  }
+
+  async toggleStar(id: EntryId) {
+    await this.#editEntry(id, (entry) => (entry.starred = !entry.starred))
+  }
+
+  /** Float an entry to the top of the list, or let it fall back into date order. */
+  async togglePin(id: EntryId) {
+    await this.#editEntry(id, (entry) => (entry.pinned = !entry.pinned))
+  }
+
+  /** File an entry under a different journal. */
+  async moveEntry(id: EntryId, journalId: JournalId) {
+    await this.#editEntry(id, (entry) => (entry.journalId = journalId))
   }
 
   // ── search ───────────────────────────────────────────────────────────

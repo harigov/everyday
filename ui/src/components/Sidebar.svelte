@@ -2,6 +2,9 @@
   import { app, type Section } from '../lib/state.svelte'
   import { DEFAULT_COLORS } from '../lib/colors'
   import { focusOnMount } from '../lib/focus'
+  import { menu } from '../lib/menu.svelte'
+  import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { colourItems } from '../lib/menus'
   import Icon from './Icon.svelte'
   import Logo from './Logo.svelte'
   import SettingsMenu from './SettingsMenu.svelte'
@@ -55,6 +58,46 @@
   const settingsJournal = $derived(
     settingsFor ? (app.journals.find((j) => j.id === settingsFor!.id) ?? null) : null,
   )
+
+  /**
+   * What a right-click on a journal offers.
+   *
+   * Note what is *not* in it: delete. That moved inside the settings dialog
+   * on purpose -- a journal is a year of entries and it should not be one
+   * slip from a menu away -- and putting it back here would undo the point
+   * of moving it. Naming and the rest of the journal live in there too, so
+   * this offers the two things you would otherwise cross the window for, the
+   * colour, and the way in.
+   */
+  function journalMenu(j: Journal): MenuItem[] {
+    const only = app.selectedJournal === j.id && !app.showStarredOnly
+    return tidyMenu([
+      {
+        label: 'New entry here',
+        icon: 'plus',
+        run: async () => {
+          app.showStarredOnly = false
+          await app.selectJournal(j.id)
+          await app.newEntry()
+        },
+      },
+      {
+        label: only ? 'Show every journal' : 'Show only this journal',
+        icon: 'layers',
+        run: () => {
+          app.showStarredOnly = false
+          void app.selectJournal(only ? null : j.id)
+        },
+      },
+      SEP,
+      {
+        label: 'Colour',
+        dot: j.color,
+        items: colourItems(j.color, (color) => app.saveJournal({ ...$state.snapshot(j), color })),
+      },
+      { label: 'Journal settings…', icon: 'settings', run: () => (settingsFor = j) },
+    ])
+  }
 
   const total = $derived(app.status?.stats?.entries ?? 0)
 </script>
@@ -137,10 +180,7 @@
               app.showStarredOnly = false
               void app.selectJournal(j.id)
             }}
-            oncontextmenu={(e) => {
-              e.preventDefault()
-              settingsFor = j
-            }}
+            oncontextmenu={(e) => menu.show(e, journalMenu(j))}
             title={j.description || j.name}
           >
             <span class="icon">{j.icon}</span>

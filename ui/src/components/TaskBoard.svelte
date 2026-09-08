@@ -13,7 +13,11 @@
 
   import { todo } from '../lib/todo.svelte'
   import { friendlyDate, formatMinutes } from '../lib/format'
+  import { menu } from '../lib/menu.svelte'
+  import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { taskMenu } from '../lib/menus'
   import Icon from './Icon.svelte'
+  import ConfirmDialog from './ConfirmDialog.svelte'
   import QuickAdd from './QuickAdd.svelte'
   import type { Task, TaskStatus } from '../lib/types'
 
@@ -77,6 +81,33 @@
   function progress(task: Task): [number, number] {
     return todo.progressOf(task.id)
   }
+
+  let pendingDelete = $state<Task | null>(null)
+
+  /**
+   * A card's menu is the list's menu.
+   *
+   * The same tasks, drawn two ways, so the actions have one definition in
+   * `lib/menus.ts` -- with one difference the board makes on its own: a card
+   * is always a top-level task, and "add a subtask" there would add a step
+   * to a piece of work whose steps the board deliberately does not draw.
+   */
+  function cardMenu(task: Task): MenuItem[] {
+    return taskMenu(task, { onDelete: () => (pendingDelete = task) })
+  }
+
+  /** A column, where there is no card under the pointer. */
+  function columnMenu(status: TaskStatus): MenuItem[] {
+    return tidyMenu([
+      {
+        label: `Add to ${LABELS[status]}`,
+        icon: 'plus',
+        run: () => (adding = status),
+      },
+      SEP,
+      { label: 'Switch to the list', icon: 'list', run: () => todo.setView('list') },
+    ])
+  }
 </script>
 
 <div class="scroll board">
@@ -92,6 +123,7 @@
         if (!e.currentTarget.contains(e.relatedTarget as Node)) over = null
       }}
       ondrop={(e) => drop(e, status)}
+      oncontextmenu={(e) => menu.show(e, columnMenu(status))}
       aria-label={LABELS[status]}
     >
       <header class="colhead">
@@ -135,6 +167,7 @@
               dragging = null
               over = null
             }}
+            oncontextmenu={(e) => menu.show(e, cardMenu(task))}
           >
             <button
               class="cardbody"
@@ -187,6 +220,20 @@
     </section>
   {/each}
 </div>
+
+{#if pendingDelete}
+  <ConfirmDialog
+    title={'Delete “' + (pendingDelete.title || 'this task') + '”?'}
+    detail="Its subtasks and every block of time booked against them go too. This cannot be undone."
+    confirmLabel="Delete task"
+    onconfirm={() => {
+      const doomed = pendingDelete
+      pendingDelete = null
+      if (doomed) void todo.remove(doomed.id)
+    }}
+    oncancel={() => (pendingDelete = null)}
+  />
+{/if}
 
 <style>
   .board {

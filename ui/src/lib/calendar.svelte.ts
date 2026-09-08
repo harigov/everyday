@@ -1104,6 +1104,35 @@ class CalendarState {
     }
   }
 
+  /**
+   * Refresh one feed, now.
+   *
+   * Apart from `syncDue` because that one belongs to the timer: it walks
+   * every subscription and honours each one's interval, which is not what
+   * was asked for by somebody pointing at a single calendar. A failure is
+   * recorded on the subscription by the backend, so the reload puts the
+   * warning beside the calendar it belongs to -- which is where this app
+   * says a broken feed is reported, rather than over the whole window.
+   */
+  async syncOne(id: CalendarId) {
+    if (!app.supportsCalendar || this.syncing) return
+    if (app.status?.writable === false) return
+    const subscription = this.calendarOf(id)
+    if (!subscription || subscription.origin.type !== 'url') return
+    this.syncing = true
+    try {
+      const report = await api.syncCalendar(id)
+      await this.refresh()
+      this.syncNote = `Refreshed ${subscription.name}, ${report.events} events.`
+    } catch (e) {
+      if (isLocked(e)) return void (await app.lock())
+      this.syncNote = `Could not refresh ${subscription.name}.`
+      await this.refresh()
+    } finally {
+      this.syncing = false
+    }
+  }
+
   /** Refresh every feed. `force` ignores each one's interval. */
   async syncDue(force: boolean) {
     if (!app.supportsCalendar || this.syncing) return

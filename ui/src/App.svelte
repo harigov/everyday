@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, onSaveAndClose } from './lib/api'
   import { app } from './lib/state.svelte'
+  import { menu } from './lib/menu.svelte'
   import { notify } from './lib/notify.svelte'
   import { todo } from './lib/todo.svelte'
   import { calendar } from './lib/calendar.svelte'
@@ -18,6 +19,7 @@
   import Logo from './components/Logo.svelte'
   import Notices from './components/Notices.svelte'
   import Toasts from './components/Toasts.svelte'
+  import ContextMenu from './components/ContextMenu.svelte'
 
   void app.start()
   // Let the Rust shell speak. Its background work -- refreshing subscribed
@@ -27,6 +29,9 @@
   // decrypted contents of the vault. They go when the key does, for the same
   // reason the search index does.
   app.onLock(() => notify.clear())
+  // And for the same reason: an open menu is quoting the row it was raised
+  // on -- an entry title, a project name -- and those are vault contents.
+  app.onLock(() => menu.close(false))
 
   // Put the quick actions in the menu bar, and keep them in step with the
   // vault from here on. The four apps have already registered what they
@@ -135,6 +140,9 @@
      the application, so it has to arrive on the lock screen and the error
      screen too. Those are the moments something has gone wrong. -->
 <Toasts />
+<!-- Also outside the screen switch, and mounted once: there is one context
+     menu in the window, and every list opens it through the store. -->
+<ContextMenu />
 
 <div class="app" style="--journal-accent: {accent}">
   {#if app.screen === 'loading'}

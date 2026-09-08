@@ -9,6 +9,9 @@
   import { calendar } from '../lib/calendar.svelte'
   import { addMonths, daysFrom, monthGrid, startOfWeek, todayIso } from '../lib/time'
   import { relativeTime } from '../lib/format'
+  import { menu } from '../lib/menu.svelte'
+  import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { colourItems, dayMenu } from '../lib/menus'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import AddCalendar from './AddCalendar.svelte'
@@ -65,9 +68,58 @@
   }
 
   const anySubscribed = $derived(calendar.calendars.some((c) => c.origin.type === 'url'))
+
+  /**
+   * What a right-click on a subscribed calendar offers.
+   *
+   * As in the other two sidebars, this gesture used to go straight to the
+   * unsubscribe dialog. Everything here except the last row is something you
+   * might do weekly; that one is at the bottom, behind a confirmation, where
+   * it was always meant to be.
+   */
+  function calendarMenu(cal: CalendarInfo): MenuItem[] {
+    return tidyMenu([
+      {
+        // The label says which way it goes, so there is no tick as well: one
+        // row cannot both be a switch and describe the thing it switches.
+        label: cal.visible ? 'Hide from the grid' : 'Show on the grid',
+        icon: cal.visible ? 'hidden' : 'calendar',
+        run: () => calendar.toggleVisible(cal.id),
+      },
+      cal.origin.type === 'url' && {
+        label: 'Refresh now',
+        icon: 'refresh',
+        disabled: calendar.syncing,
+        run: () => calendar.syncOne(cal.id),
+      },
+      {
+        label: 'Colour',
+        dot: cal.color,
+        items: colourItems(cal.color, (color) => calendar.setCalendarColor(cal.id, color)),
+      },
+      SEP,
+      { label: 'Unsubscribe…', icon: 'trash', danger: true, run: () => (pendingDelete = cal) },
+    ])
+  }
+
+  /** The panel itself, where there is no calendar under the pointer. */
+  function navMenu(): MenuItem[] {
+    return tidyMenu([
+      { label: 'Add a calendar…', icon: 'plus', run: () => (adding = true) },
+      anySubscribed && {
+        label: 'Refresh every calendar',
+        icon: 'refresh',
+        disabled: calendar.syncing,
+        run: () => calendar.syncDue(true),
+      },
+      SEP,
+      { label: 'Jump to today', icon: 'sun', run: () => calendar.goToday() },
+    ])
+  }
 </script>
 
-<nav class="scroll nav">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<nav class="scroll nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
   <!-- ── The small month ─────────────────────────────────────────────── -->
   <div class="minihead">
     <button
@@ -96,6 +148,7 @@
         class:on={shown.has(iso)}
         class:today={iso === currentDay}
         onclick={() => calendar.goto(iso)}
+        oncontextmenu={(e) => menu.show(e, dayMenu(iso))}
       >
         {Number(iso.slice(8, 10))}
         {#if busy(iso)}<span class="bump" aria-hidden="true"></span>{/if}
@@ -130,7 +183,13 @@
   </div>
 
   {#each calendar.calendars as cal (cal.id)}
-    <div class="row" class:hidden={!cal.visible} class:failed={!!cal.lastError}>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="row"
+      class:hidden={!cal.visible}
+      class:failed={!!cal.lastError}
+      oncontextmenu={(e) => menu.show(e, calendarMenu(cal))}
+    >
       <button
         class="tick"
         style="--dot: {cal.color}"
@@ -140,15 +199,7 @@
       >
         <span class="swatch" aria-hidden="true"></span>
       </button>
-      <button
-        class="text"
-        title={originLabel(cal)}
-        oncontextmenu={(e) => {
-          e.preventDefault()
-          pendingDelete = cal
-        }}
-        onclick={() => calendar.toggleVisible(cal.id)}
-      >
+      <button class="text" title={originLabel(cal)} onclick={() => calendar.toggleVisible(cal.id)}>
         <span class="cname">{cal.name}</span>
         <span class="cmeta">
           {#if cal.lastError}
@@ -163,7 +214,7 @@
           class="mini-action"
           title="Refresh this calendar"
           aria-label="Refresh {cal.name}"
-          onclick={() => calendar.syncDue(true)}
+          onclick={() => calendar.syncOne(cal.id)}
         >
           <Icon name="refresh" size={13} />
         </button>

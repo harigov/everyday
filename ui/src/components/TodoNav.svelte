@@ -8,10 +8,13 @@
   import { todo, type Scope } from '../lib/todo.svelte'
   import { DEFAULT_COLORS } from '../lib/colors'
   import { focusOnMount } from '../lib/focus'
+  import { menu } from '../lib/menu.svelte'
+  import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { colourItems } from '../lib/menus'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import type { IconName } from '../lib/icons'
-  import type { Project } from '../lib/types'
+  import type { Project, ProjectStatus } from '../lib/types'
 
   let creating = $state(false)
   let draft = $state('')
@@ -47,6 +50,81 @@
     if (p) await todo.removeProject(p.id)
   }
 
+  /** The project whose name is being edited in place, if any. */
+  let renaming = $state<Project | null>(null)
+  let renameDraft = $state('')
+
+  async function commitRename() {
+    const p = renaming
+    const name = renameDraft.trim()
+    renaming = null
+    if (!p || !name || name === p.name) return
+    await todo.saveProject({ ...$state.snapshot(p), name })
+  }
+
+  const PROJECT_STATUSES: { id: ProjectStatus; label: string; hint?: string }[] = [
+    { id: 'active', label: 'Active' },
+    { id: 'paused', label: 'Paused' },
+    { id: 'done', label: 'Done' },
+    { id: 'archived', label: 'Archived', hint: 'hidden' },
+  ]
+
+  /**
+   * What a right-click on a project offers.
+   *
+   * Like the journal rows in the sidebar above, this used to raise the
+   * delete confirmation and nothing else -- a destructive action on a
+   * gesture with no menu to discover it from.
+   */
+  function projectMenu(p: Project): MenuItem[] {
+    const open = selected({ kind: 'project', id: p.id })
+    return tidyMenu([
+      {
+        label: 'Open project',
+        icon: 'list',
+        disabled: open,
+        run: () => todo.setScope({ kind: 'project', id: p.id }),
+      },
+      {
+        label: 'Add a task here',
+        icon: 'plus',
+        run: async () => {
+          await todo.setScope({ kind: 'project', id: p.id })
+          // The capture line belongs to `TodoView`, which is not an ancestor
+          // of this one; reaching it by selector is what `Ctrl+F` already
+          // does for the search field in `App.svelte`.
+          document.querySelector<HTMLInputElement>('.quickadd .field')?.focus()
+        },
+      },
+      SEP,
+      {
+        label: 'Rename…',
+        icon: 'pencil',
+        run: () => {
+          renameDraft = p.name
+          renaming = p
+        },
+      },
+      {
+        label: 'Colour',
+        dot: p.color,
+        items: colourItems(p.color, (color) => todo.saveProject({ ...$state.snapshot(p), color })),
+      },
+      {
+        label: 'Status',
+        icon: 'flag',
+        items: PROJECT_STATUSES.map((s) => ({
+          label: s.label,
+          hint: s.hint,
+          checked: p.status === s.id,
+          run: () => todo.saveProject({ ...$state.snapshot(p), status: s.id }),
+        })),
+      },
+      SEP,
+      { label: 'Delete project…', icon: 'trash', danger: true, run: () => (pendingDelete = p) },
+    ])
+  }
+
   const due = $derived(todo.dueTodayCount)
   const overdue = $derived(todo.stats?.overdue ?? 0)
 </script>
@@ -80,23 +158,34 @@
   </div>
 
   {#each todo.liveProjects as p (p.id)}
-    <button
-      class="row"
-      class:sel={selected({ kind: 'project', id: p.id })}
-      class:paused={p.status === 'paused'}
-      style="--dot: {p.color}"
-      onclick={() => todo.setScope({ kind: 'project', id: p.id })}
-      oncontextmenu={(e) => {
-        e.preventDefault()
-        pendingDelete = p
-      }}
-      title={p.notes || p.name}
-    >
-      <span class="icon">{p.icon}</span>
-      <span class="text">{p.name}</span>
-      {#if todo.openCount(p.id) > 0}<span class="count">{todo.openCount(p.id)}</span>{/if}
-      <span class="dot" aria-hidden="true"></span>
-    </button>
+    {#if renaming?.id === p.id}
+      <input
+        class="new"
+        aria-label="Project name"
+        bind:value={renameDraft}
+        use:focusOnMount
+        onblur={commitRename}
+        onkeydown={(e) => {
+          if (e.key === 'Enter') void commitRename()
+          if (e.key === 'Escape') renaming = null
+        }}
+      />
+    {:else}
+      <button
+        class="row"
+        class:sel={selected({ kind: 'project', id: p.id })}
+        class:paused={p.status === 'paused'}
+        style="--dot: {p.color}"
+        onclick={() => todo.setScope({ kind: 'project', id: p.id })}
+        oncontextmenu={(e) => menu.show(e, projectMenu(p))}
+        title={p.notes || p.name}
+      >
+        <span class="icon">{p.icon}</span>
+        <span class="text">{p.name}</span>
+        {#if todo.openCount(p.id) > 0}<span class="count">{todo.openCount(p.id)}</span>{/if}
+        <span class="dot" aria-hidden="true"></span>
+      </button>
+    {/if}
   {/each}
 
   {#if todo.liveProjects.length === 0 && !creating}

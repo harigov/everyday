@@ -2,8 +2,19 @@
   import { app } from '../lib/state.svelte'
   import { dayNumber, groupLabel, plural, weekdayShort } from '../lib/format'
   import { mediaUrl } from '../lib/api'
+  import { menu } from '../lib/menu.svelte'
+  import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import Icon from './Icon.svelte'
-  import type { EntrySummary } from '../lib/types'
+  import ConfirmDialog from './ConfirmDialog.svelte'
+  import type { EntryId, EntrySummary, JournalId } from '../lib/types'
+
+  let pendingDelete = $state<{ id: EntryId; title: string } | null>(null)
+
+  async function remove() {
+    const doomed = pendingDelete
+    pendingDelete = null
+    if (doomed) await app.deleteEntry(doomed.id)
+  }
 
   // Group by the label the reader would use ("Today", "March"), preserving
   // the order the backend already sorted into.
@@ -22,6 +33,83 @@
 
   function colorOf(id: string): string {
     return app.journals.find((j) => j.id === id)?.color ?? 'var(--accent)'
+  }
+
+  /**
+   * Where an entry can be filed instead.
+   *
+   * Omitted entirely when there is one journal, because a menu whose only
+   * choice is the one already in force is a row that does nothing.
+   */
+  function moveItem(id: EntryId, journalId: JournalId): MenuItem | false {
+    return (
+      app.journals.length > 1 && {
+        label: 'Move to',
+        icon: 'layers',
+        items: app.journals.map((j) => ({
+          label: j.name,
+          dot: j.color,
+          checked: j.id === journalId,
+          run: () => app.moveEntry(id, j.id),
+        })),
+      }
+    )
+  }
+
+  function entryMenu(row: EntrySummary): MenuItem[] {
+    return tidyMenu([
+      { label: 'Open', icon: 'quote', run: () => app.openEntry(row.id) },
+      SEP,
+      {
+        label: row.starred ? 'Remove star' : 'Star',
+        icon: 'star',
+        run: () => app.toggleStar(row.id),
+      },
+      {
+        label: row.pinned ? 'Unpin' : 'Pin to the top',
+        icon: 'pin',
+        run: () => app.togglePin(row.id),
+      },
+      SEP,
+      moveItem(row.id, row.journalId),
+      SEP,
+      {
+        label: 'Delete entry…',
+        icon: 'trash',
+        danger: true,
+        run: () => (pendingDelete = { id: row.id, title: row.title }),
+      },
+    ])
+  }
+
+  /**
+   * The same, for a search result.
+   *
+   * A hit is not a row: it carries a score and a snippet rather than the
+   * flags, so the two actions that need to know whether an entry is starred
+   * or pinned are not offered here rather than being offered wrongly.
+   */
+  function hitMenu(hit: { id: EntryId; title: string; journalId: JournalId }): MenuItem[] {
+    return tidyMenu([
+      { label: 'Open', icon: 'quote', run: () => app.openEntry(hit.id) },
+      SEP,
+      moveItem(hit.id, hit.journalId),
+      SEP,
+      {
+        label: 'Delete entry…',
+        icon: 'trash',
+        danger: true,
+        run: () => (pendingDelete = { id: hit.id, title: hit.title }),
+      },
+    ])
+  }
+
+  /** The list itself, where there is no row under the pointer. */
+  function listMenu(): MenuItem[] {
+    return tidyMenu([
+      { label: 'New entry', icon: 'plus', hint: 'Ctrl+N', run: () => app.newEntry() },
+      !!app.query.trim() && { label: 'Clear search', icon: 'close', run: () => app.clearSearch() },
+    ])
   }
 
   /** Split a snippet on its highlight ranges so matches can be marked. */
@@ -65,7 +153,8 @@
     />
   </div>
 
-  <div class="scroll rows">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="scroll rows" oncontextmenu={(e) => menu.show(e, listMenu())}>
     {#if app.query.trim()}
       {#if app.searching && app.results.length === 0}
         <p class="note">Searching…</p>
@@ -80,6 +169,7 @@
             class="row"
             class:sel={app.selectedEntry === hit.id}
             onclick={() => app.openEntry(hit.id)}
+            oncontextmenu={(e) => menu.show(e, hitMenu(hit))}
           >
             <span class="bar" style="background: {colorOf(hit.journalId)}"></span>
             <div class="body">
@@ -106,6 +196,7 @@
             class="row"
             class:sel={app.selectedEntry === row.id}
             onclick={() => app.openEntry(row.id)}
+            oncontextmenu={(e) => menu.show(e, entryMenu(row))}
           >
             <span class="bar" style="background: {colorOf(row.journalId)}"></span>
 
@@ -146,6 +237,16 @@
     {/if}
   </div>
 </section>
+
+{#if pendingDelete}
+  <ConfirmDialog
+    title={'Delete “' + (pendingDelete.title || 'Untitled entry') + '”?'}
+    detail="The entry and anything attached to it are removed. This cannot be undone."
+    confirmLabel="Delete entry"
+    onconfirm={remove}
+    oncancel={() => (pendingDelete = null)}
+  />
+{/if}
 
 <style>
   .list {
