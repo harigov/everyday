@@ -32,7 +32,7 @@ use crate::error::{Error, Result};
 use crate::fsutil;
 use crate::id::{
     BlobId, BlockId, CalendarId, EntryId, EventId, ItemId, JournalId, KindId, LogId, ProjectId,
-    TaskId,
+    ReadingId, TaskId, TrackerId,
 };
 use crate::library::{Item, ItemStatus, Kind, KindCount, LibraryStats, LogEntry, default_kinds};
 use crate::model::{Entry, EntrySummary, Journal};
@@ -40,10 +40,12 @@ use crate::search::{SearchHit, SearchIndex};
 use crate::store::calendars::{CalendarStore, EventQuery};
 use crate::store::library::{ItemQuery, LibraryStore, LogQuery};
 use crate::store::tasks::{BlockQuery, TaskQuery, TaskStore};
+use crate::store::trackers::{ReadingQuery, TrackerDay, TrackerStore};
 use crate::store::{
     BackendRegistry, Capabilities, EntryQuery, JournalStore, StoreContext, StoreStats,
 };
 use crate::task::{Project, Task, TaskStats, TimeBlock};
+use crate::tracker::Reading;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -579,15 +581,34 @@ impl Vault {
 
     pub fn save_journal(&self, journal: &Journal) -> Result<()> {
         self.writable()?;
-        self.write(|u| u.store.put_journal(journal))
+        // Tracker definitions are tidied here rather than trusted from the
+        // caller. They arrive from a form, they are read by charts, and
+        // "the scale is at least 1 and the target is a finite number" is an
+        // assumption every reader downstream makes without checking.
+        let mut journal = journal.clone();
+        for tracker in &mut journal.trackers {
+            tracker.normalize();
+        }
+        journal.trackers.retain(|t| !t.name.is_empty());
+        self.write(|u| u.store.put_journal(&journal))
     }
 
-    /// Delete a journal and every entry inside it.
+    /// Delete a journal, every entry inside it, and every reading its
+    /// trackers made.
     pub fn delete_journal(&self, id: JournalId) -> Result<()> {
         self.writable()?;
         self.write(|u| {
             for e in u.store.list_entries(&EntryQuery::in_journal(id))? {
                 u.index.remove(e.id);
+            }
+            // Belt and braces. A backend that holds readings should take
+            // them inside its own delete -- the SQLite one does, in the same
+            // transaction as the entries, which is the only way the pair can
+            // be atomic. This second, idempotent sweep is what stops a
+            // backend that has not thought about it from leaving a year of
+            // numbers behind whose definitions have just been shredded.
+            if let Some(t) = u.store.trackers() {
+                t.delete_readings_in(id)?;
             }
             u.store.delete_journal(id)
         })
@@ -1157,6 +1178,98 @@ impl Vault {
         })
     }
 
+    // ---- trackers and readings -------------------------------------------
+    //
+    // The fifth domain, and the one that is split across two layers: the
+    // *definitions* ride along inside a `Journal` and are saved by
+    // `save_journal` above, while the readings they produce live in a store
+    // of their own. Everything here is about the readings.
+
+    /// Does this vault's backend store readings at all?
+    pub fn supports_trackers(&self) -> bool {
+        self.read(|u| Ok(u.store.trackers().is_some())).unwrap_or(false)
+    }
+
+    fn with_trackers<T>(&self, f: impl FnOnce(&dyn TrackerStore) -> Result<T>) -> Result<T> {
+        self.read(|u| {
+            let trackers = u.store.trackers().ok_or(Error::Unsupported(
+                "tracking (this vault's backend stores journals only)",
+            ))?;
+            f(trackers)
+        })
+    }
+
+    pub fn readings(&self, query: &ReadingQuery) -> Result<Vec<Reading>> {
+        self.with_trackers(|t| t.list_readings(query))
+    }
+
+    pub fn reading(&self, id: ReadingId) -> Result<Reading> {
+        self.with_trackers(|t| t.get_reading(id))
+    }
+
+    /// One row per tracker per day. What every chart is built from.
+    pub fn tracker_days(&self, query: &ReadingQuery) -> Result<Vec<TrackerDay>> {
+        self.with_trackers(|t| t.tracker_days(query))
+    }
+
+    /// Write a reading, having first made it mean something.
+    ///
+    /// The value is clamped by the *definition* — a severity cannot be 40 on
+    /// a scale of ten, and a check is one or zero however the caller wrote
+    /// it — because the alternative is a chart with an axis to the moon and
+    /// no way to tell which of a thousand rows caused it. The tracker is
+    /// looked up in its journal, which is also how a reading naming a
+    /// tracker that does not exist is refused here rather than becoming an
+    /// unnameable row.
+    pub fn save_reading(&self, reading: &Reading) -> Result<()> {
+        self.writable()?;
+        let journal = self.journal(reading.journal_id)?;
+        let tracker = journal
+            .tracker(reading.tracker_id)
+            .ok_or_else(|| Error::Invalid("no such tracker in this journal".into()))?;
+
+        let mut reading = reading.clone();
+        reading.value = tracker.clamp(reading.value);
+        reading.note = reading.note.trim().to_string();
+        reading.updated_at = Timestamp::now();
+        // A reading's day and its instant have to agree, or a chip logged at
+        // 00:10 lands on the calendar a day away from the entry it was
+        // ticked under. The instant wins: it is the more precise of the two.
+        if let Some(at) = reading.at {
+            reading.local_date = crate::model::local_date_in(at, &reading.tz);
+        }
+        self.with_trackers(|t| t.put_reading(&reading))
+    }
+
+    pub fn delete_reading(&self, id: ReadingId) -> Result<()> {
+        self.writable()?;
+        self.with_trackers(|t| t.delete_reading(id))
+    }
+
+    /// Remove a tracker from a journal, and every reading it ever made.
+    ///
+    /// The destructive half of a pair. Archiving — a flag on the definition,
+    /// saved with the journal — is the other and the usual one: it takes the
+    /// tracker off the page and keeps its history, which is what "I stopped
+    /// taking this in March" actually means. This is for the tracker added
+    /// by mistake, and it says so by taking the readings too rather than
+    /// leaving numbers behind that nothing can name.
+    pub fn delete_tracker(&self, journal_id: JournalId, tracker_id: TrackerId) -> Result<u64> {
+        self.writable()?;
+        let mut journal = self.journal(journal_id)?;
+        // Readings first, definition second. Neither order is atomic -- they
+        // are two records in two places -- so the question is only which
+        // half-done state is survivable. This one leaves a tracker whose
+        // history is gone, which is visible and can be deleted again. The
+        // other leaves a year of numbers nothing can name, which is exactly
+        // the state this method exists to avoid.
+        let removed = self.with_trackers(|t| t.delete_readings_of(tracker_id))?;
+        journal.trackers.retain(|t| t.id != tracker_id);
+        journal.updated_at = Timestamp::now();
+        self.save_journal(&journal)?;
+        Ok(removed)
+    }
+
     pub fn search(
         &self,
         query: &str,
@@ -1410,6 +1523,7 @@ mod tests {
                 tasks: false,
                 calendars: false,
                 library: false,
+                trackers: false,
             }
         }
         fn list_journals(&self) -> Result<Vec<Journal>> {

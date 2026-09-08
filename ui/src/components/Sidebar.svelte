@@ -5,7 +5,7 @@
   import Icon from './Icon.svelte'
   import Logo from './Logo.svelte'
   import SettingsMenu from './SettingsMenu.svelte'
-  import ConfirmDialog from './ConfirmDialog.svelte'
+  import JournalSettings from './JournalSettings.svelte'
   import TodoNav from './TodoNav.svelte'
   import CalendarNav from './CalendarNav.svelte'
   import LibraryNav from './LibraryNav.svelte'
@@ -43,20 +43,18 @@
     )
   }
 
-  let pendingDelete = $state<Journal | null>(null)
+  // Which journal's settings are open. A journal used to have none: it was
+  // named once at creation, and right-clicking it deleted it -- with a
+  // confirmation as the only sign that a right-click was destructive at all.
+  // Now that a journal also carries what it tracks there is somewhere for
+  // both to live, and deleting is a button inside it rather than a gesture
+  // one slip away from a year of entries.
+  let settingsFor = $state<Journal | null>(null)
 
-  async function remove() {
-    const j = pendingDelete
-    pendingDelete = null
-    if (j) await app.deleteJournal(j.id)
-  }
-
-  function deleteDetail(j: Journal): string {
-    const n = app.entries.filter((e) => e.journalId === j.id).length
-    return n > 0
-      ? `Its ${n} ${n === 1 ? 'entry' : 'entries'} will be removed too. This cannot be undone.`
-      : 'This cannot be undone.'
-  }
+  /** Re-read from the store, so a save inside the dialog is reflected. */
+  const settingsJournal = $derived(
+    settingsFor ? (app.journals.find((j) => j.id === settingsFor!.id) ?? null) : null,
+  )
 
   const total = $derived(app.status?.stats?.entries ?? 0)
 </script>
@@ -130,24 +128,34 @@
       </div>
 
       {#each app.journals as j (j.id)}
-        <button
-          class="row"
-          class:sel={app.selectedJournal === j.id && !app.showStarredOnly}
-          style="--dot: {j.color}"
-          onclick={() => {
-            app.showStarredOnly = false
-            void app.selectJournal(j.id)
-          }}
-          oncontextmenu={(e) => {
-            e.preventDefault()
-            pendingDelete = j
-          }}
-          title={j.description || j.name}
-        >
-          <span class="icon">{j.icon}</span>
-          <span class="text">{j.name}</span>
-          <span class="dot" aria-hidden="true"></span>
-        </button>
+        <div class="slot">
+          <button
+            class="row"
+            class:sel={app.selectedJournal === j.id && !app.showStarredOnly}
+            style="--dot: {j.color}"
+            onclick={() => {
+              app.showStarredOnly = false
+              void app.selectJournal(j.id)
+            }}
+            oncontextmenu={(e) => {
+              e.preventDefault()
+              settingsFor = j
+            }}
+            title={j.description || j.name}
+          >
+            <span class="icon">{j.icon}</span>
+            <span class="text">{j.name}</span>
+            <span class="dot" aria-hidden="true"></span>
+          </button>
+          <button
+            class="cog"
+            title="{j.name} settings"
+            aria-label="{j.name} settings"
+            onclick={() => (settingsFor = j)}
+          >
+            <Icon name="settings" size={13} />
+          </button>
+        </div>
       {/each}
 
       {#if creating}
@@ -178,14 +186,8 @@
   </div>
 </aside>
 
-{#if pendingDelete}
-  <ConfirmDialog
-    title={'Delete “' + pendingDelete.name + '”?'}
-    detail={deleteDetail(pendingDelete)}
-    confirmLabel="Delete journal"
-    onconfirm={remove}
-    oncancel={() => (pendingDelete = null)}
-  />
+{#if settingsJournal}
+  <JournalSettings journal={settingsJournal} onclose={() => (settingsFor = null)} />
 {/if}
 
 <style>
@@ -303,6 +305,34 @@
     background: var(--bg-active);
     color: var(--fg);
     font-weight: 550;
+  }
+
+  /* The settings button rides on top of the row rather than inside it: a
+     row is a button, and a button inside a button is not a thing HTML has. */
+  .slot {
+    position: relative;
+  }
+  .cog {
+    position: absolute;
+    top: 50%;
+    right: 4px;
+    transform: translateY(-50%);
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: var(--radius-sm);
+    color: var(--fg-faint);
+    background: var(--bg-active);
+    opacity: 0;
+    transition: opacity var(--fast) var(--ease);
+  }
+  .slot:hover .cog,
+  .cog:focus-visible {
+    opacity: 1;
+  }
+  .cog:hover {
+    color: var(--fg);
   }
 
   /* Holds an inline icon for the fixed rows and an emoji for user journals,

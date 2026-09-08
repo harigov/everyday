@@ -35,7 +35,7 @@
     label: string
     time: string
     color: string
-    kind: 'planned' | 'actual' | 'event' | 'task'
+    kind: 'planned' | 'actual' | 'event' | 'task' | 'reading'
     muted?: boolean
     onopen: () => void
   }
@@ -56,6 +56,18 @@
         onopen: () => (calendar.selection = { kind: 'event', id: event.id }),
       })
     }
+    // Readings with no time of day sit with the other undated things, above
+    // everything the clock can order.
+    for (const mark of calendar.untimedMarksOn(iso)) {
+      out.push({
+        key: mark.key,
+        label: mark.label,
+        time: '',
+        color: mark.tracker.color,
+        kind: 'reading',
+        onopen: () => calendar.goto(iso),
+      })
+    }
     for (const task of calendar.tasksOn(iso)) {
       out.push({
         key: `task:${task.id}`,
@@ -67,17 +79,35 @@
         onopen: () => calendar.goto(iso),
       })
     }
-    for (const slot of calendar.slotsOn(iso).sort((a, b) => a.start - b.start)) {
-      out.push({
+    // Everything the clock can place, in the order the day ran: blocks,
+    // events, tracked spans (`slotsOn`) and tracked moments (`marksOn`),
+    // merged on their start minute rather than listed in separate groups.
+    const timed: (Row & { at: number })[] = []
+    for (const slot of calendar.slotsOn(iso)) {
+      const start = slot.block?.start ?? slot.event?.start ?? slot.reading?.at
+      timed.push({
         key: slot.key,
-        label: slot.title,
-        time: timeFmt.format(new Date(slot.block?.start ?? slot.event!.start)),
+        label: slot.reading ? `${slot.title} · ${slot.subtitle}` : slot.title,
+        time: start ? timeFmt.format(new Date(start)) : '',
         color: slot.color,
         kind: slot.kind,
         muted: slot.cancelled,
         onopen: () => calendar.select(slot),
+        at: slot.start,
       })
     }
+    for (const mark of calendar.marksOn(iso)) {
+      timed.push({
+        key: mark.key,
+        label: mark.label,
+        time: mark.reading.at ? timeFmt.format(new Date(mark.reading.at)) : '',
+        color: mark.tracker.color,
+        kind: 'reading',
+        onopen: () => calendar.goto(iso),
+        at: mark.minute ?? 0,
+      })
+    }
+    out.push(...timed.sort((a, b) => a.at - b.at))
     return out
   }
 
@@ -289,6 +319,13 @@
   }
   .row.task .dot {
     border-radius: 1.5px;
+  }
+  /* A reading is a fifth shape: a filled pip with a halo, which reads as a
+     point at six pixels where a fourth outline would read as a smudge. */
+  .row.reading .dot {
+    border-color: transparent;
+    background: var(--c);
+    box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--c) 30%, transparent);
   }
 
   .at {

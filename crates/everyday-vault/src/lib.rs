@@ -157,6 +157,192 @@ mod tests {
         assert!(registry().ids().contains(&DEFAULT_BACKEND));
     }
 
+    /// A real vault over the SQLite backend, unencrypted for speed: these
+    /// tests are about the rules the vault applies, not about the envelope.
+    fn a_vault(dir: &Path) -> Vault {
+        create(dir, VaultConfig { password: None, ..Default::default() }).unwrap()
+    }
+
+    fn a_journal_tracking(
+        vault: &Vault,
+        tracker: everyday_core::Tracker,
+    ) -> everyday_core::Journal {
+        let mut journal = everyday_core::Journal::new("Health");
+        journal.trackers.push(tracker);
+        vault.save_journal(&journal).unwrap();
+        vault.journal(journal.id).unwrap()
+    }
+
+    #[test]
+    fn a_reading_is_clamped_by_the_tracker_that_defines_it() {
+        // The reason the vault looks the definition up rather than trusting
+        // the caller: a severity of 99 on a scale of ten is a chart with an
+        // axis to the moon and a thousand rows to search for the cause.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let mut pain = everyday_core::Tracker::new("Headache", everyday_core::TrackerKind::Scale);
+        pain.scale_max = 10.0;
+        let journal = a_journal_tracking(&vault, pain);
+        let tracker_id = journal.trackers[0].id;
+
+        let reading = everyday_core::Reading::on(
+            journal.id,
+            tracker_id,
+            jiff::civil::Date::constant(2026, 3, 14),
+            99.0,
+        );
+        vault.save_reading(&reading).unwrap();
+        assert_eq!(vault.reading(reading.id).unwrap().value, 10.0);
+    }
+
+    #[test]
+    fn a_reading_naming_no_tracker_is_refused() {
+        // Otherwise it is an unnameable row: a number against an id that
+        // nothing in the vault can turn back into a word.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let journal = everyday_core::Journal::new("Health");
+        vault.save_journal(&journal).unwrap();
+
+        let orphan = everyday_core::Reading::on(
+            journal.id,
+            everyday_core::TrackerId::new(),
+            jiff::civil::Date::constant(2026, 3, 14),
+            1.0,
+        );
+        let err = vault.save_reading(&orphan).unwrap_err();
+        assert_eq!(err.code(), "invalid", "got {err}");
+    }
+
+    #[test]
+    fn a_timed_reading_is_filed_under_the_day_its_instant_falls_on() {
+        // The instant is the more precise of the two, so it decides the day.
+        // Otherwise a dose taken at 00:10 lands on the calendar a day away
+        // from the entry it was ticked under.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let journal = a_journal_tracking(
+            &vault,
+            everyday_core::Tracker::new("Ibuprofen", everyday_core::TrackerKind::Dose),
+        );
+
+        let mut reading = everyday_core::Reading::on(
+            journal.id,
+            journal.trackers[0].id,
+            jiff::civil::Date::constant(2026, 3, 14),
+            400.0,
+        );
+        reading.at = Some("2026-03-15T09:00:00Z".parse().unwrap());
+        reading.tz = "UTC".into();
+        vault.save_reading(&reading).unwrap();
+
+        let stored = vault.reading(reading.id).unwrap();
+        assert_eq!(stored.local_date, jiff::civil::Date::constant(2026, 3, 15));
+    }
+
+    #[test]
+    fn deleting_a_tracker_takes_its_readings_and_leaves_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let mut journal = everyday_core::Journal::new("Health");
+        journal
+            .trackers
+            .push(everyday_core::Tracker::new("Ibuprofen", everyday_core::TrackerKind::Dose));
+        journal
+            .trackers
+            .push(everyday_core::Tracker::new("Floss", everyday_core::TrackerKind::Check));
+        vault.save_journal(&journal).unwrap();
+        let (gone, kept) = (journal.trackers[0].id, journal.trackers[1].id);
+
+        let day = jiff::civil::Date::constant(2026, 3, 14);
+        for (tracker, value) in [(gone, 400.0), (gone, 400.0), (kept, 1.0)] {
+            vault
+                .save_reading(&everyday_core::Reading::on(journal.id, tracker, day, value))
+                .unwrap();
+        }
+
+        assert_eq!(vault.delete_tracker(journal.id, gone).unwrap(), 2);
+
+        let left = vault.readings(&everyday_core::ReadingQuery::default()).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].tracker_id, kept);
+        // And the definition has left the journal with them.
+        let after = vault.journal(journal.id).unwrap();
+        assert_eq!(after.trackers.len(), 1);
+        assert_eq!(after.trackers[0].id, kept);
+    }
+
+    #[test]
+    fn archiving_a_tracker_keeps_every_reading_it_ever_made() {
+        // The non-destructive half of the pair, and the usual answer to "I
+        // stopped taking this in March": off the page, still in the data.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let journal = a_journal_tracking(
+            &vault,
+            everyday_core::Tracker::new("Sertraline", everyday_core::TrackerKind::Dose),
+        );
+        let tracker_id = journal.trackers[0].id;
+        vault
+            .save_reading(&everyday_core::Reading::on(
+                journal.id,
+                tracker_id,
+                jiff::civil::Date::constant(2026, 3, 14),
+                50.0,
+            ))
+            .unwrap();
+
+        let mut journal = vault.journal(journal.id).unwrap();
+        journal.trackers[0].archived = true;
+        vault.save_journal(&journal).unwrap();
+
+        let after = vault.journal(journal.id).unwrap();
+        assert_eq!(after.active_trackers().count(), 0, "an archived tracker leaves the page");
+        assert_eq!(
+            vault.readings(&everyday_core::ReadingQuery::default()).unwrap().len(),
+            1,
+            "and takes nothing with it"
+        );
+    }
+
+    #[test]
+    fn a_tracker_saved_with_nonsense_in_it_is_tidied_on_the_way_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let mut journal = everyday_core::Journal::new("Health");
+        let mut tracker =
+            everyday_core::Tracker::new("  Water  ", everyday_core::TrackerKind::Amount);
+        tracker.scale_max = f64::NAN;
+        tracker.default_value = -4.0;
+        journal.trackers.push(tracker);
+        // A nameless tracker is not a tracker; it is an empty row in a form.
+        journal
+            .trackers
+            .push(everyday_core::Tracker::new("   ", everyday_core::TrackerKind::Check));
+        vault.save_journal(&journal).unwrap();
+
+        let stored = vault.journal(journal.id).unwrap();
+        assert_eq!(stored.trackers.len(), 1);
+        assert_eq!(stored.trackers[0].name, "Water");
+        assert_eq!(stored.trackers[0].default_value, 1.0);
+        assert!(stored.trackers[0].scale_max.is_finite());
+    }
+
+    #[test]
+    fn a_markdown_vault_says_it_cannot_track_rather_than_failing_at_click_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = create(
+            dir.path(),
+            VaultConfig { password: None, backend: "markdown".into(), ..Default::default() },
+        )
+        .unwrap();
+        assert!(!vault.supports_trackers());
+        assert!(!vault.status().capabilities.unwrap().trackers);
+        // And the call that would be hidden behind that flag fails clearly.
+        let err = vault.readings(&everyday_core::ReadingQuery::default()).unwrap_err();
+        assert_eq!(err.code(), "unsupported", "got {err}");
+    }
+
     #[test]
     fn a_recorded_vault_path_round_trips() {
         let dir = tempfile::tempdir().unwrap();

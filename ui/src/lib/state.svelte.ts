@@ -264,6 +264,19 @@ class AppState {
     return this.status?.capabilities?.library === true
   }
 
+  /**
+   * Does this vault hold readings?
+   *
+   * Unlike the calendar's, this is one capability rather than a pair: the
+   * tracker *definitions* ride inside a journal and every backend can store
+   * those, so the only question is whether their readings have somewhere to
+   * go. It gates the chips under an entry, the tracking section of a
+   * journal's settings, and the marks on the calendar.
+   */
+  get supportsTrackers(): boolean {
+    return this.status?.capabilities?.trackers === true
+  }
+
   /** Is this section available on the vault that is open? */
   canShow(section: Section): boolean {
     if (section === 'todo') return this.supportsTasks

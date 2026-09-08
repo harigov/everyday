@@ -10,6 +10,8 @@ export type TaskId = string
 export type BlockId = string
 export type CalendarId = string
 export type EventId = string
+export type TrackerId = string
+export type ReadingId = string
 
 /** A ProseMirror document. Opaque to everything but the editor. */
 export type RichDoc = { type: 'doc'; content?: unknown[] }
@@ -22,8 +24,107 @@ export interface Journal {
   icon: string
   description: string
   sortOrder: number
+  /** What this journal records beside its entries. See `Tracker`. */
+  trackers: Tracker[]
   createdAt: string
   updatedAt: string
+}
+
+// ── Tracking ─────────────────────────────────────────────────────────────
+//
+// Four kinds of thing, one stored shape: a reading is a tracker, an instant
+// and a number. The kind decides how the interface *collects* that number
+// and how a chart should *aggregate* it, and nothing else.
+
+export type TrackerKind =
+  /** Done or not done. `value` is 1 or 0; no reading at all means unrecorded. */
+  | 'check'
+  /** Something taken, in a dose. One reading per dose, so a day is a sum. */
+  | 'dose'
+  /** Something felt, `0..=scaleMax`. Several a day is normal. */
+  | 'scale'
+  /** A quantity: minutes, pages, glasses. */
+  | 'amount'
+
+export const TRACKER_KINDS: TrackerKind[] = ['check', 'dose', 'scale', 'amount']
+
+/** How readings combine over a day or a week. Fixed per kind. */
+export type Aggregate = 'count' | 'sum' | 'mean'
+
+export function aggregateOf(kind: TrackerKind): Aggregate {
+  if (kind === 'check') return 'count'
+  if (kind === 'scale') return 'mean'
+  return 'sum'
+}
+
+/** A thing you have decided to record. Lives in the journal's settings. */
+export interface Tracker {
+  id: TrackerId
+  name: string
+  kind: TrackerKind
+  /** A name from `tracker-icons.ts`; unknown names fall back to a dot. */
+  icon: string
+  /** `#rrggbb`. A tracker's own identity in a row of chips. */
+  color: string
+  /** Shown after the value: `mg`, `min`, `pages`. Empty for a check. */
+  unit: string
+  /** What the input prefills and the step its buttons take. */
+  defaultValue: number
+  /** A daily goal, if there is one. Drives the ring on the chip. */
+  target?: number | null
+  /** Top of a scale's range; the bottom is always 0. */
+  scaleMax: number
+  /** Draw this tracker's readings on the calendar. */
+  onCalendar: boolean
+  /** Retired: keeps its history, leaves the day's chips. */
+  archived: boolean
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+}
+
+/** One recorded value. */
+export interface Reading {
+  id: ReadingId
+  journalId: JournalId
+  trackerId: TrackerId
+  /** The entry it was recorded beside, if there was one. */
+  entryId?: EntryId | null
+  /** `YYYY-MM-DD`. Always known. */
+  localDate: string
+  /**
+   * When it happened, RFC 3339 — or absent, meaning "that day, time
+   * unknown". Ticking something on a past page records the day and no
+   * minute, because there was no minute to record.
+   */
+  at?: string | null
+  tz: string
+  value: number
+  note: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** One tracker's day, rolled up. What a chart is built from. */
+export interface TrackerDay {
+  trackerId: TrackerId
+  date: string
+  count: number
+  sum: number
+  max: number
+  firstAt?: string | null
+  lastAt?: string | null
+}
+
+export interface ReadingQuery {
+  journalId?: JournalId | null
+  trackerIds?: TrackerId[]
+  entryId?: EntryId | null
+  from?: string | null
+  to?: string | null
+  /** Only readings that know their time of day. */
+  timedOnly?: boolean
+  limit?: number | null
 }
 
 export type MediaKind = 'image' | 'video' | 'audio' | 'file'
@@ -137,6 +238,13 @@ export interface Capabilities {
    * this alone.
    */
   library: boolean
+  /**
+   * Backend carries the tracking domain, so readings have somewhere to live.
+   *
+   * False hides tracking entirely, settings included: offering to configure
+   * what cannot then be recorded is worse than not offering it.
+   */
+  trackers: boolean
 }
 
 export interface VaultStatus {

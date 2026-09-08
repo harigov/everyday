@@ -412,10 +412,14 @@ impl JournalStore for MarkdownStore {
             // this backend rewrote wholesale every hour, in a format nobody
             // would ever want to grep -- and a watch list is a grid of
             // covers and half-star ratings, which is a database's job and
-            // not a text file's.
+            // not a text file's. Readings are the same argument from the
+            // other end: tens of thousands of six-field records whose whole
+            // purpose is to be aggregated, which is a query rather than a
+            // directory listing.
             tasks: false,
             calendars: false,
             library: false,
+            trackers: false,
         }
     }
 

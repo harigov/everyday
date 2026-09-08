@@ -39,6 +39,9 @@ import type {
   Project,
   ProjectId,
   ProviderInfo,
+  Reading,
+  ReadingId,
+  ReadingQuery,
   SearchHit,
   SearchRequest,
   SearchResult,
@@ -51,6 +54,10 @@ import type {
   TaskStats,
   TaskStatus,
   TimeBlock,
+  Tracker,
+  TrackerDay,
+  TrackerId,
+  TrackerKind,
   TrayMenuItem,
   VaultStatus,
 } from './types'
@@ -363,6 +370,51 @@ export const api = {
    * else, so a cover has to come home before it can be drawn.
    */
   fetchImage: (url: string) => invoke<string>('fetch_image', { url }),
+
+  // ── The tracking domain ────────────────────────────────────────────
+  //
+  // Available only when `status.capabilities.trackers` is true. Note the
+  // split: a tracker's *definition* is a field on its journal and is saved
+  // with `saveJournal`, so there is no `saveTracker` here. What is here is
+  // minting one and everything to do with the readings it produces.
+
+  /** Mints an unsaved tracker; fill it in and save the journal holding it. */
+  newTracker: (name: string, kind: TrackerKind) => invoke<Tracker>('new_tracker', { name, kind }),
+
+  readings: (query: ReadingQuery) => invoke<Reading[]>('list_readings', { query }),
+
+  /** One row per tracker per day: the aggregate a chart is built from. */
+  trackerDays: (query: ReadingQuery) => invoke<TrackerDay[]>('tracker_days', { query }),
+
+  /**
+   * Record one value, and let the backend decide what "when" means.
+   *
+   * Pass `at` to state the time outright. Otherwise a reading on today's
+   * date takes the current minute, and one on a past date takes no time at
+   * all — writing up Tuesday on Thursday says nothing about 23:04, and a
+   * defaulted timestamp would put a mark on the calendar at an hour nothing
+   * happened.
+   */
+  logReading: (opts: {
+    journalId: JournalId
+    trackerId: TrackerId
+    value: number
+    date: string
+    at?: string | null
+    entryId?: EntryId | null
+  }) => invoke<Reading>('log_reading', opts),
+
+  /** Update a reading that exists: a corrected dose, a note, a time. */
+  saveReading: (reading: Reading) => invoke<void>('save_reading', { reading }),
+  deleteReading: (id: ReadingId) => invoke<void>('delete_reading', { id }),
+
+  /**
+   * Remove a tracker from its journal *and* every reading it ever made,
+   * returning how many went. Archiving — a flag on the definition, saved
+   * with the journal — is the non-destructive half of this pair.
+   */
+  deleteTracker: (journalId: JournalId, trackerId: TrackerId) =>
+    invoke<number>('delete_tracker', { journalId, trackerId }),
 }
 
 /**

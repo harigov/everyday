@@ -15,17 +15,20 @@
 //!     +-- TaskStore     optional second domain (crate::store::tasks)
 //!     +-- CalendarStore optional third domain  (crate::store::calendars)
 //!     +-- LibraryStore  optional fourth domain (crate::store::library)
+//!     +-- TrackerStore  optional fifth domain  (crate::store::trackers)
 //!     |
 //!   Cipher             trait: XChaCha20-Poly1305 or none (crate::crypto)
 //! ```
 //!
 //! ## Domains
 //!
-//! A vault holds four kinds of thing. Journals and entries ([`model`]) are
+//! A vault holds five kinds of thing. Journals and entries ([`model`]) are
 //! the original; projects, tasks and blocks of time ([`task`]) are the todo
 //! app; subscribed calendars and their events ([`calendar`]) are the third;
 //! shelves, the things on them and the log of what you did with them
-//! ([`library`]) are the fourth.
+//! ([`library`]) are the fourth; and what a day produced in numbers rather
+//! than in prose -- habits, doses, symptoms, counts ([`tracker`]) -- are the
+//! fifth.
 //!
 //! The calendar domain is the smallest of the three on purpose. Time you
 //! schedule for yourself was already a [`TimeBlock`] — a record in its own
@@ -39,6 +42,13 @@
 //! metadata. It is built on the same principle as [`ics`] — this crate
 //! composes the request and parses the reply, and something above it owns
 //! the socket — so the whole of it is testable offline.
+//!
+//! The tracking domain splits itself between two places for a reason worth
+//! knowing: a [`Tracker`](tracker::Tracker) — the decision to record
+//! something — is a setting of a [`Journal`](model::Journal) and is sealed
+//! inside it, while a [`Reading`](tracker::Reading) is a row of its own with
+//! its date, its instant and its value in the clear. Definitions are few and
+//! must stay private; readings are many and must stay scannable.
 
 pub mod blobstore;
 pub mod calendar;
@@ -54,6 +64,7 @@ pub mod richtext;
 pub mod search;
 pub mod store;
 pub mod task;
+pub mod tracker;
 pub mod vault;
 pub mod websearch;
 
@@ -62,7 +73,7 @@ pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatu
 pub use error::{Error, Result};
 pub use id::{
     BlobId, BlockId, CalendarId, EntryId, EventId, ItemId, JournalId, KindId, LogId, ProjectId,
-    TaskId,
+    ReadingId, TaskId, TrackerId,
 };
 pub use library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,
@@ -73,6 +84,7 @@ pub use richtext::RichDoc;
 pub use store::calendars::{CalendarStore, EventQuery};
 pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
 pub use store::tasks::{BlockQuery, ParentScope, ProjectScope, TaskQuery, TaskSort, TaskStore};
+pub use store::trackers::{ReadingQuery, TrackerDay, TrackerStore};
 pub use store::{
     BackendRegistry, Capabilities, EntryQuery, JournalStore, SortOrder, StoreContext, StoreFactory,
     StoreStats,
@@ -81,5 +93,6 @@ pub use task::{
     BlockKind, BlockSubject, Priority, Project, ProjectStatus, ProjectTaskCount, Task, TaskStats,
     TaskStatus, TimeBlock,
 };
+pub use tracker::{Aggregate, Reading, Tracker, TrackerKind};
 pub use vault::{Vault, VaultConfig, VaultHeader, VaultStatus};
 pub use websearch::{Fetcher, SearchRequest, SearchResult, Source, WebSearch};

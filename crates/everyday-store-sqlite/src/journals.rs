@@ -11,6 +11,7 @@ use everyday_core::model::{Entry, EntrySummary, Journal};
 use everyday_core::store::calendars::CalendarStore;
 use everyday_core::store::library::LibraryStore;
 use everyday_core::store::tasks::TaskStore;
+use everyday_core::store::trackers::TrackerStore;
 use everyday_core::store::{
     Capabilities, EntryQuery, JournalStore, SortOrder, StoreStats, journal_aad,
 };
@@ -32,6 +33,7 @@ impl JournalStore for SqliteStore {
             tasks: true,
             calendars: true,
             library: true,
+            trackers: true,
         }
     }
 
@@ -44,6 +46,10 @@ impl JournalStore for SqliteStore {
     }
 
     fn library(&self) -> Option<&dyn LibraryStore> {
+        Some(self)
+    }
+
+    fn trackers(&self) -> Option<&dyn TrackerStore> {
         Some(self)
     }
 
@@ -97,6 +103,11 @@ impl JournalStore for SqliteStore {
         let mut conn = self.conn();
         let tx = conn.transaction().map_err(Error::backend)?;
         tx.execute("DELETE FROM entries WHERE journal_id = ?1", params![id.to_string()])
+            .map_err(Error::backend)?;
+        // The readings too. Their definitions live inside the journal record
+        // about to be deleted, so leaving them would strand rows whose
+        // meaning is gone -- numbers against a tracker id nothing can name.
+        tx.execute("DELETE FROM readings WHERE journal_id = ?1", params![id.to_string()])
             .map_err(Error::backend)?;
         tx.execute("DELETE FROM journals WHERE id = ?1", params![id.to_string()])
             .map_err(Error::backend)?;
@@ -277,6 +288,13 @@ impl JournalStore for SqliteStore {
     }
 
     fn delete_entry(&self, id: EntryId) -> Result<()> {
+        // Readings survive the entry they were logged beside, and are
+        // detached from it rather than deleted with it. Deleting the
+        // paragraph you wrote about a run does not undo the run, and the
+        // number is the part a year of charts is made of. What must not
+        // survive is the *pointer*: a reading naming an entry that is gone
+        // is a link the next feature to follow it would trip over.
+        self.detach_readings_from(id)?;
         let conn = self.conn();
         conn.execute("DELETE FROM entries WHERE id = ?1", params![id.to_string()])
             .map_err(Error::backend)?;

@@ -9,14 +9,15 @@ use everyday_core::error::{Error, Result};
 use rusqlite::Connection;
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub(crate) const SCHEMA_VERSION: i64 = 4;
+pub(crate) const SCHEMA_VERSION: i64 = 5;
 
 /// Bring the database up to [`SCHEMA_VERSION`].
 ///
 /// Stepped rather than all-or-nothing: a vault written by an earlier build
 /// has entries in it, so version 2 must *add* the task tables beside them
 /// rather than recreate the file, version 3 the calendar tables beside both,
-/// and version 4 the library tables beside all three. Each step is
+/// version 4 the library tables beside all three, and version 5 the
+/// readings beside all four. Each step is
 /// idempotent and runs in its own transaction, and `user_version` is only
 /// advanced once they all land.
 pub(crate) fn migrate(conn: &Connection) -> Result<()> {
@@ -50,6 +51,9 @@ pub(crate) fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 4 {
         conn.execute_batch(SCHEMA_V4).map_err(Error::backend)?;
+    }
+    if version < 5 {
+        conn.execute_batch(SCHEMA_V5).map_err(Error::backend)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(Error::backend)?;
     Ok(())
@@ -271,5 +275,63 @@ const SCHEMA_V4: &str = r#"
         -- The year in review: every completion in a window.
         CREATE INDEX IF NOT EXISTS logs_by_date
             ON logs (local_date, event);
+        COMMIT;
+        "#;
+
+/// Version 5: the tracking domain -- the readings a journal's trackers made.
+///
+/// One table, and no table for the trackers themselves: a
+/// `Tracker` is a setting of a journal and is saved inside that journal's
+/// sealed payload, which is what keeps "sertraline" out of the database and
+/// out of this schema. What lands here is the stream: which tracker, which
+/// day, at what time, how much.
+///
+/// `value` is a clear `REAL` column, and that is the whole point of the
+/// design. A year of readings is thousands of rows whose entire purpose is
+/// to be summed, averaged and counted; sealing the number would make every
+/// chart a full decrypt of the vault. What the column leaks is that tracker
+/// `7f3a...` was `500` at 08:12 -- never that `7f3a...` is a drug, because
+/// the name it maps to is sealed one table over.
+///
+/// `at_us` is nullable, and deliberately so. A reading always knows its day
+/// and only sometimes its minute: ticking "flossed" while writing up
+/// yesterday says something true about yesterday and nothing about 23:04.
+/// A defaulted timestamp there would put a pin on the calendar at an hour
+/// nothing happened and skew the first question anyone asks of this data --
+/// *when* do the migraines start -- so the unknown is stored as an unknown
+/// and `WHERE at_us IS NOT NULL` is how an hour-of-day query says what it
+/// means.
+///
+/// Four indexes, one per question actually asked:
+///
+/// | Index | Answers |
+/// |---|---|
+/// | `readings_by_tracker` | "this tracker, over this year" -- every chart |
+/// | `readings_by_day` | "everything on these seven days" -- the calendar |
+/// | `readings_by_journal` | "this journal, today" -- the chips under an entry |
+/// | `readings_by_entry` | detaching readings from an entry being deleted |
+const SCHEMA_V5: &str = r#"
+        BEGIN;
+        CREATE TABLE IF NOT EXISTS readings (
+            id          TEXT    PRIMARY KEY NOT NULL,
+            journal_id  TEXT    NOT NULL,
+            tracker_id  TEXT    NOT NULL,
+            entry_id    TEXT,
+            local_date  TEXT    NOT NULL,
+            at_us       INTEGER,
+            value       REAL    NOT NULL,
+            created_us  INTEGER NOT NULL,
+            updated_us  INTEGER NOT NULL,
+            data        BLOB    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS readings_by_tracker
+            ON readings (tracker_id, local_date, at_us);
+        CREATE INDEX IF NOT EXISTS readings_by_day
+            ON readings (local_date, at_us);
+        CREATE INDEX IF NOT EXISTS readings_by_journal
+            ON readings (journal_id, local_date);
+        CREATE INDEX IF NOT EXISTS readings_by_entry
+            ON readings (entry_id);
         COMMIT;
         "#;

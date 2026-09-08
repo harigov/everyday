@@ -27,6 +27,7 @@
     todayIso,
   } from '../lib/time'
   import Icon from './Icon.svelte'
+  import TrackerIcon from './TrackerIcon.svelte'
 
   let { days }: { days: string[] } = $props()
 
@@ -348,6 +349,17 @@
             >{event.title}</button
           >
         {/each}
+        {#each calendar.untimedMarksOn(iso) as mark (mark.key)}
+          <span class="chip reading" style="--c: {mark.tracker.color}" title={mark.label}>
+            <TrackerIcon
+              name={mark.tracker.icon}
+              color={mark.tracker.color}
+              size={13}
+              tile={false}
+            />
+            {mark.label}
+          </span>
+        {/each}
         {#each calendar.tasksOn(iso) as task (task.id)}
           <button
             class="chip task"
@@ -404,13 +416,50 @@
                 .slot.color}"
               onpointerdown={(e) => onSlotPointerDown(e, p, iso)}
             >
-              <span class="slottime">{clockOf(p.slot.start)}</span>
-              <span class="slottitle">{p.slot.title}</span>
-              {#if p.height > 42 && p.slot.subtitle}
-                <span class="slotsub">{p.slot.subtitle}</span>
+              {#if p.slot.tracker}
+                <!-- A tracked span is usually short -- 30 minutes is 23px --
+                     so it says everything on one line, with the tracker's
+                     own mark instead of a start time. The pips on the rail
+                     beside it are the same glyph, which is what ties the two
+                     halves of this layer together. -->
+                <span class="slotline">
+                  <TrackerIcon
+                    name={p.slot.tracker.icon}
+                    color={p.slot.color}
+                    size={12}
+                    tile={false}
+                  />
+                  <span class="slottitle">{p.slot.title} · {p.slot.subtitle}</span>
+                </span>
+              {:else}
+                <span class="slottime">{clockOf(p.slot.start)}</span>
+                <span class="slottitle">{p.slot.title}</span>
+                {#if p.height > 42 && p.slot.subtitle}
+                  <span class="slotsub">{p.slot.subtitle}</span>
+                {/if}
               {/if}
               {#if p.slot.movable}<span class="handle"></span>{/if}
             </div>
+          {/each}
+
+          <!-- Tracked moments, on a rail down the left of the column.
+               Deliberately not slots: a dose has no length, and giving it
+               one would put a rectangle on the grid that claims fifteen
+               minutes nobody spent. The rail is 14px, which is enough for a
+               mark and not enough to compete with the day. -->
+          {#each calendar.marksOn(iso) as mark (mark.key)}
+            <span
+              class="mark"
+              style="top: {((mark.minute ?? 0) / 60) * HOUR}px; --c: {mark.tracker.color}"
+              title="{mark.label} · {clockOf(mark.minute ?? 0)}"
+            >
+              <TrackerIcon
+                name={mark.tracker.icon}
+                color={mark.tracker.color}
+                size={14}
+                tile={false}
+              />
+            </span>
           {/each}
 
           {#if draft}
@@ -578,6 +627,13 @@
     opacity: 0.55;
     text-decoration: line-through;
   }
+  /* A reading with no time of day. Not a button: there is nothing to open,
+     and it is edited on the day's entry where the tracker is named. */
+  .chip.reading {
+    background: none;
+    border-left: 2px solid color-mix(in oklab, var(--c) 55%, transparent);
+    cursor: default;
+  }
 
   /* ── The grid ───────────────────────────────────────────────────────── */
 
@@ -669,11 +725,49 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  .slotline {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+
   .slotsub {
     opacity: 0.66;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* A tracked length of time: the lightest thing on the grid. It is a
+     record, so it is solid rather than dashed, but it is *your body's*
+     record rather than your calendar's -- it was never booked, nothing
+     clashes with it, and it must not read as an appointment. Hence the
+     hairline rail and the wash with no fill weight behind it. */
+  .slot.reading {
+    background: color-mix(in oklab, var(--c) 11%, var(--bg-raised));
+    color: color-mix(in oklab, var(--c) 70%, var(--fg));
+    border-left: 2px solid color-mix(in oklab, var(--c) 70%, transparent);
+    cursor: default;
+  }
+
+  /* A tracked moment. Sits on the left edge, over the rules and under the
+     slots, so a dose at 08:00 is legible beside the meeting it happened
+     during rather than hidden behind it. */
+  .mark {
+    position: absolute;
+    left: 1px;
+    z-index: 2;
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    margin-top: -8px;
+    border-radius: 99px;
+    color: var(--c);
+    background: var(--bg-raised);
+    box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--c) 26%, transparent);
+    pointer-events: none;
   }
 
   /* An intention: a wash, and a dashed rail. Deliberately lighter than the

@@ -396,6 +396,93 @@ an *event* that has happened, so it floats over the layout and leaves. Putting
 an event in the banner would make the window jump under someone's cursor;
 putting a condition in a toast would let it expire while still being true.
 
+## Tracking
+
+A journal is prose, and prose does not aggregate. "Slept badly again, took
+the ibuprofen around eight" is the sentence you want to write and exactly the
+sentence nobody can plot. So a journal can also carry a handful of **trackers**
+— the numbers a day produced — and they sit as chips under the entry's
+heading, one click each.
+
+Four kinds, chosen to cover what a day actually leaves behind:
+
+```
+  Check    a habit          done, or not done yet         Floss
+  Dose     medication       how much, one reading each    400 mg, twice
+  Scale    a symptom        how bad, out of ten           Headache 6
+  Amount   a quantity       minutes, pages, glasses       30 min
+```
+
+They look like four different things and are stored as one. A **reading** is
+a tracker, an instant and a single `f64`; the kind changes how the interface
+*collects* that number and how a chart should *aggregate* it — count, sum or
+mean — and changes nothing about how it is written down. One numeric column
+and one timestamp is what makes "average pain by weekday", "current streak"
+and "minutes exercised per week" ordinary queries rather than four parallel
+schemas each needing their own.
+
+What you are recording is a **journal setting**, so the definitions live
+inside the journal record and are sealed with it: a tracker's *name* is as
+private as the entries beside it. The readings are a table of their own,
+because there are thousands of them and their whole purpose is to be scanned.
+
+### `at` is optional, and that is the point
+
+A reading always knows its **day**. It only sometimes knows its **minute**.
+Ticking "flossed" while writing up yesterday evening records something true
+about yesterday and nothing whatever about 23:04, so nothing is invented:
+recording on today's page takes the clock, recording on a past page takes the
+date and no time at all, and either can be corrected afterwards.
+
+That distinction is worth a nullable column because it is the first
+interesting question anyone asks of this data — *when* do the migraines
+start — and a defaulted timestamp would quietly poison the answer. An
+hour-of-day query says `WHERE at_us IS NOT NULL` and means it.
+
+### On the calendar
+
+A tracker can opt in to being drawn, per tracker rather than per kind,
+because the question is whether the *time* on it is real. A migraine at 14:20
+belongs on a grid; "flossed", ticked at bedtime for the whole day, is a pin at
+an hour that means nothing.
+
+```
+  tracked span     a hairline rail, the tracker's mark    45 min run, 07:00–07:45
+  tracked moment   a pip on a rail down the day           400 mg, 08:12
+  undated reading  a chip in the all-day band             sometime on Tuesday
+```
+
+Only a quantity measured in time has a length — a 500 mg dose is a moment
+however it is measured — so those are the only readings drawn as rectangles.
+Everything else is a mark, which is also why they do not go through the lane
+packer: a dose does not clash with your ten o'clock. Readings are records of
+what happened, so the header's **Record** toggle shows them and **Plan** hides
+them, which falls out of what that control already means.
+
+The honest limit: a reading is not a `TimeBlock`. It cannot be dragged, and it
+does not count towards "where did my time go" — that is still what booking
+time is for. A run that should do both is two records.
+
+### Specifying it
+
+Journal settings (the cog beside a journal, or right-click) is where both
+halves live: the journal's name, symbol and colour, and what it tracks. A
+tracker is a name, one of four kinds, an icon and a colour, with the fiddly
+fields — unit, usual amount, daily goal — appearing only once a kind that
+needs them is chosen. There is also a shelf of ready-made ones, because
+answering five questions before recording anything is how a good feature gets
+abandoned at the form.
+
+The icons are a second set from the one the rest of the interface uses
+(`ui/src/lib/tracker-icons.ts`): solid rather than stroked, on a tinted tile
+of the tracker's own colour. Chrome icons are drawn to sit quietly beside
+text; a tracker's icon is a target you hit twice a day with twenty others
+beside it, and line icons lose that fight at 18px.
+
+Tracking needs a backend that can hold readings, so it is offered on a SQLite
+vault and hidden on a Markdown one — the same arrangement as the todo app, the
+calendar and the library, and for the same reason.
+
 ## Layout
 
 ```
@@ -462,6 +549,15 @@ needs — which shelf, what status, your rating, whether you starred it, the
 year, the finish date, and a log row's date and event. So the file says that
 somebody rated eleven things highly in March and never what any of them
 were.
+
+The readings table goes furthest of all: the **value** is a clear column too.
+That is the trade the whole tracking domain is built on — a year of readings
+is thousands of rows whose entire purpose is to be summed, averaged and
+counted, and sealing the number would make every chart a full decrypt of the
+vault. What stays sealed is the part that identifies anything: the tracker's
+*name*, which is not in that table at all but inside the journal record. The
+file says that tracker `7f3a…` was `500` at 08:12 on the 14th, and never that
+`7f3a…` is a drug.
 
 If that trade is unacceptable, the storage abstraction is the answer: a
 backend that seals the index columns too — at the cost of full scans — drops
@@ -744,14 +840,15 @@ that appears to do nothing.
 ## Status
 
 The core, both storage backends, the vault lifecycle, search, the media
-pipeline, the todo app, the calendar and the CLI are implemented and tested —
-278 tests, plus three shared backend conformance suites and two dependency-free
-interface suites (the quick-add grammar and the calendar's grid arithmetic).
-The desktop shell and interface are complete and the interface builds and
-typechecks clean.
+pipeline, the todo app, the calendar, the library, tracking and the CLI are
+implemented and tested — 396 tests, plus the shared backend conformance suite
+and six dependency-free interface suites (the quick-add grammar, the
+calendar's grid arithmetic, conflict handling, notifications, the library and
+the tracking arithmetic). The desktop shell and interface are complete and the
+interface builds and typechecks clean.
 
 The CLI covers journals only. It is a capture-and-export tool for the journal
-and has not been taught about tasks or calendars.
+and has not been taught about tasks, calendars, the library or tracking.
 
 Calendar subscriptions are the one part not exercised against a real server
 here, for the obvious reason: the iCalendar reader, the recurrence expansion
@@ -761,9 +858,16 @@ the job. The interface's own mock backend (`make ui`) ships two sample
 calendars, one of them deliberately in a failed state, so both paths through
 the "add a calendar" sheet can be seen without a server.
 
-Not yet built: sync between machines, mobile shells, a map view, task
-recurrence, writing back to a subscribed calendar (see above for why not),
-and importers for Day One's export format.
+Tracking stores and draws; it does not yet chart. The storage was chosen so
+that it can — `tracker_days` is one `GROUP BY` over a clear index and returns
+a year of any tracker as 365 rows without decrypting anything — but the view
+that plots them is not built, and building it before anyone had a year of
+readings would have been the wrong order.
+
+Not yet built: an analytics view over the readings above, sync between
+machines, mobile shells, a map view, task recurrence, writing back to a
+subscribed calendar (see above for why not), and importers for Day One's
+export format.
 
 ## The icon on Linux
 

@@ -6,6 +6,7 @@
   // that last one being the only control here that another calendar
   // application would not have, and the reason this one is worth using.
 
+  import { onMount } from 'svelte'
   import { calendar, type Layer, type View } from '../lib/calendar.svelte'
   import { formatMinutes } from '../lib/format'
   import Icon from './Icon.svelte'
@@ -16,6 +17,10 @@
   import type { IconName } from '../lib/icons'
 
   void calendar.start()
+  // Readings are written in the journal app, under an entry, so coming back
+  // to the calendar is the moment this store can learn about them. `start`
+  // only runs once in a session; this runs every time the app is shown.
+  onMount(() => void calendar.refreshReadings())
 
   const locale = navigator.language || 'en'
 

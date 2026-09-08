@@ -13,14 +13,16 @@ use everyday_core::search::SearchHit;
 use everyday_core::store::calendars::EventQuery;
 use everyday_core::store::library::{ItemQuery, LogQuery};
 use everyday_core::store::tasks::{BlockQuery, TaskQuery};
+use everyday_core::store::trackers::{ReadingQuery, TrackerDay};
 use everyday_core::store::{EntryQuery, StoreStats};
 use everyday_core::task::{
     BlockKind, BlockSubject, Project, Task, TaskStats, TaskStatus, TimeBlock,
 };
+use everyday_core::tracker::{Reading, Tracker, TrackerKind};
 use everyday_core::websearch::{SearchRequest, SearchResult, Source};
 use everyday_core::{
     BlobId, BlockId, CalendarId, Entry, EntryId, EventId, ItemId, Journal, JournalId, KindId,
-    LogId, ProjectId, TaskId, Vault, VaultConfig, VaultStatus,
+    LogId, ProjectId, ReadingId, TaskId, TrackerId, Vault, VaultConfig, VaultStatus,
 };
 use serde::Serialize;
 use std::path::PathBuf;
@@ -1272,6 +1274,116 @@ pub async fn put_blob(state: State<'_, AppState>, bytes: Vec<u8>) -> CommandResu
     }
     let vault = state.require()?;
     blocking(move || Ok(vault.put_blob(&bytes)?.to_hex())).await
+}
+
+// ---- trackers and readings ----------------------------------------------
+//
+// The fourth domain. Definitions travel inside a `Journal` and are saved by
+// `save_journal`, so what is here is minting one -- which needs an id and a
+// clock the webview cannot be trusted with -- and everything to do with the
+// readings themselves.
+
+/// Mint a tracker, without saving it.
+///
+/// The id, the timestamps and the defaults come from here for the same
+/// reason `new_journal` mints a journal: `crypto.randomUUID` needs a secure
+/// context the packaged webview does not always provide, and a tracker that
+/// silently fails to get an id is a tracker whose readings all pile up under
+/// the same one.
+#[tauri::command]
+pub fn new_tracker(
+    state: State<'_, AppState>,
+    name: String,
+    kind: TrackerKind,
+) -> CommandResult<Tracker> {
+    let _ = state.require()?;
+    let mut tracker = Tracker::new(name, kind);
+    tracker.normalize();
+    Ok(tracker)
+}
+
+#[tauri::command]
+pub fn list_readings(
+    state: State<'_, AppState>,
+    query: ReadingQuery,
+) -> CommandResult<Vec<Reading>> {
+    Ok(state.require()?.readings(&query)?)
+}
+
+/// One row per tracker per day: the aggregate every chart is built from.
+#[tauri::command]
+pub fn tracker_days(
+    state: State<'_, AppState>,
+    query: ReadingQuery,
+) -> CommandResult<Vec<TrackerDay>> {
+    Ok(state.require()?.tracker_days(&query)?)
+}
+
+/// Record one value, and decide what "when" means.
+///
+/// The whole of that decision lives here, in one place, because it is the
+/// question this domain is easiest to get quietly wrong:
+///
+/// * an explicit `at` is always believed — the person corrected the time;
+/// * ticking something on **today's** page records the minute, because that
+///   minute is real: you are logging it as it happens;
+/// * ticking something on a **past** page records the day and no minute at
+///   all. Writing up Tuesday on Thursday says something true about Tuesday
+///   and nothing whatever about 23:04, and a defaulted timestamp there would
+///   put a mark on the calendar at an hour nothing happened.
+#[tauri::command]
+pub fn log_reading(
+    state: State<'_, AppState>,
+    journal_id: JournalId,
+    tracker_id: TrackerId,
+    value: f64,
+    date: jiff::civil::Date,
+    at: Option<jiff::Timestamp>,
+    entry_id: Option<EntryId>,
+) -> CommandResult<Reading> {
+    let vault = state.require()?;
+    let tz = system_tz();
+    let now = jiff::Timestamp::now();
+    let at = match at {
+        Some(at) => Some(at),
+        None if date == local_date_in(now, &tz) => Some(now),
+        None => None,
+    };
+
+    let mut reading = match at {
+        Some(at) => Reading::at(journal_id, tracker_id, at, &tz, value),
+        None => Reading::on(journal_id, tracker_id, date, value),
+    };
+    reading.tz = tz;
+    reading.entry_id = entry_id;
+    vault.save_reading(&reading)?;
+    // Read back rather than returned as written: the vault clamps the value
+    // against the tracker's definition, and the interface should draw what
+    // was stored rather than what it asked for.
+    Ok(vault.reading(reading.id)?)
+}
+
+/// Update a reading that already exists: a corrected dose, a note, a time.
+#[tauri::command]
+pub fn save_reading(state: State<'_, AppState>, reading: Reading) -> CommandResult<()> {
+    Ok(state.require()?.save_reading(&reading)?)
+}
+
+#[tauri::command]
+pub fn delete_reading(state: State<'_, AppState>, id: ReadingId) -> CommandResult<()> {
+    Ok(state.require()?.delete_reading(id)?)
+}
+
+/// Remove a tracker from its journal along with every reading it made,
+/// returning how many went. Archiving is the non-destructive half and is an
+/// ordinary `save_journal`.
+#[tauri::command]
+pub fn delete_tracker(
+    state: State<'_, AppState>,
+    journal_id: JournalId,
+    tracker_id: TrackerId,
+) -> CommandResult<u64> {
+    Ok(state.require()?.delete_tracker(journal_id, tracker_id)?)
 }
 
 // ---- maintenance --------------------------------------------------------

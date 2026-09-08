@@ -101,6 +101,15 @@ typed_id!(KindId, "kind");
 typed_id!(ItemId, "item");
 typed_id!(LogId, "log");
 
+// The tracking domain. A `TrackerId` names a thing you decided to record --
+// a habit, a supplement, a symptom -- and lives in the journal's settings; a
+// `ReadingId` names one recorded value. The split matters more here than
+// elsewhere: readings outlive the definition being renamed, re-coloured or
+// archived, which is what makes a year of "how much did I sleep" comparable
+// with itself.
+typed_id!(TrackerId, "tracker");
+typed_id!(ReadingId, "reading");
+
 /// Content address of an attachment payload.
 ///
 /// Blobs are content-addressed with BLAKE3 so that the same photo dropped into

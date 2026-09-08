@@ -15,8 +15,10 @@ use everyday_core::model::Entry;
 use everyday_core::store::calendars::{CalendarStore, EventQuery};
 use everyday_core::store::conformance;
 use everyday_core::store::tasks::{TaskQuery, TaskSort, TaskStore};
+use everyday_core::store::trackers::{ReadingQuery, TrackerStore};
 use everyday_core::store::{EntryQuery, JournalStore, SortOrder, StoreContext};
 use everyday_core::task::{Project, Task, TimeBlock};
+use everyday_core::tracker::{Aggregate, Reading, Tracker, TrackerKind};
 use everyday_core::{RichDoc, model::Journal};
 use std::path::Path;
 use std::sync::Arc;
@@ -640,4 +642,217 @@ fn a_second_handle_sees_the_first_ones_writes() {
         "the stale writer must be refused, not allowed to clobber"
     );
     assert_eq!(first.get_entry(e.id).unwrap().title, "written by the second");
+}
+
+// ---- the tracking domain -------------------------------------------------
+
+fn a_day(n: i8) -> jiff::civil::Date {
+    jiff::civil::Date::constant(2026, 3, n)
+}
+
+#[test]
+fn the_database_file_contains_no_readable_tracker_name() {
+    // The trade this domain makes, checked. Values, dates and instants are
+    // in the clear so a year of them can be aggregated without decryption --
+    // and the *name* that would say what a value means is not, because it
+    // lives in the journal record and is sealed with it.
+    let dir = tempfile::tempdir().unwrap();
+    let mut journal = Journal::new("Health");
+    let tracker = Tracker::new("Sertraline", TrackerKind::Dose).with_unit("mg");
+    let tracker_id = tracker.id;
+    journal.trackers.push(tracker);
+
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    store.put_journal(&journal).unwrap();
+
+    let mut reading = Reading::on(journal.id, tracker_id, a_day(14), 50.0);
+    reading.note = "with breakfast".into();
+    store.put_reading(&reading).unwrap();
+    store.flush().unwrap();
+
+    let bytes = std::fs::read(dir.path().join(DB_FILENAME)).unwrap();
+    let raw = String::from_utf8_lossy(&bytes);
+    assert!(!raw.contains("Sertraline"), "a tracker name reached the database file");
+    assert!(!raw.contains("with breakfast"), "a reading's note reached the database file");
+    // What is deliberately visible: the day and the id it belongs to.
+    assert!(raw.contains("2026-03-14"), "the date column is meant to be readable");
+}
+
+#[test]
+fn readings_are_filtered_and_aggregated_by_the_same_window() {
+    // `list_readings` and `tracker_days` share one `WHERE` clause precisely
+    // so these two can never disagree; this is the check that they do not.
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let journal = Journal::new("Health");
+    let (pain, dose) = (everyday_core::TrackerId::new(), everyday_core::TrackerId::new());
+
+    for (tracker, day, value) in
+        [(pain, 1, 3.0), (pain, 1, 7.0), (pain, 2, 4.0), (dose, 1, 400.0), (dose, 5, 400.0)]
+    {
+        store.put_reading(&Reading::on(journal.id, tracker, a_day(day), value)).unwrap();
+    }
+
+    let window = ReadingQuery {
+        tracker_ids: vec![pain],
+        from: Some(a_day(1)),
+        to: Some(a_day(2)),
+        ..Default::default()
+    };
+    assert_eq!(store.list_readings(&window).unwrap().len(), 3);
+
+    let days = store.tracker_days(&window).unwrap();
+    assert_eq!(days.len(), 2, "two days of one tracker");
+    // The morning's 3 and the evening's 7 average 5. They do not add to 10.
+    assert_eq!(days[0].value_for(Aggregate::Mean), 5.0);
+    assert_eq!(days[0].count, 2);
+    assert_eq!(days[1].value_for(Aggregate::Mean), 4.0);
+
+    // And the SQL aggregate agrees with the arithmetic done in memory.
+    assert_eq!(days, window.totals(store.list_readings(&window).unwrap()));
+}
+
+#[test]
+fn a_capped_query_caps_the_list_and_not_the_aggregate() {
+    // The SQL path and the in-memory one have to cover the same rows, and a
+    // limit is the filter they cannot both honour. Both ignore it here; the
+    // check is that they ignore it identically.
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let journal = Journal::new("Health");
+    let tracker = everyday_core::TrackerId::new();
+    for value in [400.0, 400.0, 400.0] {
+        store.put_reading(&Reading::on(journal.id, tracker, a_day(1), value)).unwrap();
+    }
+
+    let capped = ReadingQuery { limit: Some(1), ..Default::default() };
+    assert_eq!(store.list_readings(&capped).unwrap().len(), 1, "the list is capped");
+
+    let days = store.tracker_days(&capped).unwrap();
+    assert_eq!(days[0].count, 3, "the aggregate covers the window");
+    assert_eq!(days[0].sum, 1200.0);
+    // And the two implementations of it still agree.
+    assert_eq!(days, capped.totals(store.list_readings(&ReadingQuery::default()).unwrap()));
+}
+
+#[test]
+fn a_reading_that_never_knew_its_minute_says_so_after_a_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let journal = Journal::new("Health");
+    let tracker = everyday_core::TrackerId::new();
+
+    let undated = Reading::on(journal.id, tracker, a_day(1), 1.0);
+    let at: jiff::Timestamp = "2026-03-01T07:30:00Z".parse().unwrap();
+    let timed = Reading::at(journal.id, tracker, at, "UTC", 45.0);
+    store.put_reading(&undated).unwrap();
+    store.put_reading(&timed).unwrap();
+
+    let all = store.list_readings(&ReadingQuery::default()).unwrap();
+    assert_eq!(all.len(), 2);
+    // Untimed first within the day: "sometime today" is not lunchtime.
+    assert_eq!(all[0].at, None);
+    assert_eq!(all[1].at, Some(at));
+
+    let timed_only = ReadingQuery { timed_only: true, ..Default::default() };
+    let kept = store.list_readings(&timed_only).unwrap();
+    assert_eq!(kept.len(), 1, "an unknown minute must not answer an hour-of-day query");
+    assert_eq!(kept[0].id, timed.id);
+    // And the aggregate over the same window excludes it too.
+    assert_eq!(store.tracker_days(&timed_only).unwrap()[0].count, 1);
+}
+
+#[test]
+fn deleting_a_journal_takes_its_readings_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let mine = Journal::new("Health");
+    let other = Journal::new("Work");
+    store.put_journal(&mine).unwrap();
+    store.put_journal(&other).unwrap();
+
+    let t = everyday_core::TrackerId::new();
+    store.put_reading(&Reading::on(mine.id, t, a_day(1), 1.0)).unwrap();
+    store.put_reading(&Reading::on(other.id, t, a_day(1), 1.0)).unwrap();
+
+    store.delete_journal(mine.id).unwrap();
+
+    let left = store.list_readings(&ReadingQuery::default()).unwrap();
+    assert_eq!(left.len(), 1, "the deleted journal's readings should be gone");
+    assert_eq!(left[0].journal_id, other.id, "and the other journal's should not");
+}
+
+#[test]
+fn deleting_an_entry_keeps_its_readings_but_drops_the_link() {
+    // Deleting the paragraph about a run does not undo the run. What must
+    // not survive is the pointer -- in *both* copies of it, the clear column
+    // and the sealed payload, or a restore would resurrect a dead link.
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let journal = Journal::new("Health");
+    store.put_journal(&journal).unwrap();
+    let entry = Entry::new(journal.id, "UTC");
+    store.put_entry(&entry).unwrap();
+
+    let t = everyday_core::TrackerId::new();
+    let reading = Reading::on(journal.id, t, a_day(1), 45.0).with_entry(entry.id);
+    store.put_reading(&reading).unwrap();
+
+    store.delete_entry(entry.id).unwrap();
+
+    let kept = store.get_reading(reading.id).unwrap();
+    assert_eq!(kept.value, 45.0, "the reading itself must survive");
+    assert_eq!(kept.entry_id, None, "the sealed copy of the link must be cleared");
+    // The clear column too, or the index would still find it by that entry.
+    let by_entry = ReadingQuery { entry_id: Some(entry.id), ..Default::default() };
+    assert!(store.list_readings(&by_entry).unwrap().is_empty());
+}
+
+#[test]
+fn deleting_a_tracker_takes_only_its_own_readings() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let journal = Journal::new("Health");
+    let (gone, kept) = (everyday_core::TrackerId::new(), everyday_core::TrackerId::new());
+    store.put_reading(&Reading::on(journal.id, gone, a_day(1), 1.0)).unwrap();
+    store.put_reading(&Reading::on(journal.id, gone, a_day(2), 1.0)).unwrap();
+    store.put_reading(&Reading::on(journal.id, kept, a_day(1), 1.0)).unwrap();
+
+    assert_eq!(store.delete_readings_of(gone).unwrap(), 2);
+    let left = store.list_readings(&ReadingQuery::default()).unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].tracker_id, kept);
+}
+
+#[test]
+fn a_version_4_database_gains_the_readings_table_without_losing_entries() {
+    // The migration people will actually run: a vault written before
+    // tracking existed, opened by a build that has it. Readings arrive at
+    // version 5 because the library took version 4 first -- the numbering
+    // is a queue, and joining it in the wrong place would mean a vault
+    // migrated by one build silently skipping the other's tables.
+    let dir = tempfile::tempdir().unwrap();
+    let journal = Journal::new("Health");
+    let mut entry = Entry::new(journal.id, "UTC");
+    entry.body = RichDoc::from_plain_text("written before there were trackers");
+
+    {
+        let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+        store.put_journal(&journal).unwrap();
+        store.put_entry(&entry).unwrap();
+        let conn = store.conn.lock().unwrap();
+        conn.execute_batch("DROP TABLE readings;").unwrap();
+        conn.pragma_update(None, "user_version", 4i64).unwrap();
+    }
+
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    assert_eq!(store.get_entry(entry.id).unwrap(), entry, "migrating must not disturb the journal");
+    // A journal written by the older build has no `trackers` key at all,
+    // which must deserialise as "none" rather than as a failure.
+    assert!(store.get_journal(journal.id).unwrap().trackers.is_empty());
+
+    let t = everyday_core::TrackerId::new();
+    let reading = Reading::on(journal.id, t, a_day(1), 1.0);
+    store.put_reading(&reading).unwrap();
+    assert_eq!(store.get_reading(reading.id).unwrap(), reading);
 }

@@ -22,6 +22,7 @@ import { Autosave } from './autosave'
 import { app, errorMessage, handle, isLocked } from './state.svelte'
 import { todo } from './todo.svelte'
 import { TRAY_ORDER, tray } from './tray.svelte'
+import { durationMinutes, formatValue } from './tracker'
 import {
   MIN_BLOCK_MINUTES,
   SNAP_MINUTES,
@@ -47,9 +48,11 @@ import type {
   EntrySummary,
   Project,
   ProjectId,
+  Reading,
   Task,
   TaskId,
   TimeBlock,
+  Tracker,
 } from './types'
 import { TASK_STATUSES, isOpen } from './types'
 
@@ -70,14 +73,21 @@ export type Layer = 'both' | 'planned' | 'actual'
 /**
  * Anything the grid can draw in a time slot, reduced to what drawing needs.
  *
- * A single shape for four different records, because the grid's job — pack
+ * A single shape for five different records, because the grid's job — pack
  * overlapping things into lanes, position them, colour them — is identical
- * for all of them, and four nearly-identical layout passes is how a calendar
+ * for all of them, and five nearly-identical layout passes is how a calendar
  * view becomes unmaintainable.
+ *
+ * Note which readings reach here and which do not. A tracked *quantity of
+ * time* — "45 min run at 07:00" — is a rectangle from 07:00 to 07:45 and
+ * belongs in the lane packer beside the meetings it clashes with. Everything
+ * else a tracker records is a moment, not a shape: a 500 mg dose has no
+ * length, and drawing it as a fifteen-minute box would be an invention. Those
+ * are `Mark`s, drawn as pips on a rail down the side of the day.
  */
 export interface Slot {
   key: string
-  kind: 'planned' | 'actual' | 'event'
+  kind: 'planned' | 'actual' | 'event' | 'reading'
   title: string
   subtitle: string
   color: string
@@ -88,12 +98,32 @@ export interface Slot {
   movable: boolean
   block?: TimeBlock
   event?: CalendarEvent
+  /** Set on a `reading` slot: something recorded, and what recorded it. */
+  reading?: Reading
+  tracker?: Tracker
   /** A cancelled meeting, drawn struck through rather than hidden. */
   cancelled?: boolean
   /** Marked free by the publisher: drawn faintly, does not read as a clash. */
   free?: boolean
   /** The timer is running in this one. */
   live?: boolean
+}
+
+/**
+ * A reading drawn as a moment rather than as a shape.
+ *
+ * `minute` is minutes from the column's midnight, or `null` for a reading
+ * that never knew its time of day — those go in the all-day band, because
+ * "sometime on Tuesday" is a fact about the day and pinning it to a minute
+ * would be a fact nobody recorded.
+ */
+export interface Mark {
+  key: string
+  minute: number | null
+  tracker: Tracker
+  reading: Reading
+  /** `Ibuprofen · 400 mg`, for the tooltip and the month row. */
+  label: string
 }
 
 /**
@@ -155,6 +185,16 @@ class CalendarState {
   projects = $state<Project[]>([])
   /** Days with a journal entry on them, so the calendar can say so. */
   entryDays = $state<Set<string>>(new Set())
+  /**
+   * Readings in the window, from every journal.
+   *
+   * Loaded whole and filtered at draw time rather than queried per tracker:
+   * which trackers are drawn is decided by their *definitions*, which live
+   * on the journals `app` already holds, and a query cannot ask about them
+   * because the backend keeps them sealed. The window is a week or a month
+   * of one clear index scan either way.
+   */
+  readings = $state<Reading[]>([])
 
   selection = $state<Selection>(null)
   loading = $state(false)
@@ -222,6 +262,7 @@ class CalendarState {
     this.openTasks = []
     this.projects = []
     this.entryDays = new Set()
+    this.readings = []
     this.selection = null
     this.syncNote = null
     // The timer is deliberately *not* cleared: it is a note to self held in
@@ -320,8 +361,8 @@ class CalendarState {
       // One round of queries per navigation, all four in parallel. Each is a
       // date-range scan over a clear index column, so paging through a year
       // is cheap even on an encrypted vault.
-      const [calendars, events, blocks, dueTasks, openTasks, projects, entries] = await Promise.all(
-        [
+      const [calendars, events, blocks, dueTasks, openTasks, projects, entries, readings] =
+        await Promise.all([
           api.calendars(),
           api.events({ from, to, visibleOnly: true }),
           api.blocks({ from, to }),
@@ -329,8 +370,8 @@ class CalendarState {
           api.tasks({ statuses: OPEN_STATUSES, sort: 'dueAsc', limit: 300 }),
           api.projects(),
           api.entries({ from, to, sort: 'dateAsc', limit: 500 }),
-        ],
-      )
+          app.supportsTrackers ? api.readings({ from, to }) : Promise.resolve([]),
+        ])
       this.calendars = calendars
       this.events = events
       this.blocks = blocks
@@ -338,12 +379,31 @@ class CalendarState {
       this.openTasks = openTasks
       this.projects = projects
       this.entryDays = new Set(entries.map((e: EntrySummary) => e.localDate))
+      this.readings = readings
       // A selection that has scrolled out of the window is not a selection.
       if (this.selection && !this.selected) this.selection = null
     } catch (e) {
       await handle(e)
     } finally {
       this.loading = false
+    }
+  }
+
+  /**
+   * Re-read only the readings.
+   *
+   * Called when the calendar is shown again, because readings are written in
+   * the *journal* app -- ticking a chip under an entry -- and this store has
+   * no way to hear about that. One index scan, rather than re-running the
+   * whole eight-query navigation load for a tab switch.
+   */
+  async refreshReadings() {
+    if (!app.supportsTrackers) return
+    const [from, to] = this.range
+    try {
+      this.readings = await api.readings({ from, to })
+    } catch (e) {
+      if (isLocked(e)) await app.lock()
     }
   }
 
@@ -358,6 +418,24 @@ class CalendarState {
   }
 
   // ── what the grid draws ──────────────────────────────────────────────
+
+  /**
+   * The trackers this calendar is allowed to draw, by id.
+   *
+   * Opt-in per tracker rather than per kind, because the question is whether
+   * the *time* on a reading is real. A migraine at 14:20 belongs on a grid;
+   * "flossed", ticked at bedtime for the whole day, is a pin at an hour that
+   * means nothing. The switch is in the journal's settings.
+   */
+  get drawnTrackers(): Map<string, Tracker> {
+    const out = new Map<string, Tracker>()
+    for (const journal of app.journals) {
+      for (const tracker of journal.trackers) {
+        if (tracker.onCalendar && !tracker.archived) out.set(tracker.id, tracker)
+      }
+    }
+    return out
+  }
 
   /** The calendar an event came from, for its colour and its name. */
   calendarOf(id: CalendarId): CalendarInfo | null {
@@ -415,6 +493,10 @@ class CalendarState {
 
     if (this.layer !== 'actual') out.push(...this.blockSlots(iso, 'planned'))
     if (this.layer !== 'planned') out.push(...this.blockSlots(iso, 'actual'))
+    // A reading is a record of something that happened, so it belongs with
+    // the record layer and disappears under Plan. That falls out of what the
+    // toggle already means rather than being a rule of its own.
+    if (this.layer !== 'planned') out.push(...this.readingSlots(iso))
     const live = this.liveSlot(iso)
     if (live) out.push(live)
 
@@ -441,6 +523,91 @@ class CalendarState {
       })
     }
     return out
+  }
+
+  /**
+   * Readings that occupy a *length* of time, as rectangles.
+   *
+   * Only a quantity measured in time qualifies: 45 minutes of running
+   * started at 07:00 is 07:00–07:45. `at` is the start rather than the end,
+   * which is the reading the strip's time field offers and the one a person
+   * means by "when did you do it".
+   */
+  private readingSlots(iso: string): Slot[] {
+    const drawn = this.drawnTrackers
+    const out: Slot[] = []
+    for (const reading of this.readings) {
+      if (!reading.at) continue
+      const tracker = drawn.get(reading.trackerId)
+      if (!tracker) continue
+      const minutes = durationMinutes(tracker, reading.value)
+      if (minutes === null) continue
+      const start = offsetInDay(reading.at, iso)
+      const end = start + minutes
+      if (end <= 0 || start >= 24 * 60) continue
+      out.push({
+        key: `reading:${reading.id}`,
+        kind: 'reading',
+        title: tracker.name,
+        subtitle: formatValue(tracker, reading.value),
+        color: tracker.color,
+        start: Math.max(0, start),
+        end: Math.min(24 * 60, end),
+        movable: false,
+        reading,
+        tracker,
+      })
+    }
+    return out
+  }
+
+  /**
+   * Readings drawn as moments: pips down the side of a day.
+   *
+   * Everything a tracker records that is not a length of time — a dose, a
+   * severity, a habit ticked at the moment it happened.
+   */
+  marksOn(iso: string): Mark[] {
+    if (this.layer === 'planned') return []
+    const drawn = this.drawnTrackers
+    const out: Mark[] = []
+    for (const reading of this.readings) {
+      if (reading.localDate !== iso || !reading.at) continue
+      const tracker = drawn.get(reading.trackerId)
+      if (!tracker || durationMinutes(tracker, reading.value) !== null) continue
+      out.push({
+        key: `mark:${reading.id}`,
+        minute: offsetInDay(reading.at, iso),
+        tracker,
+        reading,
+        label: `${tracker.name} · ${formatValue(tracker, reading.value)}`,
+      })
+    }
+    return out.sort((a, b) => (a.minute ?? 0) - (b.minute ?? 0))
+  }
+
+  /**
+   * Readings filed under a day with no time of day, for the all-day band.
+   *
+   * The band is where they belong and the reason `at` is optional at all: a
+   * habit ticked while writing up last Tuesday is true of Tuesday and says
+   * nothing about the minute it was typed.
+   */
+  untimedMarksOn(iso: string): Mark[] {
+    if (this.layer === 'planned') return []
+    const drawn = this.drawnTrackers
+    return this.readings
+      .filter((r) => r.localDate === iso && !r.at && drawn.has(r.trackerId))
+      .map((reading) => {
+        const tracker = drawn.get(reading.trackerId)!
+        return {
+          key: `mark:${reading.id}`,
+          minute: null,
+          tracker,
+          reading,
+          label: `${tracker.name} · ${formatValue(tracker, reading.value)}`,
+        }
+      })
   }
 
   private blockSlots(iso: string, kind: BlockKind): Slot[] {
@@ -547,6 +714,10 @@ class CalendarState {
 
   select(slot: Slot | null) {
     if (!slot) return void (this.selection = null)
+    // A reading is not a thing with a panel: it is edited where it was
+    // recorded, under the day's entry, which is also where the tracker that
+    // gives it meaning is named.
+    if (slot.reading) return void (this.selection = null)
     this.selection = slot.block
       ? { kind: 'block', id: slot.block.id }
       : { kind: 'event', id: slot.event!.id }

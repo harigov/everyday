@@ -101,6 +101,8 @@ export const ICONS = {
 
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
 
+  minus: '<path d="M5 12h14"/>',
+
   trash:
     '<path d="M3.5 6h17"/>' +
     '<path d="M19 6v13a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 5 19V6"/>' +

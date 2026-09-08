@@ -35,6 +35,7 @@
 //! | event `calendar_id`, `local_date`, `end_date`, `start_us` | how many calendars, and which days have something on them |
 //! | item `kind_id`, `status`, `rating`, `favourite`, `year`, `finished_on` | how many shelves, how much is on each, and how you scored it |
 //! | log `item_id`, `event`, `local_date` | that something was got to the end of on a day, never what |
+//! | reading `tracker_id`, `local_date`, `at_us`, `value` | that something was recorded, when, and how much of it -- never what |
 //!
 //! Titles, bodies, tags, locations, attachments and file names are all
 //! sealed. Someone with the database file learns *that* you journalled on 14
@@ -67,10 +68,11 @@
 //!   tasks.rs       impl TaskStore    -- projects, tasks, time blocks
 //!   calendars.rs   impl CalendarStore -- subscriptions and their events
 //!   library.rs     impl LibraryStore  -- shelves, items and the log
+//!   trackers.rs    impl TrackerStore  -- the readings a journal recorded
 //! ```
 //!
-//! One `SqliteStore` implements all four traits; the split is by domain,
-//! the same one `everyday_core::store` makes between the trait and its three
+//! One `SqliteStore` implements all five traits; the split is by domain,
+//! the same one `everyday_core::store` makes between the trait and its four
 //! optional siblings. It replaces a single file that had grown past 1,800
 //! lines, in which finding the four places a task's `sort_order` is written
 //! meant scrolling past the entry queries and the migration SQL.
@@ -80,11 +82,13 @@ mod journals;
 mod library;
 mod schema;
 mod tasks;
+mod trackers;
 
 use everyday_core::blobstore::FileBlobStore;
 use everyday_core::error::{Error, Result};
-use everyday_core::id::{EntryId, TaskId};
+use everyday_core::id::{EntryId, ReadingId, TaskId};
 use everyday_core::model::{Entry, EntrySummary};
+use everyday_core::store::trackers::reading_aad;
 use everyday_core::store::{JournalStore, StoreContext, StoreFactory, entry_aad};
 use rusqlite::{Connection, Transaction, params, params_from_iter};
 use std::sync::{Arc, Mutex};
@@ -265,6 +269,44 @@ impl SqliteStore {
             frontier = next;
         }
         Ok(out)
+    }
+
+    /// Clear the entry pointer on any reading that names `entry`.
+    ///
+    /// Both copies of it: the clear column the index is built on, and the
+    /// one inside the sealed payload. Updating only the column would leave
+    /// the record disagreeing with itself, and the sealed copy is the one
+    /// that would be believed after a restore.
+    ///
+    /// A read-modify-reseal per row, which is affordable precisely because
+    /// of what it operates on: the handful of things ticked while writing
+    /// one entry, on the rare occasion that entry is deleted.
+    fn detach_readings_from(&self, entry: EntryId) -> Result<()> {
+        let rows: Vec<(String, Vec<u8>)> = {
+            let conn = self.conn();
+            let mut stmt = conn
+                .prepare("SELECT id, data FROM readings WHERE entry_id = ?1")
+                .map_err(Error::backend)?;
+            stmt.query_map(params![entry.to_string()], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(Error::backend)?
+                .collect::<rusqlite::Result<_>>()
+                .map_err(Error::backend)?
+        };
+
+        for (id, sealed) in rows {
+            let id = ReadingId::parse(&id).map_err(|e| Error::Invalid(e.to_string()))?;
+            let aad = reading_aad(id);
+            let mut reading: everyday_core::tracker::Reading = self.unseal(&aad, &sealed)?;
+            reading.entry_id = None;
+            let data = self.seal(&aad, &reading)?;
+            let conn = self.conn();
+            conn.execute(
+                "UPDATE readings SET entry_id = NULL, data = ?2 WHERE id = ?1",
+                params![id.to_string(), data],
+            )
+            .map_err(Error::backend)?;
+        }
+        Ok(())
     }
 
     /// Delete these tasks and every time block booked against them.

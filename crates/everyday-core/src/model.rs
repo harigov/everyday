@@ -4,8 +4,9 @@
 //! index and the UI. They are deliberately backend-agnostic: nothing here
 //! knows about SQL tables or Markdown frontmatter.
 
-use crate::id::{BlobId, EntryId, JournalId};
+use crate::id::{BlobId, EntryId, JournalId, TrackerId};
 use crate::richtext::RichDoc;
+use crate::tracker::Tracker;
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +23,18 @@ pub struct Journal {
     pub description: String,
     /// Manual ordering in the sidebar; ties broken by `name`.
     pub sort_order: i32,
+    /// What this journal records alongside its entries: habits, doses,
+    /// symptoms, counts. See [`crate::tracker`].
+    ///
+    /// The definitions live here — inside the sealed journal record — rather
+    /// than in a table of their own, because "what am I tracking" is a
+    /// setting of the journal, is a handful of rows rather than thousands,
+    /// and is the one part of this domain whose *names* must never reach a
+    /// clear column. The readings themselves are stored separately, and
+    /// separately for the opposite reason: there are thousands of them and
+    /// they have to be scannable without being decrypted.
+    #[serde(default)]
+    pub trackers: Vec<Tracker>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -36,6 +49,7 @@ impl Journal {
             icon: "\u{1f4d3}".into(), // notebook
             description: String::new(),
             sort_order: 0,
+            trackers: Vec::new(),
             created_at: now,
             updated_at: now,
         }
@@ -49,6 +63,19 @@ impl Journal {
     pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
         self.icon = icon.into();
         self
+    }
+
+    /// The trackers the day's chips should offer, in the order they were
+    /// arranged. Archived ones are excluded: they keep their history and
+    /// leave the page.
+    pub fn active_trackers(&self) -> impl Iterator<Item = &Tracker> {
+        let mut live: Vec<&Tracker> = self.trackers.iter().filter(|t| !t.archived).collect();
+        live.sort_by_key(|t| (t.sort_order, t.created_at));
+        live.into_iter()
+    }
+
+    pub fn tracker(&self, id: TrackerId) -> Option<&Tracker> {
+        self.trackers.iter().find(|t| t.id == id)
     }
 }
 

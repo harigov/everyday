@@ -30,6 +30,7 @@ use crate::model::{Entry, EntrySummary, Journal};
 use crate::store::calendars::CalendarStore;
 use crate::store::library::LibraryStore;
 use crate::store::tasks::TaskStore;
+use crate::store::trackers::TrackerStore;
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -68,6 +69,13 @@ pub struct Capabilities {
     /// backend that carries this alone.
     #[serde(default)]
     pub library: bool,
+    /// Backend implements [`trackers::TrackerStore`], so the habits, doses,
+    /// symptoms and counts recorded beside an entry have somewhere to live.
+    /// False hides tracking entirely — including the settings that define
+    /// it, since offering to configure what cannot be recorded is worse than
+    /// not offering it.
+    #[serde(default)]
+    pub trackers: bool,
 }
 
 /// Everything a backend needs to open a vault directory.
@@ -246,6 +254,15 @@ pub trait JournalStore: Send + Sync {
     /// [`library`](crate::store::library) for the three records it holds and
     /// the cascades between them.
     fn library(&self) -> Option<&dyn LibraryStore> {
+        None
+    }
+
+    /// Storage for the tracking domain, if this backend has any.
+    ///
+    /// Same shape and same reasoning as the three above. See
+    /// [`trackers`](crate::store::trackers) for why a stream of timestamped
+    /// numbers is its own trait — and why the *definitions* are not in it.
+    fn trackers(&self) -> Option<&dyn TrackerStore> {
         None
     }
 
@@ -504,6 +521,7 @@ impl BackendRegistry {
 pub mod calendars;
 pub mod library;
 pub mod tasks;
+pub mod trackers;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod conformance;

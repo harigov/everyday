@@ -16,6 +16,7 @@
   import { longDate, plural, relativeTime } from '../lib/format'
   import Toolbar from './Toolbar.svelte'
   import EntryMeta from './EntryMeta.svelte'
+  import TrackerStrip from './TrackerStrip.svelte'
   import Logo from './Logo.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
@@ -275,6 +276,12 @@
             spellcheck="false"
           />
           <EntryMeta {entry} />
+          <!-- What the day recorded in numbers, under what it recorded in
+               prose. Keyed on the journal and the date rather than on the
+               entry, because a reading belongs to the day: it survives this
+               entry being deleted, and it can be recorded on a day nothing
+               was written at all. -->
+          <TrackerStrip journalId={entry.journalId} date={entry.localDate} />
         </header>
 
         <div class="prose" bind:this={host}></div>

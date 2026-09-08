@@ -38,12 +38,17 @@ import type {
   EntrySummary,
   Journal,
   Project,
+  Reading,
+  ReadingQuery,
   SearchHit,
   Task,
   TaskQuery,
   TaskStats,
   TaskStatus,
   TimeBlock,
+  Tracker,
+  TrackerDay,
+  TrackerKind,
   VaultStatus,
 } from './types'
 import { TASK_STATUSES, VaultError, isAhead, isOpen, priorityRank } from './types'
@@ -103,6 +108,33 @@ const BLOBS: Record<string, string> = {
   ['a'.repeat(64)]: swatch('#f0a35e', '#b8434f', 'the harbour at dusk'),
   ['b'.repeat(64)]: swatch('#4a7fb5', '#1c2f4a', 'the train window'),
   ['c'.repeat(64)]: swatch('#7ba05b', '#2f4a2f', 'first frost'),
+}
+
+function tracker(
+  id: string,
+  name: string,
+  kind: TrackerKind,
+  icon: string,
+  color: string,
+  rest: Partial<Tracker> = {},
+): Tracker {
+  return {
+    id,
+    name,
+    kind,
+    icon,
+    color,
+    unit: '',
+    defaultValue: 1,
+    target: null,
+    scaleMax: 10,
+    onCalendar: false,
+    archived: false,
+    sortOrder: 0,
+    createdAt: iso(400),
+    updatedAt: iso(400),
+    ...rest,
+  }
 }
 
 // ── The library domain ───────────────────────────────────────────────────
@@ -641,6 +673,31 @@ const journals: Journal[] = [
     icon: '\u{1f342}',
     description: 'The ordinary days',
     sortOrder: 0,
+    trackers: [
+      tracker('t-walk', 'Walk the dog', 'check', 'paw', '#16a34a', { sortOrder: 0 }),
+      tracker('t-vitd', 'Vitamin D', 'dose', 'tablet', '#f59e0b', {
+        unit: 'iu',
+        defaultValue: 1000,
+        sortOrder: 1,
+      }),
+      tracker('t-head', 'Headache', 'scale', 'bolt', '#e11d48', {
+        onCalendar: true,
+        sortOrder: 2,
+      }),
+      tracker('t-run', 'Run', 'amount', 'run', '#0284c7', {
+        unit: 'min',
+        defaultValue: 30,
+        target: 30,
+        onCalendar: true,
+        sortOrder: 3,
+      }),
+      tracker('t-read', 'Pages read', 'amount', 'book', '#4f46e5', {
+        unit: 'pages',
+        defaultValue: 20,
+        target: 20,
+        sortOrder: 4,
+      }),
+    ],
     createdAt: iso(400),
     updatedAt: iso(1),
   },
@@ -651,6 +708,7 @@ const journals: Journal[] = [
     icon: '\u{2708}\u{fe0f}',
     description: 'Trips, trains and long walks',
     sortOrder: 1,
+    trackers: [],
     createdAt: iso(300),
     updatedAt: iso(9),
   },
@@ -661,6 +719,7 @@ const journals: Journal[] = [
     icon: '\u{1f4d6}',
     description: 'Books and the thoughts they caused',
     sortOrder: 2,
+    trackers: [],
     createdAt: iso(200),
     updatedAt: iso(20),
   },
@@ -1314,6 +1373,60 @@ void TASK_STATUSES
 // exists so the interface can be opened straight to the main view when
 // reviewing or screenshotting it.
 let unlocked = new URLSearchParams(location.search).has('unlocked')
+/**
+ * A fortnight of readings, generated rather than typed out.
+ *
+ * Deterministic on purpose -- a mock that reshuffles itself every reload is
+ * no use for judging a layout. The shape is meant to be *realistic* rather
+ * than tidy: the walk is missed twice, the headaches cluster, and two of the
+ * runs are on days with no journal entry at all, because a reading does not
+ * require one.
+ */
+const readings: Reading[] = (() => {
+  const out: Reading[] = []
+  let n = 0
+  const push = (
+    trackerId: string,
+    daysAgo: number,
+    value: number,
+    hour: number | null,
+    note = '',
+  ) => {
+    const d = new Date()
+    d.setDate(d.getDate() - daysAgo)
+    const p = (x: number) => String(x).padStart(2, '0')
+    const localDate = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+    let at: string | null = null
+    if (hour !== null) {
+      const t = new Date(d)
+      t.setHours(hour, (n * 7) % 60, 0, 0)
+      at = t.toISOString()
+    }
+    out.push({
+      id: `r-${n++}`,
+      journalId: 'j-daily',
+      trackerId,
+      entryId: null,
+      localDate,
+      at,
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      value,
+      note,
+      createdAt: at ?? iso(daysAgo),
+      updatedAt: at ?? iso(daysAgo),
+    })
+  }
+  for (let d = 0; d < 15; d++) {
+    if (d !== 4 && d !== 11) push('t-walk', d, 1, 8 + (d % 3))
+    push('t-vitd', d, 1000, 8)
+    if (d % 3 === 0) push('t-read', d, 15 + ((d * 7) % 30), null)
+    if ([1, 3, 6, 8, 13].includes(d)) push('t-run', d, 25 + ((d * 5) % 20), 7)
+    if ([2, 3, 9].includes(d)) push('t-head', d, 3 + (d % 4), 15, d === 3 ? 'after the flight' : '')
+    if (d === 3) push('t-head', d, 6, 21)
+  }
+  return out
+})()
+
 let nextId = 100
 
 function plainText(node: unknown): string {
@@ -1372,9 +1485,53 @@ function status(): VaultStatus {
           tasks: true,
           calendars: true,
           library: true,
+          trackers: true,
         }
       : undefined,
   }
+}
+
+/** The local day an instant falls on, which is what a reading is filed under. */
+function localDayOf(at: string): string {
+  const d = new Date(at)
+  const p = (x: number) => String(x).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+/**
+ * The filter `list_readings` and `tracker_days` share, as the store does.
+ *
+ * `paginate` is the one thing they do not share: a cap belongs to a list,
+ * and an aggregate that honoured it would return silently partial totals.
+ * The real backend leaves `LIMIT` out of its `GROUP BY` for the same reason.
+ */
+function matchReadings(q: ReadingQuery, paginate = true): Reading[] {
+  return readings
+    .filter((r) => {
+      if (q.journalId && r.journalId !== q.journalId) return false
+      if (q.trackerIds?.length && !q.trackerIds.includes(r.trackerId)) return false
+      if (q.entryId && r.entryId !== q.entryId) return false
+      if (q.from && r.localDate < q.from) return false
+      if (q.to && r.localDate > q.to) return false
+      if (q.timedOnly && !r.at) return false
+      return true
+    })
+    .sort(
+      (a, b) =>
+        a.localDate.localeCompare(b.localDate) ||
+        (a.at ?? '').localeCompare(b.at ?? '') ||
+        a.id.localeCompare(b.id),
+    )
+    .slice(0, (paginate ? q.limit : null) ?? undefined)
+}
+
+/** What the real vault does on the way in: a value has to mean something. */
+function clampReading(tracker: Tracker | undefined, value: number): number {
+  if (!Number.isFinite(value)) return 0
+  if (!tracker) return Math.max(0, value)
+  if (tracker.kind === 'check') return value > 0 ? 1 : 0
+  if (tracker.kind === 'scale') return Math.min(Math.max(value, 0), tracker.scaleMax)
+  return Math.max(0, value)
 }
 
 function requireUnlocked() {
@@ -1445,6 +1602,7 @@ export const mockInvoke = async <T>(
         icon: '\u{1f4d3}',
         description: '',
         sortOrder: journals.length,
+        trackers: [],
         createdAt: now,
         updatedAt: now,
       } as T
@@ -1897,6 +2055,119 @@ export const mockInvoke = async <T>(
           skipped: 0,
         }))
       return (cmd === 'sync_calendar' ? (reports[0] ?? { events: 0, skipped: 0 }) : reports) as T
+    }
+
+    case 'new_tracker': {
+      requireUnlocked()
+      const now = new Date().toISOString()
+      return {
+        id: `t-${nextId++}`,
+        name: str(args.name),
+        kind: args.kind as TrackerKind,
+        icon: 'dot',
+        color: '#e11d48',
+        unit: '',
+        defaultValue: 1,
+        target: null,
+        scaleMax: 10,
+        onCalendar: false,
+        archived: false,
+        sortOrder: 0,
+        createdAt: now,
+        updatedAt: now,
+      } satisfies Tracker as T
+    }
+
+    case 'list_readings': {
+      requireUnlocked()
+      return matchReadings((args.query ?? {}) as ReadingQuery).map((r) => structuredClone(r)) as T
+    }
+
+    case 'tracker_days': {
+      requireUnlocked()
+      const days = new Map<string, TrackerDay>()
+      for (const r of matchReadings(args.query ?? {}, false)) {
+        const key = `${r.localDate}/${r.trackerId}`
+        const d = days.get(key) ?? {
+          trackerId: r.trackerId,
+          date: r.localDate,
+          count: 0,
+          sum: 0,
+          max: 0,
+          firstAt: null,
+          lastAt: null,
+        }
+        d.count += 1
+        d.sum += r.value
+        d.max = Math.max(d.max, r.value)
+        if (r.at) {
+          d.firstAt = d.firstAt && d.firstAt < r.at ? d.firstAt : r.at
+          d.lastAt = d.lastAt && d.lastAt > r.at ? d.lastAt : r.at
+        }
+        days.set(key, d)
+      }
+      return [...days.values()].sort(
+        (a, b) => a.date.localeCompare(b.date) || a.trackerId.localeCompare(b.trackerId),
+      ) as T
+    }
+
+    case 'log_reading': {
+      requireUnlocked()
+      const date = str(args.date)
+      const today = day(0)
+      const at = (args.at as string | null) ?? (date === today ? new Date().toISOString() : null)
+      const tracker = journals.flatMap((j) => j.trackers).find((t) => t.id === args.trackerId)
+      const raw = Number(args.value)
+      const value = clampReading(tracker, raw)
+      const now = new Date().toISOString()
+      const reading: Reading = {
+        id: `r-${nextId++}`,
+        journalId: str(args.journalId),
+        trackerId: str(args.trackerId),
+        entryId: (args.entryId as string | null) ?? null,
+        localDate: at ? localDayOf(at) : date,
+        at,
+        tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        value,
+        note: '',
+        createdAt: now,
+        updatedAt: now,
+      }
+      readings.push(reading)
+      return structuredClone(reading) as T
+    }
+
+    case 'save_reading': {
+      requireUnlocked()
+      const r = structuredClone(args.reading as Reading)
+      const tracker = journals.flatMap((j) => j.trackers).find((t) => t.id === r.trackerId)
+      r.value = clampReading(tracker, r.value)
+      r.updatedAt = new Date().toISOString()
+      const i = readings.findIndex((x) => x.id === r.id)
+      if (i >= 0) readings[i] = r
+      else readings.push(r)
+      return undefined as T
+    }
+
+    case 'delete_reading': {
+      requireUnlocked()
+      const i = readings.findIndex((r) => r.id === args.id)
+      if (i >= 0) readings.splice(i, 1)
+      return undefined as T
+    }
+
+    case 'delete_tracker': {
+      requireUnlocked()
+      const journal = journals.find((j) => j.id === args.journalId)
+      if (journal) journal.trackers = journal.trackers.filter((t) => t.id !== args.trackerId)
+      let gone = 0
+      for (let i = readings.length - 1; i >= 0; i--) {
+        if (readings[i]!.trackerId === args.trackerId) {
+          readings.splice(i, 1)
+          gone++
+        }
+      }
+      return gone as T
     }
 
     case 'calendar_providers':
