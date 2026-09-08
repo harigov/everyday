@@ -6,6 +6,7 @@
 
 import { api, isMock } from './api'
 import { AUTOSAVE_MS } from './autosave'
+import { notify } from './notify.svelte'
 import type {
   Bootstrap,
   Entry,
@@ -168,6 +169,17 @@ class AppState {
   #locking = false
   #lastListRefresh = 0
   #listTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * Set once a failing save has been told to the user, cleared when one
+   * lands.
+   *
+   * `Notices` shows a failed save in the window, which is right and stays,
+   * but it can only be seen by somebody looking at the window. This is the
+   * case the notification service was added for: the retries have been going
+   * for over a minute, the author has walked away, and what they typed is
+   * still only in a webview. That has to follow them out of the app.
+   */
+  #saveAlarmed = false
 
   /**
    * How to obtain the entry body, registered by the editor.
@@ -597,6 +609,17 @@ class AppState {
       // it is allowed to lag -- but the refresh is queued, never dropped, so
       // it always converges once the typing stops.
       this.#retryDelay = null
+      if (this.#saveAlarmed) {
+        this.#saveAlarmed = false
+        // Worth saying out loud, and worth it reaching as far as the alarm
+        // did. Being told your writing is not on disk and then never being
+        // told that it is leaves you checking.
+        notify.success('Your journal is saved again', {
+          body: 'Everything written while saving was failing has been written.',
+          reach: 'user',
+          key: 'save-failing',
+        })
+      }
     } catch (e) {
       // A conflict is not a failure to retry. Somebody else's version is in
       // the vault and ours is on screen; both are real, and which one wins is
@@ -622,6 +645,20 @@ class AppState {
           MAX_SAVE_RETRY_MS,
         )
         this.#saveTimer = setTimeout(() => void this.flush(), this.#retryDelay)
+        // Not on the first failure. A save refused once and accepted 700ms
+        // later is a disk that was busy, and interrupting somebody mid-word
+        // to tell them about it is how a notification service earns the
+        // reputation that gets it muted. The backoff reaching its ceiling
+        // means the retries have been failing for over a minute, which is no
+        // longer a hiccup.
+        if (this.#retryDelay === MAX_SAVE_RETRY_MS && !this.#saveAlarmed) {
+          this.#saveAlarmed = true
+          notify.error('Your journal is not being saved', {
+            body: 'Every attempt for the last minute has failed. What you have written is still in the editor and has not been lost.',
+            reach: 'user',
+            key: 'save-failing',
+          })
+        }
       }
     } finally {
       this.saving = false

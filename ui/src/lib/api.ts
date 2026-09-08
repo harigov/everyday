@@ -38,6 +38,7 @@ import type {
   VaultStatus,
 } from './types'
 import { VaultError } from './types'
+import type { ShellNotification } from './types'
 
 // Decided at BUILD time, not run time.
 //
@@ -70,10 +71,25 @@ let invoke: Invoke = async () => {
  */
 export let onSaveAndClose: (handler: () => void | Promise<void>) => void = () => {}
 
+/**
+ * Register the handler for notifications raised by the Rust shell.
+ *
+ * The shell does work the interface never asked for -- refreshing subscribed
+ * calendars on a timer -- and this is how it says something about it. The
+ * payload is a `NotifySpec` minus the parts only a component could supply,
+ * so `notify.svelte.ts` can post it unchanged.
+ *
+ * Outside Tauri nothing ever emits, so this is a no-op.
+ */
+export let onShellNotification: (handler: (spec: ShellNotification) => void) => void = () => {}
+
 if (!MOCK) {
   const { listen } = await import('@tauri-apps/api/event')
   onSaveAndClose = (handler) => {
     void listen('everyday://save-and-close', () => void handler())
+  }
+  onShellNotification = (handler) => {
+    void listen<ShellNotification>('everyday://notify', (event) => handler(event.payload))
   }
 
   const mod = await import('@tauri-apps/api/core')

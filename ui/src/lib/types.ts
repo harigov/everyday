@@ -432,3 +432,20 @@ export interface ProviderInfo {
   label: string
   hint: string
 }
+
+/**
+ * A notification raised by the Rust shell, off `everyday://notify`.
+ *
+ * Mirrors `everyday_app::notify::Notification`, and is deliberately a subset
+ * of the interface's own `NotifySpec`: the shell can say what happened, how
+ * serious it is and how far it needs to reach, but it cannot hand across a
+ * button, because the thing a button does lives on this side of the bridge.
+ */
+export interface ShellNotification {
+  level: 'info' | 'success' | 'warning' | 'error'
+  reach: 'app' | 'user'
+  title: string
+  body?: string | null
+  /** Identity for a condition that recurs; replaces rather than stacks. */
+  key?: string | null
+}

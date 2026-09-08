@@ -9,6 +9,7 @@
 mod commands;
 mod error;
 mod feeds;
+mod notify;
 mod protocol;
 mod state;
 
@@ -55,6 +56,10 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // Registered for the *webview's* sake. The shell never posts through
+        // it -- see `notify.rs` for why the routing decision lives on one
+        // side of the bridge only.
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState::new())
         .register_asynchronous_uri_scheme_protocol("everyday", |ctx, request, responder| {
             protocol::handle(ctx.app_handle(), request, responder);
