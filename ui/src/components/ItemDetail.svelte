@@ -2,7 +2,7 @@
   import { friendlyDate, plural, pluralWord } from '../lib/format'
   import { coverRatio, library } from '../lib/library.svelte'
   import { ratingLabel } from '../lib/rating'
-  import { sourceLabel, web } from '../lib/websearch'
+  import { sourceLabel } from '../lib/websearch'
   import { ITEM_STATUSES } from '../lib/types'
   import type { Item, KindInfo, LogEvent, SearchResult } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
@@ -41,7 +41,10 @@
     matching = true
     matchError = null
     try {
-      const outcome = await web.lookup(kind.id, item.title, 6)
+      // Through the store, not `web` directly: it is what routes a vault
+      // that locked mid-lookup to the lock screen rather than leaving an
+      // unhandled rejection and "Nothing found" on screen.
+      const outcome = await library.lookup(kind.id, item.title, 6)
       matches = outcome.results
       matchError = outcome.error
     } finally {

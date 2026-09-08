@@ -56,6 +56,23 @@ export function ratingTitle(score: number | null | undefined): string {
 }
 
 /**
+ * The score a row should draw: the position under the pointer, or the stored
+ * value when there is no pointer.
+ *
+ * It exists because there are two scales in play and they look alike. A
+ * hover position is stars (`0.5 .. 5`); a stored rating is a score
+ * (`0 .. 100`). Reconciling them inline reads fine and was wrong in exactly
+ * one direction -- `fromStars(84)` clamps to five, so every rated item drew
+ * as five full stars while its number said 4.2. Naming the conversion is
+ * what makes it a thing that can be tested rather than a thing that can be
+ * glanced at.
+ */
+export function shownScore(value: number | null | undefined, hovered: number | null): number {
+  if (hovered !== null) return fromStars(hovered)
+  return value ?? 0
+}
+
+/**
  * How full the `n`th star is, in `0..=1`.
  *
  * A fraction rather than a boolean, so a half star is drawn as half a star

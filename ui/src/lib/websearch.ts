@@ -163,14 +163,21 @@ class WebSearch {
    * function: without the generation counter, a slow answer to "dun" lands
    * after the fast answer to "dune" and the list ends up showing sand dunes.
    *
+   * `onLocked` is how a vault that locked mid-search reaches the lock
+   * screen; without it the reason is simply not drawn, which is still better
+   * than putting "vault is locked" in a suggestion list.
+   *
    * ```ts
-   * const search = web.live((outcome) => (hits = outcome.results))
+   * const search = web.live(
+   *   (outcome) => (hits = outcome.results),
+   *   () => void app.lock(),
+   * )
    * search.type(value, { source: 'openLibrary' }) // in an input handler
-   * search.stop() // on unmount
+   * search.stop() // on unmount, and to cancel; reusable afterwards
    * ```
    */
-  live(onResult: (outcome: LiveOutcome) => void): LiveSearch {
-    return new LiveSearch(this, onResult)
+  live(onResult: (outcome: LiveOutcome) => void, onLocked?: () => void): LiveSearch {
+    return new LiveSearch(this, onResult, onLocked)
   }
 
   /** The sources the picker offers. Fetched once and kept. */
@@ -221,11 +228,19 @@ export class LiveSearch {
   private timer: ReturnType<typeof setTimeout> | null = null
   /** Bumped per query; an answer from an older generation is discarded. */
   private generation = 0
-  private stopped = false
 
   constructor(
     private readonly web: WebSearch,
     private readonly onResult: (outcome: LiveOutcome) => void,
+    /**
+     * What to do when the vault locks under a search.
+     *
+     * `WebSearch` re-throws that one error rather than reporting it, because
+     * "locked" is a screen to go to and not a message to draw in a dropdown.
+     * This module cannot import the application store -- see `isLocked`
+     * above -- so the caller supplies the routing.
+     */
+    private readonly onLocked: () => void = () => {},
   ) {}
 
   /** Somebody typed. Schedules a search, replacing any already scheduled. */
@@ -245,14 +260,23 @@ export class LiveSearch {
     void this.execute(query, run)
   }
 
-  /** Cancel anything pending and ignore anything still in flight. */
+  /**
+   * Cancel anything pending and ignore anything still in flight.
+   *
+   * Reusable afterwards, deliberately. This started as a latched `stopped`
+   * flag that nothing ever cleared, which made it a one-shot: `AddItem`
+   * calls `stop` on the first keystroke (the dropdown does not open until
+   * the second), on turning the lookup off, and after every add -- so the
+   * suggestions were dead for the life of the component after one character.
+   *
+   * Bumping the generation is the whole of what cancelling means here.
+   * Nothing already awaited can be recalled, but everything can be
+   * *ignored*, and a later `type` starts a generation of its own.
+   */
   stop() {
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
-    // Nothing already awaited can be cancelled, but everything can be
-    // *ignored*, which is the part that matters for correctness.
     this.generation++
-    this.stopped = true
   }
 
   private schedule(query: string, run: () => Promise<SearchOutcome>) {
@@ -278,10 +302,17 @@ export class LiveSearch {
     try {
       const outcome = await run()
       // The guard this class exists for.
-      if (generation !== this.generation || this.stopped) return
+      if (generation !== this.generation) return
       this.onResult({ ...outcome, searching: false })
     } catch (e) {
-      if (generation !== this.generation || this.stopped) return
+      if (generation !== this.generation) return
+      // A lock is a screen to go to, not an error to draw. Everything else
+      // is worth saying beside an empty list.
+      if (isLocked(e)) {
+        this.onResult({ query, results: [], error: null, searching: false })
+        this.onLocked()
+        return
+      }
       this.onResult({ query, results: [], error: errorMessage(e), searching: false })
     }
   }

@@ -2,6 +2,7 @@
   import { onDestroy } from 'svelte'
   import { article } from '../lib/format'
   import { library } from '../lib/library.svelte'
+  import { app } from '../lib/state.svelte'
   import { web, type LiveOutcome } from '../lib/websearch'
   import type { KindInfo, SearchResult } from '../lib/types'
   import Cover from './Cover.svelte'
@@ -40,15 +41,21 @@
   /** Keyboard position in the list. -1 is the "just add what I typed" row. */
   let cursor = $state(-1)
 
-  const search = web.live((outcome: LiveOutcome) => {
-    hits = outcome.results
-    searching = outcome.searching
-    searchError = outcome.error
-    // Never move the cursor off the typed row on the strength of results
-    // arriving: the person is still typing, and having Enter suddenly mean
-    // something else is how a capture field loses a title.
-    if (outcome.results.length === 0) cursor = -1
-  })
+  const search = web.live(
+    (outcome: LiveOutcome) => {
+      hits = outcome.results
+      searching = outcome.searching
+      searchError = outcome.error
+      // Never move the cursor off the typed row on the strength of results
+      // arriving: the person is still typing, and having Enter suddenly mean
+      // something else is how a capture field loses a title.
+      if (outcome.results.length === 0) cursor = -1
+    },
+    // A vault that locked while somebody was typing a title is a screen to
+    // go to, not a red line in a dropdown they are about to be taken away
+    // from.
+    () => void app.lock(),
+  )
   onDestroy(() => search.stop())
 
   // The store holds the focus hook so a quick action from the menu bar can

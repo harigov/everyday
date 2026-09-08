@@ -5,6 +5,7 @@
     fromStars,
     ratingLabel,
     ratingTitle,
+    shownScore,
     starFill,
   } from '../lib/rating'
   import Icon from './Icon.svelte'
@@ -30,15 +31,15 @@
   } = $props()
 
   /**
-   * What the row is currently drawing.
+   * Where the pointer is, as a star position, or null when it is elsewhere.
    *
-   * The hovered value while the pointer is over an editable row, and the
-   * stored one otherwise. A star control that only updates on click makes
-   * you guess where the half steps are; one that previews under the cursor
-   * does not.
+   * A star control that only updates on click makes you guess where the half
+   * steps are; one that previews under the cursor does not.
    */
   let hovered = $state<number | null>(null)
-  const shown = $derived(hovered ?? value ?? 0)
+  /** What to draw, as a stored score. See `shownScore` for why it is a
+      function rather than a `??` chain. */
+  const shown = $derived(shownScore(value, hovered))
 
   /**
    * Which half-star position the pointer is on, in `0.5 .. 5`.
@@ -101,7 +102,7 @@
      themselves are a snippet, so there is still only one of them. -->
 {#snippet row()}
   {#each Array.from({ length: MAX_STARS }, (_, i) => i + 1) as star (star)}
-    {@const fill = starFill(fromStars(shown), star)}
+    {@const fill = starFill(shown, star)}
     <span
       class="star"
       class:empty={fill === 0}

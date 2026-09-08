@@ -45,7 +45,7 @@ const server = await createServer({
   logLevel: 'error',
 })
 
-const { MAX_STARS, fromStars, ratingLabel, ratingTitle, starFill, stars } =
+const { MAX_STARS, fromStars, ratingLabel, ratingTitle, shownScore, starFill, stars } =
   await server.ssrLoadModule('/src/lib/rating.ts')
 
 // ── ratings ───────────────────────────────────────────────────────────
@@ -94,9 +94,27 @@ assert.deepEqual(
   [0, 0, 0, 0, 0],
 )
 
+// The two scales must not be confused. `hovered` is a star position and
+// `value` is a stored score, and the bug this guards -- reconciling them with
+// a `??` chain and then converting the result -- drew *every* rated item as
+// five full stars while its own number said 4.2, because `fromStars(84)`
+// clamps to five. It is invisible in a screenshot at 12px, which is how it
+// shipped the first time.
+const fillOf = (score) => [1, 2, 3, 4, 5].map((n) => starFill(score, n))
+assert.deepEqual(fillOf(shownScore(84, null)), [1, 1, 1, 1, 0], 'a stored score is not stars')
+assert.deepEqual(fillOf(shownScore(90, null)), [1, 1, 1, 1, 0.5])
+assert.deepEqual(fillOf(shownScore(10, null)), [0.5, 0, 0, 0, 0])
+assert.deepEqual(fillOf(shownScore(null, null)), [0, 0, 0, 0, 0])
+// ...and a hover position is stars, converted on the way in.
+assert.equal(shownScore(84, 4.5), 90)
+assert.equal(shownScore(null, 5), 100)
+// A hover of zero stars is a real position, not a missing one.
+assert.equal(shownScore(84, 0), 0)
+
 // ── the search race guard ─────────────────────────────────────────────
 
 const { LiveSearch, SEARCH_DEBOUNCE_MS } = await server.ssrLoadModule('/src/lib/websearch.ts')
+const { VaultError } = await server.ssrLoadModule('/src/lib/types.ts')
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const outcome = (query, results) => ({ query, results, error: null })
@@ -174,6 +192,47 @@ function slowSearch(delays) {
   live.stop()
   await sleep(200)
   assert.deepEqual(seen, [], 'a stopped search must not report')
+}
+
+// ...but stopping is not a latch. `AddItem` calls `stop` on the first
+// keystroke -- the dropdown does not open until the second -- on turning the
+// lookup off, and after every add. A one-shot `stopped` flag therefore left
+// the suggestions dead for the life of the component after one character,
+// which no screenshot taken by setting the field's value in one go can show.
+{
+  const seen = []
+  const live = new LiveSearch(slowSearch({}), (o) => {
+    if (!o.searching && o.results.length) seen.push(o.results[0].title)
+  })
+  live.stop()
+  live.type('dune')
+  await sleep(SEARCH_DEBOUNCE_MS + 80)
+  assert.deepEqual(seen, ['dune'], 'a searcher must work again after being stopped')
+}
+
+// A vault that locked under a search is routed out, not drawn: "locked" is a
+// screen to go to, and a red line in a dropdown somebody is about to be taken
+// away from is noise.
+{
+  let locked = 0
+  let got = null
+  const web = {
+    search: async () => {
+      throw new VaultError('locked', 'vault is locked')
+    },
+    lookup: async () => outcome('', []),
+  }
+  const live = new LiveSearch(
+    web,
+    (o) => {
+      if (!o.searching) got = o
+    },
+    () => locked++,
+  )
+  live.type('dune')
+  await sleep(SEARCH_DEBOUNCE_MS + 80)
+  assert.equal(locked, 1, 'the lock handler must run')
+  assert.equal(got.error, null, 'and the reason must not be drawn as an error')
 }
 
 // A failing search reports the reason rather than rejecting: every caller of

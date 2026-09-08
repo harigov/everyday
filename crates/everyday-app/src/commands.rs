@@ -1236,6 +1236,15 @@ pub async fn apply_metadata(
 #[tauri::command]
 pub async fn fetch_image(state: State<'_, AppState>, url: String) -> CommandResult<String> {
     let vault = state.require()?;
+    // Checked *before* the fetch, like `web_search`, and not left to
+    // `put_blob` to refuse afterwards. `state.require` only says a vault is
+    // open, so without this a locked vault still put a request on the wire
+    // and only failed once the answer came back -- which is precisely the
+    // thing the rule exists to prevent. The lock screen must not be a place
+    // from which requests leave the machine.
+    if !vault.is_unlocked() {
+        return Err(CommandError::from(everyday_core::Error::Locked));
+    }
     let bytes = websearch::fetch_image(&url).await?;
     blocking(move || Ok(vault.put_blob(&bytes)?.to_hex())).await
 }

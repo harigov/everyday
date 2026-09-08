@@ -22,7 +22,7 @@ import { api } from './api'
 import { Autosave } from './autosave'
 import { app, errorMessage, handle, isLocked } from './state.svelte'
 import { TRAY_ORDER, tray } from './tray.svelte'
-import { web } from './websearch'
+import { web, type SearchOutcome } from './websearch'
 import type {
   Item,
   ItemId,
@@ -505,15 +505,22 @@ class LibraryState {
   /**
    * Look a title up on behalf of a shelf.
    *
-   * A thin pass-through to `web.lookup`, which owns the debouncing, the
-   * caching and the race guard. It is here so a component can ask the store
-   * rather than reach past it, and so the shelf's id is the only thing a
-   * caller has to know.
+   * `web.lookup` owns the caching and the merge; what this adds is the one
+   * thing it deliberately does not do, which is decide what a *locked* vault
+   * means. It re-throws that single error rather than reporting it -- a lock
+   * is a screen to go to, not a message to draw in a panel -- so a component
+   * calling `web.lookup` directly leaves an unhandled rejection behind and
+   * shows "nothing found" instead of the lock screen. Everything else comes
+   * back as `error`, for the caller to put beside its own empty list rather
+   * than over the whole window.
    */
-  async lookup(kindId: KindId, query: string, limit?: number): Promise<SearchResult[]> {
-    const outcome = await web.lookup(kindId, query, limit)
-    if (outcome.error) this.note = outcome.error
-    return outcome.results
+  async lookup(kindId: KindId, query: string, limit?: number): Promise<SearchOutcome> {
+    try {
+      return await web.lookup(kindId, query, limit)
+    } catch (e) {
+      await handle(e)
+      return { query, results: [], error: null }
+    }
   }
 
   /**
