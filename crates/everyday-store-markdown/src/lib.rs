@@ -420,6 +420,12 @@ impl JournalStore for MarkdownStore {
             calendars: false,
             library: false,
             trackers: false,
+            // Nor the assistant. A chat transcript as a tree of files is
+            // the same bad idea as a kanban board is, with one addition:
+            // this backend's whole purpose is that its files can be read
+            // by other tools, and a conversation about your journal is the
+            // last thing in the vault that should be greppable.
+            agent: false,
         }
     }
 
