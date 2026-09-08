@@ -122,7 +122,12 @@ fn is_loopback(url: &str) -> bool {
     } else {
         host.split(':').next().unwrap_or("")
     };
-    matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0" | "::1")
+    // Host names are case-insensitive, and `LocalHost` is a thing people
+    // type. Getting this wrong does not merely fail to recognise a local
+    // model -- it refuses to save the setting at all, because an http://
+    // endpoint that is not this machine is rejected as unencrypted.
+    let host = host.to_ascii_lowercase();
+    matches!(host.as_str(), "localhost" | "127.0.0.1" | "0.0.0.0" | "::1")
         // The whole 127.0.0.0/8 block, which is where a second local model
         // ends up when the first one already has 127.0.0.1.
         || host.strip_prefix("127.").is_some_and(|rest| {
@@ -596,7 +601,15 @@ pub fn system_prompt(
             "\n\nThings you have been asked to remember, most recent last. \
              Treat them as standing instructions:\n",
         );
-        for m in memories.iter().take(MAX_MEMORIES) {
+        // The newest, not the first. `memories` arrives oldest-first -- the
+        // order they are read in, so that a later instruction wins -- and the
+        // list can exceed the cap even though the vault trims on write,
+        // because pinned memories are never evicted. Taking from the front
+        // would drop the newest facts, including the one just remembered,
+        // which is the single most surprising thing an assistant's memory
+        // could do.
+        let skip = memories.len().saturating_sub(MAX_MEMORIES);
+        for m in memories.iter().skip(skip) {
             out.push_str("- ");
             out.push_str(m.text.trim());
             out.push('\n');
@@ -741,6 +754,35 @@ mod tests {
         let mine = prompt.find("I am a nurse").unwrap();
         let house = prompt.find("You are the assistant").unwrap();
         assert!(mine < house, "the person's own instructions should be read first");
+    }
+
+    #[test]
+    fn a_local_host_is_recognised_however_it_was_typed() {
+        // Not merely a missed optimisation: an unrecognised http:// host is
+        // refused outright as unencrypted, so the setting will not save.
+        for url in ["http://LocalHost:11434/v1", "http://LOCALHOST:1234", "http://[::1]:8080"] {
+            let cfg = ModelConfig { base_url: Some(url.into()), ..Default::default() };
+            assert!(!cfg.needs_key(), "{url} runs on this machine");
+            assert!(cfg.validate().is_ok(), "{url} should be saveable");
+        }
+    }
+
+    #[test]
+    fn the_prompt_keeps_the_newest_memories_when_there_are_too_many() {
+        // Pinned memories are never evicted, so the stored list can exceed
+        // the cap. Trimming from the wrong end would silently drop the fact
+        // that was just remembered.
+        let memories: Vec<Memory> =
+            (0..MAX_MEMORIES + 5).map(|i| Memory::new(format!("fact {i}"))).collect();
+        let prompt = system_prompt(&AgentSettings::default(), &memories, date(2026, 9, 8), None);
+
+        assert!(prompt.contains(&format!("fact {}", MAX_MEMORIES + 4)), "the newest must survive");
+        assert!(!prompt.contains("- fact 0\n"), "the oldest is the one to drop");
+        assert_eq!(
+            prompt.matches("\n- fact ").count(),
+            MAX_MEMORIES,
+            "exactly the cap should reach the prompt"
+        );
     }
 
     #[test]

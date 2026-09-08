@@ -63,6 +63,7 @@ use crate::task::{
 };
 use crate::tracker::Reading;
 use crate::vault::Vault;
+use jiff::Timestamp;
 use jiff::civil::Date;
 
 /// What running a tool does to the vault.
@@ -1232,7 +1233,7 @@ fn run_create_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let journal = ctx.vault.journal(journal_id)?;
 
     let mut entry = Entry::new(journal_id, ctx.tz);
-    entry.body = RichDoc::from_plain_text(args.str("body")?);
+    entry.body = RichDoc::from_markdown(args.str("body")?);
     entry.title = args.opt_str("title").unwrap_or_default().to_string();
     entry.tags = args.strings("tags");
     if let Some(d) = args.opt_date("date")? {
@@ -1253,7 +1254,21 @@ fn run_update_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let mut entry = ctx.vault.entry(id)?;
 
     if let Some(body) = args.opt_str("body") {
-        entry.body = RichDoc::from_plain_text(body);
+        // A body arrives whole or not at all, so replacing one that holds
+        // photographs would take them off the page -- the blobs survive, via
+        // `Entry::attachments`, but the entry stops showing them. Refused
+        // rather than silently done, because there is no undo and no way for
+        // the model to know what it dropped: it was handed the body as
+        // Markdown, in which an attachment is a link it cannot put back.
+        if !entry.body.blob_refs().is_empty() {
+            return Err(Error::Invalid(
+                "this entry has photographs or files in it, and replacing its text would \
+                 take them off the page. Edit it in the app, or say what to change and \
+                 leave the body alone."
+                    .into(),
+            ));
+        }
+        entry.body = RichDoc::from_markdown(body);
     }
     if let Some(title) = args.opt_str("title") {
         entry.title = title.to_string();
@@ -1267,6 +1282,14 @@ fn run_update_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if let Some(starred) = args.opt_bool("starred") {
         entry.starred = starred;
     }
+
+    // Stamped here because the vault does not do it: every writer owns its
+    // own `updated_at`, and the interface stamps one before each autosave.
+    // Without this the record's timestamp never moves, so an editor that
+    // still has the entry open keeps matching on the version it loaded and
+    // its next save overwrites the assistant's edit with no conflict
+    // reported -- the exact loss `put_entry_if` exists to prevent.
+    entry.updated_at = Timestamp::now();
 
     // Unconditional rather than optimistic. The optimistic path exists for
     // two people editing the same entry in two windows; here the other
@@ -1317,7 +1340,7 @@ fn run_create_project(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let mut p = Project::new(args.str("name")?);
     p.notes = args.opt_str("notes").unwrap_or_default().to_string();
     if let Some(s) = args.opt_enum("status", PROJECT_STATUSES)? {
-        p.status = s;
+        p.set_status(s);
     }
     if let Some(pr) = args.opt_enum("priority", PRIORITIES)? {
         p.priority = pr;
@@ -1340,8 +1363,12 @@ fn run_update_project(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if let Some(notes) = args.opt_str("notes") {
         p.notes = notes.to_string();
     }
+    // Through `set_status`, never by assignment: the helper is what keeps
+    // `completed_at` honest -- set when a project is finished, cleared when
+    // it is reopened. Assigning the field directly leaves a reopened project
+    // wearing the date it was closed.
     if let Some(s) = args.opt_enum("status", PROJECT_STATUSES)? {
-        p.status = s;
+        p.set_status(s);
     }
     if let Some(pr) = args.opt_enum("priority", PRIORITIES)? {
         p.priority = pr;
@@ -1355,6 +1382,7 @@ fn run_update_project(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if args.get("tags").is_some() {
         p.tags = args.strings("tags");
     }
+    p.updated_at = Timestamp::now();
 
     ctx.vault.save_project(&p)?;
     done("updated", "project", &p.name, p.id.to_string())
@@ -1436,11 +1464,11 @@ fn run_get_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 
 fn run_create_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let mut t = Task::new(args.str("title")?);
-    t.project_id = args.opt_id("project_id", "project")?;
-    t.parent_id = args.opt_id("parent_id", "task")?;
+    t.project_id = resolve_project(ctx, args, "project_id")?;
+    t.parent_id = resolve_parent(ctx, args)?;
     t.notes = args.opt_str("notes").unwrap_or_default().to_string();
     if let Some(s) = args.opt_enum("status", STATUSES)? {
-        t.status = s;
+        t.set_status(s);
     }
     if let Some(p) = args.opt_enum("priority", PRIORITIES)? {
         t.priority = p;
@@ -1464,8 +1492,12 @@ fn run_update_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if let Some(notes) = args.opt_str("notes") {
         t.notes = notes.to_string();
     }
+    // See `run_update_project`: `set_status` owns `completed_at`. A task
+    // finished by assignment has no completion date, so "what did I get done
+    // this week" never sees it; one reopened by assignment keeps the old one
+    // and renders as a todo that was finished on Tuesday.
     if let Some(s) = args.opt_enum("status", STATUSES)? {
-        t.status = s;
+        t.set_status(s);
     }
     if let Some(p) = args.opt_enum("priority", PRIORITIES)? {
         t.priority = p;
@@ -1474,7 +1506,7 @@ fn run_update_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     // in a field typed as a string, and `""` would have to be guessed at.
     if args.bool_or("clear_project", false) {
         t.project_id = None;
-    } else if let Some(p) = args.opt_id("project_id", "project")? {
+    } else if let Some(p) = resolve_project(ctx, args, "project_id")? {
         t.project_id = Some(p);
     }
     if args.bool_or("clear_due_date", false) {
@@ -1491,9 +1523,38 @@ fn run_update_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if args.get("tags").is_some() {
         t.tags = args.strings("tags");
     }
+    t.updated_at = Timestamp::now();
 
     ctx.vault.save_task(&t)?;
     done("updated", "task", &t.title, t.id.to_string())
+}
+
+/// Read the project an argument names, so a task cannot be filed into one
+/// that does not exist.
+///
+/// Ids are untagged UUIDs and there is no foreign key on `project_id` -- the
+/// column is a denormalised copy beside a sealed payload -- so an id the
+/// model half-remembered is stored without complaint and produces a task
+/// that is in neither the inbox nor on any board, while the tool reports
+/// success. One read closes that, and its error tells the model how to get
+/// a real one.
+fn resolve_project(ctx: &ToolContext<'_>, args: &Args<'_>, key: &str) -> Result<Option<ProjectId>> {
+    let Some(id) = args.opt_id::<ProjectId>(key, "project")? else { return Ok(None) };
+    ctx.vault.project(id).map_err(|_| {
+        Error::Invalid(format!(
+            "no project with id {id}. Call list_projects and use an id from it."
+        ))
+    })?;
+    Ok(Some(id))
+}
+
+/// The same, for a parent task. See [`resolve_project`].
+fn resolve_parent(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Option<TaskId>> {
+    let Some(id) = args.opt_id::<TaskId>("parent_id", "task")? else { return Ok(None) };
+    ctx.vault.task(id).map_err(|_| {
+        Error::Invalid(format!("no task with id {id}. Call list_tasks and use an id from it."))
+    })?;
+    Ok(Some(id))
 }
 
 fn run_delete_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -1702,7 +1763,7 @@ fn run_create_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let mut item = Item::new(kind_id, args.str("title")?);
     item.creator = args.opt_str("creator").unwrap_or_default().to_string();
     if let Some(s) = args.opt_enum("status", ITEM_STATUSES)? {
-        item.status = s;
+        item.set_status(s, ctx.today);
     }
     item.year = args.opt_u32("year").map(|y| y as i16);
     item.rating = rating_out_of_ten(args)?;
@@ -1730,7 +1791,12 @@ fn run_update_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         item.creator = creator.to_string();
     }
     if let Some(s) = args.opt_enum("status", ITEM_STATUSES)? {
-        item.status = s;
+        // `set_status` is what makes the dates mean something: starting
+        // something records when, finishing it records when, and putting it
+        // back on the wishlist clears both -- otherwise an item bounced
+        // through "done" by a misreading keeps a finish date it never
+        // earned and is counted in the year's tally forever.
+        item.set_status(s, ctx.today);
     }
     if let Some(r) = rating_out_of_ten(args)? {
         item.rating = Some(r);
@@ -1751,25 +1817,31 @@ fn run_update_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         item.tags = args.strings("tags");
     }
 
-    // Finishing something is the one status change worth a log line: the
-    // library's year-in-review is built from the log, and an item marked
-    // finished without one is a book that silently missed the list.
-    if item.status == ItemStatus::Done && was != ItemStatus::Done {
-        if item.finished_on.is_none() {
-            item.finished_on = Some(ctx.today);
-        }
-        let log = LogEntry::new(
-            item.id,
-            LogEvent::Finished,
-            item.finished_on.unwrap_or(ctx.today),
-            ctx.tz,
-        );
-        if let Err(e) = ctx.vault.save_log(&log) {
-            tracing::warn!(error = %e, "could not log a finish the assistant recorded");
+    item.updated_at = Timestamp::now();
+    ctx.vault.save_item(&item)?;
+
+    // The same transitions the interface logs, and for its reason: the
+    // library's year in review is built from the log, so a status change
+    // that skips it is a book that silently missed the list. Going back to
+    // the wishlist is a correction rather than an event and logs nothing.
+    if item.status != was {
+        let event = match item.status {
+            ItemStatus::Active => Some(LogEvent::Started),
+            ItemStatus::Done => Some(LogEvent::Finished),
+            ItemStatus::Paused | ItemStatus::Abandoned => Some(LogEvent::Stopped),
+            ItemStatus::Wishlist => None,
+        };
+        if let Some(event) = event {
+            let when = item.finished_on.filter(|_| item.status == ItemStatus::Done);
+            let log = LogEntry::new(item.id, event, when.unwrap_or(ctx.today), ctx.tz);
+            // The item is already saved. Failing the whole call because the
+            // history line did not land would report "nothing happened" for
+            // a change that did.
+            if let Err(e) = ctx.vault.save_log(&log) {
+                tracing::warn!(error = %e, "could not log a status change the assistant made");
+            }
         }
     }
-
-    ctx.vault.save_item(&item)?;
     done("updated", "item", &item.title, item.id.to_string())
 }
 

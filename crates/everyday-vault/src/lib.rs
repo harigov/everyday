@@ -1211,6 +1211,252 @@ mod tests {
     }
 
     #[test]
+    fn finishing_and_reopening_keep_the_completion_date_honest() {
+        // The tools go through `set_status` rather than assigning the field,
+        // which is what owns `completed_at`. Assigned directly, a finished
+        // task has no completion date -- so "what did I get done this week"
+        // never sees it -- and a reopened one keeps the date it was closed.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        let id = call(&vault, "create_task", serde_json::json!({ "title": "Order timber" }))["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let task_id: everyday_core::TaskId = id.parse().unwrap();
+        assert!(vault.task(task_id).unwrap().completed_at.is_none());
+
+        call(&vault, "update_task", serde_json::json!({ "task_id": id, "status": "done" }));
+        assert!(vault.task(task_id).unwrap().completed_at.is_some(), "finishing must record when");
+
+        call(&vault, "update_task", serde_json::json!({ "task_id": id, "status": "todo" }));
+        assert!(
+            vault.task(task_id).unwrap().completed_at.is_none(),
+            "a reopened task must not still claim it was finished"
+        );
+
+        // Projects are the same shape and the same helper.
+        let pid = call(&vault, "create_project", serde_json::json!({ "name": "Deck" }))["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let project_id: everyday_core::ProjectId = pid.parse().unwrap();
+        call(&vault, "update_project", serde_json::json!({ "project_id": pid, "status": "done" }));
+        assert!(vault.project(project_id).unwrap().completed_at.is_some());
+        call(
+            &vault,
+            "update_project",
+            serde_json::json!({ "project_id": pid, "status": "active" }),
+        );
+        assert!(vault.project(project_id).unwrap().completed_at.is_none());
+    }
+
+    #[test]
+    fn an_edit_moves_the_record_forward_so_an_open_editor_notices() {
+        // Every writer stamps its own `updated_at`; the vault does not do it.
+        // Without the stamp the entry's version never moves, so an editor
+        // still holding the old one saves over the assistant's work and
+        // `put_entry_if` reports no conflict -- the exact loss it exists for.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let journal = everyday_core::Journal::new("Daily");
+        vault.save_journal(&journal).unwrap();
+
+        let entry_id = call(
+            &vault,
+            "create_entry",
+            serde_json::json!({ "journal_id": journal.id.to_string(), "body": "First draft." }),
+        )["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let eid: everyday_core::EntryId = entry_id.parse().unwrap();
+        let before = vault.entry(eid).unwrap().updated_at;
+
+        call(
+            &vault,
+            "update_entry",
+            serde_json::json!({ "entry_id": entry_id, "title": "Second draft" }),
+        );
+        let after = vault.entry(eid).unwrap().updated_at;
+        assert!(after > before, "the entry's version must move");
+
+        // And a stale writer is now told, rather than winning silently.
+        let mut stale = vault.entry(eid).unwrap();
+        stale.title = "From an old tab".into();
+        let err = vault.save_entry(&stale, Some(before)).unwrap_err();
+        assert_eq!(err.code(), "conflict", "got {err}");
+
+        // Tasks and items carry the same stamp.
+        let tid = call(&vault, "create_task", serde_json::json!({ "title": "x" }))["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let task_id: everyday_core::TaskId = tid.parse().unwrap();
+        let before = vault.task(task_id).unwrap().updated_at;
+        call(&vault, "update_task", serde_json::json!({ "task_id": tid, "notes": "detail" }));
+        assert!(vault.task(task_id).unwrap().updated_at > before);
+    }
+
+    #[test]
+    fn moving_something_off_a_shelf_and_back_clears_the_dates_it_never_earned() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        vault.seed_library().unwrap();
+        let shelf = call(&vault, "list_shelves", serde_json::json!({}))[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let id = call(
+            &vault,
+            "create_item",
+            serde_json::json!({ "shelf_id": shelf, "title": "Piranesi" }),
+        )["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let item_id: everyday_core::ItemId = id.parse().unwrap();
+
+        call(&vault, "update_item", serde_json::json!({ "item_id": id, "status": "active" }));
+        assert_eq!(
+            vault.item(item_id).unwrap().started_on,
+            Some(TODAY),
+            "starting something records when"
+        );
+
+        call(&vault, "update_item", serde_json::json!({ "item_id": id, "status": "done" }));
+        assert_eq!(vault.item(item_id).unwrap().finished_on, Some(TODAY));
+
+        call(&vault, "update_item", serde_json::json!({ "item_id": id, "status": "wishlist" }));
+        let back = vault.item(item_id).unwrap();
+        assert!(back.finished_on.is_none(), "it is not still finished this year");
+        assert!(back.started_on.is_none(), "nor still started");
+
+        // The history the year-in-review reads: started, finished, and
+        // nothing for the correction back to the wishlist.
+        let events: Vec<everyday_core::LogEvent> = vault
+            .logs(&everyday_core::LogQuery::default())
+            .unwrap()
+            .iter()
+            .map(|l| l.event)
+            .collect();
+        assert_eq!(events.len(), 2, "got {events:?}");
+        assert!(events.contains(&everyday_core::LogEvent::Started));
+        assert!(events.contains(&everyday_core::LogEvent::Finished));
+    }
+
+    #[test]
+    fn a_task_cannot_be_filed_into_a_project_that_does_not_exist() {
+        // There is no foreign key on `project_id`, so an id the model half
+        // remembered would otherwise be stored without complaint, producing
+        // a task on no board and in no inbox while the tool said "created".
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        let ghost = everyday_core::ProjectId::new().to_string();
+        let err = call_err(
+            &vault,
+            "create_task",
+            serde_json::json!({ "title": "Order timber", "project_id": ghost }),
+        );
+        assert!(err.contains("no project with id"), "got {err}");
+        assert!(err.contains("list_projects"), "should say how to recover: {err}");
+
+        assert_eq!(
+            call(&vault, "list_tasks", serde_json::json!({}))["count"],
+            0,
+            "nothing should have been created"
+        );
+
+        let err = call_err(
+            &vault,
+            "create_task",
+            serde_json::json!({
+                "title": "A subtask",
+                "parent_id": everyday_core::TaskId::new().to_string(),
+            }),
+        );
+        assert!(err.contains("no task with id"), "got {err}");
+    }
+
+    #[test]
+    fn an_entry_written_in_markdown_is_stored_as_structure_rather_than_as_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let journal = everyday_core::Journal::new("Daily");
+        vault.save_journal(&journal).unwrap();
+
+        // The bullets and the tick-boxes are two lists, not one, so the
+        // canonical form has a blank line between them -- which is what a
+        // round trip has to agree on.
+        let body =
+            "## What is left\n\n- Sand the rails\n\n- [x] Ring the yard\n\nSee **the plan**.";
+        let id = call(
+            &vault,
+            "create_entry",
+            serde_json::json!({ "journal_id": journal.id.to_string(), "body": body }),
+        )["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let eid: everyday_core::EntryId = id.parse().unwrap();
+
+        let stored = vault.entry(eid).unwrap();
+        let blocks = stored.body.0["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "heading", "got {blocks:?}");
+        assert_eq!(blocks[1]["type"], "bulletList");
+        assert_eq!(blocks[2]["type"], "taskList");
+        assert!(
+            !stored.body.plain_text().contains('#'),
+            "the hashes must not survive as literal text"
+        );
+
+        // And what the assistant reads back is what it wrote, so an edit to
+        // one line does not flatten the rest.
+        assert_eq!(call(&vault, "get_entry", serde_json::json!({ "entry_id": id }))["body"], body);
+    }
+
+    #[test]
+    fn an_entry_holding_photographs_will_not_have_its_text_replaced() {
+        // A body arrives whole. Replacing one that holds media takes the
+        // media off the page, and the model -- handed the body as Markdown --
+        // has no way to know it did that or to put it back.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let journal = everyday_core::Journal::new("Daily");
+        vault.save_journal(&journal).unwrap();
+
+        let blob = vault.put_blob(b"not really a photograph").unwrap();
+        let mut entry = everyday_core::Entry::new(journal.id, "UTC");
+        entry.body = everyday_core::RichDoc(serde_json::json!({
+            "type": "doc",
+            "content": [
+                { "type": "paragraph", "content": [{ "type": "text", "text": "The deck" }] },
+                { "type": "media", "attrs": { "blob": blob.to_string(), "kind": "image" } },
+            ],
+        }));
+        vault.save_entry(&entry, None).unwrap();
+
+        let err = call_err(
+            &vault,
+            "update_entry",
+            serde_json::json!({ "entry_id": entry.id.to_string(), "body": "Rewritten." }),
+        );
+        assert!(err.contains("photographs"), "got {err}");
+
+        // Everything else about it is still editable.
+        call(
+            &vault,
+            "update_entry",
+            serde_json::json!({ "entry_id": entry.id.to_string(), "tags": ["deck"] }),
+        );
+        let after = vault.entry(entry.id).unwrap();
+        assert_eq!(after.tags, vec!["deck"]);
+        assert_eq!(after.body.blob_refs().len(), 1, "the photograph is still on the page");
+    }
+
+    #[test]
     fn the_default_vault_directory_is_absolute_and_named() {
         let dir = default_vault_dir();
         assert!(dir.is_absolute(), "got a relative path: {dir:?}");
