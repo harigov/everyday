@@ -1,7 +1,11 @@
 <script lang="ts">
+  import { article } from '../lib/format'
   import { focusOnMount } from '../lib/focus'
   import { library } from '../lib/library.svelte'
-  import type { KindInfo } from '../lib/types'
+  import { menu } from '../lib/menu.svelte'
+  import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { colourItems } from '../lib/menus'
+  import type { Kind, KindInfo } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
 
@@ -25,9 +29,92 @@
 
   const stats = $derived(library.stats)
   const counts = $derived(new Map(stats?.byKind.map((c) => [c.kindId, c]) ?? []))
+
+  /**
+   * What a right-click on a shelf offers.
+   *
+   * The gesture used to go straight to the delete confirmation, as the
+   * journal and project rows once did. The deletion is still the last line
+   * of this -- a shelf takes everything on it with it -- with the things
+   * anybody does more than once a year above it.
+   */
+  function shelfMenu(kind: KindInfo): MenuItem[] {
+    const open = library.shelf === kind.id && !library.favouritesOnly
+    return tidyMenu([
+      {
+        label: `Open ${kind.name.toLowerCase()}`,
+        icon: 'layers',
+        disabled: open,
+        run: () => {
+          library.favouritesOnly = false
+          void library.selectShelf(kind.id)
+        },
+      },
+      {
+        label: `Add ${article(kind.singular)} ${kind.singular.toLowerCase()}`,
+        icon: 'plus',
+        run: async () => {
+          library.favouritesOnly = false
+          await library.selectShelf(kind.id)
+          library.focusCapture()
+        },
+      },
+      SEP,
+      {
+        label: 'Colour',
+        dot: kind.color,
+        items: colourItems(kind.color, (color) => library.saveShelf({ ...shelfOnly(kind), color })),
+      },
+      SEP,
+      {
+        label: `Delete the ${kind.name.toLowerCase()} shelf…`,
+        icon: 'trash',
+        danger: true,
+        run: () => (pendingDelete = kind),
+      },
+    ])
+  }
+
+  /**
+   * A shelf as the backend holds it: the record without the counts.
+   *
+   * `KindInfo` is a shelf plus how many items are on it, and those are
+   * counted from the items rather than stored on the shelf -- so writing
+   * them back would be handing the backend two of its own answers.
+   */
+  function shelfOnly(kind: KindInfo): Kind {
+    const { items: _items, open: _open, ...shelf } = kind
+    return shelf
+  }
+
+  /** The panel itself, where there is no shelf under the pointer. */
+  function navMenu(): MenuItem[] {
+    return tidyMenu([
+      { label: 'New shelf', icon: 'plus', run: () => (creating = true) },
+      SEP,
+      {
+        label: 'Everything',
+        icon: 'layers',
+        checked: library.shelf === null && !library.favouritesOnly,
+        run: () => {
+          library.favouritesOnly = false
+          void library.selectShelf(null)
+        },
+      },
+      {
+        label: 'Favourites',
+        icon: 'star',
+        checked: library.favouritesOnly,
+        run: () => {
+          library.favouritesOnly = true
+          void library.selectShelf(null)
+        },
+      },
+    ])
+  }
 </script>
 
-<nav class="scroll nav">
+<nav class="scroll nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
   <button
     class="row"
     class:sel={library.shelf === null && !library.favouritesOnly}
@@ -70,10 +157,7 @@
         library.favouritesOnly = false
         void library.selectShelf(kind.id)
       }}
-      oncontextmenu={(e) => {
-        e.preventDefault()
-        pendingDelete = kind
-      }}
+      oncontextmenu={(e) => menu.show(e, shelfMenu(kind))}
       title="{kind.name} — {kind.items} {kind.items === 1 ? 'item' : 'items'}"
     >
       <span class="icon">{kind.icon}</span>

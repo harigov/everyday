@@ -15,6 +15,8 @@
   import { calendar } from '../lib/calendar.svelte'
   import { formatMinutes, friendlyDate } from '../lib/format'
   import { minutesBetween, offsetInDay } from '../lib/time'
+  import { menu } from '../lib/menu.svelte'
+  import { blockMenu, calendarTaskMenu, eventMenu } from '../lib/menus'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import type { CalendarEvent, Task, TimeBlock } from '../lib/types'
@@ -71,7 +73,12 @@
 <aside class="rail">
   {#if block}
     {@const colour = calendar.colorOfBlock(block)}
-    <div class="panel scroll" style="--c: {colour}">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="panel scroll"
+      style="--c: {colour}"
+      oncontextmenu={(e) => menu.show(e, blockMenu(block))}
+    >
       <header class="phead">
         <span class="kind {block.kind}">
           {block.kind === 'actual' ? 'What happened' : 'Planned'}
@@ -167,7 +174,12 @@
     </div>
   {:else if event}
     {@const cal = calendar.calendarOf(event.calendarId)}
-    <div class="panel scroll" style="--c: {cal?.color ?? 'var(--fg-subtle)'}">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="panel scroll"
+      style="--c: {cal?.color ?? 'var(--fg-subtle)'}"
+      oncontextmenu={(e) => menu.show(e, eventMenu(event))}
+    >
       <header class="phead">
         <span class="kind event">
           <span class="cdot" aria-hidden="true"></span>
@@ -258,6 +270,7 @@
           draggable="true"
           ondragstart={(e) => onTaskDragStart(e, task)}
           onclick={() => calendar.scheduleNext(task.id)}
+          oncontextmenu={(e) => menu.show(e, calendarTaskMenu(task))}
         >
           <span class="grip"><Icon name="grip" size={14} /></span>
           <span class="tinfo">

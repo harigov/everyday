@@ -66,6 +66,9 @@
   --radius-lg: 12px;
   --radius-xl: 16px;
 
+  /* The app bar down the left edge: an icon and a word, at a size that can
+     be hit without aiming. */
+  --appbar-w: 76px;
   --sidebar-w: 232px;
   --list-w: 340px;
   /* The width of the *text*, not of the box around it -- the page adds its

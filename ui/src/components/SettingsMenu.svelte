@@ -51,9 +51,9 @@
 </script>
 
 <div class="wrap">
-  <button class="trigger" onclick={() => (open = !open)} aria-expanded={open} title="Settings">
-    <Icon name="settings" size={15} />
-    Settings
+  <button class="barbtn" onclick={() => (open = !open)} aria-expanded={open}>
+    <span><Icon name="settings" size={19} weight={1.7} /></span>
+    <span class="barlabel">Settings</span>
   </button>
 
   {#if open}
@@ -166,32 +166,19 @@
     position: relative;
   }
 
-  .trigger {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    width: 100%;
-    height: 28px;
-    padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
-    color: var(--fg-subtle);
-  }
-  .trigger:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-
   .scrim {
     position: fixed;
     inset: 0;
     z-index: 40;
   }
 
+  /* Out of the side of the bar rather than up its width: the panel is three
+     times wider than the button that opens it, and a bar is too narrow to
+     hang anything under. */
   .panel {
     position: absolute;
-    bottom: calc(100% + 6px);
-    left: 0;
+    bottom: 0;
+    left: calc(100% + var(--sp-2));
     z-index: 41;
     width: 268px;
     padding: var(--sp-4);

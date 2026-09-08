@@ -45,10 +45,22 @@ the right side of the trade.
 
 ## Four apps, one vault
 
-The sidebar switches between **Journal**, **Todo**, **Calendar** and
-**Library** (`Ctrl/Cmd J` cycles). They share a vault, a password and a lock;
-they share nothing else — except that the calendar is a view over what the
-journal and the todo app already store, which is the whole point of it.
+A bar down the left edge switches between **Journal**, **Todo**,
+**Calendar** and **Library** (`Ctrl/Cmd J` cycles); right-clicking one of
+them offers what that app can start from a standing stop — the same actions
+the tray offers, from the same registration. They share a vault, a password
+and a lock; they share nothing else — except that the calendar is a view over
+what the journal and the todo app already store, which is the whole point of
+it.
+
+The bar sits outside the sidebar because it is not any one app's navigation:
+everything to the right of it changes completely when one is pressed, and it
+does not. The apps were a segmented control at the top of the sidebar while
+there were two of them, which stopped working at four — the labels no longer
+fitted on a row, and a control that wraps to two rows of two reads as a set
+of filters over the list below it. **Settings** and **Lock** are at the foot
+of the bar, under a rule, for the same reason: they belong to the vault
+rather than to whichever app is open.
 
 The todo app has projects, tasks and subtasks — a subtask is just a task with
 a parent, so the two levels the interface offers are a UI decision rather
@@ -836,6 +848,40 @@ On Linux the icon needs a StatusNotifier host -- GNOME wants the AppIndicator
 extension -- and the `libayatana-appindicator3-1` package the `.deb` depends
 on. Where there is no host, Settings says so rather than leaving a switch
 that appears to do nothing.
+
+## Right-click
+
+Every list in all four apps carries a context menu, and they are all the same
+menu: one panel in the window, opened by whichever row was clicked.
+
+```
+  entry      star · pin · which journal it is filed under
+  task       status · priority · deadline · project · a subtask
+  block      "this is what happened" · plan or record · track it now
+  event      set the same hour aside in your own record
+  item       status · rating · favourite — in the shelf's own words, so a
+             restaurant offers "Been" where a book offers "Read"
+  reading    the entry it was recorded under · off the calendar
+  chip       record it · clear the day · draw it on the calendar
+```
+
+The empty part of a list has one too — new entry, new task, add a book, how
+to group, which view, which sort. Arrow keys walk them, `→` opens a submenu,
+`Escape` closes one level, `Enter` chooses, and the context-menu key opens
+one on the focused row without a mouse. While a menu is open it holds the
+keyboard, so the letter shortcuts underneath it stay put.
+
+Text is the exception, deliberately: a field, a notes box and the editor keep
+the webview's own menu, because that one carries paste, the spelling
+suggestions and the input method, and none of those are ours to reimplement.
+
+Two things are deliberately *not* offered. A journal is deleted from its
+settings and a shelf item from its own menu with a confirmation, because
+right-click-to-delete — which is what three of these rows used to do, with no
+menu at all — is one slip away from a year of entries. And a reading is not
+edited from the calendar: it is changed under the day it belongs to, beside
+the tracker that gives it meaning, so the menu offers the way back there
+instead.
 
 ## Status
 

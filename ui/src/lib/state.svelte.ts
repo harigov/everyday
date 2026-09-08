@@ -17,6 +17,7 @@ import type {
   Journal,
   JournalId,
   SearchHit,
+  TrackerId,
   VaultStatus,
 } from './types'
 import { VaultError } from './types'
@@ -506,6 +507,26 @@ class AppState {
     }
   }
 
+  /**
+   * Draw a tracker's readings on the calendar, or stop drawing them.
+   *
+   * A tracker is a field on its journal rather than a record of its own --
+   * there is deliberately no `saveTracker` -- so a switch on one is a write
+   * of the whole journal. `JournalSettings` does exactly this; the method is
+   * here because two other places offer the same switch without owning that
+   * dialog: the chip under the day, and a reading already on the grid.
+   */
+  async setTrackerOnCalendar(journalId: JournalId, trackerId: TrackerId, onCalendar: boolean) {
+    const journal = this.journals.find((j) => j.id === journalId)
+    if (!journal) return
+    const next = $state.snapshot(journal)
+    const tracker = next.trackers.find((t) => t.id === trackerId)
+    if (!tracker || tracker.onCalendar === onCalendar) return
+    tracker.onCalendar = onCalendar
+    next.updatedAt = new Date().toISOString()
+    await this.saveJournal(next)
+  }
+
   async deleteJournal(id: JournalId) {
     try {
       await api.deleteJournal(id)
@@ -776,23 +797,50 @@ class AppState {
     await this.refreshEntries()
   }
 
-  async toggleStar(id: EntryId) {
+  /**
+   * Change one field of an entry that may or may not be the open one, and
+   * write it.
+   *
+   * Every row action in the list has this same two-case shape: the open
+   * entry, whose agreed version this window is already tracking, or any
+   * other row, which has to be read before it can be written -- the list
+   * holds summaries, and writing one back would drop the body.
+   */
+  async #editEntry(id: EntryId, change: (entry: Entry) => void) {
     try {
-      const full = this.entry?.id === id ? this.entry : await api.entry(id)
+      // The same object, when it is the open one: mutating it is what puts
+      // the star on the entry behind the list without a second read.
+      const open = this.entry && this.entry.id === id ? this.entry : null
+      const full = open ?? (await api.entry(id))
       // For the open entry this window already tracks the agreed version;
       // for any other row, what we just read is it.
-      const base = this.entry?.id === id ? this.#baseVersion : full.updatedAt
-      full.starred = !full.starred
+      const base = open ? this.#baseVersion : full.updatedAt
+      change(full)
       full.updatedAt = new Date().toISOString()
       await api.saveEntry($state.snapshot(full), base)
-      if (this.entry?.id === id) {
-        this.entry.starred = full.starred
-        this.#baseVersion = full.updatedAt
-      }
+      // Re-checked after the await, and by identity: starring one entry and
+      // clicking another while the write is in flight would otherwise stamp
+      // the first one's version token onto the second, and the next autosave
+      // of *that* entry would be refused as a conflict it was never in.
+      if (open && this.entry === open) this.#baseVersion = full.updatedAt
     } catch (e) {
       return void (await handle(e))
     }
     await this.refreshEntries()
+  }
+
+  async toggleStar(id: EntryId) {
+    await this.#editEntry(id, (entry) => (entry.starred = !entry.starred))
+  }
+
+  /** Float an entry to the top of the list, or let it fall back into date order. */
+  async togglePin(id: EntryId) {
+    await this.#editEntry(id, (entry) => (entry.pinned = !entry.pinned))
+  }
+
+  /** File an entry under a different journal. */
+  async moveEntry(id: EntryId, journalId: JournalId) {
+    await this.#editEntry(id, (entry) => (entry.journalId = journalId))
   }
 
   // ── search ───────────────────────────────────────────────────────────

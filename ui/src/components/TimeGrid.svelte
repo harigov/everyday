@@ -18,6 +18,15 @@
 
   import { calendar, DEFAULT_BLOCK_MINUTES, type Slot } from '../lib/calendar.svelte'
   import { formatMinutes } from '../lib/format'
+  import { menu } from '../lib/menu.svelte'
+  import {
+    calendarTaskMenu,
+    dayMenu,
+    eventMenu,
+    readingMenu,
+    slotMenu,
+    timeMenu,
+  } from '../lib/menus'
   import {
     MIN_BLOCK_MINUTES,
     SNAP_MINUTES,
@@ -137,6 +146,21 @@
   /** Is this slot the one currently under the pointer? It is drawn as the draft. */
   function isDragging(slot: Slot): boolean {
     return !!drag && (drag.mode === 'move' || drag.mode === 'resize') && slot.block?.id === drag.id
+  }
+
+  /**
+   * The menu for whatever is under the pointer.
+   *
+   * Selecting first, so the rail on the right is showing the same thing the
+   * menu is about -- a menu raised on one block while the panel describes
+   * another is two answers to the same question.
+   */
+  function onSlotContextMenu(e: MouseEvent, slot: Slot) {
+    // `select` is total and knows which of the four kinds of slot have a
+    // panel behind them: a reading and the live timer have none, and asking
+    // for one deselects rather than selecting something else.
+    calendar.select(slot)
+    menu.show(e, slotMenu(slot))
   }
 
   /** The draft rectangle, if a gesture is in flight on `iso`. */
@@ -307,7 +331,12 @@
     <div class="corner"></div>
     {#each days as iso (iso)}
       {@const totals = calendar.totalsOn(iso)}
-      <div class="dayhead" class:now={iso === currentDay}>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="dayhead"
+        class:now={iso === currentDay}
+        oncontextmenu={(e) => menu.show(e, dayMenu(iso))}
+      >
         <button
           class="daylabel"
           onclick={() => {
@@ -346,11 +375,20 @@
             style="--c: {cal?.color ?? 'var(--fg-subtle)'}"
             title={event.title + (cal ? ` — ${cal.name}` : '')}
             onclick={() => (calendar.selection = { kind: 'event', id: event.id })}
-            >{event.title}</button
+            oncontextmenu={(e) => {
+              calendar.selection = { kind: 'event', id: event.id }
+              menu.show(e, eventMenu(event))
+            }}>{event.title}</button
           >
         {/each}
         {#each calendar.untimedMarksOn(iso) as mark (mark.key)}
-          <span class="chip reading" style="--c: {mark.tracker.color}" title={mark.label}>
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <span
+            class="chip reading"
+            style="--c: {mark.tracker.color}"
+            title={mark.label}
+            oncontextmenu={(e) => menu.show(e, readingMenu(mark.reading, mark.tracker))}
+          >
             <TrackerIcon
               name={mark.tracker.icon}
               color={mark.tracker.color}
@@ -369,6 +407,7 @@
             draggable="true"
             ondragstart={(e) => e.dataTransfer?.setData('text/x-everyday-task', task.id)}
             onclick={() => (calendar.selection = null)}
+            oncontextmenu={(e) => menu.show(e, calendarTaskMenu(task))}
           >
             <Icon name={task.status === 'done' ? 'check' : 'circle'} size={11} weight={2} />
             {task.title}
@@ -395,6 +434,8 @@
           class:today={iso === currentDay}
           onpointerdown={(e) => onColumnPointerDown(e, iso)}
           onpointermove={(e) => onColumnPointerMove(e, iso)}
+          oncontextmenu={(e) =>
+            menu.show(e, timeMenu(iso, snap(minutesAt(e.currentTarget, e.clientY))))}
           ondragover={(e) => onDragOver(e, iso)}
           ondragleave={() => (dropAt = null)}
           ondrop={(e) => onDrop(e, iso)}
@@ -415,6 +456,7 @@
               style="top: {p.top}px; height: {p.height}px; left: {p.left}%; width: {p.width}%; --c: {p
                 .slot.color}"
               onpointerdown={(e) => onSlotPointerDown(e, p, iso)}
+              oncontextmenu={(e) => onSlotContextMenu(e, p.slot)}
             >
               {#if p.slot.tracker}
                 <!-- A tracked span is usually short -- 30 minutes is 23px --
@@ -448,10 +490,12 @@
                minutes nobody spent. The rail is 14px, which is enough for a
                mark and not enough to compete with the day. -->
           {#each calendar.marksOn(iso) as mark (mark.key)}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
             <span
               class="mark"
               style="top: {((mark.minute ?? 0) / 60) * HOUR}px; --c: {mark.tracker.color}"
               title="{mark.label} · {clockOf(mark.minute ?? 0)}"
+              oncontextmenu={(e) => menu.show(e, readingMenu(mark.reading, mark.tracker))}
             >
               <TrackerIcon
                 name={mark.tracker.icon}
@@ -767,7 +811,11 @@
     color: var(--c);
     background: var(--bg-raised);
     box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--c) 26%, transparent);
-    pointer-events: none;
+    /* Still not a button -- there is nothing to open, and a pointerdown on
+       one falls through to the column and starts a drag exactly as it did
+       when this was `none`. What it buys is the two things a mark had no way
+       to offer: its own tooltip, and a right-click. */
+    pointer-events: auto;
   }
 
   /* An intention: a wash, and a dashed rail. Deliberately lighter than the

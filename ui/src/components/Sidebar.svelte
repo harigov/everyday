@@ -1,29 +1,20 @@
 <script lang="ts">
-  import { app, type Section } from '../lib/state.svelte'
+  import { app } from '../lib/state.svelte'
   import { DEFAULT_COLORS } from '../lib/colors'
   import { focusOnMount } from '../lib/focus'
+  import { menu } from '../lib/menu.svelte'
+  import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { colourItems } from '../lib/menus'
   import Icon from './Icon.svelte'
   import Logo from './Logo.svelte'
-  import SettingsMenu from './SettingsMenu.svelte'
   import JournalSettings from './JournalSettings.svelte'
   import TodoNav from './TodoNav.svelte'
   import CalendarNav from './CalendarNav.svelte'
   import LibraryNav from './LibraryNav.svelte'
   import type { Journal } from '../lib/types'
-  import type { IconName } from '../lib/icons'
 
-  // One vault, four apps. The switcher is the only chrome above the nav
-  // because the apps are peers -- none is a mode of another -- and each tab
-  // is hidden on a backend that cannot carry it, so a Markdown vault does
-  // not offer a tab that cannot work.
-  const APPS: { id: Section; label: string; icon: IconName }[] = [
-    { id: 'journal', label: 'Journal', icon: 'quote' },
-    { id: 'todo', label: 'Todo', icon: 'check' },
-    { id: 'calendar', label: 'Calendar', icon: 'calendar' },
-    { id: 'library', label: 'Library', icon: 'book' },
-  ]
-  const shownApps = $derived(APPS.filter((a) => app.canShow(a.id)))
-
+  // The apps themselves are `AppBar`, outside this: they are not one app's
+  // navigation, and everything below is.
   let creating = $state(false)
   let draft = $state('')
 
@@ -56,6 +47,46 @@
     settingsFor ? (app.journals.find((j) => j.id === settingsFor!.id) ?? null) : null,
   )
 
+  /**
+   * What a right-click on a journal offers.
+   *
+   * Note what is *not* in it: delete. That moved inside the settings dialog
+   * on purpose -- a journal is a year of entries and it should not be one
+   * slip from a menu away -- and putting it back here would undo the point
+   * of moving it. Naming and the rest of the journal live in there too, so
+   * this offers the two things you would otherwise cross the window for, the
+   * colour, and the way in.
+   */
+  function journalMenu(j: Journal): MenuItem[] {
+    const only = app.selectedJournal === j.id && !app.showStarredOnly
+    return tidyMenu([
+      {
+        label: 'New entry here',
+        icon: 'plus',
+        run: async () => {
+          app.showStarredOnly = false
+          await app.selectJournal(j.id)
+          await app.newEntry()
+        },
+      },
+      {
+        label: only ? 'Show every journal' : 'Show only this journal',
+        icon: 'layers',
+        run: () => {
+          app.showStarredOnly = false
+          void app.selectJournal(only ? null : j.id)
+        },
+      },
+      SEP,
+      {
+        label: 'Colour',
+        dot: j.color,
+        items: colourItems(j.color, (color) => app.saveJournal({ ...$state.snapshot(j), color })),
+      },
+      { label: 'Journal settings…', icon: 'settings', run: () => (settingsFor = j) },
+    ])
+  }
+
   const total = $derived(app.status?.stats?.entries ?? 0)
 </script>
 
@@ -64,23 +95,6 @@
     <Logo size={20} tile />
     <span class="name">Every Day</span>
   </div>
-
-  {#if shownApps.length > 1}
-    <div class="apps" role="tablist" aria-label="Apps">
-      {#each shownApps as a (a.id)}
-        <button
-          class="app"
-          class:on={app.section === a.id}
-          role="tab"
-          aria-selected={app.section === a.id}
-          onclick={() => app.setSection(a.id)}
-        >
-          <Icon name={a.icon} size={14} />
-          {a.label}
-        </button>
-      {/each}
-    </div>
-  {/if}
 
   {#if app.section === 'todo'}
     <TodoNav />
@@ -137,10 +151,7 @@
               app.showStarredOnly = false
               void app.selectJournal(j.id)
             }}
-            oncontextmenu={(e) => {
-              e.preventDefault()
-              settingsFor = j
-            }}
+            oncontextmenu={(e) => menu.show(e, journalMenu(j))}
             title={j.description || j.name}
           >
             <span class="icon">{j.icon}</span>
@@ -176,14 +187,6 @@
       {/if}
     </nav>
   {/if}
-
-  <div class="foot">
-    <SettingsMenu />
-    <button class="lock" onclick={() => app.lock()} title="Lock now (Ctrl+L)">
-      <Icon name="lock" size={15} />
-      Lock
-    </button>
-  </div>
 </aside>
 
 {#if settingsJournal}
@@ -214,48 +217,6 @@
     font-weight: 620;
     letter-spacing: -0.006em;
     font-size: var(--text-md);
-  }
-
-  /* A segmented control rather than two rows in the nav: these switch what
-     the whole window is, and a thing that looks like a list item reads as
-     "one more place to put a journal". */
-  .apps {
-    display: flex;
-    /* Four of them now. At the sidebar's width the labels no longer fit on
-       one row, and a segmented control that wraps to two rows of two reads
-       better than one that ellipsises every tab to "Cale…". */
-    flex-wrap: wrap;
-    gap: 2px;
-    flex: none;
-    margin: 0 var(--sp-2) var(--sp-1);
-    padding: 2px;
-    border-radius: var(--radius);
-    background: var(--bg-active);
-  }
-  .app {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    /* `1 1 40%` rather than `1`: two per row when four are shown, and still
-       one row when a Markdown vault offers only two. */
-    flex: 1 1 40%;
-    height: 26px;
-    border-radius: calc(var(--radius) - 3px);
-    font-size: var(--text-sm);
-    font-weight: 550;
-    color: var(--fg-subtle);
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
-  }
-  .app:hover {
-    color: var(--fg);
-  }
-  .app.on {
-    background: var(--bg-raised);
-    color: var(--fg);
-    box-shadow: var(--shadow-sm);
   }
 
   .nav {
@@ -383,26 +344,5 @@
   }
   .new:focus {
     outline: none;
-  }
-
-  .foot {
-    padding: var(--sp-2);
-    border-top: 1px solid var(--border);
-  }
-  .lock {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    /* Matches the settings trigger above it. */
-    width: 100%;
-    height: 28px;
-    padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
-    color: var(--fg-subtle);
-  }
-  .lock:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
   }
 </style>

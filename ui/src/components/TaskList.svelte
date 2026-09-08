@@ -5,9 +5,11 @@
   // loaded set can be re-cut without another round trip -- which is what
   // makes flipping between "by due date" and "by priority" instant.
 
-  import { todo } from '../lib/todo.svelte'
+  import { todo, type GroupBy } from '../lib/todo.svelte'
   import { friendlyDate } from '../lib/format'
   import { todayIso } from '../lib/time'
+  import { menu } from '../lib/menu.svelte'
+  import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import TaskRow from './TaskRow.svelte'
   import type { TaskNode } from '../lib/todo.svelte'
   import type { Task } from '../lib/types'
@@ -94,9 +96,60 @@
     }
     return [...out.values()].sort((a, b) => a.order - b.order || a.key.localeCompare(b.key))
   })
+
+  const GROUPS: { id: GroupBy; label: string }[] = [
+    { id: 'due', label: 'Due date' },
+    { id: 'status', label: 'Status' },
+    { id: 'priority', label: 'Priority' },
+    { id: 'none', label: 'Nothing' },
+  ]
+
+  /**
+   * The list itself, where there is no task under the pointer.
+   *
+   * The same three controls the header carries, within reach of where you
+   * are looking rather than at the top of the pane.
+   */
+  function listMenu(): MenuItem[] {
+    return tidyMenu([
+      {
+        label: 'New task',
+        icon: 'plus',
+        hint: 'Ctrl+N',
+        // The capture line is `TodoView`'s, and this component is inside it
+        // rather than around it; `App.svelte` reaches the search field the
+        // same way for Ctrl+F.
+        run: () => document.querySelector<HTMLInputElement>('.quickadd .field')?.focus(),
+      },
+      SEP,
+      {
+        label: 'Group by',
+        icon: 'layers',
+        items: GROUPS.map((g) => ({
+          label: g.label,
+          checked: todo.groupBy === g.id,
+          run: () => (todo.groupBy = g.id),
+        })),
+      },
+      {
+        // No icon: the gutter is the tick, and a row that carried one either
+        // way would look the same on and off.
+        label: 'Show finished tasks',
+        checked: todo.showDone,
+        run: () => (todo.showDone = !todo.showDone),
+      },
+      SEP,
+      todo.boardable && {
+        label: 'Switch to the board',
+        icon: 'board',
+        run: () => todo.setView('board'),
+      },
+    ])
+  }
 </script>
 
-<div class="scroll list">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="scroll list" oncontextmenu={(e) => menu.show(e, listMenu())}>
   {#if todo.tasks.length === 0}
     <div class="blank">
       {#if todo.filter.trim()}

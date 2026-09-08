@@ -12,7 +12,10 @@
 
   import { calendar } from '../lib/calendar.svelte'
   import { daysFrom, startOfWeek, todayIso } from '../lib/time'
+  import { menu } from '../lib/menu.svelte'
+  import { calendarTaskMenu, dayMenu, eventMenu, readingMenu, slotMenu } from '../lib/menus'
   import Icon from './Icon.svelte'
+  import type { MenuItem } from '../lib/menu'
 
   let { days }: { days: string[] } = $props()
 
@@ -38,6 +41,14 @@
     kind: 'planned' | 'actual' | 'event' | 'task' | 'reading'
     muted?: boolean
     onopen: () => void
+    /**
+     * The same menus the week grid raises, on the same things.
+     *
+     * A function, not an array: `rowsOn` runs for all forty-two cells on
+     * every redraw, and a month of built menus that nobody right-clicked is
+     * a month of wasted work.
+     */
+    menu: () => MenuItem[]
   }
 
   /** Everything on one day, in the order the day runs. */
@@ -54,6 +65,7 @@
         kind: 'event',
         muted: event.status === 'cancelled',
         onopen: () => (calendar.selection = { kind: 'event', id: event.id }),
+        menu: () => eventMenu(event),
       })
     }
     // Readings with no time of day sit with the other undated things, above
@@ -66,6 +78,7 @@
         color: mark.tracker.color,
         kind: 'reading',
         onopen: () => calendar.goto(iso),
+        menu: () => readingMenu(mark.reading, mark.tracker),
       })
     }
     for (const task of calendar.tasksOn(iso)) {
@@ -77,6 +90,7 @@
         kind: 'task',
         muted: task.status === 'done',
         onopen: () => calendar.goto(iso),
+        menu: () => calendarTaskMenu(task),
       })
     }
     // Everything the clock can place, in the order the day ran: blocks,
@@ -93,6 +107,7 @@
         kind: slot.kind,
         muted: slot.cancelled,
         onopen: () => calendar.select(slot),
+        menu: () => slotMenu(slot),
         at: slot.start,
       })
     }
@@ -104,6 +119,7 @@
         color: mark.tracker.color,
         kind: 'reading',
         onopen: () => calendar.goto(iso),
+        menu: () => readingMenu(mark.reading, mark.tracker),
         at: mark.minute ?? 0,
       })
     }
@@ -123,10 +139,12 @@
     {#each days as iso (iso)}
       {@const rows = rowsOn(iso)}
       {@const first = Number(iso.slice(8, 10)) === 1}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="cell"
         class:outside={!calendar.inAnchorMonth(iso)}
         class:today={iso === currentDay}
+        oncontextmenu={(e) => menu.show(e, dayMenu(iso))}
       >
         <div class="cellhead">
           <button
@@ -157,6 +175,7 @@
               style="--c: {row.color}"
               title={row.label}
               onclick={row.onopen}
+              oncontextmenu={(e) => menu.show(e, row.menu())}
             >
               <span class="dot" aria-hidden="true"></span>
               {#if row.time}<span class="at">{row.time}</span>{/if}

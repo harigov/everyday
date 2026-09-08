@@ -7,7 +7,10 @@
 
   import { todo, type TaskNode } from '../lib/todo.svelte'
   import { friendlyDate, formatClock, formatMinutes } from '../lib/format'
+  import { menu } from '../lib/menu.svelte'
+  import { taskMenu } from '../lib/menus'
   import Icon from './Icon.svelte'
+  import ConfirmDialog from './ConfirmDialog.svelte'
   import QuickAdd from './QuickAdd.svelte'
   import Self from './TaskRow.svelte'
 
@@ -23,14 +26,26 @@
   const showProject = $derived(project !== null && todo.scope.kind !== 'project')
 
   let adding = $state(false)
+  let confirming = $state(false)
 </script>
 
 <div class="wrap" style="--depth: {depth}">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="row"
     class:sel={todo.selectedTask === task.id}
     class:done={task.status === 'done'}
     class:cancelled={task.status === 'cancelled'}
+    oncontextmenu={(e) =>
+      menu.show(
+        e,
+        taskMenu(task, {
+          // Two levels is what the list offers, so only a top-level row is
+          // asked whether it wants another one under it.
+          onAddSubtask: depth === 0 ? () => (adding = true) : undefined,
+          onDelete: () => (confirming = true),
+        }),
+      )}
   >
     <button
       class="tick"
@@ -124,6 +139,21 @@
     </div>
   {/if}
 </div>
+
+{#if confirming}
+  <ConfirmDialog
+    title={'Delete “' + (task.title || 'this task') + '”?'}
+    detail={progress[1] > 0
+      ? `Its ${progress[1]} ${progress[1] === 1 ? 'subtask' : 'subtasks'} and every block of time booked against them go too. This cannot be undone.`
+      : 'Any time booked against it goes too. This cannot be undone.'}
+    confirmLabel="Delete task"
+    onconfirm={() => {
+      confirming = false
+      void todo.remove(task.id)
+    }}
+    oncancel={() => (confirming = false)}
+  />
+{/if}
 
 <style>
   .wrap {
