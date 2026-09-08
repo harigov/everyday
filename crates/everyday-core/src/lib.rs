@@ -16,19 +16,23 @@
 //!     +-- CalendarStore optional third domain  (crate::store::calendars)
 //!     +-- LibraryStore  optional fourth domain (crate::store::library)
 //!     +-- TrackerStore  optional fifth domain  (crate::store::trackers)
+//!     +-- AgentStore    optional sixth domain  (crate::store::agent)
 //!     |
 //!   Cipher             trait: XChaCha20-Poly1305 or none (crate::crypto)
 //! ```
 //!
 //! ## Domains
 //!
-//! A vault holds five kinds of thing. Journals and entries ([`model`]) are
+//! A vault holds six kinds of thing. Journals and entries ([`model`]) are
 //! the original; projects, tasks and blocks of time ([`task`]) are the todo
 //! app; subscribed calendars and their events ([`calendar`]) are the third;
 //! shelves, the things on them and the log of what you did with them
 //! ([`library`]) are the fourth; and what a day produced in numbers rather
 //! than in prose -- habits, doses, symptoms, counts ([`tracker`]) -- are the
-//! fifth.
+//! fifth. The sixth is the assistant ([`agent`]) -- its configuration, the
+//! threads you have had with it, and what you asked it to remember -- and it
+//! is the only domain that exists to act on the other five rather than to
+//! record anything of its own.
 //!
 //! The calendar domain is the smallest of the three on purpose. Time you
 //! schedule for yourself was already a [`TimeBlock`] — a record in its own
@@ -50,6 +54,7 @@
 //! its date, its instant and its value in the clear. Definitions are few and
 //! must stay private; readings are many and must stay scannable.
 
+pub mod agent;
 pub mod blobstore;
 pub mod calendar;
 pub mod crypto;
@@ -68,12 +73,15 @@ pub mod tracker;
 pub mod vault;
 pub mod websearch;
 
+pub use agent::{
+    AgentSettings, Conversation, Memory, Message, ModelConfig, Provider, Role, ToolCall,
+};
 pub use blobstore::FileBlobStore;
 pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatus, SyncReport};
 pub use error::{Error, Result};
 pub use id::{
-    BlobId, BlockId, CalendarId, EntryId, EventId, ItemId, JournalId, KindId, LogId, ProjectId,
-    ReadingId, TaskId, TrackerId,
+    BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, ItemId, JournalId, KindId,
+    LogId, MemoryId, MessageId, ProjectId, ReadingId, TaskId, TrackerId,
 };
 pub use library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,
@@ -81,6 +89,7 @@ pub use library::{
 };
 pub use model::{Attachment, Entry, EntrySummary, Journal, Location, MediaKind, Weather};
 pub use richtext::RichDoc;
+pub use store::agent::{AgentStore, ConversationQuery};
 pub use store::calendars::{CalendarStore, EventQuery};
 pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
 pub use store::tasks::{BlockQuery, ParentScope, ProjectScope, TaskQuery, TaskSort, TaskStore};

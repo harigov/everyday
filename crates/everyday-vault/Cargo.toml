@@ -16,4 +16,5 @@ directories = "6"
 
 [dev-dependencies]
 jiff.workspace = true
+serde_json.workspace = true
 tempfile = "3"

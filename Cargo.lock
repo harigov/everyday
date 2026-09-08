@@ -1388,6 +1388,7 @@ dependencies = [
  "everyday-store-sqlite",
  "jiff",
  "serde",
+ "serde_json",
  "tempfile",
 ]
 

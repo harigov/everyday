@@ -628,6 +628,834 @@ mod tests {
         assert_eq!(vault.calendars().unwrap_err().code(), "unsupported");
     }
 
+    // ---- the assistant ---------------------------------------------------
+
+    #[test]
+    fn a_message_names_its_thread_and_floats_it_to_the_top() {
+        // Two facts that must not be separable: a turn that did not move its
+        // conversation up the history list is one somebody will fail to find
+        // again, and an untitled thread is indistinguishable from every
+        // other untitled thread.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        let older = everyday_core::Conversation::new();
+        vault.save_conversation(&older).unwrap();
+        let newer = everyday_core::Conversation::new();
+        vault.save_conversation(&newer).unwrap();
+
+        vault
+            .save_message(&everyday_core::Message::user(
+                older.id,
+                "Go through my open projects and tell me which have gone stale",
+            ))
+            .unwrap();
+
+        let listed = vault.conversations(&everyday_core::ConversationQuery::default()).unwrap();
+        assert_eq!(listed[0].id, older.id, "the thread just written to should be first");
+        assert!(
+            listed[0].title.starts_with("Go through my open projects"),
+            "got {:?}",
+            listed[0].title
+        );
+
+        // ...and the title is only taken once. A second question must not
+        // rename the thread out from under whoever is reading the list.
+        vault
+            .save_message(&everyday_core::Message::user(older.id, "actually, never mind"))
+            .unwrap();
+        let again = vault.conversation(older.id).unwrap();
+        assert!(again.title.starts_with("Go through my open projects"));
+        assert_eq!(vault.message_count(older.id).unwrap(), 2);
+    }
+
+    #[test]
+    fn an_assistants_own_turn_never_becomes_the_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let c = everyday_core::Conversation::new();
+        vault.save_conversation(&c).unwrap();
+
+        vault.save_message(&everyday_core::Message::assistant(c.id, "Hello!")).unwrap();
+        assert!(vault.conversation(c.id).unwrap().title.is_empty());
+    }
+
+    #[test]
+    fn the_oldest_memories_are_evicted_and_the_pinned_ones_are_not() {
+        // The trim is the vault's job rather than the assistant's because an
+        // agent asked to tidy up after itself does not, and every memory is
+        // loaded into the system prompt on every request forever.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let cap = everyday_core::agent::MAX_MEMORIES;
+
+        // One pinned memory, written first so it is the oldest and would be
+        // the first thing an unguarded trim reached for.
+        let pinned =
+            everyday_core::Memory { pinned: true, ..everyday_core::Memory::new("Typed by hand") };
+        assert!(vault.save_memory(&pinned).unwrap().is_empty());
+
+        for i in 0..cap - 1 {
+            let m = everyday_core::Memory::new(format!("fact {i}"));
+            assert!(vault.save_memory(&m).unwrap().is_empty(), "under the cap, nothing is dropped");
+        }
+        assert_eq!(vault.memories().unwrap().len(), cap);
+
+        let overflow = everyday_core::Memory::new("one too many");
+        let evicted = vault.save_memory(&overflow).unwrap();
+        assert_eq!(evicted.len(), 1, "exactly the overflow is dropped");
+        assert_eq!(evicted[0].text, "fact 0", "the oldest unpinned memory goes");
+
+        let kept = vault.memories().unwrap();
+        assert_eq!(kept.len(), cap);
+        assert!(kept.iter().any(|m| m.id == pinned.id), "a hand-written memory must survive");
+        assert!(kept.iter().any(|m| m.id == overflow.id), "the memory just written must survive");
+    }
+
+    #[test]
+    fn the_api_key_never_comes_back_through_the_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        vault.set_agent_key("sk-secret").unwrap();
+        let settings = vault.agent_settings().unwrap();
+        assert!(settings.has_key, "the pane needs to know one is set");
+        // The only place the key is reachable is `agent_credentials`, and
+        // that is gated on the assistant being switched on.
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(!json.contains("sk-secret"), "the key must not ride along with the settings");
+    }
+
+    #[test]
+    fn credentials_are_refused_until_the_assistant_is_configured() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        // Off is off, key or no key.
+        vault.set_agent_key("sk-secret").unwrap();
+        assert!(vault.agent_credentials().is_err(), "a switched-off assistant has no credentials");
+
+        let mut settings = everyday_core::AgentSettings { enabled: true, ..Default::default() };
+        vault.save_agent_settings(&settings).unwrap();
+        let (back, key) = vault.agent_credentials().unwrap();
+        assert!(back.enabled);
+        assert_eq!(key.as_deref(), Some("sk-secret"));
+
+        // Enabled, remote, and keyless is the half-configured state that
+        // must fail here rather than as a 401 nobody can act on.
+        vault.clear_agent_key().unwrap();
+        let err = vault.agent_credentials().unwrap_err();
+        assert!(err.to_string().contains("API key"), "got {err}");
+
+        // ...but a model on this machine needs no key at all.
+        settings.model.base_url = Some("http://localhost:11434/v1".into());
+        vault.save_agent_settings(&settings).unwrap();
+        let (_, key) = vault.agent_credentials().unwrap();
+        assert!(key.is_none(), "a local model should work with nothing configured but its address");
+    }
+
+    #[test]
+    fn settings_that_could_not_be_acted_on_are_refused_at_the_pane() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        let mut settings = everyday_core::AgentSettings { enabled: true, ..Default::default() };
+        settings.model.model = String::new();
+        assert!(vault.save_agent_settings(&settings).is_err(), "a model name is required");
+
+        settings.model.model = "gpt-5.1".into();
+        settings.model.base_url = Some("http://gateway.example.com/v1".into());
+        assert!(
+            vault.save_agent_settings(&settings).is_err(),
+            "plain http off this machine would leak the key"
+        );
+    }
+
+    // ---- the assistant's tools, end to end -------------------------------
+    //
+    // These run the real catalogue against a real vault. Everything the
+    // assistant can do to somebody's data goes through `dispatch`, so this
+    // is where "it marked the wrong task done" is caught -- offline, with no
+    // API key, and independently of whichever harness is calling it.
+
+    use everyday_core::agent::tools::{self, Effect, ToolContext};
+
+    const TODAY: jiff::civil::Date = jiff::civil::Date::constant(2026, 9, 8);
+
+    fn ctx(vault: &Vault) -> ToolContext<'_> {
+        ToolContext { vault, today: TODAY, tz: "UTC", conversation: None }
+    }
+
+    fn call(vault: &Vault, tool: &str, args: serde_json::Value) -> serde_json::Value {
+        tools::dispatch(&ctx(vault), tool, &args).unwrap_or_else(|e| panic!("{tool} failed: {e}"))
+    }
+
+    fn call_err(vault: &Vault, tool: &str, args: serde_json::Value) -> String {
+        tools::dispatch(&ctx(vault), tool, &args)
+            .map(|v| panic!("{tool} unexpectedly succeeded: {v}"))
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[test]
+    fn a_task_can_be_captured_found_and_finished_without_ever_being_deleted() {
+        // The whole point of the tool surface, in one test: the assistant
+        // completes work by moving its status, not by removing the record.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        let project = call(&vault, "create_project", serde_json::json!({ "name": "The deck" }));
+        let project_id = project["id"].as_str().unwrap().to_string();
+
+        let created = call(
+            &vault,
+            "create_task",
+            serde_json::json!({
+                "title": "Order the timber",
+                "project_id": project_id,
+                "due_date": "2026-09-14",
+                "priority": "high",
+                "tags": ["shopping"],
+            }),
+        );
+        assert_eq!(created["action"], "created");
+        let task_id = created["id"].as_str().unwrap().to_string();
+
+        // Found by the filters a model would actually reach for.
+        let found = call(
+            &vault,
+            "list_tasks",
+            serde_json::json!({ "project_id": project_id, "open_only": true }),
+        );
+        assert_eq!(found["count"], 1);
+        assert_eq!(found["tasks"][0]["title"], "Order the timber");
+        assert_eq!(found["tasks"][0]["due_date"], "2026-09-14");
+        assert_eq!(found["tasks"][0]["priority"], "high");
+
+        // Finished, not deleted.
+        call(&vault, "update_task", serde_json::json!({ "task_id": task_id, "status": "done" }));
+        let after = call(&vault, "get_task", serde_json::json!({ "task_id": task_id }));
+        assert_eq!(after["status"], "done");
+        assert_eq!(
+            call(&vault, "list_tasks", serde_json::json!({ "open_only": true }))["count"],
+            0
+        );
+
+        // ...and the project count in the overview follows.
+        let overview = call(&vault, "overview", serde_json::json!({}));
+        assert_eq!(overview["tasks"]["open"], 0);
+        assert_eq!(overview["tasks"]["done"], 1);
+        assert_eq!(overview["today"], "2026-09-08");
+    }
+
+    #[test]
+    fn an_update_leaves_every_field_it_was_not_given() {
+        // The failure this guards against is the quiet one: a model that
+        // sends only the field it means to change must not blank the rest.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        let id = call(
+            &vault,
+            "create_task",
+            serde_json::json!({
+                "title": "Ring the vet",
+                "notes": "About the booster",
+                "due_date": "2026-09-10",
+                "tags": ["pets", "calls"],
+                "estimate_minutes": 15,
+            }),
+        )["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        call(&vault, "update_task", serde_json::json!({ "task_id": id, "priority": "urgent" }));
+
+        let t = call(&vault, "get_task", serde_json::json!({ "task_id": id }));
+        assert_eq!(t["priority"], "urgent");
+        assert_eq!(t["title"], "Ring the vet", "the title must survive an unrelated edit");
+        assert_eq!(t["notes"], "About the booster");
+        assert_eq!(t["due_date"], "2026-09-10");
+        assert_eq!(t["tags"], serde_json::json!(["pets", "calls"]));
+        assert_eq!(t["estimate_minutes"], 15);
+    }
+
+    #[test]
+    fn clearing_a_field_needs_its_own_flag_because_a_string_cannot_say_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        let project_id =
+            call(&vault, "create_project", serde_json::json!({ "name": "Deck" }))["id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+        let id = call(
+            &vault,
+            "create_task",
+            serde_json::json!({
+                "title": "Order timber",
+                "project_id": project_id,
+                "due_date": "2026-09-14",
+            }),
+        )["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        call(
+            &vault,
+            "update_task",
+            serde_json::json!({ "task_id": id, "clear_due_date": true, "clear_project": true }),
+        );
+        let t = call(&vault, "get_task", serde_json::json!({ "task_id": id }));
+        assert!(t.get("due_date").is_none(), "the deadline should be gone: {t}");
+        assert!(t.get("project_id").is_none(), "it should be back in the inbox: {t}");
+    }
+
+    #[test]
+    fn an_entry_round_trips_as_markdown_because_that_is_what_a_model_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let journal = everyday_core::Journal::new("Daily");
+        vault.save_journal(&journal).unwrap();
+
+        let created = call(
+            &vault,
+            "create_entry",
+            serde_json::json!({
+                "journal_id": journal.id.to_string(),
+                "title": "Deck, day one",
+                "body": "Cut the joists.\n\nRan out of screws.",
+                "date": "2026-09-07",
+                "tags": ["deck"],
+            }),
+        );
+        let id = created["id"].as_str().unwrap().to_string();
+
+        let back = call(&vault, "get_entry", serde_json::json!({ "entry_id": id }));
+        assert_eq!(back["title"], "Deck, day one");
+        assert!(back["body"].as_str().unwrap().contains("Cut the joists"));
+        assert!(back["body"].as_str().unwrap().contains("Ran out of screws"));
+        assert_eq!(back["date"], "2026-09-07", "back-dating must work");
+
+        // And it is findable by the search tool, which is how a model gets
+        // an id in the first place.
+        let hits = call(&vault, "search", serde_json::json!({ "query": "joists" }));
+        assert_eq!(hits["count"], 1, "got {hits}");
+        assert_eq!(hits["results"][0]["id"], id);
+    }
+
+    #[test]
+    fn a_reading_reports_the_value_that_was_stored_rather_than_the_one_asked_for() {
+        // The vault clamps to the tracker's scale. If the tool echoed the
+        // argument, the assistant would tell somebody it recorded a 99 when
+        // the vault holds a 10.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let mut pain = everyday_core::Tracker::new("Headache", everyday_core::TrackerKind::Scale);
+        pain.scale_max = 10.0;
+        let journal = a_journal_tracking(&vault, pain);
+        let tracker_id = journal.trackers[0].id.to_string();
+
+        let logged = call(
+            &vault,
+            "log_reading",
+            serde_json::json!({ "tracker_id": tracker_id, "value": 99, "date": "2026-09-08" }),
+        );
+        assert_eq!(logged["value"], 10.0, "the clamped value is what to report");
+        assert_eq!(logged["name"], "Headache");
+
+        let summary = call(
+            &vault,
+            "tracker_summary",
+            serde_json::json!({ "from": "2026-09-01", "to": "2026-09-08" }),
+        );
+        assert_eq!(summary["count"], 1);
+        assert_eq!(summary["days"][0]["value"], 10.0);
+        // A severity averages rather than sums: a 3 in the morning and a 3
+        // at night is not a 6. The aggregate is named in the reply so the
+        // model can say "averaging 10" rather than a bare number.
+        assert_eq!(summary["days"][0]["aggregate"], "mean");
+    }
+
+    #[test]
+    fn finishing_something_on_a_shelf_writes_the_log_the_year_in_review_reads() {
+        // An item marked done without a log line is a book that silently
+        // misses the list.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        vault.seed_library().unwrap();
+
+        let shelves = call(&vault, "list_shelves", serde_json::json!({}));
+        let shelf = shelves[0]["id"].as_str().unwrap().to_string();
+
+        let id = call(
+            &vault,
+            "create_item",
+            serde_json::json!({ "shelf_id": shelf, "title": "Piranesi", "creator": "Susanna Clarke" }),
+        )["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        call(
+            &vault,
+            "update_item",
+            serde_json::json!({ "item_id": id, "status": "done", "rating": 9 }),
+        );
+
+        let items = call(&vault, "list_items", serde_json::json!({ "status": "done" }));
+        assert_eq!(items["count"], 1);
+        assert_eq!(items["items"][0]["rating_out_of_10"], 9.0, "a rating out of ten survives");
+        assert_eq!(
+            items["items"][0]["finished_on"], "2026-09-08",
+            "finishing without a date means today"
+        );
+
+        let logs = vault.logs(&everyday_core::LogQuery::default()).unwrap();
+        assert_eq!(logs.len(), 1, "the finish must be logged");
+        assert_eq!(logs[0].event, everyday_core::LogEvent::Finished);
+    }
+
+    #[test]
+    fn a_rating_on_the_wrong_scale_is_refused_rather_than_recorded() {
+        // 80 and 8 must not silently record wildly different opinions.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        vault.seed_library().unwrap();
+        let shelf = call(&vault, "list_shelves", serde_json::json!({}))[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let err = call_err(
+            &vault,
+            "create_item",
+            serde_json::json!({ "shelf_id": shelf, "title": "Dune", "rating": 80 }),
+        );
+        assert!(err.contains("out of 10"), "got {err}");
+    }
+
+    #[test]
+    fn a_time_block_is_placed_at_the_wall_clock_time_it_was_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let task_id =
+            call(&vault, "create_task", serde_json::json!({ "title": "Deep work" }))["id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+
+        call(
+            &vault,
+            "create_time_block",
+            serde_json::json!({
+                "date": "2026-09-09",
+                "start_time": "09:00",
+                "end_time": "10:30",
+                "task_id": task_id,
+            }),
+        );
+
+        let blocks = call(
+            &vault,
+            "list_time_blocks",
+            serde_json::json!({ "from": "2026-09-09", "to": "2026-09-09" }),
+        );
+        assert_eq!(blocks["count"], 1);
+        assert_eq!(blocks["blocks"][0]["minutes"], 90);
+        assert_eq!(blocks["blocks"][0]["kind"], "planned");
+        assert_eq!(blocks["blocks"][0]["for"]["task_id"], task_id);
+    }
+
+    #[test]
+    fn a_block_must_say_what_the_time_is_for_and_may_only_say_it_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let base = serde_json::json!({
+            "date": "2026-09-09", "start_time": "09:00", "end_time": "10:00",
+        });
+
+        let err = call_err(&vault, "create_time_block", base.clone());
+        assert!(err.contains("give one of"), "got {err}");
+
+        let task_id = call(&vault, "create_task", serde_json::json!({ "title": "x" }))["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut both = base.clone();
+        both["task_id"] = serde_json::json!(task_id);
+        both["label"] = serde_json::json!("Lunch");
+        let err = call_err(&vault, "create_time_block", both);
+        assert!(err.contains("only one of"), "got {err}");
+
+        // Backwards is refused rather than silently stored as zero minutes.
+        let mut backwards = base;
+        backwards["label"] = serde_json::json!("Lunch");
+        backwards["end_time"] = serde_json::json!("08:00");
+        let err = call_err(&vault, "create_time_block", backwards);
+        assert!(err.contains("after"), "got {err}");
+    }
+
+    #[test]
+    fn a_tool_that_names_a_record_that_does_not_exist_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        let err = call_err(
+            &vault,
+            "update_task",
+            serde_json::json!({ "task_id": everyday_core::TaskId::new().to_string(), "status": "done" }),
+        );
+        assert!(err.contains("not found") || err.contains("task"), "got {err}");
+
+        // And an invented tool name comes back with the real ones, which is
+        // what a model needs in order to recover on the next turn.
+        let err = call_err(&vault, "add_task", serde_json::json!({ "title": "x" }));
+        assert!(err.contains("no tool called"), "got {err}");
+        assert!(err.contains("create_task"), "should list the real names: {err}");
+    }
+
+    #[test]
+    fn the_assistant_can_read_a_markdown_vault_but_is_not_offered_tasks() {
+        // The backend decides the catalogue, so a model is never told about
+        // a tool whose storage does not exist and cannot claim to have used
+        // one.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = create(
+            dir.path(),
+            VaultConfig { password: None, backend: "markdown".into(), ..Default::default() },
+        )
+        .unwrap();
+
+        let offered: Vec<&str> = tools::available(&vault).iter().map(|t| t.name).collect();
+        assert!(offered.contains(&"create_entry"), "journals work on every backend: {offered:?}");
+        assert!(!offered.contains(&"create_task"), "markdown stores no tasks: {offered:?}");
+        assert!(!offered.contains(&"list_shelves"), "nor a library: {offered:?}");
+
+        let err = call_err(&vault, "create_task", serde_json::json!({ "title": "x" }));
+        assert!(err.contains("does not store"), "got {err}");
+    }
+
+    #[test]
+    fn the_catalogue_marks_exactly_the_tools_the_confirmation_gate_must_catch() {
+        // The gate reads `Effect`, so this is the list that decides what a
+        // person gets asked about. Worth asserting by name rather than by
+        // count, so adding a destructive tool is a deliberate edit here.
+        let destructive: Vec<&str> = tools::catalog()
+            .iter()
+            .filter(|t| t.effect == Effect::Destructive)
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(
+            destructive,
+            vec![
+                "delete_entry",
+                "delete_project",
+                "delete_task",
+                "delete_time_block",
+                "delete_item",
+                "forget",
+            ]
+        );
+    }
+
+    #[test]
+    fn remembering_and_forgetting_go_through_the_settings_that_govern_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        // Off by default in a fresh vault? No -- remembering is on, but the
+        // switch has to actually be honoured.
+        vault
+            .save_agent_settings(&everyday_core::AgentSettings {
+                remember: false,
+                ..Default::default()
+            })
+            .unwrap();
+        let err = call_err(&vault, "remember", serde_json::json!({ "fact": "Plans on Sundays" }));
+        assert!(err.contains("switched off"), "got {err}");
+
+        vault.save_agent_settings(&everyday_core::AgentSettings::default()).unwrap();
+        let saved = call(&vault, "remember", serde_json::json!({ "fact": "Plans on Sundays" }));
+        let id = saved["id"].as_str().unwrap().to_string();
+        assert_eq!(saved["forgotten_to_make_room"], serde_json::json!([]));
+
+        let listed = call(&vault, "list_memories", serde_json::json!({}));
+        assert_eq!(listed[0]["fact"], "Plans on Sundays");
+
+        call(&vault, "forget", serde_json::json!({ "memory_id": id }));
+        assert!(vault.memories().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_read_only_vault_refuses_every_write_and_allows_every_read() {
+        // Two processes on one vault: the second opens read-only. The
+        // assistant must say so rather than failing somewhere deeper with a
+        // message about lock files.
+        let dir = tempfile::tempdir().unwrap();
+        let first = a_vault(dir.path());
+        first.save_journal(&everyday_core::Journal::new("Daily")).unwrap();
+
+        let second = open(dir.path()).unwrap();
+        second.unlock(None).unwrap();
+        assert!(!second.is_writable(), "the second open should be read-only");
+
+        // Reads still work.
+        assert_eq!(call(&second, "list_journals", serde_json::json!({}))[0]["name"], "Daily");
+
+        let err = call_err(&second, "create_task", serde_json::json!({ "title": "x" }));
+        assert!(err.contains("read-only"), "got {err}");
+    }
+
+    #[test]
+    fn finishing_and_reopening_keep_the_completion_date_honest() {
+        // The tools go through `set_status` rather than assigning the field,
+        // which is what owns `completed_at`. Assigned directly, a finished
+        // task has no completion date -- so "what did I get done this week"
+        // never sees it -- and a reopened one keeps the date it was closed.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        let id = call(&vault, "create_task", serde_json::json!({ "title": "Order timber" }))["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let task_id: everyday_core::TaskId = id.parse().unwrap();
+        assert!(vault.task(task_id).unwrap().completed_at.is_none());
+
+        call(&vault, "update_task", serde_json::json!({ "task_id": id, "status": "done" }));
+        assert!(vault.task(task_id).unwrap().completed_at.is_some(), "finishing must record when");
+
+        call(&vault, "update_task", serde_json::json!({ "task_id": id, "status": "todo" }));
+        assert!(
+            vault.task(task_id).unwrap().completed_at.is_none(),
+            "a reopened task must not still claim it was finished"
+        );
+
+        // Projects are the same shape and the same helper.
+        let pid = call(&vault, "create_project", serde_json::json!({ "name": "Deck" }))["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let project_id: everyday_core::ProjectId = pid.parse().unwrap();
+        call(&vault, "update_project", serde_json::json!({ "project_id": pid, "status": "done" }));
+        assert!(vault.project(project_id).unwrap().completed_at.is_some());
+        call(
+            &vault,
+            "update_project",
+            serde_json::json!({ "project_id": pid, "status": "active" }),
+        );
+        assert!(vault.project(project_id).unwrap().completed_at.is_none());
+    }
+
+    #[test]
+    fn an_edit_moves_the_record_forward_so_an_open_editor_notices() {
+        // Every writer stamps its own `updated_at`; the vault does not do it.
+        // Without the stamp the entry's version never moves, so an editor
+        // still holding the old one saves over the assistant's work and
+        // `put_entry_if` reports no conflict -- the exact loss it exists for.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let journal = everyday_core::Journal::new("Daily");
+        vault.save_journal(&journal).unwrap();
+
+        let entry_id = call(
+            &vault,
+            "create_entry",
+            serde_json::json!({ "journal_id": journal.id.to_string(), "body": "First draft." }),
+        )["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let eid: everyday_core::EntryId = entry_id.parse().unwrap();
+        let before = vault.entry(eid).unwrap().updated_at;
+
+        call(
+            &vault,
+            "update_entry",
+            serde_json::json!({ "entry_id": entry_id, "title": "Second draft" }),
+        );
+        let after = vault.entry(eid).unwrap().updated_at;
+        assert!(after > before, "the entry's version must move");
+
+        // And a stale writer is now told, rather than winning silently.
+        let mut stale = vault.entry(eid).unwrap();
+        stale.title = "From an old tab".into();
+        let err = vault.save_entry(&stale, Some(before)).unwrap_err();
+        assert_eq!(err.code(), "conflict", "got {err}");
+
+        // Tasks and items carry the same stamp.
+        let tid = call(&vault, "create_task", serde_json::json!({ "title": "x" }))["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let task_id: everyday_core::TaskId = tid.parse().unwrap();
+        let before = vault.task(task_id).unwrap().updated_at;
+        call(&vault, "update_task", serde_json::json!({ "task_id": tid, "notes": "detail" }));
+        assert!(vault.task(task_id).unwrap().updated_at > before);
+    }
+
+    #[test]
+    fn moving_something_off_a_shelf_and_back_clears_the_dates_it_never_earned() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        vault.seed_library().unwrap();
+        let shelf = call(&vault, "list_shelves", serde_json::json!({}))[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let id = call(
+            &vault,
+            "create_item",
+            serde_json::json!({ "shelf_id": shelf, "title": "Piranesi" }),
+        )["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let item_id: everyday_core::ItemId = id.parse().unwrap();
+
+        call(&vault, "update_item", serde_json::json!({ "item_id": id, "status": "active" }));
+        assert_eq!(
+            vault.item(item_id).unwrap().started_on,
+            Some(TODAY),
+            "starting something records when"
+        );
+
+        call(&vault, "update_item", serde_json::json!({ "item_id": id, "status": "done" }));
+        assert_eq!(vault.item(item_id).unwrap().finished_on, Some(TODAY));
+
+        call(&vault, "update_item", serde_json::json!({ "item_id": id, "status": "wishlist" }));
+        let back = vault.item(item_id).unwrap();
+        assert!(back.finished_on.is_none(), "it is not still finished this year");
+        assert!(back.started_on.is_none(), "nor still started");
+
+        // The history the year-in-review reads: started, finished, and
+        // nothing for the correction back to the wishlist.
+        let events: Vec<everyday_core::LogEvent> = vault
+            .logs(&everyday_core::LogQuery::default())
+            .unwrap()
+            .iter()
+            .map(|l| l.event)
+            .collect();
+        assert_eq!(events.len(), 2, "got {events:?}");
+        assert!(events.contains(&everyday_core::LogEvent::Started));
+        assert!(events.contains(&everyday_core::LogEvent::Finished));
+    }
+
+    #[test]
+    fn a_task_cannot_be_filed_into_a_project_that_does_not_exist() {
+        // There is no foreign key on `project_id`, so an id the model half
+        // remembered would otherwise be stored without complaint, producing
+        // a task on no board and in no inbox while the tool said "created".
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        let ghost = everyday_core::ProjectId::new().to_string();
+        let err = call_err(
+            &vault,
+            "create_task",
+            serde_json::json!({ "title": "Order timber", "project_id": ghost }),
+        );
+        assert!(err.contains("no project with id"), "got {err}");
+        assert!(err.contains("list_projects"), "should say how to recover: {err}");
+
+        assert_eq!(
+            call(&vault, "list_tasks", serde_json::json!({}))["count"],
+            0,
+            "nothing should have been created"
+        );
+
+        let err = call_err(
+            &vault,
+            "create_task",
+            serde_json::json!({
+                "title": "A subtask",
+                "parent_id": everyday_core::TaskId::new().to_string(),
+            }),
+        );
+        assert!(err.contains("no task with id"), "got {err}");
+    }
+
+    #[test]
+    fn an_entry_written_in_markdown_is_stored_as_structure_rather_than_as_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let journal = everyday_core::Journal::new("Daily");
+        vault.save_journal(&journal).unwrap();
+
+        // The bullets and the tick-boxes are two lists, not one, so the
+        // canonical form has a blank line between them -- which is what a
+        // round trip has to agree on.
+        let body =
+            "## What is left\n\n- Sand the rails\n\n- [x] Ring the yard\n\nSee **the plan**.";
+        let id = call(
+            &vault,
+            "create_entry",
+            serde_json::json!({ "journal_id": journal.id.to_string(), "body": body }),
+        )["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let eid: everyday_core::EntryId = id.parse().unwrap();
+
+        let stored = vault.entry(eid).unwrap();
+        let blocks = stored.body.0["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "heading", "got {blocks:?}");
+        assert_eq!(blocks[1]["type"], "bulletList");
+        assert_eq!(blocks[2]["type"], "taskList");
+        assert!(
+            !stored.body.plain_text().contains('#'),
+            "the hashes must not survive as literal text"
+        );
+
+        // And what the assistant reads back is what it wrote, so an edit to
+        // one line does not flatten the rest.
+        assert_eq!(call(&vault, "get_entry", serde_json::json!({ "entry_id": id }))["body"], body);
+    }
+
+    #[test]
+    fn an_entry_holding_photographs_will_not_have_its_text_replaced() {
+        // A body arrives whole. Replacing one that holds media takes the
+        // media off the page, and the model -- handed the body as Markdown --
+        // has no way to know it did that or to put it back.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let journal = everyday_core::Journal::new("Daily");
+        vault.save_journal(&journal).unwrap();
+
+        let blob = vault.put_blob(b"not really a photograph").unwrap();
+        let mut entry = everyday_core::Entry::new(journal.id, "UTC");
+        entry.body = everyday_core::RichDoc(serde_json::json!({
+            "type": "doc",
+            "content": [
+                { "type": "paragraph", "content": [{ "type": "text", "text": "The deck" }] },
+                { "type": "media", "attrs": { "blob": blob.to_string(), "kind": "image" } },
+            ],
+        }));
+        vault.save_entry(&entry, None).unwrap();
+
+        let err = call_err(
+            &vault,
+            "update_entry",
+            serde_json::json!({ "entry_id": entry.id.to_string(), "body": "Rewritten." }),
+        );
+        assert!(err.contains("photographs"), "got {err}");
+
+        // Everything else about it is still editable.
+        call(
+            &vault,
+            "update_entry",
+            serde_json::json!({ "entry_id": entry.id.to_string(), "tags": ["deck"] }),
+        );
+        let after = vault.entry(entry.id).unwrap();
+        assert_eq!(after.tags, vec!["deck"]);
+        assert_eq!(after.body.blob_refs().len(), 1, "the photograph is still on the page");
+    }
+
     #[test]
     fn the_default_vault_directory_is_absolute_and_named() {
         let dir = default_vault_dir();

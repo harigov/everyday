@@ -77,6 +77,7 @@
 //! lines, in which finding the four places a task's `sort_order` is written
 //! meant scrolling past the entry queries and the migration SQL.
 
+mod agent;
 mod calendars;
 mod journals;
 mod library;

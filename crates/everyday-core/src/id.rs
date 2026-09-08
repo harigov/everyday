@@ -110,6 +110,16 @@ typed_id!(LogId, "log");
 typed_id!(TrackerId, "tracker");
 typed_id!(ReadingId, "reading");
 
+// The assistant's domain. A `ConversationId` names a thread, a `MessageId`
+// one turn in it, and a `MemoryId` one fact the assistant was asked to keep
+// across all of them. The third is separate from the first two for the
+// reason readings are separate from trackers: a memory outlives the
+// conversation that produced it, and deleting a thread must not quietly
+// retract what it taught.
+typed_id!(ConversationId, "conversation");
+typed_id!(MessageId, "message");
+typed_id!(MemoryId, "memory");
+
 /// Content address of an attachment payload.
 ///
 /// Blobs are content-addressed with BLAKE3 so that the same photo dropped into

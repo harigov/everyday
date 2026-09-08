@@ -27,6 +27,7 @@ use crate::crypto::Cipher;
 use crate::error::{Error, Result};
 use crate::id::{BlobId, EntryId, JournalId};
 use crate::model::{Entry, EntrySummary, Journal};
+use crate::store::agent::AgentStore;
 use crate::store::calendars::CalendarStore;
 use crate::store::library::LibraryStore;
 use crate::store::tasks::TaskStore;
@@ -76,6 +77,16 @@ pub struct Capabilities {
     /// not offering it.
     #[serde(default)]
     pub trackers: bool,
+    /// Backend implements [`agent::AgentStore`], so the assistant has
+    /// somewhere to keep its settings, its threads and its memory.
+    ///
+    /// False hides the assistant entirely rather than offering a panel whose
+    /// conversation vanishes when the window closes. Independent of the
+    /// others in the type, but of limited use without them: an assistant
+    /// whose vault holds journals and nothing else can still read and write
+    /// entries, and its task tools will say the backend does not do tasks.
+    #[serde(default)]
+    pub agent: bool,
 }
 
 /// Everything a backend needs to open a vault directory.
@@ -263,6 +274,15 @@ pub trait JournalStore: Send + Sync {
     /// [`trackers`](crate::store::trackers) for why a stream of timestamped
     /// numbers is its own trait — and why the *definitions* are not in it.
     fn trackers(&self) -> Option<&dyn TrackerStore> {
+        None
+    }
+
+    /// Storage for the assistant, if this backend has any.
+    ///
+    /// Same shape and same reasoning as the four above. See
+    /// [`agent`](crate::store::agent) for why a chat transcript is its own
+    /// trait -- and why none of it is left in the clear.
+    fn agent(&self) -> Option<&dyn AgentStore> {
         None
     }
 
@@ -518,6 +538,7 @@ impl BackendRegistry {
     }
 }
 
+pub mod agent;
 pub mod calendars;
 pub mod library;
 pub mod tasks;

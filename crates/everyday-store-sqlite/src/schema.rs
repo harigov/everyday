@@ -9,15 +9,16 @@ use everyday_core::error::{Error, Result};
 use rusqlite::Connection;
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub(crate) const SCHEMA_VERSION: i64 = 5;
+pub(crate) const SCHEMA_VERSION: i64 = 6;
 
 /// Bring the database up to [`SCHEMA_VERSION`].
 ///
 /// Stepped rather than all-or-nothing: a vault written by an earlier build
 /// has entries in it, so version 2 must *add* the task tables beside them
 /// rather than recreate the file, version 3 the calendar tables beside both,
-/// version 4 the library tables beside all three, and version 5 the
-/// readings beside all four. Each step is
+/// version 4 the library tables beside all three, version 5 the
+/// readings beside all four, and version 6 the assistant's own beside all
+/// five. Each step is
 /// idempotent and runs in its own transaction, and `user_version` is only
 /// advanced once they all land.
 pub(crate) fn migrate(conn: &Connection) -> Result<()> {
@@ -54,6 +55,9 @@ pub(crate) fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 5 {
         conn.execute_batch(SCHEMA_V5).map_err(Error::backend)?;
+    }
+    if version < 6 {
+        conn.execute_batch(SCHEMA_V6).map_err(Error::backend)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(Error::backend)?;
     Ok(())
@@ -333,5 +337,85 @@ const SCHEMA_V5: &str = r#"
             ON readings (journal_id, local_date);
         CREATE INDEX IF NOT EXISTS readings_by_entry
             ON readings (entry_id);
+        COMMIT;
+        "#;
+
+/// Version 6: the assistant -- its configuration, its threads, and what it
+/// was asked to remember.
+///
+/// The clear/sealed split every other version of this schema makes does not
+/// appear here, and its absence is the design. Versions 4 and 5 keep
+/// `status`, `rating`, `local_date` and `value` readable because an index on
+/// them is what makes a shelf or a chart one query instead of a full
+/// decrypt. Nothing in this domain is ever asked that sort of question: the
+/// panel wants one thread in order and the history list wants the newest
+/// threads, and `conversation_id` plus a timestamp answer both. So there is
+/// no reason to leave a single word of a conversation outside the envelope,
+/// and none is left. The file records that fourteen messages were exchanged
+/// on the 3rd and nothing at all about them.
+///
+/// Two singleton tables, each pinned to one row by a `CHECK`. `agent_secret`
+/// is separate from `agent_settings` rather than a column in it so that
+/// reading the configuration -- which happens on every panel open -- cannot
+/// pick up the API key on the way past. They are sealed under different
+/// associated data for the same reason, so neither can be substituted for
+/// the other by anyone who can write to this file.
+///
+/// `messages` cascades from `conversations`, as `events` does from
+/// `calendars` and for the same reason: deleting a thread takes its turns
+/// and nothing else, because nothing else in the vault points at a message.
+/// What deliberately does *not* cascade is `memories`. A memory holds a
+/// `source_id` naming the conversation that taught it, and that pointer is
+/// allowed to dangle -- clearing your chat history must not silently make
+/// the assistant forget that you plan on Sundays. Which is also why
+/// `source_id` is not a column here at all: it lives inside the sealed
+/// payload, where a foreign key cannot reach it and try to enforce the
+/// cascade this domain does not want.
+const SCHEMA_V6: &str = r#"
+        BEGIN;
+        CREATE TABLE IF NOT EXISTS agent_settings (
+            id          INTEGER PRIMARY KEY CHECK (id = 1),
+            data        BLOB    NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_secret (
+            id          INTEGER PRIMARY KEY CHECK (id = 1),
+            data        BLOB    NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS conversations (
+            id          TEXT    PRIMARY KEY NOT NULL,
+            created_us  INTEGER NOT NULL,
+            updated_us  INTEGER NOT NULL,
+            data        BLOB    NOT NULL
+        );
+
+        -- The history pane: most recently used first.
+        CREATE INDEX IF NOT EXISTS conversations_by_updated
+            ON conversations (updated_us DESC);
+
+        CREATE TABLE IF NOT EXISTS messages (
+            id              TEXT    PRIMARY KEY NOT NULL,
+            conversation_id TEXT    NOT NULL
+                                    REFERENCES conversations (id) ON DELETE CASCADE,
+            created_us      INTEGER NOT NULL,
+            data            BLOB    NOT NULL
+        );
+
+        -- One thread, in order. `id` breaks ties because a tool result and
+        -- the turn that asked for it can land in the same microsecond, and
+        -- replaying them the wrong way round makes a model re-run the call.
+        -- Ids are UUIDv7, so ordering by one orders by time anyway.
+        CREATE INDEX IF NOT EXISTS messages_by_conversation
+            ON messages (conversation_id, created_us, id);
+
+        CREATE TABLE IF NOT EXISTS memories (
+            id          TEXT    PRIMARY KEY NOT NULL,
+            created_us  INTEGER NOT NULL,
+            data        BLOB    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS memories_by_created
+            ON memories (created_us);
         COMMIT;
         "#;
