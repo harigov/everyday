@@ -81,7 +81,6 @@
             <input
               type="checkbox"
               checked={tray.enabled}
-              disabled={tray.unavailable}
               onchange={(e) => tray.setEnabled(e.currentTarget.checked)}
             />
             <span>Show Every Day in the {TRAY_WORD}</span>

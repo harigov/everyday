@@ -96,9 +96,13 @@ class TrayRegistry {
   /** Is one actually up? False while the setting is off, or if it failed. */
   showing = $state(false)
   /**
-   * Set when the shell reports there is nowhere to put an icon -- a Linux
-   * session with no StatusNotifier host is the usual reason. Settings says
-   * so rather than leaving a switch that appears to do nothing.
+   * Does the shell report nowhere to put an icon? A Linux session with no
+   * StatusNotifier host is the usual reason, and Settings says so rather
+   * than leaving a switch that appears to do nothing.
+   *
+   * Only ever the shell's own answer, never an inference from a failed
+   * call, and it clears again if a later one succeeds -- a tray host can
+   * arrive mid-session.
    */
   unavailable = $state(false)
 
@@ -200,6 +204,8 @@ class TrayRegistry {
     const items = entries.map((e) => this.#toItem(e))
     const key = enabled ? JSON.stringify(items) : null
     if (key === this.#sent) return
+    // Claimed before the send rather than after, so a burst of changes
+    // queues one call each rather than one per change per change in flight.
     this.#sent = key
 
     this.#chain = this.#chain
@@ -209,15 +215,24 @@ class TrayRegistry {
           this.showing = false
           return
         }
-        this.showing = await api.setTrayMenu(items)
-        if (!this.showing) this.unavailable = true
+        // The shell answers false only for "this desktop has nowhere to put
+        // an icon", which is a lasting fact worth repeating in Settings --
+        // and it can stop being true mid-session, when somebody turns on
+        // the extension that provides the tray, so it is tracked rather
+        // than latched.
+        const up = await api.setTrayMenu(items)
+        this.showing = up
+        this.unavailable = !up
       })
       .catch(() => {
-        // A tray is a convenience. Failing to raise one is worth noting in
-        // Settings and worth nothing else -- it must not put an error over
-        // the window the user is writing in.
+        // A tray is a convenience: a failure here must not put an error over
+        // the window somebody is writing in. But it is *not* evidence that
+        // the desktop has no tray, so `unavailable` is left alone -- one
+        // transient failure must not tell the user their machine cannot do
+        // this. Forgetting the description is what makes it retry: the next
+        // change to the same state no longer looks like a menu already sent.
+        this.#sent = null
         this.showing = false
-        this.unavailable = true
       })
   }
 

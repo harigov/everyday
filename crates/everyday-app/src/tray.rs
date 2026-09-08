@@ -19,6 +19,10 @@
 //! application is a menu built by a webview that might be wedged is a way
 //! to lose a running program, and on Linux -- where a click on the icon
 //! raises no event at all -- it is the only way.
+//!
+//! The icon itself is built at most once per process and hidden rather than
+//! destroyed. Both handlers below are registered on the `Builder` instead of
+//! on the icon, for the same reason: see [`Tray::hide`].
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -118,14 +122,17 @@ impl Tray {
         let mut slot = self.icon.lock().unwrap();
         if let Some(tray) = slot.as_ref() {
             tray.set_menu(Some(menu)).map_err(menu_error)?;
+            // Puts it back if the setting was switched off and on again.
+            tray.set_visible(true).map_err(menu_error)?;
             return Ok(true);
         }
 
-        let mut builder = TrayIconBuilder::with_id(TRAY_ID)
-            .menu(&menu)
-            .tooltip("Every Day")
-            .on_menu_event(on_menu_event)
-            .on_tray_icon_event(on_tray_icon_event);
+        // No `on_menu_event` or `on_tray_icon_event` here: they are the
+        // `Builder`'s, in `lib.rs`. Registering a menu handler on an icon
+        // appends it to a process-wide list that nothing ever removes, so an
+        // icon built a second time would leave every menu pick firing its
+        // handler twice -- two journal entries from one click.
+        let mut builder = TrayIconBuilder::with_id(TRAY_ID).menu(&menu).tooltip("Every Day");
         // The application mark, not a monochrome silhouette of it. A macOS
         // template icon would be the more idiomatic choice in the menu bar,
         // but the mark is a filled tile and a template renders only its
@@ -150,10 +157,26 @@ impl Tray {
         }
     }
 
-    /// Take the icon down. Dropping it is what removes it.
+    /// Take the icon down, keeping it in hand for the next `show`.
+    ///
+    /// Hidden rather than dropped, and the difference is not stylistic.
+    /// Dropping this handle does not remove anything: `TrayIconBuilder::build`
+    /// files a second copy in Tauri's resource table, so the icon would stay
+    /// on screen and the switch in Settings would appear to do nothing. The
+    /// route that *does* remove it, `remove_tray_by_id`, leaves the id behind
+    /// in Tauri's own index and so works exactly once -- and building a
+    /// replacement afterwards is what duplicates the menu handler described
+    /// above. Visibility is the operation this actually wants: one icon, one
+    /// handler, for the life of the process.
     pub fn hide(&self) {
-        let previous = self.icon.lock().unwrap().take();
-        drop(previous);
+        if let Some(tray) = self.icon.lock().unwrap().as_ref() {
+            // Nothing to do about a failure but carry on: the icon is a
+            // convenience and the vault is not involved either way.
+            if let Err(e) = tray.set_visible(false) {
+                tracing::warn!(error = %e, "could not hide the tray icon");
+            }
+        }
+        // A hidden menu cannot be clicked, so nothing needs raising.
         self.raise.lock().unwrap().clear();
     }
 
@@ -233,7 +256,7 @@ pub fn raise_window(app: &AppHandle) {
     let _ = window.set_focus();
 }
 
-fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
+pub fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     let id = event.id().as_ref();
     match id {
         SHOW_ID => raise_window(app),
@@ -258,7 +281,7 @@ fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     }
 }
 
-fn on_tray_icon_event(tray: &TrayIcon, event: TrayIconEvent) {
+pub fn on_tray_icon_event(app: &AppHandle, event: TrayIconEvent) {
     // Double click, and only on the left button: the Windows convention for
     // "open the application", where a single left click is already spoken
     // for by the menu. macOS shows the menu on any click and Linux reports
@@ -266,6 +289,6 @@ fn on_tray_icon_event(tray: &TrayIcon, event: TrayIconEvent) {
     // "Open Every Day" is the way back -- which is why the shell appends it
     // rather than trusting the interface to.
     if let TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } = event {
-        raise_window(tray.app_handle());
+        raise_window(app);
     }
 }

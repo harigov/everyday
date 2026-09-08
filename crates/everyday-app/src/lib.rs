@@ -65,6 +65,12 @@ pub fn run() {
         // appears at launch holding only "Quit" is worse than one that
         // appears a moment later holding the actions.
         .manage(Tray::default())
+        // Registered here rather than on the icon, and once rather than per
+        // icon: Tauri appends a menu handler given to `TrayIconBuilder` to a
+        // process-wide list it never prunes, and dispatches every menu event
+        // to all of them. See `tray::Tray::hide`.
+        .on_menu_event(tray::on_menu_event)
+        .on_tray_icon_event(tray::on_tray_icon_event)
         .register_asynchronous_uri_scheme_protocol("everyday", |ctx, request, responder| {
             protocol::handle(ctx.app_handle(), request, responder);
         })
