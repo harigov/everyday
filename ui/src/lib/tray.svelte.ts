@@ -150,6 +150,18 @@ class TrayRegistry {
     this.#groups = [...rest, { source, order, actions }].sort((a, b) => a.order - b.order)
   }
 
+  /**
+   * One app's quick actions, as that app would offer them right now.
+   *
+   * For a menu that is not the tray's: the app bar raises this on a
+   * right-click, and it has to be the same list rather than a second one
+   * written beside it. Two answers to "what can this app start right now"
+   * drift, and the one nobody is looking at is always the stale one.
+   */
+  entriesFor(source: string): TrayEntry[] {
+    return this.#groups.find((g) => g.source === source)?.actions() ?? []
+  }
+
   /** Start listening for clicks and keeping the menu in step. Once. */
   start() {
     if (this.#started || !this.supported) return

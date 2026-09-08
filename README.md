@@ -45,10 +45,20 @@ the right side of the trade.
 
 ## Four apps, one vault
 
-The sidebar switches between **Journal**, **Todo**, **Calendar** and
-**Library** (`Ctrl/Cmd J` cycles). They share a vault, a password and a lock;
-they share nothing else — except that the calendar is a view over what the
-journal and the todo app already store, which is the whole point of it.
+A bar down the left edge switches between **Journal**, **Todo**,
+**Calendar** and **Library** (`Ctrl/Cmd J` cycles); right-clicking one of
+them offers what that app can start from a standing stop — the same actions
+the tray offers, from the same registration. They share a vault, a password
+and a lock; they share nothing else — except that the calendar is a view over
+what the journal and the todo app already store, which is the whole point of
+it.
+
+The bar sits outside the sidebar because it is not any one app's navigation:
+everything to the right of it changes completely when one is pressed, and it
+does not. The apps were a segmented control at the top of the sidebar while
+there were two of them, which stopped working at four — the labels no longer
+fitted on a row, and a control that wraps to two rows of two reads as a set
+of filters over the list below it.
 
 The todo app has projects, tasks and subtasks — a subtask is just a task with
 a parent, so the two levels the interface offers are a UI decision rather

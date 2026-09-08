@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app, type Section } from '../lib/state.svelte'
+  import { app } from '../lib/state.svelte'
   import { DEFAULT_COLORS } from '../lib/colors'
   import { focusOnMount } from '../lib/focus'
   import { menu } from '../lib/menu.svelte'
@@ -13,20 +13,9 @@
   import CalendarNav from './CalendarNav.svelte'
   import LibraryNav from './LibraryNav.svelte'
   import type { Journal } from '../lib/types'
-  import type { IconName } from '../lib/icons'
 
-  // One vault, four apps. The switcher is the only chrome above the nav
-  // because the apps are peers -- none is a mode of another -- and each tab
-  // is hidden on a backend that cannot carry it, so a Markdown vault does
-  // not offer a tab that cannot work.
-  const APPS: { id: Section; label: string; icon: IconName }[] = [
-    { id: 'journal', label: 'Journal', icon: 'quote' },
-    { id: 'todo', label: 'Todo', icon: 'check' },
-    { id: 'calendar', label: 'Calendar', icon: 'calendar' },
-    { id: 'library', label: 'Library', icon: 'book' },
-  ]
-  const shownApps = $derived(APPS.filter((a) => app.canShow(a.id)))
-
+  // The apps themselves are `AppBar`, outside this: they are not one app's
+  // navigation, and everything below is.
   let creating = $state(false)
   let draft = $state('')
 
@@ -107,23 +96,6 @@
     <Logo size={20} tile />
     <span class="name">Every Day</span>
   </div>
-
-  {#if shownApps.length > 1}
-    <div class="apps" role="tablist" aria-label="Apps">
-      {#each shownApps as a (a.id)}
-        <button
-          class="app"
-          class:on={app.section === a.id}
-          role="tab"
-          aria-selected={app.section === a.id}
-          onclick={() => app.setSection(a.id)}
-        >
-          <Icon name={a.icon} size={14} />
-          {a.label}
-        </button>
-      {/each}
-    </div>
-  {/if}
 
   {#if app.section === 'todo'}
     <TodoNav />
@@ -254,48 +226,6 @@
     font-weight: 620;
     letter-spacing: -0.006em;
     font-size: var(--text-md);
-  }
-
-  /* A segmented control rather than two rows in the nav: these switch what
-     the whole window is, and a thing that looks like a list item reads as
-     "one more place to put a journal". */
-  .apps {
-    display: flex;
-    /* Four of them now. At the sidebar's width the labels no longer fit on
-       one row, and a segmented control that wraps to two rows of two reads
-       better than one that ellipsises every tab to "Cale…". */
-    flex-wrap: wrap;
-    gap: 2px;
-    flex: none;
-    margin: 0 var(--sp-2) var(--sp-1);
-    padding: 2px;
-    border-radius: var(--radius);
-    background: var(--bg-active);
-  }
-  .app {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    /* `1 1 40%` rather than `1`: two per row when four are shown, and still
-       one row when a Markdown vault offers only two. */
-    flex: 1 1 40%;
-    height: 26px;
-    border-radius: calc(var(--radius) - 3px);
-    font-size: var(--text-sm);
-    font-weight: 550;
-    color: var(--fg-subtle);
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
-  }
-  .app:hover {
-    color: var(--fg);
-  }
-  .app.on {
-    background: var(--bg-raised);
-    color: var(--fg);
-    box-shadow: var(--shadow-sm);
   }
 
   .nav {

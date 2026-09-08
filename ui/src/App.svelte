@@ -7,6 +7,7 @@
   import { calendar } from './lib/calendar.svelte'
   import { library } from './lib/library.svelte'
   import { tray } from './lib/tray.svelte'
+  import AppBar from './components/AppBar.svelte'
   import Sidebar from './components/Sidebar.svelte'
   import EntryList from './components/EntryList.svelte'
   import Editor from './components/Editor.svelte'
@@ -160,6 +161,7 @@
     <div class="shell">
       <Notices />
       <div class="panes">
+        <AppBar />
         <Sidebar />
         {#if app.section === 'todo'}
           <TodoView />
