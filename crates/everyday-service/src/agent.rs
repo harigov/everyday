@@ -49,7 +49,7 @@ use std::sync::{Arc, Mutex};
 
 use everyday_core::agent::tools::{self, Effect, ToolContext};
 use everyday_core::agent::{AgentSettings, Conversation, Message as VaultMessage, Role, ToolCall};
-use everyday_core::model::{system_tz, today_local};
+use everyday_core::model::system_tz;
 use everyday_core::{ConversationId, Vault};
 use rig_agent::agent::hook::{
     ToolCall as HookToolCall, ToolCallAction, ToolResultAction, ToolResultEvent,
@@ -282,6 +282,15 @@ impl ConfirmGate {
     }
 }
 
+/// The zone to reckon a turn in: the person's, else this machine's.
+///
+/// A name rather than a `TimeZone` because it crosses into the blocking pool
+/// with every tool call, and because `ToolContext` wants the name anyway --
+/// a record stores the zone it was written in, not an offset.
+fn zone_name(settings: &AgentSettings) -> String {
+    settings.timezone.clone().unwrap_or_else(system_tz)
+}
+
 /// Wrap the core catalogue as rig tools and assemble the agent.
 ///
 /// `vault` is captured by every tool callback, which is why it arrives as an
@@ -308,7 +317,17 @@ fn build(
         .map_err(|e| CommandError::new("agent", format!("could not start the assistant: {e}")))?;
 
     let memories = vault.memories()?;
-    let preamble = everyday_core::agent::system_prompt(settings, &memories, today_local(), context);
+    // Who, and what time it is where they are. Both read from the vault
+    // rather than from the host: a service in a container has the wrong zone,
+    // and a model told the wrong hour gets "what is left today" wrong.
+    let profile = vault.profile()?;
+    let preamble = everyday_core::agent::system_prompt(
+        settings,
+        &profile,
+        &memories,
+        &settings.now(),
+        context,
+    );
 
     let mut builder = AgentBuilder::new(client.completion_model(&model.model))
         .preamble(&preamble)
@@ -322,16 +341,19 @@ fn build(
 
     // Only the tools this vault can actually serve. A model is never told
     // about storage that does not exist, so it cannot claim to have used it.
+    let zone = zone_name(settings);
     let wrap = |tool: &'static tools::Tool| {
         let vault = vault.clone();
         let name = tool.name;
+        let zone = zone.clone();
         PortableDynamicTool::new(
             tool.name,
             tool.description,
             tool.parameters(),
             move |arguments: serde_json::Value| {
                 let vault = vault.clone();
-                Box::pin(async move { run_tool(vault, name, arguments, conversation).await })
+                let zone = zone.clone();
+                Box::pin(async move { run_tool(vault, name, arguments, conversation, zone).await })
             },
         )
     };
@@ -364,14 +386,20 @@ async fn run_tool(
     name: &'static str,
     arguments: serde_json::Value,
     conversation: ConversationId,
+    zone: String,
 ) -> Result<ToolOutput, ToolExecutionError> {
     let outcome = tokio::task::spawn_blocking(move || {
+        // Read per call rather than once per turn: a conversation left open
+        // overnight must not still think it is yesterday. The *zone* is
+        // fixed for the turn, and is the person's rather than the host's, so
+        // that "due today" in a tool means the same day the prompt said it
+        // was.
+        let now = jiff::Timestamp::now()
+            .to_zoned(jiff::tz::TimeZone::get(&zone).unwrap_or(jiff::tz::TimeZone::UTC));
         let ctx = ToolContext {
             vault: &vault,
-            // Read per call rather than once per turn: a conversation left
-            // open overnight must not still think it is yesterday.
-            today: today_local(),
-            tz: &system_tz(),
+            today: now.date(),
+            tz: &zone,
             conversation: Some(conversation),
         };
         tools::dispatch(&ctx, name, &arguments)
@@ -433,8 +461,8 @@ pub async fn run_turn(turn: Turn) -> CommandResult<()> {
         channel: channel.clone(),
         enabled: settings.confirm_destructive,
         vault: vault.clone(),
-        today: today_local(),
-        tz: system_tz(),
+        today: settings.now().date(),
+        tz: zone_name(&settings),
         ledger: ledger.clone(),
     };
 

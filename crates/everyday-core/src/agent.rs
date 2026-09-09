@@ -269,6 +269,16 @@ pub struct AgentSettings {
     pub max_steps: u32,
     /// Whether the assistant may write [`Memory`] rows.
     pub remember: bool,
+    /// The person's own time zone, as an IANA name. `None` means the
+    /// machine's.
+    ///
+    /// Here rather than read from the host, because the host may not be where
+    /// the person is. A vault served from a machine under a desk, or from a
+    /// container, has whatever zone that machine was installed with -- and
+    /// "seven in the morning" for a routine, or "is it too late to ring them"
+    /// in a conversation, has to mean seven where the *person* is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
     /// Whether a key is stored. Never the key itself.
     #[serde(default)]
     pub has_key: bool,
@@ -283,6 +293,7 @@ impl Default for AgentSettings {
             confirm_destructive: true,
             max_steps: DEFAULT_MAX_STEPS,
             remember: true,
+            timezone: None,
             has_key: false,
         }
     }
@@ -317,7 +328,36 @@ impl AgentSettings {
                 "steps per request must be between 1 and {MAX_STEPS_LIMIT}"
             )));
         }
+        // Checked against the platform's own database rather than a pattern.
+        // A zone this machine cannot resolve is one every routine on it would
+        // silently fall back to UTC for, which is a scheduler that runs at
+        // the wrong hour and never says why.
+        if let Some(tz) = &self.timezone
+            && jiff::tz::TimeZone::get(tz).is_err()
+        {
+            return Err(Error::Invalid(format!("{tz:?} is not a time zone this machine knows")));
+        }
         Ok(())
+    }
+
+    /// The zone to reckon in: the person's, else the machine's.
+    pub fn zone(&self) -> jiff::tz::TimeZone {
+        match &self.timezone {
+            Some(name) => jiff::tz::TimeZone::get(name).unwrap_or_else(|_| {
+                // Validation refuses an unknown zone on the way in, so this
+                // is a vault whose zone was valid on the machine that wrote
+                // it and is not on this one. UTC and a log line, rather than
+                // refusing to run.
+                tracing::warn!(zone = %name, "unknown time zone; reckoning in UTC");
+                jiff::tz::TimeZone::UTC
+            }),
+            None => jiff::tz::TimeZone::system(),
+        }
+    }
+
+    /// Now, in that zone.
+    pub fn now(&self) -> jiff::Zoned {
+        jiff::Timestamp::now().to_zoned(self.zone())
     }
 
     /// Whether a request could actually be made right now.
@@ -561,14 +601,19 @@ impl Memory {
 /// delete things is enforced by [`AgentSettings::confirm_destructive`] and
 /// by the tool layer, not by asking politely here.
 ///
-/// `today` is passed in rather than read from the clock because a prompt
-/// builder that knows what day it is cannot be tested, and "what is due this
-/// week" is exactly the question that goes wrong when the model assumes its
-/// training cutoff is today.
+/// `now` is passed in rather than read from the clock because a prompt builder
+/// that knows what time it is cannot be tested, and "what is due this week" is
+/// exactly the question that goes wrong when the model assumes its training
+/// cutoff is today. It is a [`Zoned`] rather than a date because the *hour*
+/// matters to half of what an assistant is asked -- "what is left today", "is
+/// it too late to ring them" -- and because a service running in a container
+/// under a desk has the wrong zone, so the zone has to travel with the
+/// instant rather than being read from the host.
 pub fn system_prompt(
     settings: &AgentSettings,
+    profile: &crate::profile::Profile,
     memories: &[Memory],
-    today: jiff::civil::Date,
+    now: &jiff::Zoned,
     context: Option<&str>,
 ) -> String {
     let mut out = String::new();
@@ -594,7 +639,20 @@ pub fn system_prompt(
          it, and do not summarise it back to them unless they asked.",
     );
 
-    out.push_str(&format!("\n\nToday is {}.", today.strftime("%A %-d %B %Y")));
+    // Who, then when. Both before the memories, because a memory is a
+    // standing instruction and reads better against a person who has already
+    // been introduced.
+    if let Some(said) = profile.describe(now.date()) {
+        out.push_str("\n\n");
+        out.push_str(&said);
+    }
+
+    out.push_str(&format!(
+        "\n\nIt is {}, {} in {}.",
+        now.strftime("%A %-d %B %Y"),
+        now.strftime("%H:%M"),
+        now.time_zone().iana_name().unwrap_or("an unknown time zone"),
+    ));
 
     if !memories.is_empty() {
         out.push_str(
@@ -740,17 +798,60 @@ mod tests {
         assert_eq!(title.chars().count(), Conversation::MAX_TITLE_CHARS + 1);
     }
 
+    /// A fixed instant in a named zone, so the prompt tests are about the
+    /// wording rather than about what time it happens to be.
+    fn at(hour: i8, minute: i8, zone: &str) -> jiff::Zoned {
+        date(2026, 9, 8)
+            .at(hour, minute, 0, 0)
+            .in_tz(zone)
+            .expect("a real zone and a real local time")
+    }
+
     #[test]
-    fn the_prompt_carries_todays_date_because_the_model_does_not_know_it() {
-        let prompt = system_prompt(&AgentSettings::default(), &[], date(2026, 9, 8), None);
+    fn the_prompt_carries_the_clock_because_the_model_does_not_know_it() {
+        let prompt = system_prompt(
+            &AgentSettings::default(),
+            &crate::profile::Profile::default(),
+            &[],
+            &at(14, 5, "America/Los_Angeles"),
+            None,
+        );
         assert!(prompt.contains("8 September 2026"), "got: {prompt}");
+        assert!(prompt.contains("14:05"), "the hour matters to half of what is asked: {prompt}");
+        assert!(prompt.contains("America/Los_Angeles"), "and so does the zone: {prompt}");
+    }
+
+    #[test]
+    fn the_prompt_introduces_the_person_and_says_nothing_when_it_cannot() {
+        let none = system_prompt(
+            &AgentSettings::default(),
+            &crate::profile::Profile::default(),
+            &[],
+            &at(9, 0, "UTC"),
+            None,
+        );
+        assert!(!none.contains("Its owner is"), "an empty profile adds nothing");
+
+        let profile = crate::profile::Profile {
+            first_name: "Hari".into(),
+            born: Some(date(1985, 3, 14)),
+            location: "Seattle".into(),
+            ..Default::default()
+        };
+        let said = system_prompt(&AgentSettings::default(), &profile, &[], &at(9, 0, "UTC"), None);
+        assert!(said.contains("Its owner is Hari, 41, in Seattle."), "got: {said}");
+        assert!(
+            said.find("Its owner is Hari").unwrap() < said.find("It is Tuesday").unwrap(),
+            "who, then when"
+        );
     }
 
     #[test]
     fn the_persons_instructions_come_before_the_house_rules() {
         let s =
             AgentSettings { instructions: "Be terse. I am a nurse.".into(), ..Default::default() };
-        let prompt = system_prompt(&s, &[], date(2026, 9, 8), None);
+        let prompt =
+            system_prompt(&s, &crate::profile::Profile::default(), &[], &at(9, 0, "UTC"), None);
         let mine = prompt.find("I am a nurse").unwrap();
         let house = prompt.find("You are the assistant").unwrap();
         assert!(mine < house, "the person's own instructions should be read first");
@@ -774,7 +875,13 @@ mod tests {
         // that was just remembered.
         let memories: Vec<Memory> =
             (0..MAX_MEMORIES + 5).map(|i| Memory::new(format!("fact {i}"))).collect();
-        let prompt = system_prompt(&AgentSettings::default(), &memories, date(2026, 9, 8), None);
+        let prompt = system_prompt(
+            &AgentSettings::default(),
+            &crate::profile::Profile::default(),
+            &memories,
+            &at(9, 0, "UTC"),
+            None,
+        );
 
         assert!(prompt.contains(&format!("fact {}", MAX_MEMORIES + 4)), "the newest must survive");
         assert!(!prompt.contains("- fact 0\n"), "the oldest is the one to drop");
@@ -788,14 +895,26 @@ mod tests {
     #[test]
     fn memories_reach_the_prompt_as_standing_instructions() {
         let memories = vec![Memory::new("Plans the week on Sunday evening")];
-        let prompt = system_prompt(&AgentSettings::default(), &memories, date(2026, 9, 8), None);
+        let prompt = system_prompt(
+            &AgentSettings::default(),
+            &crate::profile::Profile::default(),
+            &memories,
+            &at(9, 0, "UTC"),
+            None,
+        );
         assert!(prompt.contains("Plans the week on Sunday evening"));
     }
 
     #[test]
     fn blank_context_and_instructions_add_no_empty_sections() {
         let s = AgentSettings { instructions: "   \n ".into(), ..Default::default() };
-        let prompt = system_prompt(&s, &[], date(2026, 9, 8), Some("  "));
+        let prompt = system_prompt(
+            &s,
+            &crate::profile::Profile::default(),
+            &[],
+            &at(9, 0, "UTC"),
+            Some("  "),
+        );
         assert!(!prompt.contains("---"), "whitespace is not instructions");
         assert!(!prompt.contains("currently looking at"), "whitespace is not context");
         assert!(prompt.starts_with("You are the assistant"));

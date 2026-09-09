@@ -62,6 +62,7 @@ import type {
   RoleInfo,
   SearchHit,
   SearchKind,
+  Profile,
   Note,
   NoteId,
   NoteQuery,
@@ -437,6 +438,16 @@ export const api = {
     limit: number,
     kind: SearchKind | null = null,
   ) => invoke<SearchHit[]>('search', { query, journalId, kind, limit }),
+
+  /**
+   * Who the vault belongs to.
+   *
+   * Read into every prompt the assistant sends. Written only from Settings:
+   * there is no tool for it, deliberately, because a fact that changes is a
+   * memory and this is for the ones that do not.
+   */
+  profile: () => invoke<Profile>('profile'),
+  saveProfile: (profile: Profile) => invoke<Profile>('save_profile', { profile }),
 
   notes: (query: NoteQuery = {}) => invoke<NoteSummary[]>('list_notes', { query }),
   note: (id: NoteId) => invoke<Note>('get_note', { id }),

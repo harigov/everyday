@@ -109,6 +109,7 @@ mod journals;
 mod library;
 mod notes;
 mod pool;
+mod profile;
 mod purpose;
 mod tasks;
 mod trackers;

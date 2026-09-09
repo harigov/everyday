@@ -34,6 +34,7 @@ use crate::library::{
 };
 use crate::model::{Attachment, Entry, Journal, Location, MediaKind};
 use crate::note::Note;
+use crate::profile::Profile;
 use crate::purpose::{Goal, GoalStatus, Purpose, Role as LifeRole};
 use crate::richtext::{MEDIA_NODE, RichDoc};
 use crate::store::notes::{NoteQuery, NoteSort};
@@ -70,6 +71,7 @@ pub fn run_all(store: &dyn JournalStore) {
     garbage_collection_keeps_referenced_blobs(store);
     stats_reflect_contents(store);
     unicode_survives_a_round_trip(store);
+    the_owner_round_trips_and_starts_empty(store);
 
     // The task domain is optional. A backend that has one must implement all
     // of it, so this is run whenever `tasks()` answers, and skipped -- with a
@@ -3398,4 +3400,44 @@ fn unicode_survives_a_note_round_trip(store: &dyn JournalStore) {
     assert_eq!(back.tags, vec!["தமிழ்".to_string()]);
     assert_eq!(back.body.plain_text().trim(), "நீரில் நீந்துகிறது");
     n.delete_note(note.id).expect("delete_note");
+}
+
+/// The one row that says whose vault this is.
+///
+/// Part of the base battery rather than an optional suite, because every
+/// backend must answer it: the default on the trait says "nothing filled in",
+/// which is a real answer, and a backend that cannot store one has to say so
+/// rather than silently forgetting what was typed.
+fn the_owner_round_trips_and_starts_empty(store: &dyn JournalStore) {
+    let blank = store.profile().expect("a fresh store still has an answer");
+    assert!(blank.is_empty(), "nobody has said who they are yet");
+
+    let mine = Profile {
+        first_name: "Hari".into(),
+        last_name: "Govardhanam".into(),
+        born: Some(date(1985, 3, 14)),
+        gender: "male".into(),
+        location: "Seattle".into(),
+        about: "Software, two children, sailing at weekends".into(),
+        updated_at: Some(Timestamp::now()),
+    };
+    match store.put_profile(&mine) {
+        Ok(()) => {}
+        // A backend written before this existed says so rather than pretending.
+        Err(e) if e.code() == "unsupported" => {
+            eprintln!("  (backend stores no profile; skipping the owner)");
+            return;
+        }
+        Err(e) => panic!("put_profile: {e}"),
+    }
+
+    assert_eq!(store.profile().unwrap(), mine, "every field must survive the round trip");
+
+    // Idempotent, and a second write replaces rather than adding a row.
+    store.put_profile(&mine).expect("put_profile again");
+    assert_eq!(store.profile().unwrap(), mine);
+
+    // Emptied by hand is emptied, not reverted to what was there before.
+    store.put_profile(&Profile::default()).expect("clearing the profile");
+    assert!(store.profile().unwrap().is_empty(), "clearing it must actually clear it");
 }

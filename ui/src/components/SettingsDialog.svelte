@@ -24,6 +24,7 @@
   import { app } from '../lib/state.svelte'
   import { tray } from '../lib/tray.svelte'
   import AgentPanel from './AgentPanel.svelte'
+  import ProfilePanel from './ProfilePanel.svelte'
   import SharePanel from './SharePanel.svelte'
   import Icon from './Icon.svelte'
   import type { IconName } from '../lib/icons'
@@ -72,6 +73,7 @@
 
   const TABS: { id: SettingsTab; label: string; icon: IconName }[] = [
     { id: 'general', label: 'General', icon: 'settings' },
+    { id: 'profile', label: 'You', icon: 'star' },
     { id: 'assistant', label: 'Assistant', icon: 'sparkle' },
     { id: 'vault', label: 'Vault', icon: 'lock' },
   ]
@@ -167,6 +169,8 @@
     <div class="body scroll">
       {#if tab === 'assistant'}
         <AgentPanel />
+      {:else if tab === 'profile'}
+        <ProfilePanel />
       {:else if tab === 'general'}
         <section>
           <span class="eyebrow">Appearance</span>

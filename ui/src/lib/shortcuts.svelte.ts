@@ -602,6 +602,14 @@ export const ACTIONS: Binding[] = [
     run: () => panels.openSettings(),
   },
   {
+    label: 'About you',
+    group: 'Everywhere',
+    keywords: ['profile', 'name', 'birthday', 'me', 'owner'],
+    icon: 'star',
+    when: () => app.screen === 'main',
+    run: () => panels.openSettings('profile'),
+  },
+  {
     label: 'Habits',
     group: 'Overview',
     keywords: ['streak', 'tracker', 'heatmap'],

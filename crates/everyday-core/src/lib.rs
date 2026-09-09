@@ -66,6 +66,7 @@ pub mod library;
 pub mod lockfile;
 pub mod model;
 pub mod note;
+pub mod profile;
 pub mod purpose;
 pub mod richtext;
 pub mod search;
@@ -92,6 +93,7 @@ pub use library::{
 };
 pub use model::{Attachment, Entry, EntrySummary, Journal, Location, MediaKind, Weather};
 pub use note::{Note, NoteSummary};
+pub use profile::Profile;
 pub use purpose::{
     Goal, GoalActivity, GoalStatus, Purpose, PurposeMinutes, Role, RoleEventMinutes,
 };

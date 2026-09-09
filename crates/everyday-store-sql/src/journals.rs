@@ -60,6 +60,14 @@ impl JournalStore for SqlStore {
         Some(self)
     }
 
+    fn profile(&self) -> Result<everyday_core::profile::Profile> {
+        self.read_profile()
+    }
+
+    fn put_profile(&self, profile: &everyday_core::profile::Profile) -> Result<()> {
+        self.write_profile(profile)
+    }
+
     // ---- journals -------------------------------------------------------
 
     fn list_journals(&self) -> Result<Vec<Journal>> {

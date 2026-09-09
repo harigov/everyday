@@ -44,6 +44,7 @@ import type {
   SyncReport,
   Entry,
   Note,
+  Profile,
   NoteQuery,
   NoteSummary,
   EntryQuery,
@@ -1726,6 +1727,23 @@ function summarize(e: Entry): EntrySummary {
   }
 }
 
+/**
+ * Who the demo vault belongs to.
+ *
+ * Filled in, unlike a real new vault, so the assistant tab and the prompt it
+ * describes can be seen doing something on `make ui`.
+ */
+let profile: Profile = {
+  firstName: 'Sam',
+  lastName: 'Weatherby',
+  born: '1988-06-02',
+  gender: 'they/them',
+  location: 'Lisbon',
+  about:
+    'Freelance illustration, one daughter, learning to sail. Trying to swim three times a week.',
+  updatedAt: null,
+}
+
 /** The heading a note shows: its title, else its first line. */
 function noteTitle(n: Note): string {
   if (n.title.trim()) return n.title.trim()
@@ -2018,6 +2036,16 @@ export const mockInvoke = async <T>(
       const at = notes.findIndex((n) => n.id === args.id)
       if (at >= 0) notes.splice(at, 1)
       return undefined as T
+    }
+
+    case 'profile':
+      requireUnlocked()
+      return profile as T
+
+    case 'save_profile': {
+      requireUnlocked()
+      profile = { ...(args.profile as Profile), updatedAt: new Date().toISOString() }
+      return profile as T
     }
 
     case 'note_tags':

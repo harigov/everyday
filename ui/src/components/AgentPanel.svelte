@@ -56,6 +56,22 @@
     if (!draft && agent.settings) draft = structuredClone($state.snapshot(agent.settings))
   })
 
+  const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+
+  /**
+   * Every zone the platform knows, with this machine's first if it is not
+   * already in the list.
+   *
+   * `supportedValuesOf` is in every engine this application runs in; the
+   * fallback is a short list rather than an empty picker, because a select
+   * with one option in it reads as broken.
+   */
+  const ZONES: string[] = (() => {
+    const of = (Intl as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf
+    const all = of ? of('timeZone') : ['UTC', localZone]
+    return [...new Set([localZone, ...all])].sort()
+  })()
+
   /** Common endpoints, so the two local ones are not a thing to look up. */
   const PRESETS = [
     { label: 'OpenAI', url: '' },
@@ -226,6 +242,25 @@
       </label>
       <p class="hint">
         How many times it may call a tool before giving up on one request. A ceiling, not a target.
+      </p>
+    </section>
+
+    <section>
+      <span class="eyebrow">Your time zone</span>
+      <select
+        class="field"
+        value={draft.timezone ?? ''}
+        onchange={(e) => (draft!.timezone = e.currentTarget.value || null)}
+      >
+        <option value="">This computer's ({localZone})</option>
+        {#each ZONES as zone (zone)}
+          <option value={zone}>{zone}</option>
+        {/each}
+      </select>
+      <p class="hint">
+        Where <em>you</em> are, which is not always where the vault is. A vault served from a machine
+        under a desk has that machine's clock, and “seven in the morning” has to mean seven where you
+        are.
       </p>
     </section>
 

@@ -42,6 +42,7 @@ use crate::id::{
 use crate::library::{Item, ItemStatus, Kind, KindCount, LibraryStats, LogEntry, default_kinds};
 use crate::model::{Entry, EntrySummary, Journal};
 use crate::note::{Note, NoteSummary};
+use crate::profile::Profile;
 use crate::purpose::{Goal, GoalActivity, PurposeMinutes, Role, RoleEventMinutes, suggested_roles};
 use crate::search::{SearchHit, SearchIndex, SearchScope};
 use crate::store::agent::{AgentStore, ConversationQuery};
@@ -1882,6 +1883,27 @@ impl Vault {
     pub fn delete_memory(&self, id: MemoryId) -> Result<()> {
         self.writable()?;
         self.with_agent(|a| a.delete_memory(id))
+    }
+
+    // ---- the owner ------------------------------------------------------
+
+    /// Who this vault belongs to. Never fails for want of a profile: an
+    /// unfilled one is the answer.
+    pub fn profile(&self) -> Result<Profile> {
+        self.read(|u| u.store.profile())
+    }
+
+    /// Write the profile.
+    ///
+    /// There is deliberately no tool for this. Facts that change are what
+    /// [`Memory`] is for; this is the handful that do not, and they are typed
+    /// in Settings once. See [`crate::profile`].
+    pub fn save_profile(&self, profile: &Profile) -> Result<()> {
+        self.writable()?;
+        profile.validate()?;
+        let mut stamped = profile.clone();
+        stamped.updated_at = Some(Timestamp::now());
+        self.write(|u| u.store.put_profile(&stamped))
     }
 
     // ---- notes ----------------------------------------------------------

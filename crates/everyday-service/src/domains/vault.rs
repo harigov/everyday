@@ -9,6 +9,7 @@ use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult};
 use crate::service::{Service, blocking};
 use everyday_core::VaultStatus;
+use everyday_core::profile::Profile;
 use everyday_core::store::StoreStats;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -33,6 +34,36 @@ pub struct ChangePassword {
 #[serde(rename_all = "camelCase")]
 pub struct AutoLock {
     pub seconds: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveProfile {
+    pub profile: Profile,
+}
+
+/// Who this vault belongs to.
+///
+/// Under `Journals` rather than `Agent`, and read-write by hand rather than
+/// by any tool. The assistant reads it into every prompt, but it is not the
+/// assistant's: a birthday is a calendar's business and a location is the
+/// weather's, when either of those exists. See `everyday_core::profile` for
+/// why a fact that changes is a memory instead.
+async fn profile(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Profile> {
+    let vault = svc.require()?;
+    blocking(move || Ok(vault.profile()?)).await
+}
+
+async fn save_profile(svc: Arc<Service>, _ctx: Ctx, args: SaveProfile) -> CommandResult<Profile> {
+    let vault = svc.require()?;
+    blocking(move || {
+        vault.save_profile(&args.profile)?;
+        // Read back rather than echoing what was sent: the vault stamps
+        // `updated_at`, and a client that drew what it sent would show a
+        // profile that had not been saved yet as though it had.
+        Ok(vault.profile()?)
+    })
+    .await
 }
 
 async fn status(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<VaultStatus> {
@@ -203,6 +234,18 @@ pub static COMMANDS: &[crate::command::Command] = &[
         name: "poll_auto_lock", scope: Journals, effect: Write,
         args: Nothing, returns: "boolean", signature: &[],
         run: poll_auto_lock,
+    },
+    command! {
+        name: "profile", scope: Journals, effect: Read,
+        args: Nothing, returns: "Profile", signature: &[],
+        run: profile,
+    },
+    command! {
+        name: "save_profile", scope: Journals, effect: Write,
+        change: Settings / Updated,
+        args: SaveProfile, returns: "Profile",
+        signature: &[("profile", "Profile", true)],
+        run: save_profile,
     },
     command! {
         name: "vault_stats", scope: Journals, effect: Read,

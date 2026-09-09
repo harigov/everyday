@@ -400,6 +400,28 @@ export interface NoteSummary {
   updatedAt: string
 }
 
+/**
+ * Who the vault belongs to.
+ *
+ * The handful of things that do not change. Facts that do -- a move, a new
+ * job -- are what the assistant's memory is for, and it writes those itself.
+ * Nothing writes this: it is typed here, by hand, once. Read into every
+ * prompt, which is why the field beneath it says so.
+ */
+export interface Profile {
+  firstName: string
+  lastName: string
+  /** `YYYY-MM-DD`. The age in the prompt is computed from it. */
+  born?: string | null
+  /** Free text, not a closed set. Nothing branches on the value. */
+  gender: string
+  /** Roughly where they live. A city is the useful grain. */
+  location: string
+  /** Anything else worth knowing, in their own words. */
+  about: string
+  updatedAt?: string | null
+}
+
 /** How a note list is ordered. Fewer choices than an entry list has. */
 export type NoteSort = 'updatedDesc' | 'createdDesc' | 'titleAsc'
 
@@ -1425,6 +1447,15 @@ export interface AgentSettings {
   maxSteps: number
   /** Whether the assistant may write memories. */
   remember: boolean
+  /**
+   * The person's own IANA time zone. `null` means this machine's.
+   *
+   * Here rather than read from the host because the host may not be where the
+   * person is: a vault served from a machine under a desk has that machine's
+   * clock, and a routine set for seven in the morning has to mean seven where
+   * the person is.
+   */
+  timezone?: string | null
   /** Whether a key is stored. Never the key. */
   hasKey: boolean
 }

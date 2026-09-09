@@ -52,6 +52,7 @@ import type {
   NoteId,
   NoteQuery,
   NoteSummary,
+  Profile,
   Project,
   ProjectId,
   ProviderInfo,
@@ -185,6 +186,7 @@ export interface Commands {
   newTracker: { args: { name: string; kind: TrackerKind }; result: Tracker }
   noteTags: { args: Record<string, never>; result: string[] }
   pollAutoLock: { args: Record<string, never>; result: boolean }
+  profile: { args: Record<string, never>; result: Profile }
   runTool: {
     args: { name: string; arguments?: unknown; confirmDestructive?: boolean }
     result: unknown
@@ -204,6 +206,7 @@ export interface Commands {
   saveMemory: { args: { memory: Memory }; result: Memory[] }
   saveNote: { args: { note: Note; expect?: string | null }; result: void }
   saveNoteForce: { args: { note: Note }; result: void }
+  saveProfile: { args: { profile: Profile }; result: Profile }
   saveProject: { args: { project: Project }; result: void }
   saveReading: { args: { reading: Reading }; result: void }
   saveRole: { args: { role: Role }; result: void }
@@ -319,6 +322,7 @@ export const COMMAND_NAMES = {
   newTracker: 'new_tracker',
   noteTags: 'note_tags',
   pollAutoLock: 'poll_auto_lock',
+  profile: 'profile',
   runTool: 'run_tool',
   saveAgentSettings: 'save_agent_settings',
   saveBlock: 'save_block',
@@ -335,6 +339,7 @@ export const COMMAND_NAMES = {
   saveMemory: 'save_memory',
   saveNote: 'save_note',
   saveNoteForce: 'save_note_force',
+  saveProfile: 'save_profile',
   saveProject: 'save_project',
   saveReading: 'save_reading',
   saveRole: 'save_role',
@@ -451,6 +456,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'new_tracker',
   'note_tags',
   'poll_auto_lock',
+  'profile',
   'run_tool',
   'save_agent_settings',
   'save_block',
@@ -467,6 +473,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_memory',
   'save_note',
   'save_note_force',
+  'save_profile',
   'save_project',
   'save_reading',
   'save_role',
@@ -549,6 +556,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_memory',
   'save_note',
   'save_note_force',
+  'save_profile',
   'save_project',
   'save_reading',
   'save_role',
@@ -610,6 +618,7 @@ export const CHANGE_KINDS: Readonly<Record<string, string>> = {
   save_memory: 'memory',
   save_note: 'note',
   save_note_force: 'note',
+  save_profile: 'settings',
   save_project: 'project',
   save_reading: 'reading',
   save_role: 'role',

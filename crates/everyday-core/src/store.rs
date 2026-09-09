@@ -456,6 +456,29 @@ pub trait JournalStore: Send + Sync {
         None
     }
 
+    // ---- the owner ------------------------------------------------------
+
+    /// Who this vault belongs to.
+    ///
+    /// On the base trait rather than behind an accessor, and never an
+    /// `Option`: every vault has an owner, and a vault that could not say who
+    /// would be one whose assistant had to guess. An unfilled profile is a
+    /// perfectly good answer and is the default -- the same argument
+    /// [`agent::AgentStore::settings`] makes about an assistant that has
+    /// never been configured.
+    ///
+    /// The default here is for backends written before this existed: they
+    /// answer "nothing filled in" and refuse to remember anything, which is
+    /// honest and keeps them compiling.
+    fn profile(&self) -> Result<crate::profile::Profile> {
+        Ok(crate::profile::Profile::default())
+    }
+
+    fn put_profile(&self, profile: &crate::profile::Profile) -> Result<()> {
+        let _ = profile;
+        Err(Error::Unsupported("storing a profile"))
+    }
+
     // ---- journals -------------------------------------------------------
 
     fn list_journals(&self) -> Result<Vec<Journal>>;
