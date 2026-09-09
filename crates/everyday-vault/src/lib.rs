@@ -1158,6 +1158,296 @@ mod tests {
     }
 
     #[test]
+    fn the_assistant_can_file_a_project_and_see_where_the_week_went() {
+        // The whole point of the purpose domain, exercised through the tools
+        // a model actually has: name a role, name a goal, file one project
+        // under it, and read back where the hours went.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        let role = everyday_core::Role::new("Work");
+        vault.save_role(&role).unwrap();
+
+        let goal = call(
+            &vault,
+            "create_goal",
+            serde_json::json!({ "role_id": role.id.to_string(), "title": "Ship the rewrite" }),
+        );
+        let goal_id = goal["id"].as_str().unwrap().to_string();
+
+        let project = everyday_core::Project::new("The rewrite");
+        vault.save_project(&project).unwrap();
+        let task = {
+            let mut t = everyday_core::Task::new("write it");
+            t.project_id = Some(project.id);
+            vault.save_task(&t).unwrap();
+            t
+        };
+
+        // Filing the *project* is what attributes everything under it. One
+        // call rather than one per task, which is the whole argument for
+        // inheritance.
+        let filed = call(
+            &vault,
+            "set_purpose",
+            serde_json::json!({
+                "kind": "project",
+                "id": project.id.to_string(),
+                "goal_id": goal_id,
+            }),
+        );
+        assert_eq!(filed["action"], "filed");
+        assert_eq!(filed["name"], "The rewrite");
+
+        let day = jiff::civil::date(2026, 9, 14);
+        let at = day.at(9, 0, 0, 0).in_tz("UTC").unwrap().timestamp();
+        let block = everyday_core::TimeBlock::new(
+            everyday_core::BlockSubject::Task { id: task.id },
+            at,
+            120,
+            "UTC",
+        )
+        .of_kind(everyday_core::BlockKind::Actual);
+        vault.save_block(&block).unwrap();
+
+        let report = call(
+            &vault,
+            "time_by_role",
+            serde_json::json!({ "from": "2026-09-14", "to": "2026-09-14" }),
+        );
+        let rows = report["roles"].as_array().unwrap();
+        let work = rows
+            .iter()
+            .find(|r| r["role"] == "Work")
+            .unwrap_or_else(|| panic!("expected a Work row, got {report}"));
+        assert_eq!(work["minutes"], 120, "an hour under a task inherits its project's goal");
+
+        // ...and the goal itself reports it.
+        let goals = call(&vault, "list_goals", serde_json::json!({ "include_activity": true }));
+        assert_eq!(goals["goals"][0]["activity"]["minutes"], 120);
+        assert_eq!(goals["goals"][0]["role"], "Work");
+
+        // Unfiling puts it back where unattributed time goes, rather than
+        // leaving a pointer nothing resolves.
+        call(
+            &vault,
+            "set_purpose",
+            serde_json::json!({ "kind": "project", "id": project.id.to_string(), "clear": true }),
+        );
+        let after = call(
+            &vault,
+            "time_by_role",
+            serde_json::json!({ "from": "2026-09-14", "to": "2026-09-14" }),
+        );
+        let rows = after["roles"].as_array().unwrap();
+        assert!(rows.iter().all(|r| r["role"] != "Work"), "got {after}");
+        assert!(rows.iter().any(|r| r["role"] == "not filed" && r["minutes"] == 120));
+    }
+
+    #[test]
+    fn set_purpose_refuses_a_call_that_says_two_things_or_nothing() {
+        // Two would be a silent choice between them and none would be a
+        // call that looks like it worked and did nothing -- which is the
+        // worst outcome for a tool a model cannot see the effect of.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let project = everyday_core::Project::new("x");
+        vault.save_project(&project).unwrap();
+        let role = everyday_core::Role::new("Work");
+        vault.save_role(&role).unwrap();
+        let goal = everyday_core::Goal::new(role.id, "g");
+        vault.save_goal(&goal).unwrap();
+
+        let both = call_err(
+            &vault,
+            "set_purpose",
+            serde_json::json!({
+                "kind": "project",
+                "id": project.id.to_string(),
+                "goal_id": goal.id.to_string(),
+                "role_id": role.id.to_string(),
+            }),
+        );
+        assert!(both.contains("exactly one"), "got {both}");
+
+        let neither = call_err(
+            &vault,
+            "set_purpose",
+            serde_json::json!({ "kind": "project", "id": project.id.to_string() }),
+        );
+        assert!(neither.contains("exactly one"), "got {neither}");
+
+        // And a goal that does not exist is refused before anything is
+        // written, rather than filing the project under nothing.
+        let missing = call_err(
+            &vault,
+            "set_purpose",
+            serde_json::json!({
+                "kind": "project",
+                "id": project.id.to_string(),
+                "goal_id": everyday_core::GoalId::new().to_string(),
+            }),
+        );
+        assert!(!missing.is_empty());
+        assert_eq!(vault.project(project.id).unwrap().purpose, None);
+    }
+
+    #[test]
+    fn readings_can_be_lined_up_against_each_other_day_by_day() {
+        // The question this tool exists for: "pull up the days I spent time
+        // in the pool and tell me whether my mood improved the day after".
+        // `tracker_summary` cannot answer it -- it returns one number per
+        // day per tracker, already aggregated, with no way to walk two
+        // series against each other.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        let swim = everyday_core::Tracker::new("Swimming", everyday_core::TrackerKind::Amount)
+            .with_unit("min");
+        vault.save_tracker(&swim).unwrap();
+        let mut mood = everyday_core::Tracker::new("Mood", everyday_core::TrackerKind::Scale);
+        mood.scale_max = 10.0;
+        vault.save_tracker(&mood).unwrap();
+
+        // Swam on the 1st and the 5th; mood every day.
+        for day in [1, 5] {
+            call(
+                &vault,
+                "log_reading",
+                serde_json::json!({
+                    "tracker_id": swim.id.to_string(),
+                    "value": 60,
+                    "date": format!("2026-09-0{day}"),
+                }),
+            );
+        }
+        for (day, value) in [(1, 5), (2, 8), (3, 6), (4, 5), (5, 4), (6, 9)] {
+            call(
+                &vault,
+                "log_reading",
+                serde_json::json!({
+                    "tracker_id": mood.id.to_string(),
+                    "value": value,
+                    "date": format!("2026-09-0{day}"),
+                }),
+            );
+        }
+
+        let all = call(
+            &vault,
+            "list_readings",
+            serde_json::json!({ "from": "2026-09-01", "to": "2026-09-06" }),
+        );
+        assert_eq!(all["count"], 8);
+        // Every row names its tracker in words, so a model can reason about
+        // "swimming" rather than about a uuid.
+        let rows = all["readings"].as_array().unwrap();
+        assert!(rows.iter().any(|r| r["tracker"] == "Swimming"));
+        assert!(rows.iter().any(|r| r["tracker"] == "Mood"));
+
+        // One tracker at a time is what actually makes the comparison
+        // possible: two calls, two series, aligned on the date.
+        let swims = call(
+            &vault,
+            "list_readings",
+            serde_json::json!({
+                "tracker_id": swim.id.to_string(),
+                "from": "2026-09-01",
+                "to": "2026-09-06",
+            }),
+        );
+        let days: Vec<&str> = swims["readings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["date"].as_str().unwrap())
+            .collect();
+        assert_eq!(days, ["2026-09-01", "2026-09-05"]);
+
+        let moods = call(
+            &vault,
+            "list_readings",
+            serde_json::json!({
+                "tracker_id": mood.id.to_string(),
+                "from": "2026-09-01",
+                "to": "2026-09-06",
+            }),
+        );
+        let after: Vec<f64> = moods["readings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| matches!(r["date"].as_str(), Some("2026-09-02") | Some("2026-09-06")))
+            .map(|r| r["value"].as_f64().unwrap())
+            .collect();
+        assert_eq!(after, [8.0, 9.0], "the day after each swim is reachable");
+
+        // A reading logged for a past day carries no time of day, so an
+        // hour-of-day filter excludes it rather than averaging in a
+        // defaulted instant.
+        let timed = call(
+            &vault,
+            "list_readings",
+            serde_json::json!({ "from": "2026-09-01", "to": "2026-09-06", "timed_only": true }),
+        );
+        assert_eq!(timed["count"], 0, "a day written up later knows no minute");
+    }
+
+    #[test]
+    fn a_goal_reports_never_touched_rather_than_saying_nothing() {
+        // The most useful thing this domain can tell somebody, so it has to
+        // be said rather than left as an absent field a model will not
+        // mention.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let role = everyday_core::Role::new("Myself");
+        vault.save_role(&role).unwrap();
+        call(
+            &vault,
+            "create_goal",
+            serde_json::json!({ "role_id": role.id.to_string(), "title": "Write every week" }),
+        );
+
+        let goals = call(&vault, "list_goals", serde_json::json!({ "include_activity": true }));
+        assert_eq!(goals["goals"][0]["activity"]["last_touched"], "never");
+        // ...and nothing else is invented to fill the gap.
+        assert!(goals["goals"][0]["activity"].get("minutes").is_none());
+    }
+
+    #[test]
+    fn dropping_a_goal_is_not_finishing_it() {
+        // The distinction the whole status set exists for, checked through
+        // the tool: a completion date on something you gave up on would
+        // poison the one count anybody wants -- how many of the things you
+        // set out to do you actually did.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let role = everyday_core::Role::new("Work");
+        vault.save_role(&role).unwrap();
+        let made = call(
+            &vault,
+            "create_goal",
+            serde_json::json!({ "role_id": role.id.to_string(), "title": "Hire someone" }),
+        );
+        let id: everyday_core::GoalId = made["id"].as_str().unwrap().parse().unwrap();
+
+        call(
+            &vault,
+            "update_goal",
+            serde_json::json!({ "goal_id": id.to_string(), "status": "done" }),
+        );
+        assert!(vault.goal(id).unwrap().completed_at.is_some());
+
+        call(
+            &vault,
+            "update_goal",
+            serde_json::json!({ "goal_id": id.to_string(), "status": "dropped" }),
+        );
+        assert_eq!(vault.goal(id).unwrap().completed_at, None);
+        assert_eq!(vault.goal(id).unwrap().status, everyday_core::GoalStatus::Dropped);
+    }
+
+    #[test]
     fn a_reading_reports_the_value_that_was_stored_rather_than_the_one_asked_for() {
         // The vault clamps to the tracker's scale. If the tool echoed the
         // argument, the assistant would tell somebody it recorded a 99 when
@@ -1431,6 +1721,7 @@ mod tests {
                 "delete_task",
                 "delete_time_block",
                 "delete_item",
+                "delete_goal",
                 "forget",
             ]
         );
