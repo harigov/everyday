@@ -672,12 +672,13 @@ fn the_database_file_contains_no_readable_tracker_name() {
     let mut journal = Journal::new("Health");
     let tracker = Tracker::new("Sertraline", TrackerKind::Dose).with_unit("mg");
     let tracker_id = tracker.id;
-    journal.trackers.push(tracker);
+    journal.show(tracker_id);
 
     let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
     store.put_journal(&journal).unwrap();
+    store.put_tracker(&tracker).unwrap();
 
-    let mut reading = Reading::on(journal.id, tracker_id, a_day(14), 50.0);
+    let mut reading = Reading::on(tracker_id, a_day(14), 50.0).in_journal(journal.id);
     reading.note = "with breakfast".into();
     store.put_reading(&reading).unwrap();
     store.flush().unwrap();
@@ -702,7 +703,7 @@ fn readings_are_filtered_and_aggregated_by_the_same_window() {
     for (tracker, day, value) in
         [(pain, 1, 3.0), (pain, 1, 7.0), (pain, 2, 4.0), (dose, 1, 400.0), (dose, 5, 400.0)]
     {
-        store.put_reading(&Reading::on(journal.id, tracker, a_day(day), value)).unwrap();
+        store.put_reading(&Reading::on(tracker, a_day(day), value).in_journal(journal.id)).unwrap();
     }
 
     let window = ReadingQuery {
@@ -734,7 +735,7 @@ fn a_capped_query_caps_the_list_and_not_the_aggregate() {
     let journal = Journal::new("Health");
     let tracker = everyday_core::TrackerId::new();
     for value in [400.0, 400.0, 400.0] {
-        store.put_reading(&Reading::on(journal.id, tracker, a_day(1), value)).unwrap();
+        store.put_reading(&Reading::on(tracker, a_day(1), value).in_journal(journal.id)).unwrap();
     }
 
     let capped = ReadingQuery { limit: Some(1), ..Default::default() };
@@ -754,9 +755,9 @@ fn a_reading_that_never_knew_its_minute_says_so_after_a_round_trip() {
     let journal = Journal::new("Health");
     let tracker = everyday_core::TrackerId::new();
 
-    let undated = Reading::on(journal.id, tracker, a_day(1), 1.0);
+    let undated = Reading::on(tracker, a_day(1), 1.0).in_journal(journal.id);
     let at: jiff::Timestamp = "2026-03-01T07:30:00Z".parse().unwrap();
-    let timed = Reading::at(journal.id, tracker, at, "UTC", 45.0);
+    let timed = Reading::at(tracker, at, "UTC", 45.0).in_journal(journal.id);
     store.put_reading(&undated).unwrap();
     store.put_reading(&timed).unwrap();
 
@@ -775,7 +776,7 @@ fn a_reading_that_never_knew_its_minute_says_so_after_a_round_trip() {
 }
 
 #[test]
-fn deleting_a_journal_takes_its_readings_with_it() {
+fn deleting_a_journal_leaves_its_readings_and_only_drops_the_link() {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
     let mine = Journal::new("Health");
@@ -784,14 +785,24 @@ fn deleting_a_journal_takes_its_readings_with_it() {
     store.put_journal(&other).unwrap();
 
     let t = everyday_core::TrackerId::new();
-    store.put_reading(&Reading::on(mine.id, t, a_day(1), 1.0)).unwrap();
-    store.put_reading(&Reading::on(other.id, t, a_day(1), 1.0)).unwrap();
+    store.put_reading(&Reading::on(t, a_day(1), 1.0).in_journal(mine.id)).unwrap();
+    store.put_reading(&Reading::on(t, a_day(1), 1.0).in_journal(other.id)).unwrap();
 
     store.delete_journal(mine.id).unwrap();
 
+    // Both survive. A reading belongs to its tracker, which is a vault
+    // record; the journal is only where it happened to be ticked, and
+    // deleting the notebook you wrote in does not undo the run.
     let left = store.list_readings(&ReadingQuery::default()).unwrap();
-    assert_eq!(left.len(), 1, "the deleted journal's readings should be gone");
-    assert_eq!(left[0].journal_id, other.id, "and the other journal's should not");
+    assert_eq!(left.len(), 2, "readings outlive the journal they were logged in");
+
+    let orphaned = left.iter().find(|r| r.journal_id.is_none()).expect("one was detached");
+    assert_eq!(orphaned.value, 1.0);
+    // The clear column too, or the index would still find it by that journal.
+    let by_journal = ReadingQuery { journal_id: Some(mine.id), ..Default::default() };
+    assert!(store.list_readings(&by_journal).unwrap().is_empty());
+    // ...and the untouched one still names the journal it was ticked in.
+    assert!(left.iter().any(|r| r.journal_id == Some(other.id)));
 }
 
 #[test]
@@ -807,7 +818,7 @@ fn deleting_an_entry_keeps_its_readings_but_drops_the_link() {
     store.put_entry(&entry).unwrap();
 
     let t = everyday_core::TrackerId::new();
-    let reading = Reading::on(journal.id, t, a_day(1), 45.0).with_entry(entry.id);
+    let reading = Reading::on(t, a_day(1), 45.0).in_journal(journal.id).with_entry(entry.id);
     store.put_reading(&reading).unwrap();
 
     store.delete_entry(entry.id).unwrap();
@@ -826,9 +837,9 @@ fn deleting_a_tracker_takes_only_its_own_readings() {
     let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
     let journal = Journal::new("Health");
     let (gone, kept) = (everyday_core::TrackerId::new(), everyday_core::TrackerId::new());
-    store.put_reading(&Reading::on(journal.id, gone, a_day(1), 1.0)).unwrap();
-    store.put_reading(&Reading::on(journal.id, gone, a_day(2), 1.0)).unwrap();
-    store.put_reading(&Reading::on(journal.id, kept, a_day(1), 1.0)).unwrap();
+    store.put_reading(&Reading::on(gone, a_day(1), 1.0).in_journal(journal.id)).unwrap();
+    store.put_reading(&Reading::on(gone, a_day(2), 1.0).in_journal(journal.id)).unwrap();
+    store.put_reading(&Reading::on(kept, a_day(1), 1.0).in_journal(journal.id)).unwrap();
 
     assert_eq!(store.delete_readings_of(gone).unwrap(), 2);
     let left = store.list_readings(&ReadingQuery::default()).unwrap();
@@ -861,12 +872,14 @@ fn a_version_4_database_gains_the_readings_table_without_losing_entries() {
 
     let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
     assert_eq!(store.get_entry(entry.id).unwrap(), entry, "migrating must not disturb the journal");
-    // A journal written by the older build has no `trackers` key at all,
-    // which must deserialise as "none" rather than as a failure.
-    assert!(store.get_journal(journal.id).unwrap().trackers.is_empty());
+    // A journal written by the older build has neither key, and both must
+    // deserialise as "none" rather than as a failure.
+    let back = store.get_journal(journal.id).unwrap();
+    assert!(back.trackers.is_empty());
+    assert!(back.shown_trackers.is_empty());
 
     let t = everyday_core::TrackerId::new();
-    let reading = Reading::on(journal.id, t, a_day(1), 1.0);
+    let reading = Reading::on(t, a_day(1), 1.0).in_journal(journal.id);
     store.put_reading(&reading).unwrap();
     assert_eq!(store.get_reading(reading.id).unwrap(), reading);
 }

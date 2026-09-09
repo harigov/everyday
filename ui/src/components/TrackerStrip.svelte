@@ -13,7 +13,7 @@
   // the user's behalf is how a tracker fills up with readings nobody meant.
 
   import { app } from '../lib/state.svelte'
-  import { activeTrackers, dayValue, formatDay, formatValue } from '../lib/tracker'
+  import { dayValue, formatDay, formatValue, shownTrackers } from '../lib/tracker'
   import { tracking } from '../lib/tracking.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
@@ -26,7 +26,9 @@
 
   let { journalId, date }: { journalId: string; date: string } = $props()
 
-  const trackers = $derived(activeTrackers(app.journals.find((j) => j.id === journalId) ?? null))
+  const trackers = $derived(
+    shownTrackers(app.journals.find((j) => j.id === journalId) ?? null, tracking.trackers),
+  )
 
   /** The tracker whose panel is open, and which side it opens towards. */
   let open = $state<string | null>(null)
@@ -121,7 +123,7 @@
       {
         label: 'Show on the calendar',
         checked: tracker.onCalendar,
-        run: () => app.setTrackerOnCalendar(journalId, tracker.id, !tracker.onCalendar),
+        run: () => tracking.setOnCalendar(tracker.id, !tracker.onCalendar),
       },
     ])
   }

@@ -137,10 +137,107 @@ pub enum Aggregate {
 /// Zero to ten is the scale every clinician already asks in.
 pub const DEFAULT_SCALE_MAX: f64 = 10.0;
 
-/// A thing you have decided to record in a journal.
+/// How often a tracker is meant to happen.
 ///
-/// Lives in [`Journal::trackers`](crate::model::Journal::trackers), so
-/// "which journal" and "what does it track" are one record and one save.
+/// [`Tracker::target`] answers "how much, in a day" and cannot express the
+/// commonest habit there is: three times a week. That gap is not academic —
+/// a streak counted against a daily target reads every rest day as a
+/// failure, which is exactly the shape of habit tracking that makes people
+/// stop.
+///
+/// So a cadence is a count and a period, and the arithmetic it enables is
+/// deliberately small: how many periods in a row were *met*. Nothing here
+/// knows about calendars beyond a day being in a week; that lives in the
+/// interface, where the week's first day is already a setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Cadence {
+    /// How many times per period. Zero is meaningless and is rejected by
+    /// [`Cadence::new`], which is the only way to build one.
+    pub times: u32,
+    pub per: Period,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Period {
+    #[default]
+    Day,
+    Week,
+    Month,
+}
+
+impl Period {
+    pub const ALL: [Period; 3] = [Period::Day, Period::Week, Period::Month];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Period::Day => "day",
+            Period::Week => "week",
+            Period::Month => "month",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.as_str() == s)
+    }
+
+    /// Roughly how many days a period covers. For turning a window into a
+    /// number of periods, never for deciding which period a day is in —
+    /// that is a calendar question and the interface answers it.
+    pub fn days(self) -> u32 {
+        match self {
+            Period::Day => 1,
+            Period::Week => 7,
+            Period::Month => 30,
+        }
+    }
+}
+
+impl Cadence {
+    /// Build one, refusing the degenerate case.
+    ///
+    /// Zero times per anything is not a cadence, it is the absence of one —
+    /// and the absence of one is already spelled `None`. Letting it through
+    /// would make every period trivially met and every streak infinite.
+    pub fn new(times: u32, per: Period) -> Option<Self> {
+        (times > 0).then_some(Self { times, per })
+    }
+
+    pub fn daily() -> Self {
+        Self { times: 1, per: Period::Day }
+    }
+
+    /// Is a period with `hits` recordings in it met?
+    pub fn met(&self, hits: u32) -> bool {
+        hits >= self.times
+    }
+
+    /// How it reads in a sentence: "3× a week".
+    pub fn describe(&self) -> String {
+        if self.times == 1 {
+            match self.per {
+                Period::Day => "every day".into(),
+                Period::Week => "once a week".into(),
+                Period::Month => "once a month".into(),
+            }
+        } else {
+            format!("{}\u{00d7} a {}", self.times, self.per.as_str())
+        }
+    }
+}
+
+/// A thing you have decided to record.
+///
+/// A record of its own in the vault, like a library
+/// [`Kind`](crate::library::Kind) — not a field inside one journal. It was
+/// the latter until the purpose domain arrived, and the change is what lets
+/// a habit be the *measure* of a goal: "meditate daily" cannot belong to
+/// your work journal or your personal one, it belongs to you, and a habits
+/// view had to reach through every journal to find it.
+///
+/// Which journals draw its chip is a per-journal choice, held in
+/// [`Journal::shown_trackers`](crate::model::Journal::shown_trackers).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tracker {
@@ -179,6 +276,21 @@ pub struct Tracker {
     /// day, is a pin at an hour that means nothing.
     #[serde(default)]
     pub on_calendar: bool,
+    /// What this measures, if it measures a goal.
+    ///
+    /// A run tracker under "run 10k without stopping" is evidence the goal
+    /// is alive in a way no task can be: the goal has no work under it and
+    /// never will, and the only thing that says it is being pursued is that
+    /// the number keeps arriving.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<crate::purpose::Purpose>,
+    /// How often this is meant to happen, if it is a habit.
+    ///
+    /// `None` means it is not one — a dose is taken when it is taken and a
+    /// symptom is felt when it is felt, and neither has a streak. See
+    /// [`Cadence`] for why [`target`](Tracker::target) could not carry this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cadence: Option<Cadence>,
     /// Retired: kept for its history, gone from the day's chips.
     ///
     /// The alternative — deleting the tracker — would take a year of
@@ -233,11 +345,19 @@ impl Tracker {
             target: None,
             scale_max: DEFAULT_SCALE_MAX,
             on_calendar: false,
+            purpose: None,
+            cadence: None,
             archived: false,
             sort_order: 0,
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// Make this a habit, recorded `times` per `per`.
+    pub fn every(mut self, times: u32, per: Period) -> Self {
+        self.cadence = Cadence::new(times, per);
+        self
     }
 
     pub fn with_unit(mut self, unit: impl Into<String>) -> Self {
@@ -336,8 +456,15 @@ impl Tracker {
 #[serde(rename_all = "camelCase")]
 pub struct Reading {
     pub id: ReadingId,
-    /// The journal whose settings define [`tracker_id`](Reading::tracker_id).
-    pub journal_id: JournalId,
+    /// The journal whose page this was ticked on, if it was ticked on one.
+    ///
+    /// `None` for a reading logged from the Overview, or from the tray,
+    /// where there is no journal in view. It used to be required, because a
+    /// tracker was a field inside one journal and so every reading had one;
+    /// the tracker is a vault record now and this is provenance rather than
+    /// ownership — exactly what [`entry_id`](Reading::entry_id) already is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal_id: Option<JournalId>,
     pub tracker_id: TrackerId,
     /// The entry it was recorded beside, if there was one. Readings do not
     /// need an entry — logging a supplement should not oblige anyone to
@@ -370,12 +497,16 @@ fn utc() -> String {
 }
 
 impl Reading {
-    /// A reading filed under `date`, with no time of day.
-    pub fn on(journal_id: JournalId, tracker_id: TrackerId, date: Date, value: f64) -> Self {
+    /// A reading filed under `date`, with no time of day and no journal.
+    ///
+    /// Use [`in_journal`](Reading::in_journal) to say where it was ticked,
+    /// the way [`with_entry`](Reading::with_entry) says which entry it sat
+    /// beside. Neither is required.
+    pub fn on(tracker_id: TrackerId, date: Date, value: f64) -> Self {
         let now = Timestamp::now();
         Self {
             id: ReadingId::new(),
-            journal_id,
+            journal_id: None,
             tracker_id,
             entry_id: None,
             local_date: date,
@@ -390,15 +521,15 @@ impl Reading {
 
     /// A reading of something that happened at `at`, filed under the day
     /// `at` falls on in `tz`.
-    pub fn at(
-        journal_id: JournalId,
-        tracker_id: TrackerId,
-        at: Timestamp,
-        tz: &str,
-        value: f64,
-    ) -> Self {
+    pub fn at(tracker_id: TrackerId, at: Timestamp, tz: &str, value: f64) -> Self {
         let date = crate::model::local_date_in(at, tz);
-        Self { at: Some(at), tz: tz.to_string(), ..Self::on(journal_id, tracker_id, date, value) }
+        Self { at: Some(at), tz: tz.to_string(), ..Self::on(tracker_id, date, value) }
+    }
+
+    /// Record which journal's page this was ticked on.
+    pub fn in_journal(mut self, journal: JournalId) -> Self {
+        self.journal_id = Some(journal);
+        self
     }
 
     pub fn with_entry(mut self, entry: EntryId) -> Self {
@@ -431,6 +562,48 @@ pub fn format_number(v: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cadence_of_zero_is_refused_rather_than_stored() {
+        // Zero times per anything is not a cadence, it is the absence of
+        // one -- and the absence of one is already spelled `None`. Letting
+        // it through would make every period trivially met and every streak
+        // infinite, which is a habit tracker that congratulates you for
+        // doing nothing.
+        assert_eq!(Cadence::new(0, Period::Week), None);
+        assert_eq!(Cadence::new(1, Period::Week), Some(Cadence { times: 1, per: Period::Week }));
+    }
+
+    #[test]
+    fn a_period_is_met_at_the_count_and_not_before() {
+        let thrice = Cadence::new(3, Period::Week).expect("a real cadence");
+        assert!(!thrice.met(2));
+        assert!(thrice.met(3));
+        // More than asked for is still met: three runs a week does not
+        // become a failure because you went four times.
+        assert!(thrice.met(9));
+    }
+
+    #[test]
+    fn a_cadence_reads_as_a_sentence() {
+        assert_eq!(Cadence::daily().describe(), "every day");
+        assert_eq!(Cadence::new(1, Period::Week).unwrap().describe(), "once a week");
+        assert_eq!(Cadence::new(3, Period::Week).unwrap().describe(), "3\u{00d7} a week");
+    }
+
+    #[test]
+    fn a_reading_need_not_name_a_journal() {
+        // What the Overview's quick-track produces: a real reading of a
+        // vault-level tracker, logged from no journal page at all.
+        let date = jiff::civil::date(2026, 3, 1);
+        let r = Reading::on(TrackerId::new(), date, 60.0);
+        assert_eq!(r.journal_id, None);
+        assert_eq!(r.entry_id, None, "and no entry either");
+
+        let filed = r.clone().in_journal(JournalId::new());
+        assert!(filed.journal_id.is_some());
+        assert_eq!(filed.value, r.value, "saying where it was ticked changes nothing else");
+    }
 
     #[test]
     fn numbers_lose_their_trailing_zeroes() {
@@ -508,14 +681,13 @@ mod tests {
 
     #[test]
     fn an_undated_reading_has_no_minute_and_says_so() {
-        let j = JournalId::new();
         let t = TrackerId::new();
         let date = Date::constant(2026, 3, 14);
-        assert_eq!(Reading::on(j, t, date, 1.0).minute_of_day(), None);
+        assert_eq!(Reading::on(t, date, 1.0).minute_of_day(), None);
 
         // 07:30 in Berlin is 06:30 UTC; the reading knows which it means.
         let at: Timestamp = "2026-03-14T06:30:00Z".parse().unwrap();
-        let timed = Reading::at(j, t, at, "Europe/Berlin", 45.0);
+        let timed = Reading::at(t, at, "Europe/Berlin", 45.0);
         assert_eq!(timed.minute_of_day(), Some(7 * 60 + 30));
         assert_eq!(timed.local_date, date);
     }

@@ -33,7 +33,7 @@
 
 use crate::error::Result;
 use crate::id::{EntryId, JournalId, ReadingId, TrackerId};
-use crate::tracker::{Aggregate, Reading};
+use crate::tracker::{Aggregate, Reading, Tracker};
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -88,9 +88,10 @@ impl ReadingQuery {
     }
 
     pub fn matches(&self, r: &Reading) -> bool {
-        if let Some(j) = self.journal_id
-            && r.journal_id != j
-        {
+        // A reading with no journal never matches a journal filter, the
+        // same way an undated task falls outside a date window rather than
+        // inside every one of them.
+        if self.journal_id.is_some() && r.journal_id != self.journal_id {
             return false;
         }
         if !self.tracker_ids.is_empty() && !self.tracker_ids.contains(&r.tracker_id) {
@@ -211,8 +212,37 @@ impl TrackerDay {
     }
 }
 
-/// The persistence contract for readings. See the module docs.
+/// The persistence contract for trackers and their readings.
 pub trait TrackerStore: Send + Sync {
+    // ---- definitions ----------------------------------------------------
+
+    /// Every tracker in the vault, archived ones included. There are a
+    /// handful of these, so filtering is the caller's business.
+    fn list_trackers(&self) -> Result<Vec<Tracker>>;
+
+    fn get_tracker(&self, id: TrackerId) -> Result<Tracker>;
+
+    /// Insert or replace. Implementations must be idempotent.
+    fn put_tracker(&self, tracker: &Tracker) -> Result<()>;
+
+    /// Delete the definition and every reading it ever made, returning how
+    /// many readings went.
+    ///
+    /// Archiving is the other answer and the usual one; this is here because
+    /// a tracker added by mistake should be able to leave without a trace.
+    /// The two halves are one call so they cannot be half done.
+    fn delete_tracker(&self, id: TrackerId) -> Result<u64>;
+
+    /// Move every reading of `from` onto `into`, then delete `from`.
+    ///
+    /// The tidy-up for lazily created trackers: `#swim` on Monday and
+    /// `#swimming` on Friday are two records of the same thing, and the
+    /// answer has to keep both years of numbers. Returns how many readings
+    /// moved.
+    fn merge_trackers(&self, from: TrackerId, into: TrackerId) -> Result<u64>;
+
+    // ---- readings -------------------------------------------------------
+
     fn list_readings(&self, query: &ReadingQuery) -> Result<Vec<Reading>>;
 
     fn get_reading(&self, id: ReadingId) -> Result<Reading>;
@@ -224,15 +254,20 @@ pub trait TrackerStore: Send + Sync {
 
     /// Delete every reading of one tracker, returning how many went.
     ///
-    /// What "delete this tracker, and its history" means. Archiving is the
-    /// other answer and the usual one; this is here because a tracker added
-    /// by mistake should be able to leave without a trace.
+    /// The readings alone; [`delete_tracker`](TrackerStore::delete_tracker)
+    /// is what takes the definition with them.
     fn delete_readings_of(&self, tracker: TrackerId) -> Result<u64>;
 
-    /// Delete every reading in one journal. Part of the journal cascade: a
-    /// deleted journal takes its entries, and it has to take these too or
-    /// the next tracker to be created inherits a stranger's history.
-    fn delete_readings_in(&self, journal: JournalId) -> Result<u64>;
+    /// Clear the journal pointer on every reading recorded in one journal,
+    /// returning how many were changed.
+    ///
+    /// Part of the journal cascade, and deliberately *not* a delete any
+    /// more. A reading used to belong to the journal that defined its
+    /// tracker, so deleting the journal had to take it. Trackers are vault
+    /// records now: the reading belongs to the tracker, and the journal is
+    /// only where you happened to tick it. Deleting the notebook you wrote
+    /// in does not undo the run.
+    fn detach_readings_in(&self, journal: JournalId) -> Result<u64>;
 
     /// One row per tracker per day over the queried window.
     ///
@@ -253,6 +288,11 @@ pub fn reading_aad(id: ReadingId) -> Vec<u8> {
     format!("everyday.reading.v1:{id}").into_bytes()
 }
 
+/// Associated data binding a tracker definition's ciphertext to its row.
+pub fn tracker_aad(id: TrackerId) -> Vec<u8> {
+    format!("everyday.tracker.v1:{id}").into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,7 +303,7 @@ mod tests {
     }
 
     fn reading(journal: JournalId, tracker: TrackerId, d: i8, value: f64) -> Reading {
-        Reading::on(journal, tracker, day(d), value)
+        Reading::on(tracker, day(d), value).in_journal(journal)
     }
 
     #[test]
@@ -303,7 +343,7 @@ mod tests {
         let j = JournalId::new();
         let t = TrackerId::new();
         let at: Timestamp = "2026-03-01T08:00:00Z".parse().unwrap();
-        let rows = vec![reading(j, t, 1, 1.0), Reading::at(j, t, at, "UTC", 1.0)];
+        let rows = vec![reading(j, t, 1, 1.0), Reading::at(t, at, "UTC", 1.0).in_journal(j)];
 
         let all = ReadingQuery::default();
         assert_eq!(all.apply(rows.clone()).len(), 2);
@@ -345,7 +385,7 @@ mod tests {
         let j = JournalId::new();
         let t = TrackerId::new();
         let morning: Timestamp = "2026-03-01T08:00:00Z".parse().unwrap();
-        let rows = vec![Reading::at(j, t, morning, "UTC", 1.0), reading(j, t, 1, 2.0)];
+        let rows = vec![Reading::at(t, morning, "UTC", 1.0).in_journal(j), reading(j, t, 1, 2.0)];
         let sorted = ReadingQuery::default().apply(rows);
         assert_eq!(sorted[0].at, None);
         assert_eq!(sorted[1].at, Some(morning));

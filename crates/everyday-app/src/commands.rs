@@ -1510,10 +1510,9 @@ pub async fn put_blob(
 
 // ---- trackers and readings ----------------------------------------------
 //
-// The fourth domain. Definitions travel inside a `Journal` and are saved by
-// `save_journal`, so what is here is minting one -- which needs an id and a
-// clock the webview cannot be trusted with -- and everything to do with the
-// readings themselves.
+// Both halves are records now. `list_trackers` is where the one migration
+// that cannot be a SQL step runs, for the same reason `list_kinds` is where
+// the library is seeded: it is the first call the feature makes.
 
 /// Mint a tracker, without saving it.
 ///
@@ -1532,6 +1531,48 @@ pub fn new_tracker(
     let mut tracker = Tracker::new(name, kind);
     tracker.normalize();
     Ok(tracker)
+}
+
+/// Every tracker in the vault, moving any that a pre-v7 vault still keeps
+/// inside its journals on the way.
+///
+/// The move is here, in the first call the feature makes, rather than in
+/// `unlock`, and for the reason the library's seeding is in `list_kinds`: a
+/// vault whose owner never opens the journal never pays for it, and putting
+/// work on the unlock path makes every unlock slower for a thing that
+/// happens once. It runs at most once per vault -- see
+/// `Vault::migrate_journal_trackers`, which is idempotent by construction.
+#[tauri::command]
+pub async fn list_trackers(state: State<'_, AppState>) -> CommandResult<Vec<Tracker>> {
+    let vault = state.require()?;
+    blocking(move || {
+        if let Err(e) = vault.migrate_journal_trackers() {
+            // Not fatal. An unwritable vault cannot be migrated and can
+            // still be read; what it loses is the old definitions, which is
+            // a strip with no chips rather than an error over the window.
+            tracing::warn!(error = %e, "could not move the journals' trackers");
+        }
+        Ok(vault.trackers()?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn save_tracker(state: State<'_, AppState>, tracker: Tracker) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.save_tracker(&tracker)?)).await
+}
+
+/// Fold one tracker into another, keeping both histories, and answer how
+/// many readings moved.
+#[tauri::command]
+pub async fn merge_trackers(
+    state: State<'_, AppState>,
+    from: TrackerId,
+    into: TrackerId,
+) -> CommandResult<u64> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.merge_trackers(from, into)?)).await
 }
 
 #[tauri::command]
@@ -1568,11 +1609,11 @@ pub async fn tracker_days(
 #[tauri::command]
 pub async fn log_reading(
     state: State<'_, AppState>,
-    journal_id: JournalId,
     tracker_id: TrackerId,
     value: f64,
     date: jiff::civil::Date,
     at: Option<jiff::Timestamp>,
+    journal_id: Option<JournalId>,
     entry_id: Option<EntryId>,
 ) -> CommandResult<Reading> {
     let vault = state.require()?;
@@ -1586,10 +1627,13 @@ pub async fn log_reading(
         };
 
         let mut reading = match at {
-            Some(at) => Reading::at(journal_id, tracker_id, at, &tz, value),
-            None => Reading::on(journal_id, tracker_id, date, value),
+            Some(at) => Reading::at(tracker_id, at, &tz, value),
+            None => Reading::on(tracker_id, date, value),
         };
         reading.tz = tz;
+        // Both optional: a reading logged from the Overview, or from the
+        // tray, was ticked on no page at all.
+        reading.journal_id = journal_id;
         reading.entry_id = entry_id;
         vault.save_reading(&reading)?;
         // Read back rather than returned as written: the vault clamps the value
@@ -1613,17 +1657,13 @@ pub async fn delete_reading(state: State<'_, AppState>, id: ReadingId) -> Comman
     blocking(move || Ok(vault.delete_reading(id)?)).await
 }
 
-/// Remove a tracker from its journal along with every reading it made,
-/// returning how many went. Archiving is the non-destructive half and is an
-/// ordinary `save_journal`.
+/// Delete a tracker along with every reading it ever made, returning how
+/// many went. Archiving is the non-destructive half and is a `save_tracker`
+/// with the flag set.
 #[tauri::command]
-pub async fn delete_tracker(
-    state: State<'_, AppState>,
-    journal_id: JournalId,
-    tracker_id: TrackerId,
-) -> CommandResult<u64> {
+pub async fn delete_tracker(state: State<'_, AppState>, id: TrackerId) -> CommandResult<u64> {
     let vault = state.require()?;
-    blocking(move || Ok(vault.delete_tracker(journal_id, tracker_id)?)).await
+    blocking(move || Ok(vault.delete_tracker(id)?)).await
 }
 
 // ---- maintenance --------------------------------------------------------

@@ -23,6 +23,7 @@ import { app, errorMessage, handle, isLocked } from './state.svelte'
 import { todo } from './todo.svelte'
 import { TRAY_ORDER, tray } from './tray.svelte'
 import { durationMinutes, formatValue } from './tracker'
+import { tracking } from './tracking.svelte'
 import {
   MIN_BLOCK_MINUTES,
   SNAP_MINUTES,
@@ -438,10 +439,8 @@ class CalendarState {
    */
   get drawnTrackers(): Map<string, Tracker> {
     const out = new Map<string, Tracker>()
-    for (const journal of app.journals) {
-      for (const tracker of journal.trackers) {
-        if (tracker.onCalendar && !tracker.archived) out.set(tracker.id, tracker)
-      }
+    for (const tracker of tracking.trackers) {
+      if (tracker.onCalendar && !tracker.archived) out.set(tracker.id, tracker)
     }
     return out
   }

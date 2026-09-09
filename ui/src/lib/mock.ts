@@ -675,6 +675,42 @@ function fakeResults(query: string, limit: number): SearchResult[] {
   }))
 }
 
+// The vault's trackers, out of the journals that used to hold them.
+//
+// One of them measures a goal and carries a cadence, because a habits view
+// drawn against five daily checks looks finished when it is not: three runs
+// a week is the shape that actually needs the arithmetic.
+const trackers: Tracker[] = [
+  tracker('t-walk', 'Walk the dog', 'check', 'paw', '#16a34a', {
+    sortOrder: 0,
+    cadence: { times: 1, per: 'day' },
+  }),
+  tracker('t-vitd', 'Vitamin D', 'dose', 'tablet', '#f59e0b', {
+    unit: 'iu',
+    defaultValue: 1000,
+    sortOrder: 1,
+  }),
+  tracker('t-head', 'Headache', 'scale', 'bolt', '#e11d48', {
+    onCalendar: true,
+    sortOrder: 2,
+  }),
+  tracker('t-run', 'Run', 'amount', 'run', '#0284c7', {
+    unit: 'min',
+    defaultValue: 30,
+    target: 30,
+    onCalendar: true,
+    sortOrder: 3,
+    cadence: { times: 3, per: 'week' },
+    purpose: { type: 'goal', id: 'g-run' },
+  }),
+  tracker('t-read', 'Pages read', 'amount', 'book', '#4f46e5', {
+    unit: 'pages',
+    defaultValue: 20,
+    target: 20,
+    sortOrder: 4,
+  }),
+]
+
 const journals: Journal[] = [
   {
     id: 'j-daily',
@@ -683,31 +719,7 @@ const journals: Journal[] = [
     icon: '\u{1f342}',
     description: 'The ordinary days',
     sortOrder: 0,
-    trackers: [
-      tracker('t-walk', 'Walk the dog', 'check', 'paw', '#16a34a', { sortOrder: 0 }),
-      tracker('t-vitd', 'Vitamin D', 'dose', 'tablet', '#f59e0b', {
-        unit: 'iu',
-        defaultValue: 1000,
-        sortOrder: 1,
-      }),
-      tracker('t-head', 'Headache', 'scale', 'bolt', '#e11d48', {
-        onCalendar: true,
-        sortOrder: 2,
-      }),
-      tracker('t-run', 'Run', 'amount', 'run', '#0284c7', {
-        unit: 'min',
-        defaultValue: 30,
-        target: 30,
-        onCalendar: true,
-        sortOrder: 3,
-      }),
-      tracker('t-read', 'Pages read', 'amount', 'book', '#4f46e5', {
-        unit: 'pages',
-        defaultValue: 20,
-        target: 20,
-        sortOrder: 4,
-      }),
-    ],
+    shownTrackers: ['t-walk', 't-vitd', 't-head', 't-run', 't-read'],
     createdAt: iso(400),
     updatedAt: iso(1),
   },
@@ -718,7 +730,7 @@ const journals: Journal[] = [
     icon: '\u{2708}\u{fe0f}',
     description: 'Trips, trains and long walks',
     sortOrder: 1,
-    trackers: [],
+    shownTrackers: [],
     createdAt: iso(300),
     updatedAt: iso(9),
   },
@@ -729,7 +741,7 @@ const journals: Journal[] = [
     icon: '\u{1f4d6}',
     description: 'Books and the thoughts they caused',
     sortOrder: 2,
-    trackers: [],
+    shownTrackers: [],
     createdAt: iso(200),
     updatedAt: iso(20),
   },
@@ -2358,13 +2370,15 @@ export const mockInvoke = async <T>(
       const date = str(args.date)
       const today = day(0)
       const at = (args.at as string | null) ?? (date === today ? new Date().toISOString() : null)
-      const tracker = journals.flatMap((j) => j.trackers).find((t) => t.id === args.trackerId)
+      const tracker = trackers.find((t) => t.id === args.trackerId)
       const raw = Number(args.value)
       const value = clampReading(tracker, raw)
       const now = new Date().toISOString()
       const reading: Reading = {
         id: `r-${nextId++}`,
-        journalId: str(args.journalId),
+        // Both optional: a reading logged from the Overview or the tray was
+        // ticked on no page at all.
+        journalId: (args.journalId as string | null) ?? null,
         trackerId: str(args.trackerId),
         entryId: (args.entryId as string | null) ?? null,
         localDate: at ? localDayOf(at) : date,
@@ -2382,7 +2396,7 @@ export const mockInvoke = async <T>(
     case 'save_reading': {
       requireUnlocked()
       const r = structuredClone(args.reading as Reading)
-      const tracker = journals.flatMap((j) => j.trackers).find((t) => t.id === r.trackerId)
+      const tracker = trackers.find((t) => t.id === r.trackerId)
       r.value = clampReading(tracker, r.value)
       r.updatedAt = new Date().toISOString()
       const i = readings.findIndex((x) => x.id === r.id)
@@ -2398,13 +2412,50 @@ export const mockInvoke = async <T>(
       return undefined as T
     }
 
+    case 'list_trackers':
+      requireUnlocked()
+      return structuredClone(trackers) as T
+
+    case 'save_tracker': {
+      requireUnlocked()
+      const t = structuredClone(args.tracker as Tracker)
+      const at = trackers.findIndex((x) => x.id === t.id)
+      if (at >= 0) trackers[at] = t
+      else trackers.push(t)
+      return undefined as T
+    }
+
+    case 'merge_trackers': {
+      requireUnlocked()
+      const from = str(args.from)
+      const into = str(args.into)
+      let moved = 0
+      for (const r of readings) {
+        if (r.trackerId === from) {
+          r.trackerId = into
+          moved++
+        }
+      }
+      const at = trackers.findIndex((t) => t.id === from)
+      if (at >= 0) trackers.splice(at, 1)
+      // Every journal drawing the old chip draws the new one; left alone,
+      // the strip would silently stop showing anything.
+      for (const j of journals) {
+        if (!j.shownTrackers.includes(from)) continue
+        j.shownTrackers = j.shownTrackers.filter((id) => id !== from)
+        if (!j.shownTrackers.includes(into)) j.shownTrackers.push(into)
+      }
+      return moved as T
+    }
+
     case 'delete_tracker': {
       requireUnlocked()
-      const journal = journals.find((j) => j.id === args.journalId)
-      if (journal) journal.trackers = journal.trackers.filter((t) => t.id !== args.trackerId)
+      const id = str(args.id)
+      const at = trackers.findIndex((t) => t.id === id)
+      if (at >= 0) trackers.splice(at, 1)
       let gone = 0
       for (let i = readings.length - 1; i >= 0; i--) {
-        if (readings[i]!.trackerId === args.trackerId) {
+        if (readings[i]!.trackerId === id) {
           readings.splice(i, 1)
           gone++
         }

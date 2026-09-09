@@ -592,6 +592,65 @@ fn v7(d: Dialect) -> Vec<String> {
              )"
         ),
         "CREATE INDEX IF NOT EXISTS trackers_by_order ON trackers (sort_order, created_us)".into(),
+        // `readings`, rebuilt so a reading need not name a journal.
+        //
+        // Version 5 declared `journal_id` `NOT NULL` because a tracker was a
+        // field inside one journal's sealed record, so a reading always had
+        // one. Trackers are their own records from this version on, and a
+        // reading logged from the Overview -- from no journal page at all --
+        // has no journal to name. SQLite cannot drop a `NOT NULL`, so the
+        // column is widened the only way it can be.
+        //
+        // This is the one place in the file that does not merely add, and it
+        // is still idempotent, which is what the rest of the file's rule
+        // actually asks for. Replayed against a database where it has
+        // already run: the create is a no-op on a table that was renamed
+        // away and so is made afresh, the insert copies out of the current
+        // `readings`, the drop takes it, and the rename puts the copy back
+        // -- the same state again. The interrupted-halfway case cannot
+        // arise, because the whole step is one transaction and DDL is
+        // transactional in both engines.
+        //
+        // Postgres would accept `ALTER COLUMN ... DROP NOT NULL` and does
+        // not get it: one shape of the schema in both engines is worth more
+        // than one statement saved, and the drift guard below is what keeps
+        // that true.
+        format!(
+            "CREATE TABLE IF NOT EXISTS readings_v7 (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 journal_id  TEXT,
+                 tracker_id  TEXT    NOT NULL,
+                 entry_id    TEXT,
+                 local_date  TEXT    NOT NULL,
+                 at_us       {int},
+                 value       {real} NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )",
+            real = d.real()
+        ),
+        // Every column named on both sides, so a later reordering of one
+        // cannot silently shift the data into the wrong columns.
+        "INSERT INTO readings_v7
+             (id, journal_id, tracker_id, entry_id, local_date, at_us, value,
+              created_us, updated_us, data)
+         SELECT id, journal_id, tracker_id, entry_id, local_date, at_us, value,
+                created_us, updated_us, data
+         FROM readings"
+            .into(),
+        "DROP TABLE IF EXISTS readings".into(),
+        "ALTER TABLE readings_v7 RENAME TO readings".into(),
+        // Rebuilt after the copy rather than before it: a bulk insert into
+        // an unindexed table is one append per row instead of four B-tree
+        // updates.
+        "CREATE INDEX IF NOT EXISTS readings_by_tracker
+             ON readings (tracker_id, local_date, at_us)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS readings_by_day ON readings (local_date, at_us)".into(),
+        "CREATE INDEX IF NOT EXISTS readings_by_journal ON readings (journal_id, local_date)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS readings_by_entry ON readings (entry_id)".into(),
     ]
 }
 

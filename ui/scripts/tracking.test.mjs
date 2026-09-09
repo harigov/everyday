@@ -25,7 +25,7 @@ const server = await createServer({
   logLevel: 'error',
 })
 
-const { activeTrackers, dayValue, durationMinutes, formatDay, formatNumber, formatValue } =
+const { dayValue, durationMinutes, formatDay, formatNumber, formatValue, shownTrackers } =
   await server.ssrLoadModule('/src/lib/tracker.ts')
 
 let failed = 0
@@ -129,20 +129,35 @@ check(
 )
 
 // ── which trackers a day offers ─────────────────────────────────────────
+//
+// A tracker is a vault record and a journal names the ones it draws, so this
+// resolves ids against the vault's list. Three ways it can go wrong and
+// none of them throws: an id naming a tracker that has been deleted, one
+// naming an archived tracker, and an order that disagrees with the array.
 
-const journal = {
-  trackers: [
-    tracker({ id: 'b', name: 'Second', sortOrder: 2 }),
-    tracker({ id: 'a', name: 'First', sortOrder: 1 }),
-    tracker({ id: 'z', name: 'Retired', sortOrder: 0, archived: true }),
-  ],
-}
+const all = [
+  tracker({ id: 'b', name: 'Second', sortOrder: 2 }),
+  tracker({ id: 'a', name: 'First', sortOrder: 1 }),
+  tracker({ id: 'z', name: 'Retired', sortOrder: 0, archived: true }),
+]
+const journal = { shownTrackers: ['b', 'a', 'z'] }
+
 check(
   'the strip is in the arranged order, and archived ones have left it',
-  activeTrackers(journal).map((t) => t.id),
+  shownTrackers(journal, all).map((t) => t.id),
   ['a', 'b'],
 )
-check('no journal, no trackers', activeTrackers(null), [])
+check('no journal, no trackers', shownTrackers(null, all), [])
+check('a journal that shows nothing draws nothing', shownTrackers({ shownTrackers: [] }, all), [])
+
+// A stale id is the ordinary consequence of deleting a tracker: every
+// journal that showed it keeps the id, and the strip has to skip it rather
+// than fail to draw at all.
+check(
+  'an id naming a tracker that is gone is skipped, not an error',
+  shownTrackers({ shownTrackers: ['a', 'deleted', 'b'] }, all).map((t) => t.id),
+  ['a', 'b'],
+)
 
 await server.close()
 

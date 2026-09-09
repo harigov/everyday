@@ -484,13 +484,28 @@ export const api = {
 
   // ── The tracking domain ────────────────────────────────────────────
   //
-  // Available only when `status.capabilities.trackers` is true. Note the
-  // split: a tracker's *definition* is a field on its journal and is saved
-  // with `saveJournal`, so there is no `saveTracker` here. What is here is
-  // minting one and everything to do with the readings it produces.
+  // Available only when `status.capabilities.trackers` is true. Both halves
+  // are records: a definition is its own row, and which journals draw its
+  // chip is a list of ids on each journal.
 
-  /** Mints an unsaved tracker; fill it in and save the journal holding it. */
+  /** Mints an unsaved tracker; fill it in and pass it to `saveTracker`. */
   newTracker: (name: string, kind: TrackerKind) => invoke<Tracker>('new_tracker', { name, kind }),
+
+  /**
+   * Every tracker in the vault.
+   *
+   * Also where a vault written before trackers became records has its old
+   * definitions moved out of its journals — once, on the first call.
+   */
+  trackers: () => invoke<Tracker[]>('list_trackers'),
+  saveTracker: (tracker: Tracker) => invoke<void>('save_tracker', { tracker }),
+
+  /**
+   * Fold one tracker into another, keeping both histories, and answer how
+   * many readings moved. The tidy-up for a name typed two ways.
+   */
+  mergeTrackers: (from: TrackerId, into: TrackerId) =>
+    invoke<number>('merge_trackers', { from, into }),
 
   readings: (query: ReadingQuery) => invoke<Reading[]>('list_readings', { query }),
 
@@ -507,11 +522,12 @@ export const api = {
    * happened.
    */
   logReading: (opts: {
-    journalId: JournalId
     trackerId: TrackerId
     value: number
     date: string
     at?: string | null
+    /** Where it was ticked. Both absent for a reading logged from anywhere else. */
+    journalId?: JournalId | null
     entryId?: EntryId | null
   }) => invoke<Reading>('log_reading', opts),
 
@@ -520,12 +536,11 @@ export const api = {
   deleteReading: (id: ReadingId) => invoke<void>('delete_reading', { id }),
 
   /**
-   * Remove a tracker from its journal *and* every reading it ever made,
-   * returning how many went. Archiving — a flag on the definition, saved
-   * with the journal — is the non-destructive half of this pair.
+   * Delete a tracker *and* every reading it ever made, returning how many
+   * went. Archiving — a flag on the definition — is the non-destructive
+   * half of this pair, and the usual answer.
    */
-  deleteTracker: (journalId: JournalId, trackerId: TrackerId) =>
-    invoke<number>('delete_tracker', { journalId, trackerId }),
+  deleteTracker: (id: TrackerId) => invoke<number>('delete_tracker', { id }),
 
   // ── The assistant ──────────────────────────────────────────────────
   //

@@ -16,6 +16,7 @@ import { SEP, tidyMenu, type MenuItem } from './menu'
 import { app } from './state.svelte'
 import { calendar, DEFAULT_BLOCK_MINUTES, type Slot } from './calendar.svelte'
 import { library } from './library.svelte'
+import { tracking } from './tracking.svelte'
 import { purpose, samePurpose } from './purpose.svelte'
 import { todo } from './todo.svelte'
 import { addDays, minutesBetween, offsetInDay, todayIso } from './time'
@@ -470,7 +471,9 @@ export function readingMenu(reading: Reading, tracker: Tracker): MenuItem[] {
         app.setSection('journal')
         // The journal first: opening an entry the list is not showing leaves
         // the list pointing at some other day's row.
-        await app.selectJournal(reading.journalId)
+        // A reading logged from no page has no journal to select, and the
+        // entry pointer is what this row is offered for anyway.
+        if (reading.journalId) await app.selectJournal(reading.journalId)
         await app.openEntry(reading.entryId!)
       },
     },
@@ -486,7 +489,7 @@ export function readingMenu(reading: Reading, tracker: Tracker): MenuItem[] {
     {
       label: `Hide “${tracker.name}” from the calendar`,
       icon: 'hidden',
-      run: () => app.setTrackerOnCalendar(reading.journalId, tracker.id, false),
+      run: () => tracking.setOnCalendar(tracker.id, false),
     },
   ])
 }

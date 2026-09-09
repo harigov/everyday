@@ -7,6 +7,7 @@
   import { calendar } from './lib/calendar.svelte'
   import { library } from './lib/library.svelte'
   import { purpose } from './lib/purpose.svelte'
+  import { tracking } from './lib/tracking.svelte'
   import { tray } from './lib/tray.svelte'
   import { agent } from './lib/agent.svelte'
   import { panels } from './lib/panels.svelte'
@@ -69,7 +70,12 @@
   // group-by, and every purpose chip — so loading on first use would show
   // up as a submenu that is empty the first time it is opened.
   $effect(() => {
-    if (app.screen === 'main') void purpose.load()
+    if (app.screen !== 'main') return
+    void purpose.load()
+    // The vault's trackers, and — on a vault written before they became
+    // records — the one migration that cannot be a SQL step, since the old
+    // definitions are inside a sealed journal payload no migration can read.
+    void tracking.load()
   })
 
   // Each app tints the window with the accent of whatever it has selected:

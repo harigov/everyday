@@ -126,9 +126,9 @@ fn an_untimed_reading_sorts_before_a_timed_one_on_the_same_day() {
     let tracker = TrackerId::new();
     let day = jiff::civil::date(2026, 3, 14);
 
-    let mut timed = Reading::on(journal.id, tracker, day, 2.0);
+    let mut timed = Reading::on(tracker, day, 2.0).in_journal(journal.id);
     timed.at = Some("2026-03-14T09:00:00Z".parse().unwrap());
-    let untimed = Reading::on(journal.id, tracker, day, 1.0);
+    let untimed = Reading::on(tracker, day, 1.0).in_journal(journal.id);
 
     store.put_reading(&timed).unwrap();
     store.put_reading(&untimed).unwrap();
@@ -147,8 +147,11 @@ fn an_untimed_reading_sorts_before_a_timed_one_on_the_same_day() {
     assert_eq!(days[0].sum, 3.0);
     assert_eq!(days[0].first_at, timed.at, "the earliest *known* instant, ignoring the unknown");
 
-    // Deleting the journal takes its readings with it, which is the cascade
-    // the store owns rather than the database.
+    // Deleting the journal detaches its readings rather than taking them,
+    // which is the cascade the store owns rather than the database. They
+    // belong to the tracker; the journal is only where they were ticked.
     store.delete_journal(journal.id).unwrap();
-    assert!(store.list_readings(&ReadingQuery::default()).unwrap().is_empty());
+    let left = store.list_readings(&ReadingQuery::default()).unwrap();
+    assert_eq!(left.len(), 2, "readings outlive the journal they were logged in");
+    assert!(left.iter().all(|r| r.journal_id.is_none()), "and the link is cleared on both");
 }

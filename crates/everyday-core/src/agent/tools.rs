@@ -1213,13 +1213,10 @@ fn run_overview(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
 
     if vault.supports_trackers() {
         let trackers: Vec<Value> = vault
-            .journals()?
+            .trackers()?
             .iter()
-            .flat_map(|j| {
-                j.active_trackers()
-                    .map(|t| json!({ "id": t.id.to_string(), "name": t.name }))
-                    .collect::<Vec<_>>()
-            })
+            .filter(|t| !t.archived)
+            .map(|t| json!({ "id": t.id.to_string(), "name": t.name }))
             .collect();
         m.insert("trackers".into(), json!(trackers));
     }
@@ -1910,51 +1907,33 @@ fn run_delete_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 // ---- tracking -----------------------------------------------------------
 
 fn run_list_trackers(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
-    let mut rows = Vec::new();
-    for journal in ctx.vault.journals()? {
-        for t in journal.active_trackers() {
-            rows.push(json!({
+    let rows: Vec<Value> = ctx
+        .vault
+        .trackers()?
+        .into_iter()
+        .filter(|t| !t.archived)
+        .map(|t| {
+            json!({
                 "id": t.id.to_string(),
                 "name": t.name,
-                "journal_id": journal.id.to_string(),
-                "journal": journal.name,
-                "kind": format!("{:?}", t.kind).to_lowercase(),
+                "kind": t.kind.as_str(),
                 "unit": t.unit,
                 "scale_max": t.scale_max,
-            }));
-        }
-    }
-    Ok(json!({ "count": rows.len(), "trackers": rows }))
-}
-
-/// Find which journal defines a tracker.
-///
-/// Needed because a [`Reading`] carries both ids and the definitions live
-/// inside journal records rather than in a table of their own — so a tool
-/// handed only a tracker id has to go looking. See
-/// [`tracker`](crate::tracker) for why the split exists.
-fn journal_of_tracker(ctx: &ToolContext<'_>, tracker: TrackerId) -> Result<JournalId> {
-    ctx.vault
-        .journals()?
-        .into_iter()
-        .find(|j| j.tracker(tracker).is_some())
-        .map(|j| j.id)
-        .ok_or_else(|| {
-            Error::Invalid(format!(
-                "no tracker with id {tracker}. Call list_trackers for the ones that exist."
-            ))
+                "cadence": t.cadence.map(|c| c.describe()),
+            })
         })
+        .collect();
+    Ok(json!({ "count": rows.len(), "trackers": rows }))
 }
 
 fn run_log_reading(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let tracker_id: TrackerId = args.id("tracker_id", "tracker")?;
-    let journal_id = journal_of_tracker(ctx, tracker_id)?;
     let value = args
         .opt_f64("value")
         .ok_or_else(|| args.bad("`value` is required and must be a number"))?;
     let date = args.opt_date("date")?.unwrap_or(ctx.today);
 
-    let mut reading = Reading::on(journal_id, tracker_id, date, value);
+    let mut reading = Reading::on(tracker_id, date, value);
     reading.note = args.opt_str("note").unwrap_or_default().to_string();
     // The vault clamps to the tracker's scale on the way in, which is why
     // the stored value is read back rather than echoed: a model told it
@@ -1962,7 +1941,7 @@ fn run_log_reading(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     ctx.vault.save_reading(&reading)?;
     let stored = ctx.vault.reading(reading.id)?;
 
-    let name = ctx.vault.journal(journal_id)?.tracker(tracker_id).map(|t| t.name.clone());
+    let name = ctx.vault.tracker(tracker_id).ok().map(|t| t.name);
     Ok(json!({
         "ok": true,
         "action": "recorded",
@@ -1995,12 +1974,8 @@ fn run_tracker_summary(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> 
     // here would make half the charts wrong, so each day is reduced by its
     // own tracker's aggregate -- and the aggregate is named in the reply, so
     // the model can say "3 doses" rather than "3".
-    let aggregates: std::collections::BTreeMap<TrackerId, crate::tracker::Aggregate> = ctx
-        .vault
-        .journals()?
-        .iter()
-        .flat_map(|j| j.trackers.iter().map(|t| (t.id, t.kind.aggregate())).collect::<Vec<_>>())
-        .collect();
+    let aggregates: std::collections::BTreeMap<TrackerId, crate::tracker::Aggregate> =
+        ctx.vault.trackers()?.iter().map(|t| (t.id, t.kind.aggregate())).collect();
 
     Ok(json!({
         "from": from.to_string(),

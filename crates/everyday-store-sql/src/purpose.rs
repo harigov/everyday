@@ -47,6 +47,7 @@ pub(crate) enum RecordKind {
     Entry,
     Item,
     Calendar,
+    Tracker,
 }
 
 impl RecordKind {
@@ -58,6 +59,7 @@ impl RecordKind {
             RecordKind::Entry => "entry",
             RecordKind::Item => "item",
             RecordKind::Calendar => "calendar",
+            RecordKind::Tracker => "tracker",
         }
     }
 }
