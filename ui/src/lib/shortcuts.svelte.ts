@@ -54,9 +54,33 @@ function inApp(section: Section): () => boolean {
   return () => app.screen === 'main' && app.section === section
 }
 
+/**
+ * Is a dialog over the window?
+ *
+ * Asked of the document rather than of `panels`, and that is the point.
+ * `panels` knows about the two dialogs it owns -- settings and this help
+ * sheet -- and knows nothing about the half-dozen a component raises for
+ * itself: the delete confirmation, a journal's settings, the "subscribe to a
+ * calendar" sheet. So a bare letter stayed live behind all of them, and `j`
+ * pressed over a confirmation asking whether to delete an entry quietly
+ * opened a different one behind it.
+ *
+ * The invariant this leans on is already written down and already relied on:
+ * every modal in the application declares `aria-modal="true"`, which is what
+ * `trapFocus` is a promise about. A dialog that forgets it has a bigger
+ * problem than its shortcuts.
+ */
+function dialogOpen(): boolean {
+  // Nothing counts while the help sheet is asking what applies: it is asking
+  // about the window it will not be covering. See `panels.listing`.
+  if (panels.listing) return false
+  if (panels.settings !== null || panels.shortcuts) return true
+  return document.querySelector('[aria-modal="true"]') !== null
+}
+
 /** Anywhere past the lock screen, with no dialog over the window. */
 function anywhere(): boolean {
-  return app.screen === 'main' && !panels.modal
+  return app.screen === 'main' && !dialogOpen()
 }
 
 /** Move the journal's selection by `step` rows through the loaded list. */
@@ -109,7 +133,7 @@ export const BINDINGS: Binding[] = [
     label: 'The next app',
     group: 'Go to',
     whileTyping: true,
-    when: () => app.screen === 'main',
+    when: anywhere,
     run: () => app.nextSection(),
   },
 
@@ -119,7 +143,7 @@ export const BINDINGS: Binding[] = [
     label: 'Start the next thing',
     group: 'Everywhere',
     whileTyping: true,
-    when: () => app.screen === 'main',
+    when: anywhere,
     run: () => create(),
   },
   {
@@ -141,7 +165,7 @@ export const BINDINGS: Binding[] = [
     label: 'Search this app',
     group: 'Everywhere',
     whileTyping: true,
-    when: () => app.screen === 'main',
+    when: anywhere,
     run: focusSearch,
   },
   {
@@ -156,9 +180,14 @@ export const BINDINGS: Binding[] = [
     label: 'Settings',
     group: 'Everywhere',
     whileTyping: true,
-    when: () => app.screen === 'main',
+    when: anywhere,
     run: () => panels.openSettings(),
   },
+  // These two are deliberately the only chords a dialog does not stop, and
+  // for the same reason: neither moves the caret or navigates. Writing to
+  // disk and sealing the vault are things somebody should be able to do from
+  // wherever they are, including from on top of a confirmation they have not
+  // answered -- and a lock takes every dialog with it on the way out.
   {
     keys: 'mod+s',
     label: 'Write everything to disk now',
@@ -184,7 +213,10 @@ export const BINDINGS: Binding[] = [
     keys: '?',
     label: 'This list',
     group: 'Everywhere',
-    when: () => app.screen === 'main' && panels.settings === null,
+    // Opens when nothing is over the window, and closes when the thing over
+    // the window is this sheet -- which is what makes it a toggle rather
+    // than a key that only works in one direction.
+    when: () => app.screen === 'main' && (panels.shortcuts || anywhere()),
     run: () => panels.toggleShortcuts(),
   },
 
@@ -347,6 +379,10 @@ class Shortcuts {
 
   /** Handle a key press. Returns true if a shortcut took it. */
   press(event: KeyboardEvent): boolean {
+    // Something nearer the key has already dealt with it. The assistant's
+    // resize handle answers the arrow keys, and without this the same
+    // ArrowLeft both narrowed the rail and paged the calendar behind it.
+    if (event.defaultPrevented) return false
     const chord = chordOf(event)
     if (chord === null) return false
 

@@ -323,10 +323,8 @@ impl SearchRequest {
     pub fn attempts(&self) -> Vec<SearchRequest> {
         let mut out = vec![self.clone()];
         if matches!(self.source, Source::OpenLibrary | Source::ITunes) {
-            // The hint carries, because it is what a later source may use to
-            // tell a film from its soundtrack.
             out.push(
-                SearchRequest::new(self.query.clone())
+                SearchRequest::new(self.hinted_query())
                     .on(Source::Wikipedia)
                     .about(self.hint.clone())
                     .limit(self.limit),
@@ -334,7 +332,7 @@ impl SearchRequest {
         }
         if self.source != Source::Web {
             out.push(
-                SearchRequest::new(self.web_query())
+                SearchRequest::new(self.hinted_query())
                     .on(Source::Web)
                     .about(self.hint.clone())
                     .limit(self.limit),
@@ -343,17 +341,25 @@ impl SearchRequest {
         out
     }
 
-    /// The query to hand a plain web search made as a *fallback*.
+    /// The query to hand an attempt made as a *fallback*.
     ///
     /// The kind's own word is added to it: "dune" over a films shelf becomes
     /// "dune film". Two sources of ambiguity are removed by that one word —
-    /// the novel from the picture, and the record from the tour — and this is
-    /// the one attempt with no structured field to disambiguate on, so the
-    /// query is all there is.
+    /// the novel from the picture, and the record from the tour.
     ///
-    /// Only for the fallback, never for a search somebody asked for on the
-    /// web explicitly: there, what was typed is what was meant.
-    fn web_query(&self) -> String {
+    /// It goes to both fallbacks and not only to the last one. That was the
+    /// first shape and it was half a fix: the whole point of putting
+    /// Wikipedia in front of the open web is that it answers with the work,
+    /// and searching it for the bare word answers with the *most famous* work
+    /// of that name — so "dune" from a films shelf came back as the novel,
+    /// which is the exact case the step was added for. Wikipedia's
+    /// `generator=search` is full text, so the extra word ranks the film's
+    /// article first, and neither source has a structured field to
+    /// disambiguate on: the query is all there is.
+    ///
+    /// Only for a fallback, never for a search somebody asked for on that
+    /// source directly: there, what was typed is what was meant.
+    fn hinted_query(&self) -> String {
         let hint = self.hint.trim();
         if hint.is_empty() || self.query.to_lowercase().contains(&hint.to_lowercase()) {
             return self.query.clone();
@@ -1356,20 +1362,28 @@ mod tests {
     }
 
     #[test]
-    fn the_web_fallback_says_what_kind_of_thing_it_is_looking_for() {
+    fn every_fallback_says_what_kind_of_thing_it_is_looking_for() {
         // "dune" over a films shelf is a novel, a record and a tour as well.
-        // The fallback has no structured field to disambiguate on, so the
-        // one word goes into the query.
+        // Neither fallback has a structured field to disambiguate on, so the
+        // one word goes into both queries -- including Wikipedia's, whose
+        // whole reason for being in the chain is to answer with the right
+        // work rather than with the most famous one of that name.
         let films = SearchRequest::for_kind("dune", &kind("film"));
-        let web = films.attempts().last().unwrap().clone();
-        assert_eq!(web.source, Source::Web);
-        assert_eq!(web.query, "dune film");
+        let attempts = films.attempts();
+        assert_eq!(attempts[0].query, "dune", "the shelf's own source is asked what was typed");
+        for fallback in &attempts[1..] {
+            assert_eq!(
+                fallback.query, "dune film",
+                "{:?} was asked the bare word",
+                fallback.source
+            );
+        }
 
         // Not twice, when the person already typed it.
         let typed = SearchRequest::for_kind("Dune the Film", &kind("film"));
-        assert_eq!(typed.attempts().last().unwrap().query, "Dune the Film");
+        assert!(typed.attempts().iter().all(|a| a.query == "Dune the Film"));
 
-        // And never for a search asked for on the web explicitly: there,
+        // And never for a search asked for on a source explicitly: there,
         // what was typed is what was meant.
         let plain = SearchRequest::new("dune film").about("film");
         assert_eq!(plain.attempts().len(), 1);

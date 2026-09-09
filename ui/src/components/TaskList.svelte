@@ -6,7 +6,7 @@
   // makes flipping between "by due date" and "by priority" instant.
 
   import { FILTER_LABELS, TASK_FILTERS, todo, type GroupBy } from '../lib/todo.svelte'
-  import { friendlyDate } from '../lib/format'
+  import { friendlyDate, plural } from '../lib/format'
   import { todayIso } from '../lib/time'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
@@ -173,16 +173,24 @@
        scope that is genuinely empty, and saying "no tasks yet" over a list
        somebody has just filtered is how a filter looks like a bug. -->
   {#if todo.visible.length === 0}
-    {#if todo.narrowed}
-      <EmptyState
-        lead={todo.filter.trim()
-          ? `Nothing matches “${todo.filter.trim()}”.`
-          : 'Nothing under these filters.'}
-      >
+    <!-- The two narrowings are told apart, because only one of them can be
+         counted. The text filter is applied by the backend, so `tasks` is
+         already down to what matched it -- offering "there are 0 tasks here
+         in all" over a project of forty was arithmetic on a number that
+         means something else. The chips and dropdowns are applied here, so
+         over those the total is honest and worth saying. -->
+    {#if todo.filter.trim()}
+      <EmptyState lead={`Nothing matches “${todo.filter.trim()}”.`}>
+        {#snippet note()}Try fewer words, or a different list.{/snippet}
+        {#snippet action()}
+          <button class="btn" onclick={() => todo.clearFilters()}>Clear the filters</button>
+        {/snippet}
+      </EmptyState>
+    {:else if todo.narrowed}
+      <EmptyState lead="Nothing under these filters.">
         {#snippet note()}
-          There {todo.tasks.length === 1 ? 'is' : 'are'}
-          {todo.tasks.length}
-          {todo.tasks.length === 1 ? 'task' : 'tasks'} here in all.
+          {plural(todo.tasks.length, 'task')}
+          {todo.tasks.length === 1 ? 'is' : 'are'} in this list in all.
         {/snippet}
         {#snippet action()}
           <button class="btn" onclick={() => todo.clearFilters()}>Clear the filters</button>

@@ -659,16 +659,7 @@ class AppState {
       return void (await handle(e))
     }
     if (existing) {
-      // The starred filter is dropped for the reason it is below: an entry
-      // opened in the editor while the list beside it cannot show that row
-      // is an editor nobody can tell is the right one. The *journal*
-      // selection is deliberately left alone -- narrowing "All entries" to
-      // one journal as a side effect of asking for today's page would be
-      // answering a question nobody asked.
-      if (this.showStarredOnly) {
-        this.showStarredOnly = false
-        await this.refreshEntries()
-      }
+      await this.showTheList()
       await this.openEntry(existing.id)
       notify.info("You have already started today's entry", {
         body: 'A journal keeps one entry a day, so this is that one — carry on writing in it.',
@@ -688,12 +679,27 @@ class AppState {
     this.conflict = false
     this.entry = entry
     this.selectedEntry = entry.id
-    // A new entry is not starred, so the Starred list is not a list it can
-    // appear in. Leaving the filter up put the row out of sight while the
-    // refresh below quietly opened some *other* entry in the editor -- so
-    // "New entry" answered with somebody else's writing. Show the list the
-    // new entry is actually in.
+    await this.showTheList()
+  }
+
+  /**
+   * Put the list back to something today's entry can appear in.
+   *
+   * Two filters can hide it and both had to be cleared, though only one of
+   * them was. A new entry is not starred, so the Starred view is not a list
+   * it can be in; and while a search is running the panel draws `results`
+   * rather than `entries`, so the row is not merely filtered out, it is not
+   * the thing being drawn at all. Either way the editor opens an entry the
+   * list beside it cannot show, which reads as the entry having gone
+   * somewhere else.
+   *
+   * The *journal* selection is deliberately left alone: narrowing "All
+   * entries" to one journal as a side effect of asking for today's page
+   * would be answering a question nobody asked.
+   */
+  private async showTheList() {
     this.showStarredOnly = false
+    this.clearSearch()
     await this.refreshEntries()
   }
 
@@ -992,6 +998,12 @@ class AppState {
   }
 
   clearSearch() {
+    // The pending query goes too. `setQuery` leaves a timer armed against
+    // the text as it was, so clearing without this let a search typed a
+    // moment ago land afterwards and refill a list that had been emptied on
+    // purpose -- results for a query no longer in the box.
+    if (this.#searchTimer) clearTimeout(this.#searchTimer)
+    this.#searchTimer = null
     this.query = ''
     this.results = []
     this.searching = false

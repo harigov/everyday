@@ -193,9 +193,12 @@
            label is now the control it always looked like. -->
       <button
         class="lead pick"
+        data-menu-trigger
         title="Adding to {kind.name} — click to change"
         aria-label="Adding to {kind.name}. Change the shelf."
-        onclick={(e) => menu.show(e, shelfMenu())}
+        aria-haspopup="menu"
+        aria-expanded={menu.at !== null}
+        onclick={(e) => (menu.at ? menu.close() : menu.show(e, shelfMenu()))}
       >
         <span aria-hidden="true">{kind.icon}</span>
         <Icon name="chevron" size={11} weight={2} />

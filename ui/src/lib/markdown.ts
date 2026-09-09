@@ -379,12 +379,25 @@ function inline(text: string): string {
 
   // A bare URL. Anything already inside an anchor is parked and therefore
   // invisible here, which is what stops a link being wrapped twice.
+  //
+  // The awkward part is that this runs on *escaped* text, where an ampersand
+  // is five characters. Excluding `&` from the run -- the obvious way to stop
+  // a URL swallowing the `&quot;` that closes a quotation -- silently cut
+  // every query string in half: `?a=1&b=2` became a link to `?a=1` with
+  // `&b=2` left as prose beside it, pointing at a different page. So the run
+  // allows an ampersand and refuses only the four entities that genuinely end
+  // a URL in running text, and the address is decoded before it is measured
+  // for trailing punctuation -- trimming `;` off an escaped string would
+  // otherwise cut `&amp;` down to `&amp`.
   out = out.replace(
-    /(^|[\s(])(https?:\/\/[^\s<>&"')\]]+)/g,
+    /(^|[\s(])(https?:\/\/(?:(?!&quot;|&#39;|&lt;|&gt;)[^\s<>"')\]])+)/g,
     (_all, before: string, url: string) => {
+      const address = decodeEntities(url)
       // Trailing punctuation belongs to the sentence, not to the address.
-      const trimmed = url.replace(/[.,;:!?]+$/, '')
-      return `${before}${park(`${anchor(trimmed)}${trimmed}</a>`)}${url.slice(trimmed.length)}`
+      const trimmed = address.replace(/[.,;:!?]+$/, '')
+      const tail = address.slice(trimmed.length)
+      const link = `${anchor(trimmed)}${escapeHtml(trimmed)}</a>`
+      return `${before}${park(link)}${escapeHtml(tail)}`
     },
   )
 

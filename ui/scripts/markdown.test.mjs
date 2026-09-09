@@ -214,6 +214,34 @@ includes('see https://example.org/a_b for more', 'href="https://example.org/a_b"
   assert.ok(html.endsWith('.</p>'), `the sentence lost its full stop: ${html}`)
 }
 
+// A query string survives whole. This runs on escaped text, where `&` is
+// five characters, and the first attempt stopped the address at it -- so a
+// link with two parameters pointed at a page with one, and the rest of the
+// query was left sitting in the prose beside it.
+{
+  const html = renderMarkdown('see https://example.org/s?a=1&b=2 for more')
+  assert.ok(html.includes('href="https://example.org/s?a=1&amp;b=2"'), html)
+  assert.ok(!html.includes('b=2 for more'), `the query was cut in half: ${html}`)
+  assert.equal(html.match(/<a /g).length, 1, html)
+}
+// The same, written as a Markdown link.
+includes('[q](https://example.org/s?a=1&b=2)', 'href="https://example.org/s?a=1&amp;b=2"')
+
+// An entity that really does end an address still ends it: the closing
+// quotation mark is `&quot;` by the time this runs, and allowing `&` through
+// must not let the address swallow it.
+{
+  const html = renderMarkdown('he said "go to https://example.org/x" and left')
+  assert.ok(html.includes('href="https://example.org/x"'), html)
+  assert.ok(!html.includes('href="https://example.org/x&'), `it ate the quotation: ${html}`)
+  assert.ok(html.includes('&quot; and left'), `the quotation was lost: ${html}`)
+}
+// A trailing semicolon is a sentence's, but the one inside `&amp;` is not.
+{
+  const html = renderMarkdown('https://example.org/s?a=1&b=2;')
+  assert.ok(html.includes('href="https://example.org/s?a=1&amp;b=2"'), html)
+}
+
 // A single newline inside a paragraph is a line the writer meant to break.
 renders('one\ntwo', '<p>one<br>two</p>')
 

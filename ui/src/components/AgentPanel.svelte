@@ -14,6 +14,7 @@
   // an OpenAI key to somebody else's gateway.
 
   import { onDestroy } from 'svelte'
+  import { isLoopback } from '../lib/agent'
   import { agent } from '../lib/agent.svelte'
   import type { AgentSettings } from '../lib/types'
   import Icon from './Icon.svelte'
@@ -63,16 +64,19 @@
     { label: 'OpenRouter', url: 'https://openrouter.ai/api/v1' },
   ]
 
-  const local = $derived.by(() => {
-    const url = draft?.model.baseUrl
-    if (!url) return false
-    try {
-      const host = new URL(url).hostname.toLowerCase()
-      return host === 'localhost' || host === '::1' || host.startsWith('127.')
-    } catch {
-      return false
-    }
-  })
+  /**
+   * Is the model on this machine?
+   *
+   * `isLoopback`, and not a second opinion. This was a copy of it that had
+   * fallen a case or two behind -- it missed `[::1]`, which is the form
+   * `URL.hostname` actually returns for an IPv6 address, and `0.0.0.0`. So an
+   * Ollama endpoint on IPv6 was told "what you ask about is sent to the model
+   * provider you configure below" while `agent.ready` was treating the same
+   * address as local and not asking for a key. Of the two things this decides
+   * -- whether to demand an API key, and what to say about where your journal
+   * goes -- disagreeing about the second is the one that matters.
+   */
+  const local = $derived(isLoopback(draft?.model.baseUrl ?? null))
 
   async function save() {
     if (!draft) return

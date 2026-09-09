@@ -217,7 +217,17 @@
   tabindex="-1"
   style="left: {pos?.x ?? 0}px; top: {pos?.y ?? 0}px"
   onkeydown={onKeydown}
-  use:dismissable={{ onaway: () => ondismiss?.(), enabled: !!ondismiss, within: '[role="menu"]' }}
+  use:dismissable={{
+    onaway: () => ondismiss?.(),
+    enabled: !!ondismiss,
+    // The panel, and whatever opened it. A menu raised by a *click* -- rather
+    // than by a right-click, which is every other one here -- is a toggle, and
+    // a toggle whose button dismisses the menu on the way down reopens it on
+    // the way up: the press closes it, the click that follows opens it again,
+    // and it looks like a button that does not close its own menu. Marked
+    // buttons are excluded here so the button can answer the click itself.
+    within: '[role="menu"], [data-menu-trigger]',
+  }}
 >
   {#each items as item, i (i)}
     {#if item.kind === 'separator'}

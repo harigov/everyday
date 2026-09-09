@@ -41,29 +41,52 @@
   // for the same reason: it is a working preference rather than a mood.
 
   const MIN_WIDTH = 300
+  const DEFAULT_WIDTH = 380
   /** Never more than this share of the window: the app is the point. */
   const MAX_SHARE = 0.62
 
-  let width = $state(Number(localStorage.getItem('everyday:assistant-width')) || 380)
+  /**
+   * The width somebody asked for, and the width they get.
+   *
+   * Two values rather than one, because the preference outlives the window it
+   * was set in. Storing the clamped figure meant a rail dragged wide on a
+   * desktop display came back at 62% of a laptop's -- and, worse, that
+   * *became* the preference, so plugging the big screen back in did not
+   * restore it. `width` is the wish and is what is written down; `applied` is
+   * what the rail is actually given, recomputed whenever the window changes
+   * shape.
+   */
+  let width = $state(Number(localStorage.getItem('everyday:assistant-width')) || DEFAULT_WIDTH)
+  let viewport = $state(window.innerWidth)
   let dragging = $state(false)
 
   /** Clamp to the window, so a rail dragged wide on a big display comes back. */
-  function clamp(px: number): number {
-    return Math.max(MIN_WIDTH, Math.min(px, Math.round(window.innerWidth * MAX_SHARE)))
+  function clamp(px: number, within = viewport): number {
+    return Math.max(MIN_WIDTH, Math.min(px, Math.round(within * MAX_SHARE)))
   }
 
+  const applied = $derived(clamp(width))
+
   function startResize(event: PointerEvent) {
+    // Prevented so the drag does not paint a selection across the reply it
+    // passes over -- and, because preventing a pointer press also suppresses
+    // the focus that would have followed it, the handle is focused by hand.
+    // Without that, a resizer you can drag is one you cannot click on to
+    // then nudge with the arrow keys.
     event.preventDefault()
     dragging = true
     const startX = event.clientX
-    const startWidth = width
+    const startWidth = applied
     // Captured on the handle, so the drag survives the pointer outrunning it
     // -- which it does immediately, because the panel is what moves.
     const handle = event.currentTarget as HTMLElement
+    handle.focus()
     handle.setPointerCapture(event.pointerId)
 
     const move = (e: PointerEvent) => {
-      // Leftwards is wider: the rail is on the right-hand edge.
+      // Leftwards is wider: the rail is on the right-hand edge. Measured
+      // from `applied` rather than from `width`, so a drag that begins on a
+      // rail the window has narrowed starts from where the edge actually is.
       width = clamp(startWidth + (startX - e.clientX))
     }
     const end = () => {
@@ -82,9 +105,11 @@
   /** The keyboard's version of the drag. A rail nobody can resize by hand. */
   function nudge(event: KeyboardEvent) {
     const step = event.shiftKey ? 48 : 16
-    if (event.key === 'ArrowLeft') width = clamp(width + step)
-    else if (event.key === 'ArrowRight') width = clamp(width - step)
+    if (event.key === 'ArrowLeft') width = clamp(applied + step)
+    else if (event.key === 'ArrowRight') width = clamp(applied - step)
     else return
+    // Taken here, so the same arrow key does not also page the calendar
+    // behind the rail: the window's shortcut handler checks this first.
     event.preventDefault()
     localStorage.setItem('everyday:assistant-width', String(width))
   }
@@ -205,7 +230,11 @@
   }
 </script>
 
-<aside class="panel" class:dragging style="--panel-w: {width}px" aria-label="Assistant">
+<!-- The rail is re-fitted when the window changes shape, without the stored
+     preference being rewritten: see `width` and `applied`. -->
+<svelte:window onresize={() => (viewport = window.innerWidth)} />
+
+<aside class="panel" class:dragging style="--panel-w: {applied}px" aria-label="Assistant">
   <!-- The rail's own left edge, as a control. `separator` with an
        orientation and a value is what a resizer is called in ARIA, and it
        takes the arrow keys for the same reason every other control here
@@ -213,16 +242,16 @@
        cannot read a table in. -->
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_tabindex -->
   <div
-    class="grip"
+    class="resizer"
     role="separator"
     aria-orientation="vertical"
     aria-label="Width of the assistant"
-    aria-valuenow={width}
+    aria-valuenow={applied}
     tabindex="0"
     onpointerdown={startResize}
     onkeydown={nudge}
     ondblclick={() => {
-      width = 380
+      width = DEFAULT_WIDTH
       localStorage.setItem('everyday:assistant-width', String(width))
     }}
   ></div>
@@ -397,7 +426,7 @@
   /* Four pixels wide and eleven to grab: a resizer you can hit is wider than
      a resizer you can see, so the target is padded outwards over the pane
      beside it rather than drawn thicker. */
-  .grip {
+  .resizer {
     position: absolute;
     top: 0;
     bottom: 0;
@@ -407,7 +436,7 @@
     cursor: col-resize;
     touch-action: none;
   }
-  .grip::after {
+  .resizer::after {
     content: '';
     position: absolute;
     inset: 0 auto 0 4px;
@@ -416,9 +445,9 @@
     opacity: 0;
     transition: opacity var(--fast) var(--ease);
   }
-  .grip:hover::after,
-  .grip:focus-visible::after,
-  .panel.dragging .grip::after {
+  .resizer:hover::after,
+  .resizer:focus-visible::after,
+  .panel.dragging .resizer::after {
     opacity: 1;
   }
   /* Text selection must not fight the drag: without this, pulling the rail
