@@ -1705,6 +1705,10 @@ export const mockInvoke = async <T>(
       let rows = entries.map(summarize)
       if (q.journalId) rows = rows.filter((r) => r.journalId === q.journalId)
       if (q.starred) rows = rows.filter((r) => r.starred)
+      // Both bounds are inclusive, as the core's `EntryQuery` documents.
+      // Dates are `YYYY-MM-DD`, so a string comparison is a date comparison.
+      if (q.from) rows = rows.filter((r) => r.localDate >= q.from!)
+      if (q.to) rows = rows.filter((r) => r.localDate <= q.to!)
       if (q.tags?.length) {
         rows = rows.filter((r) =>
           q.tags!.every((t) => r.tags.some((x) => x.toLowerCase() === t.toLowerCase())),
@@ -2712,14 +2716,52 @@ export async function mockSendMessage(
     onEvent({ type: 'toolStarted', callId, name: 'list_tasks', arguments: { open_only: true } })
     await sleep(350)
     onEvent({ type: 'toolFinished', callId, name: 'list_tasks', ok: true, summary: '3 results' })
-    reply = 'You have three open: order the timber, ring the vet, and book the MOT.'
+    // Markdown, because that is what a model answers with whatever it is
+    // asked. A mock that replies in plain prose is a mock in which the panel
+    // cannot be reviewed: the one thing to look at here is whether a list
+    // renders as a list and a command renders as code.
+    reply = [
+      'You have **three** open:',
+      '',
+      '1. Order the timber — *overdue since Monday*',
+      '2. Ring the vet',
+      '3. Book the MOT',
+      '',
+      'Two of them are in `Move house`. Say the word and I will move the third.',
+    ].join('\n')
+  } else if (lower.includes('markdown')) {
+    // Everything the renderer draws, for reviewing it in one screen.
+    reply = [
+      '## What I can format',
+      '',
+      'Prose with **bold**, *italic*, ~~struck out~~ and `inline code`.',
+      '',
+      '- A bullet',
+      '  - and one nested under it',
+      '- [A link](https://example.org)',
+      '',
+      '> A quotation, for something you said earlier.',
+      '',
+      '```sh',
+      'everyday search rain --json',
+      '```',
+      '',
+      '| Shelf | Open |',
+      '| --- | ---: |',
+      '| Books | 4 |',
+      '| Films | 2 |',
+    ].join('\n')
   } else {
     reply = 'This is a scripted reply from the mock backend. There is no model behind it.'
   }
 
-  for (const word of reply.split(' ')) {
+  // Split on whitespace but *keep* it, so the newlines a Markdown reply is
+  // made of survive the streaming. Splitting on ' ' alone joined every line
+  // of a list into one paragraph, which is the exact failure the renderer
+  // exists to fix -- reproduced by the harness meant to demonstrate it.
+  for (const chunk of reply.split(/(?<=\s)/)) {
     await sleep(35)
-    onEvent({ type: 'delta', text: word + ' ' })
+    onEvent({ type: 'delta', text: chunk })
   }
 
   agentMessages.push({

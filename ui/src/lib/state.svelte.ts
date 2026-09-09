@@ -8,6 +8,7 @@ import { tick } from 'svelte'
 import { api, isMock } from './api'
 import { AUTOSAVE_MS } from './autosave'
 import { notify } from './notify.svelte'
+import { todayIso } from './time'
 import { TRAY_ORDER, tray } from './tray.svelte'
 import type {
   Bootstrap,
@@ -617,10 +618,65 @@ class AppState {
     }
   }
 
+  /**
+   * Start today's entry, or open it if it has already been started.
+   *
+   * **One entry per journal per day.** A journal is a record of days, and a
+   * day is one thing: two entries dated the same Tuesday in the same journal
+   * are not two records, they are one record that has been split by an
+   * accidental second press of Ctrl+N -- and once split, half of what you
+   * wrote is behind a row you have to remember exists. The list groups by
+   * day, so the two sit under one heading looking like a duplicate, and
+   * nothing in the interface says which is the one you were writing in.
+   *
+   * Enforced by opening rather than by refusing, which is the part that
+   * makes it a rule and not an error message: "New entry" always answers
+   * with today's page, whether or not there was one a moment ago. That is
+   * also exactly what the tray action, the shortcut and the sidebar's "New
+   * entry here" should do, and all three go through here.
+   *
+   * The check is a query rather than a look at `entries`, because the list
+   * on screen is filtered: today's entry can easily not be in it -- the
+   * starred view, another journal selected, a search in progress -- and
+   * concluding "there is no entry today" from a list that was never asked
+   * about today is how the rule would fail in exactly the case somebody
+   * notices.
+   *
+   * More than one journal is untouched by this. Keeping a work journal and
+   * a personal one and writing in both on the same day is the arrangement
+   * the app is for.
+   */
   async newEntry() {
     const journalId = this.selectedJournal ?? this.journals[0]?.id
     if (!journalId) return
     await this.flush()
+
+    const today = todayIso()
+    let existing: EntrySummary | undefined
+    try {
+      existing = (await api.entries({ journalId, from: today, to: today, limit: 1 }))[0]
+    } catch (e) {
+      return void (await handle(e))
+    }
+    if (existing) {
+      // The starred filter is dropped for the reason it is below: an entry
+      // opened in the editor while the list beside it cannot show that row
+      // is an editor nobody can tell is the right one. The *journal*
+      // selection is deliberately left alone -- narrowing "All entries" to
+      // one journal as a side effect of asking for today's page would be
+      // answering a question nobody asked.
+      if (this.showStarredOnly) {
+        this.showStarredOnly = false
+        await this.refreshEntries()
+      }
+      await this.openEntry(existing.id)
+      notify.info("You have already started today's entry", {
+        body: 'A journal keeps one entry a day, so this is that one — carry on writing in it.',
+        key: 'entry-today',
+      })
+      return
+    }
+
     let entry: Entry
     try {
       entry = await api.newEntry(journalId)
@@ -876,6 +932,40 @@ class AppState {
   /** File an entry under a different journal. */
   async moveEntry(id: EntryId, journalId: JournalId) {
     await this.#editEntry(id, (entry) => (entry.journalId = journalId))
+  }
+
+  /**
+   * The days in a month that have an entry in them, for the mini calendar.
+   *
+   * A query rather than a read of `entries`, and not cached here: the list
+   * holds at most 500 rows in whatever order the filter chose, so a month
+   * three years back is very often simply not in it -- and a calendar that
+   * is silently wrong about which days you wrote on is worse than no
+   * calendar. Cheap: dates are a clear index column, so nothing is
+   * decrypted to answer it.
+   *
+   * Returns a map from date to the entry to open for it. Where a journal
+   * holds two entries on one day -- which `newEntry` no longer creates, but
+   * which an older vault may well contain -- the first in the list wins,
+   * and that is the one a click on the day opens.
+   */
+  async entriesInRange(from: string, to: string): Promise<Map<string, EntryId>> {
+    const out = new Map<string, EntryId>()
+    try {
+      const rows = await api.entries({
+        journalId: this.selectedJournal,
+        from,
+        to,
+        sort: 'dateAsc',
+        limit: 500,
+      })
+      for (const row of rows) if (!out.has(row.localDate)) out.set(row.localDate, row.id)
+    } catch (e) {
+      // Not worth a message over the window: the calendar is an aid beside
+      // the list, and the list is the thing that has to be right.
+      if (isLocked(e)) await app.lock()
+    }
+    return out
   }
 
   // ── search ───────────────────────────────────────────────────────────

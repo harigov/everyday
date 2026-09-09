@@ -28,25 +28,36 @@
     'Liberation Mono', monospace;
 
   /* A modular scale at 1.2, rounded to whole pixels so glyph rasterisation
-   * lands on the pixel grid rather than between it. */
-  --text-xs: 11px;
-  --text-sm: 12px;
-  --text-base: 13px;
-  --text-md: 15px;
-  --text-lg: 18px;
-  --text-xl: 22px;
-  --text-2xl: 27px;
-  --text-3xl: 33px;
+   * lands on the pixel grid rather than between it.
+   *
+   * The whole ladder moved up a step from where it started. The old base was
+   * 13px, which is the size a dense productivity tool uses when it is trying
+   * to fit one more row on the screen -- and this is not that: it is a
+   * journal you read, a list you think in front of, and a shelf you browse.
+   * At 13px every one of those asked to be leaned into. 14px is the size at
+   * which a sentence of interface text is simply read. */
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 16px;
+  --text-lg: 19px;
+  --text-xl: 23px;
+  --text-2xl: 28px;
+  --text-3xl: 34px;
 
   /* Entry bodies. */
-  --text-prose: 17px;
+  --text-prose: 18px;
 
   --leading-tight: 1.25;
-  --leading-snug: 1.4;
-  --leading-normal: 1.6;
-  /* Serif prose wants air between lines; this sans has a larger x-height and
-     shorter extenders, so the same ratio reads as double-spaced. */
-  --leading-prose: 1.58;
+  --leading-snug: 1.45;
+  --leading-normal: 1.65;
+  /* Long-form prose wants more air between lines than anything else here.
+     The old 1.58 was chosen against the worry that this sans -- large
+     x-height, short extenders -- would read as double-spaced at a serif's
+     ratio. It does not: at the measure this app sets, 1.58 packed the lines
+     tightly enough that the eye lost the return sweep on a long paragraph,
+     which is the one thing line spacing exists to prevent. */
+  --leading-prose: 1.75;
 
   /* 4px base. Everything is a multiple, which is what makes rhythm read as
    * deliberate rather than accidental. */
@@ -68,9 +79,27 @@
 
   /* The app bar down the left edge: an icon and a word, at a size that can
      be hit without aiming. */
-  --appbar-w: 76px;
-  --sidebar-w: 232px;
-  --list-w: 340px;
+  --appbar-w: 82px;
+  --sidebar-w: 248px;
+  --list-w: 366px;
+
+  /* Every header across the four apps, and the empty cap above the app bar
+     that lines up with them. It was written as a bare `46px` in eight
+     stylesheets, which is how a row of headings drifts out of alignment the
+     first time one of them is adjusted. */
+  --header-h: 54px;
+
+  /* One row in a sidebar, a menu or a list. Set here for the same reason as
+     the header: the same target size in four apps should be one number. */
+  --row-h: 32px;
+
+  /* The floating assistant button, and the room anything in the bottom
+     right-hand corner has to leave for it. A token rather than three
+     hard-coded paddings, because the two numbers have to move together: the
+     button is `--fab-size` across and sits `--sp-6` in from both edges, and
+     the editor's Delete button used to sit straight underneath it. */
+  --fab-size: 48px;
+  --fab-clear: calc(var(--fab-size) + var(--sp-6) * 2);
   /* The width of the *text*, not of the box around it -- the page adds its
      padding on top. About 75 characters at --text-prose, which is the top of
      the range where the eye still finds the next line reliably, and a good

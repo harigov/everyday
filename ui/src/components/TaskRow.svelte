@@ -11,13 +11,14 @@
   import { taskMenu } from '../lib/menus'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
+  import ProgressPie from './ProgressPie.svelte'
   import QuickAdd from './QuickAdd.svelte'
   import Self from './TaskRow.svelte'
 
   let { node, depth = 0 }: { node: TaskNode; depth?: number } = $props()
 
   const task = $derived(node.task)
-  const open = $derived(todo.expanded.has(task.id))
+  const open = $derived(todo.isExpanded(task.id))
   // A tuple in one binding: `$derived` initialises a single declaration.
   const progress = $derived(todo.progressOf(task.id))
   const overdue = $derived(todo.overdue(task))
@@ -102,10 +103,20 @@
       <button
         class="disclose"
         class:open
-        title={open ? 'Hide subtasks' : 'Show subtasks'}
+        title="{progress[0]} of {progress[1]} done — {open ? 'hide' : 'show'} them"
         aria-expanded={open}
         onclick={() => todo.toggleExpanded(task.id)}
       >
+        <!-- The dial rather than the fraction, for the reason in
+             `ProgressPie`: "2/5" is read and a filled circle is seen. The
+             numbers stay beside it, because a dial cannot tell you that the
+             five are five. -->
+        <ProgressPie
+          done={progress[0]}
+          total={progress[1]}
+          size={14}
+          color={project?.color ?? 'var(--journal-accent, var(--accent))'}
+        />
         <span class="progress">{progress[0]}/{progress[1]}</span>
         <Icon name="chevron" size={13} weight={1.8} />
       </button>
@@ -121,7 +132,12 @@
     {/if}
   </div>
 
-  {#if open || adding}
+  <!-- `node.children.length` and not just `open`: subtasks are expanded by
+       default now, so a task with none would otherwise draw an empty
+       disclosure containing nothing but its own "Add a subtask" row -- a
+       permanent second line under every task in the list. The button is
+       still there on hover, at the end of the row. -->
+  {#if (open && node.children.length > 0) || adding}
     <div class="kids">
       {#each node.children as child (child.task.id)}
         <Self node={child} depth={depth + 1} />
@@ -166,7 +182,7 @@
 
 <style>
   .wrap {
-    padding-left: calc(var(--depth) * 26px);
+    padding-left: calc(var(--depth) * 28px);
   }
 
   .row {
@@ -174,7 +190,7 @@
     align-items: flex-start;
     gap: var(--sp-2);
     border-radius: var(--radius-sm);
-    padding: 5px var(--sp-2);
+    padding: var(--sp-2) var(--sp-2);
     transition: background var(--fast) var(--ease);
   }
   .row:hover {
@@ -257,7 +273,7 @@
     display: inline-flex;
     align-items: center;
     gap: 3px;
-    font-size: 10px;
+    font-size: var(--text-xs);
     font-weight: 550;
     color: var(--fg-faint);
     padding: 1px var(--sp-2);
@@ -301,7 +317,7 @@
     padding: 2px 5px;
     border-radius: var(--radius-sm);
     color: var(--fg-faint);
-    font-size: 10px;
+    font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
   }
   .disclose:hover,

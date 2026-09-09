@@ -2,6 +2,8 @@
   import { onDestroy } from 'svelte'
   import { article } from '../lib/format'
   import { library } from '../lib/library.svelte'
+  import { menu } from '../lib/menu.svelte'
+  import { tidyMenu, type MenuItem } from '../lib/menu'
   import { app } from '../lib/state.svelte'
   import { web, type LiveOutcome } from '../lib/websearch'
   import type { KindInfo, SearchResult } from '../lib/types'
@@ -19,6 +21,31 @@
   // "Add a book", "Add an album" -- the shelf names its own singular, so the
   // article cannot be hard-coded either way.
   const noun = $derived(`Add ${article(kind.singular)} ${kind.singular.toLowerCase()}…`)
+
+  /**
+   * Whether the shelf is a choice here, or is simply where you are.
+   *
+   * On a shelf it is not: you opened Films, so what you type is a film, and
+   * offering to file it under Books would be offering to put it somewhere
+   * you cannot see. In the everything view it is the whole question -- see
+   * `captureShelf` in the store for what used to happen instead.
+   */
+  const choosable = $derived(library.shelf === null && library.visibleKinds.length > 1)
+
+  function shelfMenu(): MenuItem[] {
+    return tidyMenu([
+      { kind: 'heading', label: 'Add to' },
+      ...library.visibleKinds.map((k) => ({
+        label: k.name,
+        dot: k.color,
+        checked: k.id === kind.id,
+        run: () => {
+          library.setCaptureShelf(k.id)
+          field?.focus()
+        },
+      })),
+    ])
+  }
 
   let draft = $state('')
   let field = $state<HTMLInputElement | null>(null)
@@ -160,7 +187,22 @@
 
 <div class="add">
   <div class="line" class:busy>
-    <span class="lead" aria-hidden="true">{kind.icon}</span>
+    {#if choosable}
+      <!-- The shelf, as a button, at the head of the line it decides. It is
+           where the shelf's emoji already was, so nothing moved: what was a
+           label is now the control it always looked like. -->
+      <button
+        class="lead pick"
+        title="Adding to {kind.name} — click to change"
+        aria-label="Adding to {kind.name}. Change the shelf."
+        onclick={(e) => menu.show(e, shelfMenu())}
+      >
+        <span aria-hidden="true">{kind.icon}</span>
+        <Icon name="chevron" size={11} weight={2} />
+      </button>
+    {:else}
+      <span class="lead" aria-hidden="true">{kind.icon}</span>
+    {/if}
     <input
       bind:this={field}
       class="field"
@@ -269,6 +311,26 @@
     font-size: var(--text-base);
     line-height: 1;
     opacity: 0.85;
+  }
+  /* The chevron points down when it is a menu, which is the only difference
+     between the two states a reader should have to notice. */
+  .pick {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    height: 24px;
+    padding: 0 3px 0 4px;
+    margin-left: -2px;
+    border-radius: var(--radius-sm);
+    color: var(--fg-faint);
+    transition: background var(--fast) var(--ease);
+  }
+  .pick:hover {
+    background: var(--bg-hover);
+    color: var(--fg-muted);
+  }
+  .pick :global(svg) {
+    rotate: 90deg;
   }
 
   .field {

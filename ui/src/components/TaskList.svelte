@@ -5,11 +5,12 @@
   // loaded set can be re-cut without another round trip -- which is what
   // makes flipping between "by due date" and "by priority" instant.
 
-  import { todo, type GroupBy } from '../lib/todo.svelte'
+  import { FILTER_LABELS, TASK_FILTERS, todo, type GroupBy } from '../lib/todo.svelte'
   import { friendlyDate } from '../lib/format'
   import { todayIso } from '../lib/time'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import EmptyState from './EmptyState.svelte'
   import TaskRow from './TaskRow.svelte'
   import { rovingFocus } from '../lib/roving'
   import type { TaskNode } from '../lib/todo.svelte'
@@ -133,11 +134,18 @@
         })),
       },
       {
-        // No icon: the gutter is the tick, and a row that carried one either
-        // way would look the same on and off.
-        label: 'Show finished tasks',
-        checked: todo.showDone,
-        run: () => (todo.showDone = !todo.showDone),
+        label: 'Show',
+        icon: 'circle',
+        items: TASK_FILTERS.map((f) => ({
+          label: FILTER_LABELS[f],
+          checked: todo.statusFilter === f,
+          run: () => todo.setStatusFilter(f),
+        })),
+      },
+      todo.narrowed && {
+        label: 'Clear the filters',
+        icon: 'close',
+        run: () => todo.clearFilters(),
       },
       SEP,
       todo.boardable && {
@@ -160,21 +168,41 @@
   oncontextmenu={(e) => menu.show(e, listMenu())}
   use:rovingFocus={todo.selectedTask}
 >
-  {#if todo.tasks.length === 0}
-    <div class="blank">
-      {#if todo.filter.trim()}
-        <p>Nothing matches “{todo.filter}”.</p>
-      {:else if todo.scope.kind === 'today'}
-        <p>Nothing due today.</p>
-        <p class="quiet">Anything overdue would be here too.</p>
-      {:else if todo.scope.kind === 'inbox'}
-        <p>The inbox is empty.</p>
-        <p class="quiet">Tasks land here when you add one without a project.</p>
-      {:else}
-        <p>No tasks yet.</p>
-        <p class="quiet">Add one above — try <code>Buy milk @tomorrow !high</code>.</p>
-      {/if}
-    </div>
+  <!-- `visible` rather than `tasks`: a scope with work in it that the filter
+       bar has narrowed to nothing is a different thing to be told than a
+       scope that is genuinely empty, and saying "no tasks yet" over a list
+       somebody has just filtered is how a filter looks like a bug. -->
+  {#if todo.visible.length === 0}
+    {#if todo.narrowed}
+      <EmptyState
+        lead={todo.filter.trim()
+          ? `Nothing matches “${todo.filter.trim()}”.`
+          : 'Nothing under these filters.'}
+      >
+        {#snippet note()}
+          There {todo.tasks.length === 1 ? 'is' : 'are'}
+          {todo.tasks.length}
+          {todo.tasks.length === 1 ? 'task' : 'tasks'} here in all.
+        {/snippet}
+        {#snippet action()}
+          <button class="btn" onclick={() => todo.clearFilters()}>Clear the filters</button>
+        {/snippet}
+      </EmptyState>
+    {:else if todo.scope.kind === 'today'}
+      <EmptyState lead="Nothing due today.">
+        {#snippet note()}Anything overdue would be here too.{/snippet}
+      </EmptyState>
+    {:else if todo.scope.kind === 'inbox'}
+      <EmptyState lead="The inbox is empty.">
+        {#snippet note()}Tasks land here when you add one without a project.{/snippet}
+      </EmptyState>
+    {:else}
+      <EmptyState lead="No tasks yet.">
+        {#snippet note()}
+          Add one above — try <code>Buy milk @tomorrow !high</code>.
+        {/snippet}
+      </EmptyState>
+    {/if}
   {:else}
     {#each groups as group (group.key)}
       {#if group.label}
@@ -193,7 +221,10 @@
 <style>
   .list {
     flex: 1;
-    padding: 0 var(--sp-4) var(--sp-10);
+    display: flex;
+    flex-direction: column;
+    /* The tail clears the floating assistant button. */
+    padding: 0 var(--sp-4) var(--fab-clear);
   }
 
   .grouphead {
@@ -211,19 +242,9 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .blank {
-    padding: var(--sp-12) var(--sp-4);
-    text-align: center;
-    color: var(--fg-subtle);
-  }
-  .blank .quiet {
-    margin-top: var(--sp-2);
-    font-size: var(--text-sm);
-    color: var(--fg-faint);
-  }
-  .blank code {
+  code {
     font-family: var(--font-mono);
-    font-size: var(--text-xs);
+    font-size: var(--text-sm);
     padding: 1px 5px;
     border-radius: var(--radius-sm);
     background: var(--bg-sunken);

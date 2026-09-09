@@ -348,7 +348,7 @@
     display: inline-flex;
     align-items: center;
     gap: 3px;
-    font-size: 10px;
+    font-size: var(--text-xs);
     font-weight: 550;
     color: var(--fg-faint);
     padding: 1px var(--sp-2);

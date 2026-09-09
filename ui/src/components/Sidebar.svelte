@@ -207,7 +207,7 @@
     display: flex;
     align-items: center;
     gap: var(--sp-2);
-    height: 46px;
+    height: var(--header-h);
     padding: 0 var(--sp-4);
     flex: none;
     /* Room for the traffic lights on macOS. */
@@ -248,7 +248,7 @@
     align-items: center;
     gap: var(--sp-2);
     width: 100%;
-    height: 29px;
+    height: var(--row-h);
     padding: 0 var(--sp-2);
     border-radius: var(--radius-sm);
     font-size: var(--text-base);
@@ -333,7 +333,7 @@
 
   .new {
     width: 100%;
-    height: 29px;
+    height: var(--row-h);
     margin-top: 2px;
     padding: 0 var(--sp-2);
     border: 1px solid var(--accent);

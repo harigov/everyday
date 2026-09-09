@@ -204,7 +204,7 @@
     padding: 1px var(--sp-2);
     border-radius: 99px;
     background: var(--bg-active);
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 550;
     color: var(--fg-muted);
   }

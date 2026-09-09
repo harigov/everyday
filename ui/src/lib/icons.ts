@@ -267,4 +267,9 @@ export const ICONS = {
   // Send. Up rather than right, which is what every composer with a box
   // above it now uses -- the message goes up into the conversation.
   'arrow-up': '<path d="M12 20V4"/><path d="m5 11 7-7 7 7"/>',
+
+  // Two sheets, one behind the other. Copy, on an assistant's reply.
+  copy:
+    '<rect width="12" height="12" x="8.5" y="8.5" rx="2.5"/>' +
+    '<path d="M5.5 15.5H5a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v.5"/>',
 } as const

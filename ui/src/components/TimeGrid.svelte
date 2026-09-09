@@ -545,11 +545,25 @@
     flex: none;
   }
 
+  /* Wraps, and that is the whole of it. A week column is about a hundred
+     pixels wide and the two halves of this header -- "MON 7" and "1h 15m" --
+     want a hundred and thirty between them. They were laid out with
+     `space-between` and a `min-width: 0` on the label, so what actually
+     happened was that the label shrank to nothing and its text spilled
+     *underneath* the tally: "MON 7" and "1h 15m" drawn on top of each other,
+     on exactly the days that had time booked against them.
+
+     Wrapping puts the tally on a second line when it does not fit and leaves
+     it beside the date when it does, so the day view keeps its one line and
+     the week view stops overlapping. The rows of the grid size to the tallest
+     header, so the columns stay aligned either way. */
   .dayhead {
     display: flex;
+    flex-wrap: wrap;
     align-items: baseline;
     justify-content: space-between;
-    gap: var(--sp-2);
+    column-gap: var(--sp-2);
+    row-gap: 0;
     padding: var(--sp-2) var(--sp-2) var(--sp-1);
     border-left: 1px solid var(--border);
     min-width: 0;
@@ -559,6 +573,8 @@
     align-items: baseline;
     gap: 6px;
     min-width: 0;
+    /* Clipped rather than spilling: see above. */
+    overflow: hidden;
     border-radius: var(--radius-sm);
     padding: 0 3px;
   }
@@ -761,7 +777,7 @@
   .slottime {
     font-variant-numeric: tabular-nums;
     opacity: 0.72;
-    font-size: 10px;
+    font-size: 11px;
   }
   .slottitle {
     font-weight: 570;

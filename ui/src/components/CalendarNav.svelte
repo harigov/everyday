@@ -310,7 +310,7 @@
     height: 18px;
     display: grid;
     place-items: center;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
     color: var(--fg-faint);
   }
@@ -397,7 +397,7 @@
     align-items: center;
     gap: 6px;
     width: 100%;
-    min-height: 29px;
+    min-height: var(--row-h);
     padding: 0 var(--sp-1) 0 2px;
     border-radius: var(--radius-sm);
   }

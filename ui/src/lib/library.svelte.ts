@@ -47,10 +47,18 @@ export type Shelf = KindId | null
 /**
  * The status filter, as the filter bar offers it.
  *
- * `ahead` is a set rather than a status, and it is the default because it is
- * the question the app exists to answer: what have I said I want to get to.
+ * `ahead` is a set rather than a status: everything you have said you intend
+ * to get to. It used to be first and the default, on the argument that it is
+ * the question the app exists to answer -- and that was wrong in one place
+ * badly enough to be wrong everywhere. Opening a shelf called *Everything*
+ * and being shown a third of it is not a filter, it is a missing library:
+ * the things you have read are the whole point of keeping a record of what
+ * you read, and they were behind a chip nobody had a reason to press.
+ *
+ * So `all` is first, and it is the default. `ahead` is one chip along, which
+ * is where a question you sometimes ask belongs.
  */
-export const FILTERS = ['ahead', 'all', ...ITEM_STATUSES] as const
+export const FILTERS = ['all', 'ahead', ...ITEM_STATUSES] as const
 export type Filter = (typeof FILTERS)[number]
 
 /** The statuses a filter selects. Empty means "do not filter". */
@@ -66,11 +74,26 @@ class LibraryState {
   // -- what is on screen ------------------------------------------------
   view = $state<View>('grid')
   shelf = $state<Shelf>(null)
-  filter = $state<Filter>('ahead')
+  filter = $state<Filter>('all')
   sort = $state<ItemSort>('addedDesc')
   query = $state('')
   /** Star filter, the same affordance the journal's starred view has. */
   favouritesOnly = $state(false)
+  /**
+   * The shelf a new thing goes on while the everything view is open.
+   *
+   * There is no shelf selected there, and the capture line has to put what
+   * you type *somewhere*. It used to be `visibleKinds[0]` -- whichever shelf
+   * happened to sort first, which in a new vault is Books. So on the one
+   * page that shows every kind of thing, the only kind of thing you could
+   * add was a book: typing a film's name filed it under Books, and it then
+   * did not appear in Films, which read as the film having been lost.
+   *
+   * Remembered locally, because the answer is a habit rather than a fact
+   * about the vault -- somebody who keeps a film list reaches for this far
+   * more often than somebody who keeps a reading list.
+   */
+  captureShelf = $state<KindId | null>(null)
 
   // -- what has been loaded for it --------------------------------------
   kinds = $state<KindInfo[]>([])
@@ -119,6 +142,7 @@ class LibraryState {
     // grid has already drawn by then, so it would visibly flip to the list.
     const remembered = localStorage.getItem('everyday.library.view')
     if (remembered === 'grid' || remembered === 'list') this.view = remembered
+    this.captureShelf = localStorage.getItem('everyday.library.capture')
   }
 
   /**
@@ -241,6 +265,31 @@ class LibraryState {
   setView(view: View) {
     this.view = view
     localStorage.setItem('everyday.library.view', view)
+  }
+
+  /** Choose the shelf the everything view's capture line adds to. */
+  setCaptureShelf(id: KindId) {
+    this.captureShelf = id
+    localStorage.setItem('everyday.library.capture', id)
+  }
+
+  setFavouritesOnly(only: boolean) {
+    this.favouritesOnly = only
+    void this.refresh()
+  }
+
+  /** Is anything beyond the defaults narrowing the shelf? */
+  get narrowed(): boolean {
+    return this.filter !== 'all' || this.favouritesOnly || this.query.trim() !== ''
+  }
+
+  clearFilters() {
+    this.filter = 'all'
+    this.favouritesOnly = false
+    this.query = ''
+    if (this.#queryTimer) clearTimeout(this.#queryTimer)
+    this.#queryTimer = null
+    void this.refresh()
   }
 
   /** Debounced, so typing does not fire a query per keystroke. */
@@ -609,9 +658,20 @@ class LibraryState {
     return this.kinds.filter((k) => k.visible)
   }
 
-  /** The shelf a new item goes on when the everything view is open. */
+  /**
+   * The shelf a new item goes on.
+   *
+   * The open one, if a shelf is open. Otherwise whichever the capture line
+   * was last pointed at -- and only then the first shelf, for a vault where
+   * nobody has chosen yet. See `captureShelf` for why the last of those
+   * three was doing all the work and should not have been.
+   */
   get defaultShelf(): KindInfo | null {
-    return this.kind ?? this.visibleKinds[0] ?? this.kinds[0] ?? null
+    if (this.kind) return this.kind
+    const chosen = this.captureShelf
+      ? this.kinds.find((k) => k.id === this.captureShelf && k.visible)
+      : null
+    return chosen ?? this.visibleKinds[0] ?? this.kinds[0] ?? null
   }
 
   /** What this shelf calls a status. Falls back to the plain word. */

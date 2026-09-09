@@ -13,10 +13,14 @@
   // panel that looked ready and then failed on the first message would be the
   // worst of the three.
 
+  import { onDestroy } from 'svelte'
   import { agent } from '../lib/agent.svelte'
+  import { renderMarkdown } from '../lib/markdown'
+  import { panels } from '../lib/panels.svelte'
   import { app } from '../lib/state.svelte'
   import { todo } from '../lib/todo.svelte'
   import { library } from '../lib/library.svelte'
+  import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import ToolCardView from './ToolCard.svelte'
 
@@ -24,6 +28,96 @@
   let box = $state<HTMLTextAreaElement | null>(null)
   let scroller = $state<HTMLDivElement | null>(null)
   let showHistory = $state(false)
+
+  // ── How wide the rail is ─────────────────────────────────────────────
+  //
+  // It was 340px and nothing else. That is a reasonable width for a question
+  // and a two-line answer, and the wrong one for everything else this panel
+  // now draws: a table of tasks, a fenced block of configuration, a numbered
+  // list of eleven things. Any of those in a 340px column is a column of
+  // wrapped fragments.
+  //
+  // Remembered across launches, like whether the rail is open at all, and
+  // for the same reason: it is a working preference rather than a mood.
+
+  const MIN_WIDTH = 300
+  /** Never more than this share of the window: the app is the point. */
+  const MAX_SHARE = 0.62
+
+  let width = $state(Number(localStorage.getItem('everyday:assistant-width')) || 380)
+  let dragging = $state(false)
+
+  /** Clamp to the window, so a rail dragged wide on a big display comes back. */
+  function clamp(px: number): number {
+    return Math.max(MIN_WIDTH, Math.min(px, Math.round(window.innerWidth * MAX_SHARE)))
+  }
+
+  function startResize(event: PointerEvent) {
+    event.preventDefault()
+    dragging = true
+    const startX = event.clientX
+    const startWidth = width
+    // Captured on the handle, so the drag survives the pointer outrunning it
+    // -- which it does immediately, because the panel is what moves.
+    const handle = event.currentTarget as HTMLElement
+    handle.setPointerCapture(event.pointerId)
+
+    const move = (e: PointerEvent) => {
+      // Leftwards is wider: the rail is on the right-hand edge.
+      width = clamp(startWidth + (startX - e.clientX))
+    }
+    const end = () => {
+      dragging = false
+      handle.releasePointerCapture(event.pointerId)
+      handle.removeEventListener('pointermove', move)
+      handle.removeEventListener('pointerup', end)
+      handle.removeEventListener('pointercancel', end)
+      localStorage.setItem('everyday:assistant-width', String(width))
+    }
+    handle.addEventListener('pointermove', move)
+    handle.addEventListener('pointerup', end)
+    handle.addEventListener('pointercancel', end)
+  }
+
+  /** The keyboard's version of the drag. A rail nobody can resize by hand. */
+  function nudge(event: KeyboardEvent) {
+    const step = event.shiftKey ? 48 : 16
+    if (event.key === 'ArrowLeft') width = clamp(width + step)
+    else if (event.key === 'ArrowRight') width = clamp(width - step)
+    else return
+    event.preventDefault()
+    localStorage.setItem('everyday:assistant-width', String(width))
+  }
+
+  /** Which turn's copy button has just been pressed, for the tick. */
+  let copied = $state<string | null>(null)
+  let copiedTimer: ReturnType<typeof setTimeout> | null = null
+
+  /**
+   * Put a reply on the clipboard as the Markdown it arrived as.
+   *
+   * Deliberately the source rather than the rendered text: what comes back
+   * is usually going somewhere that understands Markdown -- a note, an
+   * issue, the entry you were writing -- and flattening the list you are
+   * copying is not a kindness. Selecting by hand still gets the plain text,
+   * which is the other half of why the log is selectable at all.
+   */
+  async function copy(id: string, text: string) {
+    try {
+      await navigator.clipboard.writeText(text)
+      copied = id
+      if (copiedTimer) clearTimeout(copiedTimer)
+      copiedTimer = setTimeout(() => {
+        copiedTimer = null
+        copied = null
+      }, 1600)
+    } catch {
+      /* a clipboard the webview refuses is not worth a dialog */
+    }
+  }
+  onDestroy(() => {
+    if (copiedTimer) clearTimeout(copiedTimer)
+  })
 
   /**
    * What the person is looking at, in one line.
@@ -111,7 +205,28 @@
   }
 </script>
 
-<aside class="panel" aria-label="Assistant">
+<aside class="panel" class:dragging style="--panel-w: {width}px" aria-label="Assistant">
+  <!-- The rail's own left edge, as a control. `separator` with an
+       orientation and a value is what a resizer is called in ARIA, and it
+       takes the arrow keys for the same reason every other control here
+       does: a panel only the pointer can size is a panel a keyboard user
+       cannot read a table in. -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_tabindex -->
+  <div
+    class="grip"
+    role="separator"
+    aria-orientation="vertical"
+    aria-label="Width of the assistant"
+    aria-valuenow={width}
+    tabindex="0"
+    onpointerdown={startResize}
+    onkeydown={nudge}
+    ondblclick={() => {
+      width = 380
+      localStorage.setItem('everyday:assistant-width', String(width))
+    }}
+  ></div>
+
   <header class="head">
     <button
       class="ghost"
@@ -138,7 +253,7 @@
   {#if showHistory}
     <div class="history">
       {#if agent.threads.length === 0}
-        <p class="empty">Nothing yet.</p>
+        <p class="none">Nothing yet.</p>
       {:else}
         {#each agent.threads as thread (thread.id)}
           <div class="thread" class:on={thread.id === agent.conversationId}>
@@ -164,22 +279,29 @@
          what is missing and where to fix it, rather than presenting a box
          that fails on the first message. -->
     <div class="unset">
-      <p class="lede">The assistant is not set up yet.</p>
-      <p class="note">
-        Choose a model and add a key in Settings. A model running on this machine — Ollama or LM
-        Studio — needs only its address, and nothing you write leaves the machine.
-      </p>
+      <EmptyState lead="The assistant is not set up yet.">
+        {#snippet icon()}<Icon name="sparkle" size={28} weight={1.4} />{/snippet}
+        {#snippet note()}
+          Choose a model and add a key in Settings. A model running on this machine — Ollama or LM
+          Studio — needs only its address, and nothing you write leaves the machine.
+        {/snippet}
+        {#snippet action()}
+          <button class="btn btn-primary" onclick={() => panels.openSettings('assistant')}>
+            Set it up
+          </button>
+        {/snippet}
+      </EmptyState>
     </div>
   {:else}
     <div class="log" bind:this={scroller} onscroll={onScroll}>
       {#if agent.turns.length === 0}
-        <div class="opening">
-          <p class="lede">Ask about anything in this vault.</p>
-          <p class="note">
+        <EmptyState lead="Ask about anything in this vault.">
+          {#snippet icon()}<Icon name="sparkle" size={28} weight={1.4} />{/snippet}
+          {#snippet note()}
             It can read and change your journal, tasks, calendar, shelves and trackers. Deletions
             stop and ask first.
-          </p>
-        </div>
+          {/snippet}
+        </EmptyState>
       {/if}
 
       {#each agent.turns as turn (turn.id)}
@@ -194,7 +316,35 @@
               />
             {/each}
             {#if turn.text}
-              <div class="reply">{turn.text}</div>
+              <!-- Rendered rather than shown as it arrived. A model answers
+                   in Markdown whatever it is asked, so `white-space:
+                   pre-wrap` meant literal asterisks around every bold
+                   phrase, numbered lists run together and shell commands in
+                   the same face as the sentence around them. See
+                   `lib/markdown.ts` -- in particular why the renderer is in
+                   this repository and what it escapes before it does
+                   anything else. -->
+              <!-- The rule below is right in general and this is the case
+                   it does not cover: `renderMarkdown` HTML-escapes its input
+                   before a single pattern runs, so every tag in what comes
+                   back was written by that module. It is checked from five
+                   directions in `scripts/markdown.test.mjs`, including a raw
+                   `<script>`, an `onerror` attribute and a `javascript:`
+                   link. -->
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+              <div class="reply md">{@html renderMarkdown(turn.text)}</div>
+              <!-- Under the reply rather than over it, and quiet until the
+                   turn is hovered: a copy button is wanted after reading. -->
+              <div class="acts">
+                <button
+                  class="copy"
+                  onclick={() => void copy(turn.id, turn.text)}
+                  title="Copy this reply"
+                >
+                  <Icon name={copied === turn.id ? 'tick' : 'copy'} size={13} weight={1.8} />
+                  {copied === turn.id ? 'Copied' : 'Copy'}
+                </button>
+              </div>
             {/if}
             {#if turn.error}
               <p class="failed">{turn.error}</p>
@@ -234,13 +384,47 @@
 
 <style>
   .panel {
+    position: relative;
     display: flex;
     flex-direction: column;
-    width: 340px;
+    width: var(--panel-w);
     flex: none;
     min-height: 0;
     border-left: 1px solid var(--border);
     background: var(--bg-panel);
+  }
+
+  /* Four pixels wide and eleven to grab: a resizer you can hit is wider than
+     a resizer you can see, so the target is padded outwards over the pane
+     beside it rather than drawn thicker. */
+  .grip {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -4px;
+    width: 9px;
+    z-index: 5;
+    cursor: col-resize;
+    touch-action: none;
+  }
+  .grip::after {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 4px;
+    width: 2px;
+    background: var(--accent);
+    opacity: 0;
+    transition: opacity var(--fast) var(--ease);
+  }
+  .grip:hover::after,
+  .grip:focus-visible::after,
+  .panel.dragging .grip::after {
+    opacity: 1;
+  }
+  /* Text selection must not fight the drag: without this, pulling the rail
+     wider highlights every reply it passes over. */
+  .panel.dragging {
+    user-select: none;
   }
 
   .head {
@@ -323,29 +507,22 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: var(--sp-3);
+    padding: var(--sp-4) var(--sp-4) var(--sp-6);
     display: flex;
     flex-direction: column;
-    gap: var(--sp-3);
+    gap: var(--sp-5);
+    /* The window sets `user-select: none` so that dragging across a list of
+       rows does not paint them blue. A conversation is the opposite case:
+       it is prose, and an answer you cannot select is an answer you have to
+       retype. Everything inside the log -- and the composer -- opts back in. */
+    user-select: text;
+    cursor: auto;
   }
 
-  .opening,
   .unset {
-    padding: var(--sp-4) var(--sp-3);
-  }
-  .unset {
+    display: flex;
     flex: 1;
-  }
-  .lede {
-    margin: 0 0 var(--sp-2);
-    font-size: var(--text-base);
-    color: var(--fg);
-  }
-  .note {
-    margin: 0;
-    font-size: var(--text-sm);
-    line-height: var(--leading-normal);
-    color: var(--fg-subtle);
+    min-height: 0;
   }
 
   .turn {
@@ -358,7 +535,7 @@
      landmarks you scroll to find. */
   .said {
     align-self: flex-end;
-    max-width: 85%;
+    max-width: 88%;
     margin: 0;
     padding: var(--sp-2) var(--sp-3);
     border-radius: var(--radius-lg);
@@ -372,8 +549,135 @@
     font-size: var(--text-base);
     line-height: var(--leading-normal);
     color: var(--fg);
-    white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+
+  /* Quiet, and only there once the pointer is on the turn: a copy button on
+     every reply, permanently, is a column of grey buttons down the rail. */
+  .acts {
+    display: flex;
+    opacity: 0;
+    transition: opacity var(--fast) var(--ease);
+  }
+  .turn:hover .acts,
+  .acts:focus-within {
+    opacity: 1;
+  }
+  .copy {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    height: 24px;
+    padding: 0 var(--sp-2);
+    margin-left: -6px;
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    font-weight: 550;
+    color: var(--fg-faint);
+  }
+  .copy:hover {
+    background: var(--bg-hover);
+    color: var(--fg-muted);
+  }
+
+  /* ── A rendered reply ──────────────────────────────────────────────
+     The markup all comes from `lib/markdown.ts`, so this is the complete
+     list of what can appear. Sized down from the journal's prose: this is a
+     rail beside the thing being talked about, not the page itself. */
+
+  .md :global(> * + *) {
+    margin-top: 0.7em;
+  }
+  .md :global(h1),
+  .md :global(h2),
+  .md :global(h3),
+  .md :global(h4),
+  .md :global(h5),
+  .md :global(h6) {
+    font-size: var(--text-base);
+    font-weight: 650;
+    line-height: var(--leading-snug);
+    margin-top: 1.3em;
+  }
+  .md :global(h1) {
+    font-size: var(--text-md);
+  }
+  .md :global(strong) {
+    font-weight: 650;
+  }
+  .md :global(em) {
+    font-style: italic;
+  }
+  .md :global(del) {
+    color: var(--fg-subtle);
+  }
+  .md :global(a) {
+    color: var(--accent);
+  }
+  .md :global(ul),
+  .md :global(ol) {
+    padding-left: 1.35em;
+  }
+  .md :global(li + li) {
+    margin-top: 0.25em;
+  }
+  .md :global(li > p) {
+    margin: 0;
+  }
+  .md :global(li > p + p) {
+    margin-top: 0.5em;
+  }
+  .md :global(blockquote) {
+    margin-left: 0;
+    padding-left: 0.9em;
+    border-left: 2px solid var(--border-strong);
+    color: var(--fg-muted);
+  }
+  .md :global(hr) {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 1.2em 0;
+  }
+  .md :global(code) {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    padding: 0.1em 0.35em;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-sunken);
+  }
+  .md :global(pre) {
+    padding: var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-sunken);
+    /* Scrolled rather than wrapped: a wrapped command is a command that
+       cannot be copied and pasted. */
+    overflow-x: auto;
+    font-size: var(--text-sm);
+    line-height: var(--leading-normal);
+  }
+  .md :global(pre code) {
+    padding: 0;
+    border: none;
+    background: none;
+    font-size: inherit;
+    white-space: pre;
+  }
+  .md :global(table) {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: var(--text-sm);
+  }
+  .md :global(th),
+  .md :global(td) {
+    padding: 4px var(--sp-2);
+    border: 1px solid var(--border);
+    text-align: left;
+  }
+  .md :global(th) {
+    background: var(--bg-sunken);
+    font-weight: 650;
   }
 
   .failed {
@@ -430,6 +734,7 @@
   textarea {
     flex: 1;
     resize: none;
+    user-select: text;
     padding: var(--sp-2);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -458,7 +763,7 @@
     opacity: 0.4;
     cursor: default;
   }
-  .empty {
+  .none {
     margin: 0;
     padding: var(--sp-3);
     font-size: var(--text-sm);

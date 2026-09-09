@@ -1,0 +1,456 @@
+// Every keyboard shortcut in the application, in one table.
+//
+// The mechanics -- what a chord is, how a two-key sequence is matched -- are
+// in `keys.ts`, which has no stores in it and is tested on its own. This file
+// is the table and the dispatcher, and it is the only place a shortcut is
+// declared. That matters more than it sounds: shortcuts were previously
+// spread across `App.svelte` (five with a modifier) and `CalendarView.svelte`
+// (seven bare letters, on a `<svelte:window>` handler of its own), so nothing
+// could say what the application's keyboard was, no two of them agreed about
+// what counted as "typing", and there was nowhere for a help sheet to read.
+//
+// # The shape of it
+//
+// Superhuman's, because it is the one that scales past a dozen. A modifier
+// combination for the handful of things every desktop application has --
+// new, find, save, lock -- and for everything else a short *sequence*: `g`
+// then `j` for the journal, `g` then `l` for the library. It reads as a
+// sentence, there are as many as you like of them, and none of them collides
+// with what the platform or the webview has already taken.
+//
+// Bare single letters are reserved for what is on screen: `d`, `w` and `m`
+// switch the calendar's view, `s` stars the open entry, `v` flips the
+// library between covers and a list. Every one of those is `when`-gated to
+// the app that owns it, so the same letter can mean something different in
+// two apps without either of them being ambiguous.
+//
+// # The one rule
+//
+// A bare letter is a letter when the caret is in a field. `whileTyping` is
+// how the few exceptions -- the ones with a modifier in them -- say so.
+
+import { agent } from './agent.svelte'
+import { calendar } from './calendar.svelte'
+import { SEQUENCE_MS, chordOf, isTyping, match, type Binding } from './keys'
+import { library } from './library.svelte'
+import { panels } from './panels.svelte'
+import { app, type Section } from './state.svelte'
+import { todo } from './todo.svelte'
+
+/**
+ * Put the caret in whatever the open app calls its search.
+ *
+ * Found by attribute rather than by selector-per-app: three of the four have
+ * a search field, they are in three different components, and the alternative
+ * is this function knowing all three class names. `data-search` is the
+ * contract, and a fourth app gets the shortcut by wearing it.
+ */
+function focusSearch() {
+  document.querySelector<HTMLInputElement>('[data-search]')?.focus()
+}
+
+/** Is this app the one on screen, and past the lock? */
+function inApp(section: Section): () => boolean {
+  return () => app.screen === 'main' && app.section === section
+}
+
+/** Anywhere past the lock screen, with no dialog over the window. */
+function anywhere(): boolean {
+  return app.screen === 'main' && !panels.modal
+}
+
+/** Move the journal's selection by `step` rows through the loaded list. */
+function stepEntry(step: 1 | -1) {
+  const rows = app.entries
+  if (rows.length === 0) return
+  const at = rows.findIndex((e) => e.id === app.selectedEntry)
+  const next = rows[Math.min(rows.length - 1, Math.max(0, at + step))]
+  if (next && next.id !== app.selectedEntry) void app.openEntry(next.id)
+}
+
+/**
+ * The table.
+ *
+ * Ordered by group, and the groups by how often they are reached for. The
+ * help sheet draws it in this order, so this is also the reading order.
+ */
+export const BINDINGS: Binding[] = [
+  // ── Go to ───────────────────────────────────────────────────────────
+  {
+    keys: 'g j',
+    label: 'Journal',
+    group: 'Go to',
+    when: () => anywhere() && app.canShow('journal'),
+    run: () => app.setSection('journal'),
+  },
+  {
+    keys: 'g t',
+    label: 'Todo',
+    group: 'Go to',
+    when: () => anywhere() && app.canShow('todo'),
+    run: () => app.setSection('todo'),
+  },
+  {
+    keys: 'g c',
+    label: 'Calendar',
+    group: 'Go to',
+    when: () => anywhere() && app.canShow('calendar'),
+    run: () => app.setSection('calendar'),
+  },
+  {
+    keys: 'g l',
+    label: 'Library',
+    group: 'Go to',
+    when: () => anywhere() && app.canShow('library'),
+    run: () => app.setSection('library'),
+  },
+  {
+    keys: 'mod+j',
+    label: 'The next app',
+    group: 'Go to',
+    whileTyping: true,
+    when: () => app.screen === 'main',
+    run: () => app.nextSection(),
+  },
+
+  // ── Everywhere ──────────────────────────────────────────────────────
+  {
+    keys: 'mod+n',
+    label: 'Start the next thing',
+    group: 'Everywhere',
+    whileTyping: true,
+    when: () => app.screen === 'main',
+    run: () => create(),
+  },
+  {
+    keys: 'c',
+    label: 'Start the next thing',
+    group: 'Everywhere',
+    when: anywhere,
+    run: () => create(),
+  },
+  {
+    keys: '/',
+    label: 'Search this app',
+    group: 'Everywhere',
+    when: anywhere,
+    run: focusSearch,
+  },
+  {
+    keys: 'mod+f',
+    label: 'Search this app',
+    group: 'Everywhere',
+    whileTyping: true,
+    when: () => app.screen === 'main',
+    run: focusSearch,
+  },
+  {
+    keys: 'a',
+    label: 'The assistant',
+    group: 'Everywhere',
+    when: () => anywhere() && agent.supported,
+    run: () => void agent.toggle(),
+  },
+  {
+    keys: 'mod+,',
+    label: 'Settings',
+    group: 'Everywhere',
+    whileTyping: true,
+    when: () => app.screen === 'main',
+    run: () => panels.openSettings(),
+  },
+  {
+    keys: 'mod+s',
+    label: 'Write everything to disk now',
+    group: 'Everywhere',
+    whileTyping: true,
+    when: () => app.screen === 'main',
+    run: () => {
+      void app.flush()
+      void todo.flush()
+      void calendar.flush()
+      void library.flush()
+    },
+  },
+  {
+    keys: 'mod+l',
+    label: 'Lock the vault',
+    group: 'Everywhere',
+    whileTyping: true,
+    when: () => app.screen === 'main',
+    run: () => void app.lock(),
+  },
+  {
+    keys: '?',
+    label: 'This list',
+    group: 'Everywhere',
+    when: () => app.screen === 'main' && panels.settings === null,
+    run: () => panels.toggleShortcuts(),
+  },
+
+  // ── Journal ─────────────────────────────────────────────────────────
+  {
+    keys: 'j',
+    label: 'The entry below',
+    group: 'Journal',
+    when: () => anywhere() && inApp('journal')(),
+    run: () => stepEntry(1),
+  },
+  {
+    keys: 'k',
+    label: 'The entry above',
+    group: 'Journal',
+    when: () => anywhere() && inApp('journal')(),
+    run: () => stepEntry(-1),
+  },
+  {
+    keys: 's',
+    label: 'Star this entry',
+    group: 'Journal',
+    when: () => anywhere() && inApp('journal')() && !!app.selectedEntry,
+    run: () => void app.toggleStar(app.selectedEntry!),
+  },
+  {
+    keys: 'p',
+    label: 'Pin this entry to the top',
+    group: 'Journal',
+    when: () => anywhere() && inApp('journal')() && !!app.selectedEntry,
+    run: () => void app.togglePin(app.selectedEntry!),
+  },
+
+  // ── Todo ────────────────────────────────────────────────────────────
+  {
+    keys: 'x',
+    label: 'Show or hide finished tasks',
+    group: 'Todo',
+    when: () => anywhere() && inApp('todo')(),
+    run: () => todo.setStatusFilter(todo.statusFilter === 'done' ? 'open' : 'done'),
+  },
+  {
+    keys: 'b',
+    label: 'The board, or the list',
+    group: 'Todo',
+    when: () => anywhere() && inApp('todo')() && todo.boardable,
+    run: () => todo.setView(todo.view === 'board' ? 'list' : 'board'),
+  },
+
+  // ── Calendar ────────────────────────────────────────────────────────
+  //
+  // These were a `<svelte:window>` handler inside `CalendarView`, which is
+  // why they are the only group here that is a move rather than an addition.
+  {
+    keys: 'd',
+    label: 'One day',
+    group: 'Calendar',
+    when: () => anywhere() && inApp('calendar')(),
+    run: () => calendar.setView('day'),
+  },
+  {
+    keys: 'w',
+    label: 'A week',
+    group: 'Calendar',
+    when: () => anywhere() && inApp('calendar')(),
+    run: () => calendar.setView('week'),
+  },
+  {
+    keys: 'm',
+    label: 'A month',
+    group: 'Calendar',
+    when: () => anywhere() && inApp('calendar')(),
+    run: () => calendar.setView('month'),
+  },
+  {
+    keys: 't',
+    label: 'Jump to today',
+    group: 'Calendar',
+    when: () => anywhere() && inApp('calendar')(),
+    run: () => calendar.goToday(),
+  },
+  {
+    keys: 'ArrowLeft',
+    label: 'Back',
+    group: 'Calendar',
+    when: () => anywhere() && inApp('calendar')(),
+    run: () => calendar.step(-1),
+  },
+  {
+    keys: 'ArrowRight',
+    label: 'Forward',
+    group: 'Calendar',
+    when: () => anywhere() && inApp('calendar')(),
+    run: () => calendar.step(1),
+  },
+  {
+    keys: 'Escape',
+    label: 'Drop the selection',
+    group: 'Calendar',
+    when: () => anywhere() && inApp('calendar')() && calendar.selection !== null,
+    run: () => (calendar.selection = null),
+  },
+  {
+    keys: 'Backspace',
+    label: 'Remove the selected block',
+    group: 'Calendar',
+    when: () => anywhere() && inApp('calendar')() && calendar.selection?.kind === 'block',
+    run: () => removeSelectedBlock(),
+  },
+  {
+    keys: 'Delete',
+    label: 'Remove the selected block',
+    group: 'Calendar',
+    when: () => anywhere() && inApp('calendar')() && calendar.selection?.kind === 'block',
+    run: () => removeSelectedBlock(),
+  },
+
+  // ── Library ─────────────────────────────────────────────────────────
+  {
+    keys: 'v',
+    label: 'Covers, or a list',
+    group: 'Library',
+    when: () => anywhere() && inApp('library')(),
+    run: () => library.setView(library.view === 'grid' ? 'list' : 'grid'),
+  },
+  {
+    keys: 's',
+    label: 'Favourite this item',
+    group: 'Library',
+    when: () => anywhere() && inApp('library')() && !!library.selected,
+    run: () => void library.toggleFavourite(library.selected!),
+  },
+]
+
+/** What "the next thing" means in the app that is open. */
+function create() {
+  if (app.section === 'todo') todo.focusCapture()
+  else if (app.section === 'calendar') void calendar.bookNow()
+  else if (app.section === 'library') library.focusCapture()
+  else void app.newEntry()
+}
+
+function removeSelectedBlock() {
+  const selection = calendar.selection
+  if (selection?.kind === 'block') void calendar.removeBlock(selection.id)
+}
+
+/**
+ * The dispatcher: one window handler, and the half-finished sequence.
+ *
+ * The pending chords are `$state` so the window can show what has been
+ * pressed -- `g …` in the corner -- which is the difference between a
+ * sequence that feels deliberate and one that feels like the keyboard
+ * stopped responding for a second.
+ */
+class Shortcuts {
+  /** The chords pressed so far, when a sequence is half done. */
+  pending = $state<string[]>([])
+  #timer: ReturnType<typeof setTimeout> | null = null
+
+  /** Handle a key press. Returns true if a shortcut took it. */
+  press(event: KeyboardEvent): boolean {
+    const chord = chordOf(event)
+    if (chord === null) return false
+
+    // Escape always abandons a half-finished sequence first, and is then
+    // matched on its own. It is never part of a sequence and never
+    // swallowed on a miss: what it usually closes is whatever is open, and
+    // that is the business of the thing that is open.
+    if (chord === 'Escape') this.#clear()
+
+    const typing = isTyping(event.target)
+    const pressed = chord === 'Escape' ? [chord] : [...this.pending, chord]
+    const { hit, pending } = match(BINDINGS, pressed, typing)
+
+    if (hit) {
+      this.#clear()
+      event.preventDefault()
+      hit.run()
+      return true
+    }
+
+    if (pending) {
+      this.pending = pressed
+      // Swallowed, because the `g` of `g j` must not also reach the page.
+      event.preventDefault()
+      this.#arm()
+      return true
+    }
+
+    // Not a shortcut. If a sequence was in progress it is abandoned here,
+    // and the key is *not* re-interpreted on its own: pressing `g` and then
+    // `q` should do nothing, rather than doing whatever `q` does.
+    if (this.pending.length > 0) {
+      this.#clear()
+      event.preventDefault()
+      return true
+    }
+    return false
+  }
+
+  #arm() {
+    if (this.#timer) clearTimeout(this.#timer)
+    this.#timer = setTimeout(() => {
+      this.#timer = null
+      this.pending = []
+    }, SEQUENCE_MS)
+  }
+
+  #clear() {
+    if (this.#timer) clearTimeout(this.#timer)
+    this.#timer = null
+    if (this.pending.length > 0) this.pending = []
+  }
+}
+
+export const shortcuts = new Shortcuts()
+
+/**
+ * The bindings that apply right now, grouped, for the help sheet.
+ *
+ * `panels.listing` is raised for the duration, so the sheet does not
+ * disqualify the very shortcuts it exists to list -- see the field's own
+ * comment. It is lowered in a `finally`, because a `when` closure reads four
+ * stores and a throw from any of them would otherwise leave the window
+ * believing no dialog is open.
+ */
+export function applicableBindings(): { group: string; items: Binding[] }[] {
+  panels.listing = true
+  try {
+    return group(BINDINGS)
+  } finally {
+    panels.listing = false
+  }
+}
+
+function group(bindings: Binding[]): { group: string; items: Binding[] }[] {
+  const out: { group: string; items: Binding[] }[] = []
+  const seen = new Map<string, Set<string>>()
+  for (const binding of bindings) {
+    if (binding.when && !binding.when()) continue
+    let group = out.find((g) => g.group === binding.group)
+    if (!group) {
+      group = { group: binding.group, items: [] }
+      out.push(group)
+      seen.set(binding.group, new Set())
+    }
+    // Two chords for one action -- `c` and Ctrl+N, `/` and Ctrl+F -- is one
+    // row in the sheet with both spellings on it, not two rows saying the
+    // same thing. The first one declared wins the row.
+    const labels = seen.get(binding.group)!
+    if (labels.has(binding.label)) continue
+    labels.add(binding.label)
+    group.items.push(binding)
+  }
+  return out
+}
+
+/** Every spelling of one action, for the row the sheet draws. */
+export function spellings(binding: Binding): string[] {
+  panels.listing = true
+  try {
+    return BINDINGS.filter(
+      (b) => b.group === binding.group && b.label === binding.label && (!b.when || b.when()),
+    ).map((b) => b.keys)
+  } finally {
+    panels.listing = false
+  }
+}
