@@ -556,6 +556,14 @@ export interface Capabilities {
    * assistant's note tools with it.
    */
   notes: boolean
+  /**
+   * Backend implements the routine store, so the assistant can have standing
+   * work and a log of what it did.
+   *
+   * False hides the routines. The rail still works: talking to it needs
+   * nothing from there.
+   */
+  routines: boolean
 }
 
 export interface VaultStatus {

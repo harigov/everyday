@@ -34,6 +34,7 @@ use crate::store::calendars::CalendarStore;
 use crate::store::library::LibraryStore;
 use crate::store::notes::NoteStore;
 use crate::store::purpose::PurposeStore;
+use crate::store::routines::RoutineStore;
 use crate::store::tasks::TaskStore;
 use crate::store::trackers::TrackerStore;
 use jiff::civil::Date;
@@ -98,6 +99,13 @@ pub struct Capabilities {
     /// routine puts prose it has more than a paragraph of.
     #[serde(default)]
     pub notes: bool,
+    /// Backend implements [`routines::RoutineStore`], so the assistant can
+    /// have standing work and a log of what it did.
+    ///
+    /// False hides the Assistant app's routines entirely. The rail still
+    /// works: talking to it needs nothing from here.
+    #[serde(default)]
+    pub routines: bool,
     /// Backend implements [`agent::AgentStore`], so the assistant has
     /// somewhere to keep its settings, its threads and its memory.
     ///
@@ -447,6 +455,15 @@ pub trait JournalStore: Send + Sync {
         None
     }
 
+    /// Storage for the assistant's standing work, if this backend has any.
+    ///
+    /// Same shape and same reasoning as the five above. See
+    /// [`routines`](crate::store::routines) for the two records it holds and
+    /// the one cascade it does have.
+    fn routines(&self) -> Option<&dyn RoutineStore> {
+        None
+    }
+
     /// Storage for the assistant, if this backend has any.
     ///
     /// Same shape and same reasoning as the four above. See
@@ -771,6 +788,7 @@ pub mod calendars;
 pub mod library;
 pub mod notes;
 pub mod purpose;
+pub mod routines;
 pub mod tasks;
 pub mod trackers;
 

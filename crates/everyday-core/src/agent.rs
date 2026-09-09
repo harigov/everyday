@@ -489,12 +489,31 @@ pub struct Conversation {
     /// Bumped on every message, so the history list sorts by recency of use
     /// rather than of creation.
     pub updated_at: Timestamp,
+    /// The routine run this thread is the transcript of, if it is one.
+    ///
+    /// Inside the payload rather than a column, because it is only ever read
+    /// after the row has been decrypted anyway -- the history list opens every
+    /// thread for its title. It is how the rail keeps a week of morning briefs
+    /// out of a list of conversations somebody actually had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<crate::id::RoutineRunId>,
 }
 
 impl Conversation {
     pub fn new() -> Self {
         let now = Timestamp::now();
-        Self { id: ConversationId::new(), title: String::new(), created_at: now, updated_at: now }
+        Self {
+            id: ConversationId::new(),
+            title: String::new(),
+            created_at: now,
+            updated_at: now,
+            run_id: None,
+        }
+    }
+
+    /// A thread that is a routine run's transcript rather than a chat.
+    pub fn for_run(run: crate::id::RoutineRunId, title: impl Into<String>) -> Self {
+        Self { title: title.into(), run_id: Some(run), ..Self::new() }
     }
 
     /// Longest a derived title may be.

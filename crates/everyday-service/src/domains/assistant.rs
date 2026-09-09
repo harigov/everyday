@@ -45,6 +45,14 @@ pub struct SetKey {
 pub struct Conversations {
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Include the transcripts of routine runs.
+    ///
+    /// Off by default, which is what the rail's history list wants: a week of
+    /// morning briefs is not a list of conversations somebody had. The
+    /// Assistant app asks for a run's transcript by its run rather than by
+    /// finding it in here.
+    #[serde(default)]
+    pub include_runs: bool,
 }
 
 #[derive(Deserialize)]
@@ -124,7 +132,8 @@ async fn list_conversations(
 ) -> CommandResult<Vec<ConversationSummary>> {
     let vault = svc.require()?;
     blocking(move || {
-        let query = ConversationQuery { limit: args.limit, offset: 0 };
+        let query =
+            ConversationQuery { limit: args.limit, offset: 0, chats_only: !args.include_runs };
         vault
             .conversations(&query)?
             .into_iter()
@@ -226,7 +235,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "list_conversations", scope: Agent, effect: Read,
         args: Conversations, returns: "ConversationSummary[]",
-        signature: &[("limit", "number | null", false)],
+        signature: &[("limit", "number | null", false), ("includeRuns", "boolean", false)],
         run: list_conversations,
     },
     command! {

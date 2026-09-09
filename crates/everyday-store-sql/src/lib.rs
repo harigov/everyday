@@ -111,6 +111,7 @@ mod notes;
 mod pool;
 mod profile;
 mod purpose;
+mod routines;
 mod tasks;
 mod trackers;
 
@@ -281,6 +282,7 @@ impl SqlStore {
             trackers: true,
             goals: true,
             notes: true,
+            routines: true,
             agent: true,
         }
     }

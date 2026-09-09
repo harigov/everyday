@@ -13,6 +13,7 @@ use everyday_core::store::calendars::CalendarStore;
 use everyday_core::store::library::LibraryStore;
 use everyday_core::store::notes::NoteStore;
 use everyday_core::store::purpose::PurposeStore;
+use everyday_core::store::routines::RoutineStore;
 use everyday_core::store::tasks::TaskStore;
 use everyday_core::store::trackers::TrackerStore;
 use everyday_core::store::{
@@ -53,6 +54,10 @@ impl JournalStore for SqlStore {
     }
 
     fn notes(&self) -> Option<&dyn NoteStore> {
+        Some(self)
+    }
+
+    fn routines(&self) -> Option<&dyn RoutineStore> {
         Some(self)
     }
 

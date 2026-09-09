@@ -69,6 +69,7 @@ pub mod note;
 pub mod profile;
 pub mod purpose;
 pub mod richtext;
+pub mod routine;
 pub mod search;
 pub mod store;
 pub mod task;
@@ -85,7 +86,8 @@ pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatu
 pub use error::{Error, Result};
 pub use id::{
     BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, GoalId, ItemId, JournalId,
-    KindId, LogId, MemoryId, MessageId, NoteId, ProjectId, ReadingId, RoleId, TaskId, TrackerId,
+    KindId, LogId, MemoryId, MessageId, NoteId, ProjectId, ReadingId, RoleId, RoutineId,
+    RoutineRunId, TaskId, TrackerId,
 };
 pub use library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,
@@ -98,6 +100,7 @@ pub use purpose::{
     Goal, GoalActivity, GoalStatus, Purpose, PurposeMinutes, Role, RoleEventMinutes,
 };
 pub use richtext::RichDoc;
+pub use routine::{Due, Outcome, Routine, RoutineRun, Trigger, Weekday};
 pub use store::agent::{AgentStore, ConversationQuery};
 pub use store::calendars::{CalendarStore, EventQuery};
 pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};

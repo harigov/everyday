@@ -1793,6 +1793,7 @@ function status(): VaultStatus {
           transactional: true,
           humanReadable: false,
           notes: true,
+          routines: true,
           tasks: true,
           calendars: true,
           library: true,
