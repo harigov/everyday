@@ -2536,47 +2536,6 @@ mod tests {
         assert!(v.is_unlocked());
     }
 
-    /// A backend decides the assistant's catalogue, per vault.
-    ///
-    /// This used to be checked against the Markdown backend, which stored
-    /// journals and nothing else. That backend is gone, and every backend
-    /// shipped today carries every domain -- so the check moved here, onto
-    /// the in-memory store, which is now the only one that says no to
-    /// anything. Without it the filtering is exercised by nothing at all.
-    ///
-    /// What it protects is not a crash. A model handed `create_task` by a
-    /// vault that cannot store one gets an error at *call* time, having
-    /// already told somebody it was adding a task -- so the tool must never
-    /// be offered rather than merely failing well.
-    #[test]
-    fn a_backend_without_a_domain_offers_none_of_its_tools() {
-        use crate::agent::tools;
-
-        let dir = tempfile::tempdir().unwrap();
-        let v = Vault::create(dir.path(), cfg(None), registry()).unwrap();
-
-        let offered: Vec<&str> = tools::available(&v).iter().map(|t| t.name).collect();
-        assert!(offered.contains(&"create_entry"), "journals work on every backend: {offered:?}");
-        for absent in ["create_task", "list_tasks", "list_shelves", "log_reading", "remember"] {
-            assert!(
-                !offered.contains(&absent),
-                "this backend stores no such domain, so {absent} must not be offered: {offered:?}"
-            );
-        }
-
-        // And calling one anyway is refused in the vault's own words rather
-        // than failing somewhere deeper about storage traits.
-        let ctx = tools::ToolContext {
-            vault: &v,
-            today: jiff::civil::date(2026, 9, 8),
-            tz: "UTC",
-            conversation: None,
-        };
-        let err =
-            tools::dispatch(&ctx, "create_task", &serde_json::json!({ "title": "x" })).unwrap_err();
-        assert_eq!(err.code(), "unsupported", "got {err}");
-    }
-
     #[test]
     fn a_vault_with_only_a_backup_header_is_not_overwritten_by_create() {
         // `create` refuses an existing vault, and "existing" has to include

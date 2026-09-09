@@ -43,7 +43,9 @@
 
   // Whether the assistant's rail was showing is remembered across launches:
   // it is a panel somebody either works with or does not, and reopening it
-  // every session is as wrong as closing it every session.
+  // every session is as wrong as closing it every session. What it holds is
+  // loaded by the panel itself -- see `ensureLoaded`, which also covers the
+  // rail still being open after a lock cleared everything behind it.
   agent.restore()
 
   // Each app tints the window with the accent of whatever it has selected:

@@ -48,7 +48,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use everyday_core::agent::tools::{self, Effect, ToolContext};
-use everyday_core::agent::{AgentSettings, Conversation, Message as VaultMessage, Role};
+use everyday_core::agent::{AgentSettings, Conversation, Message as VaultMessage, Role, ToolCall};
 use everyday_core::model::{system_tz, today_local};
 use everyday_core::{ConversationId, Vault};
 use rig_agent::agent::hook::{
@@ -60,6 +60,7 @@ use rig_agent::core::tool::{PortableDynamicTool, ToolExecutionError, ToolOutput}
 use rig_agent::prelude::*;
 use rig_agent::{Agent, AgentBuilder, AgentHook, HookContext};
 use serde::Serialize;
+use serde_json::Value;
 use tokio::sync::oneshot;
 
 use crate::error::{CommandError, CommandResult};
@@ -149,6 +150,22 @@ struct ConfirmGate {
     /// is still installed, because the events it emits are also how the panel
     /// draws what ran.
     enabled: bool,
+    /// For naming what a destructive call is about to act on. Every such tool
+    /// takes an id and nothing else, so the name has to be read.
+    vault: Arc<Vault>,
+    today: jiff::civil::Date,
+    tz: String,
+    /// What ran this turn, in call order, so the thread is written down with
+    /// its tool calls rather than only its prose. See `run_turn`.
+    ledger: Arc<Mutex<Vec<Ran>>>,
+}
+
+/// One tool call and what it returned, kept for the record.
+#[derive(Clone)]
+struct Ran {
+    call: ToolCall,
+    /// `None` until the result arrives -- a call the run abandoned keeps it.
+    outcome: Option<std::result::Result<String, String>>,
 }
 
 impl AgentHook for ConfirmGate {
@@ -164,6 +181,15 @@ impl AgentHook for ConfirmGate {
         let arguments: serde_json::Value =
             serde_json::from_str(event.args).unwrap_or(serde_json::Value::Null);
 
+        self.ledger.lock().unwrap().push(Ran {
+            call: ToolCall {
+                id: call_id.clone(),
+                name: name.clone(),
+                arguments: arguments.clone(),
+            },
+            outcome: None,
+        });
+
         let destructive = tools::find(&name).is_some_and(|t| t.effect == Effect::Destructive);
         if !destructive || !self.enabled {
             let _ = self.channel.send(AgentEvent::ToolStarted { call_id, name, arguments });
@@ -174,7 +200,7 @@ impl AgentHook for ConfirmGate {
         let _ = self.channel.send(AgentEvent::ConfirmationRequired {
             call_id: call_id.clone(),
             name: name.clone(),
-            subject: describe_subject(&arguments),
+            subject: self.describe(&name, &arguments),
             arguments: arguments.clone(),
         });
 
@@ -206,32 +232,41 @@ impl AgentHook for ConfirmGate {
         _ctx: &HookContext,
         event: ToolResultEvent<'_>,
     ) -> ToolResultAction {
+        let ok = event.raw_result.is_success();
         let summary = match event.raw_result.error() {
             Some(e) => e.to_string(),
             None => summarise(event.raw_result.output()),
         };
+
+        // Recorded against the call it answers, so a reopened thread shows
+        // what the assistant did rather than only what it said about it.
+        let mut ledger = self.ledger.lock().unwrap();
+        if let Some(ran) = ledger.iter_mut().find(|r| r.call.id == event.internal_call_id) {
+            ran.outcome = Some(if ok { Ok(summary.clone()) } else { Err(summary.clone()) });
+        }
+        drop(ledger);
+
         let _ = self.channel.send(AgentEvent::ToolFinished {
             call_id: event.internal_call_id.to_string(),
             name: event.tool_name.to_string(),
-            ok: event.raw_result.is_success(),
+            ok,
             summary,
         });
         ToolResultAction::Keep
     }
 }
 
-/// The best short name for what a destructive call is about to act on.
-///
-/// Only ever the argument the tool itself takes, so this cannot be wrong in
-/// an interesting way -- and an id is a poor thing to ask somebody to approve,
-/// which is why the panel also gets the whole argument object to draw.
-fn describe_subject(arguments: &serde_json::Value) -> String {
-    for key in ["title", "name", "fact", "entry_id", "task_id", "project_id", "item_id"] {
-        if let Some(v) = arguments.get(key).and_then(|v| v.as_str()) {
-            return v.to_string();
-        }
+impl ConfirmGate {
+    /// What this call is about to act on, named rather than identified.
+    ///
+    /// Falls back to nothing rather than to an id: a card that says "delete
+    /// project" with no subject asks somebody to think, and one that says
+    /// "delete 0192f8b2-..." asks them to guess.
+    fn describe(&self, name: &str, arguments: &Value) -> String {
+        let ctx =
+            ToolContext { vault: &self.vault, today: self.today, tz: &self.tz, conversation: None };
+        tools::describe(&ctx, name, arguments).unwrap_or_default()
     }
-    String::new()
 }
 
 /// Wrap the core catalogue as rig tools and assemble the agent.
@@ -379,10 +414,15 @@ pub async fn run_turn(turn: Turn) -> CommandResult<()> {
     let _ = channel.send(AgentEvent::Started { message_id: reply.id.to_string() });
 
     let agent = build(vault.clone(), &settings, key, conversation, context.as_deref())?;
+    let ledger: Arc<Mutex<Vec<Ran>>> = Arc::default();
     let gate = ConfirmGate {
         pending: pending.clone(),
         channel: channel.clone(),
         enabled: settings.confirm_destructive,
+        vault: vault.clone(),
+        today: today_local(),
+        tz: system_tz(),
+        ledger: ledger.clone(),
     };
 
     let outcome =
@@ -392,19 +432,61 @@ pub async fn run_turn(turn: Turn) -> CommandResult<()> {
     // confirmation card that outlived its run would answer the next one.
     pending.clear();
 
+    // What ran, whether or not the turn as a whole succeeded. A run that
+    // failed after deleting a project must still show the deletion.
+    let ran = std::mem::take(&mut *ledger.lock().unwrap());
+
     match outcome {
         Ok(text) => {
-            let finished = VaultMessage { content: text, ..reply.clone() };
+            let finished = VaultMessage {
+                content: text,
+                tool_calls: ran.iter().map(|r| r.call.clone()).collect(),
+                ..reply.clone()
+            };
             vault.save_message(&finished)?;
+            write_results(&vault, conversation, &ran);
             let _ = channel.send(AgentEvent::Finished { message_id: reply.id.to_string() });
             Ok(())
         }
         Err(e) => {
-            // The empty assistant turn is removed rather than left behind as
-            // a silent blank reply; the failure is shown by the panel instead.
-            let _ = vault.delete_message(reply.id);
+            if ran.is_empty() {
+                // Nothing happened, so the empty assistant turn is removed
+                // rather than left behind as a silent blank reply; the
+                // failure is shown by the panel instead.
+                let _ = vault.delete_message(reply.id);
+            } else {
+                // Something did happen. The turn is kept, holding what ran,
+                // because a thread that shows no sign of a delete that
+                // actually took place is worse than an empty reply.
+                let kept = VaultMessage {
+                    tool_calls: ran.iter().map(|r| r.call.clone()).collect(),
+                    ..reply.clone()
+                };
+                let _ = vault.save_message(&kept);
+                write_results(&vault, conversation, &ran);
+            }
             let _ = channel.send(AgentEvent::Failed { message: e.message.clone() });
             Err(e)
+        }
+    }
+}
+
+/// Write one `Role::Tool` message per call that reported.
+///
+/// After the assistant turn that holds the calls, because that is the order
+/// the panel folds them in -- a result looks backwards for the turn that
+/// asked for it. A call with no outcome is one the run abandoned, and is
+/// left without a result rather than given a made-up one.
+///
+/// Best effort: the reply is already saved, and failing the whole turn
+/// because a history line did not land would report "nothing happened" for
+/// something that did.
+fn write_results(vault: &Vault, conversation: ConversationId, ran: &[Ran]) {
+    for entry in ran {
+        let Some(outcome) = entry.outcome.clone() else { continue };
+        let message = VaultMessage::tool_result(conversation, &entry.call, outcome);
+        if let Err(e) = vault.save_message(&message) {
+            tracing::warn!(error = %e, "could not write down a tool result");
         }
     }
 }

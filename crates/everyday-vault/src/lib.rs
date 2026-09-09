@@ -1262,6 +1262,91 @@ mod tests {
     }
 
     #[test]
+    fn a_confirmation_names_what_it_will_destroy_rather_than_its_id() {
+        // The gate exists so somebody can catch a misreading, and it can only
+        // do that if the card says what the thing is. Every destructive tool
+        // takes an id and nothing else, so the name has to be read back out
+        // of the vault before the question is asked -- the tools themselves
+        // read it, but a moment too late to be asked about.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        vault.seed_library().unwrap();
+
+        let project = call(&vault, "create_project", serde_json::json!({ "name": "The deck" }));
+        let task = call(
+            &vault,
+            "create_task",
+            serde_json::json!({ "title": "Order the timber", "project_id": project["id"] }),
+        );
+        let shelf = call(&vault, "list_shelves", serde_json::json!({}))[0]["id"].clone();
+        let item = call(
+            &vault,
+            "create_item",
+            serde_json::json!({ "shelf_id": shelf, "title": "Piranesi" }),
+        );
+        let journal = everyday_core::Journal::new("Daily");
+        vault.save_journal(&journal).unwrap();
+        let entry = call(
+            &vault,
+            "create_entry",
+            serde_json::json!({ "journal_id": journal.id.to_string(), "body": "Cut the joists." }),
+        );
+        let memory = call(&vault, "remember", serde_json::json!({ "fact": "Plans on Sundays" }));
+        call(
+            &vault,
+            "create_time_block",
+            serde_json::json!({
+                "date": "2026-09-09",
+                "start_time": "09:00",
+                "end_time": "10:00",
+                "task_id": task["id"],
+            }),
+        );
+        let block = call(
+            &vault,
+            "list_time_blocks",
+            serde_json::json!({ "from": "2026-09-09", "to": "2026-09-09" }),
+        )["blocks"][0]["id"]
+            .clone();
+
+        let cases = [
+            ("delete_project", "project_id", project["id"].clone(), "The deck"),
+            ("delete_task", "task_id", task["id"].clone(), "Order the timber"),
+            ("delete_item", "item_id", item["id"].clone(), "Piranesi"),
+            ("delete_entry", "entry_id", entry["id"].clone(), "Cut the joists."),
+            ("forget", "memory_id", memory["id"].clone(), "Plans on Sundays"),
+            ("delete_time_block", "block_id", block, "Order the timber on 2026-09-09"),
+        ];
+
+        for (tool, key, id, expected) in cases {
+            let args = serde_json::json!({ key: id });
+            let described = tools::describe(&ctx(&vault), tool, &args)
+                .unwrap_or_else(|| panic!("{tool} described nothing"));
+            assert_eq!(described, expected, "{tool} should name what it will destroy");
+            assert!(
+                !described.contains('-')
+                    || !described.chars().any(|c| c.is_ascii_hexdigit())
+                    || described == expected,
+                "{tool} must not fall back to an id: {described}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_confirmation_for_something_that_is_gone_says_nothing_rather_than_guessing() {
+        // A card with no subject asks somebody to think about the tool name.
+        // One holding a stale id asks them to believe it.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        let args = serde_json::json!({ "task_id": everyday_core::TaskId::new().to_string() });
+        assert_eq!(tools::describe(&ctx(&vault), "delete_task", &args), None);
+
+        // And a tool that destroys nothing has nothing to describe.
+        assert_eq!(tools::describe(&ctx(&vault), "list_tasks", &serde_json::json!({})), None);
+    }
+
+    #[test]
     fn the_catalogue_marks_exactly_the_tools_the_confirmation_gate_must_catch() {
         // The gate reads `Effect`, so this is the list that decides what a
         // person gets asked about. Worth asserting by name rather than by

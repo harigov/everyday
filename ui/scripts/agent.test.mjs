@@ -172,6 +172,67 @@ const { applyEvent, emptyTurn, isLoopback, replay, settle } =
   )
 }
 
+// ── folding into a turn that lives in a $state array ──────────────────
+//
+// The check above this one runs `applyEvent` on plain objects, and that is
+// exactly why it missed the bug this replaces: `$state` arrays store a
+// *proxy* of what is pushed, so a caller that keeps the reference it pushed
+// mutates an object nothing is watching. The panel showed an empty reply
+// for every turn -- no prose, no tool cards, and therefore no confirm
+// buttons on a destructive call.
+//
+// `proxy` is Svelte's own, from the copy this interface builds against, so
+// this checks the real behaviour rather than a model of it.
+{
+  const { proxy } = await server.ssrLoadModule('svelte/internal/client')
+
+  const turns = proxy([])
+  turns.push(emptyTurn('assistant', 'local-1'))
+
+  // Read the way the panel reads, so the proxy has cached its sources --
+  // which is the step that made the old bug invisible on a fresh object.
+  assert.equal(turns[0].text, '')
+  assert.equal(turns[0].cards.length, 0)
+
+  // The reference the store must use is the one read back out, not the one
+  // it pushed.
+  const reply = turns[turns.length - 1]
+  assert.notEqual(reply, undefined)
+
+  applyEvent(reply, { type: 'started', messageId: 'msg-7' })
+  applyEvent(reply, { type: 'delta', text: 'Added it.' })
+  applyEvent(reply, {
+    type: 'confirmationRequired',
+    callId: 'c1',
+    name: 'delete_task',
+    subject: 'Order the timber',
+    arguments: {},
+  })
+
+  assert.equal(turns[0].text, 'Added it.', 'streamed prose must reach the array the panel reads')
+  assert.equal(turns[0].cards.length, 1, 'and so must a card, or its buttons never appear')
+  assert.equal(turns[0].id, 'msg-7')
+
+  // And the failure mode itself, so this cannot regress quietly: mutating
+  // the pushed reference instead updates nothing.
+  const raw = emptyTurn('assistant', 'local-2')
+  turns.push(raw)
+  assert.equal(turns[1].text, '')
+  applyEvent(raw, { type: 'delta', text: 'invisible' })
+  assert.equal(turns[1].text, '', 'mutating the pushed reference is exactly the bug')
+}
+
+// Local ids are unique, because the panel keys its `{#each}` on them and two
+// turns sharing a key is a runtime error that takes the render down. A turn
+// keeps its local id whenever a request fails before the backend names it.
+{
+  const seen = new Set()
+  for (const turn of [emptyTurn('user', 'local-1'), emptyTurn('assistant', 'local-2')]) {
+    assert.ok(!seen.has(turn.id), 'ids must not repeat')
+    seen.add(turn.id)
+  }
+}
+
 // ── replaying a stored thread ─────────────────────────────────────────
 
 // A declaration rather than an arrow returning an object literal: an arrow

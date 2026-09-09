@@ -67,19 +67,37 @@
     if (pinned && scroller) scroller.scrollTop = scroller.scrollHeight
   })
 
+  // The rail can be on screen without anyone having clicked it this session
+  // -- restored at startup, or still open after a lock cleared its state --
+  // so it loads its own settings rather than relying on the toggle. Without
+  // this a configured assistant draws its "not set up yet" screen until the
+  // panel is closed and reopened.
+  $effect(() => {
+    void agent.ensureLoaded()
+  })
+
   // The panel is opened in order to type in it, so the caret starts here
   // rather than making the first thing anyone does be a click.
+  //
+  // Depends on the textarea existing and on nothing else. It used to read
+  // `agent.ready`, which reads the settings -- so every save in the Assistant
+  // dialog re-ran this and pulled focus out of the dialog into the composer
+  // behind it, and the next thing typed went to the wrong box.
   $effect(() => {
-    if (agent.ready) box?.focus()
+    box?.focus()
   })
 
   async function send() {
     const text = draft
+    // Cleared optimistically, because the box is disabled for the whole turn
+    // and leaving the question in it reads as though nothing was sent. Put
+    // back if the store refuses it -- which it does when there is no thread
+    // open -- so a paragraph is never silently eaten.
     draft = ''
-    await agent.send(text, context)
-    // A turn takes seconds and the box is disabled throughout, which drops
-    // focus. Putting it back is what makes a second question as cheap to ask
-    // as the first.
+    const accepted = await agent.send(text, context)
+    if (!accepted) draft = text
+    // A turn takes seconds with the box disabled, which drops focus. Putting
+    // it back is what makes a second question as cheap to ask as the first.
     box?.focus()
   }
 

@@ -82,6 +82,19 @@ class AgentState {
     this.open = localStorage.getItem('everyday:assistant-open') === '1'
   }
 
+  /**
+   * Load if the panel is showing and has nothing.
+   *
+   * `toggle` is not enough on its own. The rail can be on screen without
+   * anybody having clicked it this session -- restored at startup, or still
+   * open after a lock cleared its state -- and in both cases a fully
+   * configured assistant would otherwise draw its "not set up yet" screen
+   * until somebody closed the panel and opened it again.
+   */
+  async ensureLoaded() {
+    if (this.open && this.supported && !this.settings) await this.load()
+  }
+
   /** Settings and threads. Cheap, and repeated whenever the panel opens. */
   async load() {
     if (!this.supported) return
@@ -139,16 +152,29 @@ class AgentState {
    * it — and if the request fails, the question is still on screen rather
    * than having vanished with it.
    */
-  async send(prompt: string, context: string | null) {
+  async send(prompt: string, context: string | null): Promise<boolean> {
     const text = prompt.trim()
-    if (!text || this.busy || !this.conversationId) return
+    if (!text || this.busy) return false
+    if (!this.conversationId) {
+      // Nothing to send into: an unlock cleared the thread, or minting one
+      // failed. Said out loud, because the composer clears on the strength
+      // of this answer and silence would eat what was typed.
+      this.error = 'No conversation is open. Try again in a moment.'
+      return false
+    }
 
     this.error = null
     this.busy = true
-    this.turns.push(emptyTurn('user', `local-${Date.now()}`, text))
+    this.turns.push(emptyTurn('user', this.#nextLocalId(), text))
 
-    const reply = emptyTurn('assistant', 'pending')
-    this.turns.push(reply)
+    // Pushed first, then read back out. `turns` is `$state`, so pushing an
+    // object stores a *proxy* of it and the reference handed in is not the
+    // one the panel watches: folding the stream into that raw object updates
+    // nothing on screen -- no prose, no tool cards, and so no confirm
+    // buttons on a destructive call. Everything below must go through the
+    // array.
+    this.turns.push(emptyTurn('assistant', this.#nextLocalId()))
+    const reply = this.turns[this.turns.length - 1]!
 
     try {
       await sendMessage(this.conversationId, text, context, (event) => applyEvent(reply, event))
@@ -157,7 +183,10 @@ class AgentState {
     } catch (e) {
       if (isLocked(e)) {
         await handle(e)
-        return
+        // Accepted, then interrupted. The prompt was written down before the
+        // model was called, so it is not lost and must not be put back in
+        // the composer to be asked twice.
+        return true
       }
       reply.error = e instanceof Error ? e.message : String(e)
     } finally {
@@ -166,6 +195,21 @@ class AgentState {
       // so no result can arrive and no answer can reach it.
       settle(reply)
     }
+    return true
+  }
+
+  /**
+   * An id for a turn the vault has not named yet.
+   *
+   * Unique per turn rather than a shared literal, because the panel keys its
+   * `{#each}` on it: two turns sharing one key is a runtime error that takes
+   * the whole render down, and a turn keeps its local id whenever a request
+   * fails before the backend reports the real one.
+   */
+  #localSeq = 0
+  #nextLocalId(): string {
+    this.#localSeq += 1
+    return `local-${this.#localSeq}`
   }
 
   /**
@@ -205,12 +249,20 @@ class AgentState {
   }
 
   async loadMemories() {
-    this.memories = await api.memories()
+    try {
+      this.memories = await api.memories()
+    } catch (e) {
+      await handle(e)
+    }
   }
 
   async forget(id: string) {
-    await api.deleteMemory(id)
-    this.memories = this.memories.filter((m) => m.id !== id)
+    try {
+      await api.deleteMemory(id)
+      this.memories = this.memories.filter((m) => m.id !== id)
+    } catch (e) {
+      await handle(e)
+    }
   }
 }
 

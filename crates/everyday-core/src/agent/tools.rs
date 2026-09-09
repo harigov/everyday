@@ -386,6 +386,61 @@ pub fn find(name: &str) -> Option<&'static Tool> {
     ALL.iter().find(|t| t.name == name)
 }
 
+/// What a destructive call is about to act on, in the person's own words.
+///
+/// The confirmation gate exists so somebody can catch a misreading, and it
+/// can only do that if it names the thing: "delete the deck" is a decision,
+/// "delete 0192f8b2-…" is a coin toss. Every destructive tool takes an id
+/// and nothing else, so the name has to be read out of the vault -- which
+/// the tools themselves already do, just a moment too late to be asked
+/// about.
+///
+/// `None` when there is nothing useful to say, which the interface draws as
+/// a card with no subject rather than as an id nobody can check.
+pub fn describe(ctx: &ToolContext<'_>, name: &str, arguments: &Value) -> Option<String> {
+    let args = Args::new("describe", arguments);
+    let vault = ctx.vault;
+    match name {
+        "delete_entry" => {
+            let id: EntryId = args.opt_id("entry_id", "entry").ok()??;
+            vault.entry(id).ok().map(|e| e.display_title())
+        }
+        "delete_project" => {
+            let id: ProjectId = args.opt_id("project_id", "project").ok()??;
+            vault.project(id).ok().map(|p| p.name)
+        }
+        "delete_task" => {
+            let id: TaskId = args.opt_id("task_id", "task").ok()??;
+            vault.task(id).ok().map(|t| t.title)
+        }
+        "delete_item" => {
+            let id: ItemId = args.opt_id("item_id", "item").ok()??;
+            vault.item(id).ok().map(|i| i.title)
+        }
+        "delete_time_block" => {
+            let id: BlockId = args.opt_id("block_id", "time block").ok()??;
+            let block = vault.block(id).ok()?;
+            // A block has no name of its own unless it is ad-hoc, so it is
+            // described by what it is for and when -- which is what somebody
+            // needs in order to recognise it.
+            let subject = match &block.subject {
+                BlockSubject::Task { id } => vault.task(*id).ok().map(|t| t.title),
+                BlockSubject::Project { id } => vault.project(*id).ok().map(|p| p.name),
+                BlockSubject::Adhoc => Some(block.title.clone()).filter(|t| !t.is_empty()),
+            };
+            Some(match subject {
+                Some(what) => format!("{what} on {}", block.local_date),
+                None => format!("the block on {}", block.local_date),
+            })
+        }
+        "forget" => {
+            let id: MemoryId = args.opt_id("memory_id", "memory").ok()??;
+            vault.memories().ok()?.into_iter().find(|m| m.id == id).map(|m| m.text)
+        }
+        _ => None,
+    }
+}
+
 /// Run one tool call.
 ///
 /// Refuses a tool the vault cannot serve rather than failing somewhere
