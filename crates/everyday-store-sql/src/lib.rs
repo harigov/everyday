@@ -38,6 +38,10 @@
 //! | item `kind_id`, `status`, `rating`, `favourite`, `year`, `finished_on` | how many shelves, how much is on each, and how you scored it |
 //! | log `item_id`, `event`, `local_date` | that something was got to the end of on a day, never what |
 //! | reading `tracker_id`, `local_date`, `at_us`, `value` | that something was recorded, when, and how much of it -- never what |
+//! | tracker `archived`, `sort_order` | how many things are tracked and which have been retired |
+//! | goal `role_id`, `status`, `horizon` | how many goals sit under each part of a life, how they are going, and roughly when they are wanted |
+//! | role `archived`, `sort_order` | how many parts a life is divided into |
+//! | `purposes` (`record_kind`, `record_id`, `purpose_kind`, `purpose_id`) | which records are filed against which goal -- never the name of either |
 //!
 //! Titles, bodies, tags, locations, attachments and file names are all
 //! sealed. Someone with the database learns *that* you journalled on 14 July
