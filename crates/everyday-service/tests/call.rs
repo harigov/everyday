@@ -15,14 +15,22 @@ use std::sync::{Arc, Mutex};
 
 /// A vault in a temporary directory, with a service around it.
 fn service() -> (Arc<Service>, tempfile::TempDir) {
+    with_password(None)
+}
+
+/// The same, with a password on it, for the tests about locking. The KDF is
+/// the cheap one: these tests are about which door is being knocked on, not
+/// about how long knocking takes.
+fn with_password(password: Option<&str>) -> (Arc<Service>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let config = everyday_core::VaultConfig {
         name: "Test".into(),
         backend: "sqlite".into(),
         settings: Default::default(),
-        password: None,
-        kdf: Default::default(),
+        password: password.map(str::to_string),
+        kdf: everyday_core::crypto::KdfParams::insecure_fast(),
         auto_lock_seconds: 900,
+        forget_key_seconds: 0,
     };
     let vault = everyday_vault::create(dir.path(), config).unwrap();
     // A vault with no journal is a dead end, and it is whoever creates one --
@@ -310,4 +318,88 @@ async fn a_cancelled_request_does_not_park_its_retry() {
         Ok(_) => {}
         Err(e) => assert_eq!(e.code, "retry", "{e}"),
     }
+}
+
+// ── two locks ───────────────────────────────────────────────────────────
+//
+// A screen and a key are different things, and the commands that end them
+// are different commands. These check the seam rather than the crypto, which
+// the core covers.
+
+#[tokio::test]
+async fn a_password_can_be_checked_without_unlocking_anything() {
+    let (svc, _dir) = with_password(Some("correct horse"));
+    let vault = svc.get().unwrap();
+
+    call(&svc, "verify_password", json!({ "password": "correct horse" })).await;
+    assert!(vault.is_unlocked(), "checking a password must not close an open vault");
+
+    let err = fails(&svc, "verify_password", json!({ "password": "wrong" })).await;
+    assert_eq!(err.code, "bad_password");
+    assert!(vault.is_unlocked(), "a wrong guess must not close it either");
+
+    // And from behind the lock screen the vault stays shut, which is the
+    // whole point: proving who you are is not the same as opening anything.
+    call(&svc, "lock", json!({})).await;
+    call(&svc, "verify_password", json!({ "password": "correct horse" })).await;
+    assert!(!vault.is_unlocked(), "checking a password must not open a locked vault");
+}
+
+#[tokio::test]
+async fn checking_a_password_announces_no_change() {
+    let (svc, _dir) = with_password(Some("correct horse"));
+    let events = Arc::new(Collector::default());
+    svc.set_events(events.clone());
+
+    call(&svc, "verify_password", json!({ "password": "correct horse" })).await;
+    assert!(
+        events.changes.lock().unwrap().is_empty(),
+        "nothing was written, so no client has anything to reload"
+    );
+}
+
+#[tokio::test]
+async fn a_person_defers_the_key_timeout_and_the_assistant_does_not() {
+    let (svc, _dir) = service();
+    let vault = svc.get().unwrap();
+    call(&svc, "set_forget_key", json!({ "seconds": 1 })).await;
+    vault.touch();
+
+    // The assistant reads this vault every minute of every day. If that
+    // counted as somebody being here, a vault with one routine on it would
+    // never let go of its key whatever the timeout said.
+    let robot = Ctx { caller: Caller::Assistant("run".into()), ..Ctx::local() };
+    for _ in 0..3 {
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        svc.call(robot.clone(), "list_journals", json!({})).await.unwrap();
+    }
+    assert!(vault.forget_key_if_idle(), "the assistant is not a person");
+
+    // A window is.
+    call(&svc, "unlock", json!({ "password": "" })).await;
+    call(&svc, "set_forget_key", json!({ "seconds": 1 })).await;
+    for _ in 0..3 {
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        call(&svc, "list_journals", json!({})).await;
+    }
+    assert!(!vault.forget_key_if_idle(), "somebody is plainly still here");
+}
+
+#[tokio::test]
+async fn the_assistant_stamps_its_writes_with_its_own_name() {
+    let (svc, _dir) = service();
+    let events = Arc::new(Collector::default());
+    svc.set_events(events.clone());
+
+    let journal = call(&svc, "new_journal", json!({ "name": "Made by the assistant" })).await;
+    let ctx = Ctx { caller: Caller::Assistant("run-1".into()), ..Ctx::local() };
+    svc.call(ctx, "save_journal", json!({ "journal": journal })).await.unwrap();
+
+    let changes = events.changes.lock().unwrap();
+    let change = changes.first().expect("a write announces itself");
+    assert_eq!(
+        change.origin.as_deref(),
+        Some("assistant"),
+        "not `local`: a window drops its own origin, and would drop this with it"
+    );
 }

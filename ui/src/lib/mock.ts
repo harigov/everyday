@@ -1685,6 +1685,7 @@ function status(): VaultStatus {
     unlocked,
     encrypted: true,
     autoLockSeconds: 900,
+    forgetKeySeconds: 0,
     path: '/Users/you/Library/Application Support/EveryDay',
     // `?readonly=1` to review the read-only banner without a second process.
     writable: !new URLSearchParams(location.search).has('readonly'),
@@ -1838,7 +1839,12 @@ export const mockInvoke = async <T>(
       if (args.current !== PASSWORD) throw new VaultError('bad_password', 'incorrect password')
       return undefined as T
 
+    case 'verify_password':
+      if (args.password !== PASSWORD) throw new VaultError('bad_password', 'incorrect password')
+      return undefined as T
+
     case 'set_auto_lock':
+    case 'set_forget_key':
     case 'touch':
       return undefined as T
 

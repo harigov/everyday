@@ -106,9 +106,24 @@ pub struct VaultHeader {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend_settings: Option<String>,
     pub created_at: Timestamp,
-    /// Seconds of inactivity before the vault locks itself. 0 disables.
+    /// Seconds of inactivity before a *client* hides what it is showing and
+    /// asks for the password again. 0 disables.
+    ///
+    /// This is a screen timeout, not a key timeout: it is enforced by each
+    /// client on its own clock, and the vault it is looking at stays open.
+    /// See [`VaultHeader::forget_key_seconds`] for the other one.
     #[serde(default)]
     pub auto_lock_seconds: u64,
+    /// Seconds of inactivity before the *key* is dropped. 0 disables, and
+    /// that is the default.
+    ///
+    /// The distinction matters because of what a vault is now. A machine
+    /// holding one serves it -- to its own window, to a phone, and to the
+    /// assistant's own scheduler -- so the key has to outlive any one
+    /// window's screen going dark. What ends it is quitting, locking the
+    /// vault deliberately, or this.
+    #[serde(default)]
+    pub forget_key_seconds: u64,
 }
 
 impl VaultHeader {
@@ -129,6 +144,10 @@ pub struct VaultConfig {
     pub password: Option<String>,
     pub kdf: KdfParams,
     pub auto_lock_seconds: u64,
+    #[allow(clippy::doc_markdown)]
+    /// See [`VaultHeader::forget_key_seconds`]. 0, meaning never, is right
+    /// for a vault that is going to be served.
+    pub forget_key_seconds: u64,
 }
 
 impl Default for VaultConfig {
@@ -140,6 +159,7 @@ impl Default for VaultConfig {
             password: None,
             kdf: KdfParams::default(),
             auto_lock_seconds: 15 * 60,
+            forget_key_seconds: 0,
         }
     }
 }
@@ -153,6 +173,8 @@ pub struct VaultStatus {
     pub unlocked: bool,
     pub encrypted: bool,
     pub auto_lock_seconds: u64,
+    #[serde(default)]
+    pub forget_key_seconds: u64,
     pub path: PathBuf,
     /// False when another process holds the vault's write lock, so this copy
     /// reads but cannot save. The interface uses it to say so plainly rather
@@ -241,6 +263,7 @@ impl Vault {
                         backend_settings: None,
                         created_at: Timestamp::now(),
                         auto_lock_seconds: cfg.auto_lock_seconds,
+                        forget_key_seconds: cfg.forget_key_seconds,
                     },
                     Some(dek),
                 )
@@ -257,6 +280,7 @@ impl Vault {
                     backend_settings: None,
                     created_at: Timestamp::now(),
                     auto_lock_seconds: cfg.auto_lock_seconds,
+                    forget_key_seconds: cfg.forget_key_seconds,
                 },
                 None,
             ),
@@ -384,6 +408,21 @@ impl Vault {
         }
         let dek = self.data_key(password)?;
         self.activate(dek)
+    }
+
+    /// Check a password without opening or closing anything.
+    ///
+    /// This is what a *screen* lock asks. A client that has hidden what it
+    /// was showing needs to know the person is who they were, and the vault
+    /// behind it has stayed open the whole time -- for the other windows
+    /// looking at it, and for the assistant. So this derives the key,
+    /// compares the AEAD tag on the wrapped one, and throws the result away.
+    ///
+    /// It costs a full Argon2 derivation, which is the point: a screen
+    /// unlock is exactly as expensive to guess at as a vault unlock, and the
+    /// server puts both behind the same rate limit.
+    pub fn verify_password(&self, password: Option<&str>) -> Result<()> {
+        self.data_key(password).map(|_| ())
     }
 
     /// Unwrap the data key with `password`, without opening anything.
@@ -564,16 +603,33 @@ impl Vault {
         write_header(&self.root, &header)
     }
 
-    /// Record user activity, deferring the idle auto-lock.
+    /// Set how long an idle vault keeps its key. 0 means until the process
+    /// ends or somebody locks it.
+    pub fn set_forget_key(&self, seconds: u64) -> Result<()> {
+        self.writable()?;
+        let mut header = self.header_write();
+        header.forget_key_seconds = seconds;
+        write_header(&self.root, &header)
+    }
+
+    /// Record activity, deferring [`Vault::forget_key_if_idle`].
+    ///
+    /// Deliberately *not* called from [`Vault::read`] and [`Vault::write`],
+    /// which is where it used to live. The assistant's scheduler reads and
+    /// writes this vault every minute of every day; if that counted as
+    /// activity, a vault with one routine on it would never let go of its
+    /// key no matter what the timeout said. The service calls this after a
+    /// command from a person -- a window, a phone, a script -- and not after
+    /// one from the assistant.
     pub fn touch(&self) {
         let ms = self.epoch.elapsed().as_millis() as u64;
         self.last_activity_ms.store(ms, Ordering::Relaxed);
     }
 
-    /// Seconds until the idle auto-lock fires, or `None` if it is disabled
-    /// or the vault is already locked.
-    pub fn seconds_until_auto_lock(&self) -> Option<u64> {
-        let timeout = self.header_read().auto_lock_seconds;
+    /// Seconds until the key is dropped for idleness, or `None` if that is
+    /// disabled or the vault is already locked.
+    pub fn seconds_until_forget_key(&self) -> Option<u64> {
+        let timeout = self.header_read().forget_key_seconds;
         if timeout == 0 || !self.is_unlocked() {
             return None;
         }
@@ -582,10 +638,12 @@ impl Vault {
         Some(timeout.saturating_sub(idle_ms / 1000))
     }
 
-    /// Lock the vault if it has been idle past its timeout. The application
-    /// calls this on a timer. Returns whether it locked.
-    pub fn auto_lock_if_idle(&self) -> bool {
-        if self.seconds_until_auto_lock() == Some(0) {
+    /// Lock the vault if nobody has used it for `forget_key_seconds`.
+    /// Polled by a window and by the assistant's scheduler, so a machine
+    /// serving a vault with no window attached still honours it. Returns
+    /// whether it locked.
+    pub fn forget_key_if_idle(&self) -> bool {
+        if self.seconds_until_forget_key() == Some(0) {
             self.lock();
             return true;
         }
@@ -611,6 +669,7 @@ impl Vault {
             unlocked: guard.is_some(),
             encrypted: header.cipher != SUITE_NONE,
             auto_lock_seconds: header.auto_lock_seconds,
+            forget_key_seconds: header.forget_key_seconds,
             path: self.root.clone(),
             writable: self.write_lock.is_some(),
             stats: guard.as_ref().and_then(|u| u.store.stats().ok()),
@@ -691,7 +750,6 @@ impl Vault {
         let unlocked = guard.as_ref().ok_or(Error::Locked)?;
         let out = f(unlocked);
         drop(guard);
-        self.touch();
         out
     }
 
@@ -700,7 +758,6 @@ impl Vault {
         let unlocked = guard.as_mut().ok_or(Error::Locked)?;
         let out = f(unlocked);
         drop(guard);
-        self.touch();
         out
     }
 
@@ -2347,6 +2404,7 @@ mod tests {
             password: password.map(str::to_string),
             kdf: KdfParams::insecure_fast(),
             auto_lock_seconds: 0,
+            forget_key_seconds: 0,
         }
     }
 
@@ -2648,38 +2706,68 @@ mod tests {
     }
 
     #[test]
-    fn auto_lock_is_off_when_the_timeout_is_zero() {
+    fn forgetting_the_key_is_off_by_default() {
         let dir = tempfile::tempdir().unwrap();
         let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
-        assert_eq!(v.seconds_until_auto_lock(), None);
-        assert!(!v.auto_lock_if_idle());
+        assert_eq!(v.header().forget_key_seconds, 0, "a new vault keeps its key");
+        assert_eq!(v.seconds_until_forget_key(), None);
+        assert!(!v.forget_key_if_idle());
         assert!(v.is_unlocked());
     }
 
     #[test]
-    fn auto_lock_fires_once_the_idle_timeout_elapses() {
+    fn the_key_goes_once_the_idle_timeout_elapses() {
         let dir = tempfile::tempdir().unwrap();
         let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
-        v.set_auto_lock(1).unwrap();
-        assert!(!v.auto_lock_if_idle(), "should not lock while still fresh");
+        v.set_forget_key(1).unwrap();
+        v.touch();
+        assert!(!v.forget_key_if_idle(), "should not lock while still fresh");
 
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        assert!(v.auto_lock_if_idle(), "should lock after the timeout");
+        assert!(v.forget_key_if_idle(), "should lock after the timeout");
         assert!(!v.is_unlocked());
-        // Once locked there is nothing left to auto-lock.
-        assert_eq!(v.seconds_until_auto_lock(), None);
+        // Once locked there is no key left to forget.
+        assert_eq!(v.seconds_until_forget_key(), None);
     }
 
     #[test]
-    fn activity_defers_the_auto_lock() {
+    fn a_person_defers_the_forgetting_and_a_read_does_not() {
         let dir = tempfile::tempdir().unwrap();
         let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
-        v.set_auto_lock(2).unwrap();
+        v.set_forget_key(2).unwrap();
+        v.touch();
         for _ in 0..3 {
             std::thread::sleep(std::time::Duration::from_millis(700));
-            v.journals().unwrap(); // each call touches the activity clock
-            assert!(!v.auto_lock_if_idle(), "activity should keep the vault open");
+            v.touch(); // what the service does after a command from a person
+            assert!(!v.forget_key_if_idle(), "activity should keep the vault open");
         }
+
+        // Reading is not activity. The assistant's scheduler reads this vault
+        // every minute; if that counted, the timeout would never fire.
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        v.journals().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        v.journals().unwrap();
+        assert!(v.forget_key_if_idle(), "a read must not defer the timeout");
+    }
+
+    #[test]
+    fn the_right_password_verifies_and_the_wrong_one_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+        v.verify_password(Some("pw")).expect("the right password");
+        assert_eq!(
+            v.verify_password(Some("nope")).unwrap_err().code(),
+            "bad_password",
+            "the wrong one is refused"
+        );
+        assert!(v.is_unlocked(), "verifying must not close a vault that was open");
+
+        // And it works from the other side: a locked vault can be asked
+        // whether a password is right without being opened by the asking.
+        v.lock();
+        v.verify_password(Some("pw")).expect("the right password");
+        assert!(!v.is_unlocked(), "verifying must not open a vault that was locked");
     }
 
     #[test]

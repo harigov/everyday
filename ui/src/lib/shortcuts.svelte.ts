@@ -229,11 +229,11 @@ export const ACTIONS: Binding[] = [
   },
   {
     keys: 'mod+l',
-    label: 'Lock the vault',
+    label: 'Lock the screen',
     group: 'Everywhere',
     whileTyping: true,
     when: () => app.screen === 'main',
-    run: () => void app.lock(),
+    run: () => void app.lockScreen(),
   },
   {
     keys: '?',
@@ -530,7 +530,7 @@ export const ACTIONS: Binding[] = [
   },
   {
     id: 'vault:lock',
-    label: 'Lock now',
+    label: 'Lock this screen',
     group: 'Vault',
     keywords: ['sign out', 'seal', 'away'],
     icon: 'lock',
@@ -539,7 +539,22 @@ export const ACTIONS: Binding[] = [
     raise: false,
     // Nothing to lock on a vault with no password on it.
     when: () => app.screen === 'main' && app.status?.encrypted === true,
-    run: () => app.lock(),
+    run: () => void app.lockScreen(),
+  },
+  {
+    id: 'vault:lock-all',
+    label: 'Lock the vault everywhere',
+    group: 'Vault',
+    keywords: ['sign out', 'seal', 'forget', 'key', 'everywhere', 'all'],
+    icon: 'lock',
+    tray: true,
+    raise: false,
+    // The heavier of the two, and worth spelling out where it is offered:
+    // this drops the key. Every other window looking at this vault goes to
+    // its lock screen, and the assistant stops until somebody types the
+    // password again.
+    when: () => app.screen === 'main' && app.status?.encrypted === true,
+    run: () => void app.lock(),
   },
 
   // ── Palette only ────────────────────────────────────────────────────

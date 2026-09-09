@@ -1697,6 +1697,25 @@
     {
       "args": [
         {
+          "name": "seconds",
+          "required": true,
+          "type": "number"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_forget_key",
+      "returns": "void",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "id",
           "required": true,
           "type": "ItemId"
@@ -1923,6 +1942,22 @@
       "effect": "read",
       "name": "vault_stats",
       "returns": "StoreStats",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "password",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "verify_password",
+      "returns": "void",
       "scope": "journals",
       "sensitive": false,
       "streams": false

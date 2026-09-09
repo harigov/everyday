@@ -471,7 +471,15 @@ export interface VaultStatus {
   backend: string
   unlocked: boolean
   encrypted: boolean
+  /** Seconds of idleness before a client hides what it is showing. */
   autoLockSeconds: number
+  /**
+   * Seconds of idleness before the machine holding the vault drops its key.
+   * 0 is never, which is the default: that machine serves this vault to other
+   * windows and to the assistant, and none of them should lose it because one
+   * keyboard went quiet.
+   */
+  forgetKeySeconds: number
   path: string
   /**
    * False when another process holds this vault's write lock — a second copy

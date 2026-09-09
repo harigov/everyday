@@ -99,6 +99,11 @@
     app.status = await api.status()
   }
 
+  async function setForgetKey(seconds: number) {
+    await api.setForgetKey(seconds)
+    app.status = await api.status()
+  }
+
   // The same strip of the screen has three names. Calling it the wrong one
   // is how a setting becomes unfindable: nobody on macOS goes looking for a
   // "system tray".
@@ -114,6 +119,15 @@
     { label: '5 min', value: 300 },
     { label: '15 min', value: 900 },
     { label: '1 hour', value: 3600 },
+  ]
+
+  // Longer than the screen's, and starting at never, because these are the
+  // hours a vault is asleep rather than the minutes a window is idle.
+  const KEY_CHOICES = [
+    { label: 'Never', value: 0 },
+    { label: '1 hour', value: 3600 },
+    { label: '8 hours', value: 28_800 },
+    { label: '24 hours', value: 86_400 },
   ]
 </script>
 
@@ -246,7 +260,31 @@
                 </button>
               {/each}
             </div>
-            <p class="hint">How long the vault may sit untouched before it seals itself again.</p>
+            <p class="hint">
+              How long this window may sit untouched before it hides what it is showing and asks
+              for the password again. The vault stays open behind it.
+            </p>
+          </section>
+
+          <section>
+            <span class="eyebrow">Forget the key after</span>
+            <div class="segmented">
+              {#each KEY_CHOICES as c (c.value)}
+                <button
+                  class="seg"
+                  class:on={status.forgetKeySeconds === c.value}
+                  onclick={() => setForgetKey(c.value)}
+                >
+                  {c.label}
+                </button>
+              {/each}
+            </div>
+            <p class="hint">
+              The heavier of the two. This computer holds the key while the vault is open, and
+              serves it to your other windows, to any device you have paired, and to the
+              assistant's own routines. Forgetting it stops all of them until somebody types the
+              password again. Quitting always forgets it.
+            </p>
           </section>
 
           <section>

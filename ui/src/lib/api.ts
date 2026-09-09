@@ -370,14 +370,25 @@ export const api = {
   hotkeyStatus: () => invoke<HotkeyStatus>('hotkey_status'),
   setHotkey: (on: boolean) => invoke<HotkeyStatus>('set_hotkey', { on }),
   unlock: (password: string) => invoke<VaultStatus>('unlock', { password }),
+  /**
+   * Check a password without opening or closing anything.
+   *
+   * What a window asks when its own screen was locked and the vault behind it
+   * never was. Costs the same Argon2 derivation an unlock costs and counts
+   * against the same lockout, deliberately.
+   */
+  verifyPassword: (password: string) => invoke<void>('verify_password', { password }),
   lock: () => invoke<VaultStatus>('lock'),
   status: () => invoke<VaultStatus>('status'),
   changePassword: (current: string, next: string) =>
     invoke<void>('change_password', { current, next }),
+  /** How long before a client hides what it is showing. */
   setAutoLock: (seconds: number) => invoke<void>('set_auto_lock', { seconds }),
-  /** Defers the idle auto-lock; called on real user interaction. */
+  /** How long before the machine holding the vault drops its key. 0 is never. */
+  setForgetKey: (seconds: number) => invoke<void>('set_forget_key', { seconds }),
+  /** Defers the moment the key is dropped; called on real user interaction. */
   touch: () => invoke<void>('touch'),
-  /** Returns true if the vault locked itself. Polled on a timer. */
+  /** Returns true if the vault has just dropped its key. Polled on a timer. */
   pollAutoLock: () => invoke<boolean>('poll_auto_lock'),
 
   journals: () => invoke<Journal[]>('list_journals'),

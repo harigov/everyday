@@ -345,6 +345,10 @@ fn init(
             password,
             kdf: KdfParams::default(),
             auto_lock_seconds: 15 * 60,
+            // Never, by default. The machine holding a vault serves it -- to its
+            // own window, to a phone, to the assistant -- and a key that went
+            // away because one keyboard was idle would take all of that with it.
+            forget_key_seconds: 0,
         },
     )?;
 

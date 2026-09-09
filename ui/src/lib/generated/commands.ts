@@ -210,6 +210,7 @@ export interface Commands {
   }
   setAgentKey: { args: { key: string }; result: void }
   setAutoLock: { args: { seconds: number }; result: void }
+  setForgetKey: { args: { seconds: number }; result: void }
   setItemProgress: {
     args: { id: ItemId; position: number; total?: number | null; log: boolean }
     result: Item
@@ -226,6 +227,7 @@ export interface Commands {
   trackerDays: { args: { query: ReadingQuery }; result: TrackerDay[] }
   unlock: { args: { password: string }; result: VaultStatus }
   vaultStats: { args: Record<string, never>; result: StoreStats }
+  verifyPassword: { args: { password: string }; result: void }
   webSearch: { args: { request: SearchRequest }; result: SearchResult[] }
 }
 
@@ -326,6 +328,7 @@ export const COMMAND_NAMES = {
   sendMessage: 'send_message',
   setAgentKey: 'set_agent_key',
   setAutoLock: 'set_auto_lock',
+  setForgetKey: 'set_forget_key',
   setItemProgress: 'set_item_progress',
   setItemStatus: 'set_item_status',
   status: 'status',
@@ -339,6 +342,7 @@ export const COMMAND_NAMES = {
   trackerDays: 'tracker_days',
   unlock: 'unlock',
   vaultStats: 'vault_stats',
+  verifyPassword: 'verify_password',
   webSearch: 'web_search',
 } as const
 
@@ -448,6 +452,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'seed_roles',
   'set_agent_key',
   'set_auto_lock',
+  'set_forget_key',
   'set_item_progress',
   'set_item_status',
   'status',
@@ -461,6 +466,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'tracker_days',
   'unlock',
   'vault_stats',
+  'verify_password',
   'web_search',
 ])
 
@@ -524,6 +530,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'send_message',
   'set_agent_key',
   'set_auto_lock',
+  'set_forget_key',
   'set_item_progress',
   'set_item_status',
   'subscribe_calendar',
@@ -531,6 +538,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'sync_due_calendars',
   'touch',
   'unlock',
+  'verify_password',
 ])
 
 /** What a listener should reload after a command succeeds. */
@@ -580,6 +588,7 @@ export const CHANGE_KINDS: Readonly<Record<string, string>> = {
   send_message: 'conversation',
   set_agent_key: 'settings',
   set_auto_lock: 'settings',
+  set_forget_key: 'settings',
   set_item_progress: 'item',
   set_item_status: 'item',
   subscribe_calendar: 'calendar',

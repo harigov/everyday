@@ -33,7 +33,7 @@
 //! that is renamed in Rust shows up as a diff in a committed snapshot rather
 //! than as a client that stopped working.
 
-use crate::ctx::{Ctx, Scope};
+use crate::ctx::{Caller, Ctx, Scope};
 use crate::error::{CommandError, CommandResult};
 use crate::events::{Change, Kind, Op};
 use crate::service::Service;
@@ -90,6 +90,17 @@ impl Command {
     pub async fn invoke(&self, svc: Arc<Service>, ctx: Ctx, args: Value) -> CommandResult<Value> {
         ctx.require(self.scope)?;
         let origin = ctx.caller.origin().map(str::to_string);
+        // A person using the vault is what defers the moment its key is
+        // dropped. The assistant is not a person: its scheduler reads and
+        // writes every minute of every day, and a vault with one routine on
+        // it would otherwise never let go of the key whatever the timeout
+        // said. This is why `Vault::read` and `Vault::write` no longer do it
+        // themselves -- they cannot see who is asking, and this can.
+        if !matches!(ctx.caller, Caller::Assistant(_))
+            && let Some(vault) = svc.get()
+        {
+            vault.touch();
+        }
         let out = (self.run)(svc.clone(), ctx, args).await?;
         if let Some((kind, op)) = self.change {
             svc.events().changed(Change { kind, op, id: None, origin });
@@ -231,12 +242,16 @@ mod tests {
         // kind, no other window learns about it. The exceptions are listed
         // rather than inferred, so adding one is a decision somebody made.
         const INVISIBLE: &[&str] = &[
-            // Defers the auto-lock. Changes nothing anybody draws.
+            // Defers the moment the key is dropped. Changes nothing anybody
+            // draws.
             "touch",
             // Answered by the `lockState` event instead, which every client
             // has to act on rather than merely reload a list for.
             "unlock",
             "lock",
+            // Answers a question -- is this the right password -- and changes
+            // nothing at all, including the lock state.
+            "verify_password",
             "poll_auto_lock",
             // Housekeeping over storage, not over records.
             "collect_garbage",
