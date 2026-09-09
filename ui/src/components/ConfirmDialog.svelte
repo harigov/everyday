@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { focusOnMount } from '../lib/focus'
+  import { focusOnMount, trapFocus } from '../lib/focus'
 
   let {
     title,
@@ -27,7 +27,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div class="scrim" onclick={oncancel}></div>
-<div class="sheet" role="alertdialog" aria-modal="true" aria-label={title}>
+<div class="sheet" role="alertdialog" aria-modal="true" aria-label={title} use:trapFocus>
   <h2>{title}</h2>
   {#if detail}<p class="hint">{detail}</p>{/if}
   <div class="sheet-row">

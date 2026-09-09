@@ -20,11 +20,14 @@
   import Logo from './Logo.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
+  import type { MediaKind } from '../lib/types'
 
   let host = $state<HTMLDivElement>()
   let editor = $state<Editor | null>(null)
   let words = $state(0)
   let dropping = $state(false)
+  /** The file being written to the vault, if any. See `insertFiles`. */
+  let storing = $state<string | null>(null)
   /** Guards against the programmatic `setContent` echoing back as an edit. */
   let loading = false
   /** Which entry the ProseMirror document currently holds. */
@@ -92,15 +95,33 @@
     }, 400)
   }
 
-  /** Store dropped or pasted files as blobs and insert media nodes. */
+  /**
+   * Store dropped or pasted files as blobs and insert media nodes.
+   *
+   * Two things here are about the gap between dropping a file and seeing it.
+   * A phone video is hundreds of megabytes, so reading it, sealing it and
+   * writing it out is seconds of work with nothing on screen -- hence
+   * `storing`, which puts the filename in the status bar for as long as it
+   * takes rather than leaving a drop that appears to have done nothing.
+   *
+   * And the entry open when the drop happened is remembered, because it may
+   * not be the entry open when the write finishes. Switching entries during
+   * an upload used to file the attachment against whichever entry had since
+   * been opened and insert the video into *its* document -- so a clip landed
+   * in a day it had nothing to do with, and the entry it was dropped on had
+   * no record of it at all.
+   */
   function insertFiles(files: File[]): boolean {
-    if (!files.length || !editor || !app.entry) return false
+    const target = app.entry
+    if (!files.length || !editor || !target) return false
+    const ed = editor
     void (async () => {
       for (const file of files) {
         try {
+          storing = file.name
           const bytes = new Uint8Array(await file.arrayBuffer())
           const blob = await api.putBlob(bytes)
-          const kind = file.type.startsWith('image/')
+          const kind: MediaKind = file.type.startsWith('image/')
             ? 'image'
             : file.type.startsWith('video/')
               ? 'video'
@@ -108,35 +129,30 @@
                 ? 'audio'
                 : 'file'
           const size = kind === 'image' ? await imageSize(file) : null
-          editor
-            .chain()
-            .focus()
-            .insertMedia({
-              blob,
-              kind,
-              mime: file.type || 'application/octet-stream',
-              filename: file.name,
-              caption: '',
-              width: size?.width ?? null,
-              height: size?.height ?? null,
-            })
-            .run()
-          app.entry!.attachments = [
-            ...app.entry!.attachments,
-            {
-              blob,
-              kind,
-              mime: file.type || 'application/octet-stream',
-              filename: file.name,
-              byteLen: file.size,
-              width: size?.width,
-              height: size?.height,
-              caption: '',
-            },
+          const media = {
+            blob,
+            kind,
+            mime: file.type || 'application/octet-stream',
+            filename: file.name,
+            caption: '',
+            width: size?.width ?? null,
+            height: size?.height ?? null,
+          }
+          // The bytes are in the vault either way -- the garbage collector
+          // reclaims a blob nothing references -- so a drop whose entry has
+          // been navigated away from is dropped quietly rather than being
+          // put somewhere it does not belong.
+          if (app.entry !== target || ed !== editor) continue
+          ed.chain().focus().insertMedia(media).run()
+          target.attachments = [
+            ...target.attachments,
+            { ...media, byteLen: file.size, width: size?.width, height: size?.height },
           ]
           app.scheduleSave()
         } catch (e) {
           app.error = e instanceof Error ? e.message : String(e)
+        } finally {
+          storing = null
         }
       }
     })()
@@ -292,7 +308,8 @@
       <span>{plural(words, 'word')}</span>
       <span class="dot">·</span>
       <span>
-        {#if app.saving}Saving…
+        {#if storing}Storing {storing}…
+        {:else if app.saving}Saving…
         {:else if app.lastSaved}Saved {relativeTime(app.lastSaved)}
         {:else}Edited {relativeTime(entry.updatedAt)}{/if}
       </span>

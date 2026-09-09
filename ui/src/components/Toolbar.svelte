@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Editor } from '@tiptap/core'
   import Icon from './Icon.svelte'
-  import { focusOnMount } from '../lib/focus'
+  import { focusOnMount, trapFocus } from '../lib/focus'
   import type { IconName } from '../lib/icons'
 
   let { editor }: { editor: Editor | null } = $props()
@@ -202,7 +202,7 @@
 {#if linkOpen}
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
   <div class="scrim" onclick={closeLink}></div>
-  <div class="sheet" role="dialog" aria-label="Link address" aria-modal="true">
+  <div class="sheet" role="dialog" aria-label="Link address" aria-modal="true" use:trapFocus>
     <form onsubmit={applyLink}>
       <label class="label" for="link-href">Link address</label>
       <input

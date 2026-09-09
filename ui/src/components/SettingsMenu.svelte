@@ -5,6 +5,7 @@
   import { agent } from '../lib/agent.svelte'
   import AgentSettings from './AgentSettings.svelte'
   import { humanBytes, plural } from '../lib/format'
+  import { trapFocus } from '../lib/focus'
   import Icon from './Icon.svelte'
 
   let open = $state(false)
@@ -59,6 +60,14 @@
   ]
 </script>
 
+<!-- Escape closes the panel, as it does every other thing in the
+     application that a scrim has put the window behind. -->
+<svelte:window
+  onkeydown={(e: KeyboardEvent) => {
+    if (e.key === 'Escape' && open && !showAgent) open = false
+  }}
+/>
+
 {#if showAgent}
   <!-- Outside the dropdown on purpose: the dropdown closes when this opens,
        and a dialog inside a popover that has gone would go with it. -->
@@ -74,7 +83,7 @@
   {#if open}
     <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
     <div class="scrim" onclick={() => (open = false)}></div>
-    <div class="panel" role="dialog" aria-label="Settings">
+    <div class="panel" role="dialog" aria-modal="true" aria-label="Settings" use:trapFocus>
       <div class="section">
         <span class="eyebrow">Appearance</span>
         <div class="segmented">

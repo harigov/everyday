@@ -13,6 +13,7 @@
   // an OpenAI key to somebody else's gateway.
 
   import { agent } from '../lib/agent.svelte'
+  import { trapFocus } from '../lib/focus'
   import type { AgentSettings } from '../lib/types'
   import Icon from './Icon.svelte'
 
@@ -90,7 +91,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div class="scrim" onclick={onclose}></div>
-<div class="dialog" role="dialog" aria-modal="true" aria-label="Assistant settings">
+<div class="dialog" role="dialog" aria-modal="true" aria-label="Assistant settings" use:trapFocus>
   <header>
     <h2>Assistant</h2>
     <button class="ghost" onclick={onclose} title="Close"><Icon name="close" size={16} /></button>

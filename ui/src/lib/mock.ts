@@ -1580,8 +1580,13 @@ function requireUnlocked() {
 
 export const mockInvoke = async <T>(
   cmd: string,
-  args: Record<string, unknown> = {},
+  payload: Record<string, unknown> | Uint8Array = {},
 ): Promise<T> => {
+  // `put_blob` is the one command whose payload is a bare buffer rather than
+  // a bag of named arguments -- see `api.putBlob`. Nothing in the mock reads
+  // those bytes, so the shape is normalised here and every case below can go
+  // on assuming an object.
+  const args: Record<string, unknown> = payload instanceof Uint8Array ? {} : payload
   // A touch of latency, so loading states are exercised rather than skipped.
   await new Promise((r) => setTimeout(r, 40))
 
