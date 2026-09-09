@@ -1,5 +1,35 @@
 # Roles, goals, and the Overview
 
+> **Delivered.** All six phases are built, tested and on this branch. Read
+> this for the reasoning; read the commits for what was actually done. Four
+> things went differently from the plan below, each for a reason worth
+> keeping:
+>
+> - **The purpose pointer is a side table, not two columns per table.** The
+>   plan called for `ALTER TABLE … ADD COLUMN`. That cannot be written
+>   idempotently in SQL both engines accept, and every migration step has to
+>   be re-runnable because the recorded version only advances once all of
+>   them land. `purposes`, keyed by `(record kind, record id)`, is additive
+>   and `IF NOT EXISTS` like the rest of the file.
+> - **`readings` is still rebuilt in v7**, as planned, and the rebuild turned
+>   out to be idempotent after all: replayed, the create makes the table
+>   afresh, the insert copies out of the current `readings`, the drop takes it
+>   and the rename puts the copy back. The plan thought this was the risky
+>   part; the `ALTER`s were.
+> - **Deleting a journal detaches its readings** rather than keeping them
+>   untouched. The plan said "keeps its readings" and left the pointer
+>   dangling; clearing it is the same read-modify-reseal the entry pointer
+>   already got, and a reading naming a journal that is gone is a link the
+>   next feature to follow it would trip over.
+> - **The inline `#swim 60min` in the editor body is not built.** It needs
+>   `@tiptap/suggestion`, which is a dependency and a third-party notice. The
+>   plan already flagged it as optional with the popover as the primary path,
+>   and the popover is what shipped.
+>
+> Everything else — including the refusal to cascade a role delete, the
+> nullable journal pointer on a reading, the cadence, and the assistant's
+> per-reading query — is as written below.
+
 A plan for a fifth app and the two records underneath it. Written 9 September
 2026 against the tree at `371783e`. Decisions in the first section were made
 in conversation and are settled; the phases after it are the proposed order
@@ -436,12 +466,13 @@ Rough, in working days, for one person who knows the tree.
 | 5 The assistant | 2 |
 | 6 Words | 1 |
 
-## Open questions
+## What the open questions turned out to be
 
-Assumptions the plan proceeds on; say so if any is wrong.
-
-- Deleting a journal keeps its readings. They belong to the tracker now.
-- Deleting a role with goals under it is refused, not cascaded.
-- `Entry` carries a purpose (so a journal entry can be evidence for a goal),
-  even though most entries will never set one.
-- The bar letter for the app is `o`, as in `g o`.
+- **Deleting a journal keeps its readings**, and clears their journal
+  pointer. They belong to the tracker; the journal is only where they were
+  ticked.
+- **Deleting a role with goals under it is refused**, with the count in the
+  message so the interface can offer archiving instead.
+- **`Entry` carries a purpose.** Most never set one, which is the expected
+  shape: a journal is not a work log.
+- **`G` then `O`**, and `C` in the Overview makes a goal.
