@@ -44,7 +44,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="card" class:selected style="--tint: {color}" oncontextmenu={onmenu}>
-  <button class="hit" onclick={onopen} aria-label={item.title}>
+  <button class="hit" data-row={item.id} onclick={onopen} aria-label={item.title}>
     <div class="art">
       <Cover blob={item.cover} title={item.title} icon={kind?.icon ?? ''} {color} {ratio} />
 
