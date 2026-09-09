@@ -52,6 +52,7 @@ import type {
   VaultStatus,
 } from './types'
 import { TASK_STATUSES, VaultError, isAhead, isOpen, priorityRank } from './types'
+import type { AgentEvent, AgentMessage, AgentSettings, Conversation, Memory } from './types'
 import { DEFAULT_COLORS } from './colors'
 
 const PASSWORD = 'everyday'
@@ -1429,6 +1430,44 @@ const readings: Reading[] = (() => {
 
 let nextId = 100
 
+// ── The assistant ────────────────────────────────────────────────────────
+//
+// A scripted one. There is no model behind the mock and there must not be:
+// the whole point of this module is an interface that runs with no Rust, no
+// vault and no network, and a mock that reached for an API key would be none
+// of those things. What it does instead is exercise every shape the panel
+// has to draw -- prose arriving in pieces, a tool card, a confirmation, and
+// a failure -- so the panel can be built and reviewed without a provider.
+
+let agentSettings: AgentSettings = {
+  enabled: true,
+  model: {
+    provider: 'openAi',
+    model: 'gpt-5.1-mini',
+    baseUrl: null,
+    temperature: null,
+    maxTokens: null,
+  },
+  instructions: '',
+  confirmDestructive: true,
+  maxSteps: 24,
+  remember: true,
+  hasKey: true,
+}
+let agentKey = 'sk-mock'
+const conversations: Conversation[] = []
+const agentMessages: AgentMessage[] = []
+const memories: Memory[] = [
+  {
+    id: 'mem-1',
+    text: 'Plans the week on Sunday evening.',
+    sourceId: null,
+    pinned: false,
+    createdAt: iso(-20),
+    updatedAt: iso(-20),
+  },
+]
+
 function plainText(node: unknown): string {
   if (!node || typeof node !== 'object') return ''
   const n = node as Record<string, unknown>
@@ -1486,6 +1525,7 @@ function status(): VaultStatus {
           calendars: true,
           library: true,
           trackers: true,
+          agent: true,
         }
       : undefined,
   }
@@ -2494,9 +2534,200 @@ export const mockInvoke = async <T>(
       // does something without a network.
       return (Object.keys(COVERS)[0] ?? '1'.repeat(64)) as T
 
+    case 'agent_settings':
+      requireUnlocked()
+      return { ...agentSettings, hasKey: agentKey !== '' } as T
+
+    case 'save_agent_settings': {
+      requireUnlocked()
+      agentSettings = args.settings as AgentSettings
+      return { ...agentSettings, hasKey: agentKey !== '' } as T
+    }
+
+    case 'set_agent_key':
+      requireUnlocked()
+      agentKey = str(args.key)
+      return undefined as T
+
+    case 'clear_agent_key':
+      requireUnlocked()
+      agentKey = ''
+      return undefined as T
+
+    case 'list_conversations': {
+      requireUnlocked()
+      const rows = [...conversations]
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        .map((c) => ({
+          ...c,
+          messages: agentMessages.filter((m) => m.conversationId === c.id).length,
+        }))
+      const limit = args.limit as number | undefined
+      return (limit == null ? rows : rows.slice(0, limit)) as T
+    }
+
+    case 'new_conversation': {
+      requireUnlocked()
+      const now = new Date().toISOString()
+      return { id: `conv-${nextId++}`, title: '', createdAt: now, updatedAt: now } as T
+    }
+
+    case 'conversation_messages':
+      requireUnlocked()
+      return agentMessages.filter((m) => m.conversationId === args.id) as T
+
+    case 'delete_conversation': {
+      requireUnlocked()
+      const i = conversations.findIndex((c) => c.id === args.id)
+      if (i >= 0) conversations.splice(i, 1)
+      for (let n = agentMessages.length - 1; n >= 0; n--) {
+        if (agentMessages[n]?.conversationId === args.id) agentMessages.splice(n, 1)
+      }
+      return undefined as T
+    }
+
+    case 'confirm_tool_call':
+      requireUnlocked()
+      return mockConfirm(str(args.callId), args.approved === true) as T
+
+    case 'list_memories':
+      requireUnlocked()
+      return memories as T
+
+    case 'save_memory': {
+      requireUnlocked()
+      const memory = { ...(args.memory as Memory), pinned: true }
+      const i = memories.findIndex((m) => m.id === memory.id)
+      if (i >= 0) memories[i] = memory
+      else memories.push(memory)
+      return [] as T
+    }
+
+    case 'delete_memory': {
+      requireUnlocked()
+      const i = memories.findIndex((m) => m.id === args.id)
+      if (i >= 0) memories.splice(i, 1)
+      return undefined as T
+    }
+
     default:
       throw new VaultError('unknown', `no mock for command ${cmd}`)
   }
+}
+
+/** Confirmations the scripted turn below is waiting on. */
+const mockPending = new Map<string, (approved: boolean) => void>()
+
+function mockConfirm(callId: string, approved: boolean): boolean {
+  const resolve = mockPending.get(callId)
+  if (!resolve) return false
+  mockPending.delete(callId)
+  resolve(approved)
+  return true
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * A scripted turn.
+ *
+ * Chosen to walk the panel through every state it has to draw rather than to
+ * be convincing: a word-at-a-time reply always, a tool card when the prompt
+ * mentions a task, and a confirmation when it mentions deleting. Typing
+ * "fail" gets the failure path, which is otherwise the hardest state to see.
+ */
+export async function mockSendMessage(
+  conversationId: string,
+  prompt: string,
+  _context: string | null,
+  onEvent: (event: AgentEvent) => void,
+): Promise<void> {
+  requireUnlocked()
+  if (!agentSettings.enabled) {
+    throw new VaultError('invalid', 'the assistant is switched off')
+  }
+
+  const now = new Date().toISOString()
+  if (!conversations.some((c) => c.id === conversationId)) {
+    conversations.push({ id: conversationId, title: '', createdAt: now, updatedAt: now })
+  }
+  const thread = conversations.find((c) => c.id === conversationId)
+  if (thread) {
+    thread.updatedAt = now
+    if (!thread.title) thread.title = prompt.split(/\s+/).slice(0, 8).join(' ')
+  }
+  agentMessages.push({
+    id: `msg-${nextId++}`,
+    conversationId,
+    role: 'user',
+    content: prompt,
+    toolCalls: [],
+    toolCallId: null,
+    failed: false,
+    createdAt: now,
+  })
+
+  const messageId = `msg-${nextId++}`
+  onEvent({ type: 'started', messageId })
+
+  const lower = prompt.toLowerCase()
+  if (lower.includes('fail')) {
+    await sleep(300)
+    onEvent({ type: 'failed', message: 'The API key was refused. Check it in Settings.' })
+    return
+  }
+
+  let reply: string
+  if (lower.includes('delet')) {
+    const callId = 'call-mock-delete'
+    onEvent({
+      type: 'confirmationRequired',
+      callId,
+      name: 'delete_task',
+      subject: 'Order the timber',
+      arguments: { task_id: '0192f3a1-mock' },
+    })
+    const approved = await new Promise<boolean>((resolve) => mockPending.set(callId, resolve))
+    if (approved) {
+      onEvent({ type: 'toolStarted', callId, name: 'delete_task', arguments: {} })
+      await sleep(250)
+      onEvent({
+        type: 'toolFinished',
+        callId,
+        name: 'delete_task',
+        ok: true,
+        summary: 'deleted task Order the timber',
+      })
+      reply = 'Deleted "Order the timber".'
+    } else {
+      reply = 'Left it alone. What would you like to do instead?'
+    }
+  } else if (lower.includes('task') || lower.includes('todo')) {
+    const callId = 'call-mock-list'
+    onEvent({ type: 'toolStarted', callId, name: 'list_tasks', arguments: { open_only: true } })
+    await sleep(350)
+    onEvent({ type: 'toolFinished', callId, name: 'list_tasks', ok: true, summary: '3 results' })
+    reply = 'You have three open: order the timber, ring the vet, and book the MOT.'
+  } else {
+    reply = 'This is a scripted reply from the mock backend. There is no model behind it.'
+  }
+
+  for (const word of reply.split(' ')) {
+    await sleep(35)
+    onEvent({ type: 'delta', text: word + ' ' })
+  }
+
+  agentMessages.push({
+    id: messageId,
+    conversationId,
+    role: 'assistant',
+    content: reply,
+    toolCalls: [],
+    toolCallId: null,
+    failed: false,
+    createdAt: new Date().toISOString(),
+  })
+  onEvent({ type: 'finished', messageId })
 }
 
 export function mockMediaUrl(blob: string): string {

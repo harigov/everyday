@@ -44,6 +44,15 @@
 //! | `url` | `postgresql://user:password@host:5432/database`. Required. |
 //! | `schema` | Which schema to put the tables in. Defaults to `everyday`. |
 //!
+//! # TLS is not optional off this machine
+//!
+//! rust-postgres defaults to `sslmode=prefer`, which asks for TLS and
+//! carries on without it if the server says no — so the stack below would be
+//! set up and then quietly unused. This driver upgrades a remote connection
+//! to `require` unless the URL says `sslmode=disable`, and leaves a loopback
+//! or Unix-socket host alone, where there is no network between the two ends
+//! to protect.
+//!
 //! [`URL_ENV`] overrides the stored URL, which is how a deployment keeps the
 //! credential out of the vault file entirely and in whatever it already uses
 //! for secrets.
@@ -156,7 +165,12 @@ impl PostgresStore {
 
         warn_about_transaction_pooling(&url);
 
-        let mut client = postgres::Client::connect(&url, tls()?).map_err(Error::backend)?;
+        // Parsed rather than handed straight to `connect`, so the TLS
+        // decision below can be made on what the URL actually says.
+        let mut config: postgres::Config = url.parse().map_err(Error::backend)?;
+        require_tls_off_this_machine(&mut config);
+
+        let mut client = config.connect(tls()?).map_err(Error::backend)?;
 
         // The tables go in their own schema, made if it is not there. Both
         // statements are idempotent, and `search_path` is what lets every
@@ -193,6 +207,78 @@ fn warn_about_transaction_pooling(url: &str) {
              connection string on port 5432 -- prepared statements do not survive a \
              transaction-mode pooler"
         );
+    }
+}
+
+/// Insist on TLS unless the database is on this machine.
+///
+/// rust-postgres defaults to `sslmode=prefer`, which asks for TLS and
+/// continues without it if the server declines. That made the whole TLS
+/// stack below optional in practice: against a server with `ssl = off` --
+/// or an attacker on the path who strips the `SSLRequest` reply -- the
+/// connection succeeded in cleartext, carrying the URL's own password and
+/// every column this backend deliberately leaves readable, with no error and
+/// no log line. The module docs above make a promise about what a hosted
+/// vault exposes; `prefer` is not a setting that keeps it.
+///
+/// Two things are deliberately left alone.
+///
+/// `sslmode=disable` is honoured, because it is the documented way to say
+/// "this connection is not going over a network I care about" and refusing it
+/// would leave no way to say that at all.
+///
+/// A loopback or Unix-socket host is left as it is, for the same reason
+/// [`Provider::needs_key`](everyday_core::agent::Provider::needs_key) does
+/// not demand a credential for a model on this machine: there is no network
+/// between the two ends to protect, and insisting on a certificate for
+/// `localhost` would make the ordinary development setup -- and this crate's
+/// own conformance suite -- impossible to run.
+///
+/// Note what this is *not*: `Require` in rust-postgres means the session
+/// must be encrypted, and it is the verifier in [`tls`] that decides whether
+/// the certificate is anyone's. The two together are what libpq calls
+/// `verify-full`; either alone is not.
+fn require_tls_off_this_machine(config: &mut postgres::Config) {
+    use postgres::config::SslMode;
+
+    // An explicit opt-out. Nothing is upgraded over somebody's head.
+    if config.get_ssl_mode() == SslMode::Disable {
+        if !config.get_hosts().iter().all(is_on_this_machine) {
+            tracing::warn!(
+                "connecting to this database without TLS because the connection string says \
+                 sslmode=disable -- the password and every clear column travel in the open"
+            );
+        }
+        return;
+    }
+
+    // No hosts named means libpq's own default, which on Unix is a socket in
+    // a directory on this machine.
+    if config.get_hosts().iter().all(is_on_this_machine) {
+        return;
+    }
+
+    config.ssl_mode(SslMode::Require);
+}
+
+/// Is this host reachable without touching a network?
+fn is_on_this_machine(host: &postgres::config::Host) -> bool {
+    match host {
+        // A socket in a directory. It never leaves the machine.
+        #[cfg(unix)]
+        postgres::config::Host::Unix(_) => true,
+        postgres::config::Host::Tcp(name) => {
+            let name = name.to_ascii_lowercase();
+            name == "localhost"
+                || name == "::1"
+                || name == "[::1]"
+                // The whole 127.0.0.0/8 block, not just 127.0.0.1.
+                || name.strip_prefix("127.").is_some_and(|rest| {
+                    let octets = rest.split('.');
+                    octets.clone().count() == 3
+                        && octets.into_iter().all(|o| !o.is_empty() && o.parse::<u8>().is_ok())
+                })
+        }
     }
 }
 
@@ -546,6 +632,77 @@ impl ToSql for Bind<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What TLS mode a URL ends up connecting with.
+    fn mode_for(url: &str) -> postgres::config::SslMode {
+        let mut config: postgres::Config = url.parse().expect("a parseable URL");
+        require_tls_off_this_machine(&mut config);
+        config.get_ssl_mode()
+    }
+
+    #[test]
+    fn a_remote_database_is_not_reached_without_tls() {
+        use postgres::config::SslMode;
+
+        // The default is `prefer`, which asks for TLS and carries on without
+        // it -- so the whole TLS stack in this file was optional against a
+        // server with `ssl = off`, or against anyone able to strip the
+        // upgrade. The password is in the URL being tested.
+        assert_eq!(mode_for("postgresql://user:pw@db.example.com:5432/everyday"), SslMode::Require,);
+        // Including the shape this crate's own settings placeholder suggests.
+        assert_eq!(mode_for("postgresql://user:pw@host:5432/db"), SslMode::Require);
+        // And an explicit `prefer` for a remote host, which is the same
+        // exposure written out longhand.
+        assert_eq!(
+            mode_for("postgresql://user:pw@db.example.com/everyday?sslmode=prefer"),
+            SslMode::Require,
+        );
+        // Already asking for it is left as it is.
+        assert_eq!(
+            mode_for("postgresql://user:pw@db.example.com/everyday?sslmode=require"),
+            SslMode::Require,
+        );
+    }
+
+    #[test]
+    fn a_database_on_this_machine_is_left_alone() {
+        use postgres::config::SslMode;
+
+        // There is no network between the two ends, and demanding a
+        // certificate for `localhost` would make the ordinary development
+        // setup -- and this crate's own conformance suite -- unrunnable.
+        for url in [
+            "postgresql://localhost:5432/everyday_test",
+            "postgresql://LocalHost:5432/everyday_test",
+            "postgresql://127.0.0.1:5432/everyday_test",
+            "postgresql://127.10.0.2:5432/everyday_test",
+        ] {
+            assert_eq!(mode_for(url), SslMode::Prefer, "{url} is on this machine");
+        }
+    }
+
+    #[test]
+    fn saying_sslmode_disable_is_honoured_rather_than_overridden() {
+        use postgres::config::SslMode;
+
+        // The documented way to say "this connection is not going over a
+        // network I care about". Refusing it would leave no way to say so,
+        // and upgrading it would be deciding over somebody's head -- so it
+        // stands, and the warning at connect time is what covers it.
+        assert_eq!(
+            mode_for("postgresql://user:pw@db.example.com/everyday?sslmode=disable"),
+            SslMode::Disable,
+        );
+    }
+
+    #[test]
+    fn a_unix_socket_needs_no_certificate() {
+        use postgres::config::SslMode;
+
+        // A socket in a directory never leaves the machine, and there is no
+        // host for a certificate to be issued for.
+        assert_eq!(mode_for("postgresql:///everyday?host=/var/run/postgresql"), SslMode::Prefer);
+    }
 
     #[test]
     fn a_schema_name_that_could_break_out_of_the_ddl_is_refused() {

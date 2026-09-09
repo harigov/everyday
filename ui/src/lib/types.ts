@@ -12,6 +12,9 @@ export type CalendarId = string
 export type EventId = string
 export type TrackerId = string
 export type ReadingId = string
+export type ConversationId = string
+export type MessageId = string
+export type MemoryId = string
 
 /** A ProseMirror document. Opaque to everything but the editor. */
 export type RichDoc = { type: 'doc'; content?: unknown[] }
@@ -245,6 +248,14 @@ export interface Capabilities {
    * what cannot then be recorded is worse than not offering it.
    */
   trackers: boolean
+  /**
+   * Backend carries the assistant's own domain, so its settings, threads and
+   * memory have somewhere to live.
+   *
+   * False hides the chat panel entirely rather than offering one whose
+   * conversation vanishes when the window closes.
+   */
+  agent: boolean
 }
 
 export interface VaultStatus {
@@ -892,3 +903,104 @@ export interface SourceInfo {
   label: string
   hasImages: boolean
 }
+
+// ── The assistant ────────────────────────────────────────────────────────
+//
+// Mirrors `everyday_core::agent`. Note what is *not* here: the API key. It
+// has no field on `AgentSettings` on the Rust side either, and there is no
+// command that reads one back -- see the module docs there for why that is
+// structural rather than a convention.
+
+/** Which family of API the model is spoken to over. */
+export type Provider = 'openAi'
+
+export interface ModelConfig {
+  provider: Provider
+  /** As the endpoint spells it: `gpt-5.1`, `qwen3:32b`. */
+  model: string
+  /** Overrides the provider default. What points this at a local model. */
+  baseUrl: string | null
+  temperature: number | null
+  maxTokens: number | null
+}
+
+export interface AgentSettings {
+  /** Off until somebody turns it on, and off in a new vault. */
+  enabled: boolean
+  model: ModelConfig
+  /** The person's own standing instructions. */
+  instructions: string
+  /** Whether a destructive tool call stops and asks first. */
+  confirmDestructive: boolean
+  /** Model turns one request may take before the loop gives up. */
+  maxSteps: number
+  /** Whether the assistant may write memories. */
+  remember: boolean
+  /** Whether a key is stored. Never the key. */
+  hasKey: boolean
+}
+
+export type Role = 'user' | 'assistant' | 'tool' | 'system'
+
+export interface ToolCall {
+  id: string
+  name: string
+  arguments: unknown
+}
+
+export interface AgentMessage {
+  id: MessageId
+  conversationId: ConversationId
+  role: Role
+  content: string
+  toolCalls: ToolCall[]
+  toolCallId: string | null
+  /** Set on a tool turn whose tool failed, so it can be drawn as one
+   *  without the interface parsing its prose. */
+  failed: boolean
+  createdAt: string
+}
+
+export interface Conversation {
+  id: ConversationId
+  title: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** A thread in the history list, with how long it is. */
+export interface ConversationSummary extends Conversation {
+  messages: number
+}
+
+export interface Memory {
+  id: MemoryId
+  text: string
+  sourceId: ConversationId | null
+  /** Written or edited by hand, so the assistant's own trimming leaves it. */
+  pinned: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+/**
+ * One thing that happened during a turn.
+ *
+ * Arrives over a channel as the turn runs rather than all at once at the end
+ * -- see `send_message` in the Rust shell. `finished` and `failed` are the
+ * two terminal ones, and exactly one of them always arrives.
+ */
+export type AgentEvent =
+  | { type: 'started'; messageId: MessageId }
+  | { type: 'delta'; text: string }
+  | { type: 'toolStarted'; callId: string; name: string; arguments: unknown }
+  | { type: 'toolFinished'; callId: string; name: string; ok: boolean; summary: string }
+  | {
+      type: 'confirmationRequired'
+      callId: string
+      name: string
+      subject: string
+      arguments: unknown
+    }
+  | { type: 'finished'; messageId: MessageId }
+  | { type: 'failed'; message: string }

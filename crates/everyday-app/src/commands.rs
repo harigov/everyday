@@ -6,10 +6,12 @@
 //! would stall every other task, and doing it on the webview's thread would
 //! freeze the window mid-keystroke.
 
+use everyday_core::agent::{AgentSettings, Conversation, Memory, Message as AgentMessage};
 use everyday_core::calendar::{Calendar, CalendarProvider, Event, SyncReport};
 use everyday_core::library::{Item, ItemStatus, Kind, LibraryStats, LogEntry, LogEvent, Progress};
 use everyday_core::model::{local_date_in, system_tz, today_local};
 use everyday_core::search::SearchHit;
+use everyday_core::store::agent::ConversationQuery;
 use everyday_core::store::calendars::EventQuery;
 use everyday_core::store::library::{ItemQuery, LogQuery};
 use everyday_core::store::tasks::{BlockQuery, TaskQuery};
@@ -21,14 +23,16 @@ use everyday_core::task::{
 use everyday_core::tracker::{Reading, Tracker, TrackerKind};
 use everyday_core::websearch::{SearchRequest, SearchResult, Source};
 use everyday_core::{
-    BlobId, BlockId, CalendarId, Entry, EntryId, EventId, ItemId, Journal, JournalId, KindId,
-    LogId, ProjectId, ReadingId, TaskId, TrackerId, Vault, VaultConfig, VaultStatus,
+    BlobId, BlockId, CalendarId, ConversationId, Entry, EntryId, EventId, ItemId, Journal,
+    JournalId, KindId, LogId, MemoryId, ProjectId, ReadingId, TaskId, TrackerId, Vault,
+    VaultConfig, VaultStatus,
 };
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{Manager, State};
 
+use crate::agent::{self, AgentEvent, Pending};
 use crate::error::{CommandError, CommandResult};
 use crate::feeds;
 use crate::notify::{self, Notification};
@@ -1458,4 +1462,164 @@ pub fn read_blob_range(
 
 pub fn blob_len(vault: &Arc<Vault>, id: BlobId) -> everyday_core::Result<u64> {
     vault.with_store(|s| s.blob_len(id))
+}
+
+// ---- the assistant ------------------------------------------------------
+//
+// The sixth domain's command surface, and the smallest of the six: almost
+// everything the assistant can do it does through its *tools*, which are in
+// the core and reached from `crate::agent` rather than from here. What is
+// left is configuring it, reading its threads back, and the two halves of one
+// conversation -- `send_message` and the confirmation that answers it.
+
+/// How the assistant is configured. Never carries the API key; see
+/// [`everyday_core::agent`] for why that is structural rather than a habit.
+#[tauri::command]
+pub fn agent_settings(state: State<'_, AppState>) -> CommandResult<AgentSettings> {
+    Ok(state.require()?.agent_settings()?)
+}
+
+#[tauri::command]
+pub async fn save_agent_settings(
+    state: State<'_, AppState>,
+    settings: AgentSettings,
+) -> CommandResult<AgentSettings> {
+    let vault = state.require()?;
+    blocking(move || {
+        vault.save_agent_settings(&settings)?;
+        // Read back rather than echoing what was sent: `has_key` is derived
+        // from the secret table, so the pane must be told what is true rather
+        // than what it asked for.
+        Ok(vault.agent_settings()?)
+    })
+    .await
+}
+
+/// Store the API key. There is no command that reads one back.
+#[tauri::command]
+pub async fn set_agent_key(state: State<'_, AppState>, key: String) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.set_agent_key(&key)?)).await
+}
+
+#[tauri::command]
+pub async fn clear_agent_key(state: State<'_, AppState>) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.clear_agent_key()?)).await
+}
+
+/// One row per thread for the history list, with how long each one is.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSummary {
+    #[serde(flatten)]
+    pub conversation: Conversation,
+    pub messages: u64,
+}
+
+#[tauri::command]
+pub async fn list_conversations(
+    state: State<'_, AppState>,
+    limit: Option<u32>,
+) -> CommandResult<Vec<ConversationSummary>> {
+    let vault = state.require()?;
+    blocking(move || {
+        let query = ConversationQuery { limit, offset: 0 };
+        vault
+            .conversations(&query)?
+            .into_iter()
+            .map(|c| {
+                let messages = vault.message_count(c.id)?;
+                Ok(ConversationSummary { conversation: c, messages })
+            })
+            .collect()
+    })
+    .await
+}
+
+/// Mint a thread, without saving it. The id is the core's to allocate, for
+/// the reason given on [`new_journal`].
+#[tauri::command]
+pub fn new_conversation(state: State<'_, AppState>) -> CommandResult<Conversation> {
+    let _ = state.require()?;
+    Ok(Conversation::new())
+}
+
+#[tauri::command]
+pub async fn conversation_messages(
+    state: State<'_, AppState>,
+    id: ConversationId,
+) -> CommandResult<Vec<AgentMessage>> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.messages(id)?)).await
+}
+
+#[tauri::command]
+pub async fn delete_conversation(
+    state: State<'_, AppState>,
+    id: ConversationId,
+) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.delete_conversation(id)?)).await
+}
+
+/// Say something to the assistant, and stream what it says back.
+///
+/// The reply arrives on `channel` rather than as this command's return value:
+/// a turn takes seconds and calls tools while it runs, and a panel that could
+/// draw none of that until the end would read as a hang. What this returns is
+/// only whether the turn finished.
+#[tauri::command]
+pub async fn send_message(
+    state: State<'_, AppState>,
+    pending: State<'_, Arc<Pending>>,
+    conversation_id: ConversationId,
+    prompt: String,
+    context: Option<String>,
+    channel: tauri::ipc::Channel<AgentEvent>,
+) -> CommandResult<()> {
+    let vault = state.require()?;
+    agent::run_turn(agent::Turn {
+        vault,
+        pending: pending.inner().clone(),
+        conversation: conversation_id,
+        prompt,
+        context,
+        channel,
+    })
+    .await
+}
+
+/// Answer a confirmation the assistant is waiting on.
+///
+/// Returns whether anything was still waiting: a turn that was cancelled
+/// between the question and the click leaves a card on screen with nothing
+/// behind it, and the panel dismisses it rather than showing an error.
+#[tauri::command]
+pub fn confirm_tool_call(
+    pending: State<'_, Arc<Pending>>,
+    call_id: String,
+    approved: bool,
+) -> CommandResult<bool> {
+    Ok(pending.answer(&call_id, approved))
+}
+
+#[tauri::command]
+pub async fn list_memories(state: State<'_, AppState>) -> CommandResult<Vec<Memory>> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.memories()?)).await
+}
+
+/// Write a memory by hand, which also pins it: a fact somebody typed is not
+/// one the assistant's own housekeeping may drop.
+#[tauri::command]
+pub async fn save_memory(state: State<'_, AppState>, memory: Memory) -> CommandResult<Vec<Memory>> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.save_memory(&Memory { pinned: true, ..memory })?)).await
+}
+
+#[tauri::command]
+pub async fn delete_memory(state: State<'_, AppState>, id: MemoryId) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.delete_memory(id)?)).await
 }

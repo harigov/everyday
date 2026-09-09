@@ -7,11 +7,17 @@
 
 import type {
   AddedItem,
+  AgentEvent,
+  AgentMessage,
+  AgentSettings,
   BlockId,
   BlockKind,
   BlockQuery,
   BlockSubject,
   Bootstrap,
+  Conversation,
+  ConversationId,
+  ConversationSummary,
   Calendar,
   CalendarEvent,
   CalendarId,
@@ -36,6 +42,8 @@ import type {
   LogEvent,
   LogId,
   LogQuery,
+  Memory,
+  MemoryId,
   Project,
   ProjectId,
   ProviderInfo,
@@ -116,6 +124,26 @@ export let onShellNotification: (handler: (spec: ShellNotification) => void) => 
  */
 export let onTrayAction: (handler: (id: string) => void) => void = () => {}
 
+/**
+ * Say something to the assistant, streaming what it says back.
+ *
+ * Separate from the `api` object below because it is the one call that is not
+ * request/response: a turn takes seconds and runs tools while it does, so the
+ * reply arrives on a channel and this resolves only when the turn is over.
+ * Rejects with the same `VaultError` every other command does.
+ *
+ * Replaced with the mock implementation in dev-without-Tauri, so the panel is
+ * as usable in a browser as the rest of the interface.
+ */
+export let sendMessage: (
+  conversationId: ConversationId,
+  prompt: string,
+  context: string | null,
+  onEvent: (event: AgentEvent) => void,
+) => Promise<void> = async () => {
+  throw new VaultError('unavailable', 'The assistant could not reach its backend.')
+}
+
 if (!MOCK) {
   const { listen } = await import('@tauri-apps/api/event')
   onSaveAndClose = (handler) => {
@@ -129,6 +157,11 @@ if (!MOCK) {
   }
 
   const mod = await import('@tauri-apps/api/core')
+  sendMessage = async (conversationId, prompt, context, onEvent) => {
+    const channel = new mod.Channel<AgentEvent>()
+    channel.onmessage = onEvent
+    await invoke<void>('send_message', { conversationId, prompt, context, channel })
+  }
   invoke = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
     try {
       return await mod.invoke<T>(cmd, args)
@@ -426,6 +459,50 @@ export const api = {
    */
   deleteTracker: (journalId: JournalId, trackerId: TrackerId) =>
     invoke<number>('delete_tracker', { journalId, trackerId }),
+
+  // ── The assistant ──────────────────────────────────────────────────
+  //
+  // Available only when `status.capabilities.agent` is true. Small, because
+  // almost everything the assistant can do it does through its *tools*,
+  // which live in the Rust core and never cross this boundary. What is here
+  // is configuring it, reading its threads back, and the two halves of one
+  // exchange: `sendMessage` (exported separately, because it streams) and
+  // the confirmation that answers it.
+
+  agentSettings: () => invoke<AgentSettings>('agent_settings'),
+
+  /** Returns what was actually stored: `hasKey` is derived, not echoed. */
+  saveAgentSettings: (settings: AgentSettings) =>
+    invoke<AgentSettings>('save_agent_settings', { settings }),
+
+  /** Store the API key. There is deliberately no call that reads one back. */
+  setAgentKey: (key: string) => invoke<void>('set_agent_key', { key }),
+  clearAgentKey: () => invoke<void>('clear_agent_key'),
+
+  conversations: (limit?: number) => invoke<ConversationSummary[]>('list_conversations', { limit }),
+
+  /** Mints an unsaved thread; the first message is what saves it. */
+  newConversation: () => invoke<Conversation>('new_conversation'),
+
+  conversationMessages: (id: ConversationId) =>
+    invoke<AgentMessage[]>('conversation_messages', { id }),
+
+  deleteConversation: (id: ConversationId) => invoke<void>('delete_conversation', { id }),
+
+  /**
+   * Answer a confirmation the assistant is waiting on. False means nothing
+   * was waiting any more -- a turn cancelled between the question and the
+   * click -- which the panel treats as a dismissal rather than an error.
+   */
+  confirmToolCall: (callId: string, approved: boolean) =>
+    invoke<boolean>('confirm_tool_call', { callId, approved }),
+
+  memories: () => invoke<Memory[]>('list_memories'),
+
+  /** Saving by hand also pins: a fact somebody typed is not one the
+   *  assistant's own housekeeping may drop. Returns what it evicted. */
+  saveMemory: (memory: Memory) => invoke<Memory[]>('save_memory', { memory }),
+  deleteMemory: (id: MemoryId) => invoke<void>('delete_memory', { id }),
 }
 
 /**
@@ -447,6 +524,7 @@ export function mediaUrl(blob: string): string {
 
 let mockMediaUrl: (blob: string) => string = () => ''
 if (MOCK) {
-  const { mockMediaUrl: f } = await import('./mock')
+  const { mockMediaUrl: f, mockSendMessage } = await import('./mock')
   mockMediaUrl = f
+  sendMessage = mockSendMessage
 }
