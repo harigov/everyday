@@ -11,7 +11,7 @@
 //! ```text
 //!   Vault              lock / unlock, password changes, search index
 //!     |
-//!   JournalStore        trait: sqlite, markdown, ... (crate::store)
+//!   JournalStore        trait: sqlite, postgres, ... (crate::store)
 //!     +-- TaskStore     optional second domain (crate::store::tasks)
 //!     +-- CalendarStore optional third domain  (crate::store::calendars)
 //!     +-- LibraryStore  optional fourth domain (crate::store::library)
@@ -95,8 +95,8 @@ pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
 pub use store::tasks::{BlockQuery, ParentScope, ProjectScope, TaskQuery, TaskSort, TaskStore};
 pub use store::trackers::{ReadingQuery, TrackerDay, TrackerStore};
 pub use store::{
-    BackendRegistry, Capabilities, EntryQuery, JournalStore, SortOrder, StoreContext, StoreFactory,
-    StoreStats,
+    BackendInfo, BackendRegistry, BackendSettings, Capabilities, EntryQuery, JournalStore,
+    SettingSpec, SortOrder, StoreContext, StoreFactory, StoreStats,
 };
 pub use task::{
     BlockKind, BlockSubject, Priority, Project, ProjectStatus, ProjectTaskCount, Task, TaskStats,

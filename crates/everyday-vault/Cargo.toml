@@ -10,8 +10,7 @@ authors.workspace = true
 [dependencies]
 everyday-core.workspace = true
 everyday-store-sqlite.workspace = true
-everyday-store-markdown.workspace = true
-serde.workspace = true
+everyday-store-postgres.workspace = true
 directories = "6"
 
 [dev-dependencies]

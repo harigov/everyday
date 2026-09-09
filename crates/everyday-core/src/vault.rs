@@ -13,8 +13,12 @@
 //!
 //! The header is deliberately *not* encrypted: something has to be readable
 //! before the password is known in order to know how to ask for it. It
-//! contains no journal content — only the parameters needed to derive a key
-//! and the data key sealed under that key.
+//! contains no journal content — only the parameters needed to derive a key,
+//! the data key sealed under that key, and the backend's own settings sealed
+//! under the same one. That last field is why the header is a *mixture*
+//! rather than plaintext throughout: a Postgres URL carries a password, and
+//! a vault that wrote its database credential in the clear next to the salt
+//! would be handing away everything it had just encrypted.
 //!
 //! # Locking
 //!
@@ -44,7 +48,8 @@ use crate::store::library::{ItemQuery, LibraryStore, LogQuery};
 use crate::store::tasks::{BlockQuery, TaskQuery, TaskStore};
 use crate::store::trackers::{ReadingQuery, TrackerDay, TrackerStore};
 use crate::store::{
-    BackendRegistry, Capabilities, EntryQuery, JournalStore, StoreContext, StoreStats,
+    BackendRegistry, BackendSettings, Capabilities, EntryQuery, JournalStore, StoreContext,
+    StoreStats,
 };
 use crate::task::{Project, Task, TaskStats, TimeBlock};
 use crate::tracker::Reading;
@@ -85,6 +90,19 @@ pub struct VaultHeader {
     /// Hex-encoded data key, sealed under the password-derived key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrapped_key: Option<String>,
+    /// Hex-encoded [`BackendSettings`], sealed under the *data* key.
+    ///
+    /// Sealed rather than stored plainly because of what tends to be in it:
+    /// a connection URL with a password. Absent on a backend that needs no
+    /// settings, which is every file-backed one.
+    ///
+    /// Sealing it here is also what makes the ordering work. The store is
+    /// only ever opened from [`Vault::activate`], which already holds the
+    /// data key, so nothing needs these before there is a key to open them
+    /// with. On an unencrypted vault the cipher is a no-op and this is hex
+    /// of cleartext -- honest, and one more thing "no password" costs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_settings: Option<String>,
     pub created_at: Timestamp,
     /// Seconds of inactivity before the vault locks itself. 0 disables.
     #[serde(default)]
@@ -102,6 +120,8 @@ impl VaultHeader {
 pub struct VaultConfig {
     pub name: String,
     pub backend: String,
+    /// What the chosen backend needs to be told. Empty for the local ones.
+    pub settings: BackendSettings,
     /// `None` creates an *unencrypted* vault. This is a deliberate choice
     /// the UI must surface, never a default.
     pub password: Option<String>,
@@ -114,6 +134,7 @@ impl Default for VaultConfig {
         Self {
             name: "My Journal".into(),
             backend: "sqlite".into(),
+            settings: BackendSettings::default(),
             password: None,
             kdf: KdfParams::default(),
             auto_lock_seconds: 15 * 60,
@@ -151,6 +172,11 @@ fn default_true() -> bool {
 struct Unlocked {
     store: Box<dyn JournalStore>,
     index: SearchIndex,
+    /// The same cipher the store was handed. Kept so the vault can reseal
+    /// its backend settings -- a rotated database password -- without asking
+    /// for the vault password a second time. Dropped, with the key inside
+    /// it, by [`Vault::lock`].
+    cipher: Arc<dyn Cipher>,
 }
 
 /// A journal vault. Cheap to share: every method takes `&self`.
@@ -192,7 +218,7 @@ impl Vault {
         }
         std::fs::create_dir_all(root).map_err(|e| Error::io(root, e))?;
 
-        let (header, dek) = match cfg.password.as_deref() {
+        let (mut header, dek) = match cfg.password.as_deref() {
             Some(password) => {
                 if password.is_empty() {
                     return Err(Error::Invalid("password must not be empty".into()));
@@ -210,6 +236,7 @@ impl Vault {
                         kdf: Some(cfg.kdf),
                         salt: Some(to_hex(&salt)),
                         wrapped_key: Some(to_hex(&wrapped)),
+                        backend_settings: None,
                         created_at: Timestamp::now(),
                         auto_lock_seconds: cfg.auto_lock_seconds,
                     },
@@ -225,12 +252,18 @@ impl Vault {
                     kdf: None,
                     salt: None,
                     wrapped_key: None,
+                    backend_settings: None,
                     created_at: Timestamp::now(),
                     auto_lock_seconds: cfg.auto_lock_seconds,
                 },
                 None,
             ),
         };
+
+        // Sealed with the key that was just made, before it is handed to the
+        // cipher that `activate` builds. Nothing else can read it afterwards
+        // without the password, which is the point.
+        header.backend_settings = seal_settings(&cipher_for(dek.as_ref()), &cfg.settings)?;
 
         write_header(root, &header)?;
 
@@ -248,13 +281,56 @@ impl Vault {
             // new vault at the same instant.
             write_lock: crate::lockfile::acquire(root)?,
         };
-        vault.activate(dek)?;
+
+        // A backend that cannot be opened must not leave a vault behind.
+        //
+        // Until there was a backend on the far side of a network, nothing
+        // here could realistically fail: opening a file inside a directory
+        // this function had just made is about as certain as anything gets.
+        // A *connection* is not -- a typo in the URL, a password that has
+        // changed, a server that is down -- and by the time that is known the
+        // header is already on disk. `Vault::exists` would then be true, so
+        // the corrected retry is refused with `AlreadyInitialised` and the
+        // only way forward is deleting a directory by hand. That is a poor
+        // thing to ask of someone whose first attempt at making a journal has
+        // just failed, and impossible to ask through a window that offers no
+        // way to do it.
+        let held_the_lock = vault.write_lock.is_some();
+        if let Err(e) = vault.activate(dek) {
+            // The lock is released by dropping the vault, which has to happen
+            // before its file is removed.
+            drop(vault);
+            remove_partial_vault(root, held_the_lock);
+            return Err(e);
+        }
         Ok(vault)
     }
 
     /// Open an existing vault. The returned vault is **locked** if it is
     /// encrypted, and already unlocked if it is not.
     pub fn open(root: &Path, registry: Arc<BackendRegistry>) -> Result<Self> {
+        Self::open_inner(root, registry, true)
+    }
+
+    /// Open a vault's *header* without opening its storage backend.
+    ///
+    /// The repair path, and the only one there can be. Everything else here
+    /// reaches the backend: `open` activates an unencrypted vault
+    /// immediately, and `unlock` activates an encrypted one -- so a vault
+    /// whose database has moved, or whose database password has been rotated,
+    /// cannot be opened at all in the ordinary way. That would be fine if the
+    /// thing needing to change lived somewhere else, but it does not: the
+    /// connection URL is sealed in this vault's own header, and reading it
+    /// needs the vault password and nothing else. See
+    /// [`Vault::backend_settings`].
+    ///
+    /// The result is inert. It knows its name, its backend and its header,
+    /// and every method that touches a record answers [`Error::Locked`].
+    pub fn open_dormant(root: &Path, registry: Arc<BackendRegistry>) -> Result<Self> {
+        Self::open_inner(root, registry, false)
+    }
+
+    fn open_inner(root: &Path, registry: Arc<BackendRegistry>, activate: bool) -> Result<Self> {
         let header = read_header(root)?;
         if header.format > FORMAT_VERSION {
             return Err(Error::UnsupportedVaultVersion {
@@ -283,7 +359,7 @@ impl Vault {
             epoch: Instant::now(),
             write_lock,
         };
-        if !encrypted {
+        if activate && !encrypted {
             vault.activate(None)?;
         }
         Ok(vault)
@@ -304,26 +380,34 @@ impl Vault {
         if self.is_unlocked() {
             return Ok(());
         }
-        let header = self.header_read().clone();
-
-        let dek = if header.is_encrypted() {
-            let password = password.ok_or(Error::BadPassword)?;
-            let salt_hex = header.salt.as_deref().ok_or_else(|| {
-                Error::Invalid("encrypted vault header is missing its salt".into())
-            })?;
-            let wrapped_hex = header.wrapped_key.as_deref().ok_or_else(|| {
-                Error::Invalid("encrypted vault header is missing its wrapped key".into())
-            })?;
-            let kdf = header.kdf.ok_or_else(|| {
-                Error::Invalid("encrypted vault header is missing its KDF parameters".into())
-            })?;
-            let kek = derive_key(password, &from_hex(salt_hex)?, kdf)?;
-            Some(unwrap_key(&kek, &from_hex(wrapped_hex)?)?)
-        } else {
-            None
-        };
-
+        let dek = self.data_key(password)?;
         self.activate(dek)
+    }
+
+    /// Unwrap the data key with `password`, without opening anything.
+    ///
+    /// Separate from [`Vault::unlock`] because unlocking is two steps that
+    /// fail for unrelated reasons -- the password is wrong, or the backend
+    /// cannot be reached -- and the repair path needs the first without the
+    /// second. `None` for an unencrypted vault, which has no key.
+    fn data_key(&self, password: Option<&str>) -> Result<Option<SecretKey>> {
+        let header = self.header_read().clone();
+        if !header.is_encrypted() {
+            return Ok(None);
+        }
+        let password = password.ok_or(Error::BadPassword)?;
+        let salt_hex = header
+            .salt
+            .as_deref()
+            .ok_or_else(|| Error::Invalid("encrypted vault header is missing its salt".into()))?;
+        let wrapped_hex = header.wrapped_key.as_deref().ok_or_else(|| {
+            Error::Invalid("encrypted vault header is missing its wrapped key".into())
+        })?;
+        let kdf = header.kdf.ok_or_else(|| {
+            Error::Invalid("encrypted vault header is missing its KDF parameters".into())
+        })?;
+        let kek = derive_key(password, &from_hex(salt_hex)?, kdf)?;
+        Ok(Some(unwrap_key(&kek, &from_hex(wrapped_hex)?)?))
     }
 
     /// Open the backend and build the search index. Assumes the key is right.
@@ -338,8 +422,11 @@ impl Vault {
 
         let store_root = self.root.join(STORE_DIRNAME);
         std::fs::create_dir_all(&store_root).map_err(|e| Error::io(&store_root, e))?;
-        let store =
-            self.registry.open(&header.backend, StoreContext { root: store_root, cipher })?;
+        let settings = open_settings(cipher.as_ref(), header.backend_settings.as_deref())?;
+        let store = self.registry.open(
+            &header.backend,
+            StoreContext { root: store_root, cipher: cipher.clone(), settings },
+        )?;
 
         // Check the store before trusting it, but do not refuse to open on a
         // bad answer. A damaged vault is precisely the one someone needs to
@@ -361,7 +448,7 @@ impl Vault {
 
         let index = SearchIndex::build(&store.all_entries()?);
 
-        *self.state_write() = Some(Unlocked { store, index });
+        *self.state_write() = Some(Unlocked { store, index, cipher });
         self.touch();
         Ok(())
     }
@@ -420,6 +507,52 @@ impl Vault {
 
         // Same data key, so an unlocked session stays valid.
         Ok(())
+    }
+
+    /// The cipher that seals this vault's records, from whichever source is
+    /// available: the live one if it is unlocked, `password` if it is not.
+    ///
+    /// This is what lets the two methods below work on a vault opened with
+    /// [`Vault::open_dormant`] -- the case they exist for, since a vault
+    /// whose backend cannot be reached is exactly the one whose backend
+    /// settings need changing.
+    fn settings_cipher(&self, password: Option<&str>) -> Result<Arc<dyn Cipher>> {
+        if let Some(unlocked) = self.state_read().as_ref() {
+            return Ok(unlocked.cipher.clone());
+        }
+        Ok(cipher_for(self.data_key(password)?.as_ref()))
+    }
+
+    /// What this vault's backend was configured with.
+    ///
+    /// `password` is used only when the vault is locked; an unlocked one
+    /// already holds the key and ignores it. Callers that mean to *show*
+    /// these must remember what tends to be in them: a connection URL is a
+    /// credential, and this is the one part of a header that is sealed
+    /// precisely because it is one. See
+    /// [`VaultHeader::backend_settings`].
+    pub fn backend_settings(&self, password: Option<&str>) -> Result<BackendSettings> {
+        let sealed = self.header_read().backend_settings.clone();
+        open_settings(self.settings_cipher(password)?.as_ref(), sealed.as_deref())
+    }
+
+    /// Reconfigure the backend: a moved database, a rotated password.
+    ///
+    /// Takes effect the next time the store is opened rather than now.
+    /// Swapping the connection under a live store would leave the search
+    /// index -- and everything the interface has already loaded -- describing
+    /// a database this vault is no longer talking to, so the honest thing is
+    /// to write the header and let the caller lock and unlock.
+    pub fn set_backend_settings(
+        &self,
+        password: Option<&str>,
+        settings: BackendSettings,
+    ) -> Result<()> {
+        self.writable()?;
+        let sealed = seal_settings(&self.settings_cipher(password)?, &settings)?;
+        let mut header = self.header_write();
+        header.backend_settings = sealed;
+        write_header(&self.root, &header)
     }
 
     pub fn set_auto_lock(&self, seconds: u64) -> Result<()> {
@@ -1649,6 +1782,60 @@ fn write_header(root: &Path, header: &VaultHeader) -> Result<()> {
     Ok(())
 }
 
+/// Undo a [`Vault::create`] that got as far as the header and no further.
+///
+/// Best effort, and deliberately narrow: only the files `create` itself
+/// writes. `create` refused an existing vault before any of them, so none can
+/// belong to anybody else -- but `root` may well have existed already, and
+/// the store directory may have had something in it before today, so both are
+/// removed only by the non-recursive call that refuses when they are not
+/// empty. Leaving a stray directory behind is a much smaller failure than
+/// deleting one, and either way the header is gone, which is the part that
+/// decides whether the retry is allowed.
+fn remove_partial_vault(root: &Path, held_the_lock: bool) {
+    let _ = std::fs::remove_file(root.join(HEADER_FILENAME));
+    let _ = std::fs::remove_file(root.join(HEADER_BACKUP_FILENAME));
+    if held_the_lock {
+        let _ = std::fs::remove_file(root.join(crate::lockfile::LOCK_FILENAME));
+    }
+    let _ = std::fs::remove_dir(root.join(STORE_DIRNAME));
+    let _ = std::fs::remove_dir(root);
+}
+
+/// Associated data for the sealed backend settings.
+///
+/// Distinct from every record AAD in the store, so a sealed connection URL
+/// cannot be pasted into an entry's `data` column and decrypt there.
+const SETTINGS_AAD: &[u8] = b"everyday.backend-settings.v1";
+
+/// The cipher a data key implies. `None` -- an unencrypted vault -- gets the
+/// no-op one, which is the same substitution [`Vault::activate`] makes.
+fn cipher_for(dek: Option<&SecretKey>) -> Arc<dyn Cipher> {
+    match dek {
+        Some(k) => Arc::new(AeadCipher::new(k)),
+        None => Arc::new(NullCipher),
+    }
+}
+
+/// Seal `settings` for the header, or `None` if there is nothing to seal.
+///
+/// Empty settings are stored as an absent field rather than as the sealed
+/// bytes of `{}`, so a SQLite vault's header looks exactly as it always did.
+fn seal_settings(cipher: &Arc<dyn Cipher>, settings: &BackendSettings) -> Result<Option<String>> {
+    if settings.is_empty() {
+        return Ok(None);
+    }
+    let sealed = cipher.seal(SETTINGS_AAD, &serde_json::to_vec(settings)?)?;
+    Ok(Some(to_hex(&sealed)))
+}
+
+/// Recover what [`seal_settings`] wrote.
+fn open_settings(cipher: &dyn Cipher, sealed: Option<&str>) -> Result<BackendSettings> {
+    let Some(sealed) = sealed else { return Ok(BackendSettings::default()) };
+    let plain = cipher.open(SETTINGS_AAD, &from_hex(sealed)?)?;
+    Ok(serde_json::from_slice(&plain)?)
+}
+
 fn to_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -1893,6 +2080,9 @@ mod tests {
         fn id(&self) -> &'static str {
             "memory"
         }
+        fn name(&self) -> &'static str {
+            "Memory"
+        }
         fn describe(&self) -> &'static str {
             "in-memory (tests only)"
         }
@@ -1923,6 +2113,7 @@ mod tests {
         VaultConfig {
             name: "Test".into(),
             backend: "memory".into(),
+            settings: BackendSettings::default(),
             password: password.map(str::to_string),
             kdf: KdfParams::insecure_fast(),
             auto_lock_seconds: 0,
@@ -1940,6 +2131,42 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn the_assistant_is_offered_only_the_tools_the_backend_can_serve() {
+        // The backend decides the catalogue, so a model is never told about
+        // a tool whose storage does not exist and cannot then claim to have
+        // used one.
+        //
+        // This lives here, against the in-memory store, because it is the
+        // only backend left that holds journals and nothing else. Every one
+        // the application ships carries all six domains -- which is exactly
+        // why the rule needs a test that does not depend on one of them
+        // being poorer than the others, or it goes unexercised until the
+        // first backend that is.
+        use crate::agent::tools::{self, ToolContext};
+
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+        assert!(!v.supports_tasks(), "the premise of this test");
+
+        let offered: Vec<&str> = tools::available(&v).iter().map(|t| t.name).collect();
+        assert!(offered.contains(&"create_entry"), "journals work on every backend: {offered:?}");
+        assert!(!offered.contains(&"create_task"), "this backend stores no tasks: {offered:?}");
+        assert!(!offered.contains(&"list_shelves"), "nor a library: {offered:?}");
+
+        // And asking anyway is refused where the model can act on it, rather
+        // than failing somewhere deeper with a message about storage.
+        let ctx = ToolContext {
+            vault: &v,
+            today: jiff::civil::Date::constant(2026, 9, 8),
+            tz: "UTC",
+            conversation: None,
+        };
+        let err = tools::dispatch(&ctx, "create_task", &serde_json::json!({ "title": "x" }))
+            .expect_err("a tool the backend cannot serve must be refused");
+        assert!(err.to_string().contains("does not store"), "got {err}");
     }
 
     #[test]

@@ -32,9 +32,21 @@ use clap::{Parser, Subcommand};
 pub enum Command {
     /// Create a new vault.
     Init {
-        /// Storage backend.
+        /// Storage backend: `sqlite` for a database in the vault folder,
+        /// `postgres` for one on a server.
         #[arg(long, default_value = everyday_vault::DEFAULT_BACKEND)]
         backend: String,
+        /// Backend setting, as `key=value`. Repeatable.
+        ///
+        /// What a backend needs depends on the backend: `sqlite` needs
+        /// nothing, `postgres` needs
+        /// `--set url=postgresql://user:password@host:5432/database` and
+        /// optionally `--set schema=everyday`. Settings are sealed under the
+        /// vault password, so a URL given here does not end up readable in
+        /// the vault header -- but it does end up in this shell's history,
+        /// which is worth a thought before pasting a production credential.
+        #[arg(long = "set", value_name = "KEY=VALUE")]
+        settings: Vec<String>,
         /// Name shown in the app.
         #[arg(long, default_value = "My Journal")]
         name: String,
@@ -100,6 +112,17 @@ pub enum Command {
     ///
     /// The copy opens with the same password and needs no restore step.
     Backup { dir: PathBuf },
+    /// Show or change what this vault's storage backend is configured with.
+    ///
+    /// The place to fix a database password that has been rotated, or a
+    /// server that has moved, without recreating the vault. Takes effect the
+    /// next time the vault is opened.
+    Backend {
+        /// Backend setting, as `key=value`. Repeatable, and merged with what
+        /// is already there. With none, the current configuration is listed.
+        #[arg(long = "set", value_name = "KEY=VALUE")]
+        settings: Vec<String>,
+    },
     /// Check the vault for storage-level damage.
     Check,
     /// Delete attachments no entry references.
@@ -135,13 +158,25 @@ pub fn run(cli: Cli) -> Result<()> {
     let path = cli.vault.clone().unwrap_or_else(everyday_vault::default_vault_dir);
 
     // `init` is the one command that must not require an existing vault.
-    if let Command::Init { backend, name, no_encryption } = &cli.command {
-        return init(&path, backend, name, *no_encryption, cli.password.as_deref());
+    if let Command::Init { backend, settings, name, no_encryption } = &cli.command {
+        return init(&path, backend, settings, name, *no_encryption, cli.password.as_deref());
     }
 
     if !everyday_vault::exists(&path) {
         return Err(Error::NoVault(path));
     }
+
+    // `backend` is dispatched before the open below, and that is the whole
+    // reason it works. Opening a vault opens its storage backend, so a vault
+    // whose database has moved -- or whose database password has been
+    // rotated -- cannot be opened at all, which is precisely the vault whose
+    // backend settings need changing. It reads and rewrites the header and
+    // touches nothing else. See `Vault::open_dormant`.
+    if let Command::Backend { settings } = &cli.command {
+        let vault = everyday_vault::open_dormant(&path)?;
+        return backend(&vault, settings, cli.password.as_deref());
+    }
+
     let vault = everyday_vault::open(&path)?;
     if !vault.is_unlocked() {
         let password = match cli.password.clone() {
@@ -168,6 +203,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Export { dir } => export(&vault, &dir),
         Command::Passwd => passwd(&vault, cli.password.as_deref()),
         Command::Backup { dir } => backup(&vault, &dir),
+        Command::Backend { .. } => unreachable!("handled above"),
         Command::Check => check(&vault),
         Command::Gc { include_recent } => {
             let grace = if include_recent {
@@ -185,13 +221,36 @@ pub fn run(cli: Cli) -> Result<()> {
 
 // ---- commands -----------------------------------------------------------
 
+/// Parse the repeatable `--set key=value` into backend settings.
+///
+/// Split on the *first* `=` only: a Postgres URL is full of them, and
+/// `--set url=postgresql://u:p@h/db?options=-csearch_path%3Dx` must survive
+/// intact.
+fn parse_settings(pairs: &[String]) -> Result<everyday_core::BackendSettings> {
+    let mut settings = everyday_core::BackendSettings::new();
+    for pair in pairs {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| Error::Invalid(format!("--set expects key=value, got {pair:?}")))?;
+        settings.set(key.trim(), value);
+    }
+    Ok(settings)
+}
+
 fn init(
     path: &std::path::Path,
     backend: &str,
+    settings: &[String],
     name: &str,
     no_encryption: bool,
     supplied: Option<&str>,
 ) -> Result<()> {
+    let settings = parse_settings(settings)?;
+    // Checked before a password is asked for, so a typo in the backend name
+    // or a missing connection URL is reported now rather than after two
+    // prompts and a KDF.
+    everyday_vault::validate_settings(backend, &settings)?;
+
     let password = if no_encryption {
         None
     } else {
@@ -216,6 +275,7 @@ fn init(
         VaultConfig {
             name: name.to_string(),
             backend: backend.to_string(),
+            settings,
             password,
             kdf: KdfParams::default(),
             auto_lock_seconds: 15 * 60,
@@ -236,6 +296,55 @@ fn init(
             "\nWarning: this vault is NOT encrypted. Anything written to it is stored in the clear."
         );
     }
+    Ok(())
+}
+
+/// Show or amend the backend's settings.
+///
+/// Secrets are never printed back. A connection URL has a password in it, and
+/// the whole reason it is sealed in the header is that it should not be
+/// sitting somewhere it can be read -- which includes a terminal someone else
+/// can scroll back through, and a CI log.
+fn backend(vault: &Vault, pairs: &[String], supplied: Option<&str>) -> Result<()> {
+    let name = vault.status().backend;
+    let specs = everyday_vault::backend_settings(&name)?;
+
+    // The settings are sealed under the vault key, so reading them at all
+    // needs the password -- and only the password, which is what makes this
+    // reachable on a vault that cannot be opened.
+    let password = match (vault.status().encrypted, supplied) {
+        (false, _) => None,
+        (true, Some(p)) => Some(p.to_string()),
+        (true, None) => Some(prompt_password("Password: ")?),
+    };
+    let mut settings = vault.backend_settings(password.as_deref())?;
+
+    if pairs.is_empty() {
+        println!("backend    {name}");
+        if specs.is_empty() {
+            println!("this backend needs no configuration");
+            return Ok(());
+        }
+        for spec in &specs {
+            let shown = match (settings.get(spec.key), spec.secret) {
+                (Some(_), true) => "(set, not shown)".to_string(),
+                (Some(v), false) => v.to_string(),
+                (None, _) if spec.required => "(not set)".to_string(),
+                (None, _) => "(default)".to_string(),
+            };
+            println!("{:<10} {shown}", spec.key);
+        }
+        return Ok(());
+    }
+
+    // Merged, not replaced: `--set schema=archive` on a Postgres vault must
+    // not take the connection URL with it.
+    for (key, value) in parse_settings(pairs)?.into_pairs() {
+        settings.set(key, value);
+    }
+    everyday_vault::validate_settings(&name, &settings)?;
+    vault.set_backend_settings(password.as_deref(), settings)?;
+    println!("updated; it takes effect the next time this vault is opened");
     Ok(())
 }
 

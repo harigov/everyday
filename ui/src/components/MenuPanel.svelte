@@ -41,8 +41,17 @@
   let subAnchor = $state<{ left: number; right: number; top: number } | null>(null)
 
   // Measured, then placed, then given the keyboard -- in that order and in
-  // one pass. Until it is placed it is drawn where it was asked for and left
+  // one pass. Until it is placed it is drawn at the origin and left
   // transparent, so nothing is seen jumping into position.
+  //
+  // The origin, and not where it was asked for, because the measurement has
+  // to be of the width the panel will *have*. `.menu` is `position: fixed`
+  // with `left` set and `width: auto`, so its used width is shrink-to-fit
+  // against the space to its right -- measure it at a pointer 200px from the
+  // right edge and it reports 200, `placeMenu` flips it left on that figure,
+  // and it then re-lays out at its full width and lands under the pointer.
+  // Which is the exact failure `fit()` exists to prevent. At `left: 0` the
+  // whole viewport is available, so what is measured is the natural width.
   $effect(() => {
     if (!panel) return
     const box = panel.getBoundingClientRect()
@@ -105,9 +114,18 @@
     if (i !== null) rows[i]?.focus()
   }
 
-  function choose(item: MenuItem, i: number) {
+  /**
+   * Activate a row. `byKey` is whether a key did it rather than the pointer.
+   *
+   * It decides where the caret goes when the row opens a submenu: a key has
+   * to hand the keyboard on, because otherwise the next ArrowDown walks the
+   * *parent* menu while the submenu sits open beside it and the two disagree
+   * about what is selected. A click leaves the caret where it is, because
+   * the pointer is about to say where it is going anyway.
+   */
+  function choose(item: MenuItem, i: number, byKey = false) {
     if (!isAction(item) || item.disabled) return
-    if (item.items) return openSub(i, false)
+    if (item.items) return openSub(i, byKey)
     // Closed before it runs: an action that opens a dialog must not open it
     // underneath the menu that asked for it.
     onexit()
@@ -159,7 +177,7 @@
         // Explicitly, because everything here is prevented below -- and a
         // prevented keydown is exactly what stops a focused button being
         // activated by the platform.
-        if (item) choose(item, i)
+        if (item) choose(item, i, true)
         break
       case 'Tab':
         onexit()
@@ -185,10 +203,7 @@
   class:placed={!!pos}
   role="menu"
   tabindex="-1"
-  style="left: {pos?.x ?? anchor?.right ?? at?.x ?? 0}px; top: {pos?.y ??
-    anchor?.top ??
-    at?.y ??
-    0}px"
+  style="left: {pos?.x ?? 0}px; top: {pos?.y ?? 0}px"
   onkeydown={onKeydown}
 >
   {#each items as item, i (i)}

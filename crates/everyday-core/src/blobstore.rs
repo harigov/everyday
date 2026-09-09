@@ -1,7 +1,8 @@
 //! Content-addressed, chunk-encrypted storage for attachment payloads.
 //!
-//! Both shipped backends embed one of these rather than reimplementing media
-//! storage, because attachments have requirements the record store does not:
+//! Every backend uses this format rather than inventing one, and a backend
+//! whose database is on this machine embeds the [`FileBlobStore`] below as
+//! well -- because attachments have requirements the record store does not:
 //!
 //! * **They are large.** A phone video is three orders of magnitude bigger
 //!   than the entry that embeds it. Keeping them out of the database keeps
@@ -13,7 +14,7 @@
 //!   an HTTP range request for the middle of a video decrypts two chunks
 //!   rather than 400 MB.
 //!
-//! # File format
+//! # The container format
 //!
 //! ```text
 //!   magic "EVDB" | ver u8 | rsv u8 | chunk u32 | overhead u32 | len u64 | pad
@@ -27,6 +28,23 @@
 //! Each chunk is sealed with associated data naming the blob, the chunk
 //! index and the chunk count, so chunks cannot be reordered, duplicated,
 //! truncated or moved between blobs without the tag failing.
+//!
+//! # The format, and where it is kept, are two questions
+//!
+//! [`Geometry`] and [`seal`] are the format; [`FileBlobStore`] is one place
+//! to put it. A backend whose records live on a server wants the same sealed
+//! bytes in a `BYTEA` column instead of in a file -- so that attachments
+//! travel with the vault rather than being stranded on whichever laptop
+//! pasted them in -- and it gets that by reusing these two rather than by
+//! inventing a second container. A blob is then the same sequence of bytes
+//! wherever it is stored, which is what makes moving a vault between
+//! backends a copy rather than a conversion.
+//!
+//! The split is also what keeps range reads honest. [`Geometry::read_range`]
+//! is handed a closure that fetches sealed bytes from *somewhere* — a
+//! `seek`+`read` here, a `substr()` in SQL there — and decides on its own
+//! which chunks that range touches. Neither caller can get the arithmetic
+//! subtly different from the other, because there is only one copy of it.
 
 use crate::crypto::Cipher;
 use crate::error::{Error, Result};
@@ -46,6 +64,166 @@ pub const CHUNK_SIZE: u32 = 256 * 1024;
 
 fn chunk_aad(id: BlobId, index: u64, count: u64) -> Vec<u8> {
     format!("everyday.blob.v1:{id}:{index}/{count}").into_bytes()
+}
+
+/// How many chunks a payload of `plain_len` bytes occupies.
+///
+/// `max(1)` because an empty blob is still one (empty) sealed chunk: a zero
+/// here would make the count part of the associated data disagree between
+/// writer and reader, and an empty attachment would fail to open.
+fn chunk_count(plain_len: u64, chunk: u64) -> u64 {
+    plain_len.div_ceil(chunk).max(1)
+}
+
+/// The 24-byte preamble, given a measured per-chunk overhead.
+fn header_bytes(overhead: u32, plain_len: u64) -> [u8; HEADER_LEN] {
+    let mut header = [0u8; HEADER_LEN];
+    header[..4].copy_from_slice(MAGIC);
+    header[4] = VERSION;
+    header[6..10].copy_from_slice(&CHUNK_SIZE.to_le_bytes());
+    header[10..14].copy_from_slice(&overhead.to_le_bytes());
+    header[14..22].copy_from_slice(&plain_len.to_le_bytes());
+    header
+}
+
+/// Seal `bytes` into one complete container: header followed by chunks.
+///
+/// The whole thing at once, which suits a caller that is going to hand the
+/// result to something taking a single value -- a `BYTEA` parameter, a PUT
+/// body. [`FileBlobStore`] does not use this: it streams the chunks straight
+/// out to disk instead, because a 400 MB video should not exist twice in
+/// memory just to be written once.
+pub fn seal(cipher: &dyn Cipher, id: BlobId, bytes: &[u8]) -> Result<Vec<u8>> {
+    let chunk = CHUNK_SIZE as usize;
+    let count = chunk_count(bytes.len() as u64, CHUNK_SIZE as u64);
+
+    // Overhead is a property of the cipher, not of the data, but it is
+    // measured rather than assumed so that a future suite with a different
+    // tag or nonce size needs no changes here.
+    let first = cipher.seal(&chunk_aad(id, 0, count), &bytes[..chunk.min(bytes.len())])?;
+    let overhead = (first.len() - chunk.min(bytes.len())) as u32;
+
+    let mut out = Vec::with_capacity(HEADER_LEN + bytes.len() + count as usize * overhead as usize);
+    out.extend_from_slice(&header_bytes(overhead, bytes.len() as u64));
+    out.extend_from_slice(&first);
+    for (i, part) in bytes.chunks(chunk).enumerate().skip(1) {
+        out.extend_from_slice(&cipher.seal(&chunk_aad(id, i as u64, count), part)?);
+    }
+    Ok(out)
+}
+
+/// What a container's header says about the payload behind it.
+///
+/// Parsed once per read and then used to work out which sealed bytes a
+/// plaintext range needs. Holds no handle to the storage it came from, which
+/// is exactly why it can be shared between a file and a database column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Geometry {
+    /// Plaintext bytes per chunk. Every chunk but the last is exactly this.
+    pub chunk: u64,
+    /// AEAD bytes added to each chunk: nonce plus tag, or zero.
+    pub overhead: u64,
+    /// Plaintext length of the whole blob.
+    pub plain_len: u64,
+}
+
+impl Geometry {
+    /// Read the header of a container whose sealed length is `sealed_len`.
+    ///
+    /// # Why the length is checked rather than trusted
+    ///
+    /// `plain_len` is a 64-bit field in a 24-byte header, so a corrupt or
+    /// hostile container can claim to hold exabytes; readers size buffers
+    /// from it, and would try to allocate that much before the first byte was
+    /// ever decrypted. The geometry is fully determined, so it is simply
+    /// checked: a well-formed container is exactly the header, plus the
+    /// payload, plus one AEAD overhead per chunk. Anything else is
+    /// corruption, and is rejected here rather than turned into an
+    /// allocation.
+    pub fn parse(id: BlobId, header: &[u8], sealed_len: u64) -> Result<Self> {
+        if header.len() < HEADER_LEN {
+            return Err(Error::Invalid(format!("blob {id} is truncated")));
+        }
+        if &header[..4] != MAGIC {
+            return Err(Error::Invalid(format!("blob {id} is not an Every Day blob")));
+        }
+        if header[4] != VERSION {
+            return Err(Error::Invalid(format!("blob {id} uses format version {}", header[4])));
+        }
+        let chunk = u32::from_le_bytes(header[6..10].try_into().unwrap()) as u64;
+        let overhead = u32::from_le_bytes(header[10..14].try_into().unwrap()) as u64;
+        let plain_len = u64::from_le_bytes(header[14..22].try_into().unwrap());
+        if chunk == 0 {
+            return Err(Error::Invalid(format!("blob {id} declares a zero chunk size")));
+        }
+
+        let count = chunk_count(plain_len, chunk);
+        let expected = HEADER_LEN as u128 + plain_len as u128 + count as u128 * overhead as u128;
+        if expected != sealed_len as u128 {
+            return Err(Error::Invalid(format!(
+                "blob {id} declares {plain_len} bytes in {count} chunks \
+                 (expecting a {expected}-byte file) but the file is {sealed_len} bytes"
+            )));
+        }
+        Ok(Self { chunk, overhead, plain_len })
+    }
+
+    /// Total sealed size of a payload of `plain_len` bytes.
+    pub fn sealed_len(&self) -> u64 {
+        HEADER_LEN as u64 + self.plain_len + chunk_count(self.plain_len, self.chunk) * self.overhead
+    }
+
+    /// Decrypt `len` plaintext bytes from `offset`, fetching only the sealed
+    /// chunks that window actually touches.
+    ///
+    /// `fetch(offset, len)` returns sealed bytes from the container,
+    /// container-relative and including the header — a `seek` and a `read`
+    /// against a file, a `substring()` against a column. It must return
+    /// exactly `len` bytes; anything shorter is reported as truncation.
+    ///
+    /// A range past the end is clamped, matching how HTTP range requests are
+    /// expected to behave.
+    pub fn read_range(
+        &self,
+        cipher: &dyn Cipher,
+        id: BlobId,
+        offset: u64,
+        len: u64,
+        mut fetch: impl FnMut(u64, u64) -> Result<Vec<u8>>,
+    ) -> Result<Vec<u8>> {
+        if offset >= self.plain_len {
+            return Ok(Vec::new());
+        }
+        let len = len.min(self.plain_len - offset);
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        let count = chunk_count(self.plain_len, self.chunk);
+        let first = offset / self.chunk;
+        let last = ((offset + len - 1) / self.chunk).min(count - 1);
+
+        let mut out = Vec::with_capacity(len as usize);
+        for i in first..=last {
+            let plain_start = i * self.chunk;
+            let plain_size = self.chunk.min(self.plain_len.saturating_sub(plain_start));
+            let sealed_size = plain_size + self.overhead;
+            let at = HEADER_LEN as u64 + i * (self.chunk + self.overhead);
+
+            let sealed = fetch(at, sealed_size)?;
+            if sealed.len() as u64 != sealed_size {
+                return Err(Error::Invalid(format!("blob {id} is truncated at chunk {i}")));
+            }
+            let plain = cipher.open(&chunk_aad(id, i, count), &sealed)?;
+
+            // Trim the chunk down to the requested window.
+            let from = offset.saturating_sub(plain_start) as usize;
+            let to = (((offset + len) - plain_start) as usize).min(plain.len());
+            if from < plain.len() {
+                out.extend_from_slice(&plain[from..to]);
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// A directory of sealed, content-addressed blobs.
@@ -93,7 +271,7 @@ impl FileBlobStore {
         std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
 
         let chunk = CHUNK_SIZE as usize;
-        let count = bytes.len().div_ceil(chunk).max(1) as u64;
+        let count = chunk_count(bytes.len() as u64, CHUNK_SIZE as u64);
 
         // Overhead is a property of the cipher, not of the data, but we
         // measure it rather than assume it so that a future suite with a
@@ -110,15 +288,8 @@ impl FileBlobStore {
         let tmp = path.with_extension(format!("{}.tmp", crate::fsutil::unique_tag()));
         {
             let mut f = File::create(&tmp).map_err(|e| Error::io(&tmp, e))?;
-            let mut header = Vec::with_capacity(HEADER_LEN);
-            header.extend_from_slice(MAGIC);
-            header.push(VERSION);
-            header.push(0);
-            header.extend_from_slice(&CHUNK_SIZE.to_le_bytes());
-            header.extend_from_slice(&overhead.to_le_bytes());
-            header.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
-            header.resize(HEADER_LEN, 0);
-            f.write_all(&header).map_err(|e| Error::io(&tmp, e))?;
+            f.write_all(&header_bytes(overhead, bytes.len() as u64))
+                .map_err(|e| Error::io(&tmp, e))?;
 
             if bytes.is_empty() {
                 f.write_all(&probe).map_err(|e| Error::io(&tmp, e))?;
@@ -146,8 +317,8 @@ impl FileBlobStore {
     }
 
     pub fn get(&self, id: BlobId) -> Result<Vec<u8>> {
-        let meta = self.read_header(id)?;
-        self.read_range(id, &meta, 0, meta.plain_len)
+        let (geo, file) = self.read_header(id)?;
+        read_from(&geo, self.cipher.as_ref(), id, file, 0, geo.plain_len)
     }
 
     /// Read `len` plaintext bytes starting at `offset`, decrypting only the
@@ -156,17 +327,13 @@ impl FileBlobStore {
     /// A range past the end of the blob is clamped, matching how HTTP range
     /// requests are expected to behave.
     pub fn get_range(&self, id: BlobId, offset: u64, len: u64) -> Result<Vec<u8>> {
-        let meta = self.read_header(id)?;
-        if offset >= meta.plain_len {
-            return Ok(Vec::new());
-        }
-        let len = len.min(meta.plain_len - offset);
-        self.read_range(id, &meta, offset, len)
+        let (geo, file) = self.read_header(id)?;
+        read_from(&geo, self.cipher.as_ref(), id, file, offset, len)
     }
 
     /// Plaintext length, without decrypting anything.
     pub fn len_of(&self, id: BlobId) -> Result<u64> {
-        Ok(self.read_header(id)?.plain_len)
+        Ok(self.read_header(id)?.0.plain_len)
     }
 
     /// How long ago this blob was written, for garbage collection.
@@ -232,7 +399,8 @@ impl FileBlobStore {
 
     // ---- internals ------------------------------------------------------
 
-    fn read_header(&self, id: BlobId) -> Result<BlobMeta> {
+    /// Parse a blob's header, handing back the geometry and the open file.
+    fn read_header(&self, id: BlobId) -> Result<(Geometry, File)> {
         let path = self.path_for(id);
         let mut f = match File::open(&path) {
             Ok(f) => f,
@@ -243,81 +411,33 @@ impl FileBlobStore {
         };
         let mut buf = [0u8; HEADER_LEN];
         f.read_exact(&mut buf).map_err(|_| Error::Invalid(format!("blob {id} is truncated")))?;
-        if &buf[..4] != MAGIC {
-            return Err(Error::Invalid(format!("blob {id} is not an Every Day blob")));
-        }
-        if buf[4] != VERSION {
-            return Err(Error::Invalid(format!("blob {id} uses format version {}", buf[4])));
-        }
-        let chunk = u32::from_le_bytes(buf[6..10].try_into().unwrap()) as u64;
-        let overhead = u32::from_le_bytes(buf[10..14].try_into().unwrap()) as u64;
-        let plain_len = u64::from_le_bytes(buf[14..22].try_into().unwrap());
-        if chunk == 0 {
-            return Err(Error::Invalid(format!("blob {id} declares a zero chunk size")));
-        }
-
-        // Never trust the declared length. `plain_len` is a 64-bit field in a
-        // 24-byte header, so a corrupt or hostile file can claim to hold
-        // exabytes; readers size buffers from it, and would try to allocate
-        // that much before the first byte is ever decrypted.
-        //
-        // The geometry is fully determined, so it can simply be checked: a
-        // well-formed blob is exactly the header, plus the payload, plus one
-        // AEAD overhead per chunk. Anything else is corruption, and is
-        // rejected here rather than turned into an allocation.
-        let count = plain_len.div_ceil(chunk).max(1);
-        let expected = HEADER_LEN as u128 + plain_len as u128 + count as u128 * overhead as u128;
-        let actual = f.metadata().map_err(|e| Error::io(&path, e))?.len() as u128;
-        if expected != actual {
-            return Err(Error::Invalid(format!(
-                "blob {id} declares {plain_len} bytes in {count} chunks \
-                 (expecting a {expected}-byte file) but the file is {actual} bytes"
-            )));
-        }
-
-        Ok(BlobMeta { file: f, chunk, overhead, plain_len })
-    }
-
-    fn read_range(&self, id: BlobId, meta: &BlobMeta, offset: u64, len: u64) -> Result<Vec<u8>> {
-        if len == 0 {
-            return Ok(Vec::new());
-        }
-        let count = meta.plain_len.div_ceil(meta.chunk).max(1);
-        let first = offset / meta.chunk;
-        let last = (offset + len - 1) / meta.chunk;
-
-        let mut f = meta.file.try_clone().map_err(Error::RawIo)?;
-        let mut out = Vec::with_capacity(len as usize);
-
-        for i in first..=last.min(count.saturating_sub(1)) {
-            let plain_start = i * meta.chunk;
-            let plain_size = meta.chunk.min(meta.plain_len.saturating_sub(plain_start));
-            let sealed_size = plain_size + meta.overhead;
-            let file_off = HEADER_LEN as u64 + i * (meta.chunk + meta.overhead);
-
-            f.seek(SeekFrom::Start(file_off)).map_err(Error::RawIo)?;
-            let mut sealed = vec![0u8; sealed_size as usize];
-            f.read_exact(&mut sealed)
-                .map_err(|_| Error::Invalid(format!("blob {id} is truncated at chunk {i}")))?;
-
-            let plain = self.cipher.open(&chunk_aad(id, i, count), &sealed)?;
-
-            // Trim the chunk down to the requested window.
-            let from = offset.saturating_sub(plain_start) as usize;
-            let to = (((offset + len) - plain_start) as usize).min(plain.len());
-            if from < plain.len() {
-                out.extend_from_slice(&plain[from..to]);
-            }
-        }
-        Ok(out)
+        let on_disk = f.metadata().map_err(|e| Error::io(&path, e))?.len();
+        Ok((Geometry::parse(id, &buf, on_disk)?, f))
     }
 }
 
-struct BlobMeta {
-    file: File,
-    chunk: u64,
-    overhead: u64,
-    plain_len: u64,
+/// Decrypt a window of an open container file.
+///
+/// The whole of the seeking and chunk arithmetic lives in
+/// [`Geometry::read_range`]; this supplies it with the one thing that is
+/// specific to a file, which is how to get sealed bytes out of one.
+fn read_from(
+    geo: &Geometry,
+    cipher: &dyn Cipher,
+    id: BlobId,
+    mut file: File,
+    offset: u64,
+    len: u64,
+) -> Result<Vec<u8>> {
+    geo.read_range(cipher, id, offset, len, move |at, size| {
+        file.seek(SeekFrom::Start(at)).map_err(Error::RawIo)?;
+        let mut sealed = vec![0u8; size as usize];
+        match file.read_exact(&mut sealed) {
+            Ok(()) => Ok(sealed),
+            // A short read is truncation; `read_range` says so by name.
+            Err(_) => Ok(Vec::new()),
+        }
+    })
 }
 
 #[cfg(test)]

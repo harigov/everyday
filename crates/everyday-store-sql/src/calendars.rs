@@ -1,48 +1,33 @@
 //! The calendar domain: subscriptions and the events read from them.
 //!
-//! Optional on the same terms as the task domain. This one goes further than
-//! the others in what it seals: a feed's *address* is a bearer credential --
-//! anyone holding one can read that calendar until it is revoked -- so it
-//! never sits in a clear column, and neither does the name of the calendar it
-//! points at. What stays clear is only what an index needs: which calendar,
-//! which days, and when.
+//! This domain goes further than the others in what it seals: a feed's
+//! *address* is a bearer credential -- anyone holding one can read that
+//! calendar until it is revoked -- so it never sits in a clear column, and
+//! neither does the name of the calendar it points at. What stays clear is
+//! only what an index needs: which calendar, which days, and when.
 
 use everyday_core::calendar::{Calendar, Event};
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{CalendarId, EventId};
 use everyday_core::store::calendars::{CalendarStore, EventQuery, calendar_aad, event_aad};
-use rusqlite::{OptionalExtension, params, params_from_iter};
 
-use crate::{SqliteStore, to_us};
+use crate::conn::{SqlExt, Value};
+use crate::{SqlStore, to_us, vals};
 
-impl CalendarStore for SqliteStore {
+impl CalendarStore for SqlStore {
     // ---- subscriptions --------------------------------------------------
 
     fn list_calendars(&self) -> Result<Vec<Calendar>> {
-        let conn = self.conn();
-        let mut stmt = conn
-            .prepare("SELECT id, data FROM calendars ORDER BY created_us")
-            .map_err(Error::backend)?;
-        let rows: Vec<(String, Vec<u8>)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .map_err(Error::backend)?
-            .collect::<rusqlite::Result<_>>()
-            .map_err(Error::backend)?;
-        drop(stmt);
-        drop(conn);
+        let rows =
+            self.conn().records("SELECT id, data FROM calendars ORDER BY created_us", &[])?;
         self.collect(rows, calendar_aad)
     }
 
     fn get_calendar(&self, id: CalendarId) -> Result<Calendar> {
-        let conn = self.conn();
-        let sealed: Option<Vec<u8>> = conn
-            .query_row("SELECT data FROM calendars WHERE id = ?1", params![id.to_string()], |r| {
-                r.get(0)
-            })
-            .optional()
-            .map_err(Error::backend)?;
-        drop(conn);
-        let sealed = sealed.ok_or_else(|| Error::not_found("calendar", id))?;
+        let sealed = self
+            .conn()
+            .sealed("SELECT data FROM calendars WHERE id = ?1", &vals![id.to_string()])?
+            .ok_or_else(|| Error::not_found("calendar", id))?;
         self.unseal(&calendar_aad(id), &sealed)
     }
 
@@ -50,13 +35,12 @@ impl CalendarStore for SqliteStore {
         // Note what is *not* in the clear columns: the name, and above all
         // the URL. A feed address is a bearer credential.
         let data = self.seal(&calendar_aad(c.id), c)?;
-        let conn = self.conn();
-        conn.execute(
+        self.conn().execute(
             "INSERT INTO calendars (id, visible, created_us, updated_us, synced_us, data)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(id) DO UPDATE SET
+             ON CONFLICT (id) DO UPDATE SET
                 visible = ?2, created_us = ?3, updated_us = ?4, synced_us = ?5, data = ?6",
-            params![
+            &vals![
                 c.id.to_string(),
                 c.visible,
                 to_us(c.created_at),
@@ -64,24 +48,20 @@ impl CalendarStore for SqliteStore {
                 c.last_synced_at.map(to_us),
                 data,
             ],
-        )
-        .map_err(Error::backend)?;
+        )?;
         Ok(())
     }
 
     fn delete_calendar(&self, id: CalendarId) -> Result<()> {
-        // The events go with it by foreign key -- but only if the pragma is
-        // on, which `open` sets and which a future refactor could quietly
-        // turn off. Deleting them explicitly costs one indexed statement and
-        // does not depend on a connection setting staying put.
+        // The events go with it by foreign key -- but only if the database is
+        // enforcing them, which on SQLite is a connection pragma a future
+        // refactor could quietly turn off. Deleting them explicitly costs one
+        // indexed statement and does not depend on a setting staying put.
         let mut conn = self.conn();
-        let tx = conn.transaction().map_err(Error::backend)?;
-        tx.execute("DELETE FROM events WHERE calendar_id = ?1", params![id.to_string()])
-            .map_err(Error::backend)?;
-        tx.execute("DELETE FROM calendars WHERE id = ?1", params![id.to_string()])
-            .map_err(Error::backend)?;
-        tx.commit().map_err(Error::backend)?;
-        Ok(())
+        let mut tx = conn.begin()?;
+        tx.execute("DELETE FROM events WHERE calendar_id = ?1", &vals![id.to_string()])?;
+        tx.execute("DELETE FROM calendars WHERE id = ?1", &vals![id.to_string()])?;
+        tx.commit()
     }
 
     // ---- events ---------------------------------------------------------
@@ -92,22 +72,24 @@ impl CalendarStore for SqliteStore {
         // Everything else is a clear column, and the window is an overlap
         // test on the two date columns rather than a bound on the start.
         let mut sql = String::from("SELECT id, data FROM events WHERE 1=1");
-        let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        let mut args: Vec<Value> = Vec::new();
 
         if let Some(from) = query.from {
-            args.push(Box::new(from.to_string()));
+            args.push(Value::Text(from.to_string()));
             sql.push_str(&format!(" AND end_date >= ?{}", args.len()));
         }
         if let Some(to) = query.to {
-            args.push(Box::new(to.to_string()));
+            args.push(Value::Text(to.to_string()));
             sql.push_str(&format!(" AND local_date <= ?{}", args.len()));
         }
         if let Some(cal) = query.calendar_id {
-            args.push(Box::new(cal.to_string()));
+            args.push(Value::Text(cal.to_string()));
             sql.push_str(&format!(" AND calendar_id = ?{}", args.len()));
         }
         if query.visible_only {
-            sql.push_str(" AND calendar_id IN (SELECT id FROM calendars WHERE visible = 1)");
+            // `WHERE visible` rather than `WHERE visible = 1`: Postgres will
+            // not compare a boolean to an integer, and both understand this.
+            sql.push_str(" AND calendar_id IN (SELECT id FROM calendars WHERE visible)");
         }
         // All-day first within a day, then chronological: what every
         // calendar draws, and therefore where the eye looks for them.
@@ -121,32 +103,16 @@ impl CalendarStore for SqliteStore {
             sql.push_str(&format!(" LIMIT {limit}"));
         }
 
-        let conn = self.conn();
-        let mut stmt = conn.prepare(&sql).map_err(Error::backend)?;
-        let rows: Vec<(String, Vec<u8>)> = stmt
-            .query_map(params_from_iter(args.iter().map(|a| a.as_ref())), |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .map_err(Error::backend)?
-            .collect::<rusqlite::Result<_>>()
-            .map_err(Error::backend)?;
-        drop(stmt);
-        drop(conn);
-
+        let rows = self.conn().records(&sql, &args)?;
         let out: Vec<Event> = self.collect(rows, event_aad)?;
         Ok(if in_memory_pass { query.apply(out) } else { out })
     }
 
     fn get_event(&self, id: EventId) -> Result<Event> {
-        let conn = self.conn();
-        let sealed: Option<Vec<u8>> = conn
-            .query_row("SELECT data FROM events WHERE id = ?1", params![id.to_string()], |r| {
-                r.get(0)
-            })
-            .optional()
-            .map_err(Error::backend)?;
-        drop(conn);
-        let sealed = sealed.ok_or_else(|| Error::not_found("event", id))?;
+        let sealed = self
+            .conn()
+            .sealed("SELECT data FROM events WHERE id = ?1", &vals![id.to_string()])?
+            .ok_or_else(|| Error::not_found("event", id))?;
         self.unseal(&event_aad(id), &sealed)
     }
 
@@ -176,25 +142,23 @@ impl CalendarStore for SqliteStore {
             .collect::<Result<_>>()?;
 
         let mut conn = self.conn();
-        let tx = conn.transaction().map_err(Error::backend)?;
-        tx.execute("DELETE FROM events WHERE calendar_id = ?1", params![calendar.to_string()])
-            .map_err(Error::backend)?;
-        {
-            // `OR REPLACE`, because a feed is not obliged to be well formed.
+        let mut tx = conn.begin()?;
+        tx.execute("DELETE FROM events WHERE calendar_id = ?1", &vals![calendar.to_string()])?;
+        for (event, (id, data)) in events.iter().zip(&sealed) {
+            // An upsert, because a feed is not obliged to be well formed.
             // Two occurrences deriving the same id -- a publisher repeating a
             // UID, a recurrence rule that lands twice on one instant -- broke
             // the primary key and aborted the whole transaction, so that feed
             // could never sync again. Last one wins is the right answer for a
             // cache of what a server said.
-            let mut stmt = tx
-                .prepare_cached(
-                    "INSERT OR REPLACE INTO events
-                        (id, calendar_id, local_date, end_date, start_us, end_us, all_day, data)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                )
-                .map_err(Error::backend)?;
-            for (event, (id, data)) in events.iter().zip(&sealed) {
-                stmt.execute(params![
+            tx.execute(
+                "INSERT INTO events
+                    (id, calendar_id, local_date, end_date, start_us, end_us, all_day, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT (id) DO UPDATE SET
+                    calendar_id = ?2, local_date = ?3, end_date = ?4, start_us = ?5,
+                    end_us = ?6, all_day = ?7, data = ?8",
+                &vals![
                     id,
                     calendar.to_string(),
                     event.local_date.to_string(),
@@ -203,23 +167,17 @@ impl CalendarStore for SqliteStore {
                     to_us(event.end),
                     event.all_day,
                     data,
-                ])
-                .map_err(Error::backend)?;
-            }
+                ],
+            )?;
         }
-        tx.commit().map_err(Error::backend)?;
-        Ok(())
+        tx.commit()
     }
 
     fn count_events(&self, calendar: CalendarId) -> Result<u64> {
-        let conn = self.conn();
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM events WHERE calendar_id = ?1",
-                params![calendar.to_string()],
-                |r| r.get(0),
-            )
-            .map_err(Error::backend)?;
-        Ok(n as u64)
+        let n = self.conn().scalar_i64(
+            "SELECT COUNT(*) FROM events WHERE calendar_id = ?1",
+            &vals![calendar.to_string()],
+        )?;
+        Ok(n.max(0) as u64)
     }
 }

@@ -151,8 +151,19 @@ export const isMock = MOCK
 export const api = {
   bootstrap: () => invoke<Bootstrap>('bootstrap'),
 
-  createVault: (opts: { path: string; name: string; backend: string; password: string | null }) =>
-    invoke<VaultStatus>('create_vault', opts),
+  /**
+   * `settings` is whatever the chosen backend asked for in its spec — a
+   * connection URL, a schema name — and is omitted for a backend that needs
+   * only a folder. It is sealed under the vault password on the way in, so
+   * a database credential does not end up readable in the vault header.
+   */
+  createVault: (opts: {
+    path: string
+    name: string
+    backend: string
+    settings?: Record<string, string>
+    password: string | null
+  }) => invoke<VaultStatus>('create_vault', opts),
 
   openVault: (path: string) => invoke<VaultStatus>('open_vault', { path }),
   unlock: (password: string) => invoke<VaultStatus>('unlock', { password }),
@@ -211,7 +222,7 @@ export const api = {
 
   // ── The task domain ────────────────────────────────────────────────
   //
-  // Available only when `status.capabilities.tasks` is true; a Markdown
+  // Available only when `status.capabilities.tasks` is true; a
   // vault stores journals and nothing else, and the interface hides the
   // todo app rather than letting these fail at click time.
 

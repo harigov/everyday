@@ -2,8 +2,9 @@
 resolver = "3"
 members = [
     "crates/everyday-core",
+    "crates/everyday-store-sql",
     "crates/everyday-store-sqlite",
-    "crates/everyday-store-markdown",
+    "crates/everyday-store-postgres",
     "crates/everyday-vault",
     "crates/everyday-cli",
     "crates/everyday-app",
@@ -16,8 +17,9 @@ members = [
 # Everything except the shell is portable Rust and always builds.
 default-members = [
     "crates/everyday-core",
+    "crates/everyday-store-sql",
     "crates/everyday-store-sqlite",
-    "crates/everyday-store-markdown",
+    "crates/everyday-store-postgres",
     "crates/everyday-vault",
     "crates/everyday-cli",
 ]
@@ -31,8 +33,9 @@ authors = ["Every Day contributors"]
 
 [workspace.dependencies]
 everyday-core = { path = "crates/everyday-core" }
+everyday-store-sql = { path = "crates/everyday-store-sql" }
 everyday-store-sqlite = { path = "crates/everyday-store-sqlite" }
-everyday-store-markdown = { path = "crates/everyday-store-markdown" }
+everyday-store-postgres = { path = "crates/everyday-store-postgres" }
 everyday-vault = { path = "crates/everyday-vault" }
 
 tauri = "2"

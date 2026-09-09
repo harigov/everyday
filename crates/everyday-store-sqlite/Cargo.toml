@@ -1,6 +1,6 @@
 [package]
 name = "everyday-store-sqlite"
-description = "SQLite storage backend for Every Day"
+description = "SQLite driver for Every Day's SQL storage backend"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,9 +9,8 @@ authors.workspace = true
 
 [dependencies]
 everyday-core.workspace = true
+everyday-store-sql.workspace = true
 rusqlite = { version = "0.40", features = ["bundled"] }
-serde.workspace = true
-serde_json.workspace = true
 jiff.workspace = true
 
 [dev-dependencies]

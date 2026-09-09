@@ -1,0 +1,38 @@
+[package]
+name = "everyday-store-postgres"
+description = "Postgres driver for Every Day's SQL storage backend, including Supabase"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+everyday-core.workspace = true
+everyday-store-sql.workspace = true
+jiff.workspace = true
+tracing.workspace = true
+# The synchronous client, which is what the `JournalStore` trait wants: it
+# drives its own runtime internally so nothing above it has to become async.
+postgres = "0.19"
+# TLS, because a hosted Postgres is not reachable without it and Supabase
+# refuses a plaintext connection outright. Rustls rather than native-tls so
+# that building this crate needs no system OpenSSL -- the app already carries
+# rustls for the calendar fetcher, so this adds a verifier and little else.
+tokio-postgres-rustls = { version = "0.14", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# The platform's own trust store, which is what the calendar fetcher already
+# uses -- so a corporate root that Every Day is already trusting for a work
+# calendar is trusted for the database too, and there is one answer to "which
+# certificates does this app accept" rather than two.
+rustls-platform-verifier = "0.7"
+
+[dev-dependencies]
+everyday-core = { workspace = true, features = ["testing"] }
+tempfile = "3"
+
+[[test]]
+name = "conformance"
+# Needs a Postgres server, named by EVERYDAY_TEST_DATABASE_URL. Without one
+# it prints why it did nothing and passes; see the test's own docs.
+harness = true

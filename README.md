@@ -3,8 +3,9 @@
 A private journal, a todo app, a calendar and a library for macOS, Linux and
 Windows. Rich text with photos and video, projects and tasks on a list or a
 board, your week with the plan and the record side by side, a shelf for
-everything you mean to read and watch and cook, pluggable storage, and
-encryption you actually hold the key to.
+everything you mean to read and watch and cook, storage on this computer or
+on a Postgres server you choose, and encryption you actually hold the key
+to.
 
 <!-- Screenshots live in docs/ once you have run the app. -->
 
@@ -491,9 +492,10 @@ of the tracker's own colour. Chrome icons are drawn to sit quietly beside
 text; a tracker's icon is a target you hit twice a day with twenty others
 beside it, and line icons lose that fight at 18px.
 
-Tracking needs a backend that can hold readings, so it is offered on a SQLite
-vault and hidden on a Markdown one — the same arrangement as the todo app, the
-calendar and the library, and for the same reason.
+Tracking needs a backend that can hold readings, so the interface reads
+`capabilities.trackers` and hides the whole feature — including the settings
+that define it — on a backend that cannot. Both shipped backends can; the
+check exists so that the next one need not.
 
 ## Layout
 
@@ -501,8 +503,10 @@ calendar and the library, and for the same reason.
 crates/
   everyday-core/            domain model, crypto, storage traits, search,
                             iCalendar, web search
-  everyday-store-sqlite/    SQLite backend (default)
-  everyday-store-markdown/  plain Markdown files backend
+  everyday-store-sql/       the SQL backend: schema, queries, cascades --
+                            written once, run on every dialect below
+  everyday-store-sqlite/    SQLite driver (default)
+  everyday-store-postgres/  Postgres driver, including Supabase
   everyday-vault/           wires core to backends; platform paths; media serving
   everyday-cli/             `everyday` — scripted capture, export, inspection
   everyday-app/             Tauri desktop shell (window, commands, media, tray)
@@ -535,11 +539,13 @@ app says so, loudly, at creation time.
 
 ### What is *not* encrypted
 
-The SQLite backend keeps a few structural columns in the clear so date-range
+The SQL backend keeps a few structural columns in the clear so date-range
 queries and pagination stay index scans: `journal_id`, `local_date`,
 timestamps, and the starred/pinned flags. Titles, bodies, tags, locations,
-file names and media are all sealed. Someone with the database file learns
-*that* you wrote on 14 July and never what you wrote.
+file names and media are all sealed. Someone with the database learns *that*
+you wrote on 14 July and never what you wrote — and on the Postgres backend
+"someone with the database" includes whoever runs the server, which is the
+whole of what a hosted vault costs.
 
 The task tables make the same trade for the same reason — a board filters by
 status and a calendar by day, and both would otherwise decrypt every row on
@@ -582,16 +588,84 @@ without touching the app.
 
 | Backend | Good for | Trade |
 |---|---|---|
-| `sqlite` | the default; large journals, fast queries, the todo app, the calendar and the library | opaque on disk |
-| `markdown` | grep, git, editing in any editor | slower; readable only when unencrypted; journals only |
+| `sqlite` | the default; one person, one machine, works offline | the vault is on that machine |
+| `postgres` | a vault two computers can both open — your own server or a [Supabase](https://supabase.com) project | needs a network; whoever runs the server can see the vault's shape |
+
+Both are the *same backend*. `everyday-store-sql` holds the schema, every
+query, every cascade and the whole clear/sealed split; the two crates beside
+it are drivers of a hundred lines each. That is not tidiness for its own
+sake — it is what makes the Postgres vault trustworthy, because it runs the
+same code the SQLite tests are about rather than a reimplementation of it.
+The shared conformance suite runs against both.
+
+Where the two genuinely differ is written down in one file,
+`everyday-store-sql/src/dialect.rs`: placeholders (`?1` versus `$1`), how to
+spell an unlimited `OFFSET`, the greater-of-two function, the column type
+names, and where the schema version is kept. Everything else that *could*
+have differed was written out of the queries instead — `INSERT OR IGNORE`
+became `ON CONFLICT … DO NOTHING`, `WHERE visible = 1` became `WHERE
+visible`, and `ORDER BY at_us ASC` grew an explicit `NULLS FIRST`, because
+the two databases have opposite defaults for where NULLs sort and a
+tracker reading landing at the wrong end of a day is a wrong answer that
+looks right.
+
+### A vault on a server
+
+Sealing happens before anything reaches the wire, so a hosted vault is not a
+hole in the encryption: Supabase holds ciphertext and the clear index columns
+described above, and never a key. Your password does not leave your computer
+and there is nothing for the server to be trusted with except availability.
+The honest cost is the one the table in [What is *not* encrypted](#what-is-not-encrypted)
+spells out — whoever runs the database can see the vault's *shape*, in
+exactly the way whoever holds a SQLite file can.
+
+Attachments go in a `blobs` table rather than in a folder, because a folder of
+media on one laptop is not part of a vault two machines open. They are the
+identical sealed container the file backend writes, so a range request for
+the middle of a video is still a range request — `substr()` over two 256 KiB
+chunks rather than a download.
+
+Two things worth knowing before pointing it at Supabase. Use the **session**
+connection string (port 5432), not the transaction pooler (6543): the driver
+prepares its statements and a transaction-mode pooler cannot carry them, and
+it says so at connect time rather than failing later mid-save. And the tables
+go in their own `everyday` schema rather than in `public`, so a project can
+hold a vault and an application, or two vaults, without collision.
+
+The connection URL has a password in it, so it is **sealed under the vault
+key** rather than written into the plaintext header beside the salt. Setting
+`EVERYDAY_DATABASE_URL` overrides what is stored, for a deployment that would
+rather keep the credential in whatever it already uses for secrets.
+
+```sh
+everyday --vault ~/hosted init --backend postgres \
+  --set url=postgresql://user:password@host:5432/database \
+  --set schema=everyday
+
+everyday --vault ~/hosted backend                       # what it is set to
+everyday --vault ~/hosted backend --set url=postgresql://…  # a rotated password
+```
+
+`backend` never prints a secret back, and a change takes effect the next time
+the vault is opened rather than swapping the connection under a live store.
+
+It is also the one command that deliberately does *not* open the vault's
+storage, which is what makes it usable at all: a vault pointing at a database
+that has moved cannot be opened, and that is exactly the vault whose
+connection URL needs changing. It reads and rewrites the header with the
+vault password and touches nothing else. The desktop app has no equivalent
+yet — a vault it cannot open is one it can only report on — so this is the
+tool for that job.
+
+### Optional domains
 
 The task domain is a *second* trait, `TaskStore`, reached through
 `JournalStore::tasks()`, which returns `None` by default. Folding a kanban
-board into the journal trait would oblige every backend to grow a todo
-implementation it has no opinion about — a board is not a thing anyone wants
-as a tree of files. So SQLite implements it, Markdown does not, and the
-interface reads `capabilities.tasks` and hides the app rather than failing at
-click time.
+board into the journal trait would oblige a read-only import source, or a
+store built for one app, to grow a todo implementation it has no opinion
+about. Both shipped backends implement it; the accessor stays optional so the
+next one need not, and the interface reads `capabilities.tasks` and hides the
+app rather than failing at click time.
 
 Subscribed calendars are a *third*, `CalendarStore`, on exactly those terms.
 Note how little is in it: the calendar app draws time blocks, which have
@@ -611,12 +685,6 @@ blob, so it is reclaimed by the ordinary garbage collector on its grace
 period rather than deleted by whoever happened to drop the last reference.
 All three rules are in the shared conformance suite, so a backend inherits
 them rather than reimplementing them.
-
-The Markdown backend is a genuine two-way format. It writes a readable `.md`
-with TOML frontmatter plus a sidecar `.json` holding the exact rich-text tree.
-Edit an entry in vim and the app notices — the frontmatter records a hash of
-the body as written, so a mismatch means a human has been at it, and your
-Markdown wins over the sidecar.
 
 ### Not losing things
 
@@ -682,6 +750,27 @@ domain: the tree, the cascades, the date windows, and the rule that deleting
 a task takes the time booked against it too. A backend that does not is told
 it is being skipped, because a silently skipped suite is worse than none.
 
+The same suite is what checks the two SQL dialects against each other. SQLite
+runs it on every `cargo test`; Postgres runs it too, against a real server:
+
+```sh
+make test-postgres      # starts a throwaway Postgres in Docker and removes it
+```
+
+or point it at a server you already have:
+
+```sh
+EVERYDAY_TEST_DATABASE_URL=postgresql://user:password@host:5432/scratch \
+  cargo test -p everyday-store-postgres
+```
+
+Without that variable the Postgres tests say why they did nothing and pass —
+a silently skipped suite being worse than none applies here too. CI sets it
+against a service container, so a query that works on SQLite and not on
+Postgres fails the build rather than waiting to be found by whoever hosts
+their vault. **The named database is emptied**: each test drops and recreates
+its own schema.
+
 ## Building
 
 ### Prerequisites
@@ -723,8 +812,8 @@ signature its callers depend on.
 `scripts/test.sh` runs the suite inside a systemd scope with a hard memory
 ceiling and swap disabled, so a runaway allocation is killed by the cgroup in
 seconds rather than dragging the machine into swap thrash. It is not
-ceremony — it is how a real infinite-loop-with-allocation bug in the Markdown
-parser was caught. Use it.
+ceremony — it is how a real infinite-loop-with-allocation bug in a parser was
+caught. Use it.
 
 ### Work on the interface without Rust
 
@@ -748,6 +837,7 @@ everyday list
 everyday search rain
 everyday export ~/journal-backup   # readable Markdown, one file per entry
 everyday backup ~/vault-copy       # the vault itself, still sealed
+everyday backend                   # what the storage backend is set to
 everyday check                     # look for storage-level damage
 ```
 
@@ -809,8 +899,8 @@ you while you were doing something else, and it has to land somewhere before
 you forget it.
 
 Choosing one raises the window and leaves the cursor where the typing goes.
-The list is what the open vault can actually do: a Markdown vault has no task
-domain, so it has no "add a task"; an unencrypted vault has nothing to lock,
+The list is what the open vault can actually do: a vault whose backend has no
+task domain has no "add a task"; an unencrypted vault has nothing to lock,
 so it has no "lock now"; and a locked vault offers the last two lines and
 nothing else. Turn the icon off in Settings.
 
@@ -885,13 +975,21 @@ instead.
 
 ## Status
 
-The core, both storage backends, the vault lifecycle, search, the media
-pipeline, the todo app, the calendar, the library, tracking and the CLI are
-implemented and tested — 396 tests, plus the shared backend conformance suite
-and six dependency-free interface suites (the quick-add grammar, the
-calendar's grid arithmetic, conflict handling, notifications, the library and
-the tracking arithmetic). The desktop shell and interface are complete and the
-interface builds and typechecks clean.
+The core, the SQL backend and both its drivers, the vault lifecycle, search,
+the media pipeline, the todo app, the calendar, the library, tracking and the
+CLI are implemented and tested — 366 tests, plus the shared backend
+conformance suite (run against SQLite always and against a real Postgres
+server on demand) and six dependency-free interface suites (the quick-add
+grammar, the calendar's grid arithmetic, conflict handling, notifications, the
+library and the tracking arithmetic). The desktop shell and interface are
+complete and the interface builds and typechecks clean.
+
+The Postgres backend is a *shared vault*, not a sync service: the write lock
+still means one writer at a time, and two people typing into the same vault at
+once will see the conflict dialog rather than a merge. It has been exercised
+against Postgres 16 through the full conformance suite and end to end through
+the CLI; it has not been run against a live Supabase project here, and the
+Supabase-specific parts are the connection string and the pooler warning.
 
 The CLI covers journals only. It is a capture-and-export tool for the journal
 and has not been taught about tasks, calendars, the library or tracking.

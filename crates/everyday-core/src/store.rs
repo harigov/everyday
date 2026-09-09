@@ -1,9 +1,9 @@
 //! The storage abstraction.
 //!
 //! A [`JournalStore`] is the only thing the application knows about
-//! persistence. SQLite, a tree of Markdown files, an in-memory store for
-//! tests — and later a sync server — all sit behind this one trait, so the
-//! rest of the app never learns which is in use.
+//! persistence. SQLite, Postgres, an in-memory store for tests — and later a
+//! sync server — all sit behind this one trait, so the rest of the app never
+//! learns which is in use.
 //!
 //! # Why the trait is synchronous
 //!
@@ -19,9 +19,11 @@
 //!
 //! Each store is handed a [`Cipher`] at open time and is responsible for
 //! sealing record payloads and blob bytes with it. This keeps encryption
-//! uniform without dictating *layout*: the SQLite backend seals a BLOB
-//! column, the Markdown backend seals a file body, and both are equally
-//! correct.
+//! uniform without dictating *layout*: a local backend seals a `BLOB` column
+//! and a chunk of a file on disk, a server backend seals the same payload
+//! before it ever reaches the wire, and both are equally correct. It also
+//! means a remote database never sees plaintext — the sealing happens on
+//! this side of the connection.
 
 use crate::crypto::Cipher;
 use crate::error::{Error, Result};
@@ -89,13 +91,139 @@ pub struct Capabilities {
     pub agent: bool,
 }
 
+/// Per-vault configuration a backend needs and the core knows nothing about.
+///
+/// A file-backed store needs only the directory it is handed. A store that
+/// talks to a server needs to be told *which* server, and there is no way for
+/// [`everyday_core`](crate) to have an opinion about the shape of that: a
+/// connection URL, a project reference, a schema name. So it carries opaque
+/// string pairs, each backend documents the keys it reads, and the vault
+/// persists whatever it was given.
+///
+/// # These are secrets
+///
+/// A Postgres URL usually has a password in it, which makes this the only
+/// part of a vault's *configuration* that is as sensitive as its contents.
+/// The vault therefore seals it under the data key rather than writing it
+/// into the plaintext header beside the salt — see
+/// [`VaultHeader::backend_settings`](crate::vault::VaultHeader). On an
+/// unencrypted vault that sealing is a no-op, which is one more thing "no
+/// password" costs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct BackendSettings(std::collections::BTreeMap<String, String>);
+
+impl BackendSettings {
+    /// The one key with a meaning across backends: where to connect.
+    pub const URL: &'static str = "url";
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The common case, spelled once.
+    pub fn with_url(url: impl Into<String>) -> Self {
+        let mut s = Self::new();
+        s.set(Self::URL, url);
+        s
+    }
+
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).map(String::as_str).filter(|v| !v.is_empty())
+    }
+
+    pub fn url(&self) -> Option<&str> {
+        self.get(Self::URL)
+    }
+
+    pub fn set(&mut self, key: impl Into<String>, value: impl Into<String>) -> &mut Self {
+        self.0.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
+    }
+
+    /// Every pair, for merging one set of settings into another.
+    pub fn into_pairs(self) -> impl Iterator<Item = (String, String)> {
+        self.0.into_iter()
+    }
+
+    /// The value a backend cannot open without, or a message naming it.
+    ///
+    /// Backends call this instead of unwrapping, so a vault configured
+    /// without its connection URL says which key is missing rather than
+    /// failing somewhere inside a driver.
+    pub fn require(&self, key: &str, backend: &str) -> Result<&str> {
+        self.get(key).ok_or_else(|| {
+            Error::Invalid(format!(
+                "the {backend} backend needs a {key:?} setting, and none is set"
+            ))
+        })
+    }
+}
+
+/// One field a backend needs before it can be opened, for the setup screen.
+///
+/// The interface renders these rather than knowing that Postgres exists: a
+/// backend that later needs two fields, or none, changes here and nowhere in
+/// the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingSpec {
+    pub key: &'static str,
+    pub label: &'static str,
+    /// Shown greyed in the empty field. Never a real credential.
+    pub placeholder: &'static str,
+    /// The backend refuses to open without it.
+    pub required: bool,
+    /// Masked on entry and never sent back to the interface afterwards.
+    pub secret: bool,
+}
+
+/// A backend as the vault-creation screen sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendInfo {
+    pub id: &'static str,
+    /// Short human name, e.g. "Database".
+    pub name: &'static str,
+    pub description: &'static str,
+    /// Empty for a backend that needs nothing but a directory.
+    pub settings: Vec<SettingSpec>,
+}
+
 /// Everything a backend needs to open a vault directory.
 #[derive(Clone)]
 pub struct StoreContext {
     /// Directory the backend owns. It may create anything it likes inside.
+    ///
+    /// Still handed to a backend that keeps its records on a server: a vault
+    /// is a local directory whatever is underneath it, and a remote store may
+    /// well want somewhere to put a cache.
     pub root: PathBuf,
     /// Cipher for record payloads and blobs. Cheap to clone (`Arc`).
     pub cipher: Arc<dyn Cipher>,
+    /// Whatever this backend was configured with. See [`BackendSettings`].
+    pub settings: BackendSettings,
+}
+
+impl StoreContext {
+    /// A context over `root` with no backend settings — what every
+    /// directory-backed store wants, and what the tests use.
+    pub fn new(root: impl Into<PathBuf>, cipher: Arc<dyn Cipher>) -> Self {
+        Self { root: root.into(), cipher, settings: BackendSettings::default() }
+    }
+
+    pub fn with_settings(mut self, settings: BackendSettings) -> Self {
+        self.settings = settings;
+        self
+    }
 }
 
 impl std::fmt::Debug for StoreContext {
@@ -103,6 +231,9 @@ impl std::fmt::Debug for StoreContext {
         f.debug_struct("StoreContext")
             .field("root", &self.root)
             .field("cipher", &self.cipher.id())
+            // Keys only. A connection URL carries a password, and this type
+            // is `Debug`-printed into logs.
+            .field("settings", &self.settings.keys().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -240,10 +371,12 @@ pub trait JournalStore: Send + Sync {
     /// Storage for the task domain, if this backend has any.
     ///
     /// Returning `None` -- the default -- is a backend saying "journals are
-    /// all I do", which the Markdown backend means literally: a kanban board
-    /// is not a thing anyone wants as a tree of files. See
-    /// [`tasks`](crate::store::tasks) for why this is an accessor rather
-    /// than more methods on this trait.
+    /// all I do". Every backend shipped today carries all four domains, but
+    /// the accessors stay optional because the alternative is worse: folding
+    /// a kanban board into the journal trait would oblige a read-only import
+    /// source, or a store built for one app, to grow a todo list it has no
+    /// use for. See [`tasks`](crate::store::tasks) for why this is an
+    /// accessor rather than more methods on this trait.
     fn tasks(&self) -> Option<&dyn TaskStore> {
         None
     }
@@ -499,8 +632,20 @@ pub fn blob_aad(id: BlobId) -> Vec<u8> {
 /// [`JournalStore`] plus one of these and register it.
 pub trait StoreFactory: Send + Sync {
     fn id(&self) -> &'static str;
+    /// Short human name, shown as the heading of the option in the picker.
+    fn name(&self) -> &'static str;
     /// Short human description, shown in the vault-creation UI.
     fn describe(&self) -> &'static str;
+    /// What this backend must be told before it can be opened.
+    ///
+    /// Empty -- the default -- is a backend saying "the directory is all I
+    /// need", which is what every file-backed store means. A backend that
+    /// talks to a server returns the fields the setup screen should ask for;
+    /// see [`SettingSpec`].
+    fn settings(&self) -> Vec<SettingSpec> {
+        Vec::new()
+    }
+
     fn open(&self, ctx: StoreContext) -> Result<Box<dyn JournalStore>>;
 }
 
@@ -524,9 +669,22 @@ impl BackendRegistry {
         self.factories.iter().map(|f| f.id()).collect()
     }
 
-    /// `(id, description)` pairs for the backend picker.
-    pub fn describe_all(&self) -> Vec<(&'static str, &'static str)> {
-        self.factories.iter().map(|f| (f.id(), f.describe())).collect()
+    /// Everything the backend picker needs, in registration order.
+    pub fn describe_all(&self) -> Vec<BackendInfo> {
+        self.factories
+            .iter()
+            .map(|f| BackendInfo {
+                id: f.id(),
+                name: f.name(),
+                description: f.describe(),
+                settings: f.settings(),
+            })
+            .collect()
+    }
+
+    /// What `id` must be configured with, or `None` if it is not registered.
+    pub fn settings_for(&self, id: &str) -> Option<Vec<SettingSpec>> {
+        self.factories.iter().find(|f| f.id() == id).map(|f| f.settings())
     }
 
     pub fn open(&self, id: &str, ctx: StoreContext) -> Result<Box<dyn JournalStore>> {
@@ -636,10 +794,7 @@ mod tests {
     #[test]
     fn registry_reports_unknown_backends_by_name() {
         let reg = BackendRegistry::new();
-        let ctx = StoreContext {
-            root: PathBuf::from("/tmp/nope"),
-            cipher: Arc::new(crate::crypto::NullCipher),
-        };
+        let ctx = StoreContext::new("/tmp/nope", Arc::new(crate::crypto::NullCipher));
         let Err(err) = reg.open("redis", ctx) else { panic!("expected an error") };
         assert!(matches!(err, Error::UnknownBackend(b) if b == "redis"));
     }

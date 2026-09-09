@@ -1,4 +1,4 @@
-//! SQLite storage backend.
+//! SQLite driver for the SQL storage backend.
 //!
 //! This is the default backend: one database file for records, a directory
 //! of chunk-encrypted files for media.
@@ -9,96 +9,43 @@
 //!     media/           attachment payloads (see everyday_core::blobstore)
 //! ```
 //!
-//! This is also the backend that carries the *task* domain
-//! ([`everyday_core::store::tasks`]), which is why the todo app is offered
-//! on a SQLite vault and not on a Markdown one.
+//! # What is in here, and what is not
 //!
-//! # What is encrypted, and what is not
+//! Not: the schema, the queries, the cascades, or the decision about which
+//! columns stay in the clear. All of that is in
+//! [`everyday_store_sql`](everyday_store_sql), written once and shared with
+//! every other database Every Day speaks — which is what makes "the same
+//! vault, on Postgres" a driver rather than a fork.
 //!
-//! Entry and journal payloads are sealed with the vault's cipher before they
-//! reach SQLite, so the database file contains no readable journal text —
-//! not in a page, not in the WAL, not in a freelist page left behind by a
-//! deleted row.
+//! What is: the four things that are true of SQLite and of nothing else.
 //!
-//! A small amount of structural metadata is stored in the clear, because it
-//! is what the indexes are built from:
+//! * **The pragmas.** WAL, `synchronous = FULL`, foreign keys and
+//!   `secure_delete`, each argued for at [`SqliteStore::open`].
+//! * **`PRAGMA user_version`**, the free integer in the file header where the
+//!   schema version lives. A server-backed driver needs a table for this;
+//!   SQLite gives it away.
+//! * **`PRAGMA quick_check`**, which is a real answer to "is this file
+//!   damaged" and has no equivalent worth writing elsewhere.
+//! * **`VACUUM INTO`**, which is what makes a backup a *database* rather than
+//!   a dump — see [`SqliteDriver::snapshot`].
 //!
-//! | Column | Leaks |
-//! |---|---|
-//! | `journal_id` | how many journals exist and how entries divide between them |
-//! | `local_date` | which days were written on |
-//! | `created_us`, `updated_us` | when entries were written and last edited |
-//! | `starred`, `pinned` | which entries are flagged |
-//! | `project_id`, `parent_id` | the *shape* of the task tree, not its contents |
-//! | task `status`, `priority`, `due_date` | how much work is outstanding and roughly when |
-//! | block `start_us`, `end_us`, `local_date`, `kind` | that time was booked, never to what |
-//! | event `calendar_id`, `local_date`, `end_date`, `start_us` | how many calendars, and which days have something on them |
-//! | item `kind_id`, `status`, `rating`, `favourite`, `year`, `finished_on` | how many shelves, how much is on each, and how you scored it |
-//! | log `item_id`, `event`, `local_date` | that something was got to the end of on a day, never what |
-//! | reading `tracker_id`, `local_date`, `at_us`, `value` | that something was recorded, when, and how much of it -- never what |
-//!
-//! Titles, bodies, tags, locations, attachments and file names are all
-//! sealed. Someone with the database file learns *that* you journalled on 14
-//! July 2024 and never what you wrote. This is the same trade Day One makes,
-//! and it is what allows date-range queries and pagination to run as index
-//! scans rather than decrypting the entire vault on every keystroke.
-//!
-//! The task tables make the same trade for the same reason -- a board filters
-//! by status and a calendar by day, and both would otherwise decrypt every
-//! row on every draw. Task titles, descriptions and *tags* stay sealed, so
-//! the file says that four things are blocked and never what they are.
-//!
-//! The calendar tables go further than the others in one respect: a feed's
-//! *address* is sealed along with everything else. A subscription URL is a
-//! bearer credential -- anyone holding one can read that calendar for as long
-//! as it is not revoked -- so it never sits in a clear column, and neither
-//! does the name of the calendar it points at.
-//!
-//! If that trade is not acceptable, the abstraction is the answer: a backend
-//! that seals the index columns too — at the cost of full scans — plugs in
-//! without the rest of the app noticing.
-//!
-//! # Where the code is
-//!
-//! ```text
-//!   lib.rs         opening a database, and the sealing helpers every
-//!                  domain shares
-//!   schema.rs      the tables, and the migrations that reach them
-//!   journals.rs    impl JournalStore -- journals, entries, blobs
-//!   tasks.rs       impl TaskStore    -- projects, tasks, time blocks
-//!   calendars.rs   impl CalendarStore -- subscriptions and their events
-//!   library.rs     impl LibraryStore  -- shelves, items and the log
-//!   trackers.rs    impl TrackerStore  -- the readings a journal recorded
-//! ```
-//!
-//! One `SqliteStore` implements all five traits; the split is by domain,
-//! the same one `everyday_core::store` makes between the trait and its four
-//! optional siblings. It replaces a single file that had grown past 1,800
-//! lines, in which finding the four places a task's `sort_order` is written
-//! meant scrolling past the entry queries and the migration SQL.
+//! Media goes to the filesystem here rather than into a `blobs` table,
+//! because the database is on this machine and a 400 MB video in a column
+//! would make every backup of the records copy it too. The remote driver
+//! makes the opposite choice for the opposite reason.
 
-mod agent;
-mod calendars;
-mod journals;
-mod library;
-mod schema;
-mod tasks;
-mod trackers;
-
-use everyday_core::blobstore::FileBlobStore;
 use everyday_core::error::{Error, Result};
-use everyday_core::id::{EntryId, ReadingId, TaskId};
-use everyday_core::model::{Entry, EntrySummary};
-use everyday_core::store::trackers::reading_aad;
-use everyday_core::store::{JournalStore, StoreContext, StoreFactory, entry_aad};
-use rusqlite::{Connection, Transaction, params, params_from_iter};
-use std::sync::{Arc, Mutex};
-
-use schema::migrate;
+use everyday_core::store::{JournalStore, StoreContext, StoreFactory};
+use everyday_store_sql::conn::{Connection, Row, Sql, Transaction, Value};
+use everyday_store_sql::dialect::Dialect;
+use everyday_store_sql::schema::VersionStore;
+use everyday_store_sql::{Driver, Media, SqlStore};
+use rusqlite::types::{ToSqlOutput, ValueRef};
+use std::path::Path;
 
 pub const BACKEND_ID: &str = "sqlite";
-const DB_FILENAME: &str = "everyday.db";
-const MEDIA_DIRNAME: &str = "media";
+pub(crate) const DB_FILENAME: &str = "everyday.db";
+pub(crate) const MEDIA_DIRNAME: &str = "media";
 
 /// Registers this backend with a [`everyday_core::BackendRegistry`].
 pub struct SqliteFactory;
@@ -108,8 +55,12 @@ impl StoreFactory for SqliteFactory {
         BACKEND_ID
     }
 
+    fn name(&self) -> &'static str {
+        "On this computer"
+    }
+
     fn describe(&self) -> &'static str {
-        "SQLite database \u{2014} fastest, best for large journals (recommended)"
+        "A SQLite database in the vault folder \u{2014} fastest, works offline (recommended)"
     }
 
     fn open(&self, ctx: StoreContext) -> Result<Box<dyn JournalStore>> {
@@ -117,20 +68,18 @@ impl StoreFactory for SqliteFactory {
     }
 }
 
-pub struct SqliteStore {
-    conn: Mutex<Connection>,
-    blobs: FileBlobStore,
-    cipher: Arc<dyn everyday_core::crypto::Cipher>,
-    /// The directory this store owns, kept so `snapshot` can copy the media
-    /// tree beside the database it writes.
-    root: std::path::PathBuf,
-}
+/// A vault's records in a local SQLite file.
+///
+/// A thin alias in practice: everything it does is [`SqlStore`]'s, and this
+/// type exists so the crate has a name to open with and tests have a name to
+/// construct.
+pub struct SqliteStore;
 
 impl SqliteStore {
-    pub fn open(ctx: StoreContext) -> Result<Self> {
+    pub fn open(ctx: StoreContext) -> Result<SqlStore> {
         std::fs::create_dir_all(&ctx.root).map_err(|e| Error::io(&ctx.root, e))?;
         let db_path = ctx.root.join(DB_FILENAME);
-        let conn = Connection::open(&db_path).map_err(Error::backend)?;
+        let conn = rusqlite::Connection::open(&db_path).map_err(Error::backend)?;
 
         // WAL keeps a slow fsync from blocking reads, which is what keeps
         // typing smooth while an autosave is in flight.
@@ -151,180 +100,199 @@ impl SqliteStore {
         conn.pragma_update(None, "secure_delete", "ON").map_err(Error::backend)?;
         conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(Error::backend)?;
 
-        migrate(&conn)?;
+        let media = Media::files(ctx.root.join(MEDIA_DIRNAME), ctx.cipher.clone())?;
+        SqlStore::open(Box::new(SqliteDriver), Box::new(SqliteConn(conn)), media, &ctx)
+    }
+}
 
-        Ok(Self {
-            blobs: FileBlobStore::open(ctx.root.join(MEDIA_DIRNAME), ctx.cipher.clone())?,
-            cipher: ctx.cipher,
-            conn: Mutex::new(conn),
-            root: ctx.root,
+/// What SQLite answers that no other database does.
+pub struct SqliteDriver;
+
+impl Driver for SqliteDriver {
+    fn backend_id(&self) -> &'static str {
+        BACKEND_ID
+    }
+
+    fn dialect(&self) -> Dialect {
+        Dialect::Sqlite
+    }
+
+    /// Checkpoint the WAL, so what has been committed is in the database
+    /// file rather than beside it.
+    ///
+    /// Run through `query` rather than `execute`: a checkpoint answers with a
+    /// row saying how many WAL frames it moved, and rusqlite refuses to
+    /// `execute` a statement that returns one. The row is of no interest
+    /// here; being allowed to ask is.
+    fn flush(&self, conn: &mut dyn Sql) -> Result<()> {
+        conn.query("PRAGMA wal_checkpoint(TRUNCATE)", &[])?;
+        Ok(())
+    }
+
+    /// `PRAGMA quick_check`, which is the useful three quarters of
+    /// `integrity_check` at a fraction of the cost: it verifies page
+    /// structure and record sanity but skips the index-versus-table
+    /// cross-check. That is the right trade for something that runs on
+    /// unlock -- torn pages are what a bad shutdown produces, and they are
+    /// exactly what this catches.
+    fn check_integrity(&self, conn: &mut dyn Sql) -> Result<Vec<String>> {
+        let rows = conn.query("PRAGMA quick_check", &[])?;
+        // A healthy database answers with the single row "ok".
+        rows.into_iter().map(|r| r.text(0)).filter(|r| !matches!(r, Ok(s) if s == "ok")).collect()
+    }
+
+    /// `VACUUM INTO`, plus a copy of the media directory.
+    ///
+    /// `VACUUM INTO` runs inside a read transaction, so the file it produces
+    /// is a point-in-time snapshot even while the app keeps writing -- and it
+    /// is a plain database, not a dump, so the backup directory opens as a
+    /// vault without a restore step. Copying `everyday.db` with the
+    /// filesystem would do neither: it would race the WAL and land a torn
+    /// page.
+    ///
+    /// Media is copied after the database, which is the safe order. A blob
+    /// present in the copy that no entry references is reclaimed by the next
+    /// GC; an entry referencing a blob that was missed would be an
+    /// attachment lost in the backup.
+    fn snapshot(&self, conn: &mut dyn Sql, root: &Path, dir: &Path) -> Result<()> {
+        std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
+        let db = dir.join(DB_FILENAME);
+        if db.exists() {
+            return Err(Error::Invalid(format!(
+                "{} already holds a vault; back up into an empty directory",
+                dir.display()
+            )));
+        }
+
+        // Bound as a parameter: a backup path can contain a quote.
+        conn.execute("VACUUM INTO ?1", &[Value::Text(db.to_string_lossy().into_owned())])?;
+
+        everyday_core::fsutil::copy_tree(&root.join(MEDIA_DIRNAME), &dir.join(MEDIA_DIRNAME))?;
+        everyday_core::fsutil::sync_dir(dir);
+        Ok(())
+    }
+}
+
+impl VersionStore for SqliteDriver {
+    /// `PRAGMA user_version`: a 32-bit integer in the file header that
+    /// SQLite reserves for exactly this and never touches itself.
+    fn schema_version(&self, conn: &mut dyn Sql) -> Result<i64> {
+        match conn.query("PRAGMA user_version", &[])?.first() {
+            Some(row) => row.i64(0),
+            None => Ok(0),
+        }
+    }
+
+    fn set_schema_version(&self, conn: &mut dyn Sql, version: i64) -> Result<()> {
+        // Not bindable: SQLite parses a pragma argument at prepare time, so
+        // it cannot be a parameter. Safe because the value is this crate's
+        // own integer constant and never anything a caller supplied.
+        conn.execute(&format!("PRAGMA user_version = {version}"), &[])?;
+        Ok(())
+    }
+}
+
+// ---- the driver proper: rusqlite behind the two-method trait -------------
+
+struct SqliteConn(rusqlite::Connection);
+
+impl Sql for SqliteConn {
+    fn execute(&mut self, sql: &str, args: &[Value]) -> Result<u64> {
+        exec(&self.0, sql, args)
+    }
+
+    fn query(&mut self, sql: &str, args: &[Value]) -> Result<Vec<Row>> {
+        fetch(&self.0, sql, args)
+    }
+}
+
+impl Connection for SqliteConn {
+    fn begin(&mut self) -> Result<Box<dyn Transaction + '_>> {
+        let tx = self.0.transaction().map_err(Error::backend)?;
+        Ok(Box::new(SqliteTx(tx)))
+    }
+}
+
+struct SqliteTx<'a>(rusqlite::Transaction<'a>);
+
+impl Sql for SqliteTx<'_> {
+    fn execute(&mut self, sql: &str, args: &[Value]) -> Result<u64> {
+        exec(&self.0, sql, args)
+    }
+
+    fn query(&mut self, sql: &str, args: &[Value]) -> Result<Vec<Row>> {
+        fetch(&self.0, sql, args)
+    }
+}
+
+impl Transaction for SqliteTx<'_> {
+    fn commit(self: Box<Self>) -> Result<()> {
+        self.0.commit().map_err(Error::backend)
+    }
+}
+
+/// Statements are prepared through rusqlite's own cache, so the hot path --
+/// one `INSERT` per task in a batch, one per event in a sync -- reuses a
+/// prepared statement rather than reparsing the SQL every row.
+fn exec(conn: &rusqlite::Connection, sql: &str, args: &[Value]) -> Result<u64> {
+    let mut stmt = conn.prepare_cached(sql).map_err(Error::backend)?;
+    let n =
+        stmt.execute(rusqlite::params_from_iter(args.iter().map(Bind))).map_err(Error::backend)?;
+    Ok(n as u64)
+}
+
+fn fetch(conn: &rusqlite::Connection, sql: &str, args: &[Value]) -> Result<Vec<Row>> {
+    let mut stmt = conn.prepare_cached(sql).map_err(Error::backend)?;
+    let columns = stmt.column_count();
+    let mut rows =
+        stmt.query(rusqlite::params_from_iter(args.iter().map(Bind))).map_err(Error::backend)?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().map_err(Error::backend)? {
+        let mut values = Vec::with_capacity(columns);
+        for i in 0..columns {
+            values.push(from_sqlite(row.get_ref(i).map_err(Error::backend)?));
+        }
+        out.push(Row(values));
+    }
+    Ok(out)
+}
+
+/// A [`Value`] on its way into rusqlite.
+struct Bind<'a>(&'a Value);
+
+impl rusqlite::ToSql for Bind<'_> {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        use rusqlite::types::Value as V;
+        Ok(match self.0 {
+            Value::Null => ToSqlOutput::Owned(V::Null),
+            // SQLite has no boolean type; it has always stored these as
+            // 0 and 1, and the schema declares the columns INTEGER to match.
+            Value::Bool(b) => ToSqlOutput::Owned(V::Integer(i64::from(*b))),
+            Value::Int(n) => ToSqlOutput::Owned(V::Integer(*n)),
+            Value::Real(f) => ToSqlOutput::Owned(V::Real(*f)),
+            Value::Text(s) => ToSqlOutput::Borrowed(ValueRef::Text(s.as_bytes())),
+            Value::Bytes(b) => ToSqlOutput::Borrowed(ValueRef::Blob(b)),
         })
     }
-
-    /// The connection, whether or not a previous caller panicked holding it.
-    ///
-    /// `lock().unwrap()` would turn one panic anywhere in this crate into a
-    /// permanently unusable store: every later call would panic on the poison
-    /// flag, and in the desktop shell that means a window that still looks
-    /// fine while nothing it does can be saved. Poisoning is also the wrong
-    /// signal here -- the state it warns about cannot arise. A panic can only
-    /// escape mid-statement or mid-transaction, and rusqlite's `Transaction`
-    /// rolls back when it is dropped, so the connection an unwinding thread
-    /// leaves behind is exactly the one it borrowed.
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    fn seal_entry(&self, e: &Entry) -> Result<(Vec<u8>, Vec<u8>)> {
-        let aad = entry_aad(e.id);
-        let data = self.cipher.seal(&aad, &serde_json::to_vec(e)?)?;
-        let summary = self.cipher.seal(&aad, &serde_json::to_vec(&e.summarize())?)?;
-        Ok((data, summary))
-    }
-
-    fn open_entry(&self, id: EntryId, sealed: &[u8]) -> Result<Entry> {
-        let plain = self.cipher.open(&entry_aad(id), sealed)?;
-        Ok(serde_json::from_slice(&plain)?)
-    }
-
-    fn open_summary(&self, id: EntryId, sealed: &[u8]) -> Result<EntrySummary> {
-        let plain = self.cipher.open(&entry_aad(id), sealed)?;
-        Ok(serde_json::from_slice(&plain)?)
-    }
 }
 
-/// Microseconds since the Unix epoch. Stored as an integer rather than an
-/// RFC 3339 string because string timestamps only sort correctly if the
-/// fractional-second width never varies, which is a fragile thing to rely on.
-fn to_us(ts: jiff::Timestamp) -> i64 {
-    ts.as_microsecond()
-}
-
-/// `YYYY-MM-DD`, which sorts lexicographically as it sorts chronologically,
-/// so a text column is a usable index for date ranges.
-fn date_str(d: Option<jiff::civil::Date>) -> Option<String> {
-    d.map(|d| d.to_string())
-}
-
-fn id_str<T: std::fmt::Display>(id: Option<T>) -> Option<String> {
-    id.map(|i| i.to_string())
-}
-
-impl SqliteStore {
-    fn seal<T: serde::Serialize>(&self, aad: &[u8], value: &T) -> Result<Vec<u8>> {
-        self.cipher.seal(aad, &serde_json::to_vec(value)?)
-    }
-
-    fn unseal<T: serde::de::DeserializeOwned>(&self, aad: &[u8], sealed: &[u8]) -> Result<T> {
-        Ok(serde_json::from_slice(&self.cipher.open(aad, sealed)?)?)
-    }
-
-    /// Decrypt a `(id, data)` result set into whole records.
-    fn collect<T, I>(
-        &self,
-        rows: Vec<(String, Vec<u8>)>,
-        aad: impl Fn(I) -> Vec<u8>,
-    ) -> Result<Vec<T>>
-    where
-        T: serde::de::DeserializeOwned,
-        I: std::str::FromStr + Copy,
-        I::Err: std::fmt::Display,
-    {
-        rows.into_iter()
-            .map(|(id, sealed)| {
-                let id: I = id.parse().map_err(|e: I::Err| Error::Invalid(e.to_string()))?;
-                self.unseal(&aad(id), &sealed)
-            })
-            .collect()
-    }
-
-    /// Every task in the subtree rooted at `root`, `root` itself included.
-    ///
-    /// Walked breadth-first in Rust rather than as a recursive CTE so that
-    /// the cascade -- which has to reach the `time_blocks` table too -- is
-    /// one readable rule in one place. Subtrees are tens of rows, not
-    /// millions, so the extra round trips do not signify.
-    fn subtree(tx: &Transaction<'_>, root: TaskId) -> Result<Vec<String>> {
-        let mut out = vec![root.to_string()];
-        let mut frontier = vec![root.to_string()];
-        while !frontier.is_empty() {
-            let mut next = Vec::new();
-            for parent in &frontier {
-                let mut stmt = tx
-                    .prepare_cached("SELECT id FROM tasks WHERE parent_id = ?1")
-                    .map_err(Error::backend)?;
-                let kids = stmt
-                    .query_map(params![parent], |r| r.get::<_, String>(0))
-                    .map_err(Error::backend)?;
-                for kid in kids {
-                    let kid = kid.map_err(Error::backend)?;
-                    // A cycle would be corrupt data, but a corrupt vault
-                    // should not hang the app -- so believe the set, not the
-                    // shape.
-                    if !out.contains(&kid) {
-                        out.push(kid.clone());
-                        next.push(kid);
-                    }
-                }
-            }
-            frontier = next;
-        }
-        Ok(out)
-    }
-
-    /// Clear the entry pointer on any reading that names `entry`.
-    ///
-    /// Both copies of it: the clear column the index is built on, and the
-    /// one inside the sealed payload. Updating only the column would leave
-    /// the record disagreeing with itself, and the sealed copy is the one
-    /// that would be believed after a restore.
-    ///
-    /// A read-modify-reseal per row, which is affordable precisely because
-    /// of what it operates on: the handful of things ticked while writing
-    /// one entry, on the rare occasion that entry is deleted.
-    fn detach_readings_from(&self, entry: EntryId) -> Result<()> {
-        let rows: Vec<(String, Vec<u8>)> = {
-            let conn = self.conn();
-            let mut stmt = conn
-                .prepare("SELECT id, data FROM readings WHERE entry_id = ?1")
-                .map_err(Error::backend)?;
-            stmt.query_map(params![entry.to_string()], |r| Ok((r.get(0)?, r.get(1)?)))
-                .map_err(Error::backend)?
-                .collect::<rusqlite::Result<_>>()
-                .map_err(Error::backend)?
-        };
-
-        for (id, sealed) in rows {
-            let id = ReadingId::parse(&id).map_err(|e| Error::Invalid(e.to_string()))?;
-            let aad = reading_aad(id);
-            let mut reading: everyday_core::tracker::Reading = self.unseal(&aad, &sealed)?;
-            reading.entry_id = None;
-            let data = self.seal(&aad, &reading)?;
-            let conn = self.conn();
-            conn.execute(
-                "UPDATE readings SET entry_id = NULL, data = ?2 WHERE id = ?1",
-                params![id.to_string(), data],
-            )
-            .map_err(Error::backend)?;
-        }
-        Ok(())
-    }
-
-    /// Delete these tasks and every time block booked against them.
-    fn purge_tasks(tx: &Transaction<'_>, ids: &[String]) -> Result<()> {
-        if ids.is_empty() {
-            return Ok(());
-        }
-        let holes = std::iter::repeat_n("?", ids.len()).collect::<Vec<_>>().join(",");
-        let args = params_from_iter(ids.iter());
-        tx.execute(&format!("DELETE FROM time_blocks WHERE task_id IN ({holes})"), args)
-            .map_err(Error::backend)?;
-        tx.execute(
-            &format!("DELETE FROM tasks WHERE id IN ({holes})"),
-            params_from_iter(ids.iter()),
-        )
-        .map_err(Error::backend)?;
-        Ok(())
+/// A rusqlite value on its way out.
+///
+/// Text that is not UTF-8 comes back as bytes rather than as an error: this
+/// crate only ever writes UTF-8 into a text column, so the case cannot arise
+/// from its own writes, and turning a damaged byte into a decode failure
+/// three layers down would be a worse report than the type mismatch the
+/// caller gets instead.
+fn from_sqlite(v: ValueRef<'_>) -> Value {
+    match v {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(n) => Value::Int(n),
+        ValueRef::Real(f) => Value::Real(f),
+        ValueRef::Text(t) => match std::str::from_utf8(t) {
+            Ok(s) => Value::Text(s.to_string()),
+            Err(_) => Value::Bytes(t.to_vec()),
+        },
+        ValueRef::Blob(b) => Value::Bytes(b.to_vec()),
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
-name = "everyday-store-markdown"
-description = "Plain-file Markdown storage backend for Every Day"
+name = "everyday-store-sql"
+description = "The SQL storage backend for Every Day, shared by every SQL dialect it speaks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,7 +13,6 @@ serde.workspace = true
 serde_json.workspace = true
 jiff.workspace = true
 tracing.workspace = true
-toml = "1"
 
 [dev-dependencies]
 everyday-core = { workspace = true, features = ["testing"] }

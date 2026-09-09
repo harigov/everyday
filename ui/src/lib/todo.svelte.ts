@@ -728,8 +728,8 @@ export const todo = new TodoState()
 // and one line of state.
 
 tray.register('todo', TRAY_ORDER.todo, () => {
-  // A Markdown vault has no task domain at all, so the todo app is not
-  // hidden behind a disabled item -- it is not there.
+  // A backend that holds journals only has no task domain, so the todo app
+  // is not hidden behind a disabled item -- it is not there.
   if (app.screen !== 'main' || !app.supportsTasks) return []
   return [
     {

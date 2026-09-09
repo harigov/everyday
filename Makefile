@@ -19,7 +19,7 @@ UI_DIR  := ui
 ARGS ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help setup run dev ui build test lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
+.PHONY: help setup run dev ui build test test-postgres lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
 
 help: ## Show this help
 	@echo "Every Day -- make <target>"
@@ -74,6 +74,26 @@ test: ## Run the test suite under a memory cap
 	@if [ -z "$(ARGS)" ] && { [ "$$(uname -s)" != Linux ] || pkg-config --exists webkit2gtk-4.1 2>/dev/null; }; then \
 		./scripts/test.sh -p everyday-app; \
 	fi
+
+# The storage conformance suite against a real Postgres, which `make test`
+# cannot do because it would need a server it has no business starting. CI
+# runs the same suite against a service container on every push; this is the
+# way to run it before pushing. The container is removed when it stops.
+test-postgres: ## Run the storage suite against a throwaway Postgres in Docker
+	@docker rm -f everyday-pgtest >/dev/null 2>&1 || true
+	docker run -d --rm --name everyday-pgtest \
+		-e POSTGRES_PASSWORD=test -e POSTGRES_DB=everyday_test \
+		-p 55432:5432 postgres:16-alpine
+	@echo "waiting for Postgres..."
+	@for i in $$(seq 1 60); do \
+		docker exec everyday-pgtest pg_isready -q && break; \
+		sleep 1; \
+	done
+	@EVERYDAY_TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/everyday_test \
+		cargo test -p everyday-store-postgres; \
+	status=$$?; \
+	docker rm -f everyday-pgtest >/dev/null; \
+	exit $$status
 
 # The pair to reach for: `lint` says what is wrong, `fix` fixes what it can.
 # They are the same tools in the same order, so anything `fix` silences is

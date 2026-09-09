@@ -8,7 +8,6 @@
 //! database written by an earlier version.
 
 use super::{DB_FILENAME, MEDIA_DIRNAME, SqliteStore};
-use crate::schema::SCHEMA_VERSION;
 use everyday_core::calendar::Event;
 use everyday_core::crypto::{AeadCipher, Cipher, NullCipher, SecretKey};
 use everyday_core::model::Entry;
@@ -20,6 +19,7 @@ use everyday_core::store::{EntryQuery, JournalStore, SortOrder, StoreContext};
 use everyday_core::task::{Project, Task, TimeBlock};
 use everyday_core::tracker::{Aggregate, Reading, Tracker, TrackerKind};
 use everyday_core::{RichDoc, model::Journal};
+use everyday_store_sql::schema::SCHEMA_VERSION;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -29,7 +29,19 @@ fn ctx(root: &Path, encrypted: bool) -> StoreContext {
     } else {
         Arc::new(NullCipher)
     };
-    StoreContext { root: root.to_path_buf(), cipher }
+    StoreContext::new(root, cipher)
+}
+
+/// A plain connection to the database file, for the handful of tests that
+/// have to tamper with it or read a pragma off it.
+///
+/// Deliberately not a way in through the store's own connection. These tests
+/// are about what is *in the file* -- an older schema, a version pragma, a
+/// column that must not hold readable text -- and reaching them through the
+/// store would let a change to the store's internals quietly change what
+/// they check. The store should be closed first, so the WAL is behind us.
+fn raw(dir: &Path) -> rusqlite::Connection {
+    rusqlite::Connection::open(dir.join(DB_FILENAME)).unwrap()
 }
 
 #[test]
@@ -101,10 +113,8 @@ fn a_database_written_under_one_key_does_not_open_under_another() {
         let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
         store.put_journal(&j).unwrap();
     }
-    let wrong = StoreContext {
-        root: dir.path().to_path_buf(),
-        cipher: Arc::new(AeadCipher::new(&SecretKey::from_bytes([6u8; 32]))),
-    };
+    let wrong =
+        StoreContext::new(dir.path(), Arc::new(AeadCipher::new(&SecretKey::from_bytes([6u8; 32]))));
     let store = SqliteStore::open(wrong).unwrap();
     assert_eq!(store.get_journal(j.id).unwrap_err().code(), "decrypt_failed");
 }
@@ -300,9 +310,11 @@ fn a_version_1_database_gains_the_task_tables_without_losing_entries() {
         let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
         store.put_journal(&j).unwrap();
         store.put_entry(&e).unwrap();
-        // Rewind to the world as version 1 left it: the task tables gone
-        // and the recorded version behind.
-        let conn = store.conn.lock().unwrap();
+    }
+    // Rewind to the world as version 1 left it: the task tables gone and the
+    // recorded version behind.
+    {
+        let conn = raw(dir.path());
         conn.execute_batch("DROP TABLE tasks; DROP TABLE projects; DROP TABLE time_blocks;")
             .unwrap();
         conn.pragma_update(None, "user_version", 1i64).unwrap();
@@ -331,7 +343,9 @@ fn a_version_2_database_gains_the_calendar_tables_without_losing_tasks() {
     {
         let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
         store.put_task(&t).unwrap();
-        let conn = store.conn.lock().unwrap();
+    }
+    {
+        let conn = raw(dir.path());
         conn.execute_batch("DROP TABLE events; DROP TABLE calendars;").unwrap();
         conn.pragma_update(None, "user_version", 2i64).unwrap();
     }
@@ -468,9 +482,10 @@ fn hidden_calendars_are_excluded_by_the_visible_only_query() {
 fn reopening_does_not_re_run_the_migration() {
     let dir = tempfile::tempdir().unwrap();
     for _ in 0..3 {
-        let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
-        let conn = store.conn.lock().unwrap();
-        let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        drop(SqliteStore::open(ctx(dir.path(), true)).unwrap());
+        let v = raw(dir.path())
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap();
         assert_eq!(v, SCHEMA_VERSION);
     }
 }
@@ -481,11 +496,8 @@ fn a_database_from_a_newer_build_is_refused_rather_than_written_to() {
     // which meant an older build opened a newer vault, skipped every
     // migration step and wrote into a schema it did not understand.
     let dir = tempfile::tempdir().unwrap();
-    {
-        let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
-        let conn = store.conn.lock().unwrap();
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
-    }
+    drop(SqliteStore::open(ctx(dir.path(), true)).unwrap());
+    raw(dir.path()).pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
     let Err(err) = SqliteStore::open(ctx(dir.path(), true)) else {
         panic!("a newer schema version must be refused");
     };
@@ -840,7 +852,9 @@ fn a_version_4_database_gains_the_readings_table_without_losing_entries() {
         let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
         store.put_journal(&journal).unwrap();
         store.put_entry(&entry).unwrap();
-        let conn = store.conn.lock().unwrap();
+    }
+    {
+        let conn = raw(dir.path());
         conn.execute_batch("DROP TABLE readings;").unwrap();
         conn.pragma_update(None, "user_version", 4i64).unwrap();
     }

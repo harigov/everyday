@@ -1553,9 +1553,33 @@ export const mockInvoke = async <T>(
         backends: [
           {
             id: 'sqlite',
-            description: 'SQLite database — fastest, best for large journals (recommended)',
+            name: 'On this computer',
+            description:
+              'A SQLite database in the vault folder — fastest, works offline (recommended)',
+            settings: [],
           },
-          { id: 'markdown', description: 'Markdown files — readable and syncable with any tool' },
+          {
+            id: 'postgres',
+            name: 'On a Postgres server',
+            description:
+              'A Postgres database — Supabase or your own, reachable from more than one computer',
+            settings: [
+              {
+                key: 'url',
+                label: 'Connection URL',
+                placeholder: 'postgresql://user:password@host:5432/database',
+                required: true,
+                secret: true,
+              },
+              {
+                key: 'schema',
+                label: 'Schema',
+                placeholder: 'everyday',
+                required: false,
+                secret: false,
+              },
+            ],
+          },
         ],
         status: status(),
       } satisfies Bootstrap as T

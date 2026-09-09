@@ -47,13 +47,6 @@ where
         .map_err(|e| CommandError::new("panic", format!("background task failed: {e}")))?
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BackendInfo {
-    pub id: String,
-    pub description: String,
-}
-
 /// What the interface needs before any vault is open.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,7 +55,10 @@ pub struct Bootstrap {
     /// The vault location in play: the one last opened if it is still there,
     /// otherwise where a new vault would be created.
     pub default_path: PathBuf,
-    pub backends: Vec<BackendInfo>,
+    /// Every backend this build can open, with the fields each one needs
+    /// configuring. The setup screen renders these rather than knowing that
+    /// Postgres exists.
+    pub backends: Vec<everyday_core::BackendInfo>,
     pub status: Option<VaultStatus>,
 }
 
@@ -76,13 +72,7 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
         .last_path()
         .filter(|p| everyday_vault::exists(p))
         .unwrap_or_else(everyday_vault::default_vault_dir);
-    let backends = everyday_vault::available_backends()
-        .into_iter()
-        .map(|(id, description)| BackendInfo {
-            id: id.to_string(),
-            description: description.to_string(),
-        })
-        .collect();
+    let backends = everyday_vault::available_backends();
 
     // Open eagerly so an unencrypted vault is usable immediately and an
     // encrypted one can name itself on the lock screen.
@@ -115,14 +105,23 @@ pub async fn create_vault(
     path: PathBuf,
     name: String,
     backend: String,
+    // `settings` is whatever the chosen backend asked for in its spec -- a
+    // connection URL, a schema name -- and is absent for a local vault. It is
+    // sealed under the vault key once the vault exists; see `VaultHeader`.
+    settings: Option<everyday_core::BackendSettings>,
     password: Option<String>,
 ) -> CommandResult<VaultStatus> {
     if let Some(p) = password.as_deref() {
         everyday_vault::validate_password(p)?;
     }
+    let settings = settings.unwrap_or_default();
+    // Checked here as well as inside `create`, so a missing connection URL
+    // is a message on the setup screen and not a half-made vault directory.
+    everyday_vault::validate_settings(&backend, &settings)?;
     let config = VaultConfig {
         name,
         backend,
+        settings,
         password,
         kdf: Default::default(),
         auto_lock_seconds: 15 * 60,

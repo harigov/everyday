@@ -10,8 +10,45 @@
   let busy = $state(false)
   let acknowledged = $state(false)
 
+  /**
+   * What has been typed into each backend's fields, keyed by backend then by
+   * field. Kept per backend rather than per field so that clicking away to
+   * look at another option and coming back does not lose a pasted
+   * connection URL.
+   */
+  let settings = $state<Record<string, Record<string, string>>>({})
+
   const backends = $derived(app.boot?.backends ?? [])
   const path = $derived(app.boot?.defaultPath ?? '')
+
+  /** The fields the chosen backend asked for. Empty for a local vault. */
+  const fields = $derived(backends.find((b) => b.id === backend)?.settings ?? [])
+
+  function value(key: string): string {
+    return settings[backend]?.[key] ?? ''
+  }
+
+  function setValue(key: string, v: string) {
+    settings[backend] = { ...(settings[backend] ?? {}), [key]: v }
+  }
+
+  const missingField = $derived(
+    fields.find((f) => f.required && !value(f.key).trim())?.label ?? null,
+  )
+
+  /**
+   * Say what is still missing, but only once they have started.
+   *
+   * The same rule the password field follows: an empty form on first sight
+   * is not a mistake anyone has made yet, and telling someone they have got
+   * it wrong before they have touched it is not help. The Create button is
+   * disabled either way.
+   */
+  const missingHint = $derived(
+    missingField && Object.values(settings[backend] ?? {}).some((v) => v.trim())
+      ? missingField
+      : null,
+  )
 
   const problem = $derived.by(() => {
     if (!encrypt) return acknowledged ? null : 'Confirm you understand the risk below.'
@@ -21,7 +58,10 @@
   })
 
   const ready = $derived(
-    !busy && !problem && (!encrypt || (password.length >= 8 && password === confirm)),
+    !busy &&
+      !problem &&
+      !missingField &&
+      (!encrypt || (password.length >= 8 && password === confirm)),
   )
 
   async function submit(e: Event) {
@@ -29,12 +69,29 @@
     if (!ready) return
     busy = true
     try {
+      // Only the chosen backend's fields, and only the ones with something
+      // in them: an empty optional field means "use the default", not "set
+      // this to the empty string".
+      const chosen: Record<string, string> = {}
+      for (const f of fields) {
+        const v = value(f.key).trim()
+        if (v) chosen[f.key] = v
+      }
       await app.createVault({
         path,
         name: name.trim() || 'My Journal',
         backend,
+        settings: chosen,
         password: encrypt ? password : null,
       })
+      // Only on the way out. The connection URL has a database password in
+      // it and has now been sealed into the vault, so there is no reason for
+      // a copy to stay in the webview's memory -- but clearing it in a
+      // `finally` would also clear it when the create *failed*, which is
+      // precisely when it is still needed: a typo in the host is the common
+      // error here, and it should cost a correction rather than re-pasting a
+      // whole credential.
+      settings = {}
     } finally {
       busy = false
       password = ''
@@ -58,12 +115,40 @@
         <label class="option" class:on={backend === b.id}>
           <input type="radio" name="backend" value={b.id} bind:group={backend} />
           <span class="opt-body">
-            <span class="opt-name">{b.id === 'sqlite' ? 'Database' : 'Markdown files'}</span>
+            <span class="opt-name">{b.name}</span>
             <span class="opt-desc">{b.description}</span>
           </span>
         </label>
       {/each}
     </div>
+
+    <!-- Whatever the chosen backend asked for. Nothing at all for a vault
+         that lives in a folder on this computer, which is why this is driven
+         by the backend's own declaration rather than by a branch on its id. -->
+    {#each fields as f (backend + f.key)}
+      <label class="label" for="set-{f.key}">
+        {f.label}{#if !f.required}<span class="opt-desc"> — optional</span>{/if}
+      </label>
+      <input
+        id="set-{f.key}"
+        class="field"
+        type={f.secret ? 'password' : 'text'}
+        placeholder={f.placeholder}
+        autocomplete="off"
+        spellcheck="false"
+        value={value(f.key)}
+        oninput={(e) => setValue(f.key, e.currentTarget.value)}
+      />
+      <div class="gap"></div>
+    {/each}
+
+    {#if fields.length}
+      <p class="hint">
+        Entries are sealed on this computer before they are sent, so the server holds ciphertext and
+        never your password. What it can see is the shape of the journal: how many entries there are
+        and which days you wrote on.
+      </p>
+    {/if}
 
     <div class="group">
       <label class="option" class:on={encrypt}>
@@ -113,6 +198,7 @@
       </label>
     {/if}
 
+    {#if missingHint}<p class="error">{missingHint} is needed.</p>{/if}
     {#if problem}<p class="error">{problem}</p>{/if}
     {#if app.error}<p class="error">{app.error}</p>{/if}
 

@@ -11,9 +11,9 @@
 
 pub mod media;
 
-use everyday_core::store::BackendRegistry;
+use everyday_core::store::{BackendInfo, BackendRegistry, BackendSettings, SettingSpec};
 use everyday_core::{Error, Result, Vault, VaultConfig};
-use everyday_store_markdown::MarkdownFactory;
+use everyday_store_postgres::PostgresFactory;
 use everyday_store_sqlite::SqliteFactory;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,24 +22,55 @@ use std::sync::Arc;
 pub const DEFAULT_BACKEND: &str = everyday_store_sqlite::BACKEND_ID;
 
 /// Every storage backend this build knows how to open.
+///
+/// Registration order is picker order, and it is deliberate: the local
+/// database first, because it is the right answer for one person on one
+/// machine and needs nothing configured.
 pub fn registry() -> Arc<BackendRegistry> {
     let mut reg = BackendRegistry::new();
-    reg.register(SqliteFactory).register(MarkdownFactory);
+    reg.register(SqliteFactory).register(PostgresFactory);
     Arc::new(reg)
 }
 
-/// `(id, human description)` for each backend, for the vault-creation UI.
-pub fn available_backends() -> Vec<(&'static str, &'static str)> {
+/// What the vault-creation screen needs about each backend.
+pub fn available_backends() -> Vec<BackendInfo> {
     registry().describe_all()
+}
+
+/// What `backend` must be configured with before it can be opened.
+///
+/// Empty for a backend that needs only a directory. The interface asks this
+/// so it can render the fields for a chosen backend without knowing that
+/// Postgres, or anything after it, exists.
+pub fn backend_settings(backend: &str) -> Result<Vec<SettingSpec>> {
+    registry().settings_for(backend).ok_or_else(|| Error::UnknownBackend(backend.to_string()))
+}
+
+/// Reject a backend configuration that would fail at open time.
+///
+/// Called before a vault is created, so that a missing connection URL is a
+/// message on the setup screen rather than a half-made vault directory with
+/// a header in it and no database behind it.
+pub fn validate_settings(backend: &str, settings: &BackendSettings) -> Result<()> {
+    for spec in backend_settings(backend)? {
+        if spec.required && settings.get(spec.key).is_none() {
+            return Err(Error::Invalid(format!(
+                "the {backend} backend needs {}, and none was given",
+                spec.label.to_lowercase()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Where a vault lives when the user has not chosen somewhere else.
 ///
 /// Uses the platform's data directory rather than the document directory:
 /// the vault is an opaque store with its own internal layout, not a file the
-/// user is expected to open by hand. (A Markdown vault *is* meant to be
-/// browsed, which is exactly why it is worth pointing somewhere memorable at
-/// creation time.)
+/// user is expected to open by hand. It is still a real directory wherever
+/// the records live -- a Postgres vault keeps its header, its lock and its
+/// search index here and only its rows on the server -- so this is the path
+/// to point at when someone asks where their journal is.
 pub fn default_vault_dir() -> PathBuf {
     directories::ProjectDirs::from("app", "Every Day", "EveryDay")
         .map(|d| d.data_dir().to_path_buf())
@@ -99,8 +130,18 @@ pub fn open(path: &Path) -> Result<Vault> {
     Vault::open(path, registry())
 }
 
+/// Open a vault's header without opening its storage backend.
+///
+/// For fixing a vault that cannot be opened the ordinary way: a database that
+/// has moved, a password that has been rotated. See
+/// [`everyday_core::Vault::open_dormant`].
+pub fn open_dormant(path: &Path) -> Result<Vault> {
+    Vault::open_dormant(path, registry())
+}
+
 /// Create a new vault. Fails if one already exists at `path`.
 pub fn create(path: &Path, config: VaultConfig) -> Result<Vault> {
+    validate_settings(&config.backend, &config.settings)?;
     Vault::create(path, config, registry())
 }
 
@@ -142,14 +183,149 @@ mod tests {
     fn both_shipped_backends_are_registered() {
         let ids = registry().ids();
         assert!(ids.contains(&"sqlite"), "sqlite backend missing: {ids:?}");
-        assert!(ids.contains(&"markdown"), "markdown backend missing: {ids:?}");
+        assert!(ids.contains(&"postgres"), "postgres backend missing: {ids:?}");
     }
 
     #[test]
-    fn every_backend_has_a_description_for_the_picker() {
-        for (id, desc) in available_backends() {
-            assert!(!desc.is_empty(), "backend {id} has no description");
+    fn every_backend_has_a_name_and_a_description_for_the_picker() {
+        for b in available_backends() {
+            assert!(!b.name.is_empty(), "backend {} has no name", b.id);
+            assert!(!b.description.is_empty(), "backend {} has no description", b.id);
         }
+    }
+
+    #[test]
+    fn a_backend_that_needs_configuring_says_so_before_a_vault_is_made() {
+        // The setup screen reads this to decide whether to show a
+        // connection field, and `create` reads it to refuse early.
+        assert!(backend_settings("sqlite").unwrap().is_empty());
+        let pg = backend_settings("postgres").unwrap();
+        assert!(pg.iter().any(|s| s.key == "url" && s.required));
+        assert_eq!(backend_settings("mysql").unwrap_err().code(), "unknown_backend");
+    }
+
+    #[test]
+    fn creating_a_vault_without_the_settings_its_backend_needs_is_refused() {
+        // And refused *before* anything is written: a directory holding a
+        // header and no database is worse than no directory at all.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault");
+        let err = create(
+            &path,
+            VaultConfig { backend: "postgres".into(), password: None, ..Default::default() },
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "invalid", "got {err}");
+        assert!(!path.exists(), "a refused create must leave nothing behind");
+    }
+
+    #[test]
+    fn a_backend_settings_round_trip_survives_a_lock_and_unlock() {
+        // The connection URL is sealed under the data key, so this is the
+        // check that it can still be read after a real unlock -- and that it
+        // is not sitting in the header in the clear.
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = VaultConfig {
+            password: Some("correct horse battery".into()),
+            kdf: everyday_core::crypto::KdfParams::insecure_fast(),
+            ..Default::default()
+        };
+        // Any backend will do; what is under test is the sealing, not the
+        // database. SQLite ignores settings it was not asked about.
+        cfg.settings.set("url", "postgresql://someone:hunter2@example.com/db");
+        let vault = create(dir.path(), cfg).unwrap();
+        let pw = Some("correct horse battery");
+        assert_eq!(
+            vault.backend_settings(None).unwrap().get("url"),
+            Some("postgresql://someone:hunter2@example.com/db"),
+            "an unlocked vault already holds the key and needs no password",
+        );
+        drop(vault);
+
+        let header = std::fs::read_to_string(dir.path().join("vault.json")).unwrap();
+        assert!(!header.contains("hunter2"), "the password must not be in the plaintext header");
+
+        let vault = open(dir.path()).unwrap();
+        assert_eq!(
+            vault.backend_settings(None).unwrap_err().code(),
+            "bad_password",
+            "a locked vault must not hand out its database credential",
+        );
+        assert_eq!(vault.backend_settings(Some("wrong")).unwrap_err().code(), "bad_password");
+        assert_eq!(
+            vault.backend_settings(pw).unwrap().get("url"),
+            Some("postgresql://someone:hunter2@example.com/db"),
+            "the password alone is enough: reading this must not need the store",
+        );
+
+        // And it can be changed without recreating the vault, which is what
+        // a rotated database password needs -- while still locked, because a
+        // vault whose credential is wrong is one that cannot be unlocked.
+        let moved = everyday_core::BackendSettings::with_url("postgresql://elsewhere/db");
+        vault.set_backend_settings(pw, moved).unwrap();
+        assert_eq!(
+            vault.backend_settings(pw).unwrap().get("url"),
+            Some("postgresql://elsewhere/db")
+        );
+    }
+
+    #[test]
+    fn a_vault_whose_backend_will_not_open_leaves_nothing_behind() {
+        // The regression that made a hosted vault unpleasant to get wrong:
+        // the header is written before the backend is opened, so a typo in a
+        // connection URL used to leave a directory that counted as a vault,
+        // and the corrected retry was refused as `already_initialised`.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault");
+        let cfg = VaultConfig {
+            backend: "postgres".into(),
+            // Nothing is listening on this port, and connecting is the last
+            // thing `create` does.
+            settings: BackendSettings::with_url("postgresql://postgres@127.0.0.1:59999/nope"),
+            password: None,
+            ..Default::default()
+        };
+
+        assert!(create(&path, cfg.clone()).is_err());
+        assert!(!everyday_core::Vault::exists(&path), "a failed create leaves no vault behind");
+        assert!(!path.exists(), "nor the directory it made for it");
+        // And the retry, which is the whole point, gets as far as the same
+        // failure rather than being refused before it starts.
+        assert_ne!(create(&path, cfg).unwrap_err().code(), "already_initialised");
+    }
+
+    #[test]
+    fn the_backend_settings_of_a_vault_that_cannot_be_opened_are_still_reachable() {
+        // The repair path. A vault pointing at a database that has moved
+        // cannot be opened or unlocked -- both reach for the connection -- so
+        // if this needed either, the documented way to fix a rotated password
+        // would be unusable in exactly the case it is for.
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = VaultConfig {
+            password: Some("correct horse battery".into()),
+            kdf: everyday_core::crypto::KdfParams::insecure_fast(),
+            ..Default::default()
+        };
+        cfg.settings.set("url", "postgresql://gone.example.com/db");
+        drop(create(dir.path(), cfg).unwrap());
+
+        let vault = open_dormant(dir.path()).unwrap();
+        assert!(!vault.is_unlocked(), "a dormant vault has opened nothing");
+        let pw = Some("correct horse battery");
+        assert_eq!(
+            vault.backend_settings(pw).unwrap().get("url"),
+            Some("postgresql://gone.example.com/db"),
+        );
+        vault
+            .set_backend_settings(pw, BackendSettings::with_url("postgresql://here.example.com/db"))
+            .unwrap();
+        drop(vault);
+
+        assert_eq!(
+            open_dormant(dir.path()).unwrap().backend_settings(pw).unwrap().get("url"),
+            Some("postgresql://here.example.com/db"),
+            "the repaired URL must survive to the next open",
+        );
     }
 
     #[test]
@@ -329,21 +505,6 @@ mod tests {
     }
 
     #[test]
-    fn a_markdown_vault_says_it_cannot_track_rather_than_failing_at_click_time() {
-        let dir = tempfile::tempdir().unwrap();
-        let vault = create(
-            dir.path(),
-            VaultConfig { password: None, backend: "markdown".into(), ..Default::default() },
-        )
-        .unwrap();
-        assert!(!vault.supports_trackers());
-        assert!(!vault.status().capabilities.unwrap().trackers);
-        // And the call that would be hidden behind that flag fails clearly.
-        let err = vault.readings(&everyday_core::ReadingQuery::default()).unwrap_err();
-        assert_eq!(err.code(), "unsupported", "got {err}");
-    }
-
-    #[test]
     fn a_recorded_vault_path_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("last-vault");
@@ -395,18 +556,18 @@ mod tests {
     }
 
     #[test]
-    fn a_vault_can_be_created_on_either_backend() {
-        for backend in ["sqlite", "markdown"] {
-            let dir = tempfile::tempdir().unwrap();
-            let cfg = VaultConfig {
-                backend: backend.into(),
-                password: Some("correct horse battery".into()),
-                kdf: everyday_core::crypto::KdfParams::insecure_fast(),
-                ..Default::default()
-            };
-            let vault = create(dir.path(), cfg).unwrap();
-            assert_eq!(vault.status().backend, backend);
-        }
+    fn a_vault_records_which_backend_made_it() {
+        // Only the local backend is exercised here; the Postgres one needs a
+        // server, and `everyday-store-postgres` is where that lives.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = VaultConfig {
+            backend: "sqlite".into(),
+            password: Some("correct horse battery".into()),
+            kdf: everyday_core::crypto::KdfParams::insecure_fast(),
+            ..Default::default()
+        };
+        let vault = create(dir.path(), cfg).unwrap();
+        assert_eq!(vault.status().backend, "sqlite");
     }
 
     #[test]
@@ -608,24 +769,6 @@ mod tests {
         vault.delete_calendar(calendar.id).unwrap();
         assert!(vault.calendars().unwrap().is_empty());
         assert!(vault.events(&EventQuery::default()).unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_markdown_vault_offers_journals_but_not_tasks() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = VaultConfig {
-            backend: "markdown".into(),
-            password: Some("correct horse battery".into()),
-            kdf: everyday_core::crypto::KdfParams::insecure_fast(),
-            ..Default::default()
-        };
-        let vault = create(dir.path(), cfg).unwrap();
-        assert!(!vault.supports_tasks());
-        assert!(!vault.supports_calendars());
-        let caps = vault.status().capabilities.unwrap();
-        assert!(!caps.tasks && !caps.calendars);
-        assert_eq!(vault.projects().unwrap_err().code(), "unsupported");
-        assert_eq!(vault.calendars().unwrap_err().code(), "unsupported");
     }
 
     // ---- the assistant ---------------------------------------------------
@@ -1116,27 +1259,6 @@ mod tests {
         let err = call_err(&vault, "add_task", serde_json::json!({ "title": "x" }));
         assert!(err.contains("no tool called"), "got {err}");
         assert!(err.contains("create_task"), "should list the real names: {err}");
-    }
-
-    #[test]
-    fn the_assistant_can_read_a_markdown_vault_but_is_not_offered_tasks() {
-        // The backend decides the catalogue, so a model is never told about
-        // a tool whose storage does not exist and cannot claim to have used
-        // one.
-        let dir = tempfile::tempdir().unwrap();
-        let vault = create(
-            dir.path(),
-            VaultConfig { password: None, backend: "markdown".into(), ..Default::default() },
-        )
-        .unwrap();
-
-        let offered: Vec<&str> = tools::available(&vault).iter().map(|t| t.name).collect();
-        assert!(offered.contains(&"create_entry"), "journals work on every backend: {offered:?}");
-        assert!(!offered.contains(&"create_task"), "markdown stores no tasks: {offered:?}");
-        assert!(!offered.contains(&"list_shelves"), "nor a library: {offered:?}");
-
-        let err = call_err(&vault, "create_task", serde_json::json!({ "title": "x" }));
-        assert!(err.contains("does not store"), "got {err}");
     }
 
     #[test]

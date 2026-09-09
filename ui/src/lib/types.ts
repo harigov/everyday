@@ -264,11 +264,38 @@ export interface VaultStatus {
   capabilities?: Capabilities
 }
 
+/**
+ * One field a backend must be told before it can be opened.
+ *
+ * The setup screen renders whatever the backend declares rather than knowing
+ * which backends exist — so a backend that later needs two fields, or none,
+ * changes in Rust and nowhere here.
+ */
+export interface SettingSpec {
+  key: string
+  label: string
+  /** Shown greyed in the empty field. Never a real credential. */
+  placeholder: string
+  required: boolean
+  /** Masked on entry, and never sent back to the interface afterwards. */
+  secret: boolean
+}
+
+/** A storage backend as the vault-creation screen sees it. */
+export interface BackendInfo {
+  id: string
+  /** Short human name, e.g. "On this computer". */
+  name: string
+  description: string
+  /** Empty for a backend that needs nothing but a folder. */
+  settings: SettingSpec[]
+}
+
 /** What the app knows before any vault is opened. */
 export interface Bootstrap {
   vaultExists: boolean
   defaultPath: string
-  backends: { id: string; description: string }[]
+  backends: BackendInfo[]
   status: VaultStatus | null
 }
 

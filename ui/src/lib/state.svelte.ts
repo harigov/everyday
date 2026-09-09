@@ -312,8 +312,9 @@ class AppState {
    * Move to the next app the open vault can offer. What Ctrl/Cmd J does.
    *
    * A cycle rather than a toggle, now that there are four, and it skips
-   * what the backend does not carry -- so on a Markdown vault the shortcut
-   * is a no-op rather than a way to reach a screen that cannot work.
+   * what the backend does not carry -- so on a vault whose backend holds
+   * journals only, the shortcut is a no-op rather than a way to reach a
+   * screen that cannot work.
    */
   nextSection() {
     const available = SECTIONS.filter((s) => this.canShow(s))
@@ -345,6 +346,7 @@ class AppState {
     path: string
     name: string
     backend: string
+    settings?: Record<string, string>
     password: string | null
   }) {
     this.error = null

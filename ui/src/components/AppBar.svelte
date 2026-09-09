@@ -30,8 +30,8 @@
     source: string
   }
 
-  // Each tab is hidden on a backend that cannot carry it, so a Markdown
-  // vault does not offer an app that cannot work.
+  // Each tab is hidden on a backend that cannot carry it, so a vault never
+  // offers an app that cannot work.
   const APPS: AppEntry[] = [
     { id: 'journal', label: 'Journal', icon: 'quote', source: 'journal' },
     { id: 'todo', label: 'Todo', icon: 'check', source: 'todo' },
@@ -86,9 +86,9 @@
        drawn under them. -->
   <div class="cap"></div>
 
-  <!-- A bar with one app on it is a decoration: a Markdown vault stores
-       journals and nothing else, and there is nothing to switch between. The
-       two buttons at the foot are there either way. -->
+  <!-- A bar with one app on it is a decoration: a backend that stores
+       journals and nothing else leaves nothing to switch between. The two
+       buttons at the foot are there either way. -->
   {#if shown.length > 1}
     <nav aria-label="Apps">
       {#each shown as a (a.id)}
