@@ -12,6 +12,7 @@
   // pasting a key before choosing an endpoint is how people end up sending
   // an OpenAI key to somebody else's gateway.
 
+  import { onDestroy } from 'svelte'
   import { agent } from '../lib/agent.svelte'
   import { trapFocus } from '../lib/focus'
   import type { AgentSettings } from '../lib/types'
@@ -25,6 +26,27 @@
   let key = $state('')
   let notice = $state<string | null>(null)
   let saving = $state(false)
+  /**
+   * Clears "Saved." after a moment, and only that.
+   *
+   * A confirmation is true when it appears and stops being true the moment
+   * anything is typed after it -- so a footer reading "Saved." beside three
+   * fields that are not is worse than a footer reading nothing. A failure is
+   * the opposite: it stays, because it is a thing to act on rather than a
+   * thing to notice.
+   */
+  let noticeTimer: ReturnType<typeof setTimeout> | null = null
+  function confirm(message: string) {
+    notice = message
+    if (noticeTimer) clearTimeout(noticeTimer)
+    noticeTimer = setTimeout(() => {
+      noticeTimer = null
+      notice = null
+    }, 4000)
+  }
+  onDestroy(() => {
+    if (noticeTimer) clearTimeout(noticeTimer)
+  })
 
   $effect(() => {
     if (!draft && agent.settings) draft = structuredClone($state.snapshot(agent.settings))
@@ -53,6 +75,8 @@
 
   async function save() {
     if (!draft) return
+    if (noticeTimer) clearTimeout(noticeTimer)
+    noticeTimer = null
     notice = null
     saving = true
     try {
@@ -62,7 +86,7 @@
         key = ''
       }
       draft = structuredClone($state.snapshot(agent.settings!))
-      notice = 'Saved.'
+      confirm('Saved.')
     } catch (e) {
       notice = e instanceof Error ? e.message : String(e)
     } finally {
@@ -71,6 +95,8 @@
   }
 
   async function removeKey() {
+    if (noticeTimer) clearTimeout(noticeTimer)
+    noticeTimer = null
     notice = null
     try {
       await agent.clearKey()

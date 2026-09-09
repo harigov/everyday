@@ -11,6 +11,7 @@
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import TaskRow from './TaskRow.svelte'
+  import { rovingFocus } from '../lib/roving'
   import type { TaskNode } from '../lib/todo.svelte'
   import type { Task } from '../lib/types'
 
@@ -148,8 +149,17 @@
   }
 </script>
 
+<!-- One tab stop for the whole list, and the arrow keys inside it: see
+     `lib/roving.ts`. A task row carries a tick, a title and a disclosure, so
+     without this a list of two thousand tasks was six thousand stops between
+     the capture line and anything after it. Up and Down move between rows,
+     Left and Right between the controls of one. -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="scroll list" oncontextmenu={(e) => menu.show(e, listMenu())}>
+<div
+  class="scroll list"
+  oncontextmenu={(e) => menu.show(e, listMenu())}
+  use:rovingFocus={todo.selectedTask}
+>
   {#if todo.tasks.length === 0}
     <div class="blank">
       {#if todo.filter.trim()}
