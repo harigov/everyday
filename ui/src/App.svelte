@@ -6,6 +6,8 @@
   import { todo } from './lib/todo.svelte'
   import { calendar } from './lib/calendar.svelte'
   import { library } from './lib/library.svelte'
+  import { purpose } from './lib/purpose.svelte'
+  import { tracking } from './lib/tracking.svelte'
   import { tray } from './lib/tray.svelte'
   import { agent } from './lib/agent.svelte'
   import { panels } from './lib/panels.svelte'
@@ -17,6 +19,7 @@
   import TodoView from './components/TodoView.svelte'
   import CalendarView from './components/CalendarView.svelte'
   import LibraryView from './components/LibraryView.svelte'
+  import OverviewView from './components/OverviewView.svelte'
   import LockScreen from './components/LockScreen.svelte'
   import Setup from './components/Setup.svelte'
   import ErrorScreen from './components/ErrorScreen.svelte'
@@ -53,6 +56,29 @@
   // rail still being open after a lock cleared everything behind it.
   agent.restore()
 
+  // Roles and goals, loaded once the vault is open and reloaded after every
+  // unlock.
+  //
+  // Here rather than inside `state.svelte.ts`, which is where the unlock
+  // itself happens: the purpose store reads `app`, so a store `app` also
+  // read would be a cycle, and a cycle between two modules that both
+  // construct singletons at import time is how a screen ends up blank with
+  // one line in the console. This component already imports every store and
+  // is where the app-level wiring belongs.
+  //
+  // Five unrelated places need these to draw a *name* — the picker, the
+  // "File under" submenu on four different records, the todo list's
+  // group-by, and every purpose chip — so loading on first use would show
+  // up as a submenu that is empty the first time it is opened.
+  $effect(() => {
+    if (app.screen !== 'main') return
+    void purpose.load()
+    // The vault's trackers, and — on a vault written before they became
+    // records — the one migration that cannot be a SQL step, since the old
+    // definitions are inside a sealed journal payload no migration can read.
+    void tracking.load()
+  })
+
   // Each app tints the window with the accent of whatever it has selected:
   // the journal you are in, the project you are looking at, the shelf you are
   // browsing, or -- since the calendar spans every project at once -- the
@@ -60,7 +86,7 @@
   const accent = $derived(
     app.section === 'todo'
       ? todo.accent
-      : app.section === 'calendar'
+      : app.section === 'calendar' || app.section === 'overview'
         ? 'var(--accent)'
         : app.section === 'library'
           ? library.accent
@@ -148,6 +174,8 @@
           <CalendarView />
         {:else if app.section === 'library'}
           <LibraryView />
+        {:else if app.section === 'overview'}
+          <OverviewView />
         {:else}
           <EntryList />
           <main class="main"><Editor /></main>

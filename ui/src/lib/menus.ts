@@ -16,6 +16,8 @@ import { SEP, tidyMenu, type MenuItem } from './menu'
 import { app } from './state.svelte'
 import { calendar, DEFAULT_BLOCK_MINUTES, type Slot } from './calendar.svelte'
 import { library } from './library.svelte'
+import { tracking } from './tracking.svelte'
+import { purpose, samePurpose } from './purpose.svelte'
 import { todo } from './todo.svelte'
 import { addDays, minutesBetween, offsetInDay, todayIso } from './time'
 import { formatMinutes, friendlyDate } from './format'
@@ -25,6 +27,7 @@ import type {
   CalendarEvent,
   Item,
   Priority,
+  Purpose,
   Reading,
   Task,
   TaskStatus,
@@ -62,6 +65,76 @@ export function colourItems(current: string, choose: (colour: string) => unknown
     checked: colour.toLowerCase() === current.toLowerCase(),
     run: () => choose(colour),
   }))
+}
+
+/**
+ * A "File under" submenu: the roles, with their goals nested under each.
+ *
+ * Offered from a project, a block, an entry, a shelf item and a subscribed
+ * calendar. Two levels rather than one flat list, because the flat version
+ * is a column of thirty rows in which "Parent" and "Viya rides without
+ * stabilisers" look like peers, and they are not.
+ *
+ * The first row is always "Nothing in particular". Purpose is optional
+ * everywhere, so taking it off has to be as easy as putting it on — and a
+ * submenu whose only way out is Escape teaches people not to open it.
+ */
+export function purposeItems(
+  current: Purpose | null | undefined,
+  choose: (next: Purpose | null) => unknown,
+  opts: { rolesOnly?: boolean } = {},
+): MenuItem[] {
+  const roles = purpose.activeRoles
+  if (roles.length === 0) {
+    // Nothing to file under yet. Said rather than shown as an empty menu,
+    // which reads as a bug.
+    return [{ label: 'No roles yet — add one in Overview', disabled: true }]
+  }
+
+  const items: MenuItem[] = [
+    {
+      label: 'Nothing in particular',
+      checked: !current,
+      run: () => choose(null),
+    },
+    SEP,
+  ]
+
+  for (const role of roles) {
+    const goals = opts.rolesOnly
+      ? []
+      : purpose.goalsOf(role.id).filter((g) => g.status === 'active' || g.status === 'paused')
+    const asRole: Purpose = { type: 'role', id: role.id }
+    if (goals.length === 0) {
+      items.push({
+        label: role.name,
+        dot: role.color,
+        checked: samePurpose(current, asRole),
+        run: () => choose(asRole),
+      })
+      continue
+    }
+    items.push({
+      label: role.name,
+      dot: role.color,
+      items: [
+        {
+          label: `${role.name} itself`,
+          hint: 'no particular goal',
+          checked: samePurpose(current, asRole),
+          run: () => choose(asRole),
+        },
+        SEP,
+        ...goals.map((goal) => ({
+          label: goal.title,
+          icon: 'target' as const,
+          checked: samePurpose(current, { type: 'goal', id: goal.id }),
+          run: () => choose({ type: 'goal', id: goal.id }),
+        })),
+      ],
+    })
+  }
+  return items
 }
 
 /** What the views that draw a task row have to supply themselves. */
@@ -195,6 +268,15 @@ export function blockMenu(block: TimeBlock): MenuItem[] {
       label: 'Track time on it now',
       icon: 'play',
       run: () => calendar.startTimer(block.subject, block.title),
+    },
+    SEP,
+    // An hour's own purpose, overriding whatever it would inherit from its
+    // task and that task's project. Mostly used on an adhoc block: the
+    // dentist appointment that belongs under looking after yourself.
+    {
+      label: 'File under',
+      icon: 'compass',
+      items: purposeItems(block.purpose, (purpose) => calendar.patch(block.id, { purpose })),
     },
     SEP,
     {
@@ -389,7 +471,9 @@ export function readingMenu(reading: Reading, tracker: Tracker): MenuItem[] {
         app.setSection('journal')
         // The journal first: opening an entry the list is not showing leaves
         // the list pointing at some other day's row.
-        await app.selectJournal(reading.journalId)
+        // A reading logged from no page has no journal to select, and the
+        // entry pointer is what this row is offered for anyway.
+        if (reading.journalId) await app.selectJournal(reading.journalId)
         await app.openEntry(reading.entryId!)
       },
     },
@@ -405,7 +489,7 @@ export function readingMenu(reading: Reading, tracker: Tracker): MenuItem[] {
     {
       label: `Hide “${tracker.name}” from the calendar`,
       icon: 'hidden',
-      run: () => app.setTrackerOnCalendar(reading.journalId, tracker.id, false),
+      run: () => tracking.setOnCalendar(tracker.id, false),
     },
   ])
 }
@@ -496,6 +580,12 @@ export function itemMenu(item: Item, hooks: ItemMenuHooks): MenuItem[] {
         icon: 'image',
         run: () => library.fetchCover(item.id),
       },
+    SEP,
+    {
+      label: 'File under',
+      icon: 'compass',
+      items: purposeItems(item.purpose, (purpose) => library.patch(item.id, { purpose })),
+    },
     SEP,
     {
       label: `Delete ${kind?.singular.toLowerCase() ?? 'item'}…`,

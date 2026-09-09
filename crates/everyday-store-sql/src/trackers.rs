@@ -1,25 +1,126 @@
-//! The tracking domain: the readings a journal's trackers produced.
+//! The tracking domain: what you decided to record, and every value of it.
 //!
 //! The clear/sealed split this crate makes everywhere goes furthest here,
 //! and on purpose. `tracker_id`, `local_date`, `at_us` and `value` are all
 //! in the clear, which means every question this domain exists to answer --
 //! a monthly average, a streak, minutes per week -- is a `GROUP BY` over an
 //! index rather than a decryption of the vault. What stays sealed is the
-//! only part that identifies anything: the tracker's *name*, which is not
-//! in this table at all but in the journal record, and the note attached to
-//! a reading. The database says tracker `7f3a...` was `500` at 08:12 on the
-//! 14th and never what `7f3a...` is.
+//! only part that identifies anything: the tracker's *name*, its unit and
+//! its cadence, all inside the definition's payload, and the note attached
+//! to a reading. The database says tracker `7f3a...` was `500` at 08:12 on
+//! the 14th and never what `7f3a...` is.
 
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{JournalId, ReadingId, TrackerId};
-use everyday_core::store::trackers::{ReadingQuery, TrackerDay, TrackerStore, reading_aad};
-use everyday_core::tracker::Reading;
+use everyday_core::store::trackers::{
+    ReadingQuery, TrackerDay, TrackerStore, reading_aad, tracker_aad,
+};
+use everyday_core::tracker::{Reading, Tracker};
 use jiff::civil::Date;
 
 use crate::conn::{SqlExt, Value};
+use crate::purpose::{RecordKind, forget_purposes, set_purpose};
 use crate::{SqlStore, from_us, id_str, to_us, vals};
 
 impl TrackerStore for SqlStore {
+    // ---- definitions ----------------------------------------------------
+
+    fn list_trackers(&self) -> Result<Vec<Tracker>> {
+        let rows = self
+            .conn()
+            .records("SELECT id, data FROM trackers ORDER BY sort_order, created_us", &[])?;
+        self.collect(rows, tracker_aad)
+    }
+
+    fn get_tracker(&self, id: TrackerId) -> Result<Tracker> {
+        let sealed = self
+            .conn()
+            .sealed("SELECT data FROM trackers WHERE id = ?1", &vals![id.to_string()])?
+            .ok_or_else(|| Error::not_found("tracker", id))?;
+        self.unseal(&tracker_aad(id), &sealed)
+    }
+
+    fn put_tracker(&self, t: &Tracker) -> Result<()> {
+        // The name, the unit, the icon and the cadence are all inside
+        // `data`. A database whose trackers table said "sertraline" would
+        // undo the whole point of sealing the readings.
+        let data = self.seal(&tracker_aad(t.id), t)?;
+        let mut conn = self.conn();
+        let mut tx = conn.begin()?;
+        tx.execute(
+            "INSERT INTO trackers (id, archived, sort_order, created_us, updated_us, data)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (id) DO UPDATE SET
+                archived = ?2, sort_order = ?3, created_us = ?4, updated_us = ?5, data = ?6",
+            &vals![
+                t.id.to_string(),
+                t.archived,
+                t.sort_order,
+                to_us(t.created_at),
+                to_us(t.updated_at),
+                data,
+            ],
+        )?;
+        set_purpose(tx.as_mut(), RecordKind::Tracker, &t.id.to_string(), t.purpose.as_ref())?;
+        tx.commit()
+    }
+
+    fn delete_tracker(&self, id: TrackerId) -> Result<u64> {
+        // Both halves in one transaction, which is the whole reason this is
+        // one method rather than two calls the vault makes in order: the
+        // survivable half-done state -- a definition whose history is gone,
+        // and not a year of numbers nothing can name -- stops being a
+        // question anyone has to reason about.
+        let mut conn = self.conn();
+        let mut tx = conn.begin()?;
+        let removed =
+            tx.execute("DELETE FROM readings WHERE tracker_id = ?1", &vals![id.to_string()])?;
+        tx.execute("DELETE FROM trackers WHERE id = ?1", &vals![id.to_string()])?;
+        forget_purposes(tx.as_mut(), RecordKind::Tracker, &[id.to_string()])?;
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    fn merge_trackers(&self, from: TrackerId, into: TrackerId) -> Result<u64> {
+        // A read-modify-reseal per reading, for the reason
+        // `detach_readings_from` does one: `tracker_id` exists twice, as the
+        // clear column the index is built on and inside the sealed payload,
+        // and updating only the column would leave the record disagreeing
+        // with itself. The sealed copy is the one a restore would believe.
+        //
+        // Affordable because of what it operates on: the history of one
+        // tracker somebody is tidying up, once.
+        let rows = self.conn().records(
+            "SELECT id, data FROM readings WHERE tracker_id = ?1",
+            &vals![from.to_string()],
+        )?;
+        let readings: Vec<Reading> = self.collect(rows, reading_aad)?;
+        let resealed: Vec<(ReadingId, Vec<u8>)> = readings
+            .into_iter()
+            .map(|mut r| {
+                r.tracker_id = into;
+                let data = self.seal(&reading_aad(r.id), &r)?;
+                Ok((r.id, data))
+            })
+            .collect::<Result<_>>()?;
+
+        let moved = resealed.len() as u64;
+        let mut conn = self.conn();
+        let mut tx = conn.begin()?;
+        for (id, data) in resealed {
+            tx.execute(
+                "UPDATE readings SET tracker_id = ?2, data = ?3 WHERE id = ?1",
+                &vals![id.to_string(), into.to_string(), data],
+            )?;
+        }
+        tx.execute("DELETE FROM trackers WHERE id = ?1", &vals![from.to_string()])?;
+        forget_purposes(tx.as_mut(), RecordKind::Tracker, &[from.to_string()])?;
+        tx.commit()?;
+        Ok(moved)
+    }
+
+    // ---- readings -------------------------------------------------------
+
     fn list_readings(&self, query: &ReadingQuery) -> Result<Vec<Reading>> {
         let (where_sql, args) = where_clause(query);
         let mut sql = format!("SELECT id, data FROM readings WHERE {where_sql}");
@@ -58,7 +159,7 @@ impl TrackerStore for SqlStore {
                 at_us = ?6, value = ?7, created_us = ?8, updated_us = ?9, data = ?10",
             &vals![
                 r.id.to_string(),
-                r.journal_id.to_string(),
+                id_str(r.journal_id),
                 r.tracker_id.to_string(),
                 id_str(r.entry_id),
                 r.local_date.to_string(),
@@ -82,9 +183,36 @@ impl TrackerStore for SqlStore {
             .execute("DELETE FROM readings WHERE tracker_id = ?1", &vals![tracker.to_string()])
     }
 
-    fn delete_readings_in(&self, journal: JournalId) -> Result<u64> {
-        self.conn()
-            .execute("DELETE FROM readings WHERE journal_id = ?1", &vals![journal.to_string()])
+    fn detach_readings_in(&self, journal: JournalId) -> Result<u64> {
+        // The same read-modify-reseal `detach_readings_from` does for an
+        // entry, and for the same reason: `journal_id` exists as a clear
+        // column and inside the sealed payload, and a row where the two
+        // disagree is a row a restore would read differently.
+        let rows = self.conn().records(
+            "SELECT id, data FROM readings WHERE journal_id = ?1",
+            &vals![journal.to_string()],
+        )?;
+        let readings: Vec<Reading> = self.collect(rows, reading_aad)?;
+        let resealed: Vec<(ReadingId, Vec<u8>)> = readings
+            .into_iter()
+            .map(|mut r| {
+                r.journal_id = None;
+                let data = self.seal(&reading_aad(r.id), &r)?;
+                Ok((r.id, data))
+            })
+            .collect::<Result<_>>()?;
+
+        let changed = resealed.len() as u64;
+        let mut conn = self.conn();
+        let mut tx = conn.begin()?;
+        for (id, data) in resealed {
+            tx.execute(
+                "UPDATE readings SET journal_id = NULL, data = ?2 WHERE id = ?1",
+                &vals![id.to_string(), data],
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed)
     }
 
     /// The aggregate, done where the data is.

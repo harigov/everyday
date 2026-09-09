@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -87,7 +87,7 @@ pub fn migrate(
 
 /// Every migration step, in order. Index 0 is version 1.
 pub fn steps(d: Dialect) -> Vec<Vec<String>> {
-    vec![v1(d), v2(d), v3(d), v4(d), v5(d), v6(d)]
+    vec![v1(d), v2(d), v3(d), v4(d), v5(d), v6(d), v7(d)]
 }
 
 /// The `blobs` table, for a backend that keeps attachments in the database.
@@ -483,6 +483,174 @@ fn v6(d: Dialect) -> Vec<String> {
              )"
         ),
         "CREATE INDEX IF NOT EXISTS memories_by_created ON memories (created_us)".into(),
+    ]
+}
+
+/// Version 7: purpose -- the roles you play, the goals under them, and the
+/// pointer every other record now carries.
+///
+/// The pointer is a **side table** rather than a pair of columns on each of
+/// the five tables that can carry one, and that is worth explaining because
+/// two columns on `tasks` would obviously be faster to read.
+///
+/// Every step in this file is additive and idempotent: `CREATE TABLE IF NOT
+/// EXISTS` and nothing else. That is not a stylistic preference, it is what
+/// makes [`migrate`] safe to re-run, and it has to be re-runnable because the
+/// recorded version is only advanced once *every* step has landed -- so a
+/// process that dies between a step's commit and that final write replays the
+/// step on the next open. `ALTER TABLE ... ADD COLUMN` cannot be written
+/// idempotently in SQL both engines accept: Postgres has `IF NOT EXISTS` and
+/// SQLite does not, and a step that differs between the two dialects is
+/// exactly what `the_two_dialects_agree_about_everything_but_types` exists to
+/// prevent. So the pointer goes in a table of its own, where creating it is
+/// `IF NOT EXISTS` like everything else here.
+///
+/// The cost is three index lookups in
+/// [`time_by_purpose`](everyday_core::store::purpose::PurposeStore::time_by_purpose)
+/// instead of three column reads. The table is keyed by `(record_kind,
+/// record_id)` and holds a row only for records that actually carry a
+/// purpose, which in a real vault is a handful of projects and almost
+/// nothing else -- the whole point of inheritance is that you set it once
+/// high up. A join against a few hundred rows on a covering primary key is
+/// not the thing that will make that report slow.
+///
+/// A calendar's role lives here too, as a row whose `purpose_kind` is
+/// `role` -- a feed serves a role rather than one outcome, and giving it the
+/// same home as everything else means one table to sweep and one shape to
+/// reason about instead of a sixth column somewhere.
+///
+/// The sealed payload remains the source of truth for a record's purpose;
+/// this table is an *index* over what those payloads say, in the same sense
+/// that `entries.local_date` is an index over what the entry says. Reading
+/// one task never touches it. Only the reports do.
+///
+/// `trackers` is the other half of a change that started in version 5. The
+/// readings have been a table since then; their definitions were a field
+/// inside the sealed journal record, which is what made a tracker belong to
+/// one journal. Here they become records of their own, so a habit can be the
+/// measure of a goal and can be shown on whichever journals you like.
+///
+/// The clear/sealed split is the usual one. What the new tables leave
+/// readable is what an index is built from -- which role a goal is under,
+/// its status, its horizon, the ordering, the archived flag. Every word is
+/// sealed. The file can say that goal `7f3a` is active under role `91c0`
+/// and took three hours on Tuesday; it cannot say that `91c0` is "parent".
+fn v7(d: Dialect) -> Vec<String> {
+    let (blob, int, boolean, f) = (d.blob(), d.int(), d.boolean(), d.bool_default(false));
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS roles (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 archived    {boolean} NOT NULL DEFAULT {f},
+                 sort_order  {int} NOT NULL DEFAULT 0,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS goals (
+                 id           TEXT    PRIMARY KEY NOT NULL,
+                 role_id      TEXT    NOT NULL,
+                 status       TEXT    NOT NULL,
+                 horizon      TEXT,
+                 sort_order   {int} NOT NULL DEFAULT 0,
+                 created_us   {int} NOT NULL,
+                 updated_us   {int} NOT NULL,
+                 completed_us {int},
+                 data         {blob} NOT NULL
+             )"
+        ),
+        // The Overview's sidebar: one role's goals, open ones first. There
+        // is deliberately no foreign key to `roles` -- a reference invites
+        // the cascade this domain refuses. See `PurposeStore::delete_role`.
+        "CREATE INDEX IF NOT EXISTS goals_by_role ON goals (role_id, status)".into(),
+        // The pointer. One row per record that carries one; no row at all is
+        // the common case and means unattributed.
+        "CREATE TABLE IF NOT EXISTS purposes (
+                 record_kind  TEXT NOT NULL,
+                 record_id    TEXT NOT NULL,
+                 purpose_kind TEXT NOT NULL,
+                 purpose_id   TEXT NOT NULL,
+                 PRIMARY KEY (record_kind, record_id)
+             )"
+        .into(),
+        // The reverse direction: everything filed against one goal, which is
+        // what `goal_activity` walks.
+        "CREATE INDEX IF NOT EXISTS purposes_by_target
+             ON purposes (purpose_kind, purpose_id, record_kind)"
+            .into(),
+        // Tracker definitions, out of the journal that used to hold them.
+        format!(
+            "CREATE TABLE IF NOT EXISTS trackers (
+                 id           TEXT    PRIMARY KEY NOT NULL,
+                 archived     {boolean} NOT NULL DEFAULT {f},
+                 sort_order   {int} NOT NULL DEFAULT 0,
+                 created_us   {int} NOT NULL,
+                 updated_us   {int} NOT NULL,
+                 data         {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS trackers_by_order ON trackers (sort_order, created_us)".into(),
+        // `readings`, rebuilt so a reading need not name a journal.
+        //
+        // Version 5 declared `journal_id` `NOT NULL` because a tracker was a
+        // field inside one journal's sealed record, so a reading always had
+        // one. Trackers are their own records from this version on, and a
+        // reading logged from the Overview -- from no journal page at all --
+        // has no journal to name. SQLite cannot drop a `NOT NULL`, so the
+        // column is widened the only way it can be.
+        //
+        // This is the one place in the file that does not merely add, and it
+        // is still idempotent, which is what the rest of the file's rule
+        // actually asks for. Replayed against a database where it has
+        // already run: the create is a no-op on a table that was renamed
+        // away and so is made afresh, the insert copies out of the current
+        // `readings`, the drop takes it, and the rename puts the copy back
+        // -- the same state again. The interrupted-halfway case cannot
+        // arise, because the whole step is one transaction and DDL is
+        // transactional in both engines.
+        //
+        // Postgres would accept `ALTER COLUMN ... DROP NOT NULL` and does
+        // not get it: one shape of the schema in both engines is worth more
+        // than one statement saved, and the drift guard below is what keeps
+        // that true.
+        format!(
+            "CREATE TABLE IF NOT EXISTS readings_v7 (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 journal_id  TEXT,
+                 tracker_id  TEXT    NOT NULL,
+                 entry_id    TEXT,
+                 local_date  TEXT    NOT NULL,
+                 at_us       {int},
+                 value       {real} NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )",
+            real = d.real()
+        ),
+        // Every column named on both sides, so a later reordering of one
+        // cannot silently shift the data into the wrong columns.
+        "INSERT INTO readings_v7
+             (id, journal_id, tracker_id, entry_id, local_date, at_us, value,
+              created_us, updated_us, data)
+         SELECT id, journal_id, tracker_id, entry_id, local_date, at_us, value,
+                created_us, updated_us, data
+         FROM readings"
+            .into(),
+        "DROP TABLE IF EXISTS readings".into(),
+        "ALTER TABLE readings_v7 RENAME TO readings".into(),
+        // Rebuilt after the copy rather than before it: a bulk insert into
+        // an unindexed table is one append per row instead of four B-tree
+        // updates.
+        "CREATE INDEX IF NOT EXISTS readings_by_tracker
+             ON readings (tracker_id, local_date, at_us)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS readings_by_day ON readings (local_date, at_us)".into(),
+        "CREATE INDEX IF NOT EXISTS readings_by_journal ON readings (journal_id, local_date)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS readings_by_entry ON readings (entry_id)".into(),
     ]
 }
 

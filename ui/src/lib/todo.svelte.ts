@@ -52,7 +52,7 @@ export type Scope =
   | { kind: 'project'; id: ProjectId }
 
 export type View = 'list' | 'board'
-export type GroupBy = 'none' | 'status' | 'due' | 'priority'
+export type GroupBy = 'none' | 'status' | 'due' | 'priority' | 'purpose'
 
 /**
  * The status filter, as the filter bar offers it.

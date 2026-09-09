@@ -1,7 +1,7 @@
 # Every Day
 
-A private journal, a todo app, a calendar and a library for macOS, Linux and
-Windows. Rich text with photos and video, projects and tasks on a list or a
+A private journal, a todo app, a calendar, a library and a place where they
+all add up, for macOS, Linux and Windows. Rich text with photos and video, projects and tasks on a list or a
 board, your week with the plan and the record side by side, a shelf for
 everything you mean to read and watch and cook, storage on this computer or
 on a Postgres server you choose, and encryption you actually hold the key
@@ -44,15 +44,16 @@ widgets". In exchange you get native *text*, a mature editor, and one
 codebase. For a journal — an app that is essentially a text canvas — that is
 the right side of the trade.
 
-## Four apps, one vault
+## Five apps, one vault
 
 A bar down the left edge switches between **Journal**, **Todo**,
-**Calendar** and **Library** (`Ctrl/Cmd J` cycles); right-clicking one of
-them offers what that app can start from a standing stop — the same actions
-the tray offers, from the same registration. They share a vault, a password
-and a lock; they share nothing else — except that the calendar is a view over
-what the journal and the todo app already store, which is the whole point of
-it.
+**Calendar**, **Library** and **Overview** (`Ctrl/Cmd J` cycles);
+right-clicking one of them offers what that app can start from a standing
+stop — the same actions the tray offers, from the same registration. They
+share a vault, a password and a lock; they share nothing else — except that
+two of them are views over what the others already store. The calendar draws
+the journal's and the todo app's records on one grid, and the Overview says
+what all four amounted to. That is the whole point of both.
 
 The bar sits outside the sidebar because it is not any one app's navigation:
 everything to the right of it changes completely when one is pressed, and it
@@ -81,9 +82,10 @@ The todo app has projects, tasks and subtasks — a subtask is just a task with
 a parent, so the two levels the interface offers are a UI decision rather
 than a schema. Everything carries a title, description, due date and time,
 start date, priority, effort estimate and tags. There is a **list** view,
-grouped by due date, status or priority, and a **kanban board** whose columns
-are the six task statuses. Tags go on projects, tasks and blocks of time
-alike, which is what a later analytics view will count.
+grouped by due date, status, priority or **goal**, and a **kanban board** whose
+columns are the six task statuses. Tags go on projects, tasks and blocks of
+time alike; a *purpose* goes on all three too, which is what the Overview
+counts — see [roles and goals](#roles-goals-and-where-the-week-went).
 
 Capture is the part that had to be fast, so adding a task is one line and one
 Enter, and the line carries its own fields:
@@ -457,10 +459,70 @@ and one timestamp is what makes "average pain by weekday", "current streak"
 and "minutes exercised per week" ordinary queries rather than four parallel
 schemas each needing their own.
 
-What you are recording is a **journal setting**, so the definitions live
-inside the journal record and are sealed with it: a tracker's *name* is as
-private as the entries beside it. The readings are a table of their own,
+A tracker is a **record of its own**, like a library kind — not a field
+inside one journal. It was the latter for a while, on the argument that "what
+am I tracking" is a setting of the journal, and that was wrong in the one way
+that mattered: it made a tracker *belong* to one, so "meditate" had to choose
+between the work journal and the personal one, and a habits view had to reach
+through every journal to find anything. What stays on a journal is the only
+part that really was a per-journal setting — which chips that page offers,
+ticked in its settings.
+
+Both halves are sealed. A tracker's *name*, its unit and its cadence are as
+private as the entries beside them; the readings are a table of their own,
 because there are thousands of them and their whole purpose is to be scanned.
+The database says tracker `7f3a…` was `500` at 08:12 on the 14th and never
+what `7f3a…` is.
+
+### A habit has a cadence, not just a target
+
+A daily `target` drives the ring on a chip and cannot express the commonest
+habit there is: three times a week. That gap is not academic — a streak
+counted against a daily target reads every rest day as a failure, which is
+exactly the shape of habit tracking that makes people stop. So a tracker can
+carry a **cadence**: a count and a period. Streaks and hit rates are counted
+in periods, the period you are in the middle of is never counted as a failure,
+and the arithmetic lives in `ui/src/lib/habits.ts` with a test beside it,
+because every way it can be wrong is a discouraging number rather than an
+error.
+
+### Recording something there is no chip for
+
+A structured note is only worth making if making it is cheaper than writing
+the sentence. "Spent an hour in the pool" takes four seconds; a trip to a
+settings dialog to define a Swimming tracker before you can record the hour
+takes a minute and does not happen — so the number is never recorded, and
+"did my mood improve after pool days" stays unanswerable forever.
+
+So the tracker is created **by** the act of recording. A plus at the end of
+the strip, one field, one Enter:
+
+```
+  swim 60min          60 minutes, of a thing that did not exist yet
+  mood 7/10           a severity out of ten
+  floss               done
+  ibuprofen 400mg     400 mg
+```
+
+The name is matched against what already exists first, case insensitively, so
+`swim` on Friday finds the Swimming made on Monday rather than starting a
+second history. Only an unmatched name creates, and what it creates is read
+off the line — a time unit becomes minutes, any other unit an amount in that
+unit, `n/m` a scale out of m, and a bare name a habit.
+
+A **dose is never guessed**. A dose and an amount store the same number and
+differ only in how a day adds up, so guessing wrong is invisible until a chart
+is drawn; `400mg` is an amount in mg, which is true, where a dose is an
+interpretation. Promoting one is a click.
+
+The line above the button is what teaches the grammar. A hint says what is
+possible and gets read once; the preview says what *this* line means and gets
+read every time — `New tracker "swim" (in min) — 60` is the only moment a
+wrong guess can be caught before it is made, and a bare number gets
+`No tracker named in that` rather than being logged against nothing. Nothing
+typed is ever swallowed, exactly as an unrecognised quick-add token stays in a
+task's title. Two lazily made trackers that turn out to be one thing are
+**merged** in the Overview, which keeps both histories.
 
 ### `at` is optional, and that is the point
 
@@ -502,10 +564,10 @@ time is for. A run that should do both is two records.
 ### Specifying it
 
 Journal settings (the cog beside a journal, or right-click) is where both
-halves live: the journal's name, symbol and colour, and what it tracks. A
-tracker is a name, one of four kinds, an icon and a colour, with the fiddly
-fields — unit, usual amount, daily goal — appearing only once a kind that
-needs them is chosen. There is also a shelf of ready-made ones, because
+halves live: the journal's name, symbol and colour, and which of the vault's
+trackers it draws — the tick beside each row. A tracker is a name, one of four
+kinds, an icon and a colour, with the fiddly fields — unit, usual amount,
+daily goal — appearing only once a kind that needs them is chosen. There is also a shelf of ready-made ones, because
 answering five questions before recording anything is how a good feature gets
 abandoned at the form.
 
@@ -519,6 +581,146 @@ Tracking needs a backend that can hold readings, so the interface reads
 `capabilities.trackers` and hides the whole feature — including the settings
 that define it — on a backend that cannot. Both shipped backends can; the
 check exists so that the next one need not.
+
+## Roles, goals, and where the week went
+
+Four apps record what happened. None of them can say what it amounted to.
+The todo app knows a project took nine hours and not that the nine hours were
+*work*; the journal knows you wrote every evening for a fortnight and not what
+you were writing *towards*; the calendar knows Tuesday was full without
+knowing which part of you filled it. Answered by project, "where did my week
+go" is a list of jobs. It is not a life.
+
+So there are two records above all of that:
+
+```
+  Role ──── Goal ──── (anything: a project, a task, an hour, an entry)
+ (Parent)  (Viya rides without stabilisers)
+```
+
+A **role** is who you are being: parent, engineer, partner, yourself. A
+handful of them, changing about once a year, and they are the axis every
+balance chart is drawn against. A **goal** is an outcome under a role, with a
+status and a soft horizon. There are as many as you like and they get done or
+dropped. Folding the two together would mean either a permanent goal or a
+role that finishes, and neither is a thing.
+
+**Neither of them is a project.** A project is a body of work with tasks
+under it; a goal is the reason work exists. Most goals have no project at all
+— "read twelve books this year" is a shelf, "meditate daily" is a tracker,
+"write more" is a journal — which is why goals are not a level above projects
+in the todo app's tree. Three quarters of them would never reach it.
+
+### One pointer, on everything, never required
+
+A **purpose** names a goal, or a role directly. The second is not a degraded
+case of the first: a great deal of being a parent serves no particular
+outcome and is still the thing you most want counted. It sits on a project, a
+task, a block of time, an entry, a shelf item and a tracker, and it is
+optional on all of them — an interface that demanded one on capture is an
+interface people stop capturing into, which would cost the vault the very
+records the reports are made of.
+
+A subscribed **calendar** takes a role rather than a purpose. A work feed is
+work, and the forty meetings on it are not each yours to file; one click there
+attributes a year of somebody else's claims on your time, which is the
+cheapest large win in the whole report.
+
+Purpose **inherits**: a block's own, else its task's, else that task's
+project's. Set it once high up and everything under it is attributed, which is
+what keeps the pointer from being a chore. So the highest-value place in the
+application to file something is a project's right-click menu, and the todo
+app's list can group by goal — which buckets by the *resolved* purpose, so a
+task under a filed project appears in that project's section.
+
+### The Overview
+
+The fifth app. It owns the roles and the goals and spends the rest of its time
+asking the other four domains what happened. Four panes, one question each:
+
+```
+  Today    what is on, what is due, what has been recorded, today's habits
+  Week     where the hours went, by role, plan beside record
+  Goals    what you said you wanted, quietest first
+  Habits   what is holding, and what has stopped
+```
+
+The week is drawn as **bars from a common baseline, one row per role** —
+not a stacked column per day. That is not taste. The question is "how much of
+my week went to each of these", which is a magnitude comparison across
+categories; a stack answers "what was Tuesday made of", which is a different
+and lesser question. It also settles a real accessibility problem: role
+colours come from the journal palette, and two of its eight hues separate well
+for normal vision and badly for protanopia. In a stack, colour is the only
+identity channel and that would matter. Here every row carries its own name and
+icon, so the colour reinforces rather than carries.
+
+The bar is what you **recorded**; the hairline beneath it is what you
+**planned** — the comparison the whole planned/actual split exists to make.
+Meetings from subscribed calendars are a paler segment after a gap, counted
+beside your own record and never added to it: an event is somebody's claim on
+an hour and a block is your record of one, and summing them double-counts
+every meeting you also logged.
+
+Two things are drawn that a tidier report would leave out, and both are the
+point. **Time filed against nothing** gets its own row, however large: most of
+a life is not booked, and a chart that dropped that share would be flattering
+rather than useful. And a **role with nothing recorded** keeps its row at zero,
+because its absence is the finding.
+
+Which leads to the one thing this app can say that no other can: *a role with
+an open goal and nothing recorded against it for a fortnight.* Working that out
+means reading the journal, the todo app, the calendar and the shelf, and no
+single app sees all four. It is said once at the top of the week, plainly, and
+never as a notification.
+
+### What is refused, and what is not
+
+Deleting a **role** is refused while any goal still points at it. That is the
+opposite of every other parent in the vault — a shelf takes its items, a
+project takes its tasks — and the difference is deliberate. An item is *made
+of* its shelf: without the kind it has no fields, no verbs and nowhere to be
+drawn. A goal is not made of its role in that way; it is a thing you wanted,
+with a year of attributed hours behind it, and one click on a sidebar row is
+the wrong distance from losing all of that. The store counts first and says
+how many are in the way, so archiving can be offered instead — which is what
+somebody reorganising their roles actually meant.
+
+Deleting a **goal** is allowed, and what pointed at it is left alone. An
+unresolvable pointer already reads as no purpose at all, so a block whose goal
+is gone reports as unattributed; rewriting every task, block, entry and item
+that mentioned it would be a great deal of writing to make one report row
+shorter.
+
+And there are **no default roles**. The library seeds its shelves on unlock,
+because a list of what people read is a guess. A list of what a life is made
+of is a claim, and an application that wrote one unasked would be telling
+somebody who they are. The empty screen offers a handful behind a button, and
+somebody who deletes the lot never sees it again.
+
+### The pointer is a side table
+
+Two columns on `tasks` would obviously be faster to read. They are not
+possible. Every step in the schema is additive and idempotent, because the
+recorded version only advances once all of them land — so a process that dies
+between a step's commit and that final write replays the step on the next
+open. `ALTER TABLE … ADD COLUMN` cannot be written idempotently in SQL both
+engines accept: Postgres has `IF NOT EXISTS` and SQLite does not, and a step
+that differs between the dialects is exactly what the drift guard exists to
+prevent.
+
+So the pointer lives in `purposes`, keyed by `(record kind, record id)`,
+holding a row only for records that carry one — which, given inheritance, is a
+handful of projects and almost nothing else. The sealed payload stays the
+source of truth; this table is an *index* over what those payloads say, in the
+same sense `entries.local_date` is. Reading one task never touches it. Only
+the reports do.
+
+`time_by_purpose` then resolves the whole inheritance chain in one grouped
+scan over clear columns, so a year of blocks costs an index scan and opens no
+ciphertext at all. What the file can say is that goal `7f3a…` is active under
+role `91c0…` and took three hours on Tuesday. It cannot say that `91c0…` is
+"parent".
 
 ## Layout
 
@@ -596,9 +798,17 @@ That is the trade the whole tracking domain is built on — a year of readings
 is thousands of rows whose entire purpose is to be summed, averaged and
 counted, and sealing the number would make every chart a full decrypt of the
 vault. What stays sealed is the part that identifies anything: the tracker's
-*name*, which is not in that table at all but inside the journal record. The
+*name*, its unit and its cadence, all inside its own record's payload. The
 file says that tracker `7f3a…` was `500` at 08:12 on the 14th, and never that
 `7f3a…` is a drug.
+
+Roles and goals make the same trade one step up. In the clear: which role a
+goal is under, its status, its horizon, the ordering — and, in the `purposes`
+table, which record is filed against which. Sealed: every name, title and
+note. So the file says that goal `7f3a…` is active under role `91c0…` and took
+three hours on Tuesday, and never that `91c0…` is "parent". That is what makes
+the balance report one grouped scan rather than a decryption of the vault, and
+it is the same argument every table above makes.
 
 If that trade is unacceptable, the storage abstraction is the answer: a
 backend that seals the index columns too — at the cost of full scans — drops
@@ -899,8 +1109,8 @@ with what the platform or the webview has already taken.
 
 | | |
 |---|---|
-| `G` then `J` / `T` / `C` / `L` | journal, todo, calendar, library |
-| `C` | start the next thing — an entry, the task capture line, an hour set aside, the "add to shelf" field |
+| `G` then `J` / `T` / `C` / `L` / `O` | journal, todo, calendar, library, overview |
+| `C` | start the next thing — an entry, the task capture line, an hour set aside, the "add to shelf" field, a goal |
 | `/` | search this app |
 | `A` | the assistant |
 | `?` | this list |
@@ -942,13 +1152,20 @@ area (Windows) or the system tray (Linux), without going to the window first:
   ─────────────────
   Add to library
   ─────────────────
+  How today is going
+  Where the week went
+  Record a reading
+  Goals
+  ─────────────────
   Open Every Day
   Quit Every Day
 ```
 
 "Add to library" is the one this is really for: something was recommended to
 you while you were doing something else, and it has to land somewhere before
-you forget it.
+you forget it. "Record a reading" is the same argument for a number — you
+have just come back from a swim, and the hour has to be written down before
+the rest of the evening happens.
 
 Choosing one raises the window and leaves the cursor where the typing goes.
 The list is what the open vault can actually do: a vault whose backend has no
@@ -993,19 +1210,30 @@ that appears to do nothing.
 
 ## Right-click
 
-Every list in all four apps carries a context menu, and they are all the same
+Every list in all five apps carries a context menu, and they are all the same
 menu: one panel in the window, opened by whichever row was clicked.
 
 ```
-  entry      star · pin · which journal it is filed under
+  entry      star · pin · which journal it is filed under · what it is for
+  project    open · rename · colour · status · what it is for
   task       status · priority · deadline · project · a subtask
-  block      "this is what happened" · plan or record · track it now
+  block      "this is what happened" · plan or record · track it now ·
+             what that hour was for
   event      set the same hour aside in your own record
-  item       status · rating · favourite — in the shelf's own words, so a
-             restaurant offers "Been" where a book offers "Read"
+  item       status · rating · favourite · what it is for — in the shelf's
+             own words, so a restaurant offers "Been" where a book offers
+             "Read"
+  calendar   hide · refresh · colour · which role the feed serves
   reading    the entry it was recorded under · off the calendar
   chip       record it · clear the day · draw it on the calendar
+  role       add a goal · rename · colour · archive · delete
 ```
+
+"What it is for" is one submenu everywhere it appears, built once in
+`ui/src/lib/menus.ts`: the roles, with their live goals nested under each, and
+"Nothing in particular" always first. Two levels rather than one flat list,
+because flattened, "Parent" and "Viya rides without stabilisers" read as peers
+and they are not.
 
 The empty part of a list has one too — new entry, new task, add a book, how
 to group, which view, which sort. Arrow keys walk them, `→` opens a submenu,
@@ -1028,13 +1256,16 @@ instead.
 ## Status
 
 The core, the SQL backend and both its drivers, the vault lifecycle, search,
-the media pipeline, the todo app, the calendar, the library, tracking and the
-CLI are implemented and tested — 366 tests, plus the shared backend
-conformance suite (run against SQLite always and against a real Postgres
-server on demand) and six dependency-free interface suites (the quick-add
+the media pipeline, the todo app, the calendar, the library, tracking, roles
+and goals, and the CLI are implemented and tested — 480 tests, plus the shared
+backend conformance suite (run against SQLite always and against a real
+Postgres server on demand, and covering all seven domains) and thirteen
+dependency-free interface suites: the quick-add grammar, the quick-track
 grammar, the calendar's grid arithmetic, conflict handling, notifications, the
-library and the tracking arithmetic). The desktop shell and interface are
-complete and the interface builds and typechecks clean.
+library, the tracking arithmetic, the streak and balance arithmetic, the menu
+geometry, the assistant's two loops, the Markdown reader, and the keyboard.
+The desktop shell and interface are complete and the interface builds and
+typechecks clean.
 
 The Postgres backend is a *shared vault*, not a sync service: the write lock
 still means one writer at a time, and two people typing into the same vault at
@@ -1044,7 +1275,8 @@ the CLI; it has not been run against a live Supabase project here, and the
 Supabase-specific parts are the connection string and the pooler warning.
 
 The CLI covers journals only. It is a capture-and-export tool for the journal
-and has not been taught about tasks, calendars, the library or tracking.
+and has not been taught about tasks, calendars, the library, tracking, or
+roles and goals.
 
 Calendar subscriptions are the one part not exercised against a real server
 here, for the obvious reason: the iCalendar reader, the recurrence expansion
@@ -1054,16 +1286,20 @@ the job. The interface's own mock backend (`make ui`) ships two sample
 calendars, one of them deliberately in a failed state, so both paths through
 the "add a calendar" sheet can be seen without a server.
 
-Tracking stores and draws; it does not yet chart. The storage was chosen so
-that it can — `tracker_days` is one `GROUP BY` over a clear index and returns
-a year of any tracker as 365 rows without decrypting anything — but the view
-that plots them is not built, and building it before anyone had a year of
-readings would have been the wrong order.
+Tracking now charts as well as storing: the Overview draws a streak, a hit
+rate and four months a square a day, off `tracker_days` — one `GROUP BY` over
+a clear index that returns a year of any tracker as 365 rows without
+decrypting anything.
 
-Not yet built: an analytics view over the readings above, sync between
-machines, mobile shells, a map view, task recurrence, writing back to a
-subscribed calendar (see above for why not), and importers for Day One's
-export format.
+The one thing the Overview does not have is the inline `#swim 60min` in the
+body of an entry. The popover and the plus chip are the paths that ship;
+parsing it out of prose needs a suggestion plugin in the editor, which is a
+dependency and a third-party notice, and the popover was always the primary
+way in.
+
+Not yet built: sync between machines, mobile shells, a map view, task
+recurrence, writing back to a subscribed calendar (see above for why not), and
+importers for Day One's export format.
 
 ## The icon on Linux
 

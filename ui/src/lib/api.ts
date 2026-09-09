@@ -14,6 +14,7 @@ import type {
   BlockKind,
   BlockQuery,
   BlockSubject,
+  BalanceReport,
   Bootstrap,
   Conversation,
   ConversationId,
@@ -28,6 +29,10 @@ import type {
   EntrySummary,
   EventId,
   EventQuery,
+  Goal,
+  GoalActivity,
+  GoalId,
+  GoalQuery,
   Item,
   ItemId,
   ItemQuery,
@@ -50,6 +55,9 @@ import type {
   Reading,
   ReadingId,
   ReadingQuery,
+  Role,
+  RoleId,
+  RoleInfo,
   SearchHit,
   SearchRequest,
   SearchResult,
@@ -431,15 +439,73 @@ export const api = {
    */
   fetchImage: (url: string) => invoke<string>('fetch_image', { url }),
 
+  // ── Roles and goals ────────────────────────────────────────────────
+  //
+  // Available only when `status.capabilities.goals` is true. The two records
+  // are small; the interesting call is `balance`, which is the whole reason
+  // the purpose pointer exists.
+
+  roles: () => invoke<RoleInfo[]>('list_roles'),
+
+  /** Mints an unsaved role; fill it in and pass it to `saveRole`. */
+  newRole: (name: string) => invoke<Role>('new_role', { name }),
+  saveRole: (role: Role) => invoke<void>('save_role', { role }),
+
+  /**
+   * Delete a role. Refused, with a message naming the count, while goals
+   * still point at it — unlike a project, which takes its tasks with it.
+   */
+  deleteRole: (id: RoleId) => invoke<void>('delete_role', { id }),
+
+  /**
+   * Offer a starting set of roles, and answer 0 if there are any already.
+   *
+   * Never called on unlock, unlike the library's shelves: a list of what a
+   * life is made of is a claim, and writing one unasked would be this
+   * application telling somebody who they are.
+   */
+  seedRoles: () => invoke<number>('seed_roles'),
+
+  goals: (query: GoalQuery = {}) => invoke<Goal[]>('list_goals', { query }),
+  goal: (id: GoalId) => invoke<Goal>('get_goal', { id }),
+  newGoal: (roleId: RoleId, title: string) => invoke<Goal>('new_goal', { roleId, title }),
+  saveGoal: (goal: Goal) => invoke<void>('save_goal', { goal }),
+  saveGoals: (goals: Goal[]) => invoke<void>('save_goals', { goals }),
+  deleteGoal: (id: GoalId) => invoke<void>('delete_goal', { id }),
+
+  /**
+   * Minutes per purpose over a window, and the meetings somebody else
+   * booked, in one call — the Overview draws them together, and two round
+   * trips would let one arrive without the other.
+   */
+  balance: (from: string, to: string) => invoke<BalanceReport>('time_by_purpose', { from, to }),
+
+  goalActivity: (id: GoalId) => invoke<GoalActivity>('goal_activity', { id }),
+
   // ── The tracking domain ────────────────────────────────────────────
   //
-  // Available only when `status.capabilities.trackers` is true. Note the
-  // split: a tracker's *definition* is a field on its journal and is saved
-  // with `saveJournal`, so there is no `saveTracker` here. What is here is
-  // minting one and everything to do with the readings it produces.
+  // Available only when `status.capabilities.trackers` is true. Both halves
+  // are records: a definition is its own row, and which journals draw its
+  // chip is a list of ids on each journal.
 
-  /** Mints an unsaved tracker; fill it in and save the journal holding it. */
+  /** Mints an unsaved tracker; fill it in and pass it to `saveTracker`. */
   newTracker: (name: string, kind: TrackerKind) => invoke<Tracker>('new_tracker', { name, kind }),
+
+  /**
+   * Every tracker in the vault.
+   *
+   * Also where a vault written before trackers became records has its old
+   * definitions moved out of its journals — once, on the first call.
+   */
+  trackers: () => invoke<Tracker[]>('list_trackers'),
+  saveTracker: (tracker: Tracker) => invoke<void>('save_tracker', { tracker }),
+
+  /**
+   * Fold one tracker into another, keeping both histories, and answer how
+   * many readings moved. The tidy-up for a name typed two ways.
+   */
+  mergeTrackers: (from: TrackerId, into: TrackerId) =>
+    invoke<number>('merge_trackers', { from, into }),
 
   readings: (query: ReadingQuery) => invoke<Reading[]>('list_readings', { query }),
 
@@ -456,11 +522,12 @@ export const api = {
    * happened.
    */
   logReading: (opts: {
-    journalId: JournalId
     trackerId: TrackerId
     value: number
     date: string
     at?: string | null
+    /** Where it was ticked. Both absent for a reading logged from anywhere else. */
+    journalId?: JournalId | null
     entryId?: EntryId | null
   }) => invoke<Reading>('log_reading', opts),
 
@@ -469,12 +536,11 @@ export const api = {
   deleteReading: (id: ReadingId) => invoke<void>('delete_reading', { id }),
 
   /**
-   * Remove a tracker from its journal *and* every reading it ever made,
-   * returning how many went. Archiving — a flag on the definition, saved
-   * with the journal — is the non-destructive half of this pair.
+   * Delete a tracker *and* every reading it ever made, returning how many
+   * went. Archiving — a flag on the definition — is the non-destructive
+   * half of this pair, and the usual answer.
    */
-  deleteTracker: (journalId: JournalId, trackerId: TrackerId) =>
-    invoke<number>('delete_tracker', { journalId, trackerId }),
+  deleteTracker: (id: TrackerId) => invoke<number>('delete_tracker', { id }),
 
   // ── The assistant ──────────────────────────────────────────────────
   //

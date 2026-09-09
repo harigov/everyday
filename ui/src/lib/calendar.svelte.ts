@@ -23,6 +23,7 @@ import { app, errorMessage, handle, isLocked } from './state.svelte'
 import { todo } from './todo.svelte'
 import { TRAY_ORDER, tray } from './tray.svelte'
 import { durationMinutes, formatValue } from './tracker'
+import { tracking } from './tracking.svelte'
 import {
   MIN_BLOCK_MINUTES,
   SNAP_MINUTES,
@@ -49,6 +50,7 @@ import type {
   Project,
   ProjectId,
   Reading,
+  RoleId,
   Task,
   TaskId,
   TimeBlock,
@@ -437,10 +439,8 @@ class CalendarState {
    */
   get drawnTrackers(): Map<string, Tracker> {
     const out = new Map<string, Tracker>()
-    for (const journal of app.journals) {
-      for (const tracker of journal.trackers) {
-        if (tracker.onCalendar && !tracker.archived) out.set(tracker.id, tracker)
-      }
+    for (const tracker of tracking.trackers) {
+      if (tracker.onCalendar && !tracker.archived) out.set(tracker.id, tracker)
     }
     return out
   }
@@ -1187,6 +1187,25 @@ class CalendarState {
     const calendar = this.calendars.find((c) => c.id === id)
     if (!calendar) return
     calendar.color = color
+    try {
+      await api.saveCalendar($state.snapshot(calendar))
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
+  /**
+   * Say which role a feed serves.
+   *
+   * A role and not a purpose: a work calendar is work, and the forty
+   * meetings on it are not each yours to file under an outcome. One click
+   * here attributes a year of somebody else's claims on your time, which is
+   * the cheapest large win in the balance report.
+   */
+  async setCalendarRole(id: CalendarId, roleId: RoleId | null) {
+    const calendar = this.calendars.find((c) => c.id === id)
+    if (!calendar) return
+    calendar.roleId = roleId
     try {
       await api.saveCalendar($state.snapshot(calendar))
     } catch (e) {

@@ -15,6 +15,8 @@ export type ReadingId = string
 export type ConversationId = string
 export type MessageId = string
 export type MemoryId = string
+export type RoleId = string
+export type GoalId = string
 
 /** A ProseMirror document. Opaque to everything but the editor. */
 export type RichDoc = { type: 'doc'; content?: unknown[] }
@@ -27,10 +29,143 @@ export interface Journal {
   icon: string
   description: string
   sortOrder: number
-  /** What this journal records beside its entries. See `Tracker`. */
-  trackers: Tracker[]
+  /**
+   * Which of the vault's trackers this journal draws chips for.
+   *
+   * Ids, not definitions. A tracker is a vault record — see `Tracker` — so
+   * "meditate" does not have to belong to the work journal or the personal
+   * one. What stays here is the only part that really was a per-journal
+   * setting: which chips this page offers.
+   */
+  shownTrackers: TrackerId[]
+  /**
+   * Definitions written by a build before trackers became vault records.
+   *
+   * Moved out on first read and then empty forever. Present only so the
+   * move can happen at all.
+   */
+  trackers?: Tracker[]
   createdAt: string
   updatedAt: string
+}
+
+// ── Purpose: roles and goals ─────────────────────────────────────────────
+//
+// A role is who you are being; a goal is an outcome under one. Every record
+// that represents effort can point at one of the two, and that pointer is
+// what makes "where did my week go, by role" answerable.
+
+/** Who you are being. A handful of these, changing about once a year. */
+export interface Role {
+  id: RoleId
+  name: string
+  /** `#rrggbb`. The axis colour of every balance chart, so it is identity. */
+  color: string
+  /** A short emoji or glyph. */
+  icon: string
+  notes: string
+  /** Retired: kept for its history, gone from the pickers. */
+  archived: boolean
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+}
+
+/** A role with the two counts the sidebar draws under its name. */
+export interface RoleInfo extends Role {
+  goals: number
+  open: number
+}
+
+export type GoalStatus = 'active' | 'paused' | 'done' | 'dropped'
+
+export const GOAL_STATUSES: GoalStatus[] = ['active', 'paused', 'done', 'dropped']
+
+/** Paused counts as open: it is on the books, just not this month. */
+export function goalIsOpen(status: GoalStatus): boolean {
+  return status === 'active' || status === 'paused'
+}
+
+/** An outcome you want, under a role. */
+export interface Goal {
+  id: GoalId
+  /** Every goal belongs to exactly one role. */
+  roleId: RoleId
+  title: string
+  notes: string
+  status: GoalStatus
+  /**
+   * When you would like this to be true by. Soft, deliberately: nothing is
+   * ever overdue against it and no notification is raised. A goal that
+   * nagged would be a task.
+   */
+  horizon?: string | null
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+  completedAt?: string | null
+}
+
+/**
+ * What a record is *for*.
+ *
+ * Pointing at a role directly is not a degraded case of pointing at a goal:
+ * a great deal of being a parent serves no particular outcome and is still
+ * the thing you most want counted.
+ */
+export type Purpose = { type: 'goal'; id: GoalId } | { type: 'role'; id: RoleId }
+
+export interface GoalQuery {
+  roleId?: RoleId | null
+  statuses?: GoalStatus[]
+  horizonTo?: string | null
+  limit?: number | null
+}
+
+/**
+ * Minutes recorded against one purpose over a window.
+ *
+ * `purpose` absent is the unattributed row, which is always present. Most of
+ * a life is not booked against anything, and a chart that dropped that share
+ * would be flattering rather than useful.
+ */
+export interface PurposeMinutes {
+  purpose?: Purpose | null
+  actualMinutes: number
+  plannedMinutes: number
+  blocks: number
+}
+
+/**
+ * Minutes of somebody else's meetings, by the role their calendar serves.
+ *
+ * Reported apart from `PurposeMinutes` rather than summed into it: an event
+ * is a claim on an hour and a block is your record of one, and adding them
+ * would double-count every meeting you also logged.
+ */
+export interface RoleEventMinutes {
+  roleId?: RoleId | null
+  minutes: number
+  events: number
+}
+
+/** Both halves of the balance report, fetched together so they cannot disagree. */
+export interface BalanceReport {
+  purposes: PurposeMinutes[]
+  events: RoleEventMinutes[]
+}
+
+/** What has happened against one goal, over all time. */
+export interface GoalActivity {
+  openTasks: number
+  doneTasks: number
+  projects: number
+  actualMinutes: number
+  entries: number
+  readings: number
+  items: number
+  /** The most recent of everything above. What the Overview sorts by. */
+  lastTouched?: string | null
 }
 
 // ── Tracking ─────────────────────────────────────────────────────────────
@@ -60,7 +195,39 @@ export function aggregateOf(kind: TrackerKind): Aggregate {
   return 'sum'
 }
 
-/** A thing you have decided to record. Lives in the journal's settings. */
+/** How often a habit is meant to happen. */
+export type Period = 'day' | 'week' | 'month'
+
+export const PERIODS: Period[] = ['day', 'week', 'month']
+
+/**
+ * A count and a period: "3× a week".
+ *
+ * `Tracker.target` answers "how much, in a day" and cannot say this — and a
+ * streak counted against a daily target reads every rest day as a failure,
+ * which is the shape of habit tracking that makes people stop.
+ */
+export interface Cadence {
+  times: number
+  per: Period
+}
+
+/** How a cadence reads in a sentence. */
+export function describeCadence(c: Cadence): string {
+  if (c.times === 1) {
+    if (c.per === 'day') return 'every day'
+    return c.per === 'week' ? 'once a week' : 'once a month'
+  }
+  return `${c.times}\u00d7 a ${c.per}`
+}
+
+/**
+ * A thing you have decided to record.
+ *
+ * A record of its own in the vault, like a library `Kind`. It was a field
+ * inside one journal until goals arrived, and the change is what lets a
+ * habit be the *measure* of a goal.
+ */
 export interface Tracker {
   id: TrackerId
   name: string
@@ -79,6 +246,22 @@ export interface Tracker {
   scaleMax: number
   /** Draw this tracker's readings on the calendar. */
   onCalendar: boolean
+  /**
+   * What this measures, if it measures a goal.
+   *
+   * A run tracker under "run 10k without stopping" is evidence the goal is
+   * alive in a way no task can be: the goal has no work under it and never
+   * will, and the only thing saying it is being pursued is that the number
+   * keeps arriving.
+   */
+  purpose?: Purpose | null
+  /**
+   * How often it is meant to happen, if it is a habit.
+   *
+   * Absent means it is not one — a dose is taken when it is taken and a
+   * symptom is felt when it is felt, and neither has a streak.
+   */
+  cadence?: Cadence | null
   /** Retired: keeps its history, leaves the day's chips. */
   archived: boolean
   sortOrder: number
@@ -89,7 +272,13 @@ export interface Tracker {
 /** One recorded value. */
 export interface Reading {
   id: ReadingId
-  journalId: JournalId
+  /**
+   * The journal whose page this was ticked on, if it was ticked on one.
+   *
+   * Absent for a reading logged from the Overview or the tray. Provenance
+   * rather than ownership — exactly what `entryId` already is.
+   */
+  journalId?: JournalId | null
   trackerId: TrackerId
   /** The entry it was recorded beside, if there was one. */
   entryId?: EntryId | null
@@ -167,6 +356,11 @@ export interface Entry {
   pinned: boolean
   location?: Location
   attachments: Attachment[]
+  /**
+   * What this is *for*: a goal, or a role directly. Optional everywhere and
+   * never required by capture. See `Purpose`.
+   */
+  purpose?: Purpose | null
 }
 
 /** The condensed form the list view renders; never carries a full body. */
@@ -185,6 +379,11 @@ export interface EntrySummary {
   attachmentCount: number
   cover?: BlobId
   place?: string
+  /**
+   * Carried so the list can say what an entry is filed under, and offer to
+   * change it, without opening the entry to find out.
+   */
+  purpose?: Purpose | null
 }
 
 export type SortOrder = 'dateDesc' | 'dateAsc' | 'updatedDesc' | 'createdDesc' | 'titleAsc'
@@ -248,6 +447,15 @@ export interface Capabilities {
    * what cannot then be recorded is worse than not offering it.
    */
   trackers: boolean
+  /**
+   * Backend carries the purpose domain, so roles and goals have somewhere to
+   * live and the balance report can be asked for.
+   *
+   * False hides the Overview app and every purpose picker with it: offering
+   * to file a task under a goal that cannot be stored is worse than not
+   * offering it.
+   */
+  goals: boolean
   /**
    * Backend carries the assistant's own domain, so its settings, threads and
    * memory have somewhere to live.
@@ -361,6 +569,11 @@ export interface Project {
   dueDate?: string | null
   estimateMinutes?: number | null
   tags: string[]
+  /**
+   * What this is *for*: a goal, or a role directly. Optional everywhere
+   * and never required by capture. See `Purpose`.
+   */
+  purpose?: Purpose | null
   sortOrder: number
   createdAt: string
   updatedAt: string
@@ -386,6 +599,11 @@ export interface Task {
   estimateMinutes?: number | null
   tags: string[]
   /** Position within its board column or list section. */
+  /**
+   * What this is *for*: a goal, or a role directly. Optional everywhere
+   * and never required by capture. See `Purpose`.
+   */
+  purpose?: Purpose | null
   sortOrder: number
   createdAt: string
   updatedAt: string
@@ -414,6 +632,11 @@ export interface TimeBlock {
   kind: BlockKind
   notes: string
   tags: string[]
+  /**
+   * What this hour was *for*. Absent falls through to the task's, then the
+   * project's — see `Purpose`.
+   */
+  purpose?: Purpose | null
   createdAt: string
   updatedAt: string
 }
@@ -520,6 +743,11 @@ export interface Calendar {
   lastSyncedAt?: string | null
   /** Why the last refresh failed. Shown beside the calendar, never as a dialog. */
   lastError?: string | null
+  /**
+   * Which role this feed serves. A role rather than a purpose: a work
+   * calendar is work, and its forty meetings are not each yours to file.
+   */
+  roleId?: RoleId | null
   createdAt: string
   updatedAt: string
 }
@@ -765,6 +993,11 @@ export interface Item {
   finishedOn?: string | null
   /** Which source filled this in; empty for something typed by hand. */
   source: string
+  /**
+   * What this is *for*: a goal, or a role directly. Optional everywhere
+   * and never required by capture. See `Purpose`.
+   */
+  purpose?: Purpose | null
   sortOrder: number
   createdAt: string
   updatedAt: string
@@ -940,7 +1173,15 @@ export interface AgentSettings {
   hasKey: boolean
 }
 
-export type Role = 'user' | 'assistant' | 'tool' | 'system'
+/**
+ * Who said a turn in a conversation.
+ *
+ * Named for the message rather than for the word "role" on its own, because
+ * this application now has a `Role` that means something quite different —
+ * who *you* are being, in `purpose`. Two unrelated ideas sharing a name in a
+ * file this widely imported is a bug waiting for somebody in a hurry.
+ */
+export type MessageRole = 'user' | 'assistant' | 'tool' | 'system'
 
 export interface ToolCall {
   id: string
@@ -951,7 +1192,7 @@ export interface ToolCall {
 export interface AgentMessage {
   id: MessageId
   conversationId: ConversationId
-  role: Role
+  role: MessageRole
   content: string
   toolCalls: ToolCall[]
   toolCallId: string | null

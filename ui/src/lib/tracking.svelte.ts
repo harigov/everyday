@@ -1,16 +1,24 @@
 // What a day recorded in numbers, rather than in prose.
 //
-// A fourth store beside `app`, `todo` and `calendar`, and the smallest of
-// them, because most of this domain is not state at all: the *definitions*
-// live on the journal, which `app` already holds, and the aggregate a chart
-// wants is a query rather than a cache. What is here is one day's readings —
-// the ones the strip under the editor draws and writes.
+// Two things live here. The vault's tracker *definitions*, which used to sit
+// on each journal and are records of their own now — held once, because five
+// unrelated places need them to draw a chip and none of them should have to
+// wait. And one day's readings: the ones the strip under the editor draws
+// and writes.
+//
+// What is deliberately not here is the aggregate a chart wants. That is a
+// `GROUP BY` in the backend and the caller knows its window far better than
+// this store does, so `days` asks and does not cache.
 
 import { api } from './api'
+import { parseQuickTrack } from './quicktrack'
 import { app, handle, isLocked } from './state.svelte'
-import type { JournalId, Reading, Tracker, TrackerDay } from './types'
+import { todayIso } from './time'
+import type { EntryId, JournalId, Reading, Tracker, TrackerDay, TrackerKind } from './types'
 
 class TrackingState {
+  /** Every tracker in the vault, archived ones included. */
+  trackers = $state<Tracker[]>([])
   /** The readings of the day the editor is showing. */
   readings = $state<Reading[]>([])
   /** Which journal and day `readings` holds, so a reload can be skipped. */
@@ -24,12 +32,120 @@ class TrackingState {
     app.onLock(() => this.reset())
   }
 
+  #loaded = false
+  #generation = 0
+
   reset() {
+    this.#generation += 1
+    this.trackers = []
     this.readings = []
     this.#key = ''
     this.#journalId = null
     this.#date = ''
     this.busy = null
+    this.#loaded = false
+  }
+
+  /**
+   * Load the vault's trackers, once.
+   *
+   * Also where a vault written before trackers became records has its old
+   * definitions moved out of its journals — the backend does that on the
+   * first `list_trackers`, so this is the call that triggers it.
+   */
+  async load(force = false) {
+    if (!this.enabled) return
+    if (this.#loaded && !force) return
+    const mine = ++this.#generation
+    try {
+      const all = await api.trackers()
+      if (mine !== this.#generation) return
+      this.trackers = all
+      this.#loaded = true
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
+  /** One tracker by id, or undefined if it has been deleted. */
+  tracker(id: string): Tracker | undefined {
+    return this.trackers.find((t) => t.id === id)
+  }
+
+  /** Everything not retired, in the order the chips are arranged. */
+  get live(): Tracker[] {
+    return this.trackers
+      .filter((t) => !t.archived)
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt))
+  }
+
+  /**
+   * Draw a tracker's readings on the calendar, or stop drawing them.
+   *
+   * Here rather than at each call site because three places offer the same
+   * switch without owning the settings dialog: the chip under the day, a
+   * reading already on the grid, and the Overview's habits list.
+   */
+  async setOnCalendar(id: string, onCalendar: boolean) {
+    const tracker = this.tracker(id)
+    if (!tracker || tracker.onCalendar === onCalendar) return
+    await this.saveTracker({ ...$state.snapshot(tracker), onCalendar })
+  }
+
+  async saveTracker(tracker: Tracker) {
+    try {
+      await api.saveTracker($state.snapshot(tracker))
+      await this.load(true)
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
+  /**
+   * Mint a tracker, save it, and return it.
+   *
+   * The id and the timestamps come from the backend for the reason a
+   * journal's do: `crypto.randomUUID` needs a secure context the packaged
+   * webview does not always provide, and a tracker that silently fails to
+   * get an id is one whose readings all pile up under the same one.
+   */
+  async addTracker(name: string, kind: TrackerKind): Promise<Tracker | null> {
+    try {
+      const tracker = await api.newTracker(name, kind)
+      await api.saveTracker(tracker)
+      await this.load(true)
+      return this.tracker(tracker.id) ?? null
+    } catch (e) {
+      await handle(e)
+      return null
+    }
+  }
+
+  /** Delete a tracker and every reading it made. Answers how many went. */
+  async deleteTracker(id: string): Promise<number> {
+    try {
+      const removed = await api.deleteTracker(id)
+      await this.load(true)
+      await this.refresh()
+      return removed
+    } catch (e) {
+      await handle(e)
+      return 0
+    }
+  }
+
+  /** Fold one tracker into another, keeping both histories. */
+  async merge(from: string, into: string): Promise<number> {
+    try {
+      const moved = await api.mergeTrackers(from, into)
+      await this.load(true)
+      await app.refreshJournals()
+      await this.refresh()
+      return moved
+    } catch (e) {
+      await handle(e)
+      return 0
+    }
   }
 
   /** Does this vault's backend hold readings at all? */
@@ -95,10 +211,12 @@ class TrackingState {
    * `api.logReading`.
    */
   async log(tracker: Tracker, value: number, at?: string | null) {
-    if (!this.#journalId || this.busy) return
+    if (this.busy) return
     this.busy = tracker.id
     try {
       await api.logReading({
+        // Both absent when there is no page in view, which is what a
+        // reading logged from the Overview or the tray looks like.
         journalId: this.#journalId,
         trackerId: tracker.id,
         value,
@@ -112,6 +230,64 @@ class TrackingState {
     } finally {
       this.busy = null
     }
+  }
+
+  /**
+   * Record one line, making the tracker if there is not one yet.
+   *
+   * The lazy half of capture, and the reason it is in the store rather than
+   * in the popover: three call sites want it — the strip's plus chip, the
+   * Overview's today pane, and the tray — and the resolve-or-create step
+   * must not be reimplemented in any of them.
+   *
+   * Returns what happened, so the caller can say it. `null` means the line
+   * named nothing, which is a real answer and not a failure.
+   */
+  async logLine(
+    line: string,
+    where: { journalId?: JournalId | null; entryId?: EntryId | null; date?: string } = {},
+  ): Promise<{ tracker: Tracker; created: boolean } | null> {
+    if (!this.enabled) return null
+    const parsed = parseQuickTrack(line, this.trackers)
+    if (!parsed.target) return null
+
+    let tracker: Tracker | null = null
+    let created = false
+    if (parsed.target.kind === 'existing') {
+      tracker = parsed.target.tracker
+    } else {
+      const spec = parsed.target
+      const made = await this.addTracker(spec.name, spec.trackerKind)
+      if (!made) return null
+      created = true
+      // The unit and the ceiling the line implied. Written as a second save
+      // rather than passed to `newTracker`, which mints defaults and knows
+      // nothing about a grammar the interface owns.
+      const next: Tracker = {
+        ...made,
+        unit: spec.unit,
+        scaleMax: spec.scaleMax,
+        defaultValue: spec.trackerKind === 'check' ? 1 : parsed.value || 1,
+      }
+      await this.saveTracker(next)
+      tracker = this.tracker(made.id) ?? next
+    }
+
+    const date = where.date ?? this.#date ?? todayIso()
+    try {
+      await api.logReading({
+        trackerId: tracker.id,
+        value: parsed.value,
+        date,
+        journalId: where.journalId ?? null,
+        entryId: where.entryId ?? null,
+      })
+    } catch (e) {
+      await handle(e)
+      return null
+    }
+    await this.refresh()
+    return { tracker, created }
   }
 
   /** Change a reading that exists: a corrected dose, a note, a time. */

@@ -38,6 +38,10 @@
 //! | item `kind_id`, `status`, `rating`, `favourite`, `year`, `finished_on` | how many shelves, how much is on each, and how you scored it |
 //! | log `item_id`, `event`, `local_date` | that something was got to the end of on a day, never what |
 //! | reading `tracker_id`, `local_date`, `at_us`, `value` | that something was recorded, when, and how much of it -- never what |
+//! | tracker `archived`, `sort_order` | how many things are tracked and which have been retired |
+//! | goal `role_id`, `status`, `horizon` | how many goals sit under each part of a life, how they are going, and roughly when they are wanted |
+//! | role `archived`, `sort_order` | how many parts a life is divided into |
+//! | `purposes` (`record_kind`, `record_id`, `purpose_kind`, `purpose_id`) | which records are filed against which goal -- never the name of either |
 //!
 //! Titles, bodies, tags, locations, attachments and file names are all
 //! sealed. Someone with the database learns *that* you journalled on 14 July
@@ -100,6 +104,7 @@ mod agent;
 mod calendars;
 mod journals;
 mod library;
+mod purpose;
 mod tasks;
 mod trackers;
 
@@ -226,7 +231,7 @@ impl SqlStore {
 
     /// What every driver of this crate can do.
     ///
-    /// All six domains, on both databases. The optional accessors on
+    /// All seven domains, on both databases. The optional accessors on
     /// `JournalStore` stay optional for the sake of backends that are not
     /// this one, not because a SQL vault might be missing the todo app.
     pub(crate) fn capabilities(&self) -> Capabilities {
@@ -239,6 +244,7 @@ impl SqlStore {
             calendars: true,
             library: true,
             trackers: true,
+            goals: true,
             agent: true,
         }
     }
@@ -348,8 +354,18 @@ impl SqlStore {
         }
         let holes = placeholders(1, ids.len());
         let args: Vec<Value> = ids.iter().map(|id| Value::Text(id.clone())).collect();
+        // The blocks are gone with the tasks, so their pointer rows go too.
+        // Collected before the delete, because afterwards there is nothing
+        // left to ask which blocks these were.
+        let blocks: Vec<String> = tx
+            .query(&format!("SELECT id FROM time_blocks WHERE task_id IN ({holes})"), &args)?
+            .into_iter()
+            .map(|r| r.text(0))
+            .collect::<Result<_>>()?;
         tx.execute(&format!("DELETE FROM time_blocks WHERE task_id IN ({holes})"), &args)?;
         tx.execute(&format!("DELETE FROM tasks WHERE id IN ({holes})"), &args)?;
+        crate::purpose::forget_purposes(tx, crate::purpose::RecordKind::Block, &blocks)?;
+        crate::purpose::forget_purposes(tx, crate::purpose::RecordKind::Task, ids)?;
         Ok(())
     }
 

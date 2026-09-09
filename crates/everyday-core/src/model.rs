@@ -5,6 +5,7 @@
 //! knows about SQL tables or Markdown frontmatter.
 
 use crate::id::{BlobId, EntryId, JournalId, TrackerId};
+use crate::purpose::Purpose;
 use crate::richtext::RichDoc;
 use crate::tracker::Tracker;
 use jiff::{Timestamp, civil::Date};
@@ -23,17 +24,30 @@ pub struct Journal {
     pub description: String,
     /// Manual ordering in the sidebar; ties broken by `name`.
     pub sort_order: i32,
-    /// What this journal records alongside its entries: habits, doses,
-    /// symptoms, counts. See [`crate::tracker`].
+    /// Which of the vault's trackers this journal draws chips for.
     ///
-    /// The definitions live here — inside the sealed journal record — rather
-    /// than in a table of their own, because "what am I tracking" is a
-    /// setting of the journal, is a handful of rows rather than thousands,
-    /// and is the one part of this domain whose *names* must never reach a
-    /// clear column. The readings themselves are stored separately, and
-    /// separately for the opposite reason: there are thousands of them and
-    /// they have to be scannable without being decrypted.
+    /// Ids rather than definitions. The definitions used to live here, in
+    /// the sealed journal record, on the argument that "what am I tracking"
+    /// is a setting of the journal. That was wrong in one way that mattered:
+    /// it made a tracker *belong* to one journal, so "meditate" had to
+    /// choose between the work journal and the personal one, and a habits
+    /// view had to reach through every journal to find anything. They are
+    /// vault records now — see [`crate::tracker::Tracker`] — and what stays
+    /// here is the only part that really was a per-journal setting.
+    ///
+    /// Unknown ids are ignored rather than pruned, because a vault opened by
+    /// two builds should not have one of them quietly forget the other's
+    /// trackers.
     #[serde(default)]
+    pub shown_trackers: Vec<TrackerId>,
+    /// Definitions written by a build before trackers became vault records.
+    ///
+    /// Read once, on unlock, moved into the trackers table, and then left
+    /// empty forever. It is kept — rather than dropped, which `serde` would
+    /// do silently — so that the move can happen at all: this field is the
+    /// only place those definitions exist, and they are inside a sealed
+    /// payload that no SQL migration can read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trackers: Vec<Tracker>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
@@ -49,6 +63,7 @@ impl Journal {
             icon: "\u{1f4d3}".into(), // notebook
             description: String::new(),
             sort_order: 0,
+            shown_trackers: Vec::new(),
             trackers: Vec::new(),
             created_at: now,
             updated_at: now,
@@ -65,17 +80,45 @@ impl Journal {
         self
     }
 
-    /// The trackers the day's chips should offer, in the order they were
-    /// arranged. Archived ones are excluded: they keep their history and
-    /// leave the page.
-    pub fn active_trackers(&self) -> impl Iterator<Item = &Tracker> {
-        let mut live: Vec<&Tracker> = self.trackers.iter().filter(|t| !t.archived).collect();
+    /// The trackers this journal's chips should offer, picked out of the
+    /// vault's own list and in the order they were arranged.
+    ///
+    /// Archived ones are excluded: they keep their history and leave the
+    /// page. Ids naming a tracker that is gone are skipped rather than
+    /// reported — a stale id is the ordinary consequence of deleting a
+    /// tracker, and every journal that showed it should not have to be
+    /// rewritten for that.
+    pub fn shown<'a>(&self, all: &'a [Tracker]) -> Vec<&'a Tracker> {
+        let mut live: Vec<&Tracker> = self
+            .shown_trackers
+            .iter()
+            .filter_map(|id| all.iter().find(|t| t.id == *id))
+            .filter(|t| !t.archived)
+            .collect();
         live.sort_by_key(|t| (t.sort_order, t.created_at));
-        live.into_iter()
+        live
     }
 
-    pub fn tracker(&self, id: TrackerId) -> Option<&Tracker> {
-        self.trackers.iter().find(|t| t.id == id)
+    /// Does this journal draw a chip for `id`?
+    pub fn shows(&self, id: TrackerId) -> bool {
+        self.shown_trackers.contains(&id)
+    }
+
+    /// Start drawing a chip for `id`, if it is not drawn already.
+    pub fn show(&mut self, id: TrackerId) {
+        if !self.shows(id) {
+            self.shown_trackers.push(id);
+            self.updated_at = Timestamp::now();
+        }
+    }
+
+    /// Stop drawing a chip for `id`. The tracker and its readings stay.
+    pub fn hide(&mut self, id: TrackerId) {
+        let before = self.shown_trackers.len();
+        self.shown_trackers.retain(|held| *held != id);
+        if self.shown_trackers.len() != before {
+            self.updated_at = Timestamp::now();
+        }
     }
 }
 
@@ -174,6 +217,14 @@ pub struct Entry {
     pub updated_at: Timestamp,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// What this day's writing was *for*, if it was for anything.
+    ///
+    /// Most entries will never set it, and that is the expected shape: a
+    /// journal is not a work log. It exists so that the fortnight you wrote
+    /// every evening about learning to sail is evidence the goal was alive,
+    /// which is a thing no task and no block records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<Purpose>,
     #[serde(default)]
     pub starred: bool,
     #[serde(default)]
@@ -211,6 +262,7 @@ impl Entry {
             location: None,
             weather: None,
             attachments: Vec::new(),
+            purpose: None,
         }
     }
 
@@ -285,6 +337,7 @@ impl Entry {
                 .location
                 .as_ref()
                 .and_then(|l| l.place_name.clone().or_else(|| l.locality.clone())),
+            purpose: self.purpose,
         }
     }
 }
@@ -321,6 +374,10 @@ pub struct EntrySummary {
     pub cover: Option<BlobId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub place: Option<String>,
+    /// Carried so the list can say what an entry is filed under, and offer
+    /// to change it, without opening the entry to find out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<Purpose>,
 }
 
 /// Resolve the local calendar date of an instant in a named time zone,

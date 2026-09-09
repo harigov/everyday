@@ -67,6 +67,7 @@ export const TRAY_ORDER = {
   todo: 20,
   calendar: 30,
   library: 40,
+  overview: 50,
   /** The vault itself -- locking. Last, and away from the capture actions. */
   vault: 90,
 } as const

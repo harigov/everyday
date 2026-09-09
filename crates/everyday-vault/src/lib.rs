@@ -339,14 +339,13 @@ mod tests {
         create(dir, VaultConfig { password: None, ..Default::default() }).unwrap()
     }
 
-    fn a_journal_tracking(
-        vault: &Vault,
-        tracker: everyday_core::Tracker,
-    ) -> everyday_core::Journal {
+    /// A saved tracker, and a journal that shows its chip.
+    fn a_tracked(vault: &Vault, tracker: everyday_core::Tracker) -> everyday_core::Tracker {
         let mut journal = everyday_core::Journal::new("Health");
-        journal.trackers.push(tracker);
+        journal.show(tracker.id);
         vault.save_journal(&journal).unwrap();
-        vault.journal(journal.id).unwrap()
+        vault.save_tracker(&tracker).unwrap();
+        vault.tracker(tracker.id).unwrap()
     }
 
     #[test]
@@ -358,15 +357,10 @@ mod tests {
         let vault = a_vault(dir.path());
         let mut pain = everyday_core::Tracker::new("Headache", everyday_core::TrackerKind::Scale);
         pain.scale_max = 10.0;
-        let journal = a_journal_tracking(&vault, pain);
-        let tracker_id = journal.trackers[0].id;
+        let pain = a_tracked(&vault, pain);
 
-        let reading = everyday_core::Reading::on(
-            journal.id,
-            tracker_id,
-            jiff::civil::Date::constant(2026, 3, 14),
-            99.0,
-        );
+        let reading =
+            everyday_core::Reading::on(pain.id, jiff::civil::Date::constant(2026, 3, 14), 99.0);
         vault.save_reading(&reading).unwrap();
         assert_eq!(vault.reading(reading.id).unwrap().value, 10.0);
     }
@@ -377,17 +371,14 @@ mod tests {
         // nothing in the vault can turn back into a word.
         let dir = tempfile::tempdir().unwrap();
         let vault = a_vault(dir.path());
-        let journal = everyday_core::Journal::new("Health");
-        vault.save_journal(&journal).unwrap();
 
         let orphan = everyday_core::Reading::on(
-            journal.id,
             everyday_core::TrackerId::new(),
             jiff::civil::Date::constant(2026, 3, 14),
             1.0,
         );
         let err = vault.save_reading(&orphan).unwrap_err();
-        assert_eq!(err.code(), "invalid", "got {err}");
+        assert_eq!(err.code(), "not_found", "got {err}");
     }
 
     #[test]
@@ -397,17 +388,13 @@ mod tests {
         // from the entry it was ticked under.
         let dir = tempfile::tempdir().unwrap();
         let vault = a_vault(dir.path());
-        let journal = a_journal_tracking(
+        let dose = a_tracked(
             &vault,
             everyday_core::Tracker::new("Ibuprofen", everyday_core::TrackerKind::Dose),
         );
 
-        let mut reading = everyday_core::Reading::on(
-            journal.id,
-            journal.trackers[0].id,
-            jiff::civil::Date::constant(2026, 3, 14),
-            400.0,
-        );
+        let mut reading =
+            everyday_core::Reading::on(dose.id, jiff::civil::Date::constant(2026, 3, 14), 400.0);
         reading.at = Some("2026-03-15T09:00:00Z".parse().unwrap());
         reading.tz = "UTC".into();
         vault.save_reading(&reading).unwrap();
@@ -420,32 +407,26 @@ mod tests {
     fn deleting_a_tracker_takes_its_readings_and_leaves_the_rest() {
         let dir = tempfile::tempdir().unwrap();
         let vault = a_vault(dir.path());
-        let mut journal = everyday_core::Journal::new("Health");
-        journal
-            .trackers
-            .push(everyday_core::Tracker::new("Ibuprofen", everyday_core::TrackerKind::Dose));
-        journal
-            .trackers
-            .push(everyday_core::Tracker::new("Floss", everyday_core::TrackerKind::Check));
-        vault.save_journal(&journal).unwrap();
-        let (gone, kept) = (journal.trackers[0].id, journal.trackers[1].id);
+        let gone = a_tracked(
+            &vault,
+            everyday_core::Tracker::new("Ibuprofen", everyday_core::TrackerKind::Dose),
+        );
+        let kept = a_tracked(
+            &vault,
+            everyday_core::Tracker::new("Floss", everyday_core::TrackerKind::Check),
+        );
 
         let day = jiff::civil::Date::constant(2026, 3, 14);
-        for (tracker, value) in [(gone, 400.0), (gone, 400.0), (kept, 1.0)] {
-            vault
-                .save_reading(&everyday_core::Reading::on(journal.id, tracker, day, value))
-                .unwrap();
+        for (tracker, value) in [(gone.id, 400.0), (gone.id, 400.0), (kept.id, 1.0)] {
+            vault.save_reading(&everyday_core::Reading::on(tracker, day, value)).unwrap();
         }
 
-        assert_eq!(vault.delete_tracker(journal.id, gone).unwrap(), 2);
+        assert_eq!(vault.delete_tracker(gone.id).unwrap(), 2);
 
         let left = vault.readings(&everyday_core::ReadingQuery::default()).unwrap();
         assert_eq!(left.len(), 1);
-        assert_eq!(left[0].tracker_id, kept);
-        // And the definition has left the journal with them.
-        let after = vault.journal(journal.id).unwrap();
-        assert_eq!(after.trackers.len(), 1);
-        assert_eq!(after.trackers[0].id, kept);
+        assert_eq!(left[0].tracker_id, kept.id);
+        assert!(vault.tracker(gone.id).is_err(), "the definition goes with them");
     }
 
     #[test]
@@ -454,26 +435,24 @@ mod tests {
         // stopped taking this in March": off the page, still in the data.
         let dir = tempfile::tempdir().unwrap();
         let vault = a_vault(dir.path());
-        let journal = a_journal_tracking(
+        let mut tracker = a_tracked(
             &vault,
             everyday_core::Tracker::new("Sertraline", everyday_core::TrackerKind::Dose),
         );
-        let tracker_id = journal.trackers[0].id;
         vault
             .save_reading(&everyday_core::Reading::on(
-                journal.id,
-                tracker_id,
+                tracker.id,
                 jiff::civil::Date::constant(2026, 3, 14),
                 50.0,
             ))
             .unwrap();
 
-        let mut journal = vault.journal(journal.id).unwrap();
-        journal.trackers[0].archived = true;
-        vault.save_journal(&journal).unwrap();
+        tracker.archived = true;
+        vault.save_tracker(&tracker).unwrap();
 
-        let after = vault.journal(journal.id).unwrap();
-        assert_eq!(after.active_trackers().count(), 0, "an archived tracker leaves the page");
+        let journal = vault.journals().unwrap().remove(0);
+        let all = vault.trackers().unwrap();
+        assert!(journal.shown(&all).is_empty(), "an archived tracker leaves the page");
         assert_eq!(
             vault.readings(&everyday_core::ReadingQuery::default()).unwrap().len(),
             1,
@@ -482,26 +461,114 @@ mod tests {
     }
 
     #[test]
+    fn merging_two_trackers_keeps_both_histories_and_the_chip() {
+        // What tidying up a lazily created tracker has to do: `#swim` on
+        // Monday and `#swimming` on Friday are one thing, and the answer
+        // cannot be to throw a month of numbers away.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let scruffy = a_tracked(
+            &vault,
+            everyday_core::Tracker::new("swim", everyday_core::TrackerKind::Amount),
+        );
+        let proper = a_tracked(
+            &vault,
+            everyday_core::Tracker::new("Swimming", everyday_core::TrackerKind::Amount),
+        );
+        let day = jiff::civil::Date::constant(2026, 6, 1);
+        vault.save_reading(&everyday_core::Reading::on(scruffy.id, day, 30.0)).unwrap();
+        vault.save_reading(&everyday_core::Reading::on(proper.id, day, 45.0)).unwrap();
+
+        assert_eq!(vault.merge_trackers(scruffy.id, proper.id).unwrap(), 1);
+        assert!(vault.tracker(scruffy.id).is_err());
+
+        let left = vault.readings(&everyday_core::ReadingQuery::default()).unwrap();
+        assert_eq!(left.len(), 2, "no reading may be lost in a merge");
+        assert!(left.iter().all(|r| r.tracker_id == proper.id));
+
+        // Every journal that drew the old chip draws the new one. Left
+        // alone, the strip would silently stop showing anything.
+        for journal in vault.journals().unwrap() {
+            assert!(!journal.shows(scruffy.id));
+            assert!(journal.shows(proper.id), "the chip must survive the merge");
+        }
+    }
+
+    #[test]
+    fn a_tracker_cannot_be_merged_into_itself() {
+        // It would delete the definition and leave every reading pointing at
+        // it, which is exactly the unnameable-row state this domain refuses.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let t = a_tracked(
+            &vault,
+            everyday_core::Tracker::new("Steps", everyday_core::TrackerKind::Amount),
+        );
+        assert_eq!(vault.merge_trackers(t.id, t.id).unwrap_err().code(), "invalid");
+        assert!(vault.tracker(t.id).is_ok(), "the refusal must leave it alone");
+    }
+
+    #[test]
     fn a_tracker_saved_with_nonsense_in_it_is_tidied_on_the_way_in() {
         let dir = tempfile::tempdir().unwrap();
         let vault = a_vault(dir.path());
-        let mut journal = everyday_core::Journal::new("Health");
         let mut tracker =
             everyday_core::Tracker::new("  Water  ", everyday_core::TrackerKind::Amount);
         tracker.scale_max = f64::NAN;
         tracker.default_value = -4.0;
-        journal.trackers.push(tracker);
+        vault.save_tracker(&tracker).unwrap();
+
+        let stored = vault.tracker(tracker.id).unwrap();
+        assert_eq!(stored.name, "Water");
+        assert_eq!(stored.default_value, 1.0);
+        assert!(stored.scale_max.is_finite());
+
         // A nameless tracker is not a tracker; it is an empty row in a form.
-        journal
-            .trackers
-            .push(everyday_core::Tracker::new("   ", everyday_core::TrackerKind::Check));
+        let nameless = everyday_core::Tracker::new("   ", everyday_core::TrackerKind::Check);
+        assert_eq!(vault.save_tracker(&nameless).unwrap_err().code(), "invalid");
+    }
+
+    #[test]
+    fn definitions_left_inside_a_journal_are_moved_once_and_then_left_alone() {
+        // The one migration in the application that cannot be a SQL step:
+        // the definitions are inside a sealed journal payload, and nothing
+        // running against the database can read a word of it.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        let mut journal = everyday_core::Journal::new("Health");
+        let old = everyday_core::Tracker::new("Sertraline", everyday_core::TrackerKind::Dose);
+        let old_id = old.id;
+        journal.trackers.push(old);
         vault.save_journal(&journal).unwrap();
 
-        let stored = vault.journal(journal.id).unwrap();
-        assert_eq!(stored.trackers.len(), 1);
-        assert_eq!(stored.trackers[0].name, "Water");
-        assert_eq!(stored.trackers[0].default_value, 1.0);
-        assert!(stored.trackers[0].scale_max.is_finite());
+        // A reading written against it before the move, which must still
+        // resolve afterwards.
+        let day = jiff::civil::Date::constant(2026, 3, 14);
+        let reading = everyday_core::Reading::on(old_id, day, 50.0);
+        // Saved through the store rather than the vault, because the vault
+        // refuses a reading whose tracker it cannot find -- which is the
+        // state a pre-migration vault is in.
+        vault
+            .with_store(|s| s.trackers().expect("a tracking backend").put_reading(&reading))
+            .unwrap();
+
+        assert_eq!(vault.migrate_journal_trackers().unwrap(), 1);
+
+        let moved = vault.tracker(old_id).expect("the definition is a record now");
+        assert_eq!(moved.name, "Sertraline");
+        let after = vault.journal(journal.id).unwrap();
+        assert!(after.trackers.is_empty(), "the old field is emptied as it is read");
+        assert!(after.shows(old_id), "and the journal keeps drawing its chip");
+        assert_eq!(vault.reading(reading.id).unwrap().value, 50.0);
+
+        // Idempotent: a second run finds nothing to do, and cannot undo the
+        // edits made to what the first one moved.
+        let mut edited = vault.tracker(old_id).unwrap();
+        edited.name = "Sertraline 50".into();
+        vault.save_tracker(&edited).unwrap();
+        assert_eq!(vault.migrate_journal_trackers().unwrap(), 0);
+        assert_eq!(vault.tracker(old_id).unwrap().name, "Sertraline 50");
     }
 
     #[test]
@@ -1091,6 +1158,296 @@ mod tests {
     }
 
     #[test]
+    fn the_assistant_can_file_a_project_and_see_where_the_week_went() {
+        // The whole point of the purpose domain, exercised through the tools
+        // a model actually has: name a role, name a goal, file one project
+        // under it, and read back where the hours went.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        let role = everyday_core::Role::new("Work");
+        vault.save_role(&role).unwrap();
+
+        let goal = call(
+            &vault,
+            "create_goal",
+            serde_json::json!({ "role_id": role.id.to_string(), "title": "Ship the rewrite" }),
+        );
+        let goal_id = goal["id"].as_str().unwrap().to_string();
+
+        let project = everyday_core::Project::new("The rewrite");
+        vault.save_project(&project).unwrap();
+        let task = {
+            let mut t = everyday_core::Task::new("write it");
+            t.project_id = Some(project.id);
+            vault.save_task(&t).unwrap();
+            t
+        };
+
+        // Filing the *project* is what attributes everything under it. One
+        // call rather than one per task, which is the whole argument for
+        // inheritance.
+        let filed = call(
+            &vault,
+            "set_purpose",
+            serde_json::json!({
+                "kind": "project",
+                "id": project.id.to_string(),
+                "goal_id": goal_id,
+            }),
+        );
+        assert_eq!(filed["action"], "filed");
+        assert_eq!(filed["name"], "The rewrite");
+
+        let day = jiff::civil::date(2026, 9, 14);
+        let at = day.at(9, 0, 0, 0).in_tz("UTC").unwrap().timestamp();
+        let block = everyday_core::TimeBlock::new(
+            everyday_core::BlockSubject::Task { id: task.id },
+            at,
+            120,
+            "UTC",
+        )
+        .of_kind(everyday_core::BlockKind::Actual);
+        vault.save_block(&block).unwrap();
+
+        let report = call(
+            &vault,
+            "time_by_role",
+            serde_json::json!({ "from": "2026-09-14", "to": "2026-09-14" }),
+        );
+        let rows = report["roles"].as_array().unwrap();
+        let work = rows
+            .iter()
+            .find(|r| r["role"] == "Work")
+            .unwrap_or_else(|| panic!("expected a Work row, got {report}"));
+        assert_eq!(work["minutes"], 120, "an hour under a task inherits its project's goal");
+
+        // ...and the goal itself reports it.
+        let goals = call(&vault, "list_goals", serde_json::json!({ "include_activity": true }));
+        assert_eq!(goals["goals"][0]["activity"]["minutes"], 120);
+        assert_eq!(goals["goals"][0]["role"], "Work");
+
+        // Unfiling puts it back where unattributed time goes, rather than
+        // leaving a pointer nothing resolves.
+        call(
+            &vault,
+            "set_purpose",
+            serde_json::json!({ "kind": "project", "id": project.id.to_string(), "clear": true }),
+        );
+        let after = call(
+            &vault,
+            "time_by_role",
+            serde_json::json!({ "from": "2026-09-14", "to": "2026-09-14" }),
+        );
+        let rows = after["roles"].as_array().unwrap();
+        assert!(rows.iter().all(|r| r["role"] != "Work"), "got {after}");
+        assert!(rows.iter().any(|r| r["role"] == "not filed" && r["minutes"] == 120));
+    }
+
+    #[test]
+    fn set_purpose_refuses_a_call_that_says_two_things_or_nothing() {
+        // Two would be a silent choice between them and none would be a
+        // call that looks like it worked and did nothing -- which is the
+        // worst outcome for a tool a model cannot see the effect of.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let project = everyday_core::Project::new("x");
+        vault.save_project(&project).unwrap();
+        let role = everyday_core::Role::new("Work");
+        vault.save_role(&role).unwrap();
+        let goal = everyday_core::Goal::new(role.id, "g");
+        vault.save_goal(&goal).unwrap();
+
+        let both = call_err(
+            &vault,
+            "set_purpose",
+            serde_json::json!({
+                "kind": "project",
+                "id": project.id.to_string(),
+                "goal_id": goal.id.to_string(),
+                "role_id": role.id.to_string(),
+            }),
+        );
+        assert!(both.contains("exactly one"), "got {both}");
+
+        let neither = call_err(
+            &vault,
+            "set_purpose",
+            serde_json::json!({ "kind": "project", "id": project.id.to_string() }),
+        );
+        assert!(neither.contains("exactly one"), "got {neither}");
+
+        // And a goal that does not exist is refused before anything is
+        // written, rather than filing the project under nothing.
+        let missing = call_err(
+            &vault,
+            "set_purpose",
+            serde_json::json!({
+                "kind": "project",
+                "id": project.id.to_string(),
+                "goal_id": everyday_core::GoalId::new().to_string(),
+            }),
+        );
+        assert!(!missing.is_empty());
+        assert_eq!(vault.project(project.id).unwrap().purpose, None);
+    }
+
+    #[test]
+    fn readings_can_be_lined_up_against_each_other_day_by_day() {
+        // The question this tool exists for: "pull up the days I spent time
+        // in the pool and tell me whether my mood improved the day after".
+        // `tracker_summary` cannot answer it -- it returns one number per
+        // day per tracker, already aggregated, with no way to walk two
+        // series against each other.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+
+        let swim = everyday_core::Tracker::new("Swimming", everyday_core::TrackerKind::Amount)
+            .with_unit("min");
+        vault.save_tracker(&swim).unwrap();
+        let mut mood = everyday_core::Tracker::new("Mood", everyday_core::TrackerKind::Scale);
+        mood.scale_max = 10.0;
+        vault.save_tracker(&mood).unwrap();
+
+        // Swam on the 1st and the 5th; mood every day.
+        for day in [1, 5] {
+            call(
+                &vault,
+                "log_reading",
+                serde_json::json!({
+                    "tracker_id": swim.id.to_string(),
+                    "value": 60,
+                    "date": format!("2026-09-0{day}"),
+                }),
+            );
+        }
+        for (day, value) in [(1, 5), (2, 8), (3, 6), (4, 5), (5, 4), (6, 9)] {
+            call(
+                &vault,
+                "log_reading",
+                serde_json::json!({
+                    "tracker_id": mood.id.to_string(),
+                    "value": value,
+                    "date": format!("2026-09-0{day}"),
+                }),
+            );
+        }
+
+        let all = call(
+            &vault,
+            "list_readings",
+            serde_json::json!({ "from": "2026-09-01", "to": "2026-09-06" }),
+        );
+        assert_eq!(all["count"], 8);
+        // Every row names its tracker in words, so a model can reason about
+        // "swimming" rather than about a uuid.
+        let rows = all["readings"].as_array().unwrap();
+        assert!(rows.iter().any(|r| r["tracker"] == "Swimming"));
+        assert!(rows.iter().any(|r| r["tracker"] == "Mood"));
+
+        // One tracker at a time is what actually makes the comparison
+        // possible: two calls, two series, aligned on the date.
+        let swims = call(
+            &vault,
+            "list_readings",
+            serde_json::json!({
+                "tracker_id": swim.id.to_string(),
+                "from": "2026-09-01",
+                "to": "2026-09-06",
+            }),
+        );
+        let days: Vec<&str> = swims["readings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["date"].as_str().unwrap())
+            .collect();
+        assert_eq!(days, ["2026-09-01", "2026-09-05"]);
+
+        let moods = call(
+            &vault,
+            "list_readings",
+            serde_json::json!({
+                "tracker_id": mood.id.to_string(),
+                "from": "2026-09-01",
+                "to": "2026-09-06",
+            }),
+        );
+        let after: Vec<f64> = moods["readings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| matches!(r["date"].as_str(), Some("2026-09-02") | Some("2026-09-06")))
+            .map(|r| r["value"].as_f64().unwrap())
+            .collect();
+        assert_eq!(after, [8.0, 9.0], "the day after each swim is reachable");
+
+        // A reading logged for a past day carries no time of day, so an
+        // hour-of-day filter excludes it rather than averaging in a
+        // defaulted instant.
+        let timed = call(
+            &vault,
+            "list_readings",
+            serde_json::json!({ "from": "2026-09-01", "to": "2026-09-06", "timed_only": true }),
+        );
+        assert_eq!(timed["count"], 0, "a day written up later knows no minute");
+    }
+
+    #[test]
+    fn a_goal_reports_never_touched_rather_than_saying_nothing() {
+        // The most useful thing this domain can tell somebody, so it has to
+        // be said rather than left as an absent field a model will not
+        // mention.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let role = everyday_core::Role::new("Myself");
+        vault.save_role(&role).unwrap();
+        call(
+            &vault,
+            "create_goal",
+            serde_json::json!({ "role_id": role.id.to_string(), "title": "Write every week" }),
+        );
+
+        let goals = call(&vault, "list_goals", serde_json::json!({ "include_activity": true }));
+        assert_eq!(goals["goals"][0]["activity"]["last_touched"], "never");
+        // ...and nothing else is invented to fill the gap.
+        assert!(goals["goals"][0]["activity"].get("minutes").is_none());
+    }
+
+    #[test]
+    fn dropping_a_goal_is_not_finishing_it() {
+        // The distinction the whole status set exists for, checked through
+        // the tool: a completion date on something you gave up on would
+        // poison the one count anybody wants -- how many of the things you
+        // set out to do you actually did.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = a_vault(dir.path());
+        let role = everyday_core::Role::new("Work");
+        vault.save_role(&role).unwrap();
+        let made = call(
+            &vault,
+            "create_goal",
+            serde_json::json!({ "role_id": role.id.to_string(), "title": "Hire someone" }),
+        );
+        let id: everyday_core::GoalId = made["id"].as_str().unwrap().parse().unwrap();
+
+        call(
+            &vault,
+            "update_goal",
+            serde_json::json!({ "goal_id": id.to_string(), "status": "done" }),
+        );
+        assert!(vault.goal(id).unwrap().completed_at.is_some());
+
+        call(
+            &vault,
+            "update_goal",
+            serde_json::json!({ "goal_id": id.to_string(), "status": "dropped" }),
+        );
+        assert_eq!(vault.goal(id).unwrap().completed_at, None);
+        assert_eq!(vault.goal(id).unwrap().status, everyday_core::GoalStatus::Dropped);
+    }
+
+    #[test]
     fn a_reading_reports_the_value_that_was_stored_rather_than_the_one_asked_for() {
         // The vault clamps to the tracker's scale. If the tool echoed the
         // argument, the assistant would tell somebody it recorded a 99 when
@@ -1099,8 +1456,8 @@ mod tests {
         let vault = a_vault(dir.path());
         let mut pain = everyday_core::Tracker::new("Headache", everyday_core::TrackerKind::Scale);
         pain.scale_max = 10.0;
-        let journal = a_journal_tracking(&vault, pain);
-        let tracker_id = journal.trackers[0].id.to_string();
+        vault.save_tracker(&pain).unwrap();
+        let tracker_id = pain.id.to_string();
 
         let logged = call(
             &vault,
@@ -1364,6 +1721,7 @@ mod tests {
                 "delete_task",
                 "delete_time_block",
                 "delete_item",
+                "delete_goal",
                 "forget",
             ]
         );

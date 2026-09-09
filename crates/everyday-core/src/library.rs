@@ -56,6 +56,7 @@
 //! alternative even if this changed its mind.
 
 use crate::id::{BlobId, ItemId, KindId, LogId};
+use crate::purpose::Purpose;
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -587,6 +588,14 @@ pub struct Item {
     pub notes: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// What this is on the shelf *for*, if it is for anything.
+    ///
+    /// The book you are reading because of a goal, rather than the twenty
+    /// you are reading because you like reading. Set on few items, and the
+    /// reason "read twelve books this year" can be a goal with no project
+    /// and no task anywhere near it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<Purpose>,
     /// The kind's extra fields, keyed by [`FieldDef::key`].
     ///
     /// A `BTreeMap` rather than a `HashMap` so the serialised form is stable:
@@ -642,6 +651,7 @@ impl Item {
             summary: String::new(),
             notes: String::new(),
             tags: Vec::new(),
+            purpose: None,
             facts: BTreeMap::new(),
             links: Vec::new(),
             progress: None,

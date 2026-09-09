@@ -15,7 +15,7 @@
   import { untrack } from 'svelte'
   import { api } from '../lib/api'
   import { app } from '../lib/state.svelte'
-  import { activeTrackers } from '../lib/tracker'
+  import { tracking } from '../lib/tracking.svelte'
   import { KIND_COPY, TRACKER_PRESETS, fromPreset } from '../lib/tracker-presets'
   import { TRACKER_ICON_GROUPS } from '../lib/tracker-icons'
   import { focusOnMount, trapFocus } from '../lib/focus'
@@ -47,9 +47,16 @@
   let pendingJournalDelete = $state(false)
   let showArchived = $state(false)
 
-  const tracking = $derived(app.status?.capabilities?.trackers === true)
-  const live = $derived(activeTrackers(draft))
-  const archived = $derived(draft.trackers.filter((t) => t.archived))
+  const enabled = $derived(app.status?.capabilities?.trackers === true)
+  /**
+   * Every tracker in the vault, not just this journal's.
+   *
+   * A tracker is a vault record now, so this dialog is two things at once:
+   * where a tracker is defined, and where a journal says which chips it
+   * draws. The second is `shown`, the tick beside each row.
+   */
+  const live = $derived(tracking.live)
+  const archived = $derived(tracking.trackers.filter((t) => t.archived))
 
   const PALETTE = [
     '#e11d48',
@@ -69,17 +76,34 @@
     await app.saveJournal($state.snapshot(draft))
   }
 
-  function upsert(tracker: Tracker) {
-    const i = draft.trackers.findIndex((t) => t.id === tracker.id)
-    if (i >= 0) draft.trackers[i] = tracker
-    else draft.trackers.push(tracker)
+  /** Does this journal draw a chip for it? */
+  function shown(id: string): boolean {
+    return draft.shownTrackers.includes(id)
+  }
+
+  /**
+   * Start or stop drawing a chip, without touching the tracker itself.
+   *
+   * The whole of what is still a per-journal setting. Everything else about
+   * a tracker belongs to the vault, which is why hiding one here keeps its
+   * definition and every reading it ever made.
+   */
+  async function toggleShown(id: string) {
+    draft.shownTrackers = shown(id)
+      ? draft.shownTrackers.filter((held) => held !== id)
+      : [...draft.shownTrackers, id]
+    await save()
+  }
+
+  async function upsert(tracker: Tracker) {
+    await tracking.saveTracker(tracker)
   }
 
   /** Mint a tracker in the backend, which is where ids and clocks live. */
   async function mint(name: string, kind: TrackerKind): Promise<Tracker | null> {
     try {
       const tracker = await api.newTracker(name, kind)
-      tracker.sortOrder = draft.trackers.length
+      tracker.sortOrder = tracking.trackers.length
       return tracker
     } catch {
       app.error = 'The tracker could not be created.'
@@ -90,8 +114,11 @@
   async function addPreset(preset: (typeof TRACKER_PRESETS)[number]) {
     const minted = await mint(preset.name, preset.kind)
     if (!minted) return
-    upsert(fromPreset(minted, preset))
-    await save()
+    await upsert(fromPreset(minted, preset))
+    // Made here, so it is drawn here. Adding a tracker from a journal's own
+    // settings and then having to tick it on would be a form with a step
+    // in it that is never the answer.
+    await toggleShown(minted.id)
   }
 
   async function addNamed() {
@@ -102,10 +129,10 @@
     if (!minted) return
     // A colour that is not already in the row, so a new chip is
     // distinguishable from the one beside it without being chosen.
-    minted.color = PALETTE[draft.trackers.length % PALETTE.length]!
+    minted.color = PALETTE[tracking.trackers.length % PALETTE.length]!
     minted.icon = 'check'
-    upsert(minted)
-    await save()
+    await upsert(minted)
+    await toggleShown(minted.id)
     // A *copy* to edit. Handing over the object that is in the draft makes
     // Cancel a lie -- every keystroke would already have landed -- and
     // clearing the name and cancelling would leave a nameless tracker that
@@ -141,11 +168,10 @@
       tracker.defaultValue = 1
     }
     tracker.updatedAt = new Date().toISOString()
-    upsert(tracker)
+    await upsert(tracker)
     editing = null
     adding = false
     pickingIcon = false
-    await save()
   }
 
   function setKind(kind: TrackerKind) {
@@ -159,8 +185,7 @@
   }
 
   async function toggleArchived(tracker: Tracker) {
-    upsert({ ...tracker, archived: !tracker.archived, updatedAt: new Date().toISOString() })
-    await save()
+    await upsert({ ...tracker, archived: !tracker.archived, updatedAt: new Date().toISOString() })
   }
 
   /**
@@ -178,8 +203,11 @@
   }
 
   async function toggleCalendar(tracker: Tracker) {
-    upsert({ ...tracker, onCalendar: !tracker.onCalendar, updatedAt: new Date().toISOString() })
-    await save()
+    await upsert({
+      ...tracker,
+      onCalendar: !tracker.onCalendar,
+      updatedAt: new Date().toISOString(),
+    })
   }
 
   async function move(tracker: Tracker, by: -1 | 1) {
@@ -188,26 +216,17 @@
     const j = i + by
     if (i < 0 || j < 0 || j >= order.length) return
     ;[order[i], order[j]] = [order[j]!, order[i]!]
-    order.forEach((t, n) => upsert({ ...t, sortOrder: n }))
-    await save()
+    for (const [n, t] of order.entries()) await upsert({ ...t, sortOrder: n })
   }
 
   async function reallyDelete() {
     const tracker = pendingDelete
     pendingDelete = null
     if (!tracker) return
-    try {
-      await api.deleteTracker(draft.id, tracker.id)
-    } catch {
-      // Leave the list alone. Dropping the definition here while the store
-      // still holds it is the worst of both: the readings survive with
-      // nothing able to name them, and the next save writes the deletion
-      // through as though it had been asked for.
-      app.error = 'The tracker could not be deleted.'
-      return
-    }
-    draft.trackers = draft.trackers.filter((t) => t.id !== tracker.id)
-    await app.refreshJournals()
+    await tracking.deleteTracker(tracker.id)
+    // The id stays in this journal's list and is skipped when the strip is
+    // built. Rewriting six journals to tidy one array is a great deal of
+    // writing to avoid a lookup that already has to handle a miss.
   }
 
   /**
@@ -303,19 +322,32 @@
     </section>
 
     <!-- ── Tracking ────────────────────────────────────────────────── -->
-    {#if tracking}
+    {#if enabled}
       <section>
         <h3>Tracking</h3>
         <p class="hint">
           Anything you want to record beside an entry — a habit, a dose, a symptom, a number.
-          Recorded values are stored with the time they happened, so they can be charted and drawn
-          on the calendar later.
+          Trackers belong to the vault rather than to one journal, so the tick beside each says
+          whether <em>this</em> journal offers its chip. Unticking one keeps it and every reading it has
+          ever made.
         </p>
 
         {#if live.length}
           <ul class="trackers">
             {#each live as tracker, i (tracker.id)}
-              <li class="tracker">
+              <li class="tracker" class:off={!shown(tracker.id)}>
+                <button
+                  class="ghost tick"
+                  class:on={shown(tracker.id)}
+                  role="switch"
+                  aria-checked={shown(tracker.id)}
+                  title={shown(tracker.id)
+                    ? `Shown on ${draft.name}`
+                    : `Not shown on ${draft.name}`}
+                  onclick={() => toggleShown(tracker.id)}
+                >
+                  <Icon name={shown(tracker.id) ? 'check' : 'circle'} size={15} />
+                </button>
                 <TrackerIcon name={tracker.icon} color={tracker.color} size={30} />
                 <div class="what">
                   <span class="tname">{tracker.name}</span>
@@ -529,7 +561,7 @@
         <p class="glabel">Or start from one of these</p>
         <div class="presets">
           {#each TRACKER_PRESETS as preset (preset.name)}
-            {@const already = draft.trackers.some(
+            {@const already = tracking.trackers.some(
               (t) => t.name.toLowerCase() === preset.name.toLowerCase(),
             )}
             <button
@@ -750,6 +782,17 @@
   }
   .trackers.muted {
     opacity: 0.75;
+  }
+
+  /* A tracker this journal does not draw is still listed -- it is a vault
+     record and this is where they are edited -- but it should not read as
+     part of this page's strip. */
+  .tracker.off .what {
+    opacity: 0.55;
+  }
+
+  .tick.on {
+    color: var(--accent);
   }
 
   .tracker {

@@ -10,7 +10,7 @@
   import { focusOnMount } from '../lib/focus'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
-  import { colourItems } from '../lib/menus'
+  import { colourItems, purposeItems } from '../lib/menus'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import type { IconName } from '../lib/icons'
@@ -109,6 +109,16 @@
         label: 'Colour',
         dot: p.color,
         items: colourItems(p.color, (color) => todo.saveProject({ ...$state.snapshot(p), color })),
+      },
+      {
+        // The highest-value place in the whole application to set one:
+        // everything under this project inherits it, so a body of work is
+        // attributed once rather than task by task.
+        label: 'File under',
+        icon: 'compass',
+        items: purposeItems({ ...$state.snapshot(p) }.purpose, (purpose) =>
+          todo.saveProject({ ...$state.snapshot(p), purpose }),
+        ),
       },
       {
         label: 'Status',

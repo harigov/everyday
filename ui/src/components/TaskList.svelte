@@ -9,6 +9,7 @@
   import { friendlyDate, plural } from '../lib/format'
   import { todayIso } from '../lib/time'
   import { menu } from '../lib/menu.svelte'
+  import { purpose } from '../lib/purpose.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import EmptyState from './EmptyState.svelte'
   import TaskRow from './TaskRow.svelte'
@@ -75,6 +76,17 @@
       let bucket: { key: string; label: string; order: number }
       if (todo.groupBy === 'due') {
         bucket = dueBucket(node.task)
+      } else if (todo.groupBy === 'purpose') {
+        // The resolved purpose, not the task's own: a task under a filed
+        // project belongs in that project's section, which is the whole
+        // point of inheritance. Unfiled work sorts last rather than first —
+        // there is usually a lot of it, and it is not the answer anyone
+        // opened this grouping to see.
+        const resolved = node.task.purpose ?? todo.projectOf(node.task.projectId)?.purpose ?? null
+        const label = purpose.describe(resolved)
+        bucket = resolved
+          ? { key: `${resolved.type}:${resolved.id}`, label: label.name, order: 0 }
+          : { key: 'none', label: 'Not filed', order: 9 }
       } else if (todo.groupBy === 'status') {
         const key = node.task.status
         bucket = {
@@ -99,12 +111,16 @@
     return [...out.values()].sort((a, b) => a.order - b.order || a.key.localeCompare(b.key))
   })
 
-  const GROUPS: { id: GroupBy; label: string }[] = [
+  const GROUPS = $derived.by((): { id: GroupBy; label: string }[] => [
     { id: 'due', label: 'Due date' },
     { id: 'status', label: 'Status' },
     { id: 'priority', label: 'Priority' },
+    // Offered only where there is somewhere to file things. A grouping whose
+    // every row would say "Not filed" is a menu item that teaches people the
+    // feature does not work.
+    ...(purpose.enabled ? [{ id: 'purpose' as const, label: 'Goal' }] : []),
     { id: 'none', label: 'Nothing' },
-  ]
+  ])
 
   /**
    * The list itself, where there is no task under the pointer.

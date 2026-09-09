@@ -48,13 +48,16 @@ use serde_json::{Value, json};
 use crate::agent::{MAX_MEMORY_CHARS, Memory};
 use crate::error::{Error, Result};
 use crate::id::{
-    BlockId, ConversationId, EntryId, ItemId, JournalId, MemoryId, ProjectId, TaskId, TrackerId,
+    BlockId, ConversationId, EntryId, GoalId, ItemId, JournalId, MemoryId, ProjectId, RoleId,
+    TaskId, TrackerId,
 };
 use crate::library::{Item, ItemStatus, LogEntry, LogEvent};
 use crate::model::{Entry, Journal};
+use crate::purpose::{Goal, GoalActivity, GoalStatus, Purpose};
 use crate::richtext::RichDoc;
 use crate::store::calendars::EventQuery;
 use crate::store::library::ItemQuery;
+use crate::store::purpose::{GoalQuery, PurposeWindow};
 use crate::store::tasks::{BlockQuery, ParentScope, ProjectScope, TaskQuery};
 use crate::store::trackers::ReadingQuery;
 use crate::store::{EntryQuery, SortOrder};
@@ -65,6 +68,7 @@ use crate::tracker::Reading;
 use crate::vault::Vault;
 use jiff::Timestamp;
 use jiff::civil::Date;
+use std::collections::BTreeMap;
 
 /// What running a tool does to the vault.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -102,6 +106,7 @@ pub enum Domain {
     Calendars,
     Library,
     Trackers,
+    Goals,
     Agent,
 }
 
@@ -113,6 +118,7 @@ impl Domain {
             Domain::Calendars => vault.supports_calendars(),
             Domain::Library => vault.supports_library(),
             Domain::Trackers => vault.supports_trackers(),
+            Domain::Goals => vault.supports_goals(),
             Domain::Agent => vault.supports_agent(),
         }
     }
@@ -359,6 +365,8 @@ fn limit_arg() -> (&'static str, Value) {
     ("limit", number("Most rows to return. Defaults to 50, capped at 200."))
 }
 
+const GOAL_STATUSES: [&str; 4] = ["active", "paused", "done", "dropped"];
+
 const STATUSES: &[&str] = &["backlog", "todo", "doing", "blocked", "done", "cancelled"];
 const PRIORITIES: &[&str] = &["none", "low", "medium", "high", "urgent"];
 const PROJECT_STATUSES: &[&str] = &["active", "paused", "done", "archived"];
@@ -416,6 +424,10 @@ pub fn describe(ctx: &ToolContext<'_>, name: &str, arguments: &Value) -> Option<
         "delete_item" => {
             let id: ItemId = args.opt_id("item_id", "item").ok()??;
             vault.item(id).ok().map(|i| i.title)
+        }
+        "delete_goal" => {
+            let id: GoalId = args.opt_id("goal_id", "goal").ok()??;
+            vault.goal(id).ok().map(|g| g.title)
         }
         "delete_time_block" => {
             let id: BlockId = args.opt_id("block_id", "time block").ok()??;
@@ -913,8 +925,8 @@ static ALL: &[Tool] = &[
         Trackers,
         empty_schema(),
         "What this vault records in numbers rather than prose \u{2014} habits, doses, \
-         symptoms, counts \u{2014} with the journal each belongs to and what its \
-         values mean.",
+         symptoms, counts \u{2014} with what each one's values mean and how often it \
+         is meant to happen.",
         run_list_trackers
     ),
     tool!(
@@ -950,6 +962,143 @@ static ALL: &[Tool] = &[
          rather than reading every reading: it is what answers 'how has my sleep \
          been' without pulling a year of rows through the conversation.",
         run_tracker_summary
+    ),
+    tool!(
+        "list_readings",
+        Read,
+        Trackers,
+        schema(
+            vec![
+                ("tracker_id", text("From list_trackers. Omit for every tracker.")),
+                ("from", day("Start of the window, inclusive. Defaults to 30 days back.")),
+                ("to", day("End of the window, inclusive. Defaults to today.")),
+                ("timed_only", flag("Only readings that know their time of day.")),
+                limit_arg(),
+            ],
+            &[]
+        ),
+        "Every individual reading over a window, with its day and \u{2014} where it is \
+         known \u{2014} its time. Prefer tracker_summary for 'how has my sleep been': \
+         this is for questions that need the readings themselves, such as lining up \
+         the days one thing happened against what another said the day after.",
+        run_list_readings
+    ),
+    // ---- roles and goals ------------------------------------------------
+    tool!(
+        "list_roles",
+        Read,
+        Goals,
+        empty_schema(),
+        "The parts of a life this vault is organised around \u{2014} parent, work, \
+         yourself \u{2014} with how many goals sit under each.",
+        run_list_roles
+    ),
+    tool!(
+        "list_goals",
+        Read,
+        Goals,
+        schema(
+            vec![
+                ("role_id", text("From list_roles. Omit for every role.")),
+                ("status", one_of("Only goals in this state.", &GOAL_STATUSES)),
+                ("include_activity", flag("Also say what has been recorded against each.")),
+                limit_arg(),
+            ],
+            &[]
+        ),
+        "What somebody has said they want, under which part of their life. With \
+         include_activity, each goal also reports its hours, its open tasks and \
+         when it was last touched \u{2014} which is how to find the ones that have \
+         gone quiet.",
+        run_list_goals
+    ),
+    tool!(
+        "create_goal",
+        Write,
+        Goals,
+        schema(
+            vec![
+                ("role_id", text("From list_roles. Required: every goal sits under one.")),
+                ("title", text("What is wanted.")),
+                ("notes", text("What done would look like.")),
+                ("horizon", day("When it would ideally be true by. Soft; nothing is notified.")),
+            ],
+            &["role_id", "title"]
+        ),
+        "Add a goal under a role.",
+        run_create_goal
+    ),
+    tool!(
+        "update_goal",
+        Write,
+        Goals,
+        schema(
+            vec![
+                ("goal_id", text("From list_goals.")),
+                ("title", text("A new title.")),
+                ("notes", text("What done would look like.")),
+                ("status", one_of("Where it has got to.", &GOAL_STATUSES)),
+                ("horizon", day("When it would ideally be true by.")),
+                ("role_id", text("Move it under a different role.")),
+            ],
+            &["goal_id"]
+        ),
+        "Change a goal. Only the fields given are touched. Setting status to done \
+         stamps when it was finished; dropped does not, because giving up on \
+         something is not finishing it.",
+        run_update_goal
+    ),
+    tool!(
+        "delete_goal",
+        Destructive,
+        Goals,
+        schema(vec![("goal_id", text("From list_goals."))], &["goal_id"]),
+        "Permanently delete a goal. Whatever was filed under it is kept but stops \
+         being counted towards it. To record giving up on something, use \
+         update_goal with status dropped.",
+        run_delete_goal
+    ),
+    tool!(
+        "set_purpose",
+        Write,
+        Goals,
+        schema(
+            vec![
+                (
+                    "kind",
+                    one_of(
+                        "What sort of record to file.",
+                        &["project", "task", "block", "entry", "item", "tracker"]
+                    )
+                ),
+                ("id", text("The record's id, from whichever list tool found it.")),
+                ("goal_id", text("File it under this goal. From list_goals.")),
+                ("role_id", text("Or under this role directly. From list_roles.")),
+                ("clear", flag("Unfile it instead.")),
+            ],
+            &["kind", "id"]
+        ),
+        "Say what a record is for: a goal, or a part of a life directly. Filing a \
+         project is worth more than filing its tasks \u{2014} everything under it \
+         inherits, so one call attributes the lot. Pass exactly one of goal_id, \
+         role_id or clear.",
+        run_set_purpose
+    ),
+    tool!(
+        "time_by_role",
+        Read,
+        Goals,
+        schema(
+            vec![
+                ("from", day("Start of the window, inclusive. Defaults to 7 days back.")),
+                ("to", day("End of the window, inclusive. Defaults to today.")),
+            ],
+            &[]
+        ),
+        "Where the hours went over a window, grouped by the part of a life they \
+         served, planned beside recorded. Time filed against nothing is reported \
+         as its own row rather than left out.",
+        run_time_by_role
     ),
     // ---- memory ---------------------------------------------------------
     tool!(
@@ -1213,15 +1362,39 @@ fn run_overview(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
 
     if vault.supports_trackers() {
         let trackers: Vec<Value> = vault
-            .journals()?
+            .trackers()?
             .iter()
-            .flat_map(|j| {
-                j.active_trackers()
-                    .map(|t| json!({ "id": t.id.to_string(), "name": t.name }))
-                    .collect::<Vec<_>>()
-            })
+            .filter(|t| !t.archived)
+            .map(|t| json!({ "id": t.id.to_string(), "name": t.name }))
             .collect();
         m.insert("trackers".into(), json!(trackers));
+    }
+
+    if vault.supports_goals() {
+        // The parts of a life and what is wanted from each, so a model
+        // knows the vocabulary before it is asked a question in it. Names
+        // and ids only -- the hours are `time_by_role`'s answer and the
+        // per-goal detail is `list_goals`'.
+        let roles: Vec<Value> = vault
+            .roles()?
+            .iter()
+            .filter(|r| !r.archived)
+            .map(|r| json!({ "id": r.id.to_string(), "name": r.name }))
+            .collect();
+        let goals: Vec<Value> = vault
+            .goals(&GoalQuery::open())?
+            .iter()
+            .map(|g| {
+                json!({
+                    "id": g.id.to_string(),
+                    "title": g.title,
+                    "role_id": g.role_id.to_string(),
+                    "status": g.status.as_str(),
+                })
+            })
+            .collect();
+        m.insert("roles".into(), json!(roles));
+        m.insert("open_goals".into(), json!(goals));
     }
 
     Ok(out)
@@ -1910,51 +2083,33 @@ fn run_delete_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 // ---- tracking -----------------------------------------------------------
 
 fn run_list_trackers(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
-    let mut rows = Vec::new();
-    for journal in ctx.vault.journals()? {
-        for t in journal.active_trackers() {
-            rows.push(json!({
+    let rows: Vec<Value> = ctx
+        .vault
+        .trackers()?
+        .into_iter()
+        .filter(|t| !t.archived)
+        .map(|t| {
+            json!({
                 "id": t.id.to_string(),
                 "name": t.name,
-                "journal_id": journal.id.to_string(),
-                "journal": journal.name,
-                "kind": format!("{:?}", t.kind).to_lowercase(),
+                "kind": t.kind.as_str(),
                 "unit": t.unit,
                 "scale_max": t.scale_max,
-            }));
-        }
-    }
-    Ok(json!({ "count": rows.len(), "trackers": rows }))
-}
-
-/// Find which journal defines a tracker.
-///
-/// Needed because a [`Reading`] carries both ids and the definitions live
-/// inside journal records rather than in a table of their own — so a tool
-/// handed only a tracker id has to go looking. See
-/// [`tracker`](crate::tracker) for why the split exists.
-fn journal_of_tracker(ctx: &ToolContext<'_>, tracker: TrackerId) -> Result<JournalId> {
-    ctx.vault
-        .journals()?
-        .into_iter()
-        .find(|j| j.tracker(tracker).is_some())
-        .map(|j| j.id)
-        .ok_or_else(|| {
-            Error::Invalid(format!(
-                "no tracker with id {tracker}. Call list_trackers for the ones that exist."
-            ))
+                "cadence": t.cadence.map(|c| c.describe()),
+            })
         })
+        .collect();
+    Ok(json!({ "count": rows.len(), "trackers": rows }))
 }
 
 fn run_log_reading(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let tracker_id: TrackerId = args.id("tracker_id", "tracker")?;
-    let journal_id = journal_of_tracker(ctx, tracker_id)?;
     let value = args
         .opt_f64("value")
         .ok_or_else(|| args.bad("`value` is required and must be a number"))?;
     let date = args.opt_date("date")?.unwrap_or(ctx.today);
 
-    let mut reading = Reading::on(journal_id, tracker_id, date, value);
+    let mut reading = Reading::on(tracker_id, date, value);
     reading.note = args.opt_str("note").unwrap_or_default().to_string();
     // The vault clamps to the tracker's scale on the way in, which is why
     // the stored value is read back rather than echoed: a model told it
@@ -1962,7 +2117,7 @@ fn run_log_reading(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     ctx.vault.save_reading(&reading)?;
     let stored = ctx.vault.reading(reading.id)?;
 
-    let name = ctx.vault.journal(journal_id)?.tracker(tracker_id).map(|t| t.name.clone());
+    let name = ctx.vault.tracker(tracker_id).ok().map(|t| t.name);
     Ok(json!({
         "ok": true,
         "action": "recorded",
@@ -1995,12 +2150,8 @@ fn run_tracker_summary(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> 
     // here would make half the charts wrong, so each day is reduced by its
     // own tracker's aggregate -- and the aggregate is named in the reply, so
     // the model can say "3 doses" rather than "3".
-    let aggregates: std::collections::BTreeMap<TrackerId, crate::tracker::Aggregate> = ctx
-        .vault
-        .journals()?
-        .iter()
-        .flat_map(|j| j.trackers.iter().map(|t| (t.id, t.kind.aggregate())).collect::<Vec<_>>())
-        .collect();
+    let aggregates: std::collections::BTreeMap<TrackerId, crate::tracker::Aggregate> =
+        ctx.vault.trackers()?.iter().map(|t| (t.id, t.kind.aggregate())).collect();
 
     Ok(json!({
         "from": from.to_string(),
@@ -2024,6 +2175,380 @@ fn run_tracker_summary(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> 
                 })
             })
             .collect::<Vec<_>>(),
+    }))
+}
+
+fn run_list_readings(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let to = args.opt_date("to")?.unwrap_or(ctx.today);
+    let from = args
+        .opt_date("from")?
+        .unwrap_or_else(|| to.checked_sub(jiff::Span::new().days(30)).unwrap_or(to));
+    if to < from {
+        return Err(args.bad("`to` is before `from`"));
+    }
+
+    let mut query = ReadingQuery::between(from, to);
+    query.limit = Some(args.limit());
+    query.timed_only = args.bool_or("timed_only", false);
+    if let Some(id) = args.opt_id::<TrackerId>("tracker_id", "tracker")? {
+        query.tracker_ids = vec![id];
+    }
+
+    // Names, once, so a hundred rows do not each carry one -- and so the
+    // model can say "swimming" rather than a uuid.
+    let names: BTreeMap<TrackerId, String> =
+        ctx.vault.trackers()?.into_iter().map(|t| (t.id, t.name)).collect();
+
+    let rows: Vec<Value> = ctx
+        .vault
+        .readings(&query)?
+        .into_iter()
+        .map(|r| {
+            let mut row = json!({
+                "date": r.local_date.to_string(),
+                "value": r.value,
+                "tracker": names.get(&r.tracker_id).cloned().unwrap_or_default(),
+                "tracker_id": r.tracker_id.to_string(),
+            });
+            let m = row.as_object_mut().expect("just built an object");
+            // The time only when there is one. A reading ticked while
+            // writing up yesterday knows its day and nothing about 23:04,
+            // and a defaulted instant is the answer that poisons every
+            // hour-of-day question anybody asks of this data.
+            if let Some(at) = r.at {
+                m.insert("at".into(), json!(at.to_string()));
+            }
+            if !r.note.is_empty() {
+                m.insert("note".into(), json!(r.note));
+            }
+            row
+        })
+        .collect();
+
+    Ok(json!({
+        "from": from.to_string(),
+        "to": to.to_string(),
+        "count": rows.len(),
+        "readings": rows,
+    }))
+}
+
+// ---- roles and goals ----------------------------------------------------
+
+fn run_list_roles(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
+    let mut rows = Vec::new();
+    for role in ctx.vault.roles()? {
+        if role.archived {
+            continue;
+        }
+        let (goals, open) = ctx.vault.count_goals(role.id).unwrap_or((0, 0));
+        rows.push(json!({
+            "id": role.id.to_string(),
+            "name": role.name,
+            "goals": goals,
+            "open_goals": open,
+        }));
+    }
+    Ok(json!({ "count": rows.len(), "roles": rows }))
+}
+
+fn goal_json(goal: &Goal, role: Option<&str>, activity: Option<&GoalActivity>) -> Value {
+    let mut out = json!({
+        "id": goal.id.to_string(),
+        "title": goal.title,
+        "status": goal.status.as_str(),
+        "role_id": goal.role_id.to_string(),
+    });
+    let m = out.as_object_mut().expect("just built an object");
+    if let Some(role) = role {
+        m.insert("role".into(), json!(role));
+    }
+    if !goal.notes.is_empty() {
+        m.insert("notes".into(), json!(goal.notes));
+    }
+    if let Some(horizon) = goal.horizon {
+        m.insert("horizon".into(), json!(horizon.to_string()));
+    }
+    if let Some(a) = activity {
+        // Only what happened. A row of seven zeroes tells a model nothing
+        // and costs it the tokens to read them.
+        let mut had = serde_json::Map::new();
+        if a.actual_minutes > 0 {
+            had.insert("minutes".into(), json!(a.actual_minutes));
+        }
+        if a.open_tasks > 0 {
+            had.insert("open_tasks".into(), json!(a.open_tasks));
+        }
+        if a.done_tasks > 0 {
+            had.insert("done_tasks".into(), json!(a.done_tasks));
+        }
+        if a.entries > 0 {
+            had.insert("entries".into(), json!(a.entries));
+        }
+        if a.readings > 0 {
+            had.insert("readings".into(), json!(a.readings));
+        }
+        if a.items > 0 {
+            had.insert("shelf_items".into(), json!(a.items));
+        }
+        match a.last_touched {
+            Some(at) => {
+                had.insert("last_touched".into(), json!(at.to_string()));
+            }
+            // Said rather than omitted: "never touched" is the answer
+            // somebody asking about a goal most wants to hear.
+            None => {
+                had.insert("last_touched".into(), json!("never"));
+            }
+        }
+        m.insert("activity".into(), Value::Object(had));
+    }
+    out
+}
+
+fn run_list_goals(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let mut query = GoalQuery { limit: Some(args.limit()), ..Default::default() };
+    query.role_id = args.opt_id("role_id", "role")?;
+    if let Some(status) = args.opt_enum::<GoalStatus>("status", &GOAL_STATUSES)? {
+        query.statuses = vec![status];
+    }
+
+    let roles = ctx.vault.roles()?;
+    let with_activity = args.bool_or("include_activity", false);
+    let rows: Vec<Value> = ctx
+        .vault
+        .goals(&query)?
+        .into_iter()
+        .map(|goal| {
+            let role = roles.iter().find(|r| r.id == goal.role_id).map(|r| r.name.as_str());
+            let activity = if with_activity { ctx.vault.goal_activity(goal.id).ok() } else { None };
+            goal_json(&goal, role, activity.as_ref())
+        })
+        .collect();
+    Ok(json!({ "count": rows.len(), "goals": rows }))
+}
+
+fn run_create_goal(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let role_id: RoleId = args.id("role_id", "role")?;
+    let title = args.str("title")?.trim().to_string();
+    if title.is_empty() {
+        return Err(args.bad("`title` cannot be empty"));
+    }
+    let mut goal = Goal::new(role_id, title);
+    goal.notes = args.opt_str("notes").unwrap_or_default().to_string();
+    goal.horizon = args.opt_date("horizon")?;
+    ctx.vault.save_goal(&goal)?;
+    done("created", "goal", &goal.title, goal.id.to_string())
+}
+
+fn run_update_goal(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let id: GoalId = args.id("goal_id", "goal")?;
+    let mut goal = ctx.vault.goal(id)?;
+
+    if let Some(title) = args.opt_str("title") {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(args.bad("`title` cannot be emptied"));
+        }
+        goal.title = title.to_string();
+    }
+    if let Some(notes) = args.opt_str("notes") {
+        goal.notes = notes.to_string();
+    }
+    if let Some(role_id) = args.opt_id::<RoleId>("role_id", "role")? {
+        goal.role_id = role_id;
+    }
+    if let Some(horizon) = args.opt_date("horizon")? {
+        goal.horizon = Some(horizon);
+    }
+    // Through `set_status`, not by assignment: it is what keeps the finished
+    // stamp honest, and dropping a goal must not leave one behind.
+    if let Some(status) = args.opt_enum::<GoalStatus>("status", &GOAL_STATUSES)? {
+        goal.set_status(status);
+    }
+    goal.updated_at = jiff::Timestamp::now();
+    ctx.vault.save_goal(&goal)?;
+    done("updated", "goal", &goal.title, id.to_string())
+}
+
+fn run_delete_goal(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let id: GoalId = args.id("goal_id", "goal")?;
+    let goal = ctx.vault.goal(id)?;
+    ctx.vault.delete_goal(id)?;
+    done("deleted", "goal", &goal.title, id.to_string())
+}
+
+fn run_set_purpose(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let kind = args.str("kind")?;
+    let id = args.str("id")?;
+    let clear = args.bool_or("clear", false);
+    let goal_id = args.opt_id::<GoalId>("goal_id", "goal")?;
+    let role_id = args.opt_id::<RoleId>("role_id", "role")?;
+
+    // Exactly one. Two would be a silent choice between them, and none
+    // would be a call that looks like it worked and did nothing.
+    let given =
+        usize::from(clear) + usize::from(goal_id.is_some()) + usize::from(role_id.is_some());
+    if given != 1 {
+        return Err(args.bad("pass exactly one of `goal_id`, `role_id` or `clear`"));
+    }
+
+    let purpose = match (goal_id, role_id) {
+        (Some(id), _) => {
+            // Checked before anything is written, so a bad id is a refusal
+            // rather than a record filed under nothing.
+            ctx.vault.goal(id)?;
+            Some(Purpose::Goal { id })
+        }
+        (_, Some(id)) => {
+            ctx.vault.role(id)?;
+            Some(Purpose::Role { id })
+        }
+        _ => None,
+    };
+
+    let name = match kind {
+        "project" => {
+            let mut p = ctx.vault.project(parse_id(args, "id", "project", id)?)?;
+            p.purpose = purpose;
+            let name = p.name.clone();
+            ctx.vault.save_project(&p)?;
+            name
+        }
+        "task" => {
+            let mut t = ctx.vault.task(parse_id(args, "id", "task", id)?)?;
+            t.purpose = purpose;
+            let name = t.title.clone();
+            ctx.vault.save_task(&t)?;
+            name
+        }
+        "block" => {
+            let mut b = ctx.vault.block(parse_id(args, "id", "block", id)?)?;
+            b.purpose = purpose;
+            let name = if b.title.is_empty() { "that hour".to_string() } else { b.title.clone() };
+            ctx.vault.save_block(&b)?;
+            name
+        }
+        "entry" => {
+            let mut e = ctx.vault.entry(parse_id(args, "id", "entry", id)?)?;
+            e.purpose = purpose;
+            let name = e.display_title();
+            // The version it was read at, so a filing that raced an edit in
+            // the window loses rather than silently overwriting it.
+            let expect = Some(e.updated_at);
+            ctx.vault.save_entry(&e, expect)?;
+            name
+        }
+        "item" => {
+            let mut i = ctx.vault.item(parse_id(args, "id", "item", id)?)?;
+            i.purpose = purpose;
+            let name = i.title.clone();
+            ctx.vault.save_item(&i)?;
+            name
+        }
+        "tracker" => {
+            let mut t = ctx.vault.tracker(parse_id(args, "id", "tracker", id)?)?;
+            t.purpose = purpose;
+            let name = t.name.clone();
+            ctx.vault.save_tracker(&t)?;
+            name
+        }
+        other => {
+            return Err(args.bad(format!(
+                "`kind` must be one of project, task, block, entry, item, tracker \u{2014} not {other:?}"
+            )));
+        }
+    };
+
+    Ok(json!({
+        "ok": true,
+        "action": if clear { "unfiled" } else { "filed" },
+        "kind": kind,
+        "name": name,
+        "id": id,
+    }))
+}
+
+/// Parse an id of a named kind, reporting it the way `Args` reports its own.
+fn parse_id<T: std::str::FromStr>(
+    args: &Args<'_>,
+    field: &str,
+    kind: &str,
+    raw: &str,
+) -> Result<T> {
+    raw.parse::<T>().map_err(|_| args.bad(format!("`{field}` is not a {kind} id: {raw:?}")))
+}
+
+fn run_time_by_role(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let to = args.opt_date("to")?.unwrap_or(ctx.today);
+    let from = args
+        .opt_date("from")?
+        .unwrap_or_else(|| to.checked_sub(jiff::Span::new().days(7)).unwrap_or(to));
+    if to < from {
+        return Err(args.bad("`to` is before `from`"));
+    }
+
+    let window = PurposeWindow::new(from, to);
+    let roles = ctx.vault.roles()?;
+    let goals = ctx.vault.goals(&GoalQuery::default())?;
+
+    /// Recorded, planned, blocks, and somebody else's meetings.
+    #[derive(Default)]
+    struct Row {
+        actual: u64,
+        planned: u64,
+        blocks: u64,
+        meetings: u64,
+    }
+
+    // Folded to one row per role here rather than in SQL, for the reason the
+    // interface folds it too: a goal's role is inside a sealed payload, and
+    // asking the database to open every one of them to group a report would
+    // undo the whole point of the pointer being a clear column.
+    let mut rows: BTreeMap<Option<String>, Row> = BTreeMap::new();
+    let name_of = |role: Option<RoleId>| -> Option<String> {
+        role.and_then(|id| roles.iter().find(|r| r.id == id)).map(|r| r.name.clone())
+    };
+
+    for entry in ctx.vault.time_by_purpose(window)? {
+        let role = match entry.purpose {
+            Some(Purpose::Role { id }) => Some(id),
+            Some(Purpose::Goal { id }) => goals.iter().find(|g| g.id == id).map(|g| g.role_id),
+            None => None,
+        };
+        let slot = rows.entry(name_of(role)).or_default();
+        slot.actual += entry.actual_minutes;
+        slot.planned += entry.planned_minutes;
+        slot.blocks += entry.blocks;
+    }
+
+    // Meetings are counted apart from the hours and never summed into them:
+    // an event is somebody else's claim on an hour and a block is your own
+    // record of one, and adding them double-counts every meeting you logged.
+    for entry in ctx.vault.events_by_role(window).unwrap_or_default() {
+        rows.entry(name_of(entry.role_id)).or_default().meetings += entry.minutes;
+    }
+
+    let out: Vec<Value> = rows
+        .into_iter()
+        .map(|(name, row)| {
+            json!({
+                // The unattributed row is named rather than left as null:
+                // most of a life is not booked against anything, and a
+                // report that dropped that share would be flattering.
+                "role": name.unwrap_or_else(|| "not filed".into()),
+                "minutes": row.actual,
+                "planned_minutes": row.planned,
+                "blocks": row.blocks,
+                "meeting_minutes": row.meetings,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "from": from.to_string(),
+        "to": to.to_string(),
+        "roles": out,
     }))
 }
 

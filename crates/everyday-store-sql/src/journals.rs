@@ -11,6 +11,7 @@ use everyday_core::model::{Entry, EntrySummary, Journal};
 use everyday_core::store::agent::AgentStore;
 use everyday_core::store::calendars::CalendarStore;
 use everyday_core::store::library::LibraryStore;
+use everyday_core::store::purpose::PurposeStore;
 use everyday_core::store::tasks::TaskStore;
 use everyday_core::store::trackers::TrackerStore;
 use everyday_core::store::{
@@ -18,6 +19,7 @@ use everyday_core::store::{
 };
 
 use crate::conn::{SqlExt, Value};
+use crate::purpose::{RecordKind, forget_purposes, set_purpose};
 use crate::{SqlStore, to_us, vals};
 
 impl JournalStore for SqlStore {
@@ -42,6 +44,10 @@ impl JournalStore for SqlStore {
     }
 
     fn trackers(&self) -> Option<&dyn TrackerStore> {
+        Some(self)
+    }
+
+    fn purpose(&self) -> Option<&dyn PurposeStore> {
         Some(self)
     }
 
@@ -76,15 +82,27 @@ impl JournalStore for SqlStore {
     }
 
     fn delete_journal(&self, id: JournalId) -> Result<()> {
+        // The readings survive and are only detached, which is why this runs
+        // before the transaction rather than inside it: it reseals a payload
+        // per row, and the sealing is the expensive part.
+        //
+        // They used to be deleted here, because a tracker was a field inside
+        // the journal record about to go, so its numbers had no meaning
+        // without it. Trackers are vault records now: a reading belongs to
+        // the tracker, and the journal is only where it was ticked.
+        TrackerStore::detach_readings_in(self, id)?;
+
         let mut conn = self.conn();
         let mut tx = conn.begin()?;
         let args = vals![id.to_string()];
+        let doomed: Vec<String> = tx
+            .query("SELECT id FROM entries WHERE journal_id = ?1", &args)?
+            .into_iter()
+            .map(|r| r.text(0))
+            .collect::<Result<_>>()?;
         tx.execute("DELETE FROM entries WHERE journal_id = ?1", &args)?;
-        // The readings too. Their definitions live inside the journal record
-        // about to be deleted, so leaving them would strand rows whose
-        // meaning is gone -- numbers against a tracker id nothing can name.
-        tx.execute("DELETE FROM readings WHERE journal_id = ?1", &args)?;
         tx.execute("DELETE FROM journals WHERE id = ?1", &args)?;
+        forget_purposes(tx.as_mut(), RecordKind::Entry, &doomed)?;
         tx.commit()
     }
 
@@ -156,7 +174,9 @@ impl JournalStore for SqlStore {
 
     fn put_entry(&self, e: &Entry) -> Result<()> {
         let (data, summary) = self.seal_entry(e)?;
-        self.conn().execute(
+        let mut conn = self.conn();
+        let mut tx = conn.begin()?;
+        tx.execute(
             "INSERT INTO entries
                 (id, journal_id, local_date, created_us, updated_us, starred, pinned, data, summary)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
@@ -175,7 +195,8 @@ impl JournalStore for SqlStore {
                 summary,
             ],
         )?;
-        Ok(())
+        set_purpose(tx.as_mut(), RecordKind::Entry, &e.id.to_string(), e.purpose.as_ref())?;
+        tx.commit()
     }
 
     /// One statement, so the check and the write cannot be separated.
@@ -188,11 +209,16 @@ impl JournalStore for SqlStore {
     fn put_entry_if(&self, e: &Entry, expect: Option<jiff::Timestamp>) -> Result<()> {
         let (data, summary) = self.seal_entry(e)?;
 
+        // The check and the write stay one statement; the transaction around
+        // them is here only so the pointer index cannot land without the row
+        // it indexes, or survive a write that lost the race.
+        let mut conn = self.conn();
+        let mut tx = conn.begin()?;
         let changed = match expect {
             // Updating: only if `updated_us` is still what the caller read.
             // A row that has moved on, or has been deleted, matches nothing
             // and changes nothing.
-            Some(want) => self.conn().execute(
+            Some(want) => tx.execute(
                 "UPDATE entries SET
                     journal_id = ?2, local_date = ?3, created_us = ?4, updated_us = ?5,
                     starred = ?6, pinned = ?7, data = ?8, summary = ?9
@@ -213,7 +239,7 @@ impl JournalStore for SqlStore {
             // Creating: `DO NOTHING` turns the primary-key clash into zero
             // rows rather than an error, so both branches report a conflict
             // the same way.
-            None => self.conn().execute(
+            None => tx.execute(
                 "INSERT INTO entries
                     (id, journal_id, local_date, created_us, updated_us,
                      starred, pinned, data, summary)
@@ -234,9 +260,12 @@ impl JournalStore for SqlStore {
         };
 
         if changed == 0 {
+            // Dropped without committing, so the losing writer leaves no
+            // trace at all -- including in the pointer table.
             return Err(Error::Conflict { kind: "entry" });
         }
-        Ok(())
+        set_purpose(tx.as_mut(), RecordKind::Entry, &e.id.to_string(), e.purpose.as_ref())?;
+        tx.commit()
     }
 
     fn delete_entry(&self, id: EntryId) -> Result<()> {
@@ -247,8 +276,11 @@ impl JournalStore for SqlStore {
         // survive is the *pointer*: a reading naming an entry that is gone
         // is a link the next feature to follow it would trip over.
         self.detach_readings_from(id)?;
-        self.conn().execute("DELETE FROM entries WHERE id = ?1", &vals![id.to_string()])?;
-        Ok(())
+        let mut conn = self.conn();
+        let mut tx = conn.begin()?;
+        tx.execute("DELETE FROM entries WHERE id = ?1", &vals![id.to_string()])?;
+        forget_purposes(tx.as_mut(), RecordKind::Entry, &[id.to_string()])?;
+        tx.commit()
     }
 
     fn all_entries(&self) -> Result<Vec<Entry>> {

@@ -12,6 +12,7 @@ use everyday_core::id::{CalendarId, EventId};
 use everyday_core::store::calendars::{CalendarStore, EventQuery, calendar_aad, event_aad};
 
 use crate::conn::{SqlExt, Value};
+use crate::purpose::{RecordKind, forget_purposes, set_purpose};
 use crate::{SqlStore, to_us, vals};
 
 impl CalendarStore for SqlStore {
@@ -35,7 +36,9 @@ impl CalendarStore for SqlStore {
         // Note what is *not* in the clear columns: the name, and above all
         // the URL. A feed address is a bearer credential.
         let data = self.seal(&calendar_aad(c.id), c)?;
-        self.conn().execute(
+        let mut conn = self.conn();
+        let mut tx = conn.begin()?;
+        tx.execute(
             "INSERT INTO calendars (id, visible, created_us, updated_us, synced_us, data)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT (id) DO UPDATE SET
@@ -49,7 +52,12 @@ impl CalendarStore for SqlStore {
                 data,
             ],
         )?;
-        Ok(())
+        // A feed's role goes in the same pointer table as everything else,
+        // always `role`-kinded: a calendar serves a role, and its forty
+        // meetings are not each yours to file.
+        let purpose = c.role_id.map(|id| everyday_core::purpose::Purpose::Role { id });
+        set_purpose(tx.as_mut(), RecordKind::Calendar, &c.id.to_string(), purpose.as_ref())?;
+        tx.commit()
     }
 
     fn delete_calendar(&self, id: CalendarId) -> Result<()> {
@@ -61,6 +69,7 @@ impl CalendarStore for SqlStore {
         let mut tx = conn.begin()?;
         tx.execute("DELETE FROM events WHERE calendar_id = ?1", &vals![id.to_string()])?;
         tx.execute("DELETE FROM calendars WHERE id = ?1", &vals![id.to_string()])?;
+        forget_purposes(tx.as_mut(), RecordKind::Calendar, &[id.to_string()])?;
         tx.commit()
     }
 

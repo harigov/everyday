@@ -18,24 +18,28 @@
 use super::agent::{AgentStore, ConversationQuery};
 use super::calendars::{CalendarStore, EventQuery};
 use super::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
+use super::purpose::{GoalQuery, PurposeWindow};
 use super::tasks::{BlockQuery, ParentScope, ProjectScope, TaskQuery, TaskSort, TaskStore};
+use super::trackers::ReadingQuery;
 use super::{EntryQuery, JournalStore, SortOrder};
 use crate::agent::{AgentSettings, Conversation, Memory, Message, Role, ToolCall};
 use crate::calendar::{Calendar, Event, EventStatus};
 use crate::id::{
-    BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, ItemId, JournalId, KindId,
-    LogId, MemoryId, ProjectId, TaskId,
+    BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, GoalId, ItemId, JournalId,
+    KindId, LogId, MemoryId, ProjectId, ReadingId, RoleId, TaskId, TrackerId,
 };
 use crate::library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, Link, LogEntry, LogEvent,
     Progress, Verbs,
 };
 use crate::model::{Attachment, Entry, Journal, Location, MediaKind};
+use crate::purpose::{Goal, GoalStatus, Purpose, Role as LifeRole};
 use crate::richtext::{MEDIA_NODE, RichDoc};
 use crate::task::{
     BlockKind, BlockSubject, Priority, Project, ProjectStatus, ProjectTaskCount, Task, TaskStatus,
     TimeBlock,
 };
+use crate::tracker::{Aggregate, Cadence, Period, Reading, Tracker, TrackerKind};
 use jiff::Timestamp;
 use jiff::civil::{Date, date, time};
 use serde_json::json;
@@ -90,6 +94,26 @@ pub fn run_all(store: &dyn JournalStore) {
             garbage_collection_keeps_library_covers(store);
         }
         None => eprintln!("backend {name:?} stores no library; skipping the library suite"),
+    }
+
+    // And the tracking domain, on the same terms again. It is handed the
+    // whole journal store because two of the things worth checking are
+    // cascades from *outside* the domain: what a deleted journal does to the
+    // readings ticked in it, and what a deleted entry does to the ones
+    // logged beside it.
+    match store.trackers() {
+        Some(_) => run_tracker_suite(store),
+        None => eprintln!("backend {name:?} stores no trackers; skipping the tracking suite"),
+    }
+
+    // And the purpose domain, on the same terms again. It is handed the
+    // whole journal store rather than just its own trait, because the
+    // question it exists to answer -- where did the week go -- is a join
+    // across the task, calendar and tracking tables, and a suite that only
+    // saw roles and goals could not tell whether any of that works.
+    match store.purpose() {
+        Some(_) => run_purpose_suite(store),
+        None => eprintln!("backend {name:?} stores no goals; skipping the purpose suite"),
     }
 
     // And the assistant, on the same terms again.
@@ -2185,4 +2209,920 @@ fn unicode_survives_a_calendar_round_trip(store: &dyn CalendarStore) {
     assert_eq!(store.get_event(event.id).unwrap().title, event.title);
 
     store.delete_calendar(cal.id).expect("delete_calendar");
+}
+
+// ---------------------------------------------------------------------------
+// The purpose domain
+// ---------------------------------------------------------------------------
+
+/// The purpose half of the suite. Called by [`run_all`] when the backend has
+/// a [`PurposeStore`](super::purpose::PurposeStore).
+///
+/// Handed the whole journal store, because half of what it checks is that
+/// *other* domains report their purpose correctly. The store must be empty
+/// of roles on entry; it is left empty on success.
+pub fn run_purpose_suite(store: &dyn JournalStore) {
+    eprintln!("--- purpose conformance suite ---");
+
+    purpose_starts_empty(store);
+    role_crud(store);
+    missing_purpose_records_are_not_found(store);
+    goal_round_trips_and_filters(store);
+    batch_goal_writes_land_together(store);
+    a_role_with_goals_under_it_refuses_to_be_deleted(store);
+    role_goal_counts_are_answered_by_the_backend(store);
+    a_purpose_survives_a_round_trip_on_every_record(store);
+    time_is_attributed_down_the_inheritance_chain(store);
+    unattributed_time_is_reported_rather_than_dropped(store);
+    clearing_a_purpose_removes_it_from_the_reports(store);
+    deleting_a_record_takes_its_purpose_with_it(store);
+    goal_activity_counts_what_points_at_it(store);
+    events_are_attributed_by_their_calendar(store);
+    unicode_survives_a_purpose_round_trip(store);
+
+    purpose_cleanup(store);
+    eprintln!("--- purpose suite passed ---");
+}
+
+fn purpose_store(store: &dyn JournalStore) -> &dyn super::purpose::PurposeStore {
+    store.purpose().expect("the purpose suite needs a purpose store")
+}
+
+fn purpose_cleanup(store: &dyn JournalStore) {
+    let p = purpose_store(store);
+    for goal in p.list_goals(&GoalQuery::default()).expect("list_goals") {
+        p.delete_goal(goal.id).expect("delete_goal");
+    }
+    for role in p.list_roles().expect("list_roles") {
+        p.delete_role(role.id).expect("delete_role");
+    }
+    assert!(p.list_roles().unwrap().is_empty(), "cleanup left roles behind");
+    assert!(p.list_goals(&GoalQuery::default()).unwrap().is_empty(), "cleanup left goals behind");
+}
+
+fn seeded_role(store: &dyn JournalStore, name: &str) -> LifeRole {
+    let role = LifeRole::new(name);
+    purpose_store(store).put_role(&role).expect("put_role");
+    role
+}
+
+fn seeded_goal(store: &dyn JournalStore, role: &LifeRole, title: &str) -> Goal {
+    let goal = Goal::new(role.id, title);
+    purpose_store(store).put_goal(&goal).expect("put_goal");
+    goal
+}
+
+fn purpose_starts_empty(store: &dyn JournalStore) {
+    let p = purpose_store(store);
+    assert!(p.list_roles().unwrap().is_empty(), "a fresh store must have no roles");
+    assert!(p.list_goals(&GoalQuery::default()).unwrap().is_empty(), "a fresh store has no goals");
+}
+
+fn role_crud(store: &dyn JournalStore) {
+    let p = purpose_store(store);
+    let mut role = LifeRole::new("Parent").with_color("#0f766e").with_icon("\u{1f3e1}");
+    role.notes = "the one that matters".into();
+    role.sort_order = 3;
+    p.put_role(&role).unwrap();
+
+    assert_eq!(p.get_role(role.id).unwrap(), role, "a role must survive the round trip whole");
+    assert_eq!(p.list_roles().unwrap().len(), 1);
+
+    // Idempotent, as every `put_` in this codebase is.
+    p.put_role(&role).unwrap();
+    assert_eq!(p.list_roles().unwrap().len(), 1, "putting twice must not make two roles");
+
+    role.name = "Father".into();
+    role.archived = true;
+    p.put_role(&role).unwrap();
+    let back = p.get_role(role.id).unwrap();
+    assert_eq!(back.name, "Father");
+    assert!(back.archived, "an archived role is still listed; it is only hidden from pickers");
+    assert_eq!(p.list_roles().unwrap().len(), 1, "archiving is not deleting");
+
+    p.delete_role(role.id).unwrap();
+    assert!(p.list_roles().unwrap().is_empty());
+}
+
+fn missing_purpose_records_are_not_found(store: &dyn JournalStore) {
+    let p = purpose_store(store);
+    assert!(
+        matches!(p.get_role(RoleId::new()), Err(crate::Error::NotFound { .. })),
+        "a role that was never written is not found, not an empty one"
+    );
+    assert!(matches!(p.get_goal(GoalId::new()), Err(crate::Error::NotFound { .. })));
+    // Deleting what is not there is not an error: it is already true.
+    p.delete_goal(GoalId::new()).expect("deleting a missing goal is a no-op");
+    p.delete_role(RoleId::new()).expect("deleting a missing role is a no-op");
+}
+
+fn goal_round_trips_and_filters(store: &dyn JournalStore) {
+    let p = purpose_store(store);
+    let parent = seeded_role(store, "Parent");
+    let work = seeded_role(store, "Work");
+
+    let mut riding = Goal::new(parent.id, "Viya rides without stabilisers");
+    riding.notes = "start on the grass".into();
+    riding.horizon = Some(date(2027, 3, 1));
+    riding.sort_order = 1;
+    p.put_goal(&riding).unwrap();
+
+    let mut shipped = Goal::new(work.id, "ship the thing");
+    shipped.set_status(GoalStatus::Done);
+    p.put_goal(&shipped).unwrap();
+
+    let mut later = Goal::new(parent.id, "teach her to swim");
+    later.set_status(GoalStatus::Paused);
+    p.put_goal(&later).unwrap();
+
+    assert_eq!(p.get_goal(riding.id).unwrap(), riding, "every field must survive");
+
+    let all = p.list_goals(&GoalQuery::default()).unwrap();
+    assert_eq!(all.len(), 3);
+
+    let under_parent = p.list_goals(&GoalQuery::under(parent.id)).unwrap();
+    assert_eq!(under_parent.len(), 2);
+    assert!(under_parent.iter().all(|g| g.role_id == parent.id));
+
+    // Paused is open; done is not.
+    let open = p.list_goals(&GoalQuery::open()).unwrap();
+    assert_eq!(open.len(), 2, "a paused goal is still one you are pursuing");
+    assert!(!open.iter().any(|g| g.id == shipped.id));
+
+    // An undated goal is outside every horizon window rather than inside
+    // all of them.
+    let by_horizon = p
+        .list_goals(&GoalQuery { horizon_to: Some(date(2027, 12, 31)), ..Default::default() })
+        .unwrap();
+    assert_eq!(by_horizon.len(), 1);
+    assert_eq!(by_horizon[0].id, riding.id);
+
+    let capped = p.list_goals(&GoalQuery { limit: Some(1), ..Default::default() }).unwrap();
+    assert_eq!(capped.len(), 1);
+
+    for g in [riding, shipped, later] {
+        p.delete_goal(g.id).unwrap();
+    }
+    p.delete_role(parent.id).unwrap();
+    p.delete_role(work.id).unwrap();
+}
+
+fn batch_goal_writes_land_together(store: &dyn JournalStore) {
+    let p = purpose_store(store);
+    let role = seeded_role(store, "Batch");
+    let goals: Vec<Goal> = (0..5).map(|i| Goal::new(role.id, format!("goal {i}"))).collect();
+    p.put_goals(&goals).unwrap();
+    assert_eq!(p.list_goals(&GoalQuery::under(role.id)).unwrap().len(), 5);
+
+    // An empty batch is a no-op rather than an error, because "save the
+    // selection" with nothing selected is a real call.
+    p.put_goals(&[]).unwrap();
+
+    for g in goals {
+        p.delete_goal(g.id).unwrap();
+    }
+    p.delete_role(role.id).unwrap();
+}
+
+fn a_role_with_goals_under_it_refuses_to_be_deleted(store: &dyn JournalStore) {
+    // The one parent in this vault that does not take its children with it.
+    // A shelf is what its items are made of; a role is not what a year of
+    // attributed hours is made of, and one click is the wrong distance from
+    // losing them.
+    let p = purpose_store(store);
+    let role = seeded_role(store, "Held");
+    let goal = seeded_goal(store, &role, "still wanted");
+
+    let refused = p.delete_role(role.id);
+    assert!(refused.is_err(), "a role with goals under it must not be deletable");
+    assert!(p.get_role(role.id).is_ok(), "the refusal must leave the role alone");
+    assert!(p.get_goal(goal.id).is_ok(), "and must certainly leave the goal alone");
+
+    // ...and it becomes deletable once nothing points at it.
+    p.delete_goal(goal.id).unwrap();
+    p.delete_role(role.id).unwrap();
+}
+
+fn role_goal_counts_are_answered_by_the_backend(store: &dyn JournalStore) {
+    let p = purpose_store(store);
+    let role = seeded_role(store, "Counted");
+    assert_eq!(p.count_goals(role.id).unwrap(), (0, 0));
+
+    let a = seeded_goal(store, &role, "open one");
+    let mut b = Goal::new(role.id, "finished one");
+    b.set_status(GoalStatus::Done);
+    p.put_goal(&b).unwrap();
+    let mut c = Goal::new(role.id, "paused one");
+    c.set_status(GoalStatus::Paused);
+    p.put_goal(&c).unwrap();
+
+    assert_eq!(
+        p.count_goals(role.id).unwrap(),
+        (3, 2),
+        "three goals, two of them still being pursued"
+    );
+
+    for g in [a.id, b.id, c.id] {
+        p.delete_goal(g).unwrap();
+    }
+    p.delete_role(role.id).unwrap();
+}
+
+fn a_purpose_survives_a_round_trip_on_every_record(store: &dyn JournalStore) {
+    let p = purpose_store(store);
+    let role = seeded_role(store, "Round trip");
+    let goal = seeded_goal(store, &role, "the goal");
+    let by_goal = goal.purpose();
+    let by_role = role.purpose();
+
+    // A project and a task, pointing at a goal.
+    if let Some(tasks) = store.tasks() {
+        let mut project = Project::new("filed");
+        project.purpose = Some(by_goal);
+        tasks.put_project(&project).unwrap();
+        assert_eq!(tasks.get_project(project.id).unwrap().purpose, Some(by_goal));
+
+        let mut task = Task::new("filed too");
+        task.purpose = Some(by_role);
+        tasks.put_task(&task).unwrap();
+        assert_eq!(
+            tasks.get_task(task.id).unwrap().purpose,
+            Some(by_role),
+            "pointing straight at a role is not a degraded case of pointing at a goal"
+        );
+
+        let mut block = TimeBlock::new(
+            BlockSubject::Adhoc,
+            Timestamp::from_second(1_800_000_000).unwrap(),
+            60,
+            "UTC",
+        );
+        block.purpose = Some(by_goal);
+        tasks.put_block(&block).unwrap();
+        assert_eq!(tasks.get_block(block.id).unwrap().purpose, Some(by_goal));
+
+        tasks.delete_block(block.id).unwrap();
+        tasks.delete_task(task.id).unwrap();
+        tasks.delete_project(project.id).unwrap();
+    }
+
+    // An entry.
+    let journal = Journal::new("purpose");
+    store.put_journal(&journal).unwrap();
+    let mut entry = Entry::new(journal.id, "UTC");
+    entry.purpose = Some(by_goal);
+    store.put_entry(&entry).unwrap();
+    assert_eq!(store.get_entry(entry.id).unwrap().purpose, Some(by_goal));
+    store.delete_journal(journal.id).unwrap();
+
+    // A shelf item.
+    if let Some(library) = store.library() {
+        let kind = seeded_kind(library, "purpose");
+        let mut item = Item::new(kind.id, "the book for it");
+        item.purpose = Some(by_goal);
+        library.put_item(&item).unwrap();
+        assert_eq!(library.get_item(item.id).unwrap().purpose, Some(by_goal));
+        library.delete_kind(kind.id).unwrap();
+    }
+
+    // A subscribed calendar, which carries a role rather than a purpose.
+    if let Some(calendars) = store.calendars() {
+        let mut cal = Calendar::subscribed("work", "https://example.com/w.ics");
+        cal.role_id = Some(role.id);
+        calendars.put_calendar(&cal).unwrap();
+        assert_eq!(calendars.get_calendar(cal.id).unwrap().role_id, Some(role.id));
+        calendars.delete_calendar(cal.id).unwrap();
+    }
+
+    p.delete_goal(goal.id).unwrap();
+    p.delete_role(role.id).unwrap();
+}
+
+fn time_is_attributed_down_the_inheritance_chain(store: &dyn JournalStore) {
+    let Some(tasks) = store.tasks() else { return };
+    let p = purpose_store(store);
+    let role = seeded_role(store, "Chain");
+    let goal = seeded_goal(store, &role, "the goal");
+    let other = seeded_goal(store, &role, "the other goal");
+
+    // A project with a purpose, a task under it with none, and a block under
+    // that with none: the block must be attributed to the project's goal.
+    let mut project = Project::new("attributed");
+    project.purpose = Some(goal.purpose());
+    tasks.put_project(&project).unwrap();
+
+    let mut inherits = Task::new("inherits");
+    inherits.project_id = Some(project.id);
+    tasks.put_task(&inherits).unwrap();
+
+    // ...and a sibling task that overrides it, to prove the block does not
+    // simply take the project's in every case.
+    let mut overrides = Task::new("overrides");
+    overrides.project_id = Some(project.id);
+    overrides.purpose = Some(other.purpose());
+    tasks.put_task(&overrides).unwrap();
+
+    let day = date(2026, 9, 14);
+    let at = day.at(9, 0, 0, 0).in_tz("UTC").unwrap().timestamp();
+    let inherited_block = TimeBlock::new(BlockSubject::Task { id: inherits.id }, at, 60, "UTC")
+        .of_kind(BlockKind::Actual);
+    tasks.put_block(&inherited_block).unwrap();
+
+    let overridden_block = TimeBlock::new(BlockSubject::Task { id: overrides.id }, at, 30, "UTC")
+        .of_kind(BlockKind::Actual);
+    tasks.put_block(&overridden_block).unwrap();
+
+    // A block with its own purpose, overriding both.
+    let mut own = TimeBlock::new(BlockSubject::Task { id: inherits.id }, at, 15, "UTC")
+        .of_kind(BlockKind::Planned);
+    own.purpose = Some(role.purpose());
+    tasks.put_block(&own).unwrap();
+
+    let window = PurposeWindow::new(day, day);
+    let rows = p.time_by_purpose(window).unwrap();
+
+    let find = |want: Purpose| {
+        rows.iter()
+            .find(|r| r.purpose == Some(want))
+            .unwrap_or_else(|| panic!("expected a row for {want:?}, got {rows:?}"))
+    };
+
+    assert_eq!(
+        find(goal.purpose()).actual_minutes,
+        60,
+        "a block with no purpose and a task with none takes its project's"
+    );
+    assert_eq!(
+        find(other.purpose()).actual_minutes,
+        30,
+        "a task's own purpose beats the project it is filed under"
+    );
+    let owned = find(role.purpose());
+    assert_eq!(owned.planned_minutes, 15, "a block's own purpose beats everything above it");
+    assert_eq!(owned.actual_minutes, 0, "planned and actual are counted apart, never summed");
+
+    // Outside the window nothing is reported, which is what makes the window
+    // worth passing at all.
+    let elsewhere =
+        p.time_by_purpose(PurposeWindow::new(date(2026, 1, 1), date(2026, 1, 2))).unwrap();
+    assert!(elsewhere.iter().all(|r| r.actual_minutes == 0 && r.planned_minutes == 0));
+
+    tasks.delete_project(project.id).unwrap();
+    p.delete_goal(goal.id).unwrap();
+    p.delete_goal(other.id).unwrap();
+    p.delete_role(role.id).unwrap();
+}
+
+fn unattributed_time_is_reported_rather_than_dropped(store: &dyn JournalStore) {
+    // Most of a life is not booked against anything, and a report that
+    // quietly dropped that share would be flattering rather than useful.
+    let Some(tasks) = store.tasks() else { return };
+    let p = purpose_store(store);
+
+    let day = date(2026, 9, 15);
+    let at = day.at(11, 0, 0, 0).in_tz("UTC").unwrap().timestamp();
+    let block = TimeBlock::new(BlockSubject::Adhoc, at, 45, "UTC").of_kind(BlockKind::Actual);
+    tasks.put_block(&block).unwrap();
+
+    let rows = p.time_by_purpose(PurposeWindow::new(day, day)).unwrap();
+    let none =
+        rows.iter().find(|r| r.purpose.is_none()).expect("the unattributed row is always present");
+    assert_eq!(none.actual_minutes, 45);
+    assert_eq!(none.blocks, 1);
+
+    tasks.delete_block(block.id).unwrap();
+}
+
+fn clearing_a_purpose_removes_it_from_the_reports(store: &dyn JournalStore) {
+    // Setting a purpose and then unsetting it must leave no trace. The
+    // pointer is an index over what the sealed record says, and an index
+    // that keeps rows the record no longer claims is an index that lies.
+    let Some(tasks) = store.tasks() else { return };
+    let p = purpose_store(store);
+    let role = seeded_role(store, "Cleared");
+    let goal = seeded_goal(store, &role, "briefly");
+
+    let day = date(2026, 9, 16);
+    let at = day.at(8, 0, 0, 0).in_tz("UTC").unwrap().timestamp();
+    let mut block = TimeBlock::new(BlockSubject::Adhoc, at, 20, "UTC").of_kind(BlockKind::Actual);
+    block.purpose = Some(goal.purpose());
+    tasks.put_block(&block).unwrap();
+
+    let window = PurposeWindow::new(day, day);
+    assert!(p.time_by_purpose(window).unwrap().iter().any(|r| r.purpose == Some(goal.purpose())));
+
+    block.purpose = None;
+    tasks.put_block(&block).unwrap();
+    assert_eq!(tasks.get_block(block.id).unwrap().purpose, None);
+
+    let rows = p.time_by_purpose(window).unwrap();
+    assert!(
+        !rows.iter().any(|r| r.purpose == Some(goal.purpose())),
+        "an unset purpose must vanish from the report, not linger in the index"
+    );
+    assert!(rows.iter().any(|r| r.purpose.is_none() && r.actual_minutes == 20));
+
+    tasks.delete_block(block.id).unwrap();
+    p.delete_goal(goal.id).unwrap();
+    p.delete_role(role.id).unwrap();
+}
+
+fn deleting_a_record_takes_its_purpose_with_it(store: &dyn JournalStore) {
+    let Some(tasks) = store.tasks() else { return };
+    let p = purpose_store(store);
+    let role = seeded_role(store, "Deleted");
+    let goal = seeded_goal(store, &role, "doomed");
+
+    let day = date(2026, 9, 17);
+    let at = day.at(8, 0, 0, 0).in_tz("UTC").unwrap().timestamp();
+
+    // A project with a task and a block beneath it, all attributed, then the
+    // whole tree removed in one call. Nothing of it may show in the report.
+    let mut project = Project::new("doomed project");
+    project.purpose = Some(goal.purpose());
+    tasks.put_project(&project).unwrap();
+    let mut task = Task::new("doomed task");
+    task.project_id = Some(project.id);
+    tasks.put_task(&task).unwrap();
+    let block = TimeBlock::new(BlockSubject::Task { id: task.id }, at, 90, "UTC")
+        .of_kind(BlockKind::Actual);
+    tasks.put_block(&block).unwrap();
+
+    let window = PurposeWindow::new(day, day);
+    assert!(p.time_by_purpose(window).unwrap().iter().any(|r| r.purpose == Some(goal.purpose())));
+
+    tasks.delete_project(project.id).unwrap();
+    let rows = p.time_by_purpose(window).unwrap();
+    assert!(
+        rows.iter().all(|r| r.purpose != Some(goal.purpose())),
+        "a deleted tree must leave no pointer rows behind"
+    );
+    assert_eq!(p.goal_activity(goal.id).unwrap(), Default::default());
+
+    p.delete_goal(goal.id).unwrap();
+    p.delete_role(role.id).unwrap();
+}
+
+fn goal_activity_counts_what_points_at_it(store: &dyn JournalStore) {
+    let Some(tasks) = store.tasks() else { return };
+    let p = purpose_store(store);
+    let role = seeded_role(store, "Active");
+    let goal = seeded_goal(store, &role, "measured");
+
+    let mut project = Project::new("for the goal");
+    project.purpose = Some(goal.purpose());
+    tasks.put_project(&project).unwrap();
+
+    let mut open = Task::new("still to do");
+    open.project_id = Some(project.id);
+    tasks.put_task(&open).unwrap();
+
+    let mut done = Task::new("did it");
+    done.project_id = Some(project.id);
+    done.set_status(TaskStatus::Done);
+    tasks.put_task(&done).unwrap();
+
+    let at = date(2026, 9, 18).at(8, 0, 0, 0).in_tz("UTC").unwrap().timestamp();
+    let logged = TimeBlock::new(BlockSubject::Task { id: open.id }, at, 120, "UTC")
+        .of_kind(BlockKind::Actual);
+    tasks.put_block(&logged).unwrap();
+    // Planned time is an intention and must not be counted as effort spent.
+    let planned = TimeBlock::new(BlockSubject::Task { id: open.id }, at, 240, "UTC");
+    tasks.put_block(&planned).unwrap();
+
+    let activity = p.goal_activity(goal.id).unwrap();
+    assert_eq!(activity.projects, 1);
+    assert_eq!(activity.open_tasks, 1);
+    assert_eq!(activity.done_tasks, 1);
+    assert_eq!(activity.actual_minutes, 120, "only what actually happened counts as hours");
+    assert!(!activity.is_empty());
+    assert!(activity.last_touched.is_some(), "something happened, so there is a latest moment");
+
+    // A goal nothing points at reports nothing rather than failing.
+    let untouched = seeded_goal(store, &role, "nothing yet");
+    let empty = p.goal_activity(untouched.id).unwrap();
+    assert!(empty.is_empty());
+    assert_eq!(empty.last_touched, None);
+
+    tasks.delete_project(project.id).unwrap();
+    p.delete_goal(goal.id).unwrap();
+    p.delete_goal(untouched.id).unwrap();
+    p.delete_role(role.id).unwrap();
+}
+
+fn events_are_attributed_by_their_calendar(store: &dyn JournalStore) {
+    let Some(calendars) = store.calendars() else { return };
+    let p = purpose_store(store);
+    let role = seeded_role(store, "Meetings");
+
+    let mut cal = Calendar::subscribed("work", "https://example.com/work.ics");
+    cal.role_id = Some(role.id);
+    calendars.put_calendar(&cal).unwrap();
+
+    let mut unfiled = Calendar::subscribed("holidays", "https://example.com/hol.ics");
+    unfiled.role_id = None;
+    calendars.put_calendar(&unfiled).unwrap();
+
+    // `sample_event` runs 09:00 to 10:00 on its first day, so each of these
+    // is one hour and the two-day one is twenty-five.
+    let day = date(2026, 9, 19);
+    calendars.replace_events(cal.id, &[sample_event(cal.id, "purpose-1", day, day)]).unwrap();
+    calendars
+        .replace_events(unfiled.id, &[sample_event(unfiled.id, "purpose-2", day, day)])
+        .unwrap();
+
+    let rows = p.events_by_role(PurposeWindow::new(day, day)).unwrap();
+    let mine = rows
+        .iter()
+        .find(|r| r.role_id == Some(role.id))
+        .expect("a feed with a role reports under it");
+    assert_eq!(mine.minutes, 60);
+    assert_eq!(mine.events, 1);
+
+    let theirs = rows
+        .iter()
+        .find(|r| r.role_id.is_none())
+        .expect("a feed with no role is reported, not dropped");
+    assert_eq!(theirs.minutes, 60);
+
+    calendars.delete_calendar(cal.id).unwrap();
+    calendars.delete_calendar(unfiled.id).unwrap();
+    p.delete_role(role.id).unwrap();
+}
+
+fn unicode_survives_a_purpose_round_trip(store: &dyn JournalStore) {
+    let p = purpose_store(store);
+    let mut role = LifeRole::new("親 · роль · 🧭");
+    role.notes = "\u{1f3e1} home".into();
+    p.put_role(&role).unwrap();
+    assert_eq!(p.get_role(role.id).unwrap().name, "親 · роль · 🧭");
+
+    let mut goal = Goal::new(role.id, "Viya lernt Fahrrad fahren 🚲");
+    goal.notes = "auf dem Gras anfangen".into();
+    p.put_goal(&goal).unwrap();
+    assert_eq!(p.get_goal(goal.id).unwrap(), goal);
+
+    p.delete_goal(goal.id).unwrap();
+    p.delete_role(role.id).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// The tracking domain
+// ---------------------------------------------------------------------------
+
+/// The tracking half of the suite. Called by [`run_all`] when the backend
+/// has a [`TrackerStore`](super::trackers::TrackerStore).
+///
+/// This did not exist until trackers became records of their own: while a
+/// definition was a field inside a journal there was only half a domain to
+/// check, and the readings were tested per backend instead. Both halves are
+/// storage now, so both are checked here, once, for every backend.
+///
+/// The store must be empty of trackers on entry; it is left empty on success.
+pub fn run_tracker_suite(store: &dyn JournalStore) {
+    eprintln!("--- tracking conformance suite ---");
+
+    tracking_starts_empty(store);
+    tracker_crud(store);
+    missing_tracking_records_are_not_found(store);
+    reading_round_trips_every_field(store);
+    readings_filter_and_aggregate_over_the_same_window(store);
+    a_reading_need_not_name_a_journal_or_an_entry(store);
+    deleting_a_tracker_takes_its_readings_and_nothing_else(store);
+    merging_a_tracker_keeps_both_histories(store);
+    deleting_a_journal_detaches_its_readings_rather_than_deleting_them(store);
+    deleting_an_entry_keeps_its_readings(store);
+    a_tracker_can_measure_a_goal(store);
+    unicode_survives_a_tracking_round_trip(store);
+
+    tracking_cleanup(store);
+    eprintln!("--- tracking suite passed ---");
+}
+
+fn tracker_store(store: &dyn JournalStore) -> &dyn super::trackers::TrackerStore {
+    store.trackers().expect("the tracking suite needs a tracker store")
+}
+
+fn tracking_cleanup(store: &dyn JournalStore) {
+    let t = tracker_store(store);
+    for tracker in t.list_trackers().expect("list_trackers") {
+        t.delete_tracker(tracker.id).expect("delete_tracker");
+    }
+    assert!(t.list_trackers().unwrap().is_empty(), "cleanup left trackers behind");
+    assert!(
+        t.list_readings(&ReadingQuery::default()).unwrap().is_empty(),
+        "cleanup left readings behind"
+    );
+}
+
+fn seeded_tracker(store: &dyn JournalStore, name: &str, kind: TrackerKind) -> Tracker {
+    let tracker = Tracker::new(name, kind);
+    tracker_store(store).put_tracker(&tracker).expect("put_tracker");
+    tracker
+}
+
+fn tracking_starts_empty(store: &dyn JournalStore) {
+    let t = tracker_store(store);
+    assert!(t.list_trackers().unwrap().is_empty(), "a fresh store must have no trackers");
+    assert!(
+        t.list_readings(&ReadingQuery::default()).unwrap().is_empty(),
+        "a fresh store must have no readings"
+    );
+}
+
+fn tracker_crud(store: &dyn JournalStore) {
+    let t = tracker_store(store);
+    let mut tracker =
+        Tracker::new("Sertraline", TrackerKind::Dose).with_unit("mg").every(1, Period::Day);
+    tracker.icon = "pill".into();
+    tracker.color = "#0f766e".into();
+    tracker.default_value = 50.0;
+    tracker.target = Some(50.0);
+    tracker.on_calendar = true;
+    tracker.sort_order = 2;
+    t.put_tracker(&tracker).unwrap();
+
+    assert_eq!(t.get_tracker(tracker.id).unwrap(), tracker, "every field must survive");
+    assert_eq!(t.list_trackers().unwrap().len(), 1);
+
+    // Idempotent, as every `put_` in this codebase is.
+    t.put_tracker(&tracker).unwrap();
+    assert_eq!(t.list_trackers().unwrap().len(), 1, "putting twice must not make two");
+
+    tracker.archived = true;
+    tracker.cadence = Cadence::new(3, Period::Week);
+    t.put_tracker(&tracker).unwrap();
+    let back = t.get_tracker(tracker.id).unwrap();
+    assert!(back.archived, "an archived tracker is still stored; it only leaves the page");
+    assert_eq!(back.cadence, Cadence::new(3, Period::Week));
+    assert_eq!(t.list_trackers().unwrap().len(), 1, "archiving is not deleting");
+
+    t.delete_tracker(tracker.id).unwrap();
+    assert!(t.list_trackers().unwrap().is_empty());
+}
+
+fn missing_tracking_records_are_not_found(store: &dyn JournalStore) {
+    let t = tracker_store(store);
+    assert!(
+        matches!(t.get_tracker(TrackerId::new()), Err(crate::Error::NotFound { .. })),
+        "a tracker that was never written is not found, not a default one"
+    );
+    assert!(matches!(t.get_reading(ReadingId::new()), Err(crate::Error::NotFound { .. })));
+    // Deleting what is not there is not an error: it is already true.
+    assert_eq!(t.delete_tracker(TrackerId::new()).unwrap(), 0);
+    t.delete_reading(ReadingId::new()).expect("deleting a missing reading is a no-op");
+}
+
+fn reading_round_trips_every_field(store: &dyn JournalStore) {
+    let t = tracker_store(store);
+    let tracker = seeded_tracker(store, "Headache", TrackerKind::Scale);
+    let journal = Journal::new("tracking");
+    store.put_journal(&journal).unwrap();
+    let entry = Entry::new(journal.id, "UTC");
+    store.put_entry(&entry).unwrap();
+
+    let at: Timestamp = "2026-03-14T08:12:00Z".parse().unwrap();
+    let mut reading = Reading::at(tracker.id, at, "Europe/Berlin", 6.0)
+        .in_journal(journal.id)
+        .with_entry(entry.id);
+    reading.note = "behind the left eye".into();
+    t.put_reading(&reading).unwrap();
+
+    assert_eq!(t.get_reading(reading.id).unwrap(), reading);
+
+    // The day and the minute have to agree after a round trip, or a chip
+    // ticked at 00:10 lands on the calendar a day from its entry.
+    let back = t.get_reading(reading.id).unwrap();
+    assert_eq!(back.at, Some(at));
+    assert_eq!(back.local_date, crate::model::local_date_in(at, "Europe/Berlin"));
+
+    store.delete_journal(journal.id).unwrap();
+    t.delete_tracker(tracker.id).unwrap();
+}
+
+fn readings_filter_and_aggregate_over_the_same_window(store: &dyn JournalStore) {
+    // `list_readings` and `tracker_days` must cover the same rows: a chart
+    // whose totals came from a different set than the list beneath it is a
+    // bug nobody can see.
+    let t = tracker_store(store);
+    let pain = seeded_tracker(store, "Pain", TrackerKind::Scale);
+    let dose = seeded_tracker(store, "Ibuprofen", TrackerKind::Dose);
+
+    for (day, value) in [(1, 3.0), (1, 7.0), (2, 4.0), (9, 8.0)] {
+        t.put_reading(&Reading::on(pain.id, date(2026, 3, day), value)).unwrap();
+    }
+    t.put_reading(&Reading::on(dose.id, date(2026, 3, 1), 400.0)).unwrap();
+
+    let window = ReadingQuery {
+        from: Some(date(2026, 3, 1)),
+        to: Some(date(2026, 3, 2)),
+        ..Default::default()
+    };
+    let listed = t.list_readings(&window).unwrap();
+    assert_eq!(listed.len(), 4, "three pain readings and one dose fall in the window");
+
+    let days = t.tracker_days(&window).unwrap();
+    let first = days
+        .iter()
+        .find(|d| d.tracker_id == pain.id && d.date == date(2026, 3, 1))
+        .expect("a row for the first day");
+    assert_eq!(first.count, 2);
+    // Two headaches, a 3 and a 7: the day averaged 5 and was never a 10.
+    assert_eq!(first.value_for(Aggregate::Mean), 5.0);
+    assert_eq!(first.value_for(Aggregate::Sum), 10.0);
+    assert_eq!(first.max, 7.0);
+
+    // A tracker filter narrows both halves alike.
+    let just_pain = ReadingQuery { tracker_ids: vec![pain.id], ..window.clone() };
+    assert_eq!(t.list_readings(&just_pain).unwrap().len(), 3);
+    assert_eq!(t.tracker_days(&just_pain).unwrap().len(), 2);
+
+    // A cap applies to the list and never to the aggregate: a chart that
+    // paginated would be a chart that lied.
+    let capped = ReadingQuery { limit: Some(1), ..just_pain.clone() };
+    assert_eq!(t.list_readings(&capped).unwrap().len(), 1);
+    assert_eq!(
+        t.tracker_days(&capped).unwrap().iter().map(|d| d.count).sum::<u32>(),
+        3,
+        "the aggregate must ignore a limit meant for a list"
+    );
+
+    t.delete_tracker(pain.id).unwrap();
+    t.delete_tracker(dose.id).unwrap();
+}
+
+fn a_reading_need_not_name_a_journal_or_an_entry(store: &dyn JournalStore) {
+    // What quick-track from the Overview produces. It used to be impossible:
+    // a tracker was a field inside one journal, so every reading had one.
+    let t = tracker_store(store);
+    let tracker = seeded_tracker(store, "Swimming", TrackerKind::Amount);
+    let reading = Reading::on(tracker.id, date(2026, 4, 1), 60.0);
+    t.put_reading(&reading).unwrap();
+
+    let back = t.get_reading(reading.id).unwrap();
+    assert_eq!(back.journal_id, None);
+    assert_eq!(back.entry_id, None);
+    assert_eq!(back.value, 60.0);
+
+    // A journal filter must not sweep it in. An unfiled reading is outside
+    // every journal, not inside all of them.
+    let elsewhere = ReadingQuery { journal_id: Some(JournalId::new()), ..Default::default() };
+    assert!(t.list_readings(&elsewhere).unwrap().is_empty());
+
+    t.delete_tracker(tracker.id).unwrap();
+}
+
+fn deleting_a_tracker_takes_its_readings_and_nothing_else(store: &dyn JournalStore) {
+    let t = tracker_store(store);
+    let gone = seeded_tracker(store, "Doomed", TrackerKind::Check);
+    let kept = seeded_tracker(store, "Kept", TrackerKind::Check);
+    for day in [1, 2] {
+        t.put_reading(&Reading::on(gone.id, date(2026, 5, day), 1.0)).unwrap();
+    }
+    t.put_reading(&Reading::on(kept.id, date(2026, 5, 1), 1.0)).unwrap();
+
+    assert_eq!(t.delete_tracker(gone.id).unwrap(), 2, "it reports what it took");
+    assert!(t.get_tracker(gone.id).is_err(), "the definition goes with them");
+
+    let left = t.list_readings(&ReadingQuery::default()).unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].tracker_id, kept.id);
+
+    t.delete_tracker(kept.id).unwrap();
+}
+
+fn merging_a_tracker_keeps_both_histories(store: &dyn JournalStore) {
+    // The tidy-up lazy creation needs: `#swim` on Monday and `#swimming` on
+    // Friday are two records of one thing, and the answer cannot be to throw
+    // away a month of numbers.
+    let t = tracker_store(store);
+    let scruffy = seeded_tracker(store, "swim", TrackerKind::Amount);
+    let proper = seeded_tracker(store, "Swimming", TrackerKind::Amount);
+
+    for day in [1, 2, 3] {
+        t.put_reading(&Reading::on(scruffy.id, date(2026, 6, day), 30.0)).unwrap();
+    }
+    let older = Reading::on(proper.id, date(2026, 6, 4), 45.0);
+    t.put_reading(&older).unwrap();
+
+    assert_eq!(t.merge_trackers(scruffy.id, proper.id).unwrap(), 3);
+    assert!(t.get_tracker(scruffy.id).is_err(), "the one merged away is gone");
+
+    let all = t.list_readings(&ReadingQuery::default()).unwrap();
+    assert_eq!(all.len(), 4, "no reading may be lost in a merge");
+    assert!(
+        all.iter().all(|r| r.tracker_id == proper.id),
+        "every reading must point at the survivor -- in the sealed payload too"
+    );
+    // The clear column as well, or the index would still find them under a
+    // tracker that no longer exists.
+    let by_old = ReadingQuery { tracker_ids: vec![scruffy.id], ..Default::default() };
+    assert!(t.list_readings(&by_old).unwrap().is_empty());
+
+    t.delete_tracker(proper.id).unwrap();
+}
+
+fn deleting_a_journal_detaches_its_readings_rather_than_deleting_them(store: &dyn JournalStore) {
+    let t = tracker_store(store);
+    let tracker = seeded_tracker(store, "Steps", TrackerKind::Amount);
+    let mine = Journal::new("doomed");
+    let other = Journal::new("kept");
+    store.put_journal(&mine).unwrap();
+    store.put_journal(&other).unwrap();
+
+    let here = Reading::on(tracker.id, date(2026, 7, 1), 9000.0).in_journal(mine.id);
+    let there = Reading::on(tracker.id, date(2026, 7, 2), 8000.0).in_journal(other.id);
+    t.put_reading(&here).unwrap();
+    t.put_reading(&there).unwrap();
+
+    store.delete_journal(mine.id).unwrap();
+
+    // Both survive. A reading belongs to its tracker; the journal is only
+    // where it happened to be ticked, and deleting the notebook you wrote in
+    // does not undo the walk.
+    let left = t.list_readings(&ReadingQuery::default()).unwrap();
+    assert_eq!(left.len(), 2, "readings outlive the journal they were logged in");
+    assert_eq!(t.get_reading(here.id).unwrap().journal_id, None, "the sealed link is cleared");
+    assert_eq!(t.get_reading(there.id).unwrap().journal_id, Some(other.id));
+
+    // The clear column too, or the index would still find it by that journal.
+    let by_journal = ReadingQuery { journal_id: Some(mine.id), ..Default::default() };
+    assert!(t.list_readings(&by_journal).unwrap().is_empty());
+
+    store.delete_journal(other.id).unwrap();
+    t.delete_tracker(tracker.id).unwrap();
+}
+
+fn deleting_an_entry_keeps_its_readings(store: &dyn JournalStore) {
+    // Deleting the paragraph about a run does not undo the run. What must
+    // not survive is the pointer, in both copies of it.
+    let t = tracker_store(store);
+    let tracker = seeded_tracker(store, "Run", TrackerKind::Amount);
+    let journal = Journal::new("running");
+    store.put_journal(&journal).unwrap();
+    let entry = Entry::new(journal.id, "UTC");
+    store.put_entry(&entry).unwrap();
+
+    let reading =
+        Reading::on(tracker.id, date(2026, 8, 1), 45.0).in_journal(journal.id).with_entry(entry.id);
+    t.put_reading(&reading).unwrap();
+
+    store.delete_entry(entry.id).unwrap();
+
+    let kept = t.get_reading(reading.id).unwrap();
+    assert_eq!(kept.value, 45.0, "the reading itself must survive");
+    assert_eq!(kept.entry_id, None, "the sealed copy of the link must be cleared");
+    let by_entry = ReadingQuery { entry_id: Some(entry.id), ..Default::default() };
+    assert!(t.list_readings(&by_entry).unwrap().is_empty());
+
+    store.delete_journal(journal.id).unwrap();
+    t.delete_tracker(tracker.id).unwrap();
+}
+
+fn a_tracker_can_measure_a_goal(store: &dyn JournalStore) {
+    // The reason trackers left the journal at all: a habit can be the
+    // evidence a goal is alive, and a goal with no work under it has no
+    // other evidence.
+    let Some(purpose) = store.purpose() else { return };
+    let t = tracker_store(store);
+    let role = LifeRole::new("Health");
+    purpose.put_role(&role).unwrap();
+    let goal = Goal::new(role.id, "run 10k without stopping");
+    purpose.put_goal(&goal).unwrap();
+
+    let mut tracker = Tracker::new("Run", TrackerKind::Amount).with_unit("min");
+    tracker.purpose = Some(goal.purpose());
+    tracker.cadence = Cadence::new(3, Period::Week);
+    t.put_tracker(&tracker).unwrap();
+
+    assert_eq!(t.get_tracker(tracker.id).unwrap().purpose, Some(goal.purpose()));
+
+    for day in [1, 3, 5] {
+        t.put_reading(&Reading::on(tracker.id, date(2026, 9, day), 30.0)).unwrap();
+    }
+    let activity = purpose.goal_activity(goal.id).unwrap();
+    assert_eq!(activity.readings, 3, "a goal's tracker readings count as activity on it");
+    assert!(activity.last_touched.is_some());
+
+    // ...and stop counting when the tracker goes.
+    t.delete_tracker(tracker.id).unwrap();
+    assert_eq!(purpose.goal_activity(goal.id).unwrap().readings, 0);
+
+    purpose.delete_goal(goal.id).unwrap();
+    purpose.delete_role(role.id).unwrap();
+}
+
+fn unicode_survives_a_tracking_round_trip(store: &dyn JournalStore) {
+    let t = tracker_store(store);
+    let mut tracker = Tracker::new("頭痛 · головная боль 🤕", TrackerKind::Scale);
+    tracker.unit = "\u{00b0}".into();
+    t.put_tracker(&tracker).unwrap();
+    assert_eq!(t.get_tracker(tracker.id).unwrap(), tracker);
+
+    let mut reading = Reading::on(tracker.id, date(2026, 10, 1), 4.0);
+    reading.note = "nach dem Mittagessen — links".into();
+    t.put_reading(&reading).unwrap();
+    assert_eq!(t.get_reading(reading.id).unwrap(), reading);
+
+    t.delete_tracker(tracker.id).unwrap();
 }

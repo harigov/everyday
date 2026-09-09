@@ -435,6 +435,20 @@ class LibraryState {
     return statuses.length === 0 || statuses.includes(item.status)
   }
 
+  /**
+   * Apply `changes` to an item and queue the write.
+   *
+   * Mutated in place, as the calendar's blocks and the todo app's tasks are,
+   * so the card, the detail panel and the shelf counts all redraw from one
+   * object without a reconciliation pass.
+   */
+  patch(id: ItemId, changes: Partial<Item>) {
+    const item = this.items.find((i) => i.id === id)
+    if (!item) return
+    Object.assign(item, changes)
+    this.touch(id)
+  }
+
   /** Note an edit made in place. Written a beat after typing stops. */
   touch(id: ItemId) {
     const item = this.items.find((i) => i.id === id)

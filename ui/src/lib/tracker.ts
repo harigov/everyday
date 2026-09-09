@@ -80,10 +80,18 @@ export function durationMinutes(tracker: Tracker, value: number): number | null 
   return Number.isFinite(minutes) && minutes > 0 ? minutes : null
 }
 
-/** The trackers a day's chips should offer, in the order they were arranged. */
-export function activeTrackers(journal: Journal | null): Tracker[] {
+/**
+ * The trackers one journal's chips should offer, picked out of the vault's
+ * own list and in the order they were arranged.
+ *
+ * Ids naming a tracker that is gone are skipped rather than reported. A
+ * stale id is the ordinary consequence of deleting a tracker, and every
+ * journal that showed it should not have to be rewritten for that.
+ */
+export function shownTrackers(journal: Journal | null, all: Tracker[]): Tracker[] {
   if (!journal) return []
-  return journal.trackers
-    .filter((t) => !t.archived)
+  return journal.shownTrackers
+    .map((id) => all.find((t) => t.id === id))
+    .filter((t): t is Tracker => !!t && !t.archived)
     .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt))
 }

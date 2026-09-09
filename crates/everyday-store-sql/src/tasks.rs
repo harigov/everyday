@@ -17,6 +17,7 @@ use everyday_core::task::{
 };
 
 use crate::conn::{SqlExt, Value};
+use crate::purpose::{RecordKind, forget_purposes, set_purpose};
 use crate::{SqlStore, date_str, id_str, to_us, vals};
 
 impl TaskStore for SqlStore {
@@ -39,7 +40,9 @@ impl TaskStore for SqlStore {
 
     fn put_project(&self, p: &Project) -> Result<()> {
         let data = self.seal(&project_aad(p.id), p)?;
-        self.conn().execute(
+        let mut conn = self.conn();
+        let mut tx = conn.begin()?;
+        tx.execute(
             "INSERT INTO projects
                 (id, status, priority, due_date, sort_order, created_us, updated_us,
                  completed_us, data)
@@ -59,7 +62,8 @@ impl TaskStore for SqlStore {
                 data,
             ],
         )?;
-        Ok(())
+        set_purpose(tx.as_mut(), RecordKind::Project, &p.id.to_string(), p.purpose.as_ref())?;
+        tx.commit()
     }
 
     fn delete_project(&self, id: ProjectId) -> Result<()> {
@@ -84,6 +88,7 @@ impl TaskStore for SqlStore {
         // Time booked against the project itself, not against its tasks.
         tx.execute("DELETE FROM time_blocks WHERE project_id = ?1", &vals![id.to_string()])?;
         tx.execute("DELETE FROM projects WHERE id = ?1", &vals![id.to_string()])?;
+        forget_purposes(tx.as_mut(), RecordKind::Project, &[id.to_string()])?;
         tx.commit()
     }
 
@@ -216,6 +221,7 @@ impl TaskStore for SqlStore {
                     data,
                 ],
             )?;
+            set_purpose(tx.as_mut(), RecordKind::Task, &t.id.to_string(), t.purpose.as_ref())?;
         }
         tx.commit()
     }
@@ -273,7 +279,9 @@ impl TaskStore for SqlStore {
 
     fn put_block(&self, b: &TimeBlock) -> Result<()> {
         let data = self.seal(&block_aad(b.id), b)?;
-        self.conn().execute(
+        let mut conn = self.conn();
+        let mut tx = conn.begin()?;
+        tx.execute(
             "INSERT INTO time_blocks
                 (id, task_id, project_id, local_date, start_us, end_us, kind, data)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -291,11 +299,16 @@ impl TaskStore for SqlStore {
                 data,
             ],
         )?;
-        Ok(())
+        set_purpose(tx.as_mut(), RecordKind::Block, &b.id.to_string(), b.purpose.as_ref())?;
+        tx.commit()
     }
 
     fn delete_block(&self, id: BlockId) -> Result<()> {
-        self.conn().execute("DELETE FROM time_blocks WHERE id = ?1", &vals![id.to_string()])?;
+        let mut conn = self.conn();
+        let mut tx = conn.begin()?;
+        tx.execute("DELETE FROM time_blocks WHERE id = ?1", &vals![id.to_string()])?;
+        forget_purposes(tx.as_mut(), RecordKind::Block, &[id.to_string()])?;
+        tx.commit()?;
         Ok(())
     }
 

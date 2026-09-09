@@ -36,15 +36,17 @@ use crate::crypto::{
 use crate::error::{Error, Result};
 use crate::fsutil;
 use crate::id::{
-    BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, ItemId, JournalId, KindId,
-    LogId, MemoryId, MessageId, ProjectId, ReadingId, TaskId, TrackerId,
+    BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, GoalId, ItemId, JournalId,
+    KindId, LogId, MemoryId, MessageId, ProjectId, ReadingId, RoleId, TaskId, TrackerId,
 };
 use crate::library::{Item, ItemStatus, Kind, KindCount, LibraryStats, LogEntry, default_kinds};
 use crate::model::{Entry, EntrySummary, Journal};
+use crate::purpose::{Goal, GoalActivity, PurposeMinutes, Role, RoleEventMinutes, suggested_roles};
 use crate::search::{SearchHit, SearchIndex};
 use crate::store::agent::{AgentStore, ConversationQuery};
 use crate::store::calendars::{CalendarStore, EventQuery};
 use crate::store::library::{ItemQuery, LibraryStore, LogQuery};
+use crate::store::purpose::{GoalQuery, PurposeStore, PurposeWindow};
 use crate::store::tasks::{BlockQuery, TaskQuery, TaskStore};
 use crate::store::trackers::{ReadingQuery, TrackerDay, TrackerStore};
 use crate::store::{
@@ -52,7 +54,7 @@ use crate::store::{
     StoreStats,
 };
 use crate::task::{Project, Task, TaskStats, TimeBlock};
-use crate::tracker::Reading;
+use crate::tracker::{Reading, Tracker};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -736,14 +738,21 @@ impl Vault {
             for e in u.store.list_entries(&EntryQuery::in_journal(id))? {
                 u.index.remove(e.id);
             }
-            // Belt and braces. A backend that holds readings should take
-            // them inside its own delete -- the SQLite one does, in the same
-            // transaction as the entries, which is the only way the pair can
-            // be atomic. This second, idempotent sweep is what stops a
-            // backend that has not thought about it from leaving a year of
-            // numbers behind whose definitions have just been shredded.
+            // Readings survive, and are detached rather than deleted.
+            //
+            // They used to go with the journal, because a tracker was a
+            // field inside one and so its readings were part of it. Trackers
+            // are vault records now: a reading belongs to the tracker, and
+            // the journal is only where you happened to tick it. Deleting
+            // the notebook you wrote in does not undo the run.
+            //
+            // Belt and braces, as the entry sweep is: a backend that holds
+            // readings should do this inside its own delete -- the SQL one
+            // does, in the same transaction -- and this second, idempotent
+            // pass is what stops one that has not thought about it from
+            // leaving readings pointing at a journal that is gone.
             if let Some(t) = u.store.trackers() {
-                t.delete_readings_in(id)?;
+                t.detach_readings_in(id)?;
             }
             u.store.delete_journal(id)
         })
@@ -1313,14 +1322,140 @@ impl Vault {
         })
     }
 
+    // ---- roles and goals -------------------------------------------------
+    //
+    // The sixth domain, on exactly the terms of the four before it. What is
+    // different is that almost nothing here is *about* roles and goals: the
+    // two records are small and dull, and the interesting half is the pair
+    // of reports, which read every other domain's tables and are the only
+    // reason the pointer exists.
+
+    /// Does this vault's backend store roles and goals?
+    pub fn supports_goals(&self) -> bool {
+        self.read(|u| Ok(u.store.purpose().is_some())).unwrap_or(false)
+    }
+
+    fn with_purpose<T>(&self, f: impl FnOnce(&dyn PurposeStore) -> Result<T>) -> Result<T> {
+        self.read(|u| {
+            let purpose = u.store.purpose().ok_or(Error::Unsupported(
+                "roles and goals (this vault's backend stores journals only)",
+            ))?;
+            f(purpose)
+        })
+    }
+
+    /// Every role, in sidebar order. Archived ones included — the caller
+    /// decides whether to draw them, and the reports need them all.
+    pub fn roles(&self) -> Result<Vec<Role>> {
+        self.with_purpose(|p| {
+            let mut roles = p.list_roles()?;
+            roles.sort_by(|a, b| a.sort_order.cmp(&b.sort_order).then_with(|| a.name.cmp(&b.name)));
+            Ok(roles)
+        })
+    }
+
+    pub fn role(&self, id: RoleId) -> Result<Role> {
+        self.with_purpose(|p| p.get_role(id))
+    }
+
+    pub fn save_role(&self, role: &Role) -> Result<()> {
+        self.writable()?;
+        if role.name.trim().is_empty() {
+            return Err(Error::Invalid("a role needs a name".into()));
+        }
+        self.with_purpose(|p| p.put_role(role))
+    }
+
+    /// Delete a role, which the backend refuses while goals point at it.
+    pub fn delete_role(&self, id: RoleId) -> Result<()> {
+        self.writable()?;
+        self.with_purpose(|p| p.delete_role(id))
+    }
+
+    /// How many goals sit under a role, and how many are still open.
+    pub fn count_goals(&self, role: RoleId) -> Result<(u64, u64)> {
+        self.with_purpose(|p| p.count_goals(role))
+    }
+
+    /// Put a starting set of roles in a vault that has none, and do nothing
+    /// at all otherwise. Returns how many were added.
+    ///
+    /// Unlike [`seed_library`](Vault::seed_library) this is **not** called on
+    /// unlock. A list of shelves is a guess about what people read; a list
+    /// of roles is a claim about what somebody's life is made of, and an
+    /// application that wrote one unasked would be telling them who they
+    /// are. The Overview offers it behind a button on an empty screen, and
+    /// somebody who deletes the lot never sees it again.
+    pub fn seed_roles(&self) -> Result<usize> {
+        self.writable()?;
+        self.with_purpose(|p| {
+            if !p.list_roles()?.is_empty() {
+                return Ok(0);
+            }
+            let seeds = suggested_roles();
+            for role in &seeds {
+                p.put_role(role)?;
+            }
+            Ok(seeds.len())
+        })
+    }
+
+    pub fn goals(&self, query: &GoalQuery) -> Result<Vec<Goal>> {
+        self.with_purpose(|p| p.list_goals(query))
+    }
+
+    pub fn goal(&self, id: GoalId) -> Result<Goal> {
+        self.with_purpose(|p| p.get_goal(id))
+    }
+
+    pub fn save_goal(&self, goal: &Goal) -> Result<()> {
+        self.writable()?;
+        if goal.title.trim().is_empty() {
+            return Err(Error::Invalid("a goal needs a title".into()));
+        }
+        // A goal must name a role that exists. Checked here rather than by a
+        // foreign key because the backend deliberately has none — see
+        // `PurposeStore::delete_role` for why — and a goal under a role that
+        // was never written would be invisible in every view the Overview
+        // has, all of which are grouped by role.
+        self.with_purpose(|p| {
+            p.get_role(goal.role_id)?;
+            p.put_goal(goal)
+        })
+    }
+
+    pub fn save_goals(&self, goals: &[Goal]) -> Result<()> {
+        self.writable()?;
+        self.with_purpose(|p| p.put_goals(goals))
+    }
+
+    pub fn delete_goal(&self, id: GoalId) -> Result<()> {
+        self.writable()?;
+        self.with_purpose(|p| p.delete_goal(id))
+    }
+
+    /// Minutes per resolved purpose over a window, planned and actual.
+    pub fn time_by_purpose(&self, window: PurposeWindow) -> Result<Vec<PurposeMinutes>> {
+        self.with_purpose(|p| p.time_by_purpose(window))
+    }
+
+    /// Minutes of subscribed-calendar events per role over a window.
+    pub fn events_by_role(&self, window: PurposeWindow) -> Result<Vec<RoleEventMinutes>> {
+        self.with_purpose(|p| p.events_by_role(window))
+    }
+
+    pub fn goal_activity(&self, id: GoalId) -> Result<GoalActivity> {
+        self.with_purpose(|p| p.goal_activity(id))
+    }
+
     // ---- trackers and readings -------------------------------------------
     //
-    // The fifth domain, and the one that is split across two layers: the
-    // *definitions* ride along inside a `Journal` and are saved by
-    // `save_journal` above, while the readings they produce live in a store
-    // of their own. Everything here is about the readings.
+    // The seventh domain, and the one that used to be split across two
+    // layers: the definitions rode along inside a `Journal` while the
+    // readings they produced lived in a store of their own. Both are records
+    // now, and what is left in the journal is which chips it draws.
 
-    /// Does this vault's backend store readings at all?
+    /// Does this vault's backend store trackers at all?
     pub fn supports_trackers(&self) -> bool {
         self.read(|u| Ok(u.store.trackers().is_some())).unwrap_or(false)
     }
@@ -1332,6 +1467,78 @@ impl Vault {
             ))?;
             f(trackers)
         })
+    }
+
+    /// Every tracker in the vault, in the order the chips are arranged.
+    pub fn trackers(&self) -> Result<Vec<Tracker>> {
+        self.with_trackers(|t| {
+            let mut all = t.list_trackers()?;
+            all.sort_by_key(|t| (t.sort_order, t.created_at));
+            Ok(all)
+        })
+    }
+
+    pub fn tracker(&self, id: TrackerId) -> Result<Tracker> {
+        self.with_trackers(|t| t.get_tracker(id))
+    }
+
+    pub fn save_tracker(&self, tracker: &Tracker) -> Result<()> {
+        self.writable()?;
+        let mut tracker = tracker.clone();
+        tracker.normalize();
+        if tracker.name.is_empty() {
+            return Err(Error::Invalid("a tracker needs a name".into()));
+        }
+        tracker.updated_at = Timestamp::now();
+        self.with_trackers(|t| t.put_tracker(&tracker))
+    }
+
+    /// Delete a tracker and every reading it ever made.
+    ///
+    /// The destructive half of a pair. Archiving — a flag on the definition
+    /// — is the other and the usual one: it takes the tracker off the page
+    /// and keeps its history, which is what "I stopped taking this in March"
+    /// actually means. This is for the tracker added by mistake, and it says
+    /// so by taking the readings too rather than leaving numbers behind that
+    /// nothing can name.
+    ///
+    /// Every journal that drew a chip for it is left alone. A stale id in
+    /// `shown_trackers` is skipped when the strip is built, and rewriting
+    /// six journals to tidy one list is a great deal of writing to avoid an
+    /// `if let`.
+    pub fn delete_tracker(&self, id: TrackerId) -> Result<u64> {
+        self.writable()?;
+        self.with_trackers(|t| t.delete_tracker(id))
+    }
+
+    /// Fold one tracker into another, keeping both histories.
+    ///
+    /// The tidy-up lazy creation needs: `#swim` on Monday and `#swimming` on
+    /// Friday are two records of the same thing, and the answer cannot be to
+    /// throw away a month of numbers. Every journal showing the old one is
+    /// switched to the new, because that *is* one list per journal and the
+    /// alternative is a chip that silently stops drawing.
+    pub fn merge_trackers(&self, from: TrackerId, into: TrackerId) -> Result<u64> {
+        self.writable()?;
+        if from == into {
+            return Err(Error::Invalid("a tracker cannot be merged into itself".into()));
+        }
+        // Both must exist before anything moves: merging into a tracker that
+        // is not there would strand every reading under an id nothing names.
+        self.with_trackers(|t| {
+            t.get_tracker(from)?;
+            t.get_tracker(into)
+        })?;
+        let moved = self.with_trackers(|t| t.merge_trackers(from, into))?;
+        for mut journal in self.journals()? {
+            if !journal.shows(from) {
+                continue;
+            }
+            journal.hide(from);
+            journal.show(into);
+            self.save_journal(&journal)?;
+        }
+        Ok(moved)
     }
 
     pub fn readings(&self, query: &ReadingQuery) -> Result<Vec<Reading>> {
@@ -1352,16 +1559,12 @@ impl Vault {
     /// The value is clamped by the *definition* — a severity cannot be 40 on
     /// a scale of ten, and a check is one or zero however the caller wrote
     /// it — because the alternative is a chart with an axis to the moon and
-    /// no way to tell which of a thousand rows caused it. The tracker is
-    /// looked up in its journal, which is also how a reading naming a
-    /// tracker that does not exist is refused here rather than becoming an
-    /// unnameable row.
+    /// no way to tell which of a thousand rows caused it. Looking the
+    /// tracker up is also how a reading naming one that does not exist is
+    /// refused here rather than becoming an unnameable row.
     pub fn save_reading(&self, reading: &Reading) -> Result<()> {
         self.writable()?;
-        let journal = self.journal(reading.journal_id)?;
-        let tracker = journal
-            .tracker(reading.tracker_id)
-            .ok_or_else(|| Error::Invalid("no such tracker in this journal".into()))?;
+        let tracker = self.tracker(reading.tracker_id)?;
 
         let mut reading = reading.clone();
         reading.value = tracker.clamp(reading.value);
@@ -1381,28 +1584,54 @@ impl Vault {
         self.with_trackers(|t| t.delete_reading(id))
     }
 
-    /// Remove a tracker from a journal, and every reading it ever made.
+    /// Move the tracker definitions a pre-v7 vault kept inside its journals
+    /// into the trackers table, once.
     ///
-    /// The destructive half of a pair. Archiving — a flag on the definition,
-    /// saved with the journal — is the other and the usual one: it takes the
-    /// tracker off the page and keeps its history, which is what "I stopped
-    /// taking this in March" actually means. This is for the tracker added
-    /// by mistake, and it says so by taking the readings too rather than
-    /// leaving numbers behind that nothing can name.
-    pub fn delete_tracker(&self, journal_id: JournalId, tracker_id: TrackerId) -> Result<u64> {
-        self.writable()?;
-        let mut journal = self.journal(journal_id)?;
-        // Readings first, definition second. Neither order is atomic -- they
-        // are two records in two places -- so the question is only which
-        // half-done state is survivable. This one leaves a tracker whose
-        // history is gone, which is visible and can be deleted again. The
-        // other leaves a year of numbers nothing can name, which is exactly
-        // the state this method exists to avoid.
-        let removed = self.with_trackers(|t| t.delete_readings_of(tracker_id))?;
-        journal.trackers.retain(|t| t.id != tracker_id);
-        journal.updated_at = Timestamp::now();
-        self.save_journal(&journal)?;
-        Ok(removed)
+    /// This is the one migration in the application that cannot be a SQL
+    /// step, and the reason is the whole design working as intended: the
+    /// definitions are inside a sealed journal payload, and no migration
+    /// running against the database can read a word of it. Only something
+    /// holding the data key can, which means it happens here, on unlock,
+    /// inside the write claim.
+    ///
+    /// Idempotent by construction. A journal's old list is cleared as it is
+    /// moved, so a second run finds nothing to do; and a tracker whose id is
+    /// already in the table is skipped rather than overwritten, so a vault
+    /// interrupted half way through does not lose the edits made to the half
+    /// that landed.
+    ///
+    /// Returns how many definitions were moved.
+    pub fn migrate_journal_trackers(&self) -> Result<usize> {
+        if !self.supports_trackers() || !self.is_writable() {
+            return Ok(0);
+        }
+        let journals = self.journals()?;
+        if journals.iter().all(|j| j.trackers.is_empty()) {
+            return Ok(0);
+        }
+        let existing: Vec<TrackerId> =
+            self.with_trackers(|t| t.list_trackers())?.into_iter().map(|t| t.id).collect();
+
+        let mut moved = 0;
+        for mut journal in journals {
+            if journal.trackers.is_empty() {
+                continue;
+            }
+            for tracker in std::mem::take(&mut journal.trackers) {
+                // A journal that drew a chip for it keeps drawing one: the
+                // move must be invisible, and the strip is the only thing
+                // anybody would notice.
+                journal.show(tracker.id);
+                if existing.contains(&tracker.id) {
+                    continue;
+                }
+                self.with_trackers(|t| t.put_tracker(&tracker))?;
+                moved += 1;
+            }
+            journal.updated_at = Timestamp::now();
+            self.save_journal(&journal)?;
+        }
+        Ok(moved)
     }
 
     // ---- the assistant ---------------------------------------------------
@@ -1900,6 +2129,7 @@ mod tests {
                 calendars: false,
                 library: false,
                 trackers: false,
+                goals: false,
                 agent: false,
             }
         }

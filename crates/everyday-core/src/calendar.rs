@@ -46,7 +46,7 @@
 //! create here are yours and stay here; they do not appear on your work
 //! calendar. See `docs` on [`Calendar`] for what the interface says about it.
 
-use crate::id::{CalendarId, EventId};
+use crate::id::{CalendarId, EventId, RoleId};
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
 
@@ -158,6 +158,15 @@ pub struct Calendar {
     /// the calendar, not an error to interrupt someone with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// Which role this feed serves.
+    ///
+    /// A role rather than a [`Purpose`](crate::purpose::Purpose), because a
+    /// feed is not filed under one outcome: a work calendar is work, and the
+    /// forty meetings on it are not each yours to attribute. It is the
+    /// cheapest large win in the whole balance report — one click here
+    /// attributes a year of somebody else's claims on your time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_id: Option<RoleId>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -194,6 +203,7 @@ impl Calendar {
             refresh_minutes: DEFAULT_REFRESH_MINUTES,
             last_synced_at: None,
             last_error: None,
+            role_id: None,
             created_at: now,
             updated_at: now,
         }
@@ -212,6 +222,7 @@ impl Calendar {
             refresh_minutes: 0,
             last_synced_at: None,
             last_error: None,
+            role_id: None,
             created_at: now,
             updated_at: now,
         }
