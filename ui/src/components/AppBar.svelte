@@ -15,6 +15,7 @@
   // pressed, and the bar does not.
 
   import { app, type Section } from '../lib/state.svelte'
+  import { agent } from '../lib/agent.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { tray, type TrayEntry } from '../lib/tray.svelte'
@@ -111,6 +112,19 @@
        nav, because neither belongs to whichever app is open: they are the
        vault's, and so is the bar. -->
   <div class="foot">
+    <!-- Not one of the apps, and so not in the nav above: the assistant does
+         not replace what is on screen, it opens beside it. -->
+    {#if agent.supported}
+      <button
+        class="barbtn"
+        class:on={agent.open}
+        onclick={() => void agent.toggle()}
+        title="Assistant"
+      >
+        <span><Icon name="sparkle" size={19} weight={1.7} /></span>
+        <span class="barlabel">Assistant</span>
+      </button>
+    {/if}
     <SettingsMenu />
     <button class="barbtn" onclick={() => app.lock()} title="Lock now (Ctrl+L)">
       <span><Icon name="lock" size={19} weight={1.7} /></span>

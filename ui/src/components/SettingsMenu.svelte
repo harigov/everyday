@@ -2,6 +2,8 @@
   import { app } from '../lib/state.svelte'
   import { api } from '../lib/api'
   import { tray } from '../lib/tray.svelte'
+  import { agent } from '../lib/agent.svelte'
+  import AgentSettings from './AgentSettings.svelte'
   import { humanBytes, plural } from '../lib/format'
   import Icon from './Icon.svelte'
 
@@ -10,8 +12,15 @@
   let current = $state('')
   let next = $state('')
   let notice = $state<string | null>(null)
+  let showAgent = $state(false)
 
   const status = $derived(app.status)
+
+  // So the button can say "set up" or "configure" rather than guessing. Cheap
+  // and idempotent; the panel calls it too.
+  $effect(() => {
+    if (open && agent.supported && !agent.settings) void agent.load()
+  })
 
   async function changePassword(e: Event) {
     e.preventDefault()
@@ -49,6 +58,12 @@
     { label: '1 hour', value: 3600 },
   ]
 </script>
+
+{#if showAgent}
+  <!-- Outside the dropdown on purpose: the dropdown closes when this opens,
+       and a dialog inside a popover that has gone would go with it. -->
+  <AgentSettings onclose={() => (showAgent = false)} />
+{/if}
 
 <div class="wrap">
   <button class="barbtn" onclick={() => (open = !open)} aria-expanded={open}>
@@ -92,6 +107,21 @@
               Start an entry, a task or an hour without coming back to the window.
             {/if}
           </p>
+        </div>
+      {/if}
+
+      {#if agent.supported}
+        <div class="section">
+          <span class="eyebrow">Assistant</span>
+          <button
+            class="btn"
+            onclick={() => {
+              open = false
+              showAgent = true
+            }}
+          >
+            {agent.settings?.enabled ? 'Configure the assistant' : 'Set up the assistant'}
+          </button>
         </div>
       {/if}
 

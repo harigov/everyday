@@ -263,4 +263,8 @@ export const ICONS = {
   settings:
     '<path d="M20 7h-8"/><path d="M6 7H4"/><path d="M20 17h-2"/><path d="M12 17H4"/>' +
     '<circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',
+
+  // Send. Up rather than right, which is what every composer with a box
+  // above it now uses -- the message goes up into the conversation.
+  'arrow-up': '<path d="M12 20V4"/><path d="m5 11 7-7 7 7"/>',
 } as const

@@ -7,6 +7,7 @@
   import { calendar } from './lib/calendar.svelte'
   import { library } from './lib/library.svelte'
   import { tray } from './lib/tray.svelte'
+  import { agent } from './lib/agent.svelte'
   import AppBar from './components/AppBar.svelte'
   import Sidebar from './components/Sidebar.svelte'
   import EntryList from './components/EntryList.svelte'
@@ -21,6 +22,7 @@
   import Notices from './components/Notices.svelte'
   import Toasts from './components/Toasts.svelte'
   import ContextMenu from './components/ContextMenu.svelte'
+  import ChatPanel from './components/ChatPanel.svelte'
 
   void app.start()
   // Let the Rust shell speak. Its background work -- refreshing subscribed
@@ -38,6 +40,11 @@
   // vault from here on. The four apps have already registered what they
   // offer by the time this runs -- the imports above are what does it.
   tray.start()
+
+  // Whether the assistant's rail was showing is remembered across launches:
+  // it is a panel somebody either works with or does not, and reopening it
+  // every session is as wrong as closing it every session.
+  agent.restore()
 
   // Each app tints the window with the accent of whatever it has selected:
   // the journal you are in, the project you are looking at, the shelf you are
@@ -172,6 +179,11 @@
         {:else}
           <EntryList />
           <main class="main"><Editor /></main>
+        {/if}
+        <!-- Last in the row, so it is the right-hand rail whichever app is
+             open: the assistant works on all four. -->
+        {#if agent.open && agent.supported}
+          <ChatPanel />
         {/if}
       </div>
     </div>
