@@ -19,7 +19,7 @@
   import { calendar } from '../lib/calendar.svelte'
   import { api } from '../lib/api'
   import { DEFAULT_COLORS } from '../lib/colors'
-  import { focusOnMount } from '../lib/focus'
+  import { focusOnMount, trapFocus } from '../lib/focus'
   import Icon from './Icon.svelte'
   import type { CalendarProvider, ProviderInfo } from '../lib/types'
 
@@ -84,7 +84,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div class="scrim" onclick={onclose}></div>
-<div class="sheet wide" role="dialog" aria-modal="true" aria-label="Add a calendar">
+<div class="sheet wide" role="dialog" aria-modal="true" aria-label="Add a calendar" use:trapFocus>
   <h2>Add a calendar</h2>
 
   <div class="providers" role="group" aria-label="Where from">

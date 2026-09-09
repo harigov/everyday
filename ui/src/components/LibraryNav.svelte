@@ -29,6 +29,16 @@
 
   const stats = $derived(library.stats)
   const counts = $derived(new Map(stats?.byKind.map((c) => [c.kindId, c]) ?? []))
+  /**
+   * Everything still ahead of you, across every shelf.
+   *
+   * Summed from the per-shelf counts rather than read off `stats.items`,
+   * which is the *total*. One column of numbers has to mean one thing: the
+   * shelves below say what is left on them, so the row above them cannot say
+   * how many things have ever been on any of them. The total is in the
+   * tooltip, exactly as it is for a shelf.
+   */
+  const openEverywhere = $derived(stats?.byKind.reduce((sum, c) => sum + c.open, 0) ?? 0)
 
   /**
    * What a right-click on a shelf offers.
@@ -118,6 +128,7 @@
   <button
     class="row"
     class:sel={library.shelf === null && !library.favouritesOnly}
+    title="Everything — {stats?.items ?? 0} {stats?.items === 1 ? 'item' : 'items'}"
     onclick={() => {
       library.favouritesOnly = false
       void library.selectShelf(null)
@@ -125,7 +136,7 @@
   >
     <span class="icon"><Icon name="layers" /></span>
     <span class="text">Everything</span>
-    <span class="count">{stats?.items ?? 0}</span>
+    {#if openEverywhere > 0}<span class="count">{openEverywhere}</span>{/if}
   </button>
 
   <button

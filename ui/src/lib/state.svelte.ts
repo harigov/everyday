@@ -152,6 +152,8 @@ class AppState {
   #resetHooks: (() => void)[] = []
 
   #saveTimer: ReturnType<typeof setTimeout> | null = null
+  /** The tail of the chain of saves, so only one is ever in the air. */
+  #queue: Promise<void> = Promise.resolve()
   /**
    * Current backoff for a save that is failing, or `null` when the last one
    * landed. Doubles per failure up to `MAX_SAVE_RETRY_MS`.
@@ -630,8 +632,13 @@ class AppState {
     this.conflict = false
     this.entry = entry
     this.selectedEntry = entry.id
+    // A new entry is not starred, so the Starred list is not a list it can
+    // appear in. Leaving the filter up put the row out of sight while the
+    // refresh below quietly opened some *other* entry in the editor -- so
+    // "New entry" answered with somebody else's writing. Show the list the
+    // new entry is actually in.
+    this.showStarredOnly = false
     await this.refreshEntries()
-    this.selectedEntry = entry.id
   }
 
   /**
@@ -649,12 +656,28 @@ class AppState {
     this.#saveTimer = setTimeout(() => void this.flush(), AUTOSAVE_MS)
   }
 
-  /** Write any pending edit immediately. Safe to call when nothing is dirty. */
-  async flush() {
+  /**
+   * Write any pending edit immediately. Safe to call when nothing is dirty.
+   *
+   * Serialised through `#queue`, like `Autosave`'s and for a sharper reason:
+   * two saves of the same entry in the air at once would both be sent with
+   * the *same* `#baseVersion`, because the first has not returned to update
+   * it. The second is then refused as a conflict against a version this
+   * window wrote itself a moment earlier -- a "changed elsewhere" dialog
+   * over an edit nobody else touched. Ctrl+S landing on top of an autosave,
+   * or the close handshake landing on top of either, is all it took.
+   */
+  flush(): Promise<void> {
     if (this.#saveTimer) {
       clearTimeout(this.#saveTimer)
       this.#saveTimer = null
     }
+    const next = this.#queue.then(() => this.#write())
+    this.#queue = next.catch(() => {})
+    return next
+  }
+
+  async #write() {
     const entry = this.entry
     if (!entry) return
     // Nothing is written while a conflict is unresolved. Retrying would
@@ -746,8 +769,18 @@ class AppState {
    * An unconditional write, which is the one place the interface asks for
    * one. The other version is overwritten because the author looked at the
    * choice and said so.
+   *
+   * Queued behind any save still in the air, like `flush`: it is the write
+   * whose version token every later save is measured against, so it must not
+   * be the one that lands first.
    */
-  async keepMine() {
+  keepMine(): Promise<void> {
+    const next = this.#queue.then(() => this.#forceWrite())
+    this.#queue = next.catch(() => {})
+    return next
+  }
+
+  async #forceWrite() {
     const entry = this.entry
     if (!entry || !this.conflict) return
     this.syncBody()

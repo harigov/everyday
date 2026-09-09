@@ -18,7 +18,7 @@
   import { activeTrackers } from '../lib/tracker'
   import { KIND_COPY, TRACKER_PRESETS, fromPreset } from '../lib/tracker-presets'
   import { TRACKER_ICON_GROUPS } from '../lib/tracker-icons'
-  import { focusOnMount } from '../lib/focus'
+  import { focusOnMount, trapFocus } from '../lib/focus'
   import { DEFAULT_COLORS } from '../lib/colors'
   import type { Journal, Tracker, TrackerKind } from '../lib/types'
   import { TRACKER_KINDS } from '../lib/types'
@@ -252,7 +252,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div class="scrim" onclick={onclose}></div>
-<div class="sheet wide" role="dialog" aria-modal="true" aria-label="Journal settings">
+<div class="sheet wide" role="dialog" aria-modal="true" aria-label="Journal settings" use:trapFocus>
   <header class="head">
     <span class="glyph" style="--c: {draft.color}">{draft.icon}</span>
     <h2>{draft.name || 'Journal settings'}</h2>

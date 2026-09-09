@@ -411,7 +411,15 @@ class CalendarState {
   private async refreshBlocks() {
     const [from, to] = this.range
     try {
-      this.blocks = await api.blocks({ from, to })
+      // A day early on the leading edge, because `blockSlots` promises that
+      // a block running past midnight is drawn at the bottom of one day and
+      // the top of the next -- and it can only keep that promise for a block
+      // it has. A block is filed under the day it *starts*, and the query is
+      // a range on that column, so the one spilling into the first day on
+      // screen belongs to a day that is not. Nothing is needed at the other
+      // end: a block starting on the last day is already loaded, and its
+      // spill has no column to be drawn in.
+      this.blocks = await api.blocks({ from: addDays(from, -1), to })
     } catch (e) {
       if (isLocked(e)) await app.lock()
     }

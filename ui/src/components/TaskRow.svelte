@@ -36,6 +36,7 @@
     class:sel={todo.selectedTask === task.id}
     class:done={task.status === 'done'}
     class:cancelled={task.status === 'cancelled'}
+    data-row={task.id}
     oncontextmenu={(e) =>
       menu.show(
         e,
@@ -57,7 +58,11 @@
       <Icon name={task.status === 'done' ? 'check' : 'circle'} size={17} weight={1.6} />
     </button>
 
-    <button class="body" onclick={() => todo.open(todo.selectedTask === task.id ? null : task.id)}>
+    <button
+      class="body"
+      data-rowfocus
+      onclick={() => todo.open(todo.selectedTask === task.id ? null : task.id)}
+    >
       <span class="title">
         {#if task.priority === 'urgent' || task.priority === 'high'}
           <span class="flag p-{task.priority}" title="{task.priority} priority">
@@ -132,7 +137,11 @@
           />
         </div>
       {:else}
-        <button class="addsub-inline" onclick={() => (adding = true)}>
+        <!-- Its own row in the arrow-key sequence, which is what it looks
+             like: arrowing down past the last subtask lands here. Without a
+             marker it is a control inside the list that the roving tabindex
+             does not own, and so a second tab stop for every expanded task. -->
+        <button class="addsub-inline" data-row="{task.id}:add" onclick={() => (adding = true)}>
           <Icon name="plus" size={12} weight={1.8} /> Add a subtask
         </button>
       {/if}

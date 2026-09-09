@@ -87,6 +87,8 @@ class LibraryState {
   note = $state<string | null>(null)
 
   #queryTimer: ReturnType<typeof setTimeout> | null = null
+  /** Which load is the current one. See `refresh`. */
+  #generation = 0
   /**
    * How to put the cursor in the capture field, registered by the view.
    *
@@ -175,6 +177,9 @@ class LibraryState {
     this.#saves.cancel()
     if (this.#queryTimer) clearTimeout(this.#queryTimer)
     this.#queryTimer = null
+    // Nothing loaded before the lock may land after it: those rows are the
+    // decrypted contents this reset exists to drop.
+    this.#generation++
     this.#captureWanted = false
     this.kinds = []
     this.items = []
@@ -290,8 +295,18 @@ class LibraryState {
 
   // ── items ────────────────────────────────────────────────────────────
 
+  /**
+   * Re-read the shelf for the current filter, sort and query.
+   *
+   * Numbered, because these overlap: a debounced keystroke, a shelf click
+   * and a sort change can all be in the air at once, and nothing guarantees
+   * the backend answers them in order. Only the newest load is allowed to
+   * land, so the grid can never settle on the results of a query the author
+   * has already typed past.
+   */
   async refresh() {
     if (!app.supportsLibrary) return
+    const generation = ++this.#generation
     this.loading = true
     try {
       const [items, stats] = await Promise.all([
@@ -305,6 +320,7 @@ class LibraryState {
         }),
         api.libraryStats(),
       ])
+      if (generation !== this.#generation) return
       this.items = items
       this.stats = stats
       // A selection that has scrolled out of the filter is dropped rather
@@ -316,7 +332,7 @@ class LibraryState {
     } catch (e) {
       await handle(e)
     } finally {
-      this.loading = false
+      if (generation === this.#generation) this.loading = false
     }
   }
 

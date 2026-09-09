@@ -10,6 +10,7 @@
   import Cover from './Cover.svelte'
   import Icon from './Icon.svelte'
   import ItemCard from './ItemCard.svelte'
+  import { rovingFocus } from '../lib/roving'
   import ItemDetail from './ItemDetail.svelte'
   import Rating from './Rating.svelte'
 
@@ -174,7 +175,14 @@
     {/if}
 
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="scroll body" oncontextmenu={(e) => menu.show(e, shelfMenu())}>
+    <!-- One tab stop for the shelf, and the arrow keys inside it. The grid
+         is two-dimensional and `rovingFocus` measures that for itself, so
+         Down means the card below rather than the next card along. -->
+    <div
+      class="scroll body"
+      oncontextmenu={(e) => menu.show(e, shelfMenu())}
+      use:rovingFocus={library.selected}
+    >
       {#if library.items.length === 0 && !library.loading}
         <div class="empty">
           {#if library.query.trim()}
@@ -217,6 +225,7 @@
             <button
               class="row"
               class:sel={library.selected === row.id}
+              data-row={row.id}
               onclick={() => void library.open(row.id)}
               oncontextmenu={(e) => menu.show(e, rowMenu(row))}
             >

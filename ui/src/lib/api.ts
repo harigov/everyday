@@ -84,7 +84,14 @@ import type { ShellNotification } from './types'
 // indistinguishable from having lost everything.
 const MOCK = import.meta.env.DEV && !('__TAURI_INTERNALS__' in window)
 
-type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>
+/**
+ * `args` is a bag of named arguments for every command but one. `put_blob`
+ * passes a bare `Uint8Array`, which Tauri sends as a raw body rather than as
+ * JSON -- see `putBlob` for why that distinction is worth the wider type.
+ */
+type InvokeArgs = Record<string, unknown> | Uint8Array
+
+type Invoke = <T>(cmd: string, args?: InvokeArgs) => Promise<T>
 
 let invoke: Invoke = async () => {
   throw new VaultError(
@@ -162,7 +169,7 @@ if (!MOCK) {
     channel.onmessage = onEvent
     await invoke<void>('send_message', { conversationId, prompt, context, channel })
   }
-  invoke = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
+  invoke = async <T>(cmd: string, args?: InvokeArgs): Promise<T> => {
     try {
       return await mod.invoke<T>(cmd, args)
     } catch (raw) {
@@ -234,8 +241,17 @@ export const api = {
   search: (query: string, journalId: JournalId | null, limit: number) =>
     invoke<SearchHit[]>('search', { query, journalId, limit }),
 
-  /** Import a file the user dropped or picked; returns its content address. */
-  putBlob: (bytes: Uint8Array) => invoke<string>('put_blob', { bytes: Array.from(bytes) }),
+  /**
+   * Import a file the user dropped or picked; returns its content address.
+   *
+   * The buffer is the whole payload rather than a field inside one, which
+   * looks like a slip and is not: Tauri sends a top-level `ArrayBuffer` as
+   * raw bytes and anything else as JSON. Wrapped in an object, a 100 MB
+   * video became a hundred million JSON numbers -- hundreds of megabytes of
+   * text to build, post and parse -- and froze the window while it did.
+   * `put_blob` reads the request body to match.
+   */
+  putBlob: (bytes: Uint8Array) => invoke<string>('put_blob', bytes),
 
   /** Tells the shell that pending writes have landed and it may close. */
   readyToClose: () => invoke<void>('ready_to_close'),

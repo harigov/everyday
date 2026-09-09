@@ -3,6 +3,7 @@
   import { dayNumber, groupLabel, plural, weekdayShort } from '../lib/format'
   import { mediaUrl } from '../lib/api'
   import { menu } from '../lib/menu.svelte'
+  import { rovingFocus } from '../lib/roving'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
@@ -153,8 +154,15 @@
     />
   </div>
 
+  <!-- One tab stop for the whole list, and the arrow keys inside it: see
+       `lib/roving.ts`. Without it, Tab from the search field walked through
+       every entry in the journal before it reached the editor. -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="scroll rows" oncontextmenu={(e) => menu.show(e, listMenu())}>
+  <div
+    class="scroll rows"
+    oncontextmenu={(e) => menu.show(e, listMenu())}
+    use:rovingFocus={app.selectedEntry}
+  >
     {#if app.query.trim()}
       {#if app.searching && app.results.length === 0}
         <p class="note">Searching…</p>
@@ -168,6 +176,7 @@
           <button
             class="row"
             class:sel={app.selectedEntry === hit.id}
+            data-row={hit.id}
             onclick={() => app.openEntry(hit.id)}
             oncontextmenu={(e) => menu.show(e, hitMenu(hit))}
           >
@@ -195,6 +204,7 @@
           <button
             class="row"
             class:sel={app.selectedEntry === row.id}
+            data-row={row.id}
             onclick={() => app.openEntry(row.id)}
             oncontextmenu={(e) => menu.show(e, entryMenu(row))}
           >

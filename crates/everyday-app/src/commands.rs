@@ -1,10 +1,33 @@
 //! The command surface exposed to the interface.
 //!
-//! Every command runs its storage work on the blocking pool rather than on an
-//! async worker. Vault operations touch disk and, when unlocking, deliberately
-//! burn ~64 MiB of memory in Argon2; doing that on the runtime's async threads
-//! would stall every other task, and doing it on the webview's thread would
-//! freeze the window mid-keystroke.
+//! Every command that touches storage runs its work on the blocking pool
+//! rather than on an async worker. Vault operations touch disk and, when
+//! unlocking, deliberately burn ~64 MiB of memory in Argon2; doing that on
+//! the runtime's async threads would stall every other task, and doing it on
+//! the webview's thread would freeze the window mid-keystroke.
+//!
+//! # Which means: `async fn` and [`blocking`], not a plain `fn`
+//!
+//! This is not a stylistic choice, and it is easy to get wrong by omission.
+//! A `#[tauri::command]` on a *synchronous* function is dispatched inline on
+//! the main thread -- the same thread that runs the platform's UI loop. The
+//! command then does not merely fail to reach the blocking pool; it holds
+//! the window while it decrypts. Listing a day's entries, filtering two
+//! thousand tasks against sealed titles, sealing a save and fsyncing it, or
+//! counting tags across the vault are all work of that shape, and all of it
+//! was landing on the UI thread.
+//!
+//! So: anything that reads or writes the vault is `pub async fn`, takes its
+//! `Arc<Vault>` out of the state first, and does the rest inside `blocking`.
+//! What stays a plain `fn` is only what never touches storage -- reading a
+//! status word, stamping activity against an atomic, or minting a record in
+//! memory for the interface to fill in -- where a hop to another thread and
+//! back would cost more than the work.
+//!
+//! The one deliberate exception is [`poll_auto_lock`], which the interface
+//! asks every few seconds: it is an integer comparison that answers `false`
+//! almost every time, and on the rare occasion it answers `true` the vault
+//! is dropped, which is the cheap direction.
 
 use everyday_core::agent::{AgentSettings, Conversation, Memory, Message as AgentMessage};
 use everyday_core::calendar::{Calendar, CalendarProvider, Event, SyncReport};
@@ -168,10 +191,13 @@ pub async fn unlock(state: State<'_, AppState>, password: String) -> CommandResu
 }
 
 #[tauri::command]
-pub fn lock(state: State<'_, AppState>) -> CommandResult<VaultStatus> {
+pub async fn lock(state: State<'_, AppState>) -> CommandResult<VaultStatus> {
     let vault = state.require()?;
-    vault.lock();
-    Ok(vault.status())
+    blocking(move || {
+        vault.lock();
+        Ok(vault.status())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -192,8 +218,9 @@ pub async fn change_password(
 }
 
 #[tauri::command]
-pub fn set_auto_lock(state: State<'_, AppState>, seconds: u64) -> CommandResult<()> {
-    Ok(state.require()?.set_auto_lock(seconds)?)
+pub async fn set_auto_lock(state: State<'_, AppState>, seconds: u64) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.set_auto_lock(seconds)?)).await
 }
 
 /// Defer the idle auto-lock. Called on real interaction, so it must be cheap.
@@ -214,8 +241,9 @@ pub fn poll_auto_lock(state: State<'_, AppState>) -> CommandResult<bool> {
 // ---- journals -----------------------------------------------------------
 
 #[tauri::command]
-pub fn list_journals(state: State<'_, AppState>) -> CommandResult<Vec<Journal>> {
-    Ok(state.require()?.journals()?)
+pub async fn list_journals(state: State<'_, AppState>) -> CommandResult<Vec<Journal>> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.journals()?)).await
 }
 
 /// Mint a journal, without saving it.
@@ -231,28 +259,32 @@ pub fn new_journal(state: State<'_, AppState>, name: String) -> CommandResult<Jo
 }
 
 #[tauri::command]
-pub fn save_journal(state: State<'_, AppState>, journal: Journal) -> CommandResult<()> {
-    Ok(state.require()?.save_journal(&journal)?)
+pub async fn save_journal(state: State<'_, AppState>, journal: Journal) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.save_journal(&journal)?)).await
 }
 
 #[tauri::command]
-pub fn delete_journal(state: State<'_, AppState>, id: JournalId) -> CommandResult<()> {
-    Ok(state.require()?.delete_journal(id)?)
+pub async fn delete_journal(state: State<'_, AppState>, id: JournalId) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.delete_journal(id)?)).await
 }
 
 // ---- entries ------------------------------------------------------------
 
 #[tauri::command]
-pub fn list_entries(
+pub async fn list_entries(
     state: State<'_, AppState>,
     query: EntryQuery,
 ) -> CommandResult<Vec<everyday_core::EntrySummary>> {
-    Ok(state.require()?.entries(&query)?)
+    let vault = state.require()?;
+    blocking(move || Ok(vault.entries(&query)?)).await
 }
 
 #[tauri::command]
-pub fn get_entry(state: State<'_, AppState>, id: EntryId) -> CommandResult<Entry> {
-    Ok(state.require()?.entry(id)?)
+pub async fn get_entry(state: State<'_, AppState>, id: EntryId) -> CommandResult<Entry> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.entry(id)?)).await
 }
 
 /// A blank entry, filed under today in the machine's own time zone.
@@ -272,39 +304,44 @@ pub fn new_entry(state: State<'_, AppState>, journal_id: JournalId) -> CommandRe
 /// and nothing is written, which is what the editor's conflict banner is
 /// driven by. `save_entry_force` is the "keep mine" on that banner.
 #[tauri::command]
-pub fn save_entry(
+pub async fn save_entry(
     state: State<'_, AppState>,
     entry: Entry,
     expect: Option<jiff::Timestamp>,
 ) -> CommandResult<()> {
-    Ok(state.require()?.save_entry(&entry, expect)?)
+    let vault = state.require()?;
+    blocking(move || Ok(vault.save_entry(&entry, expect)?)).await
 }
 
 #[tauri::command]
-pub fn save_entry_force(state: State<'_, AppState>, entry: Entry) -> CommandResult<()> {
-    Ok(state.require()?.overwrite_entry(&entry)?)
+pub async fn save_entry_force(state: State<'_, AppState>, entry: Entry) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.overwrite_entry(&entry)?)).await
 }
 
 #[tauri::command]
-pub fn delete_entry(state: State<'_, AppState>, id: EntryId) -> CommandResult<()> {
-    Ok(state.require()?.delete_entry(id)?)
+pub async fn delete_entry(state: State<'_, AppState>, id: EntryId) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.delete_entry(id)?)).await
 }
 
 // ---- search -------------------------------------------------------------
 
 #[tauri::command]
-pub fn search(
+pub async fn search(
     state: State<'_, AppState>,
     query: String,
     journal_id: Option<JournalId>,
     limit: usize,
 ) -> CommandResult<Vec<SearchHit>> {
-    Ok(state.require()?.search(&query, journal_id, limit.min(200))?)
+    let vault = state.require()?;
+    blocking(move || Ok(vault.search(&query, journal_id, limit.min(200))?)).await
 }
 
 #[tauri::command]
-pub fn list_tags(state: State<'_, AppState>) -> CommandResult<Vec<String>> {
-    Ok(state.require()?.entry_tags()?.into_iter().map(|(tag, _)| tag).collect())
+pub async fn list_tags(state: State<'_, AppState>) -> CommandResult<Vec<String>> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.entry_tags()?.into_iter().map(|(tag, _)| tag).collect())).await
 }
 
 // ---- projects, tasks and time -------------------------------------------
@@ -319,8 +356,9 @@ pub fn list_tags(state: State<'_, AppState>) -> CommandResult<Vec<String>> {
 // unavailable outside a secure context.
 
 #[tauri::command]
-pub fn list_projects(state: State<'_, AppState>) -> CommandResult<Vec<Project>> {
-    Ok(state.require()?.projects()?)
+pub async fn list_projects(state: State<'_, AppState>) -> CommandResult<Vec<Project>> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.projects()?)).await
 }
 
 /// Mint a project, without saving it.
@@ -331,24 +369,28 @@ pub fn new_project(state: State<'_, AppState>, name: String) -> CommandResult<Pr
 }
 
 #[tauri::command]
-pub fn save_project(state: State<'_, AppState>, project: Project) -> CommandResult<()> {
-    Ok(state.require()?.save_project(&project)?)
+pub async fn save_project(state: State<'_, AppState>, project: Project) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.save_project(&project)?)).await
 }
 
 /// Delete a project, its tasks and every block of time booked against them.
 #[tauri::command]
-pub fn delete_project(state: State<'_, AppState>, id: ProjectId) -> CommandResult<()> {
-    Ok(state.require()?.delete_project(id)?)
+pub async fn delete_project(state: State<'_, AppState>, id: ProjectId) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.delete_project(id)?)).await
 }
 
 #[tauri::command]
-pub fn list_tasks(state: State<'_, AppState>, query: TaskQuery) -> CommandResult<Vec<Task>> {
-    Ok(state.require()?.tasks(&query)?)
+pub async fn list_tasks(state: State<'_, AppState>, query: TaskQuery) -> CommandResult<Vec<Task>> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.tasks(&query)?)).await
 }
 
 #[tauri::command]
-pub fn get_task(state: State<'_, AppState>, id: TaskId) -> CommandResult<Task> {
-    Ok(state.require()?.task(id)?)
+pub async fn get_task(state: State<'_, AppState>, id: TaskId) -> CommandResult<Task> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.task(id)?)).await
 }
 
 /// Mint a task, without saving it.
@@ -372,26 +414,33 @@ pub fn new_task(
 }
 
 #[tauri::command]
-pub fn save_task(state: State<'_, AppState>, task: Task) -> CommandResult<()> {
-    Ok(state.require()?.save_task(&task)?)
+pub async fn save_task(state: State<'_, AppState>, task: Task) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.save_task(&task)?)).await
 }
 
 /// Write several tasks at once. This is what dragging a card across a board
 /// is: two columns renumbered, which must land as one change or not at all.
 #[tauri::command]
-pub fn save_tasks(state: State<'_, AppState>, tasks: Vec<Task>) -> CommandResult<()> {
-    Ok(state.require()?.save_tasks(&tasks)?)
+pub async fn save_tasks(state: State<'_, AppState>, tasks: Vec<Task>) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.save_tasks(&tasks)?)).await
 }
 
 /// Delete a task, its subtasks and their time blocks.
 #[tauri::command]
-pub fn delete_task(state: State<'_, AppState>, id: TaskId) -> CommandResult<()> {
-    Ok(state.require()?.delete_task(id)?)
+pub async fn delete_task(state: State<'_, AppState>, id: TaskId) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.delete_task(id)?)).await
 }
 
 #[tauri::command]
-pub fn list_blocks(state: State<'_, AppState>, query: BlockQuery) -> CommandResult<Vec<TimeBlock>> {
-    Ok(state.require()?.blocks(&query)?)
+pub async fn list_blocks(
+    state: State<'_, AppState>,
+    query: BlockQuery,
+) -> CommandResult<Vec<TimeBlock>> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.blocks(&query)?)).await
 }
 
 /// Mint a block of time, without saving it.
@@ -417,24 +466,25 @@ pub fn new_block(
 }
 
 #[tauri::command]
-pub fn save_block(state: State<'_, AppState>, block: TimeBlock) -> CommandResult<()> {
-    Ok(state.require()?.save_block(&block)?)
+pub async fn save_block(state: State<'_, AppState>, block: TimeBlock) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.save_block(&block)?)).await
 }
 
 #[tauri::command]
-pub fn delete_block(state: State<'_, AppState>, id: BlockId) -> CommandResult<()> {
-    Ok(state.require()?.delete_block(id)?)
+pub async fn delete_block(state: State<'_, AppState>, id: BlockId) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.delete_block(id)?)).await
 }
 
 /// Every tag used anywhere in the task domain, most used first.
 #[tauri::command]
-pub fn task_tags(state: State<'_, AppState>) -> CommandResult<Vec<TagCount>> {
-    Ok(state
-        .require()?
-        .task_tags()?
-        .into_iter()
-        .map(|(tag, count)| TagCount { tag, count })
-        .collect())
+pub async fn task_tags(state: State<'_, AppState>) -> CommandResult<Vec<TagCount>> {
+    let vault = state.require()?;
+    blocking(move || {
+        Ok(vault.task_tags()?.into_iter().map(|(tag, count)| TagCount { tag, count }).collect())
+    })
+    .await
 }
 
 /// A tag and how often it is used. A named struct rather than a tuple so the
@@ -452,8 +502,9 @@ pub struct TagCount {
 /// the webview, so that "overdue" is decided by the same code that decides
 /// which day an entry is filed under.
 #[tauri::command]
-pub fn task_stats(state: State<'_, AppState>) -> CommandResult<TaskStats> {
-    Ok(state.require()?.task_stats(today_local())?)
+pub async fn task_stats(state: State<'_, AppState>) -> CommandResult<TaskStats> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.task_stats(today_local())?)).await
 }
 
 // ---- calendars ----------------------------------------------------------
@@ -471,16 +522,19 @@ pub fn task_stats(state: State<'_, AppState>) -> CommandResult<TaskStats> {
 // never learns that a network exists.
 
 #[tauri::command]
-pub fn list_calendars(state: State<'_, AppState>) -> CommandResult<Vec<CalendarInfo>> {
+pub async fn list_calendars(state: State<'_, AppState>) -> CommandResult<Vec<CalendarInfo>> {
     let vault = state.require()?;
-    let mut out = Vec::new();
-    for calendar in vault.calendars()? {
-        // The count is a `COUNT(*)` over a clear index column, so listing
-        // four calendars decrypts four records and nothing else.
-        let events = vault.event_count(calendar.id).unwrap_or(0);
-        out.push(CalendarInfo { calendar, events });
-    }
-    Ok(out)
+    blocking(move || {
+        let mut out = Vec::new();
+        for calendar in vault.calendars()? {
+            // The count is a `COUNT(*)` over a clear index column, so listing
+            // four calendars decrypts four records and nothing else.
+            let events = vault.event_count(calendar.id).unwrap_or(0);
+            out.push(CalendarInfo { calendar, events });
+        }
+        Ok(out)
+    })
+    .await
 }
 
 /// A calendar and how much is in it. A named struct rather than widening
@@ -496,24 +550,31 @@ pub struct CalendarInfo {
 }
 
 #[tauri::command]
-pub fn save_calendar(state: State<'_, AppState>, calendar: Calendar) -> CommandResult<()> {
-    Ok(state.require()?.save_calendar(&calendar)?)
+pub async fn save_calendar(state: State<'_, AppState>, calendar: Calendar) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.save_calendar(&calendar)?)).await
 }
 
 /// Unsubscribe: the calendar and every event that came from it.
 #[tauri::command]
-pub fn delete_calendar(state: State<'_, AppState>, id: CalendarId) -> CommandResult<()> {
-    Ok(state.require()?.delete_calendar(id)?)
+pub async fn delete_calendar(state: State<'_, AppState>, id: CalendarId) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.delete_calendar(id)?)).await
 }
 
 #[tauri::command]
-pub fn list_events(state: State<'_, AppState>, query: EventQuery) -> CommandResult<Vec<Event>> {
-    Ok(state.require()?.events(&query)?)
+pub async fn list_events(
+    state: State<'_, AppState>,
+    query: EventQuery,
+) -> CommandResult<Vec<Event>> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.events(&query)?)).await
 }
 
 #[tauri::command]
-pub fn get_event(state: State<'_, AppState>, id: EventId) -> CommandResult<Event> {
-    Ok(state.require()?.event(id)?)
+pub async fn get_event(state: State<'_, AppState>, id: EventId) -> CommandResult<Event> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.event(id)?)).await
 }
 
 /// Fetch one calendar's feed and replace its events with what came back.
@@ -1260,11 +1321,37 @@ pub async fn fetch_image(state: State<'_, AppState>, url: String) -> CommandResu
 ///
 /// Not a storage limit -- the blob store chunks and streams happily past this
 /// -- but a bound on the single allocation this command makes, since the
-/// bytes arrive as one JSON array from the webview.
+/// payload arrives as one buffer from the webview.
 const MAX_ATTACHMENT_BYTES: usize = 512 * 1024 * 1024;
 
+/// Store an attachment and return its content address.
+///
+/// The bytes arrive as the request's *raw body* rather than as a named
+/// argument, and that is the whole point of the odd signature. Tauri
+/// serialises command arguments as JSON, and a `Uint8Array` inside a JSON
+/// object becomes an array of numbers -- so a 100 MB video was turned into a
+/// hundred million JavaScript numbers, stringified into roughly 350 MB of
+/// text, and parsed back a byte at a time on this side. It froze the window
+/// for as long as it took and peaked at something over a gigabyte of memory
+/// for a file the disk had already handed us as a buffer.
+///
+/// A payload that *is* an `ArrayBuffer` at the top level is sent as
+/// `application/octet-stream` instead and lands here as bytes.
 #[tauri::command]
-pub async fn put_blob(state: State<'_, AppState>, bytes: Vec<u8>) -> CommandResult<String> {
+pub async fn put_blob(
+    state: State<'_, AppState>,
+    request: tauri::ipc::Request<'_>,
+) -> CommandResult<String> {
+    let bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
+        // The slow path, kept working rather than refused. Tauri falls back
+        // to `postMessage` when a webview blocks its custom protocol, and
+        // there a buffer really does arrive as an array of numbers. Losing
+        // attachments entirely in that configuration would be a worse
+        // outcome than the allocation this exists to avoid.
+        tauri::ipc::InvokeBody::Json(value) => serde_json::from_value::<Vec<u8>>(value.clone())
+            .map_err(|_| CommandError::new("invalid", "attachment payload was not a buffer"))?,
+    };
     if bytes.len() > MAX_ATTACHMENT_BYTES {
         return Err(CommandError::new(
             "too_large",
@@ -1306,20 +1393,22 @@ pub fn new_tracker(
 }
 
 #[tauri::command]
-pub fn list_readings(
+pub async fn list_readings(
     state: State<'_, AppState>,
     query: ReadingQuery,
 ) -> CommandResult<Vec<Reading>> {
-    Ok(state.require()?.readings(&query)?)
+    let vault = state.require()?;
+    blocking(move || Ok(vault.readings(&query)?)).await
 }
 
 /// One row per tracker per day: the aggregate every chart is built from.
 #[tauri::command]
-pub fn tracker_days(
+pub async fn tracker_days(
     state: State<'_, AppState>,
     query: ReadingQuery,
 ) -> CommandResult<Vec<TrackerDay>> {
-    Ok(state.require()?.tracker_days(&query)?)
+    let vault = state.require()?;
+    blocking(move || Ok(vault.tracker_days(&query)?)).await
 }
 
 /// Record one value, and decide what "when" means.
@@ -1335,7 +1424,7 @@ pub fn tracker_days(
 ///   and nothing whatever about 23:04, and a defaulted timestamp there would
 ///   put a mark on the calendar at an hour nothing happened.
 #[tauri::command]
-pub fn log_reading(
+pub async fn log_reading(
     state: State<'_, AppState>,
     journal_id: JournalId,
     tracker_id: TrackerId,
@@ -1345,48 +1434,54 @@ pub fn log_reading(
     entry_id: Option<EntryId>,
 ) -> CommandResult<Reading> {
     let vault = state.require()?;
-    let tz = system_tz();
-    let now = jiff::Timestamp::now();
-    let at = match at {
-        Some(at) => Some(at),
-        None if date == local_date_in(now, &tz) => Some(now),
-        None => None,
-    };
+    blocking(move || {
+        let tz = system_tz();
+        let now = jiff::Timestamp::now();
+        let at = match at {
+            Some(at) => Some(at),
+            None if date == local_date_in(now, &tz) => Some(now),
+            None => None,
+        };
 
-    let mut reading = match at {
-        Some(at) => Reading::at(journal_id, tracker_id, at, &tz, value),
-        None => Reading::on(journal_id, tracker_id, date, value),
-    };
-    reading.tz = tz;
-    reading.entry_id = entry_id;
-    vault.save_reading(&reading)?;
-    // Read back rather than returned as written: the vault clamps the value
-    // against the tracker's definition, and the interface should draw what
-    // was stored rather than what it asked for.
-    Ok(vault.reading(reading.id)?)
+        let mut reading = match at {
+            Some(at) => Reading::at(journal_id, tracker_id, at, &tz, value),
+            None => Reading::on(journal_id, tracker_id, date, value),
+        };
+        reading.tz = tz;
+        reading.entry_id = entry_id;
+        vault.save_reading(&reading)?;
+        // Read back rather than returned as written: the vault clamps the value
+        // against the tracker's definition, and the interface should draw what
+        // was stored rather than what it asked for.
+        Ok(vault.reading(reading.id)?)
+    })
+    .await
 }
 
 /// Update a reading that already exists: a corrected dose, a note, a time.
 #[tauri::command]
-pub fn save_reading(state: State<'_, AppState>, reading: Reading) -> CommandResult<()> {
-    Ok(state.require()?.save_reading(&reading)?)
+pub async fn save_reading(state: State<'_, AppState>, reading: Reading) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.save_reading(&reading)?)).await
 }
 
 #[tauri::command]
-pub fn delete_reading(state: State<'_, AppState>, id: ReadingId) -> CommandResult<()> {
-    Ok(state.require()?.delete_reading(id)?)
+pub async fn delete_reading(state: State<'_, AppState>, id: ReadingId) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.delete_reading(id)?)).await
 }
 
 /// Remove a tracker from its journal along with every reading it made,
 /// returning how many went. Archiving is the non-destructive half and is an
 /// ordinary `save_journal`.
 #[tauri::command]
-pub fn delete_tracker(
+pub async fn delete_tracker(
     state: State<'_, AppState>,
     journal_id: JournalId,
     tracker_id: TrackerId,
 ) -> CommandResult<u64> {
-    Ok(state.require()?.delete_tracker(journal_id, tracker_id)?)
+    let vault = state.require()?;
+    blocking(move || Ok(vault.delete_tracker(journal_id, tracker_id)?)).await
 }
 
 // ---- maintenance --------------------------------------------------------
@@ -1405,19 +1500,27 @@ pub async fn collect_garbage(state: State<'_, AppState>) -> CommandResult<u64> {
 /// makes the ordering right -- the key is dropped after the last write, not
 /// before it.
 #[tauri::command]
-pub fn ready_to_close(window: tauri::Window, state: State<'_, AppState>) -> CommandResult<()> {
+pub async fn ready_to_close(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
     if let Some(vault) = state.get() {
-        // Best-effort: a checkpoint failing is not a reason to refuse to
-        // quit, and the data is committed either way.
-        let _ = vault.with_store(|s| s.flush());
-        vault.lock();
+        blocking(move || {
+            // Best-effort: a checkpoint failing is not a reason to refuse to
+            // quit, and the data is committed either way.
+            let _ = vault.with_store(|s| s.flush());
+            vault.lock();
+            Ok(())
+        })
+        .await?;
     }
     window.destroy().map_err(|e| CommandError::new("close_failed", e.to_string()))
 }
 
 #[tauri::command]
-pub fn vault_stats(state: State<'_, AppState>) -> CommandResult<StoreStats> {
-    Ok(state.require()?.stats()?)
+pub async fn vault_stats(state: State<'_, AppState>) -> CommandResult<StoreStats> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.stats()?)).await
 }
 
 // ── the tray ───────────────────────────────────────────────────────────
@@ -1475,8 +1578,9 @@ pub fn blob_len(vault: &Arc<Vault>, id: BlobId) -> everyday_core::Result<u64> {
 /// How the assistant is configured. Never carries the API key; see
 /// [`everyday_core::agent`] for why that is structural rather than a habit.
 #[tauri::command]
-pub fn agent_settings(state: State<'_, AppState>) -> CommandResult<AgentSettings> {
-    Ok(state.require()?.agent_settings()?)
+pub async fn agent_settings(state: State<'_, AppState>) -> CommandResult<AgentSettings> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.agent_settings()?)).await
 }
 
 #[tauri::command]

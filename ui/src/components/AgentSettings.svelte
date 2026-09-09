@@ -12,7 +12,9 @@
   // pasting a key before choosing an endpoint is how people end up sending
   // an OpenAI key to somebody else's gateway.
 
+  import { onDestroy } from 'svelte'
   import { agent } from '../lib/agent.svelte'
+  import { trapFocus } from '../lib/focus'
   import type { AgentSettings } from '../lib/types'
   import Icon from './Icon.svelte'
 
@@ -24,6 +26,27 @@
   let key = $state('')
   let notice = $state<string | null>(null)
   let saving = $state(false)
+  /**
+   * Clears "Saved." after a moment, and only that.
+   *
+   * A confirmation is true when it appears and stops being true the moment
+   * anything is typed after it -- so a footer reading "Saved." beside three
+   * fields that are not is worse than a footer reading nothing. A failure is
+   * the opposite: it stays, because it is a thing to act on rather than a
+   * thing to notice.
+   */
+  let noticeTimer: ReturnType<typeof setTimeout> | null = null
+  function confirm(message: string) {
+    notice = message
+    if (noticeTimer) clearTimeout(noticeTimer)
+    noticeTimer = setTimeout(() => {
+      noticeTimer = null
+      notice = null
+    }, 4000)
+  }
+  onDestroy(() => {
+    if (noticeTimer) clearTimeout(noticeTimer)
+  })
 
   $effect(() => {
     if (!draft && agent.settings) draft = structuredClone($state.snapshot(agent.settings))
@@ -52,6 +75,8 @@
 
   async function save() {
     if (!draft) return
+    if (noticeTimer) clearTimeout(noticeTimer)
+    noticeTimer = null
     notice = null
     saving = true
     try {
@@ -61,7 +86,7 @@
         key = ''
       }
       draft = structuredClone($state.snapshot(agent.settings!))
-      notice = 'Saved.'
+      confirm('Saved.')
     } catch (e) {
       notice = e instanceof Error ? e.message : String(e)
     } finally {
@@ -70,6 +95,8 @@
   }
 
   async function removeKey() {
+    if (noticeTimer) clearTimeout(noticeTimer)
+    noticeTimer = null
     notice = null
     try {
       await agent.clearKey()
@@ -80,9 +107,17 @@
   }
 </script>
 
+<!-- Escape closes it, as it does every other dialog in the application. A
+     modal that only the mouse can dismiss is one people learn to distrust. -->
+<svelte:window
+  onkeydown={(e: KeyboardEvent) => {
+    if (e.key === 'Escape') onclose()
+  }}
+/>
+
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div class="scrim" onclick={onclose}></div>
-<div class="dialog" role="dialog" aria-label="Assistant settings">
+<div class="dialog" role="dialog" aria-modal="true" aria-label="Assistant settings" use:trapFocus>
   <header>
     <h2>Assistant</h2>
     <button class="ghost" onclick={onclose} title="Close"><Icon name="close" size={16} /></button>

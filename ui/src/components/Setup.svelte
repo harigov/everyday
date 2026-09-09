@@ -84,18 +84,24 @@
         settings: chosen,
         password: encrypt ? password : null,
       })
-      // Only on the way out. The connection URL has a database password in
-      // it and has now been sealed into the vault, so there is no reason for
-      // a copy to stay in the webview's memory -- but clearing it in a
-      // `finally` would also clear it when the create *failed*, which is
-      // precisely when it is still needed: a typo in the host is the common
-      // error here, and it should cost a correction rather than re-pasting a
-      // whole credential.
+      // Only on the way out. The credentials have been sealed into the
+      // vault, so there is no reason for a copy to stay in the webview's
+      // memory -- but clearing them in a `finally` would also clear them
+      // when the create *failed*, which is precisely when they are still
+      // needed: a typo in the host is the common error here, and answering
+      // it by emptying the form makes the correction cost a whole
+      // credential and a re-chosen password.
       settings = {}
-    } finally {
-      busy = false
       password = ''
       confirm = ''
+    } catch {
+      // `createVault` re-throws so a caller can react to the failure. This
+      // one reacts by leaving the form as it is -- the message is already
+      // in `app.error` and is drawn under the fields. Swallowed rather than
+      // left to escape, because a rejected handler is an unhandled
+      // rejection and not a second way of saying the same thing.
+    } finally {
+      busy = false
     }
   }
 </script>
