@@ -27,14 +27,71 @@
 // Control everywhere else, and a binding table that spelled that out twice
 // would be two tables to keep in step.
 
-/** A binding, as `shortcuts.ts` declares it. */
+/**
+ * One thing the application can do.
+ *
+ * Three surfaces read this same row and none of them owns it: the keyboard,
+ * which dispatches the ones with `keys`; the tray, which sends the ones with
+ * `tray` to the operating system; and the palette, which offers all of them.
+ * Before this they were three registries, and the third one to learn about a
+ * new action was always the one nobody remembered.
+ *
+ * An action that cannot happen right now says so by `when` answering false, and
+ * is then *absent* rather than disabled -- absent from the palette, from the
+ * help sheet, and from the tray menu. That is what lets two apps use the same
+ * bare letter, and it is why `when` is a function rather than a flag: it is
+ * re-read every time somebody looks.
+ */
 export interface Binding {
-  /** The sequence. See the module comment for the spelling. */
-  keys: string
-  /** What it does, in the imperative, for the help sheet. */
+  /**
+   * A stable name, for the surfaces that have to refer to one across a
+   * boundary -- the tray sends it to Rust and gets it back when a menu item is
+   * chosen. Prefixed with the app it belongs to: `todo:add`.
+   *
+   * Optional only because most rows are reached by key or by reading, and
+   * inventing an id for each of those would be forty names nobody says.
+   */
+  id?: string
+  /**
+   * The sequence. See the module comment for the spelling.
+   *
+   * Absent for an action that has no shortcut, which is most of what a palette
+   * offers: there are more things worth doing than there are comfortable keys.
+   */
+  keys?: string
+  /** What it does, in the imperative, for the help sheet and the palette. */
   label: string
-  /** The heading it appears under in the help sheet. */
+  /** The heading it appears under. */
   group: string
+  /**
+   * Extra words to match on in the palette, for the things people call by
+   * another name than the label uses. "Lock" should be found by "sign out";
+   * "Board" by "kanban".
+   */
+  keywords?: string[]
+  /** Drawn beside the label in the palette. */
+  icon?: string
+  /**
+   * Offer this in the system tray as well.
+   *
+   * The tray is a *filtered view* over this table rather than a registry of
+   * its own, so an action reaches the menu bar by wearing this rather than by
+   * being declared a second time somewhere else.
+   */
+  tray?: boolean
+  /**
+   * Bring the window forward before running, when chosen from the tray.
+   * Default true, because almost every quick action ends with a cursor
+   * somewhere. False for the ones that are precisely about *not* coming back:
+   * locking, stopping a timer.
+   */
+  raise?: boolean
+  /**
+   * Renders a checkbox in the tray. For an action that is also a state -- a
+   * timer that is or is not running -- where hiding the "off" version would
+   * cost the reader the fact that it is off.
+   */
+  checked?: () => boolean
   /**
    * Whether it applies right now.
    *
@@ -139,6 +196,8 @@ export function match(bindings: Binding[], pressed: string[], typing = false): M
   let hit: Binding | null = null
   let pending = false
   for (const binding of bindings) {
+    // A row with no keys is a palette action and has nothing to match.
+    if (!binding.keys) continue
     if (typing && !binding.whileTyping) continue
     if (binding.when && !binding.when()) continue
     const steps = sequence(binding.keys)

@@ -733,8 +733,13 @@ crates/
   everyday-store-sqlite/    SQLite driver (default)
   everyday-store-postgres/  Postgres driver, including Supabase
   everyday-vault/           wires core to backends; platform paths; media serving
-  everyday-cli/             `everyday` — scripted capture, export, inspection
-  everyday-app/             Tauri desktop shell (window, commands, media, tray)
+  everyday-service/         the command surface: everything a client can ask a
+                            vault to do, with no window in sight
+  everyday-server/          serving a vault to other machines, and the client
+                            that talks to one
+  everyday-cli/             `everyday` — scripted capture, export, inspection,
+                            and `serve`
+  everyday-app/             Tauri desktop shell (window, media, tray, sharing)
 ui/                         Svelte 5 + TipTap interface
 scripts/                    capped test runner, dev runner, Linux setup
 ```
@@ -742,6 +747,135 @@ scripts/                    capped test runner, dev runner, Linux setup
 `everyday-core` has no UI, no platform and no async runtime. That is what lets
 the same logic back a desktop shell today and a mobile one later, and it is
 why the whole test suite runs on a machine that cannot build a GUI.
+
+`everyday-service` is the middle. Every one of the ninety-odd things a vault
+can be asked to do is an entry in one table there, run by name from JSON, and
+the desktop shell registers nine commands rather than ninety. That is what
+lets the same command bodies back this window, a server answering three
+machines, and a mobile shell later — and it is why the interface's own client
+is *generated* from that table rather than written beside it.
+
+## One vault, many windows
+
+A vault can be served to other copies of this application. A client is not a
+thin viewer: it is the same app, with its own window, its own tray and its own
+keyboard, whose Rust side forwards every command to whichever machine holds
+the vault. That machine keeps the key, the search index, the calendar feeds
+and the assistant. A client keeps a device token and nothing about the data at
+all.
+
+```
+  laptop A (holds the vault)            laptop B, or a phone later
+  ┌──────────────────────────┐          ┌──────────────────────────┐
+  │  window ─┐               │          │  window ─┐               │
+  │          ├─ the service ─┼── TLS ───┼─ RemoteClient            │
+  │  server ─┘        │      │          │      pins one certificate│
+  │              the vault   │          │      no key, no data     │
+  └──────────────────────────┘          └──────────────────────────┘
+```
+
+Turn it on in **Settings → Vault → Share on the network**, press *Add a
+computer*, and carry the link it shows to the other machine — pasted, or
+scanned off the QR code beside it. There is a headless shape too, for a
+machine under a desk or in a container:
+
+```sh
+everyday --vault ~/vault serve --pair       # prints a link and a QR code
+```
+
+It starts **locked** unless given a password, so an unattended server need not
+keep one in an environment file: the first client to connect unlocks it.
+
+### What the link is, and why a self-signed certificate is stronger here
+
+```
+everyday://pair?host=100.64.0.12:7397&fp=<sha256 of the cert>&code=<one-time>&name=Journal
+```
+
+There is no certificate authority in this story and there should not be. A
+self-hoster on a Tailscale network has no public name to get a certificate
+for, and requiring one would make "share this vault" a task with a
+prerequisite. So the server signs its own and the *fingerprint* travels out of
+band — in the link a person carried from one screen to the other. A client
+trusts exactly that certificate and nothing else, which is a stronger promise
+than the public web makes: no authority anywhere can issue one it would
+accept.
+
+The order of the pairing exchange is the security of it. The certificate is
+fetched, its fingerprint compared, and only then is a client built that trusts
+it; only then is the one-time code spent. A mismatch stops before anything
+secret is sent, and costs nobody their code.
+
+### The parts that are load-bearing rather than decorative
+
+- **Unlocking is rate limited, because its cost is the attack.** Each attempt
+  burns 64 MiB of Argon2 by design. That is a fine cost to impose on somebody
+  typing a password and an excellent denial of service to hand a stranger, so
+  attempts run one at a time server-wide and a device that keeps guessing is
+  turned away.
+- **A device token is hashed at rest** and expires after a month unused. It is
+  a bearer credential to an unlocked vault, so on a client it goes in the
+  operating system's keychain — and where there is none, connecting is refused
+  rather than the token being quietly written into a settings file. The
+  difference between "in your keychain" and "in `~/.config`" is exactly what
+  somebody choosing to self-host cares about.
+- **Pairing another device is never something a paired device can do.** The
+  `admin` scope is not issued over a wire, because a device that could pair
+  another would make revocation a suggestion.
+- **A retried write is answered from the first attempt.** Over a dropped
+  connection a save lands and its answer does not, so the client retries — and
+  the conditional save would refuse the retry as a conflict against its own
+  earlier write, offering "keep mine" for something already saved. Writes
+  carry a request id, and a repeat is answered from the record, including one
+  that is still running.
+- **A token carries scopes, and every command declares the one it needs.**
+  Today every token is issued `all`. The mechanism is here first because
+  retrofitting it means invalidating every paired device, and because the
+  weakest client this application will ever have is a browser extension.
+
+### The trade, stated where somebody turns it on
+
+A machine serving a vault can read it, because it is the machine holding the
+key. That is a *different* trade from keeping a vault on a Postgres server,
+which only ever sees ciphertext — and the sharing switch says so rather than
+leaving it in a document.
+
+There is also **no offline mode**. A client keeps no copy, which is the whole
+point of the arrangement, so it shows nothing at all when the machine holding
+the vault is unreachable. The connect screen says that too.
+
+### Adding an app does not mean touching any of this
+
+Every one of the ninety-odd things a vault can be asked to do is an entry in
+one table in `everyday-service`, and a domain contributes its own slice of it.
+An entry declares the scope it needs, the effect it has and the change it
+emits, so authorisation, live refresh and the generated client are all *data*
+rather than code somebody has to remember to extend.
+
+That claim was tested by accident. The Overview, Roles, Goals and Purpose
+landed after server mode did, and reaching every client took one module, one
+scope, two change kinds and a regenerated client. Its quick actions became
+four rows in the same action table the keyboard and the palette read. There is
+a test — `a_client_can_use_the_records_that_arrived_after_it` — whose whole job
+is to keep that true for the sixth app.
+
+### Two transports, one router
+
+TLS over TCP for other machines, and a **local socket** for processes
+belonging to the same user, always on while a vault is open. The second is not
+an afterthought: the operating system already vouches for the peer, so there
+is no token and no certificate, and it is how `everyday` will write through a
+running app instead of coming up read-only beside it — and how a browser
+extension will reach a vault that is not shared on any network at all.
+
+### Lists notice writes they did not make
+
+Every command that changes something says what it touched. A window ignores
+its own — compared by origin on the server side, so a save never reloads the
+list it was made in — and reloads for anybody else's, coalesced, because a
+calendar sync writes a thousand events and drawing the grid a thousand times
+is not a plan. A vault that locks itself on the machine holding it locks for
+everybody looking at it.
 
 ## Encryption
 
@@ -823,6 +957,13 @@ without touching the app.
 |---|---|---|
 | `sqlite` | the default; one person, one machine, works offline | the vault is on that machine |
 | `postgres` | a vault two computers can both open — your own server or a [Supabase](https://supabase.com) project | needs a network; whoever runs the server can see the vault's shape |
+
+There is a third way for two computers to share a vault, and it is not a
+backend: one of them holds it and serves it to the other. See
+[One vault, many windows](#one-vault-many-windows). The two answer different
+questions — a Postgres vault is *storage two machines reach*, and a served
+vault is *one machine's storage, reached remotely* — and they compose: a
+server can sit on either backend.
 
 Both are the *same backend*. `everyday-store-sql` holds the schema, every
 query, every cascade and the whole clear/sealed split; the two crates beside
@@ -1072,6 +1213,8 @@ everyday export ~/journal-backup   # readable Markdown, one file per entry
 everyday backup ~/vault-copy       # the vault itself, still sealed
 everyday backend                   # what the storage backend is set to
 everyday check                     # look for storage-level damage
+everyday serve --pair              # serve this vault to other machines
+everyday do list_tools --list      # the assistant's verbs, without a model
 ```
 
 `--help` on any subcommand. Password comes from a prompt, or `EVERYDAY_PASSWORD`
@@ -1118,6 +1261,7 @@ with what the platform or the webview has already taken.
 | `Ctrl/Cmd N` | the same as `C` |
 | `Ctrl/Cmd F` | the same as `/` |
 | `Ctrl/Cmd ,` | settings |
+| `Ctrl/Cmd K` | the command palette — everything, by name |
 | `Ctrl/Cmd L` | lock now |
 | `Ctrl/Cmd S` | flush pending edits (it autosaves anyway) |
 
@@ -1136,6 +1280,78 @@ Every one of these is a row in `ui/src/lib/shortcuts.svelte.ts` and nowhere
 else — the table is what the help sheet reads, so a shortcut that is not in
 it does not exist and one that is cannot be undocumented. The mechanics live
 next door in `keys.ts`, which has no stores in it and is tested on its own.
+
+## The palette
+
+`Ctrl/Cmd K`. Everything the application can do, findable by typing, and the
+same rows the keyboard dispatches and the tray offers — because there is one
+table, in `ui/src/lib/shortcuts.svelte.ts`, and an action reaches all three
+surfaces by existing rather than by being declared three times.
+
+That was not true before. The keyboard had a table, the tray had its own, and
+the context menus had a third; the third one to learn about a new action was
+always the one nobody remembered.
+
+Matching is three coarse tiers rather than an edit distance — a prefix of the
+label, then a word inside it, then a keyword or the group — because a scored
+distance puts surprising things first and somebody typing two letters has an
+obvious right answer in mind. Keywords are how the things people call by
+another word are found at all: *lock* by "sign out", *board* by "kanban".
+
+**When nothing matches it offers to keep what was typed**: as a task, as a
+reading, on a shelf, or as a search. That is the half this is really for. Most
+of what somebody opens a palette to do is put a thing somewhere before they
+forget it, and "no results" is a dead end where "add as a task" is the answer.
+
+The grammars are the apps' own, not a third one written for this. So
+
+```
+Book the flights #travel !high ~1h30 @fri     a task, parsed as the todo app parses it
+ibuprofen 400mg                                a reading, as the journal's strip reads it
+mood 7/10                                      and it will make the tracker if it is new
+```
+
+all do here exactly what they do where they came from. Reimplementing either
+grammar in the palette would be a third place for them to disagree, which is
+the same argument that put every action in one table.
+
+### From anywhere on the desktop
+
+`Ctrl/Cmd Shift Space` raises the window with the palette open, whatever you
+are looking at. Both modifiers, because the unshifted version is an
+input-method switcher on most desktops and claiming it would break typing in
+another language — a worse outcome than having no hotkey.
+
+A desktop refusing the key is an **ordinary answer rather than an error**:
+Wayland has no protocol for an application to claim a global key without the
+compositor's portal, and not every compositor implements one. Settings says
+whether it was granted and points at the tray instead. Nothing about the
+palette depends on it.
+
+The honest limit: it raises the *window*. A palette in a window of its own,
+appearing over whatever is in front without taking focus from it, is the
+better end state and is deliberately not this. A second webview shares no
+memory with the first, so it would need its own connection to the vault, its
+own copy of the action table and its own answer to what "the open shelf"
+means. That is a feature, not a detail.
+
+### The assistant's verbs, without the assistant
+
+The thirty-four tools the assistant can run are also runnable directly, with
+no model in the loop — `everyday do <tool>`, or `list_tools` and `run_tool`
+over the command surface. A destructive one is refused unless the caller says,
+in that call, that it means it: there is no undo in this application, so a
+script that deletes a project has to be a script that asked to.
+
+One rule is worth stating because it exists before the app that needs it. A
+tool *domain* is classed ordinary or secret, and a secret one is absent from
+what the assistant is offered — not present and refused, not present behind a
+confirmation. Prompt injection already has a path in: a fetched page, an
+imported calendar, an entry somebody else wrote. For a task list the worst
+case is a wrongly-created task; for a stored password it is exfiltration, and
+no amount of confirming makes that a risk worth carrying. Every domain today
+is ordinary, and the match is exhaustive, so adding one without deciding will
+not compile.
 
 ## Quick actions in the tray
 
@@ -1297,7 +1513,7 @@ parsing it out of prose needs a suggestion plugin in the editor, which is a
 dependency and a third-party notice, and the popover was always the primary
 way in.
 
-Not yet built: sync between machines, mobile shells, a map view, task
+Not yet built: mobile shells, a map view, task
 recurrence, writing back to a subscribed calendar (see above for why not), and
 importers for Day One's export format.
 

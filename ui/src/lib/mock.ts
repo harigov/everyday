@@ -1808,6 +1808,13 @@ export const mockInvoke = async <T>(
           },
         ],
         status: status(),
+        protocol: 1,
+        // The mock is one machine with one vault. Server mode is a Rust
+        // feature end to end -- the pinning, the pairing, the socket -- and
+        // pretending to have paired devices here would be a screen that could
+        // never be exercised against anything.
+        remotes: [],
+        remote: null,
       } satisfies Bootstrap as T
 
     case 'unlock':

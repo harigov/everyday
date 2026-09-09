@@ -32,7 +32,7 @@ impl AgentStore for SqlStore {
     // ---- settings -------------------------------------------------------
 
     fn settings(&self) -> Result<AgentSettings> {
-        let sealed = self.conn().sealed("SELECT data FROM agent_settings WHERE id = 1", &[])?;
+        let sealed = self.read().sealed("SELECT data FROM agent_settings WHERE id = 1", &[])?;
 
         let mut settings: AgentSettings = match sealed {
             Some(sealed) => self.unseal(&settings_aad(), &sealed)?,
@@ -57,7 +57,7 @@ impl AgentStore for SqlStore {
         // the record cannot be believed by anyone. Writing it as-is keeps
         // this method a plain round-trip of what it was handed.
         let data = self.seal(&settings_aad(), settings)?;
-        self.conn().execute(
+        self.write().execute(
             "INSERT INTO agent_settings (id, data) VALUES (1, ?1)
              ON CONFLICT (id) DO UPDATE SET data = ?1",
             &vals![data],
@@ -75,7 +75,7 @@ impl AgentStore for SqlStore {
         // cannot be swapped with the settings row by anyone editing the
         // database.
         let data = self.seal(&secret_aad(), &key.trim())?;
-        self.conn().execute(
+        self.write().execute(
             "INSERT INTO agent_secret (id, data) VALUES (1, ?1)
              ON CONFLICT (id) DO UPDATE SET data = ?1",
             &vals![data],
@@ -84,7 +84,7 @@ impl AgentStore for SqlStore {
     }
 
     fn secret(&self) -> Result<Option<String>> {
-        let sealed = self.conn().sealed("SELECT data FROM agent_secret WHERE id = 1", &[])?;
+        let sealed = self.read().sealed("SELECT data FROM agent_secret WHERE id = 1", &[])?;
         match sealed {
             Some(sealed) => Ok(Some(self.unseal(&secret_aad(), &sealed)?)),
             None => Ok(None),
@@ -92,7 +92,7 @@ impl AgentStore for SqlStore {
     }
 
     fn delete_secret(&self) -> Result<()> {
-        self.conn().execute("DELETE FROM agent_secret WHERE id = 1", &[])?;
+        self.write().execute("DELETE FROM agent_secret WHERE id = 1", &[])?;
         Ok(())
     }
 
@@ -100,7 +100,7 @@ impl AgentStore for SqlStore {
         // `SELECT 1` rather than the payload: this is asked every time the
         // settings pane opens and there is no reason to pull a credential
         // across a connection to count it.
-        Ok(self.conn().query_opt("SELECT 1 FROM agent_secret WHERE id = 1", &[])?.is_some())
+        Ok(self.read().query_opt("SELECT 1 FROM agent_secret WHERE id = 1", &[])?.is_some())
     }
 
     // ---- conversations --------------------------------------------------
@@ -115,13 +115,13 @@ impl AgentStore for SqlStore {
             sql.push_str(&self.dialect().limit_offset(query.limit, query.offset));
         }
 
-        let rows = self.conn().records(&sql, &[])?;
+        let rows = self.read().records(&sql, &[])?;
         self.collect(rows, conversation_aad)
     }
 
     fn get_conversation(&self, id: ConversationId) -> Result<Conversation> {
         let sealed = self
-            .conn()
+            .read()
             .sealed("SELECT data FROM conversations WHERE id = ?1", &vals![id.to_string()])?
             .ok_or_else(|| Error::not_found("conversation", id))?;
         self.unseal(&conversation_aad(id), &sealed)
@@ -129,7 +129,7 @@ impl AgentStore for SqlStore {
 
     fn put_conversation(&self, c: &Conversation) -> Result<()> {
         let data = self.seal(&conversation_aad(c.id), c)?;
-        self.conn().execute(
+        self.write().execute(
             "INSERT INTO conversations (id, created_us, updated_us, data)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (id) DO UPDATE SET updated_us = ?3, data = ?4",
@@ -146,7 +146,7 @@ impl AgentStore for SqlStore {
         //
         // Memories do not go with it, by their deliberate absence of a key.
         // See `v6` in `schema.rs`.
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         tx.execute("DELETE FROM messages WHERE conversation_id = ?1", &vals![id.to_string()])?;
         tx.execute("DELETE FROM conversations WHERE id = ?1", &vals![id.to_string()])?;
@@ -156,7 +156,7 @@ impl AgentStore for SqlStore {
     // ---- messages -------------------------------------------------------
 
     fn list_messages(&self, id: ConversationId) -> Result<Vec<Message>> {
-        let rows = self.conn().records(
+        let rows = self.read().records(
             "SELECT id, data FROM messages
              WHERE conversation_id = ?1
              ORDER BY created_us ASC, id ASC",
@@ -171,7 +171,7 @@ impl AgentStore for SqlStore {
 
     fn put_message(&self, m: &Message) -> Result<()> {
         let data = self.seal(&message_aad(m.id), m)?;
-        self.conn().execute(
+        self.write().execute(
             "INSERT INTO messages (id, conversation_id, created_us, data)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (id) DO UPDATE SET data = ?4",
@@ -181,12 +181,12 @@ impl AgentStore for SqlStore {
     }
 
     fn delete_message(&self, id: MessageId) -> Result<()> {
-        self.conn().execute("DELETE FROM messages WHERE id = ?1", &vals![id.to_string()])?;
+        self.write().execute("DELETE FROM messages WHERE id = ?1", &vals![id.to_string()])?;
         Ok(())
     }
 
     fn count_messages(&self, id: ConversationId) -> Result<u64> {
-        let n = self.conn().scalar_i64(
+        let n = self.read().scalar_i64(
             "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
             &vals![id.to_string()],
         )?;
@@ -197,7 +197,7 @@ impl AgentStore for SqlStore {
 
     fn list_memories(&self) -> Result<Vec<Memory>> {
         let rows = self
-            .conn()
+            .read()
             .records("SELECT id, data FROM memories ORDER BY created_us ASC, id ASC", &[])?;
         self.collect(rows, memory_aad)
     }
@@ -205,7 +205,7 @@ impl AgentStore for SqlStore {
     fn put_memory(&self, m: &Memory) -> Result<()> {
         m.validate()?;
         let data = self.seal(&memory_aad(m.id), m)?;
-        self.conn().execute(
+        self.write().execute(
             "INSERT INTO memories (id, created_us, data) VALUES (?1, ?2, ?3)
              ON CONFLICT (id) DO UPDATE SET data = ?3",
             &vals![m.id.to_string(), to_us(m.created_at), data],
@@ -214,7 +214,7 @@ impl AgentStore for SqlStore {
     }
 
     fn delete_memory(&self, id: MemoryId) -> Result<()> {
-        self.conn().execute("DELETE FROM memories WHERE id = ?1", &vals![id.to_string()])?;
+        self.write().execute("DELETE FROM memories WHERE id = ?1", &vals![id.to_string()])?;
         Ok(())
     }
 }

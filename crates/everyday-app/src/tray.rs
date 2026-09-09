@@ -32,7 +32,7 @@ use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem,
 use tauri::tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Wry};
 
-use crate::error::{CommandError, CommandResult};
+use everyday_service::error::{CommandError, CommandResult};
 
 /// Emitted with the id of the menu item that was chosen.
 pub const TRAY_ACTION: &str = "everyday://tray-action";

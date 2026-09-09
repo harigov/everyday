@@ -20,6 +20,8 @@ tauri-build.workspace = true
 [dependencies]
 everyday-core.workspace = true
 everyday-vault.workspace = true
+everyday-service.workspace = true
+everyday-server.workspace = true
 # `tray-icon` is not a default feature: it pulls in muda and the platform
 # status-item APIs, and an app without a tray should not carry them. See
 # `src/tray.rs`. On Linux it also wants libayatana-appindicator at runtime,
@@ -35,28 +37,22 @@ tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
 serde.workspace = true
 serde_json.workspace = true
-jiff.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# The one network dependency in the whole application, and it is here in the
-# shell rather than in the core on purpose: `everyday-core` has no async
-# runtime, no TLS stack and no ability to open a socket, and the calendar
-# feature is built so that stays true. This crate fetches bytes; the core
-# does everything that happens to them afterwards.
-#
-# Default features are rustls, http2, charset and system-proxy, which is the
-# right set: the platform's own trust store and the platform's own proxy
-# settings, because a work calendar behind a corporate proxy is the common
-# case rather than the exotic one. `gzip` on top -- a year of a busy calendar
-# is a large text document, and every publisher serves it compressed if asked.
-# Already in the dependency graph via Tauri, so this adds the TLS backend and
-# not much else.
-reqwest = { version = "0.13", features = ["gzip"] }
 tauri-plugin-single-instance = "2"
-rig-core = "0.42"
-rig-agent = "0.42"
-tokio = { version = "1.53.1", features = ["sync"] }
-futures = "0.3.34"
+# The OS-wide hotkey that raises the palette. Registered lazily and switchable
+# off, because a global shortcut is a claim on a key combination for the whole
+# desktop and not every desktop will honour it -- Wayland wants a portal. See
+# `hotkey.rs`.
+tauri-plugin-global-shortcut = "2"
+tokio = { version = "1.53.1", features = ["sync", "time"] }
+jiff.workspace = true
+# A device token is a bearer credential to an unlocked vault on another
+# machine, so it goes in the operating system's own store rather than in a
+# settings file. One API over the macOS keychain, the Windows credential
+# manager and the XDG secret service. See `remotes.rs` for what happens where
+# there is none.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 [features]
 # Enabled by `tauri dev`/`tauri build`; keeps devtools out of releases.

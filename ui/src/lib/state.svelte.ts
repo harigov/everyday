@@ -5,13 +5,14 @@
 // stay declarative and the save/lock logic lives in one auditable spot.
 
 import { tick } from 'svelte'
-import { api, isMock } from './api'
+import { api, isMock, newRequestId } from './api'
 import { AUTOSAVE_MS } from './autosave'
 import { notify } from './notify.svelte'
 import { todayIso } from './time'
-import { TRAY_ORDER, tray } from './tray.svelte'
 import type {
   Bootstrap,
+  Connected,
+  Connection,
   Entry,
   EntryId,
   EntrySummary,
@@ -114,6 +115,29 @@ class AppState {
   status = $state<VaultStatus | null>(null)
   error = $state<string | null>(null)
 
+  /**
+   * The vault on another computer that this window is looking at.
+   *
+   * `null` means the vault is in this process, which is the ordinary case.
+   * When it is set, three things follow: the settings that are about *this*
+   * machine's storage are hidden, because they belong to the other one; a
+   * banner says which computer is being read from; and there is no offline
+   * mode, so losing the connection is a condition rather than an error to
+   * dismiss.
+   */
+  remote = $state<Connection | null>(null)
+  /**
+   * Set while this window is unlocking the vault itself.
+   *
+   * The backend raises a lock-state event on any unlock, including this
+   * window's own, and the live router would otherwise reload everything from
+   * scratch alongside the load the unlock is already doing. See
+   * `live.svelte.ts`.
+   */
+  unlocking = $state(false)
+  /** Servers this copy has paired with, for the picker. */
+  remotes = $state<Connection[]>([])
+
   journals = $state<Journal[]>([])
   entries = $state<EntrySummary[]>([])
   /** `null` means "all journals". */
@@ -170,6 +194,14 @@ class AppState {
    * and has never successfully written.
    */
   #baseVersion: string | null = null
+  /**
+   * The `updatedAt` and request id of the write currently being attempted.
+   *
+   * Held across retries so a retry *is* the same write rather than a second
+   * one; see `#write`. `null` when there is nothing in flight, and set back to
+   * `null` whenever the text changes.
+   */
+  #writeStamp: { updatedAt: string; requestId: string } | null = null
   #searchTimer: ReturnType<typeof setTimeout> | null = null
   #lockTimer: ReturnType<typeof setInterval> | null = null
   #lastTouch = 0
@@ -221,8 +253,10 @@ class AppState {
       const boot = await api.bootstrap()
       this.boot = boot
       this.status = boot.status
+      this.remote = boot.remote
+      this.remotes = boot.remotes
       this.error = null
-      if (!boot.vaultExists) this.screen = 'setup'
+      if (!boot.vaultExists && !boot.remote) this.screen = 'setup'
       else if (boot.status?.unlocked) await this.enterMain()
       else this.screen = 'locked'
     } catch (e) {
@@ -233,6 +267,100 @@ class AppState {
       this.error = errorMessage(e)
       this.screen = 'error'
     }
+  }
+
+  /**
+   * Connect to a vault on another computer, from a pairing link.
+   *
+   * The link is what somebody copied from that machine's settings, or scanned.
+   * It carries the address, a one-time code, and the certificate to pin -- so
+   * the check that this is the right computer happens before anything secret
+   * is sent. See `everyday_server::client::RemoteClient::pair`.
+   */
+  async connectRemote(link: string) {
+    this.screen = 'loading'
+    try {
+      await this.afterConnect(await api.connectRemote(link))
+    } catch (e) {
+      this.error = errorMessage(e)
+      this.screen = 'error'
+    }
+  }
+
+  /** Reconnect to one this copy has paired with before. */
+  async reconnectRemote(id: string) {
+    this.screen = 'loading'
+    try {
+      await this.afterConnect(await api.reconnectRemote(id))
+    } catch (e) {
+      this.error = errorMessage(e)
+      this.screen = 'error'
+    }
+  }
+
+  private async afterConnect({ status, connection }: Connected) {
+    this.status = status
+    // The connection the backend actually attached, by identity. Matching it
+    // out of the list by the vault's *name* was wrong for anybody with two
+    // machines each holding a vault called "Journal", which is the default.
+    this.remote = connection
+    this.remotes = await api.remotes()
+    this.error = null
+    if (status.unlocked) await this.enterMain()
+    else this.screen = 'locked'
+  }
+
+  /** Stop looking at another computer's vault. The pairing survives. */
+  async disconnectRemote() {
+    await api.disconnectRemote()
+    this.remote = null
+    await this.start()
+  }
+
+  /** Forget a pairing: the connection and the token in the keychain. */
+  async forgetRemote(id: string) {
+    await api.forgetRemote(id)
+    this.remotes = await api.remotes()
+    if (this.remote?.id === id) {
+      this.remote = null
+      await this.start()
+    }
+  }
+
+  /**
+   * Re-read the vault's status word without reloading anything else.
+   *
+   * What a settings change on another machine costs: capabilities, the
+   * auto-lock, whether the vault is still writable.
+   */
+  async refreshStatus() {
+    try {
+      this.status = await api.status()
+    } catch {
+      // A status that could not be read changes nothing on screen. Whatever
+      // made it fail will be reported by the next call that matters.
+    }
+  }
+
+  /**
+   * The vault locked, and not because anybody here asked.
+   *
+   * Under server mode the machine holding the vault decides: its idle timer,
+   * or somebody locking it there. Every window looking at it has to leave, and
+   * the local `lock()` path is wrong for this -- it would try to lock a vault
+   * that is already locked and, worse, would do it over the wire.
+   */
+  async lockedElsewhere() {
+    this.#baseVersion = null
+    this.conflict = false
+    for (const reset of this.#resetHooks) reset()
+    this.entry = null
+    this.entries = []
+    this.journals = []
+    this.results = []
+    this.query = ''
+    this.selectedEntry = null
+    this.screen = 'locked'
   }
 
   /** Register state to be dropped when the vault locks. */
@@ -378,12 +506,18 @@ class AppState {
 
   async unlock(password: string) {
     this.error = null
+    // Held across the whole thing, including `enterMain`. The backend raises a
+    // lock-state event for this unlock, and the live router must not answer it
+    // by starting a second load of the same lists beside this one.
+    this.unlocking = true
     try {
       this.status = await api.unlock(password)
       await this.enterMain()
     } catch (e) {
       this.error = errorMessage(e)
       throw e
+    } finally {
+      this.unlocking = false
     }
   }
 
@@ -544,7 +678,7 @@ class AppState {
    * collapse into the single trailing refresh, so a burst of autosaves costs
    * one re-render rather than one each.
    */
-  private queueListRefresh() {
+  queueListRefresh() {
     if (this.#listTimer) return
     const wait = Math.max(0, LIST_REFRESH_MS - (Date.now() - this.#lastListRefresh))
     this.#listTimer = setTimeout(() => {
@@ -708,6 +842,10 @@ class AppState {
    * keystroke. Only the delay is shared, so all three agree on it.
    */
   scheduleSave() {
+    // The text has moved, so any write still being retried is superseded: it
+    // must not be answered from the record, because the record holds the
+    // *older* text. A new stamp is minted by the next attempt.
+    this.#writeStamp = null
     if (this.#saveTimer) clearTimeout(this.#saveTimer)
     this.#saveTimer = setTimeout(() => void this.flush(), AUTOSAVE_MS)
   }
@@ -742,8 +880,21 @@ class AppState {
     this.syncBody()
     this.saving = true
     try {
-      entry.updatedAt = new Date().toISOString()
-      await api.saveEntry($state.snapshot(entry), this.#baseVersion)
+      // One stamp per *logical* write, reused by every retry of it.
+      //
+      // Both halves matter and they have to move together. A fresh
+      // `updatedAt` per attempt is what made a retry a different write; a
+      // fresh request id per attempt is what stopped the backend recognising
+      // it as the same one. So a save that landed and whose answer was lost
+      // to a dropped connection came back as a conflict against its own
+      // earlier write, and the editor offered "keep mine" for text that was
+      // already on disk. Cleared on success, and by `scheduleSave` when the
+      // text moves under it.
+      this.#writeStamp ??= { updatedAt: new Date().toISOString(), requestId: newRequestId() }
+      const stamp = this.#writeStamp
+      entry.updatedAt = stamp.updatedAt
+      await api.saveEntry($state.snapshot(entry), this.#baseVersion, stamp.requestId)
+      this.#writeStamp = null
       this.#baseVersion = entry.updatedAt
       this.lastSaved = entry.updatedAt
       // Pick up the new title and excerpt in the list, but not right now.
@@ -1028,44 +1179,3 @@ class AppState {
 }
 
 export const app = new AppState()
-
-// ── Quick actions ──────────────────────────────────────────────────────
-//
-// The journal's, and the vault's own. Registered at module scope beside the
-// store whose state they read, which is the convention the other two follow
-// -- see `lib/tray.svelte.ts` for what the registration means and
-// `lib/todo.svelte.ts` for the shortest example of adding one.
-//
-// Every group starts by checking the screen. A tray menu is drawn from state
-// that the window is not showing, so "are we past the lock screen" is not
-// implied by anything else here the way it is inside a component.
-
-tray.register('journal', TRAY_ORDER.journal, () => {
-  if (app.screen !== 'main') return []
-  return [
-    {
-      id: 'journal:new-entry',
-      label: 'New journal entry',
-      // A vault with no journal in it has nowhere to put an entry. Greyed
-      // rather than hidden: the action is the app's, not the moment's.
-      enabled: app.journals.length > 0,
-      run: async () => {
-        if (await app.goTo('journal')) await app.newEntry()
-      },
-    },
-  ]
-})
-
-tray.register('vault', TRAY_ORDER.vault, () => {
-  // Nothing to lock on a vault with no password on it.
-  if (app.screen !== 'main' || !app.status?.encrypted) return []
-  return [
-    {
-      id: 'vault:lock',
-      label: 'Lock now',
-      // The one action here that is *about* not coming back to the window.
-      raise: false,
-      run: () => app.lock(),
-    },
-  ]
-})

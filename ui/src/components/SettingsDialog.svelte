@@ -24,13 +24,48 @@
   import { app } from '../lib/state.svelte'
   import { tray } from '../lib/tray.svelte'
   import AgentPanel from './AgentPanel.svelte'
+  import SharePanel from './SharePanel.svelte'
   import Icon from './Icon.svelte'
   import type { IconName } from '../lib/icons'
+  import type { HotkeyStatus } from '../lib/types'
 
   let changing = $state(false)
   let current = $state('')
   let next = $state('')
   let notice = $state<string | null>(null)
+
+  /**
+   * The OS-wide key that raises the palette.
+   *
+   * `null` until it has been asked for, and after a failure: a build with no
+   * shell to ask has no switch to draw. `registered` false with nothing else
+   * to say means the desktop refused it, which is the ordinary answer on a
+   * Wayland session with no portal.
+   */
+  let hotkey = $state<HotkeyStatus | null>(null)
+  let hotkeyNotice = $state<string | null>(null)
+  /** Has claiming it ever worked? A refusal leaves the switch stuck off. */
+  let hotkeyAvailable = $state(true)
+
+  void api
+    .hotkeyStatus()
+    .then((s) => (hotkey = s))
+    .catch(() => (hotkey = null))
+
+  async function setHotkey(on: boolean) {
+    hotkeyNotice = null
+    try {
+      hotkey = await api.setHotkey(on)
+      if (on && !hotkey.registered) {
+        hotkeyAvailable = false
+        hotkeyNotice =
+          'This desktop did not grant that key. On Wayland it needs a portal the ' +
+          'compositor may not provide; the tray is the way in instead.'
+      }
+    } catch (e) {
+      hotkeyNotice = e instanceof Error ? e.message : String(e)
+    }
+  }
 
   const status = $derived(app.status)
   const tab = $derived(panels.settings ?? 'general')
@@ -163,6 +198,27 @@
             Two keys for anything you do often: <kbd>G</kbd> then <kbd>J</kbd> for the journal,
             <kbd>C</kbd> to start the next thing, <kbd>/</kbd> to search.
           </p>
+
+          {#if hotkey}
+            <label class="toggle">
+              <input
+                type="checkbox"
+                checked={hotkey.registered}
+                disabled={!hotkey.registered && !hotkeyAvailable}
+                onchange={(e) => setHotkey(e.currentTarget.checked)}
+              />
+              <span>
+                <b>Reach Every Day from anywhere with {hotkey.shortcut}</b>
+                <small>
+                  {#if hotkeyNotice}
+                    {hotkeyNotice}
+                  {:else}
+                    Raises the window with the command palette open, whatever you are looking at.
+                  {/if}
+                </small>
+              </span>
+            </label>
+          {/if}
           <div>
             <button
               class="btn"
@@ -228,6 +284,8 @@
             {/if}
           </section>
         {/if}
+
+        <SharePanel />
 
         {#if notice}<p class="notice">{notice}</p>{/if}
 

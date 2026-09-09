@@ -516,6 +516,44 @@ export interface Bootstrap {
   defaultPath: string
   backends: BackendInfo[]
   status: VaultStatus | null
+  /** The command surface this build speaks. For bug reports, not for logic. */
+  protocol: number
+  /** Vaults on other computers this copy has paired with. */
+  remotes: Connection[]
+  /** The one this window is looking at, if it is looking at one. */
+  remote: Connection | null
+}
+
+/**
+ * A vault on another computer that this copy has paired with.
+ *
+ * The token is deliberately not here. It is a bearer credential to an unlocked
+ * vault and lives in the operating system's keychain; this is what the picker
+ * needs to draw a row and what the client needs to pin a certificate.
+ */
+/**
+ * What connecting to another computer answers with.
+ *
+ * Both halves, because neither can be derived from the other. The interface
+ * used to match the new connection out of the list by comparing the vault's
+ * *name*, which is wrong the moment somebody has two machines each holding a
+ * vault called "Journal" -- and that is the default name.
+ */
+export interface Connected {
+  status: VaultStatus
+  connection: Connection
+}
+
+export interface Connection {
+  id: string
+  /** What that vault calls itself. */
+  name: string
+  /** `host:port`, as dialled. */
+  host: string
+  /** The certificate's SHA-256, hex. */
+  fingerprint: string
+  certPem: string
+  paired: string
 }
 
 /** A backend error, carrying the stable machine-readable code. */
@@ -830,6 +868,145 @@ export interface ShellNotification {
   body?: string | null
   /** Identity for a condition that recurs; replaces rather than stacks. */
   key?: string | null
+}
+
+/**
+ * A write that landed somewhere, so a list showing it can be reloaded.
+ *
+ * Raised by the backend after any command that changes something, and — under
+ * server mode — by the server for writes another machine made. `origin` is who
+ * made it, so this window ignores its own and does not reload under its own
+ * cursor.
+ */
+export interface ChangeEvent {
+  kind: ChangeKind
+  op: 'created' | 'updated' | 'deleted'
+  id?: string | null
+  origin?: string | null
+}
+
+/**
+ * What a change touched.
+ *
+ * Coarser than a table on purpose: a listener uses this to decide which list to
+ * reload, and the lists here are per app rather than per table.
+ */
+export type ChangeKind =
+  | 'journal'
+  | 'entry'
+  | 'project'
+  | 'task'
+  | 'block'
+  | 'calendar'
+  | 'event'
+  | 'shelf'
+  | 'item'
+  | 'log'
+  | 'tracker'
+  | 'reading'
+  | 'role'
+  | 'goal'
+  | 'conversation'
+  | 'memory'
+  | 'settings'
+
+// ── The command surface, describing itself ─────────────────────────────
+//
+// What `list_commands` answers with. Not used to *call* anything — the
+// generated client in `lib/generated/commands.ts` is what does that — but it is
+// what a person looking at a paired device's permissions reads, and what any
+// client that is not this interface would generate itself from.
+
+export interface Surface {
+  protocol: number
+  commands: CommandInfo[]
+}
+
+export interface CommandInfo {
+  name: string
+  scope: string
+  effect: 'read' | 'write' | 'destructive'
+  /** Will require a recent proof of the vault password, once step-up exists. */
+  sensitive: boolean
+  /** Answers with a stream rather than a value. */
+  streams: boolean
+  args: { name: string; type: string; required: boolean }[]
+  returns: string
+  changes: ChangeKind | null
+}
+
+/**
+ * One of the assistant's tools, with a label for a person rather than a
+ * description for a model.
+ *
+ * The palette and any script run these through `run_tool`, with no model in the
+ * loop. The set is the same one the assistant is offered, which matters for
+ * more than tidiness: a domain the backend cannot carry — or one classed as
+ * secret — is absent from both.
+ */
+export interface ToolInfo {
+  name: string
+  title: string
+  description: string
+  effect: 'read' | 'write' | 'destructive'
+  /** JSON Schema for the arguments. */
+  schema: unknown
+}
+
+// ── Sharing this vault ─────────────────────────────────────────────────
+
+/** What the sharing pane draws. */
+export interface ShareStatus {
+  sharing: boolean
+  /** Where it is actually answering. */
+  address: string | null
+  /** Addresses this machine can be reached at, best first. */
+  addresses: string[]
+  port: number
+  allowRemoteUnlock: boolean
+  devices: DeviceInfo[]
+  /** The outstanding invitation, if somebody pressed "add a computer". */
+  invitation: Invitation | null
+  /** How many computers have an event stream open right now. */
+  listeners: number
+}
+
+export interface DeviceInfo {
+  id: string
+  name: string
+  scopes: string[]
+  created: string
+  lastSeen: string
+  /** Unused for a month: it has to pair again. */
+  expired: boolean
+}
+
+/**
+ * A pairing invitation: one link, good once, for five minutes.
+ *
+ * The QR code is drawn by the backend rather than here, so the two cannot
+ * disagree about what was encoded, and it is SVG because the content security
+ * policy already allows an inline image and does not allow a canvas to be
+ * talked into anything.
+ */
+export interface Invitation {
+  url: string
+  code: string
+  host: string
+  fingerprint: string
+  qrSvg: string
+}
+
+/**
+ * The OS-wide key that raises the palette.
+ *
+ * `registered` false means this desktop did not grant it, which is the
+ * ordinary case on a Wayland session with no portal rather than a failure.
+ */
+export interface HotkeyStatus {
+  registered: boolean
+  /** How to write it on screen, from the value the shell actually claimed. */
+  shortcut: string
 }
 
 // ── The tray ───────────────────────────────────────────────────────────

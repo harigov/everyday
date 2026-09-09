@@ -12,6 +12,7 @@
   import { agent } from './lib/agent.svelte'
   import { panels } from './lib/panels.svelte'
   import { shortcuts } from './lib/shortcuts.svelte'
+  import { live } from './lib/live.svelte'
   import AppBar from './components/AppBar.svelte'
   import Sidebar from './components/Sidebar.svelte'
   import EntryList from './components/EntryList.svelte'
@@ -31,6 +32,7 @@
   import Icon from './components/Icon.svelte'
   import SettingsDialog from './components/SettingsDialog.svelte'
   import ShortcutsHelp from './components/ShortcutsHelp.svelte'
+  import Palette from './components/Palette.svelte'
 
   void app.start()
   // Let the Rust shell speak. Its background work -- refreshing subscribed
@@ -43,6 +45,12 @@
   // And for the same reason: an open menu is quoting the row it was raised
   // on -- an entry title, a project name -- and those are vault contents.
   app.onLock(() => menu.close(false))
+
+  // Notice writes that happened somewhere else. On a local vault that is this
+  // window's own commands and it already knows; under server mode it is another
+  // machine, and this is what keeps a list from going stale under somebody's
+  // cursor.
+  live.start()
 
   // Put the quick actions in the menu bar, and keep them in step with the
   // vault from here on. The four apps have already registered what they
@@ -217,6 +225,10 @@
     {#if panels.shortcuts}
       <ShortcutsHelp />
     {/if}
+    <!-- The palette draws its own scrim, and mounts unconditionally because
+         its open state is the one thing a global hotkey can set from outside
+         the window. -->
+    <Palette />
 
     <!-- What has been pressed, while a sequence is half finished. Small, in
          the corner, and gone in a second: without it, `g` is a keystroke

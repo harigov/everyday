@@ -16,6 +16,8 @@ import type {
   BlockSubject,
   BalanceReport,
   Bootstrap,
+  Connected,
+  Connection,
   Conversation,
   ConversationId,
   ConversationSummary,
@@ -60,7 +62,9 @@ import type {
   RoleInfo,
   SearchHit,
   SearchRequest,
+  HotkeyStatus,
   SearchResult,
+  ShareStatus,
   SourceInfo,
   SyncReport,
   TagCount,
@@ -78,7 +82,8 @@ import type {
   VaultStatus,
 } from './types'
 import { VaultError } from './types'
-import type { ShellNotification } from './types'
+import type { ChangeEvent, ShellNotification } from './types'
+import { SERVICE_COMMANDS } from './generated/commands'
 
 // Decided at BUILD time, not run time.
 //
@@ -99,7 +104,7 @@ const MOCK = import.meta.env.DEV && !('__TAURI_INTERNALS__' in window)
  */
 type InvokeArgs = Record<string, unknown> | Uint8Array
 
-type Invoke = <T>(cmd: string, args?: InvokeArgs) => Promise<T>
+type Invoke = <T>(cmd: string, args?: InvokeArgs, requestId?: string) => Promise<T>
 
 let invoke: Invoke = async () => {
   throw new VaultError(
@@ -140,6 +145,32 @@ export let onShellNotification: (handler: (spec: ShellNotification) => void) => 
 export let onTrayAction: (handler: (id: string) => void) => void = () => {}
 
 /**
+ * Register the handler for a write that landed somewhere else.
+ *
+ * On a local vault, "somewhere else" is another command in this window, and the
+ * store that made it ignores its own by origin. Under server mode it is another
+ * machine, and this is how a list learns to reload. See `lib/live.svelte.ts`.
+ */
+export let onChange: (handler: (change: ChangeEvent) => void) => void = () => {}
+
+/**
+ * Register the handler for the vault locking or unlocking.
+ *
+ * Replaces polling for a remote client, where `pollAutoLock` every few seconds
+ * would be a round trip every few seconds. The local window still polls,
+ * because there the poll is an integer comparison.
+ */
+export let onLockState: (handler: (locked: boolean) => void) => void = () => {}
+
+/**
+ * Register the handler for the OS-wide hotkey.
+ *
+ * The shell raises the window and emits this; the palette opens here. Outside
+ * Tauri there is no desktop to claim a key from, so this is a no-op.
+ */
+export let onPalette: (handler: () => void) => void = () => {}
+
+/**
  * Say something to the assistant, streaming what it says back.
  *
  * Separate from the `api` object below because it is the one call that is not
@@ -170,16 +201,42 @@ if (!MOCK) {
   onTrayAction = (handler) => {
     void listen<string>('everyday://tray-action', (e) => handler(e.payload))
   }
+  onChange = (handler) => {
+    void listen<ChangeEvent>('everyday://changed', (e) => handler(e.payload))
+  }
+  onLockState = (handler) => {
+    void listen<boolean>('everyday://lock-state', (e) => handler(e.payload))
+  }
+  onPalette = (handler) => {
+    void listen('everyday://palette', () => handler())
+  }
 
   const mod = await import('@tauri-apps/api/core')
   sendMessage = async (conversationId, prompt, context, onEvent) => {
     const channel = new mod.Channel<AgentEvent>()
     channel.onmessage = onEvent
-    await invoke<void>('send_message', { conversationId, prompt, context, channel })
+    // By name, not through `call`: a turn answers with a stream rather than a
+    // value, so the shell has a command of its own for it. The generated
+    // `SERVICE_COMMANDS` leaves the streaming ones out for the same reason.
+    await mod.invoke<void>('send_message', { conversationId, prompt, context, channel })
   }
-  invoke = async <T>(cmd: string, args?: InvokeArgs): Promise<T> => {
+  invoke = async <T>(cmd: string, args?: InvokeArgs, requestId?: string): Promise<T> => {
     try {
-      return await mod.invoke<T>(cmd, args)
+      // Two kinds of call, and the split is not arbitrary. Almost everything
+      // is a *service* command -- one entry in a table the Rust owns -- and
+      // goes through the shell's single `call`, which either runs it here or
+      // forwards it to whichever machine holds the vault. What is left is the
+      // handful the shell alone can do: opening a vault, the tray, the raw
+      // attachment body. Those are called by name.
+      //
+      // The set is generated from the Rust table, so the shell's half is
+      // whatever is left over and cannot drift.
+      if (!SERVICE_COMMANDS.has(cmd)) return await mod.invoke<T>(cmd, args)
+      return await mod.invoke<T>('call', {
+        name: cmd,
+        args: args ?? {},
+        requestId: requestId ?? null,
+      })
     } catch (raw) {
       // Commands reject with `{ code, message }`; anything else is a bug in
       // the bridge and should surface as-is rather than be swallowed.
@@ -192,6 +249,38 @@ if (!MOCK) {
 } else {
   const { mockInvoke } = await import('./mock')
   invoke = mockInvoke
+}
+
+/**
+ * An id for one *logical* write, so a retry of it is answered from the first
+ * attempt rather than applied twice.
+ *
+ * The caller mints it, and that is the whole of the contract: an id must be
+ * reused across retries of the same write and must not be reused for a
+ * different one. Nothing here can decide that, which is why this is not done
+ * automatically.
+ *
+ * It was, briefly, and the mistake is worth recording. Minting one per
+ * `invoke` call gave every retry a *fresh* id, so the layer never engaged --
+ * protection that looked present and was not. Deriving one by hashing the
+ * arguments looks better and is worse: two identical writes are sometimes two
+ * writes on purpose -- a second dose recorded at the same minute, the same
+ * book added to a shelf twice -- and deduplicating those loses data silently.
+ *
+ * So: no id unless a caller has reasoned about it. Today that is the entry
+ * autosave, which is the one retry loop in the interface whose write is
+ * conditional and therefore the one that this failure mode actually bites.
+ *
+ * A counter behind a random prefix, rather than `crypto.randomUUID`, which
+ * needs a secure context the packaged webview does not always provide -- the
+ * same reason ids for records are minted in Rust. Uniqueness only has to hold
+ * within one connection, and a prefix plus a counter gives that.
+ */
+const REQUEST_PREFIX = Math.random().toString(36).slice(2, 10)
+let requestCounter = 0
+export function newRequestId(): string {
+  requestCounter += 1
+  return `${REQUEST_PREFIX}-${requestCounter}`
 }
 
 export const isMock = MOCK
@@ -214,6 +303,72 @@ export const api = {
   }) => invoke<VaultStatus>('create_vault', opts),
 
   openVault: (path: string) => invoke<VaultStatus>('open_vault', { path }),
+
+  // ── Another computer's vault ───────────────────────────────────────
+  //
+  // A remote client is this same application, with its own window, its own
+  // tray and its own keyboard; only the machine the commands run on differs.
+  // Everything below `api` is unchanged when one of these is in effect --
+  // which is the whole claim, and why there is nothing here but connecting.
+
+  /** Every server this copy has paired with. */
+  remotes: () => invoke<Connection[]>('list_remotes'),
+
+  /**
+   * Pair from a link somebody copied, and connect.
+   *
+   * One call rather than pair-then-connect: a pairing that succeeded and a
+   * connection that then failed would leave a row in the picker whose token
+   * there is no way to know is good.
+   */
+  connectRemote: (link: string) => invoke<Connected>('connect_remote', { link }),
+
+  /** Reconnect to one already paired with. */
+  reconnectRemote: (id: string) => invoke<Connected>('reconnect_remote', { id }),
+
+  /** Look at a vault in this process again. The pairing survives. */
+  disconnectRemote: () => invoke<void>('disconnect_remote'),
+
+  /** Forget a pairing: the connection and its token. */
+  forgetRemote: (id: string) => invoke<void>('forget_remote', { id }),
+
+  // ── Sharing this vault ─────────────────────────────────────────────
+  //
+  // The other half: this window's vault, served to other machines. Every one
+  // of these answers with the whole pane's state, because every one of them
+  // changes more than the thing it was asked about -- starting the server
+  // fixes the address, pairing adds a device, revoking removes one.
+
+  shareStatus: () => invoke<ShareStatus>('share_status'),
+  shareStart: (opts: { address?: string | null; port?: number | null }) =>
+    invoke<ShareStatus>('share_start', opts),
+  /**
+   * Whether a connected computer may unlock this vault.
+   *
+   * Its own call rather than an argument to `shareStart`, because it is not a
+   * reason to restart the server -- and restarting rebinds the port, which can
+   * fail and leave sharing off because somebody moved a switch.
+   */
+  setRemoteUnlock: (allow: boolean) => invoke<ShareStatus>('set_remote_unlock', { allow }),
+  shareStop: () => invoke<ShareStatus>('share_stop'),
+  /** Offer to pair, for the next five minutes. */
+  newPairingCode: () => invoke<ShareStatus>('new_pairing_code'),
+  cancelPairing: () => invoke<ShareStatus>('cancel_pairing'),
+  /** Take a computer's access away. It has to pair again to get it back. */
+  revokeDevice: (id: string) => invoke<ShareStatus>('revoke_device', { id }),
+
+  // ── The OS-wide hotkey ─────────────────────────────────────────────
+
+  /**
+   * Whether the desktop granted the key that raises the palette.
+   *
+   * False is an ordinary answer, not an error: Wayland has no protocol for an
+   * application to claim a global key without the desktop's portal, and not
+   * every compositor implements one. The settings pane says so and offers the
+   * tray instead.
+   */
+  hotkeyStatus: () => invoke<HotkeyStatus>('hotkey_status'),
+  setHotkey: (on: boolean) => invoke<HotkeyStatus>('set_hotkey', { on }),
   unlock: (password: string) => invoke<VaultStatus>('unlock', { password }),
   lock: () => invoke<VaultStatus>('lock'),
   status: () => invoke<VaultStatus>('status'),
@@ -240,7 +395,14 @@ export const api = {
    * `null` for one it has just created. A mismatch rejects with code
    * `conflict` and writes nothing.
    */
-  saveEntry: (entry: Entry, expect: string | null) => invoke<void>('save_entry', { entry, expect }),
+  /**
+   * `requestId` identifies one logical write. Pass the *same* one when
+   * retrying, so a save that landed and whose answer was lost is answered from
+   * the record rather than refused as a conflict against itself. See
+   * `newRequestId`.
+   */
+  saveEntry: (entry: Entry, expect: string | null, requestId?: string) =>
+    invoke<void>('save_entry', { entry, expect }, requestId),
 
   /** Save regardless of what is stored. The "keep mine" on a conflict. */
   saveEntryForce: (entry: Entry) => invoke<void>('save_entry_force', { entry }),

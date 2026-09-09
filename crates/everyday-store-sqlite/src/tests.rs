@@ -883,3 +883,65 @@ fn a_version_4_database_gains_the_readings_table_without_losing_entries() {
     store.put_reading(&reading).unwrap();
     assert_eq!(store.get_reading(reading.id).unwrap(), reading);
 }
+
+// ---- the read pool ------------------------------------------------------
+
+/// A read must not wait behind an unrelated read.
+///
+/// The check that matters for a vault several clients can reach at once. It
+/// is written as a rendezvous rather than as a timing comparison: two threads
+/// each take a read, and each waits for the other to have taken one before
+/// letting go. On the old single-connection store the second read could not
+/// begin until the first had finished, so this deadlocks -- which is the
+/// point. The timeout is what turns that deadlock into a failed assertion
+/// instead of a hung test run.
+#[test]
+fn two_reads_can_be_in_flight_at_once() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    store.put_journal(&Journal::new("Daily")).unwrap();
+
+    let inside = AtomicUsize::new(0);
+    let both_arrived = std::thread::scope(|scope| {
+        let reader = || {
+            store
+                .with_read(|_conn| {
+                    inside.fetch_add(1, Ordering::SeqCst);
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while inside.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
+                        std::thread::yield_now();
+                    }
+                    Ok(inside.load(Ordering::SeqCst) == 2)
+                })
+                .unwrap()
+        };
+        let a = scope.spawn(reader);
+        let b = scope.spawn(reader);
+        a.join().unwrap() && b.join().unwrap()
+    });
+
+    assert!(both_arrived, "a read waited for an unrelated read to finish");
+}
+
+/// A write is still serialised, and a read taken afterwards sees it.
+#[test]
+fn a_write_is_visible_to_the_next_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+
+    std::thread::scope(|scope| {
+        for n in 0..8 {
+            let store = &store;
+            scope.spawn(move || {
+                store.put_journal(&Journal::new(format!("J{n}"))).unwrap();
+            });
+        }
+    });
+
+    // Every write landed, and a reader connection -- a different session from
+    // the one that wrote -- can see all of them.
+    assert_eq!(store.list_journals().unwrap().len(), 8);
+}

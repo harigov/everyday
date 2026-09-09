@@ -104,6 +104,7 @@ mod agent;
 mod calendars;
 mod journals;
 mod library;
+mod pool;
 mod purpose;
 mod tasks;
 mod trackers;
@@ -117,6 +118,7 @@ use everyday_core::id::{EntryId, ReadingId, TaskId};
 use everyday_core::model::{Entry, EntrySummary};
 use everyday_core::store::trackers::reading_aad;
 use everyday_core::store::{Capabilities, StoreContext, entry_aad};
+use pool::{Pool, ReadGuard};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -131,6 +133,32 @@ pub trait Driver: schema::VersionStore + Send + Sync {
     fn backend_id(&self) -> &'static str;
 
     fn dialect(&self) -> Dialect;
+
+    /// Open another connection to the same database, for the read pool.
+    ///
+    /// `None` -- the default -- means this driver has only the one it was
+    /// opened with, and every read shares the write connection. That is the
+    /// old behaviour and remains correct; it is merely serial.
+    ///
+    /// The connection must come back configured exactly as the first one
+    /// was. Both databases keep some of that per *session* rather than per
+    /// database -- SQLite's `foreign_keys` and `busy_timeout` are pragmas on
+    /// a connection, Postgres's `search_path` is a session setting -- so a
+    /// reader that skipped them would answer different questions from the
+    /// writer, which is the worst kind of bug this pool could have.
+    fn connect(&self) -> Result<Option<Box<dyn Connection>>> {
+        Ok(None)
+    }
+
+    /// Most reader connections to keep. Ignored by a driver whose
+    /// [`connect`](Driver::connect) answers `None`.
+    ///
+    /// Four is chosen against what actually reads at once: a window drawing a
+    /// list while its assistant runs a tool, times a couple of clients. A
+    /// larger pool would mostly buy idle Postgres sessions.
+    fn read_pool_size(&self) -> usize {
+        4
+    }
 
     /// Largest attachment this database will take, if it has a limit.
     ///
@@ -192,9 +220,9 @@ impl Media {
 
 /// A vault's records in a SQL database.
 pub struct SqlStore {
-    driver: Box<dyn Driver>,
+    driver: Arc<dyn Driver>,
     dialect: Dialect,
-    conn: Mutex<Box<dyn Connection>>,
+    pool: Pool,
     media: Media,
     cipher: Arc<dyn Cipher>,
     /// The directory this store owns, kept so `snapshot` can copy the media
@@ -205,20 +233,22 @@ pub struct SqlStore {
 impl SqlStore {
     /// Migrate `conn` up to the current schema and wrap it as a store.
     pub fn open(
-        driver: Box<dyn Driver>,
+        driver: Arc<dyn Driver>,
         mut conn: Box<dyn Connection>,
         media: Media,
         ctx: &StoreContext,
     ) -> Result<Self> {
         let dialect = driver.dialect();
+        // Migrate before the pool exists, on the connection that will become
+        // the writer. A reader opened mid-migration would see half a schema.
         schema::migrate(conn.as_mut(), dialect, driver.as_ref())?;
         if matches!(media, Media::Table) {
             blobs::create_table(conn.as_mut(), dialect)?;
         }
         Ok(Self {
+            pool: Pool::new(driver.clone(), conn),
             driver,
             dialect,
-            conn: Mutex::new(conn),
             media,
             cipher: ctx.cipher.clone(),
             root: ctx.root.clone(),
@@ -249,18 +279,33 @@ impl SqlStore {
         }
     }
 
-    /// The connection, whether or not a previous caller panicked holding it.
+    /// The write connection. One at a time, which is the rule the vault's
+    /// own write lock has always promised.
     ///
-    /// `lock().unwrap()` would turn one panic anywhere in this crate into a
-    /// permanently unusable store: every later call would panic on the poison
-    /// flag, and in the desktop shell that means a window that still looks
-    /// fine while nothing it does can be saved. Poisoning is also the wrong
-    /// signal here -- the state it warns about cannot arise. A panic can only
-    /// escape mid-statement or mid-transaction, and a driver's transaction
-    /// rolls back when it is dropped, so the connection an unwinding thread
-    /// leaves behind is exactly the one it borrowed.
-    pub(crate) fn conn(&self) -> MutexGuard<'_, Box<dyn Connection>> {
-        self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    /// Every statement that changes anything goes through here, including
+    /// the read half of a read-modify-write: taking the value on a reader
+    /// and writing it back on the writer is exactly the race the conditional
+    /// save exists to prevent, and it would not be caught by it.
+    pub(crate) fn write(&self) -> MutexGuard<'_, Box<dyn Connection>> {
+        self.pool.write()
+    }
+
+    /// A connection to read on. Several reads may hold one at once.
+    ///
+    /// Do not hold it while taking another guard: see [`pool`].
+    pub(crate) fn read(&self) -> ReadGuard<'_> {
+        self.pool.read()
+    }
+
+    /// Borrow a read connection for SQL this crate does not own.
+    ///
+    /// The escape hatch, and deliberately a narrow one: a *domain* query
+    /// belongs in a module here, written once and run on both databases,
+    /// rather than at the far end of this. What it is for is a driver's own
+    /// tests and anything diagnostic.
+    #[doc(hidden)]
+    pub fn with_read<R>(&self, f: impl FnOnce(&mut dyn Sql) -> Result<R>) -> Result<R> {
+        f(&mut self.read())
     }
 
     // ---- sealing --------------------------------------------------------
@@ -379,8 +424,26 @@ impl SqlStore {
     /// A read-modify-reseal per row, which is affordable precisely because
     /// of what it operates on: the handful of things ticked while writing
     /// one entry, on the rare occasion that entry is deleted.
+    ///
+    /// # All of it on the writer, in one transaction
+    ///
+    /// This is the one place in the crate that reads a row, changes it and
+    /// writes it back, and it is therefore the one place the read pool can
+    /// hurt. Taking the `SELECT` on a reader and the `UPDATE` on the writer
+    /// leaves a window in which somebody else's `put_reading` lands between
+    /// them -- and the reseal then writes the payload this call decrypted,
+    /// silently reverting their write. The clear column would be right and the
+    /// sealed copy wrong, which is the worse half: the sealed copy is the one
+    /// believed after a restore.
+    ///
+    /// So the whole sequence takes the write connection, and takes it once.
+    /// The transaction is what makes the set of rows consistent with itself:
+    /// without it a failure part way through would leave some readings
+    /// detached and some not.
     pub(crate) fn detach_readings_from(&self, entry: EntryId) -> Result<()> {
-        let rows = self.conn().records(
+        let mut conn = self.write();
+        let mut tx = conn.begin()?;
+        let rows = tx.records(
             "SELECT id, data FROM readings WHERE entry_id = ?1",
             &vals![entry.to_string()],
         )?;
@@ -391,13 +454,27 @@ impl SqlStore {
             let mut reading: everyday_core::tracker::Reading = self.unseal(&aad, &sealed)?;
             reading.entry_id = None;
             let data = self.seal(&aad, &reading)?;
-            self.conn().execute(
+            tx.execute(
                 "UPDATE readings SET entry_id = NULL, data = ?2 WHERE id = ?1",
                 &vals![id.to_string(), data],
             )?;
         }
-        Ok(())
+        tx.commit()
     }
+}
+
+/// A mutex, whether or not a previous caller panicked holding it.
+///
+/// `lock().unwrap()` would turn one panic anywhere in this crate into a
+/// permanently unusable store: every later call would panic on the poison
+/// flag, and in the desktop shell that means a window that still looks fine
+/// while nothing it does can be saved. Poisoning is also the wrong signal
+/// here -- the state it warns about cannot arise. A panic can only escape
+/// mid-statement or mid-transaction, and a driver's transaction rolls back
+/// when it is dropped, so the connection an unwinding thread leaves behind is
+/// exactly the one it borrowed.
+pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// `?1, ?2, ...` for an `IN` list, starting at `from` (1-based).

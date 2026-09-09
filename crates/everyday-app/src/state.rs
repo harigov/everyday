@@ -1,41 +1,102 @@
-//! Process-wide application state.
+//! What the shell holds, and what this window is looking at.
+//!
+//! Almost nothing beyond the session, which is the point of the refactor that
+//! moved the commands out. What is left here is the two facts that are about a
+//! *window* rather than about a vault -- whether the close handshake has begun,
+//! and where this session's remarks are emitted -- plus the choice between a
+//! vault in this process and one on another machine.
 
-use everyday_core::{CalendarId, Vault};
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use everyday_service::Service;
+use everyday_service::events::EventSink;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
-use crate::error::{CommandError, CommandResult};
+use crate::remote::Session;
+use crate::sharing::Sharing;
 
-/// Holds the open vault, if any.
-///
-/// `None` means no vault has been opened this session. A vault that is open
-/// but *locked* is still `Some`: the vault's own lock state governs access,
-/// and keeping the handle lets the lock screen name the vault it is guarding.
-#[derive(Default)]
 pub struct AppState {
-    vault: RwLock<Option<Arc<Vault>>>,
-    last_path: RwLock<Option<PathBuf>>,
+    /// The service, which exists whether or not this window is using it.
+    ///
+    /// A remote session leaves it holding no vault. It is kept rather than
+    /// replaced because it also owns the confirmations the assistant is waiting
+    /// on and the record of answered requests, and because switching back to a
+    /// local vault should not mean rebuilding either.
+    service: Arc<Service>,
+    session: RwLock<Session>,
     /// Set once the interface has been told to save and close, so the second
     /// `CloseRequested` -- the one we ask for ourselves -- is let through.
-    closing: std::sync::atomic::AtomicBool,
-    /// Subscriptions whose background refresh is failing and which the user
-    /// has already been told about.
-    ///
-    /// The background pass runs every few minutes for as long as the app is
-    /// open, so a feed that has been revoked fails again, and again, and
-    /// again. Notifying each time would turn one fact -- this calendar has
-    /// stopped answering -- into a notification every five minutes until
-    /// somebody muted the application. Held here rather than on the
-    /// subscription because it is a fact about *this session's* telling, not
-    /// about the calendar: the vault already records the failure itself, and
-    /// reopening the app is a reasonable moment to be told again.
-    reported_feeds: RwLock<HashSet<CalendarId>>,
+    closing: AtomicBool,
+    /// Where the service's remarks go. Kept so a remote session can re-emit the
+    /// server's events through the same channel a local vault uses.
+    sink: RwLock<Option<Arc<dyn EventSink>>>,
+    /// Serving this window's vault to other machines, when that is on.
+    sharing: Arc<Sharing>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AppState {
     pub fn new() -> Self {
-        Self::default()
+        let service = Arc::new(Service::new());
+        Self {
+            session: RwLock::new(Session::Local(service.clone())),
+            service,
+            closing: AtomicBool::new(false),
+            sink: RwLock::new(None),
+            sharing: Arc::default(),
+        }
+    }
+
+    pub fn sharing(&self) -> Arc<Sharing> {
+        self.sharing.clone()
+    }
+
+    pub fn service(&self) -> Arc<Service> {
+        self.service.clone()
+    }
+
+    /// Where events go. Set once, when Tauri has an app handle to emit through.
+    pub fn set_sink(&self, sink: Arc<dyn EventSink>) {
+        *self.sink.write().unwrap() = Some(sink.clone());
+        self.service.set_events(sink);
+    }
+
+    pub fn sink(&self) -> Option<Arc<dyn EventSink>> {
+        self.sink.read().unwrap().clone()
+    }
+
+    /// Run something against whichever vault this window is looking at.
+    ///
+    /// A closure rather than a returned guard, because a `Session` is behind a
+    /// lock and a command is `async`: holding the guard across the await would
+    /// make every command serialise against every other, which is the mistake
+    /// this whole change set exists to undo one layer down.
+    pub fn session(&self) -> SessionHandle {
+        match &*self.session.read().unwrap() {
+            Session::Local(service) => SessionHandle::Local(service.clone()),
+            Session::Remote(remote) => SessionHandle::Remote(remote.clone()),
+        }
+    }
+
+    /// Look at a vault on another machine.
+    pub fn connect(&self, remote: Arc<crate::remote::Remote>) {
+        // Release the local vault first. Its write lock is this process's, and
+        // a window that has gone remote has no business holding one.
+        self.service.close();
+        *self.session.write().unwrap() = Session::Remote(remote);
+    }
+
+    /// Look at a vault in this process again.
+    pub fn disconnect(&self) {
+        *self.session.write().unwrap() = Session::Local(self.service.clone());
+    }
+
+    pub fn is_remote(&self) -> bool {
+        matches!(&*self.session.read().unwrap(), Session::Remote(_))
     }
 
     /// Claim the right to run the save-before-close handshake.
@@ -44,75 +105,22 @@ impl AppState {
     /// completed flush is not intercepted a second time and turned into a
     /// window that will not shut.
     pub fn begin_closing(&self) -> bool {
-        !self.closing.swap(true, std::sync::atomic::Ordering::SeqCst)
+        !self.closing.swap(true, Ordering::SeqCst)
     }
+}
 
-    /// Note that `id`'s refresh has failed. True the first time, so the
-    /// caller says something once per outage rather than once per attempt.
-    pub fn feed_failed(&self, id: CalendarId) -> bool {
-        self.reported_feeds.write().unwrap().insert(id)
-    }
+/// A session, borrowed without holding a lock across an await.
+#[derive(Clone)]
+pub enum SessionHandle {
+    Local(Arc<Service>),
+    Remote(Arc<crate::remote::Remote>),
+}
 
-    /// Note that `id`'s refresh worked, so the next outage is news again.
-    pub fn feed_recovered(&self, id: CalendarId) {
-        self.reported_feeds.write().unwrap().remove(&id);
-    }
-
-    pub fn set(&self, vault: Vault) -> Arc<Vault> {
-        self.remember(vault.path());
-        let vault = Arc::new(vault);
-        *self.vault.write().unwrap() = Some(vault.clone());
-        vault
-    }
-
-    /// Close the open vault, releasing its write lock.
-    ///
-    /// Must happen *before* another vault is opened, and matters even when
-    /// the other vault is the same one. The lock is an OS lock on an open
-    /// file description, so a second `open` of a path this process already
-    /// holds conflicts with itself: without this, choosing the currently-open
-    /// vault from the picker would quietly reopen it read-only.
-    ///
-    /// Only this handle is dropped. A command already running still holds its
-    /// own `Arc`, and the lock goes when that finishes -- which is why the
-    /// open that follows must tolerate losing the race and coming up
-    /// read-only rather than failing.
-    pub fn close(&self) {
-        self.reported_feeds.write().unwrap().clear();
-        let previous = self.vault.write().unwrap().take();
-        if let Some(vault) = &previous {
-            // Drop the key and the decrypted index now rather than whenever
-            // the last `Arc` happens to go.
-            vault.lock();
-        }
-        drop(previous);
-    }
-
-    pub fn get(&self) -> Option<Arc<Vault>> {
-        self.vault.read().unwrap().clone()
-    }
-
-    /// The open vault, or a `no_vault` error the UI can route on.
-    pub fn require(&self) -> CommandResult<Arc<Vault>> {
-        self.get().ok_or_else(|| CommandError::new("no_vault", "no vault is open"))
-    }
-
-    /// The vault to open on startup: the one this session already touched,
-    /// or the one the previous session left behind.
-    pub fn last_path(&self) -> Option<PathBuf> {
-        let in_memory = self.last_path.read().unwrap().clone();
-        in_memory.or_else(everyday_vault::last_vault)
-    }
-
-    /// Record `path` as the vault to reopen, in memory and on disk.
-    ///
-    /// Failing to write the pointer is not worth failing the open that
-    /// prompted it: the vault is fine, the next launch just starts at the
-    /// default location.
-    pub fn remember(&self, path: &Path) {
-        *self.last_path.write().unwrap() = Some(path.to_path_buf());
-        if let Err(e) = everyday_vault::remember_vault(path) {
-            tracing::warn!(error = %e, "could not record the last vault path");
+impl SessionHandle {
+    pub fn as_session(&self) -> Session {
+        match self {
+            SessionHandle::Local(service) => Session::Local(service.clone()),
+            SessionHandle::Remote(remote) => Session::Remote(remote.clone()),
         }
     }
 }

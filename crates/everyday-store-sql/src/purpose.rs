@@ -116,14 +116,14 @@ impl PurposeStore for SqlStore {
 
     fn list_roles(&self) -> Result<Vec<Role>> {
         let rows = self
-            .conn()
+            .read()
             .records("SELECT id, data FROM roles ORDER BY sort_order, created_us", &[])?;
         self.collect(rows, role_aad)
     }
 
     fn get_role(&self, id: RoleId) -> Result<Role> {
         let sealed = self
-            .conn()
+            .read()
             .sealed("SELECT data FROM roles WHERE id = ?1", &vals![id.to_string()])?
             .ok_or_else(|| Error::not_found("role", id))?;
         self.unseal(&role_aad(id), &sealed)
@@ -134,7 +134,7 @@ impl PurposeStore for SqlStore {
         // table said "parent" and "recovering alcoholic" would be telling
         // somebody a great deal more than a list of shelf names would.
         let data = self.seal(&role_aad(role.id), role)?;
-        self.conn().execute(
+        self.write().execute(
             "INSERT INTO roles (id, archived, sort_order, created_us, updated_us, data)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT (id) DO UPDATE SET
@@ -156,7 +156,7 @@ impl PurposeStore for SqlStore {
         // the interface can say what is in the way rather than "no". See the
         // trait's module docs for why this one parent does not take its
         // children with it.
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let goals = conn
             .scalar_i64("SELECT COUNT(*) FROM goals WHERE role_id = ?1", &vals![id.to_string()])?;
         if goals > 0 {
@@ -196,7 +196,7 @@ impl PurposeStore for SqlStore {
             sql.push_str(&format!(" AND horizon <= ?{}", args.len()));
         }
 
-        let rows = self.conn().records(&sql, &args)?;
+        let rows = self.read().records(&sql, &args)?;
         // Sorted and capped in Rust, as the library's items are: the
         // ordering is by title as often as not, which needs the payload
         // decrypted anyway, and one implementation of it cannot disagree
@@ -206,7 +206,7 @@ impl PurposeStore for SqlStore {
 
     fn get_goal(&self, id: GoalId) -> Result<Goal> {
         let sealed = self
-            .conn()
+            .read()
             .sealed("SELECT data FROM goals WHERE id = ?1", &vals![id.to_string()])?
             .ok_or_else(|| Error::not_found("goal", id))?;
         self.unseal(&goal_aad(id), &sealed)
@@ -214,14 +214,14 @@ impl PurposeStore for SqlStore {
 
     fn put_goal(&self, goal: &Goal) -> Result<()> {
         let data = self.seal(&goal_aad(goal.id), goal)?;
-        self.conn().execute(GOAL_UPSERT, &goal_row(goal, data))?;
+        self.write().execute(GOAL_UPSERT, &goal_row(goal, data))?;
         Ok(())
     }
 
     fn put_goals(&self, goals: &[Goal]) -> Result<()> {
         let sealed: Vec<(&Goal, Vec<u8>)> =
             goals.iter().map(|g| Ok((g, self.seal(&goal_aad(g.id), g)?))).collect::<Result<_>>()?;
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         for (goal, data) in sealed {
             tx.execute(GOAL_UPSERT, &goal_row(goal, data))?;
@@ -234,12 +234,12 @@ impl PurposeStore for SqlStore {
         // unresolvable pointer already reads as no purpose at all, and
         // rewriting every task, block, entry and item that mentioned this
         // goal is a great deal of writing to make one report row shorter.
-        self.conn().execute("DELETE FROM goals WHERE id = ?1", &vals![id.to_string()])?;
+        self.write().execute("DELETE FROM goals WHERE id = ?1", &vals![id.to_string()])?;
         Ok(())
     }
 
     fn count_goals(&self, role: RoleId) -> Result<(u64, u64)> {
-        let mut conn = self.conn();
+        let mut conn = self.read();
         let id = vals![role.to_string()];
         let all = conn.scalar_i64("SELECT COUNT(*) FROM goals WHERE role_id = ?1", &id)?;
         let open = conn.scalar_i64(
@@ -285,7 +285,7 @@ impl PurposeStore for SqlStore {
             greatest = self.dialect.greatest(),
         );
         let rows =
-            self.conn().query(&sql, &vals![window.from.to_string(), window.to.to_string()])?;
+            self.read().query(&sql, &vals![window.from.to_string(), window.to.to_string()])?;
 
         // One row per purpose, folded from the two the group-by yields — a
         // purpose with planned time and no actual is one row with a zero in
@@ -331,7 +331,7 @@ impl PurposeStore for SqlStore {
             greatest = self.dialect.greatest(),
         );
         let rows =
-            self.conn().query(&sql, &vals![window.from.to_string(), window.to.to_string()])?;
+            self.read().query(&sql, &vals![window.from.to_string(), window.to.to_string()])?;
         rows.into_iter()
             .map(|row| {
                 // A calendar's row is always `role`-kinded, so the id column
@@ -348,7 +348,7 @@ impl PurposeStore for SqlStore {
     }
 
     fn goal_activity(&self, id: GoalId) -> Result<GoalActivity> {
-        let mut conn = self.conn();
+        let mut conn = self.read();
         let goal = vals![id.to_string()];
         // Projects filed directly against the goal.
         let projects = conn

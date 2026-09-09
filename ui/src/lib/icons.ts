@@ -101,6 +101,15 @@ export const ICONS = {
 
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
 
+  // Another computer, and the act of reaching one. Used by the connect screen
+  // and by the sharing panel in settings.
+  monitor:
+    '<rect x="2.5" y="4" width="19" height="12.5" rx="2"/>' +
+    '<path d="M8.5 20.5h7"/><path d="M12 16.5v4"/>',
+  share:
+    '<path d="M12 3.5v11"/><path d="m8.5 7 3.5-3.5L15.5 7"/>' +
+    '<path d="M5 13.5v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/>',
+
   minus: '<path d="M5 12h14"/>',
 
   // A pencil at the angle every editor draws one, with the ferrule marked so

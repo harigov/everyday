@@ -59,13 +59,13 @@ impl JournalStore for SqlStore {
 
     fn list_journals(&self) -> Result<Vec<Journal>> {
         let rows =
-            self.conn().records("SELECT id, data FROM journals ORDER BY sort_order, id", &[])?;
+            self.read().records("SELECT id, data FROM journals ORDER BY sort_order, id", &[])?;
         self.collect(rows, journal_aad)
     }
 
     fn get_journal(&self, id: JournalId) -> Result<Journal> {
         let sealed = self
-            .conn()
+            .read()
             .sealed("SELECT data FROM journals WHERE id = ?1", &vals![id.to_string()])?
             .ok_or_else(|| Error::not_found("journal", id))?;
         self.unseal(&journal_aad(id), &sealed)
@@ -73,7 +73,7 @@ impl JournalStore for SqlStore {
 
     fn put_journal(&self, j: &Journal) -> Result<()> {
         let sealed = self.seal(&journal_aad(j.id), j)?;
-        self.conn().execute(
+        self.write().execute(
             "INSERT INTO journals (id, sort_order, updated_us, data) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (id) DO UPDATE SET sort_order = ?2, updated_us = ?3, data = ?4",
             &vals![j.id.to_string(), j.sort_order, to_us(j.updated_at), sealed],
@@ -92,7 +92,7 @@ impl JournalStore for SqlStore {
         // the tracker, and the journal is only where it was ticked.
         TrackerStore::detach_readings_in(self, id)?;
 
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         let args = vals![id.to_string()];
         let doomed: Vec<String> = tx
@@ -154,7 +154,7 @@ impl JournalStore for SqlStore {
             sql.push_str(&self.dialect.limit_offset(query.limit, query.offset));
         }
 
-        let rows = self.conn().records(&sql, &args)?;
+        let rows = self.read().records(&sql, &args)?;
         let mut out = Vec::with_capacity(rows.len());
         for (id, sealed) in rows {
             let id = EntryId::parse(&id).map_err(|e| Error::Invalid(e.to_string()))?;
@@ -166,7 +166,7 @@ impl JournalStore for SqlStore {
 
     fn get_entry(&self, id: EntryId) -> Result<Entry> {
         let sealed = self
-            .conn()
+            .read()
             .sealed("SELECT data FROM entries WHERE id = ?1", &vals![id.to_string()])?
             .ok_or_else(|| Error::not_found("entry", id))?;
         self.open_entry(id, &sealed)
@@ -174,7 +174,7 @@ impl JournalStore for SqlStore {
 
     fn put_entry(&self, e: &Entry) -> Result<()> {
         let (data, summary) = self.seal_entry(e)?;
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         tx.execute(
             "INSERT INTO entries
@@ -212,7 +212,7 @@ impl JournalStore for SqlStore {
         // The check and the write stay one statement; the transaction around
         // them is here only so the pointer index cannot land without the row
         // it indexes, or survive a write that lost the race.
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         let changed = match expect {
             // Updating: only if `updated_us` is still what the caller read.
@@ -276,7 +276,7 @@ impl JournalStore for SqlStore {
         // survive is the *pointer*: a reading naming an entry that is gone
         // is a link the next feature to follow it would trip over.
         self.detach_readings_from(id)?;
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         tx.execute("DELETE FROM entries WHERE id = ?1", &vals![id.to_string()])?;
         forget_purposes(tx.as_mut(), RecordKind::Entry, &[id.to_string()])?;
@@ -284,7 +284,7 @@ impl JournalStore for SqlStore {
     }
 
     fn all_entries(&self) -> Result<Vec<Entry>> {
-        let rows = self.conn().records(
+        let rows = self.read().records(
             "SELECT id, data FROM entries ORDER BY local_date DESC, created_us DESC",
             &[],
         )?;
@@ -339,7 +339,7 @@ impl JournalStore for SqlStore {
 
     fn stats(&self) -> Result<StoreStats> {
         let (journals, entries) = {
-            let mut conn = self.conn();
+            let mut conn = self.read();
             (
                 conn.scalar_i64("SELECT COUNT(*) FROM journals", &[])?,
                 conn.scalar_i64("SELECT COUNT(*) FROM entries", &[])?,
@@ -350,17 +350,17 @@ impl JournalStore for SqlStore {
     }
 
     fn flush(&self) -> Result<()> {
-        let mut conn = self.conn();
+        let mut conn = self.write();
         self.driver.flush(conn.as_mut())
     }
 
     fn check_integrity(&self) -> Result<Vec<String>> {
-        let mut conn = self.conn();
+        let mut conn = self.write();
         self.driver.check_integrity(conn.as_mut())
     }
 
     fn snapshot(&self, dir: &std::path::Path) -> Result<()> {
-        let mut conn = self.conn();
+        let mut conn = self.write();
         self.driver.snapshot(conn.as_mut(), &self.root, dir)
     }
 }

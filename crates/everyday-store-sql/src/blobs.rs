@@ -30,7 +30,7 @@
 //! The server never sees plaintext: sealing happens here, before the
 //! `INSERT`.
 
-use crate::conn::{Connection, SqlExt};
+use crate::conn::{Connection, Sql, SqlExt};
 use crate::dialect::Dialect;
 use crate::{Media, SqlStore, to_us, vals};
 use everyday_core::blobstore::{self, Geometry, HEADER_LEN};
@@ -73,7 +73,7 @@ impl SqlStore {
                 // `DO NOTHING` rather than an error: two threads storing the
                 // same photo is a race with one right answer, and it is the
                 // row that is already there.
-                self.conn().execute(
+                self.write().execute(
                     "INSERT INTO blobs (id, byte_len, created_us, data)
                      VALUES (?1, ?2, ?3, ?4)
                      ON CONFLICT (id) DO NOTHING",
@@ -89,7 +89,7 @@ impl SqlStore {
             Media::Files(files) => files.get(id),
             Media::Table => {
                 let sealed = self
-                    .conn()
+                    .read()
                     .sealed("SELECT data FROM blobs WHERE id = ?1", &vals![id.to_hex()])?
                     .ok_or_else(|| Error::not_found("blob", id))?;
                 let geo = Geometry::parse(id, &sealed, sealed.len() as u64)?;
@@ -111,7 +111,7 @@ impl SqlStore {
                 geo.read_range(self.cipher.as_ref(), id, offset, len, |at, size| {
                     // `substr` is 1-based in both databases, and takes a
                     // count rather than an end.
-                    let row = self.conn().query_opt(
+                    let row = self.read().query_opt(
                         "SELECT substr(data, ?2, ?3) FROM blobs WHERE id = ?1",
                         &vals![id.to_hex(), at as i64 + 1, size as i64],
                     )?;
@@ -131,7 +131,7 @@ impl SqlStore {
             // indexed lookup and reads none of the payload.
             Media::Table => {
                 let row = self
-                    .conn()
+                    .read()
                     .query_opt("SELECT byte_len FROM blobs WHERE id = ?1", &vals![id.to_hex()])?
                     .ok_or_else(|| Error::not_found("blob", id))?;
                 row.u64(0)
@@ -143,7 +143,7 @@ impl SqlStore {
         match &self.media {
             Media::Files(files) => Ok(files.has(id)),
             Media::Table => Ok(self
-                .conn()
+                .read()
                 .query_opt("SELECT 1 FROM blobs WHERE id = ?1", &vals![id.to_hex()])?
                 .is_some()),
         }
@@ -154,7 +154,7 @@ impl SqlStore {
             Media::Files(files) => Ok(files.age_of(id)),
             Media::Table => {
                 let row = self
-                    .conn()
+                    .read()
                     .query_opt("SELECT created_us FROM blobs WHERE id = ?1", &vals![id.to_hex()])?;
                 let Some(row) = row else { return Ok(None) };
                 // A clock that has gone backwards yields zero rather than an
@@ -170,7 +170,7 @@ impl SqlStore {
         match &self.media {
             Media::Files(files) => files.delete(id),
             Media::Table => {
-                self.conn().execute("DELETE FROM blobs WHERE id = ?1", &vals![id.to_hex()])?;
+                self.write().execute("DELETE FROM blobs WHERE id = ?1", &vals![id.to_hex()])?;
                 Ok(())
             }
         }
@@ -180,7 +180,7 @@ impl SqlStore {
         match &self.media {
             Media::Files(files) => files.list(),
             Media::Table => {
-                let rows = self.conn().query("SELECT id FROM blobs ORDER BY id", &[])?;
+                let rows = self.read().query("SELECT id FROM blobs ORDER BY id", &[])?;
                 let mut out = Vec::with_capacity(rows.len());
                 for row in rows {
                     out.push(BlobId::parse(&row.text(0)?)?);
@@ -196,7 +196,7 @@ impl SqlStore {
             Media::Files(files) => files.stats(),
             Media::Table => {
                 let row = self
-                    .conn()
+                    .read()
                     .query_opt("SELECT COUNT(*), COALESCE(SUM(length(data)), 0) FROM blobs", &[])?
                     .unwrap_or_default();
                 Ok((row.u64(0)?, row.u64(1)?))
@@ -207,7 +207,7 @@ impl SqlStore {
     /// A blob's header, without fetching its payload.
     fn blob_geometry(&self, id: BlobId) -> Result<Geometry> {
         let row = self
-            .conn()
+            .read()
             .query_opt(
                 "SELECT substr(data, 1, ?2), length(data) FROM blobs WHERE id = ?1",
                 &vals![id.to_hex(), HEADER_LEN as i64],

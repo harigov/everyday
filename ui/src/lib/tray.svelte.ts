@@ -1,27 +1,30 @@
 // Quick actions in the system tray.
 //
-// The shell owns the icon and the menu widget; this owns what is in it. An
-// app registers a function that returns the actions it can offer *right
-// now*, and that is the whole API:
+// The shell owns the icon and the menu widget; this owns what is in it. What
+// is *in* it is no longer a registry of its own: it is a filtered view over
+// the one action table in `shortcuts.svelte.ts`, taking the rows that wear
+// `tray: true`.
 //
-//     tray.register('todo', TRAY_ORDER.todo, () => {
-//       if (!app.supportsTasks) return []
-//       return [{ id: 'todo:add', label: 'Add a task', run: () => ... }]
-//     })
+// That is the whole change, and it is worth stating why. There were three
+// registries -- the keyboard's, the tray's and the context menus' -- and the
+// third one to learn about a new action was always the one nobody remembered.
+// A row now reaches the menu bar by wearing a flag rather than by being
+// declared a second time, and the palette offers it without being told.
 //
-// The function is re-run whenever anything it reads changes, so an action
-// that is only sometimes possible says so by disappearing or by setting
-// `enabled: false`, rather than by failing when it is chosen. That is the
-// reason the registration takes a function rather than a list: a menu built
-// once at startup would still be offering "Add a task" on a vault whose
-// backend has no tasks, and would still be offering anything at all after
-// the vault locked.
+// What has not changed is the good part of the old design. A `when` is a
+// *function*, re-read whenever anything it reads changes, so an action that is
+// only sometimes possible disappears rather than failing when it is chosen: a
+// menu built once at startup would still offer "Add a task" on a vault whose
+// backend has no tasks, and would still offer everything after the vault
+// locked.
 //
 // Handlers stay on this side. What crosses to Rust is a description --
 // labels, ids, enabled flags -- and what comes back is the id that was
 // chosen. See `crates/everyday-app/src/tray.rs`.
 
 import { api, isMock, onTrayAction } from './api'
+import { ACTIONS } from './shortcuts.svelte'
+import type { Binding } from './keys'
 import type { TrayMenuItem } from './types'
 
 /** A thing the menu can do. */
@@ -55,30 +58,41 @@ export type TrayEntry =
   TrayAction | { separator: true } | { label: string; enabled?: boolean; items: TrayEntry[] }
 
 /**
- * Where each app's actions sit in the menu, top to bottom.
+ * The groups the tray draws, top to bottom.
  *
- * A number rather than registration order, because registration order is
- * import order and would make the menu's shape depend on which file happens
- * to import which. Gaps are deliberate: a fourth app can be slotted between
- * two of these without renumbering them.
+ * The *names* of groups in the action table, so the menu's shape is the
+ * table's reading order rather than the order modules happened to be
+ * imported. There used to be a `TRAY_ORDER` map of numbers for that, which
+ * each app read when it registered its own actions; there is one table now,
+ * so the order is where a row sits in it.
  */
-export const TRAY_ORDER = {
-  journal: 10,
-  todo: 20,
-  calendar: 30,
-  library: 40,
-  overview: 50,
-  /** The vault itself -- locking. Last, and away from the capture actions. */
-  vault: 90,
-} as const
-
-interface Group {
-  source: string
-  order: number
-  actions: () => TrayEntry[]
-}
+export const TRAY_GROUPS = ['Journal', 'Todo', 'Calendar', 'Library', 'Overview', 'Vault'] as const
 
 const SHOW_KEY = 'everyday.tray'
+
+/**
+ * The tray rows an app offers right now, as tray entries.
+ *
+ * Read from the one table, filtered by the group's own name. `id` is required
+ * for a tray row -- it is what crosses to Rust and comes back -- so a row
+ * wearing `tray` without one is a mistake worth skipping rather than sending.
+ */
+function trayEntries(group: string): TrayAction[] {
+  return ACTIONS.filter(
+    (a): a is Binding & { id: string } =>
+      a.tray === true && a.group === group && a.id !== undefined && (!a.when || a.when()),
+  ).map((a) => ({
+    id: a.id,
+    label: a.label,
+    checked: a.checked?.(),
+    raise: a.raise,
+    // An action's `run` may answer with anything -- most of them return a
+    // store's own promise -- and the tray only ever awaits it.
+    run: async () => {
+      await a.run()
+    },
+  }))
+}
 
 function isSeparator(e: TrayEntry): e is { separator: true } {
   return 'separator' in e
@@ -108,7 +122,6 @@ class TrayRegistry {
    */
   unavailable = $state(false)
 
-  #groups = $state<Group[]>([])
   /** Handlers for the menu currently up, by item id. */
   #handlers = new Map<string, TrayAction>()
   /** The last description sent, so an unchanged menu is not resent. */
@@ -136,31 +149,16 @@ class TrayRegistry {
   }
 
   /**
-   * Register an app's quick actions.
-   *
-   * Call it once, at module scope beside the store whose state the actions
-   * read. `actions` may be called at any time and must be cheap and free of
-   * side effects: it is the menu's definition, not a command.
-   *
-   * Registering `source` twice replaces the first, which is what makes a hot
-   * reload of a store during `make run` leave one copy of its actions in the
-   * menu rather than two.
-   */
-  register(source: string, order: number, actions: () => TrayEntry[]) {
-    const rest = this.#groups.filter((g) => g.source !== source)
-    this.#groups = [...rest, { source, order, actions }].sort((a, b) => a.order - b.order)
-  }
-
-  /**
    * One app's quick actions, as that app would offer them right now.
    *
-   * For a menu that is not the tray's: the app bar raises this on a
-   * right-click, and it has to be the same list rather than a second one
+   * `group` is the heading in the action table -- `Journal`, `Todo` -- not a
+   * section id. For a menu that is not the tray's: the app bar raises this on
+   * a right-click, and it has to be the same list rather than a second one
    * written beside it. Two answers to "what can this app start right now"
    * drift, and the one nobody is looking at is always the stale one.
    */
-  entriesFor(source: string): TrayEntry[] {
-    return this.#groups.find((g) => g.source === source)?.actions() ?? []
+  entriesFor(group: string): TrayEntry[] {
+    return trayEntries(group)
   }
 
   /** Start listening for clicks and keeping the menu in step. Once. */
@@ -203,8 +201,8 @@ class TrayRegistry {
    */
   #compose(): TrayEntry[] {
     const out: TrayEntry[] = []
-    for (const group of this.#groups) {
-      const entries = group.actions()
+    for (const group of TRAY_GROUPS) {
+      const entries = trayEntries(group)
       if (entries.length === 0) continue
       if (out.length > 0) out.push({ separator: true })
       out.push(...entries)

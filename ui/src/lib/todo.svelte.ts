@@ -13,7 +13,6 @@
 import { api } from './api'
 import { Autosave } from './autosave'
 import { app, handle } from './state.svelte'
-import { TRAY_ORDER, tray } from './tray.svelte'
 import { addDays, todayIso } from './time'
 import { parseQuickAdd } from './quickadd'
 import type {
@@ -859,24 +858,3 @@ class TodoState {
 }
 
 export const todo = new TodoState()
-
-// ── Quick actions ──────────────────────────────────────────────────────
-//
-// The shortest example of the tray API, and the reason it exists: capture is
-// the thing you want from the menu bar, and this app gets it for one entry
-// and one line of state.
-
-tray.register('todo', TRAY_ORDER.todo, () => {
-  // A backend that holds journals only has no task domain, so the todo app
-  // is not hidden behind a disabled item -- it is not there.
-  if (app.screen !== 'main' || !app.supportsTasks) return []
-  return [
-    {
-      id: 'todo:add',
-      label: 'Add a task',
-      run: async () => {
-        if (await app.goTo('todo')) todo.focusCapture()
-      },
-    },
-  ]
-})

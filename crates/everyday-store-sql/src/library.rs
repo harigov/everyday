@@ -39,14 +39,14 @@ impl LibraryStore for SqlStore {
 
     fn list_kinds(&self) -> Result<Vec<Kind>> {
         let rows = self
-            .conn()
+            .read()
             .records("SELECT id, data FROM kinds ORDER BY sort_order, created_us", &[])?;
         self.collect(rows, kind_aad)
     }
 
     fn get_kind(&self, id: KindId) -> Result<Kind> {
         let sealed = self
-            .conn()
+            .read()
             .sealed("SELECT data FROM kinds WHERE id = ?1", &vals![id.to_string()])?
             .ok_or_else(|| Error::not_found("kind", id))?;
         self.unseal(&kind_aad(id), &sealed)
@@ -57,7 +57,7 @@ impl LibraryStore for SqlStore {
         // field labels. A vault whose database said "Books" and "Films"
         // would be telling somebody what sort of person keeps it.
         let data = self.seal(&kind_aad(kind.id), kind)?;
-        self.conn().execute(
+        self.write().execute(
             "INSERT INTO kinds (id, sort_order, visible, created_us, updated_us, data)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT (id) DO UPDATE SET
@@ -80,7 +80,7 @@ impl LibraryStore for SqlStore {
         // refactor could quietly turn off. Three indexed statements do not
         // depend on a setting staying put, and the log has to go through the
         // items to be reached at all.
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         // Collected before the delete, because afterwards there is nothing
         // left to ask which items were on this shelf.
@@ -148,14 +148,14 @@ impl LibraryStore for SqlStore {
         }
 
         // See the module docs for why the ordering is not pushed down.
-        let rows = self.conn().records(&sql, &args)?;
+        let rows = self.read().records(&sql, &args)?;
         let items: Vec<Item> = self.collect(rows, item_aad)?;
         Ok(query.apply(items))
     }
 
     fn get_item(&self, id: ItemId) -> Result<Item> {
         let sealed = self
-            .conn()
+            .read()
             .sealed("SELECT data FROM items WHERE id = ?1", &vals![id.to_string()])?
             .ok_or_else(|| Error::not_found("item", id))?;
         self.unseal(&item_aad(id), &sealed)
@@ -174,7 +174,7 @@ impl LibraryStore for SqlStore {
         let sealed: Vec<(&Item, Vec<u8>)> =
             items.iter().map(|i| Ok((i, self.seal(&item_aad(i.id), i)?))).collect::<Result<_>>()?;
 
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         for (item, data) in &sealed {
             tx.execute(
@@ -212,7 +212,7 @@ impl LibraryStore for SqlStore {
     }
 
     fn delete_item(&self, id: ItemId) -> Result<()> {
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         tx.execute("DELETE FROM logs WHERE item_id = ?1", &vals![id.to_string()])?;
         tx.execute("DELETE FROM items WHERE id = ?1", &vals![id.to_string()])?;
@@ -229,7 +229,7 @@ impl LibraryStore for SqlStore {
             .map(|s| format!("'{}'", s.as_str()))
             .collect();
         let row = self
-            .conn()
+            .read()
             .query_opt(
                 &format!(
                     "SELECT COUNT(*), COALESCE(SUM(CASE WHEN status IN ({}) THEN 1 ELSE 0 END), 0)
@@ -279,13 +279,13 @@ impl LibraryStore for SqlStore {
             sql.push_str(&format!(" LIMIT {limit}"));
         }
 
-        let rows = self.conn().records(&sql, &args)?;
+        let rows = self.read().records(&sql, &args)?;
         self.collect(rows, log_aad)
     }
 
     fn get_log(&self, id: LogId) -> Result<LogEntry> {
         let sealed = self
-            .conn()
+            .read()
             .sealed("SELECT data FROM logs WHERE id = ?1", &vals![id.to_string()])?
             .ok_or_else(|| Error::not_found("log", id))?;
         self.unseal(&log_aad(id), &sealed)
@@ -296,7 +296,7 @@ impl LibraryStore for SqlStore {
         // are what the year-in-review query scans. The database therefore
         // says that something was finished on 2 April and never what.
         let data = self.seal(&log_aad(log.id), log)?;
-        self.conn().execute(
+        self.write().execute(
             "INSERT INTO logs (id, item_id, event, local_date, created_us, data)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT (id) DO UPDATE SET
@@ -314,7 +314,7 @@ impl LibraryStore for SqlStore {
     }
 
     fn delete_log(&self, id: LogId) -> Result<()> {
-        self.conn().execute("DELETE FROM logs WHERE id = ?1", &vals![id.to_string()])?;
+        self.write().execute("DELETE FROM logs WHERE id = ?1", &vals![id.to_string()])?;
         Ok(())
     }
 }

@@ -77,6 +77,7 @@ use postgres::types::{IsNull, ToSql, Type};
 use rustls_platform_verifier::BuilderVerifierExt;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 pub const BACKEND_ID: &str = "postgres";
 
@@ -170,21 +171,12 @@ impl PostgresStore {
         let mut config: postgres::Config = url.parse().map_err(Error::backend)?;
         require_tls_off_this_machine(&mut config);
 
-        let mut client = config.connect(tls()?).map_err(Error::backend)?;
-
-        // The tables go in their own schema, made if it is not there. Both
-        // statements are idempotent, and `search_path` is what lets every
-        // query in `everyday-store-sql` name a bare table exactly as it does
-        // on SQLite.
-        client
-            .batch_execute(&format!(
-                "CREATE SCHEMA IF NOT EXISTS \"{schema}\"; SET search_path TO \"{schema}\""
-            ))
-            .map_err(Error::backend)?;
+        let driver = PostgresDriver { config, schema: schema.to_string() };
+        let conn = driver.session()?;
 
         SqlStore::open(
-            Box::new(PostgresDriver),
-            Box::new(PgConn { client, cache: StatementCache::new() }),
+            Arc::new(driver),
+            Box::new(conn),
             // In the database, not on this disk: see the module docs.
             Media::Table,
             &ctx,
@@ -323,7 +315,36 @@ fn valid_identifier(name: &str) -> Result<&str> {
 }
 
 /// What Postgres answers that no other database does.
-pub struct PostgresDriver;
+pub struct PostgresDriver {
+    /// Kept so the read pool can open more sessions to the same database.
+    /// It already has the TLS decision baked into it, so a reader cannot be
+    /// opened with weaker transport than the writer was.
+    config: postgres::Config,
+    /// Checked by [`valid_identifier`] before it was stored, which is what
+    /// makes interpolating it below safe.
+    schema: String,
+}
+
+impl PostgresDriver {
+    /// One session, with the schema made if it is not there and
+    /// `search_path` pointed at it.
+    ///
+    /// Both statements are idempotent, and `search_path` is what lets every
+    /// query in `everyday-store-sql` name a bare table exactly as it does on
+    /// SQLite. It is a *session* setting, so every connection this driver
+    /// hands out has to run it -- a pooled reader that skipped it would look
+    /// in `public` and answer that the vault is empty.
+    fn session(&self) -> Result<PgConn> {
+        let mut client = self.config.clone().connect(tls()?).map_err(Error::backend)?;
+        let schema = &self.schema;
+        client
+            .batch_execute(&format!(
+                "CREATE SCHEMA IF NOT EXISTS \"{schema}\"; SET search_path TO \"{schema}\""
+            ))
+            .map_err(Error::backend)?;
+        Ok(PgConn { client, cache: StatementCache::new() })
+    }
+}
 
 impl Driver for PostgresDriver {
     fn backend_id(&self) -> &'static str {
@@ -336,6 +357,15 @@ impl Driver for PostgresDriver {
 
     fn max_blob_bytes(&self) -> Option<u64> {
         Some(MAX_BLOB_BYTES)
+    }
+
+    /// Another session, with its own statement cache.
+    ///
+    /// The cache has to be per connection because a prepared statement
+    /// belongs to the session that prepared it -- the same fact that makes
+    /// the transaction-mode pooler unusable here.
+    fn connect(&self) -> Result<Option<Box<dyn Connection>>> {
+        Ok(Some(Box::new(self.session()?)))
     }
 
     // `flush` is the default no-op: the server has committed by the time it

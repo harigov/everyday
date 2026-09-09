@@ -117,6 +117,15 @@ lint: $(UI_DIR)/node_modules ## Format check, clippy and interface typecheck -- 
 		echo "skipping everyday-app: WebKitGTK headers missing, run make setup"; \
 	fi
 	npm --prefix $(UI_DIR) run check
+	@# The generated client must be what the Rust command table says. The
+	@# surface snapshot catches a change on the Rust side; this catches a
+	@# generated file that was edited or never regenerated.
+	npm --prefix $(UI_DIR) run gen:api
+	@if ! git diff --quiet -- $(UI_DIR)/src/lib/generated; then \
+		echo "the generated command client is out of date: run 'make fix' and commit it"; \
+		git --no-pager diff --stat -- $(UI_DIR)/src/lib/generated; \
+		exit 1; \
+	fi
 
 check: lint ## Alias for `lint`
 
@@ -133,6 +142,11 @@ fix: $(UI_DIR)/node_modules ## Apply every fix `lint` can make on its own
 	@# Formatting a Rust file can leave it in a shape clippy reads differently
 	@# and vice versa, so settle on the formatter.
 	cargo fmt --all
+	@# Then the two generated artefacts, in the order they depend on: the
+	@# surface snapshot is written from the Rust table, and the client is
+	@# generated from the snapshot.
+	UPDATE_SURFACE=1 cargo test -p everyday-service --test surface
+	npm --prefix $(UI_DIR) run gen:api
 	@# Same order on this side: lint fixes first, formatter last.
 	npm --prefix $(UI_DIR) run lint:fix
 	npm --prefix $(UI_DIR) run format

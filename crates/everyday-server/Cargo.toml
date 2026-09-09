@@ -1,0 +1,45 @@
+[package]
+name = "everyday-server"
+description = "Serve a vault to other copies of Every Day"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+everyday-core.workspace = true
+everyday-service.workspace = true
+everyday-vault.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+tracing.workspace = true
+blake3.workspace = true
+uuid.workspace = true
+rand.workspace = true
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "macros", "sync", "time", "io-util"] }
+axum = { version = "0.8", features = ["macros"] }
+tower = "0.5"
+futures = "0.3.34"
+# The TLS terminator. `axum-server` rather than a hand-rolled acceptor because
+# the handshake, the graceful shutdown and the HTTP/2 negotiation are exactly
+# the parts worth not writing twice.
+axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# For the one handshake that happens before anything is trusted: fetching a
+# server's certificate so its fingerprint can be compared with the one in the
+# pairing link. See `client::fetch_certificate`.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rcgen = "0.14"
+base64 = "0.22"
+qrcode = { version = "0.14", default-features = false }
+hyper = "1"
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto"] }
+tower-service = "0.3"
+# The client half. Same version the service uses -- one reqwest in the tree, so
+# there is one TLS stack and one set of defaults to reason about.
+reqwest = { version = "0.13", features = ["json", "stream", "http2"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -18,7 +18,7 @@ use everyday_vault::media;
 use tauri::http::{Request, Response, StatusCode, header};
 use tauri::{Manager, Runtime};
 
-use crate::state::AppState;
+use crate::state::{AppState, SessionHandle};
 
 pub fn handle<R: Runtime>(
     app: &tauri::AppHandle<R>,
@@ -26,10 +26,25 @@ pub fn handle<R: Runtime>(
     responder: tauri::UriSchemeResponder,
 ) {
     let app = app.clone();
-    // Reading media decrypts chunks off disk; keep it off the UI thread.
-    tauri::async_runtime::spawn_blocking(move || {
-        responder.respond(serve(&app, &request));
-    });
+    let session = app.try_state::<AppState>().map(|state| state.session());
+    match session {
+        // A vault on another machine. The bytes come over the same pinned
+        // connection every command uses, with the `Range` passed through, so a
+        // video seeks over a network exactly as it seeks off a disk -- and the
+        // webview's content security policy is untouched, because the only
+        // outbound connection is still one this process makes.
+        Some(SessionHandle::Remote(remote)) => {
+            tauri::async_runtime::spawn(async move {
+                responder.respond(serve_remote(&remote, &request).await);
+            });
+        }
+        _ => {
+            // Reading media decrypts chunks off disk; keep it off the UI thread.
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(serve(&app, &request));
+            });
+        }
+    }
 }
 
 fn error(status: StatusCode, message: &str) -> Response<Vec<u8>> {
@@ -40,11 +55,43 @@ fn error(status: StatusCode, message: &str) -> Response<Vec<u8>> {
         .expect("a static response is always well formed")
 }
 
+/// The same response, from a vault this process does not hold.
+async fn serve_remote(
+    remote: &std::sync::Arc<crate::remote::Remote>,
+    request: &Request<Vec<u8>>,
+) -> Response<Vec<u8>> {
+    let path = request.uri().path().trim_start_matches('/').to_string();
+    if BlobId::parse(&path).is_err() {
+        return error(StatusCode::BAD_REQUEST, "not a blob address");
+    }
+
+    let total = match remote.client.blob_len(&path).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::debug!(id = %path, error = %e, "media request for an unknown blob");
+            return error(StatusCode::NOT_FOUND, "no such attachment");
+        }
+    };
+    // The same planner the local path uses, so a range means the same thing on
+    // both -- including the cap that stops a webview asking for a whole film.
+    let plan =
+        media::plan(total, request.headers().get(header::RANGE).and_then(|v| v.to_str().ok()));
+
+    let bytes = match remote.client.blob_range(&path, plan.start, plan.len).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(id = %path, error = %e, "could not read a remote attachment");
+            return error(StatusCode::INTERNAL_SERVER_ERROR, "could not read the attachment");
+        }
+    };
+    respond(plan, bytes)
+}
+
 fn serve<R: Runtime>(app: &tauri::AppHandle<R>, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     let Some(state) = app.try_state::<AppState>() else {
         return error(StatusCode::INTERNAL_SERVER_ERROR, "application state is missing");
     };
-    let Some(vault) = state.get() else {
+    let Some(vault) = state.service().get() else {
         return error(StatusCode::NOT_FOUND, "no vault is open");
     };
     // A locked vault must not serve media. Without this the lock screen would
@@ -77,6 +124,12 @@ fn serve<R: Runtime>(app: &tauri::AppHandle<R>, request: &Request<Vec<u8>>) -> R
         }
     };
 
+    respond(plan, bytes)
+}
+
+/// The response both paths build, so a local vault and a remote one answer a
+/// range request identically.
+fn respond(plan: media::ResponsePlan, bytes: Vec<u8>) -> Response<Vec<u8>> {
     let mut builder = Response::builder()
         .header(header::CONTENT_TYPE, media::sniff_mime(&bytes))
         .header(header::ACCEPT_RANGES, "bytes")

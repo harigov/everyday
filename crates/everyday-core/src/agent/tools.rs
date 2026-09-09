@@ -110,16 +110,60 @@ pub enum Domain {
     Agent,
 }
 
+/// Whether a domain's tools may be put in front of a model at all.
+///
+/// Not a setting, and not a confirmation. The distinction it draws is between
+/// data that is *private* -- which is all of it, and which the assistant is
+/// specifically for -- and data whose disclosure is the whole of its harm.
+///
+/// The reason this exists before the domain that needs it: prompt injection
+/// already has a path in. A fetched web page, an imported calendar, an entry
+/// somebody else wrote -- all of them reach the model's context, and a model
+/// that can be talked into calling a tool can be talked into calling that one.
+/// For a task list the worst case is a wrongly-created task. For a stored
+/// password it is exfiltration, and no amount of confirming makes that a risk
+/// worth carrying for the convenience of asking an assistant about it.
+///
+/// So a `Secret` domain is absent from [`available`], which is what both the
+/// model and the palette read. There is no flag to turn it on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sensitivity {
+    /// Private, like everything here, and reachable by the assistant.
+    Ordinary,
+    /// Never offered to a model, whatever the settings say.
+    Secret,
+}
+
 impl Domain {
     fn available(self, vault: &Vault) -> bool {
+        self.sensitivity() == Sensitivity::Ordinary
+            && match self {
+                Domain::Journals => true,
+                Domain::Tasks => vault.supports_tasks(),
+                Domain::Calendars => vault.supports_calendars(),
+                Domain::Library => vault.supports_library(),
+                Domain::Trackers => vault.supports_trackers(),
+                Domain::Goals => vault.supports_goals(),
+                Domain::Agent => vault.supports_agent(),
+            }
+    }
+
+    /// Written out rather than defaulted, so adding a domain is a decision
+    /// somebody made rather than one they inherited. A `Passwords` variant
+    /// added here without a line in this match will not compile.
+    pub fn sensitivity(self) -> Sensitivity {
         match self {
-            Domain::Journals => true,
-            Domain::Tasks => vault.supports_tasks(),
-            Domain::Calendars => vault.supports_calendars(),
-            Domain::Library => vault.supports_library(),
-            Domain::Trackers => vault.supports_trackers(),
-            Domain::Goals => vault.supports_goals(),
-            Domain::Agent => vault.supports_agent(),
+            Domain::Journals
+            | Domain::Tasks
+            | Domain::Calendars
+            | Domain::Library
+            | Domain::Trackers
+            // Roles and goals are the shape of somebody's life rather than
+            // its contents, and the assistant is specifically for reasoning
+            // about them -- "what did I actually spend the week on" is the
+            // question the Overview exists to answer.
+            | Domain::Goals
+            | Domain::Agent => Sensitivity::Ordinary,
         }
     }
 }
@@ -2616,6 +2660,43 @@ fn run_forget(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 mod tests {
     use super::*;
 
+    /// The rule that has to hold before there is a domain it applies to.
+    ///
+    /// A tool from a secret domain must be absent from what the model is
+    /// offered -- not present and refused, not present behind a confirmation.
+    /// A model that is told a tool exists can be talked into calling it, and
+    /// a refusal it can see is a refusal it can try to talk its way around.
+    #[test]
+    fn a_secret_domain_is_never_offered_to_a_model() {
+        for tool in ALL {
+            if tool.domain.sensitivity() == Sensitivity::Secret {
+                panic!(
+                    "{} is in a secret domain and is in the catalogue; \
+                     `available` filters it out, but nothing should be there to filter",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    /// Every domain has said which it is. The match in `sensitivity` is
+    /// exhaustive, so this is really a check that the list below was updated
+    /// when a variant was added -- which is the moment the decision is made.
+    #[test]
+    fn every_domain_has_answered_the_question() {
+        for domain in [
+            Domain::Journals,
+            Domain::Tasks,
+            Domain::Calendars,
+            Domain::Library,
+            Domain::Trackers,
+            Domain::Goals,
+            Domain::Agent,
+        ] {
+            assert_eq!(domain.sensitivity(), Sensitivity::Ordinary, "{domain:?}");
+        }
+    }
+
     #[test]
     fn every_tool_has_a_unique_name_and_a_usable_schema() {
         let mut seen = std::collections::BTreeSet::new();
@@ -2675,6 +2756,7 @@ mod tests {
             Domain::Calendars,
             Domain::Library,
             Domain::Trackers,
+            Domain::Goals,
             Domain::Agent,
         ] {
             assert!(

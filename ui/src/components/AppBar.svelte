@@ -27,20 +27,19 @@
     label: string
     icon: IconName
     /** The key its quick actions are registered under; see `tray.svelte.ts`. */
-    source: string
   }
 
   // Each tab is hidden on a backend that cannot carry it, so a vault never
   // offers an app that cannot work.
   const APPS: AppEntry[] = [
-    { id: 'journal', label: 'Journal', icon: 'quote', source: 'journal' },
-    { id: 'todo', label: 'Todo', icon: 'check', source: 'todo' },
-    { id: 'calendar', label: 'Calendar', icon: 'calendar', source: 'calendar' },
-    { id: 'library', label: 'Library', icon: 'book', source: 'library' },
+    { id: 'journal', label: 'Journal', icon: 'quote' },
+    { id: 'todo', label: 'Todo', icon: 'check' },
+    { id: 'calendar', label: 'Calendar', icon: 'calendar' },
+    { id: 'library', label: 'Library', icon: 'book' },
     // Last, and deliberately: it is a view over what the four above store,
     // so it reads left to right as the things you do and then the thing
     // they add up to.
-    { id: 'overview', label: 'Overview', icon: 'compass', source: 'overview' },
+    { id: 'overview', label: 'Overview', icon: 'compass' },
   ]
   const shown = $derived(APPS.filter((a) => app.canShow(a.id)))
 
@@ -79,7 +78,11 @@
         run: () => app.setSection(entry.id),
       },
       SEP,
-      ...tray.entriesFor(entry.source).map(toItem),
+      // By label, which is the name of the group in the action table. There
+      // used to be a separate `source` field here holding the same word in
+      // lower case; two spellings of one name is how this menu would quietly
+      // come back empty after the table was renamed.
+      ...tray.entriesFor(entry.label).map(toItem),
     ])
   }
 </script>

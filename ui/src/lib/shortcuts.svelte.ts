@@ -75,7 +75,7 @@ function dialogOpen(): boolean {
   // Nothing counts while the help sheet is asking what applies: it is asking
   // about the window it will not be covering. See `panels.listing`.
   if (panels.listing) return false
-  if (panels.settings !== null || panels.shortcuts) return true
+  if (panels.settings !== null || panels.shortcuts || panels.palette) return true
   return document.querySelector('[aria-modal="true"]') !== null
 }
 
@@ -99,7 +99,25 @@ function stepEntry(step: 1 | -1) {
  * Ordered by group, and the groups by how often they are reached for. The
  * help sheet draws it in this order, so this is also the reading order.
  */
-export const BINDINGS: Binding[] = [
+export const ACTIONS: Binding[] = [
+  // ── The palette ─────────────────────────────────────────────────────
+  //
+  // First in the table because it is the way to everything else in it. The
+  // chord rather than a bare letter, and `whileTyping`, because the whole
+  // point is to be reachable from wherever the cursor already is.
+  {
+    keys: 'mod+k',
+    label: 'Find a command',
+    group: 'Everywhere',
+    keywords: ['palette', 'command', 'run', 'search actions'],
+    icon: 'search',
+    whileTyping: true,
+    // Past the lock screen, and *not* gated on `anywhere()`: the palette is a
+    // dialog, so a rule about dialogs would stop it being closed by the same
+    // key that opened it.
+    when: () => app.screen === 'main',
+    run: () => (panels.palette ? panels.closePalette() : panels.openPalette()),
+  },
   // ── Go to ───────────────────────────────────────────────────────────
   {
     keys: 'g j',
@@ -357,6 +375,219 @@ export const BINDINGS: Binding[] = [
     when: () => anywhere() && inApp('library')() && !!library.selected,
     run: () => void library.toggleFavourite(library.selected!),
   },
+
+  // ── Quick actions ───────────────────────────────────────────────────
+  //
+  // The rows the tray offers as well, and the ones that have no shortcut at
+  // all. They are here rather than beside each store for the reason the whole
+  // table exists: three surfaces read this list -- the keyboard, the tray and
+  // the palette -- and an action declared anywhere else reaches at most one of
+  // them.
+  //
+  // A tray row needs an `id`, because the shell sends a description across to
+  // Rust and gets an id back; everything else stays on this side. `group` is
+  // what decides where it sits in the menu, so the menu's shape is this
+  // table's reading order.
+  {
+    id: 'journal:new-entry',
+    label: 'New journal entry',
+    group: 'Journal',
+    keywords: ['write', 'today', 'note'],
+    icon: 'pencil',
+    tray: true,
+    // A vault with no journal in it has nowhere to put an entry.
+    when: () => app.screen === 'main' && app.journals.length > 0,
+    run: async () => {
+      if (await app.goTo('journal')) await app.newEntry()
+    },
+  },
+  {
+    id: 'todo:add',
+    label: 'Add a task',
+    group: 'Todo',
+    keywords: ['todo', 'capture'],
+    icon: 'plus',
+    tray: true,
+    // A backend that holds journals only has no task domain, so the action is
+    // not hidden behind a disabled item -- it is not there.
+    when: () => app.screen === 'main' && app.supportsTasks,
+    run: async () => {
+      if (await app.goTo('todo')) todo.focusCapture()
+    },
+  },
+  {
+    id: 'calendar:book-now',
+    label: 'Set an hour aside',
+    group: 'Calendar',
+    keywords: ['book', 'time', 'schedule'],
+    icon: 'calendar',
+    tray: true,
+    when: () => app.screen === 'main' && app.supportsCalendar,
+    run: async () => {
+      if (await app.goTo('calendar')) await calendar.bookNow()
+    },
+  },
+  {
+    id: 'calendar:timer',
+    // One row that is also a state, rather than two that are sometimes greyed
+    // out. A tray is where you glance to find out whether you left the timer
+    // running, so the tick has to be readable without opening anything
+    // further -- and the elapsed figure is deliberately *not* in the label,
+    // because a menu you have to open is not a clock and putting it there
+    // would rebuild the menu once a second.
+    label: 'Track time',
+    group: 'Calendar',
+    keywords: ['timer', 'stopwatch', 'stop'],
+    icon: 'clock',
+    tray: true,
+    checked: () => calendar.timer !== null,
+    // Starting or stopping a timer is a thing you do on your way past.
+    raise: false,
+    when: () => app.screen === 'main' && app.supportsCalendar,
+    run: () => (calendar.timer ? calendar.stopTimer() : calendar.startTimer({ type: 'adhoc' })),
+  },
+  {
+    id: 'overview:today',
+    label: 'How today is going',
+    group: 'Overview',
+    keywords: ['now', 'day', 'progress'],
+    icon: 'compass',
+    tray: true,
+    when: () => app.screen === 'main' && app.supportsOverview,
+    run: async () => {
+      if (await app.goTo('overview')) overview.setPane('today')
+    },
+  },
+  {
+    id: 'overview:week',
+    label: 'Where the week went',
+    group: 'Overview',
+    keywords: ['balance', 'report', 'time', 'chart'],
+    icon: 'compass',
+    tray: true,
+    when: () => app.screen === 'main' && app.supportsOverview,
+    run: async () => {
+      if (await app.goTo('overview')) overview.setPane('week')
+    },
+  },
+  {
+    id: 'overview:log',
+    label: 'Record a reading',
+    group: 'Overview',
+    keywords: ['tracker', 'habit', 'dose', 'tick'],
+    icon: 'compass',
+    tray: true,
+    when: () => app.screen === 'main' && app.supportsOverview,
+    run: async () => {
+      // Straight to the pane that has the field, and the field opens itself.
+      // A quick action from the menu bar has no component to reach for, which
+      // is the same problem `focusCapture` solves for the todo app's line.
+      if (await app.goTo('overview')) {
+        overview.setPane('today')
+        overview.wantsLog = true
+      }
+    },
+  },
+  {
+    id: 'overview:goals',
+    label: 'Goals',
+    group: 'Overview',
+    keywords: ['goal', 'aim', 'intention', 'purpose'],
+    icon: 'compass',
+    tray: true,
+    when: () => app.screen === 'main' && app.supportsOverview,
+    run: async () => {
+      if (await app.goTo('overview')) overview.setPane('goals')
+    },
+  },
+  {
+    // The Overview's capture action, reached by `C` there. Palette-only: the
+    // tray already offers the pane, and one more row for the thing that pane
+    // opens with would be two ways to say the same thing.
+    label: 'Add a goal',
+    group: 'Overview',
+    keywords: ['new goal', 'aim'],
+    icon: 'plus',
+    when: () => app.screen === 'main' && app.supportsOverview,
+    run: async () => {
+      if (await app.goTo('overview')) newGoal()
+    },
+  },
+  {
+    id: 'library:add',
+    // The action a tray is for: something was recommended to you while you
+    // were doing something else, and it needs to land somewhere before you
+    // forget it.
+    label: 'Add to library',
+    group: 'Library',
+    keywords: ['shelf', 'book', 'film', 'read', 'watch'],
+    icon: 'plus',
+    tray: true,
+    when: () => app.screen === 'main' && app.supportsLibrary,
+    run: async () => {
+      if (await app.goTo('library')) library.focusCapture()
+    },
+  },
+  {
+    id: 'vault:lock',
+    label: 'Lock now',
+    group: 'Vault',
+    keywords: ['sign out', 'seal', 'away'],
+    icon: 'lock',
+    tray: true,
+    // The one action here that is about *not* coming back to the window.
+    raise: false,
+    // Nothing to lock on a vault with no password on it.
+    when: () => app.screen === 'main' && app.status?.encrypted === true,
+    run: () => app.lock(),
+  },
+
+  // ── Palette only ────────────────────────────────────────────────────
+  //
+  // Worth doing and not worth a key. There are more things than there are
+  // comfortable chords, and a palette is where the rest live -- which is also
+  // what stops the shortcut table growing a second tier of unmemorable
+  // three-key sequences.
+  {
+    label: 'Settings',
+    group: 'Everywhere',
+    keywords: ['preferences', 'options', 'configure'],
+    icon: 'settings',
+    when: () => app.screen === 'main',
+    run: () => panels.openSettings(),
+  },
+  {
+    label: 'Habits',
+    group: 'Overview',
+    keywords: ['streak', 'tracker', 'heatmap'],
+    when: () => app.screen === 'main' && app.supportsOverview,
+    run: async () => {
+      if (await app.goTo('overview')) overview.setPane('habits')
+    },
+  },
+  {
+    label: 'Refresh subscribed calendars',
+    group: 'Calendar',
+    keywords: ['sync', 'feed', 'ics'],
+    when: () => app.screen === 'main' && app.supportsCalendar,
+    run: () => calendar.syncDue(true),
+  },
+  {
+    label: 'Use a vault on another computer',
+    group: 'Vault',
+    keywords: ['remote', 'server', 'connect', 'pair'],
+    icon: 'monitor',
+    when: () => app.screen === 'main' && !app.remote,
+    run: () => panels.openSettings('vault'),
+  },
+  {
+    label: 'Stop using the other computer',
+    group: 'Vault',
+    keywords: ['disconnect', 'local', 'remote'],
+    icon: 'monitor',
+    when: () => app.screen === 'main' && !!app.remote,
+    run: () => app.disconnectRemote(),
+  },
 ]
 
 /** What "the next thing" means in the app that is open. */
@@ -415,7 +646,7 @@ class Shortcuts {
 
     const typing = isTyping(event.target)
     const pressed = chord === 'Escape' ? [chord] : [...this.pending, chord]
-    const { hit, pending } = match(BINDINGS, pressed, typing)
+    const { hit, pending } = match(ACTIONS, pressed, typing)
 
     if (hit) {
       this.#clear()
@@ -461,6 +692,23 @@ class Shortcuts {
 export const shortcuts = new Shortcuts()
 
 /**
+ * Every action that applies right now, in the order the table declares them.
+ *
+ * What the palette draws. `panels.listing` is raised for the duration for the
+ * same reason the help sheet raises it -- the palette is a dialog, and without
+ * this every `when` that asks "is a dialog open" would answer yes and the
+ * palette would offer nothing at all.
+ */
+export function applicableActions(): Binding[] {
+  panels.listing = true
+  try {
+    return ACTIONS.filter((a) => !a.when || a.when())
+  } finally {
+    panels.listing = false
+  }
+}
+
+/**
  * The bindings that apply right now, grouped, for the help sheet.
  *
  * `panels.listing` is raised for the duration, so the sheet does not
@@ -472,7 +720,7 @@ export const shortcuts = new Shortcuts()
 export function applicableBindings(): { group: string; items: Binding[] }[] {
   panels.listing = true
   try {
-    return group(BINDINGS)
+    return group(ACTIONS.filter((a) => a.keys !== undefined))
   } finally {
     panels.listing = false
   }
@@ -504,9 +752,13 @@ function group(bindings: Binding[]): { group: string; items: Binding[] }[] {
 export function spellings(binding: Binding): string[] {
   panels.listing = true
   try {
-    return BINDINGS.filter(
-      (b) => b.group === binding.group && b.label === binding.label && (!b.when || b.when()),
-    ).map((b) => b.keys)
+    return ACTIONS.filter(
+      (b) =>
+        b.keys !== undefined &&
+        b.group === binding.group &&
+        b.label === binding.label &&
+        (!b.when || b.when()),
+    ).map((b) => b.keys!)
   } finally {
     panels.listing = false
   }

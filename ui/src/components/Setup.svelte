@@ -1,6 +1,19 @@
 <script lang="ts">
   import { app } from '../lib/state.svelte'
   import Logo from './Logo.svelte'
+  import Connect from './Connect.svelte'
+
+  /**
+   * Which of the two things somebody is here to do.
+   *
+   * A tab rather than a second screen, because they are alternatives at the
+   * same moment -- make a vault, or use one that already exists somewhere else
+   * -- and a link away to a page with its own back button would be a longer
+   * route to the same choice. It opens on "connect" when this copy has already
+   * paired with something, because a machine that has done it once is usually
+   * doing it again.
+   */
+  let mode = $state<'create' | 'connect'>(app.remotes.length > 0 ? 'connect' : 'create')
 
   let name = $state('My Journal')
   let backend = $state('sqlite')
@@ -112,111 +125,159 @@
     <h1>Every Day</h1>
     <p class="sub">A private journal. Let's set it up.</p>
 
-    <label class="label" for="name">What should we call it?</label>
-    <input id="name" class="field" bind:value={name} placeholder="My Journal" />
-
-    <div class="group">
-      <span class="label">How should it be stored?</span>
-      {#each backends as b (b.id)}
-        <label class="option" class:on={backend === b.id}>
-          <input type="radio" name="backend" value={b.id} bind:group={backend} />
-          <span class="opt-body">
-            <span class="opt-name">{b.name}</span>
-            <span class="opt-desc">{b.description}</span>
-          </span>
-        </label>
-      {/each}
+    <div class="modes" role="tablist">
+      <button
+        type="button"
+        role="tab"
+        aria-selected={mode === 'create'}
+        class:on={mode === 'create'}
+        onclick={() => (mode = 'create')}>Make a new vault</button
+      >
+      <button
+        type="button"
+        role="tab"
+        aria-selected={mode === 'connect'}
+        class:on={mode === 'connect'}
+        onclick={() => (mode = 'connect')}>Use one on another computer</button
+      >
     </div>
 
-    <!-- Whatever the chosen backend asked for. Nothing at all for a vault
+    {#if mode === 'connect'}
+      <Connect />
+    {:else}
+      <label class="label" for="name">What should we call it?</label>
+      <input id="name" class="field" bind:value={name} placeholder="My Journal" />
+
+      <div class="group">
+        <span class="label">How should it be stored?</span>
+        {#each backends as b (b.id)}
+          <label class="option" class:on={backend === b.id}>
+            <input type="radio" name="backend" value={b.id} bind:group={backend} />
+            <span class="opt-body">
+              <span class="opt-name">{b.name}</span>
+              <span class="opt-desc">{b.description}</span>
+            </span>
+          </label>
+        {/each}
+      </div>
+
+      <!-- Whatever the chosen backend asked for. Nothing at all for a vault
          that lives in a folder on this computer, which is why this is driven
          by the backend's own declaration rather than by a branch on its id. -->
-    {#each fields as f (backend + f.key)}
-      <label class="label" for="set-{f.key}">
-        {f.label}{#if !f.required}<span class="opt-desc"> — optional</span>{/if}
-      </label>
-      <input
-        id="set-{f.key}"
-        class="field"
-        type={f.secret ? 'password' : 'text'}
-        placeholder={f.placeholder}
-        autocomplete="off"
-        spellcheck="false"
-        value={value(f.key)}
-        oninput={(e) => setValue(f.key, e.currentTarget.value)}
-      />
-      <div class="gap"></div>
-    {/each}
+      {#each fields as f (backend + f.key)}
+        <label class="label" for="set-{f.key}">
+          {f.label}{#if !f.required}<span class="opt-desc"> — optional</span>{/if}
+        </label>
+        <input
+          id="set-{f.key}"
+          class="field"
+          type={f.secret ? 'password' : 'text'}
+          placeholder={f.placeholder}
+          autocomplete="off"
+          spellcheck="false"
+          value={value(f.key)}
+          oninput={(e) => setValue(f.key, e.currentTarget.value)}
+        />
+        <div class="gap"></div>
+      {/each}
 
-    {#if fields.length}
-      <p class="hint">
-        Entries are sealed on this computer before they are sent, so the server holds ciphertext and
-        never your password. What it can see is the shape of the journal: how many entries there are
-        and which days you wrote on.
-      </p>
-    {/if}
+      {#if fields.length}
+        <p class="hint">
+          Entries are sealed on this computer before they are sent, so the server holds ciphertext
+          and never your password. What it can see is the shape of the journal: how many entries
+          there are and which days you wrote on.
+        </p>
+      {/if}
 
-    <div class="group">
-      <label class="option" class:on={encrypt}>
-        <input type="checkbox" bind:checked={encrypt} />
-        <span class="opt-body">
-          <span class="opt-name">Encrypt this journal</span>
-          <span class="opt-desc">
-            Everything is sealed with a key derived from your password.
+      <div class="group">
+        <label class="option" class:on={encrypt}>
+          <input type="checkbox" bind:checked={encrypt} />
+          <span class="opt-body">
+            <span class="opt-name">Encrypt this journal</span>
+            <span class="opt-desc">
+              Everything is sealed with a key derived from your password.
+            </span>
           </span>
-        </span>
-      </label>
-    </div>
+        </label>
+      </div>
 
-    {#if encrypt}
-      <label class="label" for="pw">Password</label>
-      <input
-        id="pw"
-        class="field"
-        type="password"
-        bind:value={password}
-        placeholder="At least 8 characters"
-        autocomplete="new-password"
-      />
-      <div class="gap"></div>
-      <input
-        class="field"
-        type="password"
-        bind:value={confirm}
-        placeholder="Repeat it"
-        autocomplete="new-password"
-      />
+      {#if encrypt}
+        <label class="label" for="pw">Password</label>
+        <input
+          id="pw"
+          class="field"
+          type="password"
+          bind:value={password}
+          placeholder="At least 8 characters"
+          autocomplete="new-password"
+        />
+        <div class="gap"></div>
+        <input
+          class="field"
+          type="password"
+          bind:value={confirm}
+          placeholder="Repeat it"
+          autocomplete="new-password"
+        />
 
-      <p class="hint warn">
-        There is no way to recover this journal without the password. It is not stored anywhere and
-        it cannot be reset.
-      </p>
-    {:else}
-      <label class="option danger" class:on={acknowledged}>
-        <input type="checkbox" bind:checked={acknowledged} />
-        <span class="opt-body">
-          <span class="opt-name">I understand this journal will not be encrypted</span>
-          <span class="opt-desc">
-            Anything written to it is stored in the clear, readable by any program on this computer
-            and by anything that backs it up.
+        <p class="hint warn">
+          There is no way to recover this journal without the password. It is not stored anywhere
+          and it cannot be reset.
+        </p>
+      {:else}
+        <label class="option danger" class:on={acknowledged}>
+          <input type="checkbox" bind:checked={acknowledged} />
+          <span class="opt-body">
+            <span class="opt-name">I understand this journal will not be encrypted</span>
+            <span class="opt-desc">
+              Anything written to it is stored in the clear, readable by any program on this
+              computer and by anything that backs it up.
+            </span>
           </span>
-        </span>
-      </label>
+        </label>
+      {/if}
+
+      {#if missingHint}<p class="error">{missingHint} is needed.</p>{/if}
+      {#if problem}<p class="error">{problem}</p>{/if}
+      {#if app.error}<p class="error">{app.error}</p>{/if}
+
+      <button class="btn btn-primary wide" type="submit" disabled={!ready}>
+        {busy ? 'Creating…' : 'Create journal'}
+      </button>
+
+      {#if path}<p class="hint where">It will live in <code>{path}</code></p>{/if}
     {/if}
-
-    {#if missingHint}<p class="error">{missingHint} is needed.</p>{/if}
-    {#if problem}<p class="error">{problem}</p>{/if}
-    {#if app.error}<p class="error">{app.error}</p>{/if}
-
-    <button class="btn btn-primary wide" type="submit" disabled={!ready}>
-      {busy ? 'Creating…' : 'Create journal'}
-    </button>
-
-    {#if path}<p class="hint where">It will live in <code>{path}</code></p>{/if}
   </form>
 </div>
 
 <style>
+  .modes {
+    display: flex;
+    gap: 0.25rem;
+    padding: 0.2rem;
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    margin-bottom: 0.4rem;
+  }
+
+  .modes button {
+    flex: 1;
+    padding: 0.4rem 0.6rem;
+    border: none;
+    border-radius: calc(var(--radius) - 2px);
+    background: none;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: var(--text-sm);
+    cursor: pointer;
+  }
+
+  .modes button.on {
+    background: var(--surface-raised, var(--surface));
+    color: var(--text);
+    font-weight: 600;
+  }
+
   .setup {
     height: 100%;
     padding: var(--sp-10) var(--sp-4);

@@ -19,10 +19,28 @@ class Panels {
   settings = $state<SettingsTab | null>(null)
   /** The keyboard shortcut sheet. */
   shortcuts = $state(false)
+  /**
+   * The command palette.
+   *
+   * Its own flag rather than a mode of the shortcut sheet, though the two read
+   * the same table. The sheet answers "what can I press"; the palette answers
+   * "do this thing", and one of them is a reference and the other is a verb.
+   */
+  palette = $state(false)
 
   openSettings(tab: SettingsTab = 'general') {
     this.shortcuts = false
+    this.palette = false
     this.settings = tab
+  }
+
+  openPalette() {
+    this.shortcuts = false
+    this.palette = true
+  }
+
+  closePalette() {
+    this.palette = false
   }
 
   closeSettings() {
@@ -30,6 +48,7 @@ class Panels {
   }
 
   toggleShortcuts() {
+    this.palette = false
     this.shortcuts = !this.shortcuts
   }
 

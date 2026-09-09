@@ -1,0 +1,1948 @@
+{
+  "commands": [
+    {
+      "args": [
+        {
+          "name": "kindId",
+          "required": true,
+          "type": "KindId"
+        },
+        {
+          "name": "title",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "lookup",
+          "required": true,
+          "type": "boolean"
+        }
+      ],
+      "changes": {
+        "kind": "item",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "add_item",
+      "returns": "AddedItem",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "agent_settings",
+      "returns": "AgentSettings",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ItemId"
+        },
+        {
+          "name": "result",
+          "required": true,
+          "type": "SearchResult"
+        },
+        {
+          "name": "overwrite",
+          "required": true,
+          "type": "boolean"
+        }
+      ],
+      "changes": {
+        "kind": "item",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "apply_metadata",
+      "returns": "Item",
+      "scope": "web",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "calendar_providers",
+      "returns": "ProviderInfo[]",
+      "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "current",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "next",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "change_password",
+      "returns": "void",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "clear_agent_key",
+      "returns": "void",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "destructive",
+      "name": "collect_garbage",
+      "returns": "number",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "callId",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "approved",
+          "required": true,
+          "type": "boolean"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "confirm_tool_call",
+      "returns": "boolean",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ConversationId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "conversation_messages",
+      "returns": "AgentMessage[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "BlockId"
+        }
+      ],
+      "changes": {
+        "kind": "block",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_block",
+      "returns": "void",
+      "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "CalendarId"
+        }
+      ],
+      "changes": {
+        "kind": "calendar",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_calendar",
+      "returns": "void",
+      "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ConversationId"
+        }
+      ],
+      "changes": {
+        "kind": "conversation",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_conversation",
+      "returns": "void",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "EntryId"
+        }
+      ],
+      "changes": {
+        "kind": "entry",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_entry",
+      "returns": "void",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "GoalId"
+        }
+      ],
+      "changes": {
+        "kind": "goal",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_goal",
+      "returns": "void",
+      "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ItemId"
+        }
+      ],
+      "changes": {
+        "kind": "item",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_item",
+      "returns": "void",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "JournalId"
+        }
+      ],
+      "changes": {
+        "kind": "journal",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_journal",
+      "returns": "void",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "KindId"
+        }
+      ],
+      "changes": {
+        "kind": "shelf",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_kind",
+      "returns": "void",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "LogId"
+        }
+      ],
+      "changes": {
+        "kind": "log",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_log",
+      "returns": "void",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "MemoryId"
+        }
+      ],
+      "changes": {
+        "kind": "memory",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_memory",
+      "returns": "void",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ProjectId"
+        }
+      ],
+      "changes": {
+        "kind": "project",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_project",
+      "returns": "void",
+      "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ReadingId"
+        }
+      ],
+      "changes": {
+        "kind": "reading",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_reading",
+      "returns": "void",
+      "scope": "trackers",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "RoleId"
+        }
+      ],
+      "changes": {
+        "kind": "role",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_role",
+      "returns": "void",
+      "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "TaskId"
+        }
+      ],
+      "changes": {
+        "kind": "task",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_task",
+      "returns": "void",
+      "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "TrackerId"
+        }
+      ],
+      "changes": {
+        "kind": "tracker",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_tracker",
+      "returns": "number",
+      "scope": "trackers",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "url",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "fetch_image",
+      "returns": "string",
+      "scope": "web",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "write",
+      "name": "flush",
+      "returns": "void",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "EntryId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_entry",
+      "returns": "Entry",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "EventId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_event",
+      "returns": "CalendarEvent",
+      "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "GoalId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_goal",
+      "returns": "Goal",
+      "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ItemId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_item",
+      "returns": "Item",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "TaskId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_task",
+      "returns": "Task",
+      "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "GoalId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "goal_activity",
+      "returns": "GoalActivity",
+      "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "label",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "color",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "ics",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "calendar",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "import_calendar",
+      "returns": "CalendarInfo",
+      "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "library_stats",
+      "returns": "LibraryStats",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "BlockQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_blocks",
+      "returns": "TimeBlock[]",
+      "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_calendars",
+      "returns": "CalendarInfo[]",
+      "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_commands",
+      "returns": "Surface",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "limit",
+          "required": false,
+          "type": "number | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_conversations",
+      "returns": "ConversationSummary[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "EntryQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_entries",
+      "returns": "EntrySummary[]",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "EventQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_events",
+      "returns": "CalendarEvent[]",
+      "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "GoalQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_goals",
+      "returns": "Goal[]",
+      "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "ItemQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_items",
+      "returns": "Item[]",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_journals",
+      "returns": "Journal[]",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_kinds",
+      "returns": "KindInfo[]",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "LogQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_logs",
+      "returns": "LogEntry[]",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_memories",
+      "returns": "Memory[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_projects",
+      "returns": "Project[]",
+      "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "ReadingQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_readings",
+      "returns": "Reading[]",
+      "scope": "trackers",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_roles",
+      "returns": "RoleInfo[]",
+      "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_tags",
+      "returns": "string[]",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "TaskQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_tasks",
+      "returns": "Task[]",
+      "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_tools",
+      "returns": "ToolInfo[]",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_trackers",
+      "returns": "Tracker[]",
+      "scope": "trackers",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "write",
+      "name": "lock",
+      "returns": "VaultStatus",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "trackerId",
+          "required": true,
+          "type": "TrackerId"
+        },
+        {
+          "name": "value",
+          "required": true,
+          "type": "number"
+        },
+        {
+          "name": "date",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "at",
+          "required": false,
+          "type": "string | null"
+        },
+        {
+          "name": "journalId",
+          "required": false,
+          "type": "JournalId | null"
+        },
+        {
+          "name": "entryId",
+          "required": false,
+          "type": "EntryId | null"
+        }
+      ],
+      "changes": {
+        "kind": "reading",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "log_reading",
+      "returns": "Reading",
+      "scope": "trackers",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "kindId",
+          "required": true,
+          "type": "KindId"
+        },
+        {
+          "name": "query",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "number | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "lookup_metadata",
+      "returns": "SearchResult[]",
+      "scope": "web",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "from",
+          "required": true,
+          "type": "TrackerId"
+        },
+        {
+          "name": "into",
+          "required": true,
+          "type": "TrackerId"
+        }
+      ],
+      "changes": {
+        "kind": "tracker",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "merge_trackers",
+      "returns": "number",
+      "scope": "trackers",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "subject",
+          "required": true,
+          "type": "BlockSubject"
+        },
+        {
+          "name": "start",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "minutes",
+          "required": true,
+          "type": "number"
+        },
+        {
+          "name": "kind",
+          "required": false,
+          "type": "BlockKind | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "new_block",
+      "returns": "TimeBlock",
+      "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "new_conversation",
+      "returns": "Conversation",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "journalId",
+          "required": true,
+          "type": "JournalId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "new_entry",
+      "returns": "Entry",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "roleId",
+          "required": true,
+          "type": "RoleId"
+        },
+        {
+          "name": "title",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "new_goal",
+      "returns": "Goal",
+      "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "new_journal",
+      "returns": "Journal",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "singular",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "new_kind",
+      "returns": "Kind",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "itemId",
+          "required": true,
+          "type": "ItemId"
+        },
+        {
+          "name": "event",
+          "required": true,
+          "type": "LogEvent"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "new_log",
+      "returns": "LogEntry",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "new_project",
+      "returns": "Project",
+      "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "new_role",
+      "returns": "Role",
+      "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "projectId",
+          "required": false,
+          "type": "ProjectId | null"
+        },
+        {
+          "name": "parentId",
+          "required": false,
+          "type": "TaskId | null"
+        },
+        {
+          "name": "status",
+          "required": false,
+          "type": "TaskStatus | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "new_task",
+      "returns": "Task",
+      "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "kind",
+          "required": true,
+          "type": "TrackerKind"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "new_tracker",
+      "returns": "Tracker",
+      "scope": "trackers",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "write",
+      "name": "poll_auto_lock",
+      "returns": "boolean",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "arguments",
+          "required": false,
+          "type": "unknown"
+        },
+        {
+          "name": "confirmDestructive",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "run_tool",
+      "returns": "unknown",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "settings",
+          "required": true,
+          "type": "AgentSettings"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_agent_settings",
+      "returns": "AgentSettings",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "block",
+          "required": true,
+          "type": "TimeBlock"
+        }
+      ],
+      "changes": {
+        "kind": "block",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_block",
+      "returns": "void",
+      "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "calendar",
+          "required": true,
+          "type": "Calendar"
+        }
+      ],
+      "changes": {
+        "kind": "calendar",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_calendar",
+      "returns": "void",
+      "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "entry",
+          "required": true,
+          "type": "Entry"
+        },
+        {
+          "name": "expect",
+          "required": false,
+          "type": "string | null"
+        }
+      ],
+      "changes": {
+        "kind": "entry",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_entry",
+      "returns": "void",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "entry",
+          "required": true,
+          "type": "Entry"
+        }
+      ],
+      "changes": {
+        "kind": "entry",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_entry_force",
+      "returns": "void",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "goal",
+          "required": true,
+          "type": "Goal"
+        }
+      ],
+      "changes": {
+        "kind": "goal",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_goal",
+      "returns": "void",
+      "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "goals",
+          "required": true,
+          "type": "Goal[]"
+        }
+      ],
+      "changes": {
+        "kind": "goal",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_goals",
+      "returns": "void",
+      "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "item",
+          "required": true,
+          "type": "Item"
+        }
+      ],
+      "changes": {
+        "kind": "item",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_item",
+      "returns": "void",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "items",
+          "required": true,
+          "type": "Item[]"
+        }
+      ],
+      "changes": {
+        "kind": "item",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_items",
+      "returns": "void",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "journal",
+          "required": true,
+          "type": "Journal"
+        }
+      ],
+      "changes": {
+        "kind": "journal",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_journal",
+      "returns": "void",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "kind",
+          "required": true,
+          "type": "Kind"
+        }
+      ],
+      "changes": {
+        "kind": "shelf",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_kind",
+      "returns": "void",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "log",
+          "required": true,
+          "type": "LogEntry"
+        }
+      ],
+      "changes": {
+        "kind": "log",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_log",
+      "returns": "void",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "memory",
+          "required": true,
+          "type": "Memory"
+        }
+      ],
+      "changes": {
+        "kind": "memory",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_memory",
+      "returns": "Memory[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "project",
+          "required": true,
+          "type": "Project"
+        }
+      ],
+      "changes": {
+        "kind": "project",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_project",
+      "returns": "void",
+      "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "reading",
+          "required": true,
+          "type": "Reading"
+        }
+      ],
+      "changes": {
+        "kind": "reading",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_reading",
+      "returns": "void",
+      "scope": "trackers",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "role",
+          "required": true,
+          "type": "Role"
+        }
+      ],
+      "changes": {
+        "kind": "role",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_role",
+      "returns": "void",
+      "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "task",
+          "required": true,
+          "type": "Task"
+        }
+      ],
+      "changes": {
+        "kind": "task",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_task",
+      "returns": "void",
+      "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "tasks",
+          "required": true,
+          "type": "Task[]"
+        }
+      ],
+      "changes": {
+        "kind": "task",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_tasks",
+      "returns": "void",
+      "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "tracker",
+          "required": true,
+          "type": "Tracker"
+        }
+      ],
+      "changes": {
+        "kind": "tracker",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_tracker",
+      "returns": "void",
+      "scope": "trackers",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "journalId",
+          "required": false,
+          "type": "JournalId | null"
+        },
+        {
+          "name": "limit",
+          "required": true,
+          "type": "number"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "search",
+      "returns": "SearchHit[]",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "search_sources",
+      "returns": "SourceInfo[]",
+      "scope": "web",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": {
+        "kind": "role",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "seed_roles",
+      "returns": "number",
+      "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "conversationId",
+          "required": true,
+          "type": "ConversationId"
+        },
+        {
+          "name": "prompt",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "context",
+          "required": false,
+          "type": "string | null"
+        }
+      ],
+      "changes": {
+        "kind": "conversation",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "send_message",
+      "returns": "void",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": true
+    },
+    {
+      "args": [
+        {
+          "name": "key",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_agent_key",
+      "returns": "void",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "seconds",
+          "required": true,
+          "type": "number"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_auto_lock",
+      "returns": "void",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ItemId"
+        },
+        {
+          "name": "position",
+          "required": true,
+          "type": "number"
+        },
+        {
+          "name": "total",
+          "required": false,
+          "type": "number | null"
+        },
+        {
+          "name": "log",
+          "required": true,
+          "type": "boolean"
+        }
+      ],
+      "changes": {
+        "kind": "item",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_item_progress",
+      "returns": "Item",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ItemId"
+        },
+        {
+          "name": "status",
+          "required": true,
+          "type": "ItemStatus"
+        },
+        {
+          "name": "log",
+          "required": true,
+          "type": "boolean"
+        }
+      ],
+      "changes": {
+        "kind": "item",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_item_status",
+      "returns": "Item",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "status",
+      "returns": "VaultStatus",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "url",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "color",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "calendar",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "subscribe_calendar",
+      "returns": "CalendarInfo",
+      "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "CalendarId"
+        }
+      ],
+      "changes": {
+        "kind": "event",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "sync_calendar",
+      "returns": "SyncReport",
+      "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "force",
+          "required": true,
+          "type": "boolean"
+        }
+      ],
+      "changes": {
+        "kind": "event",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "sync_due_calendars",
+      "returns": "SyncReport[]",
+      "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "task_stats",
+      "returns": "TaskStats",
+      "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "task_tags",
+      "returns": "TagCount[]",
+      "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "from",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "time_by_purpose",
+      "returns": "BalanceReport",
+      "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "write",
+      "name": "touch",
+      "returns": "void",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "ReadingQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "tracker_days",
+      "returns": "TrackerDay[]",
+      "scope": "trackers",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "password",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "unlock",
+      "returns": "VaultStatus",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "vault_stats",
+      "returns": "StoreStats",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "request",
+          "required": true,
+          "type": "SearchRequest"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "web_search",
+      "returns": "SearchResult[]",
+      "scope": "web",
+      "sensitive": false,
+      "streams": false
+    }
+  ],
+  "protocol": 1
+}

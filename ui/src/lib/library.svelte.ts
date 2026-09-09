@@ -21,7 +21,6 @@
 import { api } from './api'
 import { Autosave } from './autosave'
 import { app, errorMessage, handle, isLocked } from './state.svelte'
-import { TRAY_ORDER, tray } from './tray.svelte'
 import { web, type SearchOutcome } from './websearch'
 import type {
   Item,
@@ -744,24 +743,3 @@ export const DEFAULT_SHELF_COLORS = [
 ]
 
 export const library = new LibraryState()
-
-// ── Quick actions ──────────────────────────────────────────────────────
-//
-// Registered at module scope beside the store whose state they read, which is
-// the convention the other three follow. See `lib/tray.svelte.ts`.
-
-tray.register('library', TRAY_ORDER.library, () => {
-  if (app.screen !== 'main' || !app.supportsLibrary) return []
-  return [
-    {
-      id: 'library:add',
-      // The action a tray is for: something was recommended to you while you
-      // were doing something else, and it needs to land somewhere before you
-      // forget it.
-      label: 'Add to library',
-      run: async () => {
-        if (await app.goTo('library')) library.focusCapture()
-      },
-    },
-  ]
-})

@@ -77,6 +77,20 @@ pub fn default_vault_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".everyday"))
 }
 
+/// Where this application keeps its own settings, as opposed to a vault.
+///
+/// The pointer to the last vault, the server's configuration and certificate,
+/// the list of paired devices, the servers this copy has paired *with*. None of
+/// it is vault content and none of it belongs in a vault directory -- which
+/// matters most for the two credentials among it, because `everyday backup`
+/// copies a vault and a private key kept there would end up in every backup
+/// somebody ever made.
+pub fn config_dir() -> PathBuf {
+    directories::ProjectDirs::from("app", "Every Day", "EveryDay")
+        .map(|d| d.config_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from(".everyday-config"))
+}
+
 /// Where the shell records the vault it last had open.
 ///
 /// A vault need not live in [`default_vault_dir`] -- someone may keep theirs

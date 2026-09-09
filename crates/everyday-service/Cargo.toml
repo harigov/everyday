@@ -1,0 +1,29 @@
+[package]
+name = "everyday-service"
+description = "Every Day's command surface: everything a client can ask a vault to do"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+everyday-core.workspace = true
+everyday-vault.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+tracing.workspace = true
+# The one network dependency, here rather than in the core on purpose:
+# `everyday-core` has no async runtime, no TLS stack and no ability to open a
+# socket, and the calendar and library features are built so that stays true.
+# This crate fetches bytes; the core does everything that happens to them.
+reqwest = { version = "0.13", features = ["gzip"] }
+tokio = { version = "1.53.1", features = ["sync", "rt", "time"] }
+futures = "0.3.34"
+rig-core = "0.42"
+rig-agent = "0.42"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }

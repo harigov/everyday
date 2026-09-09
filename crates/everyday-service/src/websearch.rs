@@ -217,7 +217,7 @@ pub async fn apply_and_cover(
             let vault = vault.clone();
             // Sealing and writing a few hundred kilobytes is disk work; it
             // does not belong on the async runtime's threads.
-            let stored = tauri::async_runtime::spawn_blocking(move || vault.put_blob(&bytes)).await;
+            let stored = tokio::task::spawn_blocking(move || vault.put_blob(&bytes)).await;
             match stored {
                 Ok(Ok(blob)) => item.cover = Some(blob),
                 Ok(Err(e)) => tracing::warn!(error = %e, "could not store a cover"),

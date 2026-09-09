@@ -59,18 +59,31 @@ use rig_agent::core::providers::openai;
 use rig_agent::core::tool::{PortableDynamicTool, ToolExecutionError, ToolOutput};
 use rig_agent::prelude::*;
 use rig_agent::{Agent, AgentBuilder, AgentHook, HookContext};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::oneshot;
 
 use crate::error::{CommandError, CommandResult};
 
+/// Where a turn's events go.
+///
+/// A function rather than a channel type, because the three things that listen
+/// are not the same shape: the desktop shell owns a Tauri channel, the server
+/// writes a line of NDJSON per event, and a test pushes onto a vector. Any of
+/// them is a closure.
+///
+/// It is not `async`. An event is a fragment of prose on its way to a panel and
+/// the caller has somewhere to put it immediately -- a channel send, a
+/// broadcast, a `Vec` -- so making this a future would oblige every listener to
+/// have a runtime and buy nothing.
+pub type Sink = std::sync::Arc<dyn Fn(AgentEvent) + Send + Sync>;
+
 /// One thing that happened during a turn, on its way to the panel.
 ///
-/// Serialised over a Tauri channel rather than returned at the end, because a
+/// Sent as it happens rather than returned at the end, because a
 /// reply that takes twenty seconds and arrives all at once reads as a hang.
 /// The variants are what the panel has to draw differently, and no more.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AgentEvent {
     /// The assistant's message id, sent first so every delta that follows has
@@ -102,7 +115,7 @@ pub enum AgentEvent {
 
 /// Confirmations waiting on a person, and the vault they belong to.
 ///
-/// Process-wide, held in Tauri's managed state beside [`crate::state::AppState`].
+/// Held by the [`Service`](crate::service::Service).
 /// Keyed by the call id the panel was given, so an answer names exactly the
 /// call it is answering -- two destructive calls in one turn is an ordinary
 /// thing for a model to emit, and a bare "yes" could not be routed.
@@ -145,7 +158,7 @@ impl Pending {
 /// cannot slip past this by being called something else.
 struct ConfirmGate {
     pending: Arc<Pending>,
-    channel: tauri::ipc::Channel<AgentEvent>,
+    channel: Sink,
     /// Off when the person has turned confirmation off in settings. The gate
     /// is still installed, because the events it emits are also how the panel
     /// draws what ran.
@@ -192,12 +205,12 @@ impl AgentHook for ConfirmGate {
 
         let destructive = tools::find(&name).is_some_and(|t| t.effect == Effect::Destructive);
         if !destructive || !self.enabled {
-            let _ = self.channel.send(AgentEvent::ToolStarted { call_id, name, arguments });
+            (self.channel)(AgentEvent::ToolStarted { call_id, name, arguments });
             return ToolCallAction::Run;
         }
 
         let waiter = self.pending.register(&call_id);
-        let _ = self.channel.send(AgentEvent::ConfirmationRequired {
+        (self.channel)(AgentEvent::ConfirmationRequired {
             call_id: call_id.clone(),
             name: name.clone(),
             subject: self.describe(&name, &arguments),
@@ -209,7 +222,7 @@ impl AgentHook for ConfirmGate {
         // something nobody was left to agree to.
         match waiter.await {
             Ok(true) => {
-                let _ = self.channel.send(AgentEvent::ToolStarted { call_id, name, arguments });
+                (self.channel)(AgentEvent::ToolStarted { call_id, name, arguments });
                 ToolCallAction::Run
             }
             Ok(false) => ToolCallAction::Skip(
@@ -246,7 +259,7 @@ impl AgentHook for ConfirmGate {
         }
         drop(ledger);
 
-        let _ = self.channel.send(AgentEvent::ToolFinished {
+        (self.channel)(AgentEvent::ToolFinished {
             call_id: event.internal_call_id.to_string(),
             name: event.tool_name.to_string(),
             ok,
@@ -352,7 +365,7 @@ async fn run_tool(
     arguments: serde_json::Value,
     conversation: ConversationId,
 ) -> Result<ToolOutput, ToolExecutionError> {
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
+    let outcome = tokio::task::spawn_blocking(move || {
         let ctx = ToolContext {
             vault: &vault,
             // Read per call rather than once per turn: a conversation left
@@ -383,7 +396,7 @@ pub struct Turn {
     pub prompt: String,
     /// What the person is looking at, if the interface said.
     pub context: Option<String>,
-    pub channel: tauri::ipc::Channel<AgentEvent>,
+    pub channel: Sink,
 }
 
 /// Run one turn: send what was typed, stream what comes back, write it down.
@@ -411,7 +424,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<()> {
     let history = replay(&vault, conversation)?;
     let reply = VaultMessage::assistant(conversation, String::new());
     vault.save_message(&reply)?;
-    let _ = channel.send(AgentEvent::Started { message_id: reply.id.to_string() });
+    (channel)(AgentEvent::Started { message_id: reply.id.to_string() });
 
     let agent = build(vault.clone(), &settings, key, conversation, context.as_deref())?;
     let ledger: Arc<Mutex<Vec<Ran>>> = Arc::default();
@@ -445,7 +458,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<()> {
             };
             vault.save_message(&finished)?;
             write_results(&vault, conversation, &ran);
-            let _ = channel.send(AgentEvent::Finished { message_id: reply.id.to_string() });
+            (channel)(AgentEvent::Finished { message_id: reply.id.to_string() });
             Ok(())
         }
         Err(e) => {
@@ -465,7 +478,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<()> {
                 let _ = vault.save_message(&kept);
                 write_results(&vault, conversation, &ran);
             }
-            let _ = channel.send(AgentEvent::Failed { message: e.message.clone() });
+            (channel)(AgentEvent::Failed { message: e.message.clone() });
             Err(e)
         }
     }
@@ -525,7 +538,7 @@ async fn stream(
     gate: ConfirmGate,
     prompt: &str,
     history: Vec<rig_agent::completion::Message>,
-    channel: &tauri::ipc::Channel<AgentEvent>,
+    channel: &Sink,
     max_turns: usize,
 ) -> CommandResult<String> {
     use futures::StreamExt;
@@ -542,7 +555,7 @@ async fn stream(
             // well as the ones that ran.
             Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))) => {
                 text.push_str(&t.text);
-                let _ = channel.send(AgentEvent::Delta { text: t.text });
+                (channel)(AgentEvent::Delta { text: t.text });
             }
             Ok(_) => {}
             Err(e) => return Err(CommandError::new("agent", friendly(&e.to_string()))),

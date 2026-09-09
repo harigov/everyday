@@ -41,7 +41,8 @@ use everyday_store_sql::dialect::Dialect;
 use everyday_store_sql::schema::VersionStore;
 use everyday_store_sql::{Driver, Media, SqlStore};
 use rusqlite::types::{ToSqlOutput, ValueRef};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub const BACKEND_ID: &str = "sqlite";
 pub(crate) const DB_FILENAME: &str = "everyday.db";
@@ -79,34 +80,52 @@ impl SqliteStore {
     pub fn open(ctx: StoreContext) -> Result<SqlStore> {
         std::fs::create_dir_all(&ctx.root).map_err(|e| Error::io(&ctx.root, e))?;
         let db_path = ctx.root.join(DB_FILENAME);
-        let conn = rusqlite::Connection::open(&db_path).map_err(Error::backend)?;
-
-        // WAL keeps a slow fsync from blocking reads, which is what keeps
-        // typing smooth while an autosave is in flight.
-        conn.pragma_update(None, "journal_mode", "WAL").map_err(Error::backend)?;
-        // `FULL` rather than the usual WAL pairing of `NORMAL`. Under
-        // `NORMAL` the WAL is not fsynced at commit, so a power cut can roll
-        // back not merely the last transaction but everything written since
-        // the last checkpoint -- SQLite guarantees the file stays *intact*,
-        // not that a committed write survives. That is an acceptable trade
-        // for a cache and a poor one for someone's journal, and it costs
-        // nothing here: this store commits on a 700ms autosave timer, not in
-        // a loop, so the extra fsync is unmeasurable against the pauses
-        // between keystrokes.
-        conn.pragma_update(None, "synchronous", "FULL").map_err(Error::backend)?;
-        conn.pragma_update(None, "foreign_keys", "ON").map_err(Error::backend)?;
-        // Overwrite deleted pages rather than leaving stale ciphertext (and
-        // cleartext dates) in the free list.
-        conn.pragma_update(None, "secure_delete", "ON").map_err(Error::backend)?;
-        conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(Error::backend)?;
-
+        let conn = connect(&db_path)?;
         let media = Media::files(ctx.root.join(MEDIA_DIRNAME), ctx.cipher.clone())?;
-        SqlStore::open(Box::new(SqliteDriver), Box::new(SqliteConn(conn)), media, &ctx)
+        SqlStore::open(Arc::new(SqliteDriver { db_path }), Box::new(SqliteConn(conn)), media, &ctx)
     }
 }
 
+/// One connection, configured the way every connection to this file must be.
+///
+/// Called for the writer and again for each pooled reader. The pragmas below
+/// are per *connection*, not per database, so a reader that skipped them
+/// would enforce no foreign keys and give up instantly on a busy file --
+/// which is exactly the sort of difference that turns into a bug report
+/// about a query that "sometimes" fails.
+fn connect(db_path: &Path) -> Result<rusqlite::Connection> {
+    let conn = rusqlite::Connection::open(db_path).map_err(Error::backend)?;
+
+    // WAL keeps a slow fsync from blocking reads, which is what keeps
+    // typing smooth while an autosave is in flight. It is also what makes
+    // the read pool worth having: in WAL mode a reader never blocks the
+    // writer and the writer never blocks a reader, so several windows can
+    // draw a list while one of them saves.
+    conn.pragma_update(None, "journal_mode", "WAL").map_err(Error::backend)?;
+    // `FULL` rather than the usual WAL pairing of `NORMAL`. Under
+    // `NORMAL` the WAL is not fsynced at commit, so a power cut can roll
+    // back not merely the last transaction but everything written since
+    // the last checkpoint -- SQLite guarantees the file stays *intact*,
+    // not that a committed write survives. That is an acceptable trade
+    // for a cache and a poor one for someone's journal, and it costs
+    // nothing here: this store commits on a 700ms autosave timer, not in
+    // a loop, so the extra fsync is unmeasurable against the pauses
+    // between keystrokes.
+    conn.pragma_update(None, "synchronous", "FULL").map_err(Error::backend)?;
+    conn.pragma_update(None, "foreign_keys", "ON").map_err(Error::backend)?;
+    // Overwrite deleted pages rather than leaving stale ciphertext (and
+    // cleartext dates) in the free list.
+    conn.pragma_update(None, "secure_delete", "ON").map_err(Error::backend)?;
+    conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(Error::backend)?;
+
+    Ok(conn)
+}
+
 /// What SQLite answers that no other database does.
-pub struct SqliteDriver;
+pub struct SqliteDriver {
+    /// Kept so the read pool can open more connections to the same file.
+    db_path: PathBuf,
+}
 
 impl Driver for SqliteDriver {
     fn backend_id(&self) -> &'static str {
@@ -115,6 +134,19 @@ impl Driver for SqliteDriver {
 
     fn dialect(&self) -> Dialect {
         Dialect::Sqlite
+    }
+
+    /// Another connection to the same file.
+    ///
+    /// Read-write rather than `SQLITE_OPEN_READ_ONLY`, which would be the
+    /// tidier promise and is not worth what it costs: a read-only connection
+    /// cannot create the `-wal` and `-shm` files, so it depends on the writer
+    /// having got there first and fails in ways that depend on timing and on
+    /// whether a checkpoint has just run. The pool's own guard is what stops
+    /// a reader writing -- see `ReadGuard::execute` -- and it refuses the
+    /// statement rather than the connection, which is a better error.
+    fn connect(&self) -> Result<Option<Box<dyn Connection>>> {
+        Ok(Some(Box::new(SqliteConn(connect(&self.db_path)?))))
     }
 
     /// Checkpoint the WAL, so what has been committed is in the database

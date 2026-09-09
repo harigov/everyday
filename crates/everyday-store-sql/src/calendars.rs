@@ -20,13 +20,13 @@ impl CalendarStore for SqlStore {
 
     fn list_calendars(&self) -> Result<Vec<Calendar>> {
         let rows =
-            self.conn().records("SELECT id, data FROM calendars ORDER BY created_us", &[])?;
+            self.read().records("SELECT id, data FROM calendars ORDER BY created_us", &[])?;
         self.collect(rows, calendar_aad)
     }
 
     fn get_calendar(&self, id: CalendarId) -> Result<Calendar> {
         let sealed = self
-            .conn()
+            .read()
             .sealed("SELECT data FROM calendars WHERE id = ?1", &vals![id.to_string()])?
             .ok_or_else(|| Error::not_found("calendar", id))?;
         self.unseal(&calendar_aad(id), &sealed)
@@ -36,7 +36,7 @@ impl CalendarStore for SqlStore {
         // Note what is *not* in the clear columns: the name, and above all
         // the URL. A feed address is a bearer credential.
         let data = self.seal(&calendar_aad(c.id), c)?;
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         tx.execute(
             "INSERT INTO calendars (id, visible, created_us, updated_us, synced_us, data)
@@ -65,7 +65,7 @@ impl CalendarStore for SqlStore {
         // enforcing them, which on SQLite is a connection pragma a future
         // refactor could quietly turn off. Deleting them explicitly costs one
         // indexed statement and does not depend on a setting staying put.
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         tx.execute("DELETE FROM events WHERE calendar_id = ?1", &vals![id.to_string()])?;
         tx.execute("DELETE FROM calendars WHERE id = ?1", &vals![id.to_string()])?;
@@ -112,14 +112,14 @@ impl CalendarStore for SqlStore {
             sql.push_str(&format!(" LIMIT {limit}"));
         }
 
-        let rows = self.conn().records(&sql, &args)?;
+        let rows = self.read().records(&sql, &args)?;
         let out: Vec<Event> = self.collect(rows, event_aad)?;
         Ok(if in_memory_pass { query.apply(out) } else { out })
     }
 
     fn get_event(&self, id: EventId) -> Result<Event> {
         let sealed = self
-            .conn()
+            .read()
             .sealed("SELECT data FROM events WHERE id = ?1", &vals![id.to_string()])?
             .ok_or_else(|| Error::not_found("event", id))?;
         self.unseal(&event_aad(id), &sealed)
@@ -150,7 +150,7 @@ impl CalendarStore for SqlStore {
             })
             .collect::<Result<_>>()?;
 
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         tx.execute("DELETE FROM events WHERE calendar_id = ?1", &vals![calendar.to_string()])?;
         for (event, (id, data)) in events.iter().zip(&sealed) {
@@ -183,7 +183,7 @@ impl CalendarStore for SqlStore {
     }
 
     fn count_events(&self, calendar: CalendarId) -> Result<u64> {
-        let n = self.conn().scalar_i64(
+        let n = self.read().scalar_i64(
             "SELECT COUNT(*) FROM events WHERE calendar_id = ?1",
             &vals![calendar.to_string()],
         )?;

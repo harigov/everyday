@@ -55,6 +55,54 @@ pub enum Command {
         #[arg(long)]
         no_encryption: bool,
     },
+    /// Serve this vault to other copies of Every Day.
+    ///
+    /// The headless half of "one vault, many windows": a machine under a desk
+    /// or in a container holds the vault, and the app on a laptop or a phone
+    /// connects to it. What that machine keeps is the key, the search index,
+    /// the calendar feeds and the assistant; a client keeps a device token and
+    /// nothing about the data at all.
+    ///
+    /// It starts *locked* unless a password is given, so an unattended server
+    /// does not have to hold one in an environment file: the first client to
+    /// connect unlocks it.
+    Serve {
+        /// Address to answer on. `0.0.0.0` means every network on this
+        /// machine, which is what a private network wants.
+        #[arg(long, default_value_t = String::from("0.0.0.0"))]
+        listen: String,
+        /// Port to answer on.
+        #[arg(long, default_value_t = everyday_server::DEFAULT_PORT)]
+        port: u16,
+        /// Print a pairing link and a QR code, then keep serving.
+        #[arg(long)]
+        pair: bool,
+        /// Refuse to unlock over the network; the password must be given here.
+        #[arg(long)]
+        no_remote_unlock: bool,
+        /// Terminate TLS somewhere else -- a reverse proxy holding a real
+        /// certificate. Clients then pin nothing and must reach it over https.
+        #[arg(long)]
+        no_tls: bool,
+    },
+    /// Run one of the assistant's tools, with no model in the loop.
+    ///
+    /// The same verbs the assistant has, for a script or a keyboard shortcut.
+    /// `everyday do list_tools` is not a thing -- use `--list`.
+    Do {
+        /// Tool name, as `--list` prints it.
+        #[arg(required_unless_present = "list")]
+        name: Option<String>,
+        /// Arguments, as one JSON object.
+        #[arg(default_value = "{}")]
+        arguments: String,
+        /// Print every tool this vault offers and stop.
+        #[arg(long)]
+        list: bool,
+        /// Allow a tool that deletes something. There is no undo.
+        #[arg(long)]
+        confirm_destructive: bool,
+    },
     /// Show vault status.
     Status,
     /// Work with journals.
@@ -177,6 +225,20 @@ pub fn run(cli: Cli) -> Result<()> {
         return backend(&vault, settings, cli.password.as_deref());
     }
 
+    // `serve` is the one command that may run against a *locked* vault, and
+    // deliberately: an unattended server that had to be given a password would
+    // be a server keeping one in an environment file. The first client to
+    // connect unlocks it instead.
+    if let Command::Serve { listen, port, pair, no_remote_unlock, no_tls } = &cli.command {
+        let vault = everyday_vault::open(&path)?;
+        if let Some(password) = cli.password.as_deref()
+            && !vault.is_unlocked()
+        {
+            vault.unlock(Some(password))?;
+        }
+        return serve(vault, &path, listen, *port, *pair, *no_remote_unlock, *no_tls);
+    }
+
     let vault = everyday_vault::open(&path)?;
     if !vault.is_unlocked() {
         let password = match cli.password.clone() {
@@ -214,6 +276,10 @@ pub fn run(cli: Cli) -> Result<()> {
             let n = vault.collect_garbage(grace)?;
             println!("reclaimed {n} unreferenced attachment(s)");
             Ok(())
+        }
+        Command::Serve { .. } => unreachable!("handled above"),
+        Command::Do { name, arguments, list, confirm_destructive } => {
+            run_tool(vault, name, &arguments, list, confirm_destructive)
         }
         Command::Demo => demo(&vault),
     }
@@ -759,6 +825,211 @@ fn human_bytes(n: u64) -> String {
         unit += 1;
     }
     if unit == 0 { format!("{n} B") } else { format!("{size:.1} {}", UNITS[unit]) }
+}
+
+// ---- serving, and running a tool --------------------------------------
+
+/// Serve `vault` until the process is stopped.
+///
+/// Builds a runtime here rather than making `main` async: everything else this
+/// binary does is synchronous, and a runtime started for every `everyday list`
+/// would be a cost paid by the common case for the sake of the rare one.
+fn serve(
+    vault: Vault,
+    vault_path: &std::path::Path,
+    listen: &str,
+    port: u16,
+    pair: bool,
+    no_remote_unlock: bool,
+    no_tls: bool,
+) -> Result<()> {
+    let ip: std::net::IpAddr =
+        listen.parse().map_err(|_| Error::Invalid(format!("{listen} is not an address")))?;
+    let config = everyday_server::Config {
+        listen: std::net::SocketAddr::new(ip, port),
+        enabled: true,
+        allow_remote_unlock: !no_remote_unlock,
+        no_tls,
+    };
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| Error::Invalid(format!("could not start a runtime: {e}")))?;
+
+    runtime.block_on(async move {
+        everyday_server::install_crypto_provider();
+        let dir = everyday_vault::config_dir();
+        let parts = everyday_server::prepare(&dir, &config).map_err(command_error)?;
+        let registry = parts.registry.clone();
+        let broadcaster = parts.broadcaster.clone();
+
+        let name = vault.status().name;
+        let locked = !vault.is_unlocked();
+        let service = std::sync::Arc::new(everyday_service::Service::new());
+        service.set(vault);
+        service.set_events(broadcaster);
+
+        let running = everyday_server::start(service.clone(), parts, &config, name.clone())
+            .await
+            .map_err(command_error)?;
+
+        // The local socket as well, always. It is how `everyday new` writes
+        // through a running server instead of coming up read-only beside it,
+        // and how a browser-extension host will reach a vault that is not
+        // shared on any network at all.
+        #[cfg(unix)]
+        let _socket = {
+            // Named after the vault, not after the working directory. Two
+            // `serve` processes on different vaults would otherwise collide on
+            // one socket -- and any client looking the path up by the vault it
+            // wants would find nothing there.
+            let path = everyday_server::socket_path(vault_path);
+            match everyday_server::serve_socket(running.server.clone(), path.clone()).await {
+                Ok(stop) => {
+                    println!("Local socket:  {}", path.display());
+                    Some(stop)
+                }
+                Err(e) => {
+                    eprintln!("warning: no local socket ({e})");
+                    None
+                }
+            }
+        };
+
+        println!("Serving {name} on {}", running.address);
+        if locked {
+            println!("The vault is locked. The first client to connect can unlock it.");
+        }
+
+        if pair {
+            let code = registry.new_pairing_code();
+            let host = if running.address.ip().is_unspecified() {
+                match everyday_server::tls::interface_addresses().first() {
+                    Some(ip) => format!("{ip}:{}", running.address.port()),
+                    None => format!("127.0.0.1:{}", running.address.port()),
+                }
+            } else {
+                running.address.to_string()
+            };
+            let invitation =
+                everyday_server::pairing::invitation(&host, running.fingerprint(), &code, &name);
+            println!();
+            println!("{}", terminal_qr(&invitation.url));
+            println!("{}", invitation.url);
+            println!();
+            println!("Good once, for five minutes.");
+        }
+
+        println!("Press Ctrl-C to stop.");
+        tokio::signal::ctrl_c().await.ok();
+        println!();
+        println!("Stopping.");
+        running.stop();
+        // Give the vault its checkpoint before the process goes.
+        if let Some(v) = service.get() {
+            let _ = v.with_store(|s| s.flush());
+            v.lock();
+        }
+        Ok(())
+    })
+}
+
+/// A QR code drawn with half-block characters.
+///
+/// Two rows of the code per line, because a terminal cell is about twice as
+/// tall as it is wide and a code drawn one row per line comes out stretched
+/// enough that some scanners refuse it. Light on dark, with a quiet zone.
+fn terminal_qr(url: &str) -> String {
+    use qrcode::{Color, EcLevel, QrCode};
+    let Ok(code) = QrCode::with_error_correction_level(url.as_bytes(), EcLevel::M) else {
+        return String::new();
+    };
+    let width = code.width();
+    let quiet = 2;
+    let side = width + quiet * 2;
+    let dark = |x: usize, y: usize| -> bool {
+        if x < quiet || y < quiet || x >= width + quiet || y >= width + quiet {
+            return false;
+        }
+        code[(x - quiet, y - quiet)] == Color::Dark
+    };
+
+    let mut out = String::new();
+    for row in (0..side).step_by(2) {
+        for x in 0..side {
+            let top = dark(x, row);
+            let bottom = row + 1 < side && dark(x, row + 1);
+            // A dark module is drawn light: a terminal is usually dark, and a
+            // scanner wants the *quiet zone* to be the lighter of the two.
+            out.push(match (top, bottom) {
+                (true, true) => ' ',
+                (true, false) => '\u{2584}',
+                (false, true) => '\u{2580}',
+                (false, false) => '\u{2588}',
+            });
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Run one of the assistant's tools.
+fn run_tool(
+    vault: Vault,
+    name: Option<String>,
+    arguments: &str,
+    list: bool,
+    confirm_destructive: bool,
+) -> Result<()> {
+    use everyday_core::agent::tools;
+
+    if list {
+        for tool in tools::available(&vault) {
+            println!("{:<28} {}", tool.name, first_sentence(tool.description));
+        }
+        return Ok(());
+    }
+
+    let name = name.expect("clap requires a name unless --list");
+    let arguments: serde_json::Value = serde_json::from_str(arguments)
+        .map_err(|e| Error::Invalid(format!("the arguments are not JSON: {e}")))?;
+
+    let Some(tool) = tools::find(&name) else {
+        return Err(Error::Invalid(format!("there is no tool called {name:?}; try --list")));
+    };
+    if !tools::available(&vault).iter().any(|t| t.name == name) {
+        return Err(Error::Invalid(format!("{name} is not available on this vault")));
+    }
+    if matches!(tool.effect, tools::Effect::Destructive) && !confirm_destructive {
+        return Err(Error::Invalid(format!(
+            "{name} deletes something and there is no undo; pass --confirm-destructive"
+        )));
+    }
+
+    let tz = everyday_core::model::system_tz();
+    let ctx = tools::ToolContext {
+        vault: &vault,
+        today: everyday_core::model::today_local(),
+        tz: &tz,
+        conversation: None,
+    };
+    let value = tools::dispatch(&ctx, &name, &arguments)?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+fn first_sentence(text: &str) -> String {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    match text.find(". ") {
+        Some(at) => text[..=at].to_string(),
+        None => text,
+    }
+}
+
+/// A service error, in the shape the rest of this binary reports.
+fn command_error(e: everyday_service::error::CommandError) -> Error {
+    Error::Invalid(format!("{}: {}", e.code, e.message))
 }
 
 #[cfg(test)]

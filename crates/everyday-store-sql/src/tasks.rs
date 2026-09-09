@@ -16,7 +16,7 @@ use everyday_core::task::{
     BlockKind, Project, ProjectTaskCount, Task, TaskStats, TaskStatus, TimeBlock,
 };
 
-use crate::conn::{SqlExt, Value};
+use crate::conn::{Sql, SqlExt, Value};
 use crate::purpose::{RecordKind, forget_purposes, set_purpose};
 use crate::{SqlStore, date_str, id_str, to_us, vals};
 
@@ -25,14 +25,14 @@ impl TaskStore for SqlStore {
 
     fn list_projects(&self) -> Result<Vec<Project>> {
         let rows = self
-            .conn()
+            .read()
             .records("SELECT id, data FROM projects ORDER BY sort_order, created_us", &[])?;
         self.collect(rows, project_aad)
     }
 
     fn get_project(&self, id: ProjectId) -> Result<Project> {
         let sealed = self
-            .conn()
+            .read()
             .sealed("SELECT data FROM projects WHERE id = ?1", &vals![id.to_string()])?
             .ok_or_else(|| Error::not_found("project", id))?;
         self.unseal(&project_aad(id), &sealed)
@@ -40,7 +40,7 @@ impl TaskStore for SqlStore {
 
     fn put_project(&self, p: &Project) -> Result<()> {
         let data = self.seal(&project_aad(p.id), p)?;
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         tx.execute(
             "INSERT INTO projects
@@ -67,7 +67,7 @@ impl TaskStore for SqlStore {
     }
 
     fn delete_project(&self, id: ProjectId) -> Result<()> {
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
 
         // Its tasks, plus anything nested under them -- a subtask filed into
@@ -168,14 +168,14 @@ impl TaskStore for SqlStore {
             sql.push_str(&self.dialect.limit_offset(query.limit, query.offset));
         }
 
-        let rows = self.conn().records(&sql, &args)?;
+        let rows = self.read().records(&sql, &args)?;
         let tasks: Vec<Task> = self.collect(rows, task_aad)?;
         Ok(if needs_memory_pass { query.apply(tasks) } else { tasks })
     }
 
     fn get_task(&self, id: TaskId) -> Result<Task> {
         let sealed = self
-            .conn()
+            .read()
             .sealed("SELECT data FROM tasks WHERE id = ?1", &vals![id.to_string()])?
             .ok_or_else(|| Error::not_found("task", id))?;
         self.unseal(&task_aad(id), &sealed)
@@ -194,7 +194,7 @@ impl TaskStore for SqlStore {
         let sealed: Vec<(&Task, Vec<u8>)> =
             tasks.iter().map(|t| Ok((t, self.seal(&task_aad(t.id), t)?))).collect::<Result<_>>()?;
 
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         for (t, data) in sealed {
             tx.execute(
@@ -227,7 +227,7 @@ impl TaskStore for SqlStore {
     }
 
     fn delete_task(&self, id: TaskId) -> Result<()> {
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         let doomed = SqlStore::subtree(tx.as_mut(), id)?;
         SqlStore::purge_tasks(tx.as_mut(), &doomed)?;
@@ -265,13 +265,13 @@ impl TaskStore for SqlStore {
             sql.push_str(&format!(" LIMIT {limit}"));
         }
 
-        let rows = self.conn().records(&sql, &args)?;
+        let rows = self.read().records(&sql, &args)?;
         self.collect(rows, block_aad)
     }
 
     fn get_block(&self, id: BlockId) -> Result<TimeBlock> {
         let sealed = self
-            .conn()
+            .read()
             .sealed("SELECT data FROM time_blocks WHERE id = ?1", &vals![id.to_string()])?
             .ok_or_else(|| Error::not_found("block", id))?;
         self.unseal(&block_aad(id), &sealed)
@@ -279,7 +279,7 @@ impl TaskStore for SqlStore {
 
     fn put_block(&self, b: &TimeBlock) -> Result<()> {
         let data = self.seal(&block_aad(b.id), b)?;
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         tx.execute(
             "INSERT INTO time_blocks
@@ -304,7 +304,7 @@ impl TaskStore for SqlStore {
     }
 
     fn delete_block(&self, id: BlockId) -> Result<()> {
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         tx.execute("DELETE FROM time_blocks WHERE id = ?1", &vals![id.to_string()])?;
         forget_purposes(tx.as_mut(), RecordKind::Block, &[id.to_string()])?;
@@ -317,7 +317,7 @@ impl TaskStore for SqlStore {
     fn task_stats(&self, today: jiff::civil::Date) -> Result<TaskStats> {
         // Every count here reads a clear column, so the whole panel costs
         // one pass over the indexes and decrypts nothing.
-        let mut conn = self.conn();
+        let mut conn = self.read();
 
         let open: Vec<&str> =
             TaskStatus::ALL.iter().filter(|s| s.is_open()).map(|s| s.as_str()).collect();

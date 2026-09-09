@@ -23,7 +23,6 @@ import { purpose } from './purpose.svelte'
 import { app, handle } from './state.svelte'
 import { addDays, localeWeekStart, startOfWeek, todayIso } from './time'
 import { tracking } from './tracking.svelte'
-import { TRAY_ORDER, tray } from './tray.svelte'
 import type { BalanceReport, Goal, GoalActivity, GoalId, Role, RoleId, TrackerDay } from './types'
 
 /** Which pane is on screen. */
@@ -277,53 +276,6 @@ class OverviewState {
 }
 
 export const overview = new OverviewState()
-
-// The quick actions this app offers from a standing stop: the tray, and the
-// right-click menu on its button in the bar.
-tray.register('overview', TRAY_ORDER.overview, () => {
-  if (app.screen !== 'main' || !app.supportsOverview) return []
-  return [
-    {
-      id: 'overview.today',
-      label: 'How today is going',
-      raise: true,
-      run: async () => {
-        if (await app.goTo('overview')) overview.setPane('today')
-      },
-    },
-    {
-      id: 'overview.week',
-      label: 'Where the week went',
-      raise: true,
-      run: async () => {
-        if (await app.goTo('overview')) overview.setPane('week')
-      },
-    },
-    {
-      id: 'overview.log',
-      label: 'Record a reading',
-      raise: true,
-      run: async () => {
-        // Straight to the pane that has the field, and the field opens
-        // itself. A quick action from the menu bar has no component to reach
-        // for, which is the same problem `focusCapture` solves for the todo
-        // app's line.
-        if (await app.goTo('overview')) {
-          overview.setPane('today')
-          overview.wantsLog = true
-        }
-      },
-    },
-    {
-      id: 'overview.goals',
-      label: 'Goals',
-      raise: true,
-      run: async () => {
-        if (await app.goTo('overview')) overview.setPane('goals')
-      },
-    },
-  ]
-})
 
 /** Newest activity first; a goal nothing has touched sorts last. */
 function byLastTouched(a: GoalRow, b: GoalRow): number {

@@ -18,7 +18,7 @@ use everyday_core::store::trackers::{
 use everyday_core::tracker::{Reading, Tracker};
 use jiff::civil::Date;
 
-use crate::conn::{SqlExt, Value};
+use crate::conn::{Sql, SqlExt, Value};
 use crate::purpose::{RecordKind, forget_purposes, set_purpose};
 use crate::{SqlStore, from_us, id_str, to_us, vals};
 
@@ -27,14 +27,14 @@ impl TrackerStore for SqlStore {
 
     fn list_trackers(&self) -> Result<Vec<Tracker>> {
         let rows = self
-            .conn()
+            .read()
             .records("SELECT id, data FROM trackers ORDER BY sort_order, created_us", &[])?;
         self.collect(rows, tracker_aad)
     }
 
     fn get_tracker(&self, id: TrackerId) -> Result<Tracker> {
         let sealed = self
-            .conn()
+            .read()
             .sealed("SELECT data FROM trackers WHERE id = ?1", &vals![id.to_string()])?
             .ok_or_else(|| Error::not_found("tracker", id))?;
         self.unseal(&tracker_aad(id), &sealed)
@@ -45,7 +45,7 @@ impl TrackerStore for SqlStore {
         // `data`. A database whose trackers table said "sertraline" would
         // undo the whole point of sealing the readings.
         let data = self.seal(&tracker_aad(t.id), t)?;
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         tx.execute(
             "INSERT INTO trackers (id, archived, sort_order, created_us, updated_us, data)
@@ -71,7 +71,7 @@ impl TrackerStore for SqlStore {
         // survivable half-done state -- a definition whose history is gone,
         // and not a year of numbers nothing can name -- stops being a
         // question anyone has to reason about.
-        let mut conn = self.conn();
+        let mut conn = self.write();
         let mut tx = conn.begin()?;
         let removed =
             tx.execute("DELETE FROM readings WHERE tracker_id = ?1", &vals![id.to_string()])?;
@@ -90,7 +90,16 @@ impl TrackerStore for SqlStore {
         //
         // Affordable because of what it operates on: the history of one
         // tracker somebody is tidying up, once.
-        let rows = self.conn().records(
+        //
+        // All of it on the write connection, and inside one transaction. This
+        // is a read-modify-write, and taking the `SELECT` on a pooled reader
+        // would leave a window in which somebody else's `put_reading` lands
+        // between the read and the reseal -- and the reseal then writes the
+        // payload this call decrypted, silently reverting their edit. See
+        // `SqlStore::write`.
+        let mut conn = self.write();
+        let mut tx = conn.begin()?;
+        let rows = tx.records(
             "SELECT id, data FROM readings WHERE tracker_id = ?1",
             &vals![from.to_string()],
         )?;
@@ -105,8 +114,6 @@ impl TrackerStore for SqlStore {
             .collect::<Result<_>>()?;
 
         let moved = resealed.len() as u64;
-        let mut conn = self.conn();
-        let mut tx = conn.begin()?;
         for (id, data) in resealed {
             tx.execute(
                 "UPDATE readings SET tracker_id = ?2, data = ?3 WHERE id = ?1",
@@ -135,13 +142,13 @@ impl TrackerStore for SqlStore {
             sql.push_str(&format!(" LIMIT {limit}"));
         }
 
-        let rows = self.conn().records(&sql, &args)?;
+        let rows = self.read().records(&sql, &args)?;
         self.collect(rows, reading_aad)
     }
 
     fn get_reading(&self, id: ReadingId) -> Result<Reading> {
         let sealed = self
-            .conn()
+            .read()
             .sealed("SELECT data FROM readings WHERE id = ?1", &vals![id.to_string()])?
             .ok_or_else(|| Error::not_found("reading", id))?;
         self.unseal(&reading_aad(id), &sealed)
@@ -149,7 +156,7 @@ impl TrackerStore for SqlStore {
 
     fn put_reading(&self, r: &Reading) -> Result<()> {
         let data = self.seal(&reading_aad(r.id), r)?;
-        self.conn().execute(
+        self.write().execute(
             "INSERT INTO readings
                 (id, journal_id, tracker_id, entry_id, local_date, at_us, value,
                  created_us, updated_us, data)
@@ -174,12 +181,12 @@ impl TrackerStore for SqlStore {
     }
 
     fn delete_reading(&self, id: ReadingId) -> Result<()> {
-        self.conn().execute("DELETE FROM readings WHERE id = ?1", &vals![id.to_string()])?;
+        self.write().execute("DELETE FROM readings WHERE id = ?1", &vals![id.to_string()])?;
         Ok(())
     }
 
     fn delete_readings_of(&self, tracker: TrackerId) -> Result<u64> {
-        self.conn()
+        self.write()
             .execute("DELETE FROM readings WHERE tracker_id = ?1", &vals![tracker.to_string()])
     }
 
@@ -188,7 +195,14 @@ impl TrackerStore for SqlStore {
         // entry, and for the same reason: `journal_id` exists as a clear
         // column and inside the sealed payload, and a row where the two
         // disagree is a row a restore would read differently.
-        let rows = self.conn().records(
+        //
+        // And on the write connection throughout, in one transaction, for the
+        // reason spelled out on `merge_trackers`: a read on a pooled reader
+        // and a write on the writer is a race that silently reverts somebody
+        // else's edit.
+        let mut conn = self.write();
+        let mut tx = conn.begin()?;
+        let rows = tx.records(
             "SELECT id, data FROM readings WHERE journal_id = ?1",
             &vals![journal.to_string()],
         )?;
@@ -203,8 +217,6 @@ impl TrackerStore for SqlStore {
             .collect::<Result<_>>()?;
 
         let changed = resealed.len() as u64;
-        let mut conn = self.conn();
-        let mut tx = conn.begin()?;
         for (id, data) in resealed {
             tx.execute(
                 "UPDATE readings SET journal_id = NULL, data = ?2 WHERE id = ?1",
@@ -236,7 +248,7 @@ impl TrackerStore for SqlStore {
              ORDER BY local_date ASC, tracker_id ASC"
         );
 
-        let rows = self.conn().query(&sql, &args)?;
+        let rows = self.read().query(&sql, &args)?;
         rows.into_iter()
             .map(|row| {
                 Ok(TrackerDay {

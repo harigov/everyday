@@ -14,11 +14,18 @@ path = "src/main.rs"
 [dependencies]
 everyday-core.workspace = true
 everyday-vault.workspace = true
+everyday-service.workspace = true
+everyday-server.workspace = true
 serde_json.workspace = true
 jiff.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 rpassword = "7"
 mime_guess = "2"
+# Only `serve` needs a runtime, and it builds one itself: everything else this
+# binary does is synchronous, and starting a runtime for every `everyday list`
+# would be a cost paid by the common case for the sake of the rare one.
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal"] }
+qrcode = { version = "0.14", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
