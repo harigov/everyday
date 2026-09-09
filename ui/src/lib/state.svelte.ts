@@ -17,6 +17,7 @@ import type {
   EntrySummary,
   Journal,
   JournalId,
+  Purpose,
   SearchHit,
   TrackerId,
   VaultStatus,
@@ -933,6 +934,18 @@ class AppState {
   /** Float an entry to the top of the list, or let it fall back into date order. */
   async togglePin(id: EntryId) {
     await this.#editEntry(id, (entry) => (entry.pinned = !entry.pinned))
+  }
+
+  /**
+   * Say what a day's writing was for.
+   *
+   * Set on very few entries, and that is the expected shape — a journal is
+   * not a work log. It is here so the fortnight you wrote every evening
+   * about learning to sail is evidence the goal was alive, which is a thing
+   * no task and no block records.
+   */
+  async setEntryPurpose(id: EntryId, purpose: Purpose | null) {
+    await this.#editEntry(id, (entry) => (entry.purpose = purpose))
   }
 
   /** File an entry under a different journal. */

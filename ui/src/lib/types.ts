@@ -311,6 +311,11 @@ export interface EntrySummary {
   attachmentCount: number
   cover?: BlobId
   place?: string
+  /**
+   * Carried so the list can say what an entry is filed under, and offer to
+   * change it, without opening the entry to find out.
+   */
+  purpose?: Purpose | null
 }
 
 export type SortOrder = 'dateDesc' | 'dateAsc' | 'updatedDesc' | 'createdDesc' | 'titleAsc'

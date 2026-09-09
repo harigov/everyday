@@ -49,6 +49,7 @@ import type {
   Project,
   ProjectId,
   Reading,
+  RoleId,
   Task,
   TaskId,
   TimeBlock,
@@ -1187,6 +1188,25 @@ class CalendarState {
     const calendar = this.calendars.find((c) => c.id === id)
     if (!calendar) return
     calendar.color = color
+    try {
+      await api.saveCalendar($state.snapshot(calendar))
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
+  /**
+   * Say which role a feed serves.
+   *
+   * A role and not a purpose: a work calendar is work, and the forty
+   * meetings on it are not each yours to file under an outcome. One click
+   * here attributes a year of somebody else's claims on your time, which is
+   * the cheapest large win in the balance report.
+   */
+  async setCalendarRole(id: CalendarId, roleId: RoleId | null) {
+    const calendar = this.calendars.find((c) => c.id === id)
+    if (!calendar) return
+    calendar.roleId = roleId
     try {
       await api.saveCalendar($state.snapshot(calendar))
     } catch (e) {

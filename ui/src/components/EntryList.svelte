@@ -5,6 +5,7 @@
   import { menu } from '../lib/menu.svelte'
   import { rovingFocus } from '../lib/roving'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { purposeItems } from '../lib/menus'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import EmptyState from './EmptyState.svelte'
   import EntryCalendar from './EntryCalendar.svelte'
@@ -87,6 +88,11 @@
         run: () => app.togglePin(row.id),
       },
       SEP,
+      {
+        label: 'File under',
+        icon: 'compass',
+        items: purposeItems(row.purpose, (purpose) => app.setEntryPurpose(row.id, purpose)),
+      },
       moveItem(row.id, row.journalId),
       SEP,
       {

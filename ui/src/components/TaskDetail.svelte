@@ -6,11 +6,12 @@
   // moment where the two disagree about what the task says.
 
   import { todo } from '../lib/todo.svelte'
+  import PurposeField from './PurposeField.svelte'
   import { formatInstantTime, formatMinutes, friendlyDate, toLocalInputValue } from '../lib/format'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import { PRIORITIES, TASK_STATUSES } from '../lib/types'
-  import type { BlockKind, Priority, TaskStatus } from '../lib/types'
+  import type { BlockKind, Priority, Purpose, TaskStatus } from '../lib/types'
 
   const STATUS_LABELS: Record<TaskStatus, string> = {
     backlog: 'Backlog',
@@ -169,6 +170,17 @@
           <span class="unit">
             {task.estimateMinutes ? formatMinutes(task.estimateMinutes) : 'minutes'}
           </span>
+        </div>
+
+        <label class="lab" for="d-purpose">For</label>
+        <div id="d-purpose">
+          <!-- Left blank on nearly every task, and that is the expected
+               shape: a task under a filed project is already attributed. -->
+          <PurposeField
+            value={task.purpose}
+            onchange={(purpose: Purpose | null) => todo.patch(task.id, { purpose })}
+            placeholder={project?.purpose ? 'Same as the project' : 'Not filed'}
+          />
         </div>
       </div>
 

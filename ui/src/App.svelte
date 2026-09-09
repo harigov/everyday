@@ -6,6 +6,7 @@
   import { todo } from './lib/todo.svelte'
   import { calendar } from './lib/calendar.svelte'
   import { library } from './lib/library.svelte'
+  import { purpose } from './lib/purpose.svelte'
   import { tray } from './lib/tray.svelte'
   import { agent } from './lib/agent.svelte'
   import { panels } from './lib/panels.svelte'
@@ -52,6 +53,24 @@
   // loaded by the panel itself -- see `ensureLoaded`, which also covers the
   // rail still being open after a lock cleared everything behind it.
   agent.restore()
+
+  // Roles and goals, loaded once the vault is open and reloaded after every
+  // unlock.
+  //
+  // Here rather than inside `state.svelte.ts`, which is where the unlock
+  // itself happens: the purpose store reads `app`, so a store `app` also
+  // read would be a cycle, and a cycle between two modules that both
+  // construct singletons at import time is how a screen ends up blank with
+  // one line in the console. This component already imports every store and
+  // is where the app-level wiring belongs.
+  //
+  // Five unrelated places need these to draw a *name* — the picker, the
+  // "File under" submenu on four different records, the todo list's
+  // group-by, and every purpose chip — so loading on first use would show
+  // up as a submenu that is empty the first time it is opened.
+  $effect(() => {
+    if (app.screen === 'main') void purpose.load()
+  })
 
   // Each app tints the window with the accent of whatever it has selected:
   // the journal you are in, the project you are looking at, the shelf you are

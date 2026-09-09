@@ -295,6 +295,7 @@ impl Entry {
                 .location
                 .as_ref()
                 .and_then(|l| l.place_name.clone().or_else(|| l.locality.clone())),
+            purpose: self.purpose,
         }
     }
 }
@@ -331,6 +332,10 @@ pub struct EntrySummary {
     pub cover: Option<BlobId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub place: Option<String>,
+    /// Carried so the list can say what an entry is filed under, and offer
+    /// to change it, without opening the entry to find out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<Purpose>,
 }
 
 /// Resolve the local calendar date of an instant in a named time zone,

@@ -11,7 +11,7 @@
   import { relativeTime } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
-  import { colourItems, dayMenu } from '../lib/menus'
+  import { colourItems, dayMenu, purposeItems } from '../lib/menus'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import AddCalendar from './AddCalendar.svelte'
@@ -96,6 +96,17 @@
         label: 'Colour',
         dot: cal.color,
         items: colourItems(cal.color, (color) => calendar.setCalendarColor(cal.id, color)),
+      },
+      {
+        // Roles only: a feed serves one, and its events are not each yours
+        // to file under a goal.
+        label: 'Serves',
+        icon: 'compass',
+        items: purposeItems(
+          cal.roleId ? { type: 'role', id: cal.roleId } : null,
+          (next) => calendar.setCalendarRole(cal.id, next?.type === 'role' ? next.id : null),
+          { rolesOnly: true },
+        ),
       },
       SEP,
       { label: 'Unsubscribe…', icon: 'trash', danger: true, run: () => (pendingDelete = cal) },
