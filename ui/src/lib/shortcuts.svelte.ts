@@ -33,6 +33,7 @@ import { agent } from './agent.svelte'
 import { calendar } from './calendar.svelte'
 import { SEQUENCE_MS, chordOf, isTyping, match, type Binding } from './keys'
 import { library } from './library.svelte'
+import { overview } from './overview.svelte'
 import { panels } from './panels.svelte'
 import { app, type Section } from './state.svelte'
 import { todo } from './todo.svelte'
@@ -127,6 +128,13 @@ export const BINDINGS: Binding[] = [
     group: 'Go to',
     when: () => anywhere() && app.canShow('library'),
     run: () => app.setSection('library'),
+  },
+  {
+    keys: 'g o',
+    label: 'Overview',
+    group: 'Go to',
+    when: () => anywhere() && app.canShow('overview'),
+    run: () => app.setSection('overview'),
   },
   {
     keys: 'mod+j',
@@ -356,7 +364,20 @@ function create() {
   if (app.section === 'todo') todo.focusCapture()
   else if (app.section === 'calendar') void calendar.bookNow()
   else if (app.section === 'library') library.focusCapture()
+  else if (app.section === 'overview') newGoal()
   else void app.newEntry()
+}
+
+/**
+ * "The next thing" in the Overview is a goal.
+ *
+ * The composer belongs to the goals pane and there is one per role, so this
+ * goes to that pane and puts the caret in the first of them. Reaching it by
+ * selector is what this file already does for the search field.
+ */
+function newGoal() {
+  overview.setPane('goals')
+  setTimeout(() => document.querySelector<HTMLInputElement>('[data-newgoal]')?.focus(), 0)
 }
 
 function removeSelectedBlock() {

@@ -48,7 +48,7 @@ export type Screen = 'loading' | 'setup' | 'locked' | 'main' | 'error'
  * back to the app you were last in is what makes it feel like one program
  * rather than four bolted together.
  */
-export const SECTIONS = ['journal', 'todo', 'calendar', 'library'] as const
+export const SECTIONS = ['journal', 'todo', 'calendar', 'library', 'overview'] as const
 export type Section = (typeof SECTIONS)[number]
 
 /**
@@ -269,16 +269,29 @@ class AppState {
   }
 
   /**
-   * Does this vault hold readings?
+   * Does this vault hold trackers and their readings?
    *
-   * Unlike the calendar's, this is one capability rather than a pair: the
-   * tracker *definitions* ride inside a journal and every backend can store
-   * those, so the only question is whether their readings have somewhere to
-   * go. It gates the chips under an entry, the tracking section of a
-   * journal's settings, and the marks on the calendar.
+   * One capability rather than a pair: both halves of the domain — the
+   * definitions and the numbers — are answered by the same store. It gates
+   * the chips under an entry, the tracking section of a journal's settings,
+   * the marks on the calendar, and the Overview's habits.
    */
   get supportsTrackers(): boolean {
     return this.status?.capabilities?.trackers === true
+  }
+
+  /**
+   * Can this vault run the Overview?
+   *
+   * A pair, as the calendar needs. The app is a view over what the other
+   * apps store — where the week went, which goals have gone quiet, which
+   * habits are holding — and the two halves of that come from the purpose
+   * domain and the tracking one. A backend with roles and no readings could
+   * draw half of it, and half of a balance report is a report that is
+   * wrong rather than short.
+   */
+  get supportsOverview(): boolean {
+    return this.status?.capabilities?.goals === true && this.supportsTrackers
   }
 
   /** Is this section available on the vault that is open? */
@@ -286,6 +299,7 @@ class AppState {
     if (section === 'todo') return this.supportsTasks
     if (section === 'calendar') return this.supportsCalendar
     if (section === 'library') return this.supportsLibrary
+    if (section === 'overview') return this.supportsOverview
     return true
   }
 

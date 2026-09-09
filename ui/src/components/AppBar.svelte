@@ -37,6 +37,10 @@
     { id: 'todo', label: 'Todo', icon: 'check', source: 'todo' },
     { id: 'calendar', label: 'Calendar', icon: 'calendar', source: 'calendar' },
     { id: 'library', label: 'Library', icon: 'book', source: 'library' },
+    // Last, and deliberately: it is a view over what the four above store,
+    // so it reads left to right as the things you do and then the thing
+    // they add up to.
+    { id: 'overview', label: 'Overview', icon: 'compass', source: 'overview' },
   ]
   const shown = $derived(APPS.filter((a) => app.canShow(a.id)))
 
