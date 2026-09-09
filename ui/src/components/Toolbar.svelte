@@ -241,7 +241,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    height: 46px;
+    height: var(--header-h);
     padding: 0 var(--sp-3);
     border-bottom: 1px solid var(--border);
     background: var(--bg-raised);
@@ -261,7 +261,7 @@
     gap: 2px;
   }
 
-  /* 32px targets on a 46px bar: comfortably clickable, and the 7px radius
+  /* 32px targets on the header bar: comfortably clickable, and the 7px radius
      matches the pill the active state draws. */
   .tool {
     display: grid;

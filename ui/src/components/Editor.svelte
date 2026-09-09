@@ -18,6 +18,7 @@
   import EntryMeta from './EntryMeta.svelte'
   import TrackerStrip from './TrackerStrip.svelte'
   import Logo from './Logo.svelte'
+  import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import type { MediaKind } from '../lib/types'
@@ -258,12 +259,13 @@
 
 {#if !entry}
   <div class="empty">
-    <div class="empty-inner">
-      <div class="empty-mark"><Logo size={40} /></div>
-      <h2>Nothing open</h2>
-      <p>Choose an entry, or start a new one.</p>
-      <button class="btn btn-primary" onclick={() => app.newEntry()}>New entry</button>
-    </div>
+    <EmptyState lead="Nothing open">
+      {#snippet icon()}<Logo size={40} />{/snippet}
+      {#snippet note()}Choose a day from the list, or start today's entry.{/snippet}
+      {#snippet action()}
+        <button class="btn btn-primary" onclick={() => app.newEntry()}>Today's entry</button>
+      {/snippet}
+    </EmptyState>
   </div>
 {:else}
   <div
@@ -393,7 +395,10 @@
     align-items: center;
     gap: var(--sp-2);
     height: 30px;
-    padding: 0 var(--sp-4);
+    /* Room on the right for the floating assistant button, which is drawn
+       over this corner of the window: without it, Delete sits underneath a
+       48px disc and the only way to reach it is to open the rail. */
+    padding: 0 var(--fab-clear) 0 var(--sp-4);
     border-top: 1px solid var(--border);
     font-size: var(--text-xs);
     color: var(--fg-faint);
@@ -440,31 +445,9 @@
   }
 
   .empty {
-    display: grid;
-    place-items: center;
+    display: flex;
     height: 100%;
     background: var(--bg-raised);
-  }
-  .empty-inner {
-    text-align: center;
-    max-width: 26ch;
-  }
-  .empty-mark {
-    display: flex;
-    justify-content: center;
-    color: var(--fg-faint);
-    margin-bottom: var(--sp-4);
-  }
-  .empty h2 {
-    font-family: var(--font-read);
-    font-size: var(--text-xl);
-    font-weight: 620;
-    margin-bottom: var(--sp-2);
-  }
-  .empty p {
-    color: var(--fg-subtle);
-    margin-bottom: var(--sp-5);
-    line-height: var(--leading-normal);
   }
 
   /* ── Prose ───────────────────────────────────────────────────────────
@@ -488,8 +471,13 @@
     outline: none;
     -webkit-user-modify: read-write-plaintext-only;
   }
+  /* The gap between blocks, in ems of the prose size, so it tracks the
+     line height rather than being a fixed number of pixels that stops
+     looking like a paragraph break when the ratio changes. A shade over one
+     line: enough that a new paragraph is seen before it is read, and not so
+     much that a page of short ones reads as a list. */
   .prose :global(.ed-content > * + *) {
-    margin-top: 0.95em;
+    margin-top: 1.15em;
   }
 
   .prose :global(h1),
@@ -564,7 +552,7 @@
     padding-left: 1.3em;
   }
   .prose :global(li + li) {
-    margin-top: 0.3em;
+    margin-top: 0.35em;
   }
   .prose :global(li p) {
     margin: 0;

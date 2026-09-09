@@ -5,14 +5,16 @@
   // because it is the thing you came here to use and it should not move when
   // the list grows.
 
-  import { todo } from '../lib/todo.svelte'
+  import { FILTER_LABELS, TASK_FILTERS, todo } from '../lib/todo.svelte'
   import { formatMinutes } from '../lib/format'
   import Icon from './Icon.svelte'
+  import ProgressPie from './ProgressPie.svelte'
   import QuickAdd from './QuickAdd.svelte'
   import TaskList from './TaskList.svelte'
   import TaskBoard from './TaskBoard.svelte'
   import TaskDetail from './TaskDetail.svelte'
   import type { GroupBy } from '../lib/todo.svelte'
+  import type { Priority } from '../lib/types'
 
   void todo.start()
 
@@ -51,6 +53,21 @@
     return bits.join(' · ')
   })
 
+  /**
+   * How much of what is in scope is finished, as a dial beside the heading.
+   *
+   * Over every loaded task rather than over what the filter is showing: the
+   * point of the dial is to answer "how far through this am I", and a filter
+   * set to "Done" would otherwise report every project as complete.
+   */
+  const done = $derived(todo.tasks.filter((t) => t.status === 'done').length)
+  const counted = $derived(todo.tasks.filter((t) => t.status !== 'cancelled').length)
+
+  /** The tags in scope, most used first, for the tag filter. */
+  const tags = $derived(
+    [...new Set(todo.tasks.flatMap((t) => t.tags))].sort((a, b) => a.localeCompare(b)),
+  )
+
   // Lend the capture line to the store, so Ctrl/Cmd N and the tray's "add a
   // task" can put the cursor in it without holding a reference to this
   // component. Retired on unmount: a request that arrives while the journal
@@ -72,8 +89,31 @@
     <header class="top">
       <h1 class="heading">
         {#if todo.project}<span class="mark">{todo.project.icon}</span>{/if}
+        {#if counted > 0}
+          <ProgressPie
+            {done}
+            total={counted}
+            size={15}
+            color={todo.accent}
+            title="{done} of {counted} done"
+          />
+        {/if}
         {heading}
       </h1>
+
+      <div class="search">
+        <Icon name="search" size={14} />
+        <input
+          data-search
+          type="search"
+          placeholder="Filter tasks"
+          value={todo.filter}
+          oninput={(e) => todo.setFilter(e.currentTarget.value)}
+          onkeydown={(e) => {
+            if (e.key === 'Escape') todo.setFilter('')
+          }}
+        />
+      </div>
 
       <div class="tools">
         {#if todo.boardable}
@@ -112,17 +152,6 @@
               {#each GROUPS as g (g.id)}<option value={g.id}>Group: {g.label}</option>{/each}
             </select>
           </label>
-
-          <button
-            class="toggle"
-            class:on={todo.showDone}
-            title={todo.showDone ? 'Hide finished tasks' : 'Show finished tasks'}
-            aria-pressed={todo.showDone}
-            onclick={() => (todo.showDone = !todo.showDone)}
-          >
-            <Icon name="tick" size={14} weight={2} />
-            Done
-          </button>
         {/if}
       </div>
     </header>
@@ -134,19 +163,58 @@
       />
     </div>
 
-    <div class="filterbar">
-      <span class="glass"><Icon name="search" size={14} /></span>
-      <input
-        class="filter"
-        type="search"
-        placeholder="Filter tasks"
-        value={todo.filter}
-        oninput={(e) => todo.setFilter(e.currentTarget.value)}
-        onkeydown={(e) => {
-          if (e.key === 'Escape') todo.setFilter('')
-        }}
-      />
-      <span class="summary">{summary}</span>
+    <!-- The chips are centred on the pane and the two dropdowns are pushed to
+         its edges, so the row reads the same as the library's. See `.toolbar`
+         in `app.css` for why the ends are separate elements. -->
+    <div class="toolbar" style="--tint: {todo.accent}">
+      <div class="toolbar-end">
+        <select
+          class="select"
+          aria-label="Priority"
+          value={todo.priorityFilter ?? ''}
+          onchange={(e) =>
+            (todo.priorityFilter = (e.currentTarget.value || null) as Priority | null)}
+        >
+          <option value="">Any priority</option>
+          {#each todo.usedPriorities as p (p)}
+            <option value={p}>{p[0]!.toUpperCase() + p.slice(1)}</option>
+          {/each}
+        </select>
+        {#if tags.length > 0}
+          <select
+            class="select"
+            aria-label="Tag"
+            value={todo.tagFilter ?? ''}
+            onchange={(e) => (todo.tagFilter = e.currentTarget.value || null)}
+          >
+            <option value="">Any tag</option>
+            {#each tags as tag (tag)}<option value={tag}>{tag}</option>{/each}
+          </select>
+        {/if}
+      </div>
+
+      <div class="filters" role="tablist" aria-label="Status">
+        {#each TASK_FILTERS as filter (filter)}
+          {@const n = todo.countFor(filter)}
+          <button
+            class="filter"
+            class:on={todo.statusFilter === filter}
+            role="tab"
+            aria-selected={todo.statusFilter === filter}
+            onclick={() => todo.setStatusFilter(filter)}
+          >
+            {FILTER_LABELS[filter]}
+            {#if n > 0}<span class="n">{n}</span>{/if}
+          </button>
+        {/each}
+      </div>
+
+      <div class="toolbar-end right">
+        {#if todo.narrowed}
+          <button class="clear" onclick={() => todo.clearFilters()}>Clear</button>
+        {/if}
+        <span class="summary">{summary}</span>
+      </div>
     </div>
 
     {#if todo.view === 'board' && todo.boardable}
@@ -177,7 +245,7 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--sp-3);
-    height: 46px;
+    height: var(--header-h);
     padding: 0 var(--sp-4);
     flex: none;
   }
@@ -250,66 +318,52 @@
     outline: none;
   }
 
-  .toggle {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    height: 26px;
-    padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
-    color: var(--fg-faint);
-  }
-  .toggle:hover {
-    background: var(--bg-hover);
-    color: var(--fg-muted);
-  }
-  .toggle.on {
-    background: var(--bg-active);
-    color: var(--fg);
-  }
-
   .bar {
     padding: 0 var(--sp-4) var(--sp-2);
     flex: none;
   }
 
-  .filterbar {
-    position: relative;
+  /* The same shape as the library's, because it is the same control. */
+  .search {
     display: flex;
     align-items: center;
-    gap: var(--sp-3);
-    padding: var(--sp-1) var(--sp-4) var(--sp-2);
-    flex: none;
-  }
-  .glass {
-    position: absolute;
-    left: calc(var(--sp-4) + 8px);
-    display: flex;
-    color: var(--fg-faint);
-    pointer-events: none;
-  }
-  .filter {
-    width: 200px;
-    height: 26px;
-    padding: 0 var(--sp-2) 0 28px;
-    border: 1px solid transparent;
+    gap: var(--sp-2);
+    flex: 1;
+    max-width: 300px;
+    margin-left: auto;
+    height: 30px;
+    padding: 0 var(--sp-3);
     border-radius: var(--radius-sm);
     background: var(--bg-sunken);
+    color: var(--fg-faint);
+  }
+  .search input {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    background: none;
     font-size: var(--text-sm);
     color: var(--fg);
     user-select: text;
   }
-  .filter::placeholder {
-    color: var(--fg-faint);
+  .search input:focus {
+    outline: none;
   }
-  .filter::-webkit-search-cancel-button {
+  .search input::-webkit-search-cancel-button {
     -webkit-appearance: none;
   }
-  .filter:focus {
-    outline: none;
-    border-color: var(--accent);
-    background: var(--bg-raised);
+
+  .clear {
+    height: 26px;
+    padding: 0 var(--sp-2);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
+    white-space: nowrap;
+  }
+  .clear:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
   }
 
   .summary {

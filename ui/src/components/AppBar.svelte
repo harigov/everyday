@@ -15,12 +15,11 @@
   // pressed, and the bar does not.
 
   import { app, type Section } from '../lib/state.svelte'
-  import { agent } from '../lib/agent.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { panels } from '../lib/panels.svelte'
   import { tray, type TrayEntry } from '../lib/tray.svelte'
   import Icon from './Icon.svelte'
-  import SettingsMenu from './SettingsMenu.svelte'
   import type { IconName } from '../lib/icons'
 
   interface AppEntry {
@@ -110,22 +109,22 @@
 
   <!-- Settings and the lock live down here rather than under the sidebar's
        nav, because neither belongs to whichever app is open: they are the
-       vault's, and so is the bar. -->
+       vault's, and so is the bar.
+
+       The assistant used to be here too. It is a floating button in the
+       corner of the pane now -- see `App.svelte` -- because it is not one of
+       the vault's controls either: it works *on* whatever app is open, and
+       the corner of that app is where it belongs. -->
   <div class="foot">
-    <!-- Not one of the apps, and so not in the nav above: the assistant does
-         not replace what is on screen, it opens beside it. -->
-    {#if agent.supported}
-      <button
-        class="barbtn"
-        class:on={agent.open}
-        onclick={() => void agent.toggle()}
-        title="Assistant"
-      >
-        <span><Icon name="sparkle" size={19} weight={1.7} /></span>
-        <span class="barlabel">Assistant</span>
-      </button>
-    {/if}
-    <SettingsMenu />
+    <button
+      class="barbtn"
+      class:on={panels.settings !== null}
+      onclick={() => panels.openSettings()}
+      title="Settings (Ctrl+,)"
+    >
+      <span><Icon name="settings" size={19} weight={1.7} /></span>
+      <span class="barlabel">Settings</span>
+    </button>
     <button class="barbtn" onclick={() => app.lock()} title="Lock now (Ctrl+L)">
       <span><Icon name="lock" size={19} weight={1.7} /></span>
       <span class="barlabel">Lock</span>
@@ -146,7 +145,7 @@
 
   /* The height of the brand row and of every other header in the window. */
   .cap {
-    height: 46px;
+    height: var(--header-h);
     flex: none;
   }
 
@@ -173,6 +172,7 @@
   /* The same active treatment the editor's toolbar uses for a mark that is
      on, in the accent of whatever is open -- so the bar is tinted by the
      journal or the project the rest of the window is already tinted by. */
+  .barbtn.on,
   .app.on {
     background: color-mix(in oklab, var(--journal-accent, var(--accent)) 14%, transparent);
     color: var(--journal-accent, var(--accent));

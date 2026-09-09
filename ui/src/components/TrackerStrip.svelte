@@ -18,6 +18,7 @@
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import type { Reading, Tracker } from '../lib/types'
+  import { dismissable } from '../lib/dismiss'
   import { focusOnMount } from '../lib/focus'
   import { todayIso } from '../lib/time'
   import Icon from './Icon.svelte'
@@ -188,14 +189,17 @@
                with the current clock -- the pin at an hour nothing happened
                that this whole design exists to avoid. -->
           {@const timed = date === todayIso()}
-          <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-          <div class="veil" onclick={() => (open = null)}></div>
+          <!-- Dismissed by a listener rather than by a sheet of glass over
+               the window: the glass caught the click that dismissed it, so
+               with a chip open the next press on anything -- the app bar
+               most of all -- did nothing. See `lib/dismiss.ts`. -->
           <div
             class="panel"
             class:flip
             role="dialog"
             aria-label={tracker.name}
             style="--c: {tracker.color}"
+            use:dismissable={{ onaway: () => (open = null), within: '.chip' }}
           >
             {#if tracker.kind === 'scale'}
               <p class="lead">How bad, out of {tracker.scaleMax}?</p>
@@ -373,12 +377,6 @@
   }
 
   /* ── The panel ─────────────────────────────────────────────────────── */
-
-  .veil {
-    position: fixed;
-    inset: 0;
-    z-index: 20;
-  }
 
   .panel {
     position: absolute;

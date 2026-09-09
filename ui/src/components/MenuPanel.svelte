@@ -6,6 +6,7 @@
   // where to go: what it does near the edge of the window depends on how big
   // it is, and only it knows that. `placeMenu` decides the rest.
 
+  import { dismissable } from '../lib/dismiss'
   import { placeMenu, placeSubmenu, type MenuAction, type MenuItem } from '../lib/menu'
   import Icon from './Icon.svelte'
   import Self from './MenuPanel.svelte'
@@ -17,6 +18,7 @@
     autofocus = false,
     onclose,
     onexit,
+    ondismiss,
   }: {
     items: MenuItem[]
     /** Root panel: where the menu was raised, in client coordinates. */
@@ -29,6 +31,16 @@
     onclose: () => void
     /** Close every panel: an item was chosen, or the menu was dismissed. */
     onexit: () => void
+    /**
+     * A press landed outside the menu. Root panel only.
+     *
+     * Distinct from `onexit` because focus is handled differently: nothing
+     * was chosen and the pointer has gone somewhere else, so pulling the
+     * caret back to the row the menu was raised on would take it off
+     * whatever was just pressed. See `lib/dismiss.ts` for why this is not a
+     * scrim.
+     */
+    ondismiss?: () => void
   } = $props()
 
   let panel = $state<HTMLElement | null>(null)
@@ -205,6 +217,17 @@
   tabindex="-1"
   style="left: {pos?.x ?? 0}px; top: {pos?.y ?? 0}px"
   onkeydown={onKeydown}
+  use:dismissable={{
+    onaway: () => ondismiss?.(),
+    enabled: !!ondismiss,
+    // The panel, and whatever opened it. A menu raised by a *click* -- rather
+    // than by a right-click, which is every other one here -- is a toggle, and
+    // a toggle whose button dismisses the menu on the way down reopens it on
+    // the way up: the press closes it, the click that follows opens it again,
+    // and it looks like a button that does not close its own menu. Marked
+    // buttons are excluded here so the button can answer the click itself.
+    within: '[role="menu"], [data-menu-trigger]',
+  }}
 >
   {#each items as item, i (i)}
     {#if item.kind === 'separator'}
@@ -291,10 +314,10 @@
     align-items: center;
     gap: var(--sp-2);
     width: 100%;
-    height: 28px;
+    height: 30px;
     padding: 0 var(--sp-2);
     border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     color: var(--fg-muted);
     text-align: left;
   }

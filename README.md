@@ -63,6 +63,20 @@ of filters over the list below it. **Settings** and **Lock** are at the foot
 of the bar, under a rule, for the same reason: they belong to the vault
 rather than to whichever app is open.
 
+Settings is a dialog with tabs — General, Assistant, Vault — rather than a
+popover hanging out of the side of the bar. It outgrew the popover twice:
+once when it acquired an instructions box somebody is expected to write a
+paragraph into, and again when that box had to become a *second* dialog
+raised out of the first, so the application had two settings surfaces and one
+of them had to close before the other could open.
+
+The assistant is deliberately *not* on the bar. It is a round button in the
+bottom right-hand corner of whatever app is open, because that is what it
+acts on: the task you can see, the entry you are writing. It opens a rail
+beside that app rather than replacing it, and the rail can be dragged wider —
+a table or a fenced block of configuration in a 340px column is a column of
+wrapped fragments.
+
 The todo app has projects, tasks and subtasks — a subtask is just a task with
 a parent, so the two levels the interface offers are a UI decision rather
 than a schema. Everything carries a title, description, due date and time,
@@ -274,6 +288,15 @@ source it asks depends on the shelf:
 | Games, and anything general | Wikipedia | a summary and a thumbnail |
 | Restaurants, places | OpenStreetMap | an address, often a cuisine and a phone number |
 | Articles, recipes | a plain web search | there is no catalogue of these |
+
+When a catalogue draws a blank it falls through to **Wikipedia** and only
+then to a plain web search. That middle step is there because of what the
+last one returns: a web search answers with *pages* — "Dune (2021) — IMDb",
+"Buy Dune on Blu-ray" — and what a shelf wants is the thing, which is what an
+encyclopaedia article parses into. The plain search is still the last resort,
+and when it runs it is told what kind of thing it is looking for, so "dune"
+on a films shelf is searched for as "dune film". The order is one list,
+`SearchRequest::attempts`, walked by both callers so neither can drift.
 
 Every one of them works with no API key, no account and no client id
 registered to a vendor. That is a constraint rather than a coincidence: this
@@ -864,16 +887,45 @@ period if you know there is no such draft.
 
 ## Keyboard
 
+Press `?` for the list, in whatever app you are in. It draws only what
+applies there — the calendar's letters are not offered in the library, and an
+app the open vault's backend cannot carry is not listed at all.
+
+The shape is Superhuman's, because it is the one that scales past a dozen: a
+modifier combination for the handful of things every desktop application has,
+and a two-key **sequence** for everything else. `G` then `J` reads as *go to
+journal*, there are as many of those as you like, and none of them collides
+with what the platform or the webview has already taken.
+
 | | |
 |---|---|
-| `Ctrl/Cmd J` | cycle Journal → Todo → Calendar → Library |
-| `Ctrl/Cmd N` | new entry, the task capture line, an hour set aside, or the "add to shelf" field |
-| `Ctrl/Cmd F` | search |
+| `G` then `J` / `T` / `C` / `L` | journal, todo, calendar, library |
+| `C` | start the next thing — an entry, the task capture line, an hour set aside, the "add to shelf" field |
+| `/` | search this app |
+| `A` | the assistant |
+| `?` | this list |
+| `Ctrl/Cmd J` | cycle through the apps |
+| `Ctrl/Cmd N` | the same as `C` |
+| `Ctrl/Cmd F` | the same as `/` |
+| `Ctrl/Cmd ,` | settings |
 | `Ctrl/Cmd L` | lock now |
 | `Ctrl/Cmd S` | flush pending edits (it autosaves anyway) |
 
-In the calendar: `D`, `W`, `M` for the three views, `T` for today, `←`/`→` to
-page, `Delete` to remove the selected block.
+Bare letters belong to whatever is on screen, so the same key can mean
+different things in two apps without either being ambiguous. In the journal:
+`J`/`K` for the entry below and above, `S` to star it, `P` to pin it. In the
+todo app: `X` for finished work, `B` for the board. In the calendar: `D`,
+`W`, `M` for the three views, `T` for today, `←`/`→` to page, `Delete` to
+remove the selected block. In the library: `V` for covers or a list, `S` to
+favourite.
+
+**A letter is a letter while you are typing in a field.** Only the chords
+with a modifier in them fire from inside an input, which is why they exist.
+
+Every one of these is a row in `ui/src/lib/shortcuts.svelte.ts` and nowhere
+else — the table is what the help sheet reads, so a shortcut that is not in
+it does not exist and one that is cannot be undocumented. The mechanics live
+next door in `keys.ts`, which has no stores in it and is tested on its own.
 
 ## Quick actions in the tray
 

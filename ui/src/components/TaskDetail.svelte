@@ -331,7 +331,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    height: 46px;
+    height: var(--header-h);
     padding: 0 var(--sp-2) 0 var(--sp-4);
     flex: none;
   }

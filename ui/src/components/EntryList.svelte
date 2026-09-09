@@ -5,11 +5,26 @@
   import { menu } from '../lib/menu.svelte'
   import { rovingFocus } from '../lib/roving'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
-  import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
+  import EmptyState from './EmptyState.svelte'
+  import EntryCalendar from './EntryCalendar.svelte'
+  import Icon from './Icon.svelte'
   import type { EntryId, EntrySummary, JournalId } from '../lib/types'
 
   let pendingDelete = $state<{ id: EntryId; title: string } | null>(null)
+
+  /**
+   * Whether the month is showing above the list.
+   *
+   * Remembered locally, like every other piece of chrome state: somebody who
+   * navigates by date wants it there every time, and somebody who reads down
+   * the list wants the height back.
+   */
+  let showCalendar = $state(localStorage.getItem('everyday.journal.calendar') !== 'off')
+  function toggleCalendar() {
+    showCalendar = !showCalendar
+    localStorage.setItem('everyday.journal.calendar', showCalendar ? 'on' : 'off')
+  }
 
   async function remove() {
     const doomed = pendingDelete
@@ -108,8 +123,15 @@
   /** The list itself, where there is no row under the pointer. */
   function listMenu(): MenuItem[] {
     return tidyMenu([
-      { label: 'New entry', icon: 'plus', hint: 'Ctrl+N', run: () => app.newEntry() },
+      { label: "Today's entry", icon: 'plus', hint: 'Ctrl+N', run: () => app.newEntry() },
       !!app.query.trim() && { label: 'Clear search', icon: 'close', run: () => app.clearSearch() },
+      SEP,
+      {
+        label: 'Show the month',
+        icon: 'calendar',
+        checked: showCalendar,
+        run: toggleCalendar,
+      },
     ])
   }
 
@@ -131,10 +153,20 @@
   <header class="top">
     <h1 class="heading">{heading}</h1>
     <button
+      class="new icon"
+      class:on={showCalendar}
+      onclick={toggleCalendar}
+      title={showCalendar ? 'Hide the month' : 'Show the month'}
+      aria-pressed={showCalendar}
+      aria-label="Show the month"
+    >
+      <Icon name="calendar" size={16} />
+    </button>
+    <button
       class="new"
       onclick={() => app.newEntry()}
-      title="New entry (Ctrl+N)"
-      aria-label="New entry"
+      title="Today's entry (Ctrl+N)"
+      aria-label="Today's entry"
     >
       <Icon name="plus" size={17} />
     </button>
@@ -144,6 +176,7 @@
     <span class="glass"><Icon name="search" size={15} /></span>
     <input
       class="search"
+      data-search
       type="search"
       placeholder="Search"
       value={app.query}
@@ -153,6 +186,13 @@
       }}
     />
   </div>
+
+  <!-- Hidden while searching: results are ranked by relevance across every
+       month, so a calendar of one of them would be answering a question
+       nobody asked. -->
+  {#if showCalendar && !app.query.trim()}
+    <EntryCalendar />
+  {/if}
 
   <!-- One tab stop for the whole list, and the arrow keys inside it: see
        `lib/roving.ts`. Without it, Tab from the search field walked through
@@ -167,7 +207,12 @@
       {#if app.searching && app.results.length === 0}
         <p class="note">Searching…</p>
       {:else if app.results.length === 0}
-        <p class="note">Nothing matches “{app.query}”.</p>
+        <EmptyState lead={`Nothing matches “${app.query.trim()}”.`}>
+          {#snippet note()}Try a shorter word, or a different journal.{/snippet}
+          {#snippet action()}
+            <button class="btn" onclick={() => app.clearSearch()}>Clear the search</button>
+          {/snippet}
+        </EmptyState>
       {:else}
         <div class="grouphead">
           <span class="eyebrow">{plural(app.results.length, 'result')}</span>
@@ -193,10 +238,22 @@
         {/each}
       {/if}
     {:else if app.entries.length === 0}
-      <div class="blank">
-        <p>No entries yet.</p>
-        <button class="btn btn-primary" onclick={() => app.newEntry()}>Write the first one</button>
-      </div>
+      <EmptyState lead={app.showStarredOnly ? 'Nothing starred yet.' : 'No entries yet.'}>
+        {#snippet note()}
+          {#if app.showStarredOnly}
+            The star on a row keeps it here, whichever journal it is in.
+          {:else}
+            One entry a day, in whichever journal it belongs to.
+          {/if}
+        {/snippet}
+        {#snippet action()}
+          {#if !app.showStarredOnly}
+            <button class="btn btn-primary" onclick={() => app.newEntry()}>
+              Write today's entry
+            </button>
+          {/if}
+        {/snippet}
+      </EmptyState>
     {:else}
       {#each groups as group (group.label)}
         <div class="grouphead"><span class="eyebrow">{group.label}</span></div>
@@ -271,12 +328,14 @@
   .top {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    height: 46px;
+    gap: 2px;
+    height: var(--header-h);
     padding: 0 var(--sp-3) 0 var(--sp-4);
     flex: none;
   }
   .heading {
+    flex: 1;
+    min-width: 0;
     font-size: var(--text-md);
     font-weight: 620;
     letter-spacing: -0.008em;
@@ -287,6 +346,7 @@
   .new {
     width: 30px;
     height: 30px;
+    flex: none;
     display: grid;
     place-items: center;
     border-radius: var(--radius-sm);
@@ -295,6 +355,12 @@
   .new:hover {
     background: var(--bg-hover);
     color: var(--fg);
+  }
+  .new.icon {
+    color: var(--fg-faint);
+  }
+  .new.icon.on {
+    color: var(--journal-accent, var(--accent));
   }
 
   .searchbar {
@@ -337,6 +403,8 @@
 
   .rows {
     flex: 1;
+    display: flex;
+    flex-direction: column;
     padding-bottom: var(--sp-4);
   }
 
@@ -385,7 +453,7 @@
     padding-top: 1px;
   }
   .dow {
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 650;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -451,7 +519,7 @@
   }
   .chip,
   .place {
-    font-size: 10px;
+    font-size: var(--text-xs);
     font-weight: 500;
     color: var(--fg-faint);
     padding: 1px var(--sp-2);
@@ -497,13 +565,5 @@
     color: var(--fg-subtle);
     font-size: var(--text-sm);
     text-align: center;
-  }
-  .blank {
-    padding: var(--sp-10) var(--sp-4);
-    text-align: center;
-  }
-  .blank p {
-    color: var(--fg-subtle);
-    margin-bottom: var(--sp-4);
   }
 </style>

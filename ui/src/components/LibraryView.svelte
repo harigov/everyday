@@ -8,6 +8,7 @@
   import AddItem from './AddItem.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Cover from './Cover.svelte'
+  import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import ItemCard from './ItemCard.svelte'
   import { rovingFocus } from '../lib/roving'
@@ -87,6 +88,17 @@
           run: () => library.setFilter(f),
         })),
       },
+      {
+        label: 'Favourites only',
+        icon: 'star',
+        checked: library.favouritesOnly,
+        run: () => library.setFavouritesOnly(!library.favouritesOnly),
+      },
+      library.narrowed && {
+        label: 'Clear the filters',
+        icon: 'close',
+        run: () => library.clearFilters(),
+      },
     ])
   }
 
@@ -110,6 +122,7 @@
       <div class="search">
         <Icon name="search" size={14} />
         <input
+          data-search
           type="search"
           placeholder="Search titles, people, notes…"
           value={library.query}
@@ -150,7 +163,26 @@
       </div>
     </header>
 
-    <div class="tools">
+    <!-- The chips centred on the pane, with the capture line pushed to the
+         right and a matching spacer on the left holding it there. See
+         `.toolbar` in `app.css`: this is the shape all four apps use. -->
+    <div class="toolbar">
+      <div class="toolbar-end">
+        <button
+          class="star"
+          class:on={library.favouritesOnly}
+          aria-pressed={library.favouritesOnly}
+          title={library.favouritesOnly ? 'Show everything again' : 'Favourites only'}
+          onclick={() => library.setFavouritesOnly(!library.favouritesOnly)}
+        >
+          <Icon name="star" size={14} filled={library.favouritesOnly} />
+          Favourites
+        </button>
+        {#if library.narrowed}
+          <button class="clear" onclick={() => library.clearFilters()}>Clear</button>
+        {/if}
+      </div>
+
       <div class="filters" role="tablist" aria-label="Status">
         {#each FILTERS as filter (filter)}
           <button
@@ -165,10 +197,33 @@
         {/each}
       </div>
 
-      {#if target}
-        <div class="capture"><AddItem kind={target} /></div>
-      {/if}
+      <div class="toolbar-end right">
+        {#if target}
+          <div class="capture"><AddItem kind={target} /></div>
+        {/if}
+      </div>
     </div>
+
+    <!-- In the everything view the shelves are a filter of their own, and it
+         is the one people actually reach for: "show me the films" is a more
+         common question here than "show me the things I have paused". They
+         are a second row rather than more chips in the first, because they
+         narrow a different axis and mixing the two makes a row where no two
+         neighbouring chips are comparable. -->
+    {#if shelf === null && !library.favouritesOnly && library.visibleKinds.length > 1}
+      <div class="shelves">
+        {#each library.visibleKinds as k (k.id)}
+          <button
+            class="shelfchip"
+            style="--dot: {k.color}"
+            onclick={() => void library.selectShelf(k.id)}
+          >
+            <span class="dot"></span>{k.name}
+            {#if k.items > 0}<span class="n">{k.items}</span>{/if}
+          </button>
+        {/each}
+      </div>
+    {/if}
 
     {#if library.note}
       <p class="note">{library.note}</p>
@@ -184,27 +239,48 @@
       use:rovingFocus={library.selected}
     >
       {#if library.items.length === 0 && !library.loading}
-        <div class="empty">
-          {#if library.query.trim()}
-            <p class="lead">Nothing matches “{library.query.trim()}”.</p>
-            <p>Try fewer words, or switch the filter to <b>All</b>.</p>
-          {:else if library.favouritesOnly}
-            <p class="lead">No favourites yet.</p>
-            <p>The star on a card puts it here.</p>
-          {:else if target}
-            <p class="lead">
-              Nothing on this shelf {library.filter === 'all' ? 'yet' : 'under this filter'}.
-            </p>
-            <p>
-              Type a title above and press Enter. With the
+        {#if library.query.trim()}
+          <EmptyState lead={`Nothing matches “${library.query.trim()}”.`}>
+            {#snippet note()}Try fewer words, or widen the filter to <b>All</b>.{/snippet}
+            {#snippet action()}
+              <button class="btn" onclick={() => library.clearFilters()}>Clear the filters</button>
+            {/snippet}
+          </EmptyState>
+        {:else if library.favouritesOnly}
+          <EmptyState lead="No favourites yet.">
+            {#snippet note()}The star on a card puts it here.{/snippet}
+          </EmptyState>
+        {:else if library.filter !== 'all'}
+          <EmptyState lead="Nothing here under this filter.">
+            {#snippet note()}
+              Nothing on {shelf ? `the ${shelf.name.toLowerCase()} shelf` : 'any shelf'} is
+              <b>{filterLabel(library.filter).toLowerCase()}</b> at the moment.
+            {/snippet}
+            {#snippet action()}
+              <button class="btn" onclick={() => library.setFilter('all')}>Show everything</button>
+            {/snippet}
+          </EmptyState>
+        {:else if target}
+          <EmptyState lead={shelf ? `Nothing on this shelf yet.` : 'Nothing in the library yet.'}>
+            {#snippet note()}
+              Type a title in the box above and press Enter. With the
               <Icon name="sparkle" size={12} /> on, the cover and the details are looked up for you; with
               it off, exactly what you type is what you get.
-            </p>
-          {:else}
-            <p class="lead">No shelves yet.</p>
-            <p>Add one in the sidebar — books, films, restaurants, anything you keep a list of.</p>
-          {/if}
-        </div>
+            {/snippet}
+            {#snippet action()}
+              <button class="btn btn-primary" onclick={() => library.focusCapture()}>
+                Add {article(target.singular)}
+                {target.singular.toLowerCase()}
+              </button>
+            {/snippet}
+          </EmptyState>
+        {:else}
+          <EmptyState lead="No shelves yet.">
+            {#snippet note()}
+              Add one in the sidebar — books, films, restaurants, anything you keep a list of.
+            {/snippet}
+          </EmptyState>
+        {/if}
       {:else if library.view === 'grid'}
         <div class="grid">
           {#each library.items as row (row.id)}
@@ -296,7 +372,7 @@
     display: flex;
     align-items: center;
     gap: var(--sp-3);
-    height: 46px;
+    height: var(--header-h);
     flex: none;
     padding: 0 var(--sp-4);
     border-bottom: 1px solid var(--border);
@@ -380,42 +456,69 @@
     box-shadow: var(--shadow-sm);
   }
 
-  .tools {
-    display: flex;
+  .capture {
+    flex: 1;
+    max-width: 380px;
+    margin-left: auto;
+  }
+
+  .star,
+  .clear {
+    display: inline-flex;
     align-items: center;
-    gap: var(--sp-4);
-    flex: none;
-    padding: var(--sp-3) var(--sp-4);
-  }
-  .filters {
-    display: flex;
-    gap: 2px;
-    flex-wrap: wrap;
-  }
-  .filter {
-    height: 26px;
+    gap: var(--sp-2);
+    height: 28px;
     padding: 0 var(--sp-3);
     border-radius: 999px;
     font-size: var(--text-sm);
     font-weight: 550;
     color: var(--fg-subtle);
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
+    white-space: nowrap;
   }
-  .filter:hover {
+  .star:hover,
+  .clear:hover {
     background: var(--bg-hover);
     color: var(--fg);
   }
-  .filter.on {
-    background: color-mix(in oklab, var(--tint) 14%, transparent);
-    color: color-mix(in oklab, var(--tint) 78%, var(--fg));
+  .star.on {
+    background: color-mix(in oklab, #e0a92b 16%, transparent);
+    color: #a9781a;
   }
 
-  .capture {
-    flex: 1;
-    max-width: 380px;
-    margin-left: auto;
+  .shelves {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--sp-2);
+    flex: none;
+    padding: 0 var(--sp-4) var(--sp-3);
+  }
+  .shelfchip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    height: 26px;
+    padding: 0 var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
+    white-space: nowrap;
+  }
+  .shelfchip:hover {
+    border-color: var(--dot);
+    color: var(--fg);
+  }
+  .shelfchip .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--dot);
+  }
+  .shelfchip .n {
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+    font-variant-numeric: tabular-nums;
   }
 
   .note {
@@ -426,7 +529,10 @@
 
   .body {
     flex: 1;
-    padding: var(--sp-1) var(--sp-4) var(--sp-10);
+    display: flex;
+    flex-direction: column;
+    /* The tail clears the floating assistant button. */
+    padding: var(--sp-1) var(--sp-4) var(--fab-clear);
   }
 
   .grid {
@@ -505,22 +611,5 @@
   .score {
     width: 82px;
     flex: none;
-  }
-
-  .empty {
-    max-width: 34rem;
-    margin: var(--sp-16) auto;
-    text-align: center;
-    color: var(--fg-subtle);
-  }
-  .empty p {
-    margin: 0 0 var(--sp-2);
-    font-size: var(--text-base);
-    line-height: var(--leading-normal);
-  }
-  .empty .lead {
-    font-family: var(--font-read);
-    font-size: var(--text-lg);
-    color: var(--fg-muted);
   }
 </style>

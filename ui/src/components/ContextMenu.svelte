@@ -17,6 +17,11 @@
    * Scroll is watched on the capture phase because the lists scroll, not the
    * window -- but not the menu's own scrolling, which is a long menu being
    * read rather than the ground moving under it.
+   *
+   * A press somewhere else is handled by `dismissable` on the panel rather
+   * than by a scrim over the window. That module's comment has the argument;
+   * the short version is that a scrim eats the click it is dismissed by, so
+   * with a menu open the first click on the app bar did nothing at all.
    */
   $effect(() => {
     if (!menu.at) return
@@ -27,38 +32,24 @@
     window.addEventListener('scroll', away, true)
     window.addEventListener('resize', away)
     window.addEventListener('blur', away)
+    // A right-click elsewhere dismisses this one -- and is then free to open
+    // its own, because nothing is standing in front of the row it was on.
+    window.addEventListener('contextmenu', away, true)
     return () => {
       window.removeEventListener('scroll', away, true)
       window.removeEventListener('resize', away)
       window.removeEventListener('blur', away)
+      window.removeEventListener('contextmenu', away, true)
     }
   })
 </script>
 
 {#if menu.at}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    class="scrim"
-    onpointerdown={() => menu.close(false)}
-    oncontextmenu={(e) => {
-      e.preventDefault()
-      menu.close(false)
-    }}
-  ></div>
   <MenuPanel
     items={menu.items}
     at={menu.at}
     onclose={() => menu.close()}
     onexit={() => menu.close()}
+    ondismiss={() => menu.close(false)}
   />
 {/if}
-
-<style>
-  /* Invisible, and only there to catch the click that dismisses the menu: a
-     context menu does not dim what it is about. */
-  .scrim {
-    position: fixed;
-    inset: 0;
-    z-index: 70;
-  }
-</style>

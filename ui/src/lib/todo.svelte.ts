@@ -29,7 +29,7 @@ import type {
   TaskStatus,
   TimeBlock,
 } from './types'
-import { TASK_STATUSES, isOpen } from './types'
+import { PRIORITIES, TASK_STATUSES, isOpen } from './types'
 
 /** How far ahead "Upcoming" looks. */
 const UPCOMING_DAYS = 14
@@ -54,6 +54,41 @@ export type Scope =
 export type View = 'list' | 'board'
 export type GroupBy = 'none' | 'status' | 'due' | 'priority'
 
+/**
+ * The status filter, as the filter bar offers it.
+ *
+ * `open` first and by default, because a todo list is about what is left --
+ * but the rest of the statuses are here as their own chips rather than
+ * hidden behind one "show finished" switch. Somebody looking for the thing
+ * they cancelled last week, or for everything that is blocked, was
+ * previously reduced to turning finished work back on and reading past it.
+ *
+ * The same shape as the library's `FILTERS`, deliberately: two apps with a
+ * row of status chips over a list should not have two ideas of what such a
+ * row is.
+ */
+export const TASK_FILTERS = ['open', 'all', ...TASK_STATUSES] as const
+export type TaskFilter = (typeof TASK_FILTERS)[number]
+
+/** The statuses a filter selects. Empty means "do not filter". */
+export function statusesFor(filter: TaskFilter): TaskStatus[] {
+  if (filter === 'all') return []
+  if (filter === 'open') return TASK_STATUSES.filter(isOpen)
+  return [filter]
+}
+
+/** What a filter chip says. The statuses use their own words elsewhere. */
+export const FILTER_LABELS: Record<TaskFilter, string> = {
+  open: 'Open',
+  all: 'All',
+  backlog: 'Backlog',
+  todo: 'To do',
+  doing: 'Doing',
+  blocked: 'Blocked',
+  done: 'Done',
+  cancelled: 'Cancelled',
+}
+
 /** A task and the subtasks hanging off it. What the list view draws. */
 export interface TaskNode {
   task: Task
@@ -67,16 +102,29 @@ class TodoState {
   scope = $state<Scope>({ kind: 'today' })
   view = $state<View>('list')
   groupBy = $state<GroupBy>('due')
-  /** Finished work is hidden by default; a todo list is about what is left. */
-  showDone = $state(false)
+  /** Which statuses the list shows. Open work by default. */
+  statusFilter = $state<TaskFilter>('open')
+  /** One priority, or every priority. */
+  priorityFilter = $state<Priority | null>(null)
+  /** One tag, or every tag. */
+  tagFilter = $state<string | null>(null)
   /** Free-text filter over titles, notes and tags. */
   filter = $state('')
 
   selectedTask = $state<TaskId | null>(null)
   /** Time booked against the open task. Loaded when it is opened. */
   detailBlocks = $state<TimeBlock[]>([])
-  /** Subtasks that have been expanded in the list. */
-  expanded = $state<Set<TaskId>>(new Set())
+  /**
+   * Subtasks that have been *folded away*. Everything else is open.
+   *
+   * Stored as the exception rather than as the rule, which is the whole of
+   * how the default was changed. A task with steps under it is a task whose
+   * steps are the interesting part -- they are what is left to do, and the
+   * parent is only their heading -- so a list that hides them behind a
+   * disclosure is a list that has hidden the work. It cost a click per row
+   * to find out what was actually outstanding, every time the app opened.
+   */
+  #collapsed = $state<Set<TaskId>>(new Set())
 
   stats = $state<TaskStats | null>(null)
   tags = $state<TagCount[]>([])
@@ -143,7 +191,7 @@ class TodoState {
     this.tasks = []
     this.detailBlocks = []
     this.selectedTask = null
-    this.expanded = new Set()
+    this.#collapsed = new Set()
     this.stats = null
     this.tags = []
     this.#started = false
@@ -277,14 +325,58 @@ class TodoState {
   // ── the task tree ────────────────────────────────────────────────────
 
   /**
-   * The tasks the list should draw: everything in scope, minus finished work
-   * unless it has been asked for.
+   * The tasks the list should draw: everything in scope that the filter bar
+   * has not narrowed away.
    *
-   * `tasks` stays complete behind this, which is what keeps the subtask
-   * counts and the header totals honest while the list is showing less.
+   * Applied here rather than in the query, and that is not an accident --
+   * see `query` for the argument. `tasks` stays complete behind this, which
+   * is what keeps a card reading "1/3 subtasks done" honest while the list
+   * is showing one of them, and what makes every chip in the bar instant
+   * rather than a round trip.
    */
   get visible(): Task[] {
-    return this.showDone ? this.tasks : this.tasks.filter((t) => isOpen(t.status))
+    const statuses = statusesFor(this.statusFilter)
+    return this.tasks.filter(
+      (t) =>
+        (statuses.length === 0 || statuses.includes(t.status)) &&
+        (this.priorityFilter === null || t.priority === this.priorityFilter) &&
+        (this.tagFilter === null || t.tags.includes(this.tagFilter)),
+    )
+  }
+
+  /** How many tasks in scope each status chip would show. */
+  countFor(filter: TaskFilter): number {
+    const statuses = statusesFor(filter)
+    if (statuses.length === 0) return this.tasks.length
+    return this.tasks.filter((t) => statuses.includes(t.status)).length
+  }
+
+  setStatusFilter(filter: TaskFilter) {
+    this.statusFilter = filter
+  }
+
+  /** Is anything beyond the default narrowing the list? What "Clear" offers. */
+  get narrowed(): boolean {
+    return (
+      this.statusFilter !== 'open' ||
+      this.priorityFilter !== null ||
+      this.tagFilter !== null ||
+      this.filter.trim() !== ''
+    )
+  }
+
+  clearFilters() {
+    this.statusFilter = 'open'
+    this.priorityFilter = null
+    this.tagFilter = null
+    if (this.filter) this.setFilter('')
+  }
+
+  /** The priorities worth offering: the ones actually in use, most first. */
+  get usedPriorities(): Priority[] {
+    return PRIORITIES.filter((p) => p !== 'none' && this.tasks.some((t) => t.priority === p))
+      .slice()
+      .sort((a, b) => this.rank(b) - this.rank(a))
   }
 
   /** Top-level tasks in scope, each with its loaded subtasks nested. */
@@ -360,12 +452,17 @@ class TodoState {
     return this.project?.color ?? 'var(--accent)'
   }
 
+  /** Are this task's subtasks showing? They are, unless they were folded. */
+  isExpanded(id: TaskId): boolean {
+    return !this.#collapsed.has(id)
+  }
+
   toggleExpanded(id: TaskId) {
     // Reassigned rather than mutated: a `Set` is not deeply reactive, so the
     // views watching it need a new reference to notice.
-    const next = new Set(this.expanded)
+    const next = new Set(this.#collapsed)
     if (!next.delete(id)) next.add(id)
-    this.expanded = next
+    this.#collapsed = next
   }
 
   // ── writing ──────────────────────────────────────────────────────────

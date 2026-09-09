@@ -54,20 +54,16 @@
       )
     }
     // A week that straddles two months should say so, and one that straddles
-    // two years doubly so.
-    const sameMonth =
-      first.getMonth() === last.getMonth() && first.getFullYear() === last.getFullYear()
-    const left = new Intl.DateTimeFormat(locale, {
+    // two years doubly so. `formatRange` decides all of that for itself and
+    // in the reader's own language, which the two hand-built halves this
+    // replaces did not: asking for a day and a year with no month between
+    // them is a combination `Intl` has no pattern for, so a week inside one
+    // month came out reading "Sep 6 – 2026 (day: 12)".
+    return new Intl.DateTimeFormat(locale, {
       day: 'numeric',
       month: 'short',
-      year: first.getFullYear() === last.getFullYear() ? undefined : 'numeric',
-    }).format(first)
-    const right = new Intl.DateTimeFormat(locale, {
-      day: 'numeric',
-      month: sameMonth ? undefined : 'short',
       year: 'numeric',
-    }).format(last)
-    return `${left} – ${right}`
+    }).formatRange(first, last)
   })
 
   /** The one-line summary: what is booked, and what it came to. */
@@ -87,48 +83,13 @@
     return bits.join(' · ')
   })
 
-  function onKeydown(e: KeyboardEvent) {
-    if (e.metaKey || e.ctrlKey || e.altKey) return
-    const el = e.target as HTMLElement | null
-    if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return
-
-    switch (e.key) {
-      case 'd':
-        calendar.setView('day')
-        break
-      case 'w':
-        calendar.setView('week')
-        break
-      case 'm':
-        calendar.setView('month')
-        break
-      case 't':
-        calendar.goToday()
-        break
-      case 'ArrowLeft':
-        calendar.step(-1)
-        break
-      case 'ArrowRight':
-        calendar.step(1)
-        break
-      case 'Escape':
-        calendar.selection = null
-        break
-      case 'Backspace':
-      case 'Delete':
-        if (calendar.selection?.kind === 'block') {
-          e.preventDefault()
-          void calendar.removeBlock(calendar.selection.id)
-        }
-        break
-      default:
-        return
-    }
-    e.preventDefault()
-  }
+  // The bare-letter shortcuts this view used to own -- d, w, m, t, the
+  // arrows and Delete -- are rows in `lib/shortcuts.svelte.ts` now, gated on
+  // the calendar being the app on screen. They were a second
+  // `<svelte:window>` keydown handler beside the one in `App.svelte`, with
+  // its own idea of what counted as typing and no way for anything to list
+  // them; see that file for what having one table buys.
 </script>
-
-<svelte:window onkeydown={onKeydown} />
 
 <main class="cal">
   <div class="pane">
@@ -152,20 +113,6 @@
       </div>
 
       <div class="tools">
-        <!-- The control no other calendar has. Plan and record are separate
-             rows in storage precisely so this toggle can exist. -->
-        <div class="layers" role="group" aria-label="Show">
-          {#each LAYERS as l (l.id)}
-            <button
-              class="layer"
-              class:on={calendar.layer === l.id}
-              title={l.title}
-              aria-pressed={calendar.layer === l.id}
-              onclick={() => (calendar.layer = l.id)}>{l.label}</button
-            >
-          {/each}
-        </div>
-
         <div class="views" role="group" aria-label="View">
           {#each VIEWS as v (v.id)}
             <button
@@ -183,12 +130,37 @@
       </div>
     </header>
 
-    {#if summary || calendar.syncNote}
-      <div class="strip">
+    <!-- Plan and record, as the chips every other app narrows its list with.
+         They were a segmented control in the top right corner, which is
+         where each of the four apps used to put its own idea of a filter --
+         so the same job looked like three different controls depending on
+         which app you were in. The row is centred on the pane and the
+         summary is pushed to its edge; see `.toolbar` in `app.css`.
+
+         The control no other calendar has, either way. Plan and record are
+         separate rows in storage precisely so this toggle can exist. -->
+    <div class="toolbar">
+      <div class="toolbar-end"></div>
+
+      <div class="filters" role="group" aria-label="Show">
+        {#each LAYERS as l (l.id)}
+          <button
+            class="filter"
+            class:on={calendar.layer === l.id}
+            title={l.title}
+            aria-pressed={calendar.layer === l.id}
+            onclick={() => (calendar.layer = l.id)}
+          >
+            {l.label}
+          </button>
+        {/each}
+      </div>
+
+      <div class="toolbar-end right">
         <span class="summary">{summary}</span>
         {#if calendar.syncNote}<span class="note">{calendar.syncNote}</span>{/if}
       </div>
-    {/if}
+    </div>
 
     {#if calendar.view === 'month'}
       <MonthGrid days={calendar.days} />
@@ -233,7 +205,7 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--sp-3);
-    height: 46px;
+    height: var(--header-h);
     padding: 0 var(--sp-4);
     flex: none;
   }
@@ -292,32 +264,12 @@
     flex: none;
   }
 
-  .layers,
   .views {
     display: flex;
     gap: 2px;
     padding: 2px;
     border-radius: var(--radius-sm);
     background: var(--bg-active);
-  }
-  .layer {
-    height: 22px;
-    padding: 0 var(--sp-2);
-    border-radius: 4px;
-    font-size: var(--text-xs);
-    font-weight: 550;
-    color: var(--fg-subtle);
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
-  }
-  .layer:hover {
-    color: var(--fg);
-  }
-  .layer.on {
-    background: var(--bg-raised);
-    color: var(--fg);
-    box-shadow: var(--shadow-sm);
   }
 
   .view {
@@ -340,12 +292,8 @@
     box-shadow: var(--shadow-sm);
   }
 
-  .strip {
-    display: flex;
-    align-items: baseline;
-    gap: var(--sp-3);
-    padding: 0 var(--sp-4) var(--sp-2);
-    flex: none;
+  .summary,
+  .note {
     font-size: var(--text-xs);
     color: var(--fg-faint);
     font-variant-numeric: tabular-nums;

@@ -285,11 +285,36 @@ impl SearchRequest {
 
     /// The requests to try, in order, stopping at the first that answers.
     ///
-    /// One or two: this request, and then a plain web search when this one
-    /// named a specialised source. The fallback is what makes the feature
+    /// Up to three: this request, then Wikipedia where that makes sense, and
+    /// a plain web search last. The fallback chain is what makes the feature
     /// feel like it works — Open Library does not know about a
     /// self-published pamphlet, and coming back with "no results" when the
     /// web has plenty is the failure people remember.
+    ///
+    /// # Why Wikipedia sits in the middle
+    ///
+    /// Because of what the last step returns. A plain web search answers with
+    /// *pages*: "Dune (2021) — IMDb", "Dune | Rotten Tomatoes", "Buy Dune on
+    /// Blu-ray". Those are websites about the thing, and what the shelf wants
+    /// is the thing — a title, the people responsible, a year, a picture and
+    /// a sentence. So a search for a film that iTunes happened to miss came
+    /// back as a list of shops, and the person adding it had to pick one and
+    /// then correct every field by hand.
+    ///
+    /// Wikipedia answers with the article *about* the work, which parses into
+    /// exactly those fields (see [`parse_wikipedia`]), and it has one for very
+    /// nearly every film, book, record and game that a catalogue can miss.
+    /// Putting it before the web search costs one request in the rare case
+    /// both are needed, and turns the common failure from "here are some
+    /// shops" into "here is the film".
+    ///
+    /// It is inserted only after a *catalogue* — Open Library or iTunes —
+    /// and that limit is deliberate. Nominatim's misses are places, where
+    /// what somebody actually wants next is the restaurant's own website and
+    /// not an encyclopaedia article about the neighbourhood. A request that
+    /// already prefers the web is an article or a recipe, which is a web page
+    /// and nothing else. And Wikipedia's own misses have nowhere to go but
+    /// the web, which is where they already went.
     ///
     /// It lives here rather than in either caller because there are two
     /// callers: [`WebSearch::lookup`], which is synchronous, and the desktop
@@ -297,10 +322,49 @@ impl SearchRequest {
     /// on the policy — the only difference between them is an `await`.
     pub fn attempts(&self) -> Vec<SearchRequest> {
         let mut out = vec![self.clone()];
+        if matches!(self.source, Source::OpenLibrary | Source::ITunes) {
+            out.push(
+                SearchRequest::new(self.hinted_query())
+                    .on(Source::Wikipedia)
+                    .about(self.hint.clone())
+                    .limit(self.limit),
+            );
+        }
         if self.source != Source::Web {
-            out.push(SearchRequest::new(self.query.clone()).on(Source::Web).limit(self.limit));
+            out.push(
+                SearchRequest::new(self.hinted_query())
+                    .on(Source::Web)
+                    .about(self.hint.clone())
+                    .limit(self.limit),
+            );
         }
         out
+    }
+
+    /// The query to hand an attempt made as a *fallback*.
+    ///
+    /// The kind's own word is added to it: "dune" over a films shelf becomes
+    /// "dune film". Two sources of ambiguity are removed by that one word —
+    /// the novel from the picture, and the record from the tour.
+    ///
+    /// It goes to both fallbacks and not only to the last one. That was the
+    /// first shape and it was half a fix: the whole point of putting
+    /// Wikipedia in front of the open web is that it answers with the work,
+    /// and searching it for the bare word answers with the *most famous* work
+    /// of that name — so "dune" from a films shelf came back as the novel,
+    /// which is the exact case the step was added for. Wikipedia's
+    /// `generator=search` is full text, so the extra word ranks the film's
+    /// article first, and neither source has a structured field to
+    /// disambiguate on: the query is all there is.
+    ///
+    /// Only for a fallback, never for a search somebody asked for on that
+    /// source directly: there, what was typed is what was meant.
+    fn hinted_query(&self) -> String {
+        let hint = self.hint.trim();
+        if hint.is_empty() || self.query.to_lowercase().contains(&hint.to_lowercase()) {
+            return self.query.clone();
+        }
+        format!("{} {hint}", self.query)
     }
 }
 
@@ -1263,15 +1327,67 @@ mod tests {
     }
 
     #[test]
-    fn the_attempt_order_is_the_source_then_the_web() {
+    fn a_catalogue_falls_back_through_wikipedia_before_the_open_web() {
+        // The point of the middle step: a catalogue miss should still answer
+        // with the *work* rather than with a list of shops selling it.
         let books = SearchRequest::for_kind("dune", &kind("book"));
         let attempts = books.attempts();
-        assert_eq!(attempts.len(), 2);
-        assert_eq!(attempts[0].source, Source::OpenLibrary);
-        assert_eq!(attempts[1].source, Source::Web);
-        assert_eq!(attempts[1].limit, books.limit, "the limit must carry to the fallback");
+        assert_eq!(
+            attempts.iter().map(|a| a.source).collect::<Vec<_>>(),
+            vec![Source::OpenLibrary, Source::Wikipedia, Source::Web],
+        );
+        for attempt in &attempts {
+            assert_eq!(attempt.limit, books.limit, "the limit must carry down the chain");
+            assert_eq!(attempt.hint, "book", "so a later source can still tell what was meant");
+        }
+
+        // Wikipedia is *not* inserted where an encyclopaedia is the wrong
+        // answer to the question. A place that OpenStreetMap does not know
+        // wants the restaurant's website, not an article about the street.
+        let place = SearchRequest::for_kind("bar termini", &kind("restaurant"));
+        assert_eq!(
+            place.attempts().iter().map(|a| a.source).collect::<Vec<_>>(),
+            vec![Source::Nominatim, Source::Web],
+        );
+
+        // Nor after Wikipedia itself, which would be the same request twice.
+        let game = SearchRequest::new("outer wilds").on(Source::Wikipedia).about("game");
+        assert_eq!(
+            game.attempts().iter().map(|a| a.source).collect::<Vec<_>>(),
+            vec![Source::Wikipedia, Source::Web],
+        );
+
         // A request that is already a web search has nothing to fall back to.
         assert_eq!(SearchRequest::new("x").attempts().len(), 1);
+    }
+
+    #[test]
+    fn every_fallback_says_what_kind_of_thing_it_is_looking_for() {
+        // "dune" over a films shelf is a novel, a record and a tour as well.
+        // Neither fallback has a structured field to disambiguate on, so the
+        // one word goes into both queries -- including Wikipedia's, whose
+        // whole reason for being in the chain is to answer with the right
+        // work rather than with the most famous one of that name.
+        let films = SearchRequest::for_kind("dune", &kind("film"));
+        let attempts = films.attempts();
+        assert_eq!(attempts[0].query, "dune", "the shelf's own source is asked what was typed");
+        for fallback in &attempts[1..] {
+            assert_eq!(
+                fallback.query, "dune film",
+                "{:?} was asked the bare word",
+                fallback.source
+            );
+        }
+
+        // Not twice, when the person already typed it.
+        let typed = SearchRequest::for_kind("Dune the Film", &kind("film"));
+        assert!(typed.attempts().iter().all(|a| a.query == "Dune the Film"));
+
+        // And never for a search asked for on a source explicitly: there,
+        // what was typed is what was meant.
+        let plain = SearchRequest::new("dune film").about("film");
+        assert_eq!(plain.attempts().len(), 1);
+        assert_eq!(plain.attempts()[0].query, "dune film");
     }
 
     #[test]

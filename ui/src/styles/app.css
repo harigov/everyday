@@ -122,8 +122,8 @@ button {
   align-items: center;
   justify-content: center;
   gap: var(--sp-2);
-  height: 30px;
-  padding: 0 var(--sp-3);
+  height: 34px;
+  padding: 0 var(--sp-4);
   border-radius: var(--radius-sm);
   font-size: var(--text-base);
   font-weight: 500;
@@ -172,7 +172,7 @@ button {
 
 .field {
   width: 100%;
-  height: 36px;
+  height: 38px;
   padding: 0 var(--sp-3);
   background: var(--bg-raised);
   border: 1px solid var(--border);
@@ -227,7 +227,7 @@ button {
 .tag {
   display: inline-flex;
   align-items: center;
-  height: 20px;
+  height: 22px;
   padding: 0 var(--sp-2);
   border-radius: 99px;
   background: var(--bg-sunken);
@@ -253,8 +253,8 @@ button {
   display: grid;
   justify-items: center;
   gap: 4px;
-  width: 60px;
-  padding: 8px 2px 7px;
+  width: 66px;
+  padding: 9px 2px 8px;
   border-radius: var(--radius-lg);
   color: var(--fg-subtle);
   transition:
@@ -273,6 +273,102 @@ button {
   font-weight: 600;
   letter-spacing: -0.004em;
   line-height: 1;
+}
+
+/* ── Filter bars ───────────────────────────────────────────────────────
+   Every app has a row of chips that narrows what is below it, and until
+   these existed each app drew its own: different heights, different radii,
+   different idea of where the row belonged. They read as four unrelated
+   controls, which is the opposite of what a filter is for -- you learn it
+   once and then it is furniture.
+
+   Centred, because that is what makes the row read as a control *over* the
+   list rather than as the first item in it. The capture line and anything
+   else that has to sit on the same line are pushed to the ends with
+   `.toolbar-end`, so the chips stay centred in the pane whatever is beside
+   them. */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex: none;
+  padding: var(--sp-2) var(--sp-4) var(--sp-3);
+}
+/* Two of these, one each side, so the chips between them are centred on the
+   pane and not on whatever is left over after the capture line. */
+.toolbar-end {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.toolbar-end.right {
+  justify-content: flex-end;
+}
+
+.filters {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+}
+.filter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 28px;
+  padding: 0 var(--sp-3);
+  border-radius: 999px;
+  font-size: var(--text-sm);
+  font-weight: 550;
+  color: var(--fg-subtle);
+  white-space: nowrap;
+  transition:
+    background var(--fast) var(--ease),
+    color var(--fast) var(--ease);
+}
+.filter:hover {
+  color: var(--fg);
+}
+.filter.on {
+  background: var(--bg-raised);
+  color: color-mix(in oklab, var(--tint, var(--accent)) 72%, var(--fg));
+  box-shadow: var(--shadow-sm);
+}
+/* The count beside a chip's label. Tabular, so a row of them does not jitter
+   as the numbers change under it. */
+.filter .n {
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-faint);
+}
+.filter.on .n {
+  color: inherit;
+  opacity: 0.75;
+}
+
+/* ── Empty states ──────────────────────────────────────────────────────
+   See `components/EmptyState.svelte`, which is what should be reached for.
+   The class is here rather than in that component because two places draw
+   an empty list inside something too small for the component's proportions
+   -- a rail, a dropdown -- and still want the same voice. */
+
+.blank-lead {
+  font-family: var(--font-read);
+  font-size: var(--text-lg);
+  line-height: var(--leading-snug);
+  color: var(--fg-muted);
+}
+.blank-note {
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  color: var(--fg-subtle);
 }
 
 /* ── Dialogs ───────────────────────────────────────────────────────────
