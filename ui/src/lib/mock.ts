@@ -43,6 +43,9 @@ import type {
   SourceInfo,
   SyncReport,
   Entry,
+  Note,
+  NoteQuery,
+  NoteSummary,
   EntryQuery,
   EntrySummary,
   Journal,
@@ -952,6 +955,51 @@ const entries: Entry[] = [
   },
 ]
 
+/**
+ * Two notes, so the sixth app has something in it on the demo build.
+ *
+ * One of them is the shape the assistant produces: a report it wrote off a
+ * routine, which is why prose from the assistant has a home that is not
+ * somebody's journal.
+ */
+const notes: Note[] = [
+  {
+    id: 'n-1',
+    title: 'Boat, before the spring launch',
+    body: {
+      type: 'doc',
+      content: [
+        ...para('Antifoul the hull. Two coats, and leave a day between them.'),
+        ...para('Replace the port jib sheet — the cover has gone furry at the clutch.'),
+        ...para('Service the outboard: plugs, impeller, gearbox oil.'),
+      ],
+    },
+    tags: ['boats'],
+    pinned: true,
+    attachments: [],
+    createdAt: iso(20),
+    updatedAt: iso(3),
+  },
+  {
+    id: 'n-2',
+    title: 'Week of the 7th, looking back',
+    body: {
+      type: 'doc',
+      content: [
+        ...para(
+          'Eleven hours went to the deck and four to the boat. Nothing at all was recorded against being a parent, which is the third week running.',
+        ),
+        ...para('Swimming held: four sessions, which clears the three-a-week cadence.'),
+      ],
+    },
+    tags: ['review'],
+    pinned: false,
+    attachments: [],
+    createdAt: iso(2),
+    updatedAt: iso(2),
+  },
+]
+
 // ── The task domain ──────────────────────────────────────────────────────
 
 function ahead(days: number): string {
@@ -1678,6 +1726,30 @@ function summarize(e: Entry): EntrySummary {
   }
 }
 
+/** The heading a note shows: its title, else its first line. */
+function noteTitle(n: Note): string {
+  if (n.title.trim()) return n.title.trim()
+  const text = plainText(n.body).trim()
+  return text.split('\n')[0]?.slice(0, 120) || 'Untitled note'
+}
+
+function summarizeNote(n: Note): NoteSummary {
+  const text = plainText(n.body)
+  return {
+    id: n.id,
+    title: noteTitle(n),
+    excerpt: text.slice(0, 240),
+    tags: n.tags,
+    pinned: n.pinned,
+    purpose: n.purpose,
+    wordCount: text.split(/\s+/).filter(Boolean).length,
+    attachmentCount: n.attachments.length,
+    cover: n.attachments.find((a) => a.kind === 'image')?.blob,
+    createdAt: n.createdAt,
+    updatedAt: n.updatedAt,
+  }
+}
+
 function status(): VaultStatus {
   return {
     name: 'My Journal',
@@ -1702,6 +1774,7 @@ function status(): VaultStatus {
           blobs: true,
           transactional: true,
           humanReadable: false,
+          notes: true,
           tasks: true,
           calendars: true,
           library: true,
@@ -1893,6 +1966,64 @@ export const mockInvoke = async <T>(
       return undefined as T
     }
 
+    case 'list_notes': {
+      requireUnlocked()
+      const q = (args.query ?? {}) as NoteQuery
+      let rows = notes.map(summarizeNote)
+      if (q.pinned != null) rows = rows.filter((r) => r.pinned === q.pinned)
+      for (const want of q.tags ?? []) {
+        rows = rows.filter((r) => r.tags.some((t) => t.toLowerCase() === want.toLowerCase()))
+      }
+      rows.sort((a, b) => {
+        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
+        if (q.sort === 'titleAsc') return a.title.localeCompare(b.title)
+        if (q.sort === 'createdDesc') return b.createdAt.localeCompare(a.createdAt)
+        return b.updatedAt.localeCompare(a.updatedAt)
+      })
+      return rows.slice(0, q.limit ?? rows.length) as T
+    }
+
+    case 'get_note': {
+      requireUnlocked()
+      const found = notes.find((n) => n.id === args.id)
+      if (!found) throw new VaultError('not_found', 'no such note')
+      return found as T
+    }
+
+    case 'new_note':
+      requireUnlocked()
+      return {
+        id: `n-${nextId++}`,
+        title: '',
+        body: { type: 'doc', content: [{ type: 'paragraph' }] },
+        tags: [],
+        pinned: false,
+        attachments: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      } satisfies Note as T
+
+    case 'save_note':
+    case 'save_note_force': {
+      requireUnlocked()
+      const next = args.note as Note
+      const at = notes.findIndex((n) => n.id === next.id)
+      if (at < 0) notes.unshift(next)
+      else notes[at] = next
+      return undefined as T
+    }
+
+    case 'delete_note': {
+      requireUnlocked()
+      const at = notes.findIndex((n) => n.id === args.id)
+      if (at >= 0) notes.splice(at, 1)
+      return undefined as T
+    }
+
+    case 'note_tags':
+      requireUnlocked()
+      return [...new Set(notes.flatMap((n) => n.tags))].sort() as T
+
     case 'list_entries': {
       requireUnlocked()
       const q = (args.query ?? {}) as EntryQuery
@@ -1983,23 +2114,41 @@ export const mockInvoke = async <T>(
       const q = str(args.query).trim().toLowerCase()
       if (!q) return [] as T
       const hits: SearchHit[] = []
-      for (const e of entries) {
-        if (args.journalId && e.journalId !== args.journalId) continue
-        const text = `${e.title}\n${plainText(e.body)}\n${e.tags.join(' ')}`
+      /** The window of text around a match, and where in it the match is. */
+      const around = (text: string) => {
         const at = text.toLowerCase().indexOf(q)
-        if (at < 0) continue
+        if (at < 0) return null
         const start = Math.max(0, at - 60)
         const snippet = (start > 0 ? '…' : '') + text.slice(start, at + 140)
         const rel = at - start + (start > 0 ? 1 : 0)
-        hits.push({
-          id: e.id,
-          journalId: e.journalId,
-          title: e.title,
-          localDate: e.localDate,
-          score: 1,
-          snippet,
-          highlights: [[rel, rel + q.length]],
-        })
+        return { snippet, highlights: [[rel, rel + q.length]] as [number, number][] }
+      }
+      // Naming a journal narrows to entries as well, because a note is in no
+      // journal. Same rule as the real one.
+      const wantEntries = args.kind !== 'note'
+      const wantNotes = args.kind !== 'entry' && !args.journalId
+      if (wantEntries) {
+        for (const e of entries) {
+          if (args.journalId && e.journalId !== args.journalId) continue
+          const hit = around(`${e.title}\n${plainText(e.body)}\n${e.tags.join(' ')}`)
+          if (!hit) continue
+          hits.push({
+            type: 'entry',
+            id: e.id,
+            journalId: e.journalId,
+            title: e.title,
+            localDate: e.localDate,
+            score: 1,
+            ...hit,
+          })
+        }
+      }
+      if (wantNotes) {
+        for (const n of notes) {
+          const hit = around(`${n.title}\n${plainText(n.body)}\n${n.tags.join(' ')}`)
+          if (!hit) continue
+          hits.push({ type: 'note', id: n.id, title: noteTitle(n), score: 1, ...hit })
+        }
       }
       return hits.slice(0, Number(args.limit ?? 10)) as T
     }

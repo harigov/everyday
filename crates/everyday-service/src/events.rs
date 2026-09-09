@@ -132,6 +132,8 @@ pub enum Op {
 pub enum Kind {
     Journal,
     Entry,
+    /// Writing that is not a day. See `everyday_core::note`.
+    Note,
     Project,
     Task,
     Block,

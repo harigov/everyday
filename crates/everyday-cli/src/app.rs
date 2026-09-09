@@ -2,6 +2,7 @@
 
 use everyday_core::crypto::KdfParams;
 use everyday_core::model::{Attachment, MediaKind};
+use everyday_core::search::{Found, SearchScope};
 use everyday_core::store::SortOrder;
 use everyday_core::{
     Entry, EntryQuery, Error, Journal, JournalId, Result, RichDoc, Vault, VaultConfig,
@@ -563,13 +564,17 @@ fn show(vault: &Vault, id: &str, json: bool) -> Result<()> {
 }
 
 fn search(vault: &Vault, query: &str, limit: usize) -> Result<()> {
-    let hits = vault.search(query, None, limit)?;
+    // Entries only. This command is part of a tool that covers journals and
+    // nothing else, and quietly returning notes from it would be a surprise
+    // in a script somebody wrote against last year's output.
+    let hits = vault.search(query, SearchScope::Entries(None), limit)?;
     if hits.is_empty() {
         eprintln!("no matches for {query:?}");
         return Ok(());
     }
     for h in hits {
-        println!("{}  {}  [{}]", h.local_date, truncate(&h.title, 48), h.id.short());
+        let Found::Entry { id, local_date, .. } = h.found else { continue };
+        println!("{}  {}  [{}]", local_date, truncate(&h.title, 48), id.short());
         if !h.snippet.is_empty() {
             println!("    {}", h.snippet.replace('\n', " "));
         }

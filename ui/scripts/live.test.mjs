@@ -60,6 +60,7 @@ const { RELOAD, RELOADS, targetsFor } = await server.ssrLoadModule('/src/lib/liv
 const KINDS = [
   'journal',
   'entry',
+  'note',
   'project',
   'task',
   'block',

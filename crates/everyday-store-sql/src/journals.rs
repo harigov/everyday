@@ -11,6 +11,7 @@ use everyday_core::model::{Entry, EntrySummary, Journal};
 use everyday_core::store::agent::AgentStore;
 use everyday_core::store::calendars::CalendarStore;
 use everyday_core::store::library::LibraryStore;
+use everyday_core::store::notes::NoteStore;
 use everyday_core::store::purpose::PurposeStore;
 use everyday_core::store::tasks::TaskStore;
 use everyday_core::store::trackers::TrackerStore;
@@ -48,6 +49,10 @@ impl JournalStore for SqlStore {
     }
 
     fn purpose(&self) -> Option<&dyn PurposeStore> {
+        Some(self)
+    }
+
+    fn notes(&self) -> Option<&dyn NoteStore> {
         Some(self)
     }
 

@@ -12,9 +12,9 @@
 //! matters more here than it does for entries, because a note is named and
 //! the name is the part that gives it away.
 
+use crate::Result;
 use crate::id::NoteId;
 use crate::note::{Note, NoteSummary};
-use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 /// How a note list is ordered.
@@ -108,6 +108,32 @@ pub trait NoteStore: Send + Sync {
     fn get_note(&self, id: NoteId) -> Result<Note>;
     /// Idempotent: saving the same note twice leaves one.
     fn put_note(&self, note: &Note) -> Result<()>;
+
+    /// Write `note` only if the stored copy is still the one the caller read,
+    /// failing with [`crate::Error::Conflict`] if it is not.
+    ///
+    /// The same contract, and the same reason for existing, as
+    /// [`crate::store::JournalStore::put_entry_if`]: a note is a document
+    /// somebody types into for minutes at a time, autosaved, and possibly
+    /// from two windows onto one vault. `expect` is the `updated_at` the
+    /// caller last saw, or `None` for "this is new".
+    ///
+    /// The default is a read, a comparison and a write, which is right
+    /// against another thread and not against another process. A backend that
+    /// can say it in one statement should override it.
+    fn put_note_if(&self, note: &Note, expect: Option<jiff::Timestamp>) -> Result<()> {
+        match (self.get_note(note.id), expect) {
+            (Ok(current), Some(want)) if current.updated_at == want => {}
+            (Ok(_), _) => return Err(crate::Error::Conflict { kind: "note" }),
+            (Err(e), expect) if e.code() == "not_found" => {
+                if expect.is_some() {
+                    return Err(crate::Error::Conflict { kind: "note" });
+                }
+            }
+            (Err(e), _) => return Err(e),
+        }
+        self.put_note(note)
+    }
     /// Deleting a note that is not there is not an error.
     fn delete_note(&self, id: NoteId) -> Result<()>;
 
@@ -133,11 +159,6 @@ pub trait NoteStore: Send + Sync {
 /// Additional authenticated data for a sealed note payload.
 pub fn note_aad(id: NoteId) -> Vec<u8> {
     format!("everyday.note.v1:{id}").into_bytes()
-}
-
-/// The error a missing note gets, so every backend words it the same way.
-pub fn note_not_found(id: NoteId) -> Error {
-    Error::NotFound(format!("note {id}"))
 }
 
 #[cfg(test)]
@@ -169,15 +190,12 @@ mod tests {
             summary("Sailing", false, &["Boats", "summer"]),
             summary("Rowing", false, &["boats"]),
         ];
-        let hits = NoteQuery { tags: vec!["boats".into()], ..Default::default() }
-            .apply(rows.clone());
+        let hits =
+            NoteQuery { tags: vec!["boats".into()], ..Default::default() }.apply(rows.clone());
         assert_eq!(hits.len(), 2, "case must not decide whether a tag matches");
 
-        let hits = NoteQuery {
-            tags: vec!["boats".into(), "summer".into()],
-            ..Default::default()
-        }
-        .apply(rows);
+        let hits = NoteQuery { tags: vec!["boats".into(), "summer".into()], ..Default::default() }
+            .apply(rows);
         assert_eq!(hits.len(), 1, "every listed tag has to be there, not any of them");
     }
 

@@ -48,6 +48,10 @@ import type {
   LogQuery,
   Memory,
   MemoryId,
+  Note,
+  NoteId,
+  NoteQuery,
+  NoteSummary,
   Project,
   ProjectId,
   ProviderInfo,
@@ -58,6 +62,7 @@ import type {
   RoleId,
   RoleInfo,
   SearchHit,
+  SearchKind,
   SearchRequest,
   SearchResult,
   SourceInfo,
@@ -103,6 +108,7 @@ export interface Commands {
   deleteKind: { args: { id: KindId }; result: void }
   deleteLog: { args: { id: LogId }; result: void }
   deleteMemory: { args: { id: MemoryId }; result: void }
+  deleteNote: { args: { id: NoteId }; result: void }
   deleteProject: { args: { id: ProjectId }; result: void }
   deleteReading: { args: { id: ReadingId }; result: void }
   deleteRole: { args: { id: RoleId }; result: void }
@@ -114,6 +120,7 @@ export interface Commands {
   getEvent: { args: { id: EventId }; result: CalendarEvent }
   getGoal: { args: { id: GoalId }; result: Goal }
   getItem: { args: { id: ItemId }; result: Item }
+  getNote: { args: { id: NoteId }; result: Note }
   getTask: { args: { id: TaskId }; result: Task }
   goalActivity: { args: { id: GoalId }; result: GoalActivity }
   importCalendar: {
@@ -133,6 +140,7 @@ export interface Commands {
   listKinds: { args: Record<string, never>; result: KindInfo[] }
   listLogs: { args: { query: LogQuery }; result: LogEntry[] }
   listMemories: { args: Record<string, never>; result: Memory[] }
+  listNotes: { args: { query: NoteQuery }; result: NoteSummary[] }
   listProjects: { args: Record<string, never>; result: Project[] }
   listReadings: { args: { query: ReadingQuery }; result: Reading[] }
   listRoles: { args: Record<string, never>; result: RoleInfo[] }
@@ -167,6 +175,7 @@ export interface Commands {
   newJournal: { args: { name: string }; result: Journal }
   newKind: { args: { name: string; singular: string }; result: Kind }
   newLog: { args: { itemId: ItemId; event: LogEvent }; result: LogEntry }
+  newNote: { args: Record<string, never>; result: Note }
   newProject: { args: { name: string }; result: Project }
   newRole: { args: { name: string }; result: Role }
   newTask: {
@@ -174,6 +183,7 @@ export interface Commands {
     result: Task
   }
   newTracker: { args: { name: string; kind: TrackerKind }; result: Tracker }
+  noteTags: { args: Record<string, never>; result: string[] }
   pollAutoLock: { args: Record<string, never>; result: boolean }
   runTool: {
     args: { name: string; arguments?: unknown; confirmDestructive?: boolean }
@@ -192,6 +202,8 @@ export interface Commands {
   saveKind: { args: { kind: Kind }; result: void }
   saveLog: { args: { log: LogEntry }; result: void }
   saveMemory: { args: { memory: Memory }; result: Memory[] }
+  saveNote: { args: { note: Note; expect?: string | null }; result: void }
+  saveNoteForce: { args: { note: Note }; result: void }
   saveProject: { args: { project: Project }; result: void }
   saveReading: { args: { reading: Reading }; result: void }
   saveRole: { args: { role: Role }; result: void }
@@ -199,7 +211,7 @@ export interface Commands {
   saveTasks: { args: { tasks: Task[] }; result: void }
   saveTracker: { args: { tracker: Tracker }; result: void }
   search: {
-    args: { query: string; journalId?: JournalId | null; limit: number }
+    args: { query: string; journalId?: JournalId | null; kind?: SearchKind | null; limit: number }
     result: SearchHit[]
   }
   searchSources: { args: Record<string, never>; result: SourceInfo[] }
@@ -252,6 +264,7 @@ export const COMMAND_NAMES = {
   deleteKind: 'delete_kind',
   deleteLog: 'delete_log',
   deleteMemory: 'delete_memory',
+  deleteNote: 'delete_note',
   deleteProject: 'delete_project',
   deleteReading: 'delete_reading',
   deleteRole: 'delete_role',
@@ -263,6 +276,7 @@ export const COMMAND_NAMES = {
   getEvent: 'get_event',
   getGoal: 'get_goal',
   getItem: 'get_item',
+  getNote: 'get_note',
   getTask: 'get_task',
   goalActivity: 'goal_activity',
   importCalendar: 'import_calendar',
@@ -279,6 +293,7 @@ export const COMMAND_NAMES = {
   listKinds: 'list_kinds',
   listLogs: 'list_logs',
   listMemories: 'list_memories',
+  listNotes: 'list_notes',
   listProjects: 'list_projects',
   listReadings: 'list_readings',
   listRoles: 'list_roles',
@@ -297,10 +312,12 @@ export const COMMAND_NAMES = {
   newJournal: 'new_journal',
   newKind: 'new_kind',
   newLog: 'new_log',
+  newNote: 'new_note',
   newProject: 'new_project',
   newRole: 'new_role',
   newTask: 'new_task',
   newTracker: 'new_tracker',
+  noteTags: 'note_tags',
   pollAutoLock: 'poll_auto_lock',
   runTool: 'run_tool',
   saveAgentSettings: 'save_agent_settings',
@@ -316,6 +333,8 @@ export const COMMAND_NAMES = {
   saveKind: 'save_kind',
   saveLog: 'save_log',
   saveMemory: 'save_memory',
+  saveNote: 'save_note',
+  saveNoteForce: 'save_note_force',
   saveProject: 'save_project',
   saveReading: 'save_reading',
   saveRole: 'save_role',
@@ -377,6 +396,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_kind',
   'delete_log',
   'delete_memory',
+  'delete_note',
   'delete_project',
   'delete_reading',
   'delete_role',
@@ -388,6 +408,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'get_event',
   'get_goal',
   'get_item',
+  'get_note',
   'get_task',
   'goal_activity',
   'import_calendar',
@@ -404,6 +425,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_kinds',
   'list_logs',
   'list_memories',
+  'list_notes',
   'list_projects',
   'list_readings',
   'list_roles',
@@ -422,10 +444,12 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'new_journal',
   'new_kind',
   'new_log',
+  'new_note',
   'new_project',
   'new_role',
   'new_task',
   'new_tracker',
+  'note_tags',
   'poll_auto_lock',
   'run_tool',
   'save_agent_settings',
@@ -441,6 +465,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_kind',
   'save_log',
   'save_memory',
+  'save_note',
+  'save_note_force',
   'save_project',
   'save_reading',
   'save_role',
@@ -494,6 +520,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_kind',
   'delete_log',
   'delete_memory',
+  'delete_note',
   'delete_project',
   'delete_reading',
   'delete_role',
@@ -520,6 +547,8 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_kind',
   'save_log',
   'save_memory',
+  'save_note',
+  'save_note_force',
   'save_project',
   'save_reading',
   'save_role',
@@ -557,6 +586,7 @@ export const CHANGE_KINDS: Readonly<Record<string, string>> = {
   delete_kind: 'shelf',
   delete_log: 'log',
   delete_memory: 'memory',
+  delete_note: 'note',
   delete_project: 'project',
   delete_reading: 'reading',
   delete_role: 'role',
@@ -578,6 +608,8 @@ export const CHANGE_KINDS: Readonly<Record<string, string>> = {
   save_kind: 'shelf',
   save_log: 'log',
   save_memory: 'memory',
+  save_note: 'note',
+  save_note_force: 'note',
   save_project: 'project',
   save_reading: 'reading',
   save_role: 'role',

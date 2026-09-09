@@ -261,8 +261,8 @@
               {/each}
             </div>
             <p class="hint">
-              How long this window may sit untouched before it hides what it is showing and asks
-              for the password again. The vault stays open behind it.
+              How long this window may sit untouched before it hides what it is showing and asks for
+              the password again. The vault stays open behind it.
             </p>
           </section>
 
@@ -281,9 +281,9 @@
             </div>
             <p class="hint">
               The heavier of the two. This computer holds the key while the vault is open, and
-              serves it to your other windows, to any device you have paired, and to the
-              assistant's own routines. Forgetting it stops all of them until somebody types the
-              password again. Quitting always forgets it.
+              serves it to your other windows, to any device you have paired, and to the assistant's
+              own routines. Forgetting it stops all of them until somebody types the password again.
+              Quitting always forgets it.
             </p>
           </section>
 

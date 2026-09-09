@@ -37,15 +37,17 @@ use crate::error::{Error, Result};
 use crate::fsutil;
 use crate::id::{
     BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, GoalId, ItemId, JournalId,
-    KindId, LogId, MemoryId, MessageId, ProjectId, ReadingId, RoleId, TaskId, TrackerId,
+    KindId, LogId, MemoryId, MessageId, NoteId, ProjectId, ReadingId, RoleId, TaskId, TrackerId,
 };
 use crate::library::{Item, ItemStatus, Kind, KindCount, LibraryStats, LogEntry, default_kinds};
 use crate::model::{Entry, EntrySummary, Journal};
+use crate::note::{Note, NoteSummary};
 use crate::purpose::{Goal, GoalActivity, PurposeMinutes, Role, RoleEventMinutes, suggested_roles};
-use crate::search::{SearchHit, SearchIndex};
+use crate::search::{SearchHit, SearchIndex, SearchScope};
 use crate::store::agent::{AgentStore, ConversationQuery};
 use crate::store::calendars::{CalendarStore, EventQuery};
 use crate::store::library::{ItemQuery, LibraryStore, LogQuery};
+use crate::store::notes::{NoteQuery, NoteStore};
 use crate::store::purpose::{GoalQuery, PurposeStore, PurposeWindow};
 use crate::store::tasks::{BlockQuery, TaskQuery, TaskStore};
 use crate::store::trackers::{ReadingQuery, TrackerDay, TrackerStore};
@@ -487,7 +489,11 @@ impl Vault {
             Err(e) => tracing::warn!(error = %e, "could not run the integrity check"),
         }
 
-        let index = SearchIndex::build(&store.all_entries()?);
+        let notes = match store.notes() {
+            Some(n) => n.all_notes()?,
+            None => Vec::new(),
+        };
+        let index = SearchIndex::build(&store.all_entries()?, &notes);
 
         *self.state_write() = Some(Unlocked { store, index, cipher });
         self.touch();
@@ -1878,13 +1884,97 @@ impl Vault {
         self.with_agent(|a| a.delete_memory(id))
     }
 
-    pub fn search(
-        &self,
-        query: &str,
-        journal: Option<JournalId>,
-        limit: usize,
-    ) -> Result<Vec<SearchHit>> {
-        self.read(|u| Ok(u.index.search_in(query, journal, limit)))
+    // ---- notes ----------------------------------------------------------
+
+    /// Does this vault's backend hold notes at all?
+    pub fn supports_notes(&self) -> bool {
+        self.read(|u| Ok(u.store.notes().is_some())).unwrap_or(false)
+    }
+
+    fn with_notes<T>(&self, f: impl FnOnce(&dyn NoteStore) -> Result<T>) -> Result<T> {
+        self.read(|u| {
+            let notes = u
+                .store
+                .notes()
+                .ok_or(Error::Unsupported("notes (this vault's backend stores journals only)"))?;
+            f(notes)
+        })
+    }
+
+    pub fn notes(&self, query: &NoteQuery) -> Result<Vec<NoteSummary>> {
+        self.with_notes(|n| n.list_notes(query))
+    }
+
+    pub fn note(&self, id: NoteId) -> Result<Note> {
+        self.with_notes(|n| n.get_note(id))
+    }
+
+    /// Save a note, refusing to overwrite somebody else's edit.
+    ///
+    /// `expect` is the `updated_at` the caller last read, exactly as for
+    /// [`Vault::save_entry`], and for the same reason: a note is a document
+    /// that is typed into and autosaved, so two windows on one vault will
+    /// find each other sooner or later.
+    pub fn save_note(&self, note: &Note, expect: Option<Timestamp>) -> Result<()> {
+        self.writable()?;
+        note.validate()?;
+        note.body.validate()?;
+        self.write(|u| {
+            let notes = u
+                .store
+                .notes()
+                .ok_or(Error::Unsupported("notes (this vault's backend stores journals only)"))?;
+            notes.put_note_if(note, expect)?;
+            u.index.insert_note(note);
+            Ok(())
+        })
+    }
+
+    /// Save a note whatever is already stored. The deliberate "keep mine".
+    pub fn overwrite_note(&self, note: &Note) -> Result<()> {
+        self.writable()?;
+        note.validate()?;
+        note.body.validate()?;
+        self.write(|u| {
+            let notes = u
+                .store
+                .notes()
+                .ok_or(Error::Unsupported("notes (this vault's backend stores journals only)"))?;
+            notes.put_note(note)?;
+            u.index.insert_note(note);
+            Ok(())
+        })
+    }
+
+    pub fn delete_note(&self, id: NoteId) -> Result<()> {
+        self.writable()?;
+        self.write(|u| {
+            let notes = u
+                .store
+                .notes()
+                .ok_or(Error::Unsupported("notes (this vault's backend stores journals only)"))?;
+            notes.delete_note(id)?;
+            u.index.remove_note(id);
+            Ok(())
+        })
+    }
+
+    pub fn note_tags(&self) -> Result<Vec<(String, u64)>> {
+        self.with_notes(|n| n.note_tags())
+    }
+
+    /// Every note, bodies included. For export.
+    pub fn all_notes(&self) -> Result<Vec<Note>> {
+        self.with_notes(|n| n.all_notes())
+    }
+
+    /// Search everything this vault can be searched for.
+    ///
+    /// One index over entries and notes both, so a half-remembered phrase is
+    /// found wherever it was written down. [`SearchScope`] narrows it when
+    /// the asking is from inside one app.
+    pub fn search(&self, query: &str, scope: SearchScope, limit: usize) -> Result<Vec<SearchHit>> {
+        self.read(|u| Ok(u.index.search_in(query, scope, limit)))
     }
 
     pub fn suggest_terms(&self, prefix: &str, limit: usize) -> Result<Vec<String>> {
@@ -1964,7 +2054,11 @@ impl Vault {
     /// Rebuild the search index from storage. Useful after a bulk import.
     pub fn reindex(&self) -> Result<usize> {
         self.write(|u| {
-            u.index = SearchIndex::build(&u.store.all_entries()?);
+            let notes = match u.store.notes() {
+                Some(n) => n.all_notes()?,
+                None => Vec::new(),
+            };
+            u.index = SearchIndex::build(&u.store.all_entries()?, &notes);
             Ok(u.index.len())
         })
     }
@@ -2178,6 +2272,7 @@ mod tests {
         }
         fn capabilities(&self) -> Capabilities {
             Capabilities {
+                notes: false,
                 blobs: true,
                 transactional: false,
                 human_readable: false,
@@ -2541,7 +2636,7 @@ mod tests {
         v.unlock(Some("correct horse")).unwrap();
         assert!(v.is_unlocked());
         assert_eq!(v.journals().unwrap().len(), 1);
-        assert_eq!(v.search("secret", None, 10).unwrap().len(), 1);
+        assert_eq!(v.search("secret", SearchScope::Everything, 10).unwrap().len(), 1);
     }
 
     #[test]
@@ -2554,7 +2649,7 @@ mod tests {
         assert!(!v.is_unlocked());
         assert_eq!(v.journals().unwrap_err().code(), "locked");
         assert_eq!(v.stats().unwrap_err().code(), "locked");
-        assert_eq!(v.search("x", None, 5).unwrap_err().code(), "locked");
+        assert_eq!(v.search("x", SearchScope::Everything, 5).unwrap_err().code(), "locked");
         assert_eq!(v.put_blob(b"x").unwrap_err().code(), "locked");
 
         // Status is still answerable while locked — the UI needs it.
@@ -2649,7 +2744,7 @@ mod tests {
         let mut e = Entry::new(j.id, "UTC");
         e.body = crate::RichDoc::from_plain_text("kingfisher on the wire");
         v.save_entry(&e, None).unwrap();
-        assert_eq!(v.search("kingfisher", None, 10).unwrap().len(), 1);
+        assert_eq!(v.search("kingfisher", SearchScope::Everything, 10).unwrap().len(), 1);
 
         // An edit, so it carries the version it is replacing. `None` here
         // would be the caller claiming the entry is new, and is a conflict.
@@ -2657,11 +2752,17 @@ mod tests {
         e.body = crate::RichDoc::from_plain_text("heron on the wire");
         e.updated_at = Timestamp::now();
         v.save_entry(&e, Some(loaded)).unwrap();
-        assert!(v.search("kingfisher", None, 10).unwrap().is_empty(), "edit must reindex");
-        assert_eq!(v.search("heron", None, 10).unwrap().len(), 1);
+        assert!(
+            v.search("kingfisher", SearchScope::Everything, 10).unwrap().is_empty(),
+            "edit must reindex"
+        );
+        assert_eq!(v.search("heron", SearchScope::Everything, 10).unwrap().len(), 1);
 
         v.delete_entry(e.id).unwrap();
-        assert!(v.search("heron", None, 10).unwrap().is_empty(), "delete must deindex");
+        assert!(
+            v.search("heron", SearchScope::Everything, 10).unwrap().is_empty(),
+            "delete must deindex"
+        );
     }
 
     #[test]
@@ -2675,7 +2776,7 @@ mod tests {
         v.save_entry(&e, None).unwrap();
 
         v.delete_journal(j.id).unwrap();
-        assert!(v.search("kingfisher", None, 10).unwrap().is_empty());
+        assert!(v.search("kingfisher", SearchScope::Everything, 10).unwrap().is_empty());
         assert!(v.entries(&EntryQuery::default()).unwrap().is_empty());
     }
 
@@ -3017,8 +3118,11 @@ mod tests {
         // search index straight.
         v.overwrite_entry(&e).unwrap();
         assert_eq!(v.entry(e.id).unwrap().body.plain_text(), "my later paragraph");
-        assert_eq!(v.search("paragraph", None, 10).unwrap().len(), 1);
-        assert!(v.search("they", None, 10).unwrap().is_empty(), "the index must follow the write");
+        assert_eq!(v.search("paragraph", SearchScope::Everything, 10).unwrap().len(), 1);
+        assert!(
+            v.search("they", SearchScope::Everything, 10).unwrap().is_empty(),
+            "the index must follow the write"
+        );
     }
 
     // The backup *round trip* is exercised against SQLite, in that crate:

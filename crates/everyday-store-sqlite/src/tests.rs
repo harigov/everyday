@@ -11,8 +11,11 @@ use super::{DB_FILENAME, MEDIA_DIRNAME, SqliteStore};
 use everyday_core::calendar::Event;
 use everyday_core::crypto::{AeadCipher, Cipher, NullCipher, SecretKey};
 use everyday_core::model::Entry;
+use everyday_core::note::Note;
 use everyday_core::store::calendars::{CalendarStore, EventQuery};
 use everyday_core::store::conformance;
+use everyday_core::store::notes::NoteStore;
+use everyday_core::store::purpose::PurposeStore;
 use everyday_core::store::tasks::{TaskQuery, TaskSort, TaskStore};
 use everyday_core::store::trackers::{ReadingQuery, TrackerStore};
 use everyday_core::store::{EntryQuery, JournalStore, SortOrder, StoreContext};
@@ -944,4 +947,70 @@ fn a_write_is_visible_to_the_next_read() {
     // Every write landed, and a reader connection -- a different session from
     // the one that wrote -- can see all of them.
     assert_eq!(store.list_journals().unwrap().len(), 8);
+}
+
+#[test]
+fn the_database_file_contains_no_readable_note_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let mut note = Note::written("A note title nobody should see", "note body nobody should see");
+    note.tags = vec!["secretnotetag".into()];
+    note.pinned = true;
+    store.put_note(&note).unwrap();
+    store.flush().unwrap();
+
+    // What *is* readable is the pin and the timestamps, which is what orders
+    // the list -- and is the whole of the trade this table makes.
+    let pinned: i64 =
+        raw(dir.path()).query_row("SELECT pinned FROM notes", [], |r| r.get(0)).unwrap();
+    assert_eq!(pinned, 1, "the pin is an index column and stays in the clear");
+
+    let bytes = std::fs::read(dir.path().join(DB_FILENAME)).unwrap();
+    for needle in [
+        b"A note title nobody should see".as_slice(),
+        b"note body nobody should see",
+        b"secretnotetag",
+    ] {
+        assert!(
+            !bytes.windows(needle.len()).any(|w| w == needle),
+            "found {:?} in the database file",
+            String::from_utf8_lossy(needle)
+        );
+    }
+}
+
+#[test]
+fn a_version_7_database_gains_notes_without_losing_goals() {
+    // The migration people will actually run: a vault written before notes,
+    // the profile and the assistant's routines existed, opened by a build
+    // that has them.
+    let dir = tempfile::tempdir().unwrap();
+    let role = everyday_core::purpose::Role::new("this must survive the migration");
+
+    {
+        let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+        store.put_role(&role).unwrap();
+    }
+    // Rewind to the world as version 7 left it: the new tables gone and the
+    // recorded version behind.
+    {
+        let conn = raw(dir.path());
+        conn.execute_batch(
+            "DROP TABLE notes; DROP TABLE profile;
+             DROP TABLE routines; DROP TABLE routine_runs;",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 7i64).unwrap();
+    }
+
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    assert_eq!(
+        store.get_role(role.id).unwrap().name,
+        "this must survive the migration",
+        "migrating must not disturb what was already there"
+    );
+
+    let note = Note::written("and the new table must work", "with a body");
+    store.put_note(&note).unwrap();
+    assert_eq!(store.get_note(note.id).unwrap(), note);
 }

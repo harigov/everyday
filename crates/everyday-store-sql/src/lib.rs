@@ -42,6 +42,9 @@
 //! | goal `role_id`, `status`, `horizon` | how many goals sit under each part of a life, how they are going, and roughly when they are wanted |
 //! | role `archived`, `sort_order` | how many parts a life is divided into |
 //! | `purposes` (`record_kind`, `record_id`, `purpose_kind`, `purpose_id`) | which records are filed against which goal -- never the name of either |
+//! | note `pinned`, `created_us`, `updated_us` | how many notes there are, which are pinned, and when they were touched -- never a title |
+//! | routine `created_us`, `updated_us` | how many standing jobs the assistant has |
+//! | run `routine_id`, `started_us`, `seen` | that a routine ran at seven and that nobody has read the result |
 //!
 //! Titles, bodies, tags, locations, attachments and file names are all
 //! sealed. Someone with the database learns *that* you journalled on 14 July
@@ -104,6 +107,7 @@ mod agent;
 mod calendars;
 mod journals;
 mod library;
+mod notes;
 mod pool;
 mod purpose;
 mod tasks;
@@ -275,6 +279,7 @@ impl SqlStore {
             library: true,
             trackers: true,
             goals: true,
+            notes: true,
             agent: true,
         }
     }

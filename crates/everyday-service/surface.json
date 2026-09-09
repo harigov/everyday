@@ -357,6 +357,25 @@
         {
           "name": "id",
           "required": true,
+          "type": "NoteId"
+        }
+      ],
+      "changes": {
+        "kind": "note",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_note",
+      "returns": "void",
+      "scope": "notes",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "ProjectId"
         }
       ],
@@ -534,6 +553,22 @@
       "name": "get_item",
       "returns": "Item",
       "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "NoteId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_note",
+      "returns": "Note",
+      "scope": "notes",
       "sensitive": false,
       "streams": false
     },
@@ -772,6 +807,22 @@
       "name": "list_memories",
       "returns": "Memory[]",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "NoteQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_notes",
+      "returns": "NoteSummary[]",
+      "scope": "notes",
       "sensitive": false,
       "streams": false
     },
@@ -1098,6 +1149,16 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "new_note",
+      "returns": "Note",
+      "scope": "notes",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "name",
@@ -1173,6 +1234,16 @@
       "name": "new_tracker",
       "returns": "Tracker",
       "scope": "trackers",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "note_tags",
+      "returns": "string[]",
+      "scope": "notes",
       "sensitive": false,
       "streams": false
     },
@@ -1467,6 +1538,49 @@
     {
       "args": [
         {
+          "name": "note",
+          "required": true,
+          "type": "Note"
+        },
+        {
+          "name": "expect",
+          "required": false,
+          "type": "string | null"
+        }
+      ],
+      "changes": {
+        "kind": "note",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_note",
+      "returns": "void",
+      "scope": "notes",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "note",
+          "required": true,
+          "type": "Note"
+        }
+      ],
+      "changes": {
+        "kind": "note",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_note_force",
+      "returns": "void",
+      "scope": "notes",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "project",
           "required": true,
           "type": "Project"
@@ -1589,6 +1703,11 @@
           "name": "journalId",
           "required": false,
           "type": "JournalId | null"
+        },
+        {
+          "name": "kind",
+          "required": false,
+          "type": "SearchKind | null"
         },
         {
           "name": "limit",

@@ -20,6 +20,7 @@
 import { onChange, onLockState, onPalette } from './api'
 import { calendar } from './calendar.svelte'
 import { library } from './library.svelte'
+import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
 import { panels } from './panels.svelte'
 import { app } from './state.svelte'
@@ -52,6 +53,7 @@ export const RELOAD: Record<string, () => Promise<unknown> | void> = {
   entries: () => app.queueListRefresh(),
   todo: () => todo.refresh(),
   calendar: () => calendar.refresh(),
+  notes: () => notes.refresh(),
   shelves: () => library.refreshKinds(),
   library: () => library.refresh(),
   tracking: () => tracking.refresh(),
@@ -79,6 +81,7 @@ const PURPOSE_BEARING: ReadonlySet<ChangeKind> = new Set([
   'task',
   'block',
   'entry',
+  'note',
   'item',
   'tracker',
   'reading',
@@ -89,6 +92,7 @@ const PURPOSE_BEARING: ReadonlySet<ChangeKind> = new Set([
 export const RELOADS: Record<ChangeKind, keyof typeof RELOAD | null> = {
   journal: 'journals',
   entry: 'entries',
+  note: 'notes',
   project: 'todo',
   task: 'todo',
   block: 'calendar',

@@ -4,6 +4,7 @@
 
 export type JournalId = string
 export type EntryId = string
+export type NoteId = string
 export type BlobId = string
 export type ProjectId = string
 export type TaskId = string
@@ -363,6 +364,53 @@ export interface Entry {
   purpose?: Purpose | null
 }
 
+/**
+ * A note: writing that is not a day.
+ *
+ * An entry without a journal or a date. It has a title because notes are
+ * looked for by name, and no date because the day a recipe was typed is not
+ * how anybody finds it again. Everything else it shares with an entry, which
+ * is why the same editor draws it.
+ */
+export interface Note {
+  id: NoteId
+  title: string
+  body: RichDoc
+  tags: string[]
+  /** Kept at the top of the list. There is no starring as well. */
+  pinned: boolean
+  purpose?: Purpose | null
+  attachments: Attachment[]
+  createdAt: string
+  updatedAt: string
+}
+
+/** The condensed form the note list renders; never carries a full body. */
+export interface NoteSummary {
+  id: NoteId
+  title: string
+  excerpt: string
+  tags: string[]
+  pinned: boolean
+  purpose?: Purpose | null
+  wordCount: number
+  attachmentCount: number
+  cover?: BlobId
+  createdAt: string
+  updatedAt: string
+}
+
+/** How a note list is ordered. Fewer choices than an entry list has. */
+export type NoteSort = 'updatedDesc' | 'createdDesc' | 'titleAsc'
+
+export interface NoteQuery {
+  tags?: string[]
+  pinned?: boolean | null
+  sort?: NoteSort
+  offset?: number
+  limit?: number | null
+}
+
 /** The condensed form the list view renders; never carries a full body. */
 export interface EntrySummary {
   id: EntryId
@@ -399,16 +447,32 @@ export interface EntryQuery {
   limit?: number | null
 }
 
-export interface SearchHit {
-  id: EntryId
-  journalId: JournalId
+/** Which records a search should look at. */
+export type SearchKind = 'entry' | 'note'
+
+/**
+ * A ranked search result.
+ *
+ * One index covers entries and notes both, so a half-remembered phrase is
+ * found wherever it was written down. The fields that only make sense for one
+ * of them hang off the variant that has them: an entry is filed under a day in
+ * a journal, and a note is filed under nothing, which is the whole difference
+ * between the two records.
+ */
+export type SearchHit = {
   title: string
-  localDate: string
   score: number
   snippet: string
-  /** Byte ranges within `snippet` that matched. */
   highlights: [number, number][]
-}
+} & (
+  | { type: 'entry'; id: EntryId; journalId: JournalId; localDate: string }
+  | { type: 'note'; id: NoteId }
+)
+
+/** A hit that is known to be an entry. What the journal's own search box gets. */
+export type EntryHit = Extract<SearchHit, { type: 'entry' }>
+/** A hit that is known to be a note. */
+export type NoteHit = Extract<SearchHit, { type: 'note' }>
 
 export interface StoreStats {
   journals: number
@@ -464,6 +528,12 @@ export interface Capabilities {
    * conversation vanishes when the window closes.
    */
   agent: boolean
+  /**
+   * Backend implements the note store, so writing that is not filed under a
+   * day has somewhere to live. False hides the Notes app, and takes the
+   * assistant's note tools with it.
+   */
+  notes: boolean
 }
 
 export interface VaultStatus {
@@ -902,6 +972,7 @@ export interface ChangeEvent {
 export type ChangeKind =
   | 'journal'
   | 'entry'
+  | 'note'
   | 'project'
   | 'task'
   | 'block'

@@ -33,6 +33,7 @@ import { agent } from './agent.svelte'
 import { calendar } from './calendar.svelte'
 import { SEQUENCE_MS, chordOf, isTyping, match, type Binding } from './keys'
 import { library } from './library.svelte'
+import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
 import { panels } from './panels.svelte'
 import { app, type Section } from './state.svelte'
@@ -41,10 +42,10 @@ import { todo } from './todo.svelte'
 /**
  * Put the caret in whatever the open app calls its search.
  *
- * Found by attribute rather than by selector-per-app: three of the four have
- * a search field, they are in three different components, and the alternative
- * is this function knowing all three class names. `data-search` is the
- * contract, and a fourth app gets the shortcut by wearing it.
+ * Found by attribute rather than by selector-per-app: several apps have a
+ * search field, they are in different components, and the alternative is this
+ * function knowing all their class names. `data-search` is the contract, and
+ * a new app gets the shortcut by wearing it.
  */
 function focusSearch() {
   document.querySelector<HTMLInputElement>('[data-search]')?.focus()
@@ -125,6 +126,13 @@ export const ACTIONS: Binding[] = [
     group: 'Go to',
     when: () => anywhere() && app.canShow('journal'),
     run: () => app.setSection('journal'),
+  },
+  {
+    keys: 'g n',
+    label: 'Notes',
+    group: 'Go to',
+    when: () => anywhere() && app.canShow('notes'),
+    run: () => app.setSection('notes'),
   },
   {
     keys: 'g t',
@@ -529,6 +537,28 @@ export const ACTIONS: Binding[] = [
     },
   },
   {
+    id: 'notes:new',
+    label: 'New note',
+    group: 'Notes',
+    keywords: ['write', 'jot', 'memo', 'draft'],
+    icon: 'pencil',
+    tray: true,
+    when: () => app.screen === 'main' && app.supportsNotes,
+    run: async () => {
+      if (await app.goTo('notes')) await notes.create()
+    },
+  },
+  {
+    label: 'Search notes',
+    group: 'Notes',
+    keywords: ['find', 'note'],
+    icon: 'search',
+    when: () => app.screen === 'main' && app.supportsNotes,
+    run: async () => {
+      if (await app.goTo('notes')) focusSearch()
+    },
+  },
+  {
     id: 'vault:lock',
     label: 'Lock this screen',
     group: 'Vault',
@@ -607,7 +637,8 @@ export const ACTIONS: Binding[] = [
 
 /** What "the next thing" means in the app that is open. */
 function create() {
-  if (app.section === 'todo') todo.focusCapture()
+  if (app.section === 'notes') void notes.create()
+  else if (app.section === 'todo') todo.focusCapture()
   else if (app.section === 'calendar') void calendar.bookNow()
   else if (app.section === 'library') library.focusCapture()
   else if (app.section === 'overview') newGoal()

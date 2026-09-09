@@ -65,6 +65,7 @@ pub mod id;
 pub mod library;
 pub mod lockfile;
 pub mod model;
+pub mod note;
 pub mod purpose;
 pub mod richtext;
 pub mod search;
@@ -83,13 +84,14 @@ pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatu
 pub use error::{Error, Result};
 pub use id::{
     BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, GoalId, ItemId, JournalId,
-    KindId, LogId, MemoryId, MessageId, ProjectId, ReadingId, RoleId, TaskId, TrackerId,
+    KindId, LogId, MemoryId, MessageId, NoteId, ProjectId, ReadingId, RoleId, TaskId, TrackerId,
 };
 pub use library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,
     LogEntry, LogEvent, Progress, Verbs,
 };
 pub use model::{Attachment, Entry, EntrySummary, Journal, Location, MediaKind, Weather};
+pub use note::{Note, NoteSummary};
 pub use purpose::{
     Goal, GoalActivity, GoalStatus, Purpose, PurposeMinutes, Role, RoleEventMinutes,
 };
@@ -97,6 +99,7 @@ pub use richtext::RichDoc;
 pub use store::agent::{AgentStore, ConversationQuery};
 pub use store::calendars::{CalendarStore, EventQuery};
 pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
+pub use store::notes::{NoteQuery, NoteSort, NoteStore};
 pub use store::purpose::{GoalQuery, PurposeStore, PurposeWindow};
 pub use store::tasks::{BlockQuery, ParentScope, ProjectScope, TaskQuery, TaskSort, TaskStore};
 pub use store::trackers::{ReadingQuery, TrackerDay, TrackerStore};

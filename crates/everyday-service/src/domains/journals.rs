@@ -5,7 +5,7 @@ use crate::ctx::Ctx;
 use crate::error::CommandResult;
 use crate::service::{Service, blocking};
 use everyday_core::model::{local_date_in, system_tz};
-use everyday_core::search::SearchHit;
+use everyday_core::search::{SearchHit, SearchScope};
 use everyday_core::store::EntryQuery;
 use everyday_core::{Entry, EntryId, EntrySummary, Journal, JournalId};
 use serde::Deserialize;
@@ -69,8 +69,15 @@ pub struct ForceEntry {
 #[serde(rename_all = "camelCase")]
 pub struct Search {
     pub query: String,
+    /// Narrow to one journal. Naming one also narrows to *entries*, since a
+    /// note is in no journal.
     #[serde(default)]
     pub journal_id: Option<JournalId>,
+    /// Narrow to one kind of record. Absent means both, which is what the
+    /// palette wants: a half-remembered phrase should be found wherever it
+    /// was written down.
+    #[serde(default)]
+    pub kind: Option<String>,
     pub limit: usize,
 }
 
@@ -149,7 +156,15 @@ async fn delete_entry(svc: Arc<Service>, _ctx: Ctx, args: EntryRef) -> CommandRe
 
 async fn search(svc: Arc<Service>, _ctx: Ctx, args: Search) -> CommandResult<Vec<SearchHit>> {
     let vault = svc.require()?;
-    blocking(move || Ok(vault.search(&args.query, args.journal_id, args.limit.min(200))?)).await
+    // Naming a journal narrows to entries as well: a note is in no journal,
+    // so returning some anyway would answer a different question.
+    let scope = match (args.kind.as_deref(), args.journal_id) {
+        (Some("note"), _) => SearchScope::Notes,
+        (_, Some(id)) => SearchScope::Entries(Some(id)),
+        (Some("entry"), None) => SearchScope::Entries(None),
+        _ => SearchScope::Everything,
+    };
+    blocking(move || Ok(vault.search(&args.query, scope, args.limit.min(200))?)).await
 }
 
 async fn list_tags(svc: Arc<Service>, _ctx: Ctx, _a: Nothing) -> CommandResult<Vec<String>> {
@@ -228,6 +243,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
         signature: &[
             ("query", "string", true),
             ("journalId", "JournalId | null", false),
+            ("kind", "SearchKind | null", false),
             ("limit", "number", true),
         ],
         run: search,

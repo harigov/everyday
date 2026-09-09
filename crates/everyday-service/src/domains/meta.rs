@@ -115,6 +115,7 @@ async fn list_commands(_s: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<
             changes: c.change.map(|(kind, _)| match kind {
                 crate::events::Kind::Journal => "journal",
                 crate::events::Kind::Entry => "entry",
+                crate::events::Kind::Note => "note",
                 crate::events::Kind::Project => "project",
                 crate::events::Kind::Task => "task",
                 crate::events::Kind::Block => "block",

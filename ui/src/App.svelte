@@ -20,6 +20,7 @@
   import TodoView from './components/TodoView.svelte'
   import CalendarView from './components/CalendarView.svelte'
   import LibraryView from './components/LibraryView.svelte'
+  import NotesView from './components/NotesView.svelte'
   import OverviewView from './components/OverviewView.svelte'
   import LockScreen from './components/LockScreen.svelte'
   import Setup from './components/Setup.svelte'
@@ -94,7 +95,7 @@
   const accent = $derived(
     app.section === 'todo'
       ? todo.accent
-      : app.section === 'calendar' || app.section === 'overview'
+      : app.section === 'calendar' || app.section === 'overview' || app.section === 'notes'
         ? 'var(--accent)'
         : app.section === 'library'
           ? library.accent
@@ -176,7 +177,9 @@
       <div class="panes">
         <AppBar />
         <Sidebar />
-        {#if app.section === 'todo'}
+        {#if app.section === 'notes'}
+          <NotesView />
+        {:else if app.section === 'todo'}
           <TodoView />
         {:else if app.section === 'calendar'}
           <CalendarView />

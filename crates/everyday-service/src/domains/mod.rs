@@ -13,6 +13,7 @@ pub mod calendars;
 pub mod journals;
 pub mod library;
 pub mod meta;
+pub mod notes;
 pub mod purpose;
 pub mod tasks;
 pub mod trackers;
@@ -35,6 +36,7 @@ pub fn catalog() -> &'static [&'static Command] {
             tasks::COMMANDS,
             calendars::COMMANDS,
             library::COMMANDS,
+            notes::COMMANDS,
             trackers::COMMANDS,
             purpose::COMMANDS,
             web::COMMANDS,

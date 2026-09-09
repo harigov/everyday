@@ -19,7 +19,7 @@ import type {
   Journal,
   JournalId,
   Purpose,
-  SearchHit,
+  EntryHit,
   VaultStatus,
 } from './types'
 import { VaultError } from './types'
@@ -54,7 +54,7 @@ export type Screen = 'loading' | 'setup' | 'locked' | 'main' | 'error'
  * back to the app you were last in is what makes it feel like one program
  * rather than four bolted together.
  */
-export const SECTIONS = ['journal', 'todo', 'calendar', 'library', 'overview'] as const
+export const SECTIONS = ['journal', 'notes', 'todo', 'calendar', 'library', 'overview'] as const
 export type Section = (typeof SECTIONS)[number]
 
 /**
@@ -159,7 +159,7 @@ class AppState {
   entry = $state<Entry | null>(null)
 
   query = $state('')
-  results = $state<SearchHit[]>([])
+  results = $state<EntryHit[]>([])
   searching = $state(false)
 
   showStarredOnly = $state(false)
@@ -431,8 +431,19 @@ class AppState {
     return this.status?.capabilities?.goals === true && this.supportsTrackers
   }
 
+  /**
+   * Does this vault hold notes?
+   *
+   * Independent of everything else: nothing in the notes app reads a task or
+   * an entry, so it is offered on any backend that carries the domain.
+   */
+  get supportsNotes(): boolean {
+    return this.status?.capabilities?.notes === true
+  }
+
   /** Is this section available on the vault that is open? */
   canShow(section: Section): boolean {
+    if (section === 'notes') return this.supportsNotes
     if (section === 'todo') return this.supportsTasks
     if (section === 'calendar') return this.supportsCalendar
     if (section === 'library') return this.supportsLibrary
@@ -1226,7 +1237,12 @@ class AppState {
     this.searching = true
     this.#searchTimer = setTimeout(async () => {
       try {
-        this.results = await api.search(q, this.selectedJournal, 50)
+        // Entries only. This box is the journal's, and quietly mixing notes
+        // into a list whose rows carry a journal colour and a date would be
+        // answering a question nobody asked. Narrowed here rather than cast
+        // at the drawing end, so the rows genuinely have the fields they use.
+        const hits = await api.search(q, this.selectedJournal, 50, 'entry')
+        this.results = hits.filter((h): h is EntryHit => h.type === 'entry')
       } catch (e) {
         await handle(e)
       } finally {

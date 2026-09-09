@@ -33,6 +33,7 @@
   // offers an app that cannot work.
   const APPS: AppEntry[] = [
     { id: 'journal', label: 'Journal', icon: 'quote' },
+    { id: 'notes', label: 'Notes', icon: 'pencil' },
     { id: 'todo', label: 'Todo', icon: 'check' },
     { id: 'calendar', label: 'Calendar', icon: 'calendar' },
     { id: 'library', label: 'Library', icon: 'book' },

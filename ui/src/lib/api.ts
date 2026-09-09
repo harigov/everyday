@@ -61,6 +61,11 @@ import type {
   RoleId,
   RoleInfo,
   SearchHit,
+  SearchKind,
+  Note,
+  NoteId,
+  NoteQuery,
+  NoteSummary,
   SearchRequest,
   HotkeyStatus,
   SearchResult,
@@ -419,8 +424,34 @@ export const api = {
   saveEntryForce: (entry: Entry) => invoke<void>('save_entry_force', { entry }),
   deleteEntry: (id: EntryId) => invoke<void>('delete_entry', { id }),
 
-  search: (query: string, journalId: JournalId | null, limit: number) =>
-    invoke<SearchHit[]>('search', { query, journalId, limit }),
+  /**
+   * Search entries and notes.
+   *
+   * `kind` narrows to one of them; naming a journal narrows to entries
+   * whatever `kind` says, because a note is in no journal. Both absent means
+   * both kinds, which is what the palette wants.
+   */
+  search: (
+    query: string,
+    journalId: JournalId | null,
+    limit: number,
+    kind: SearchKind | null = null,
+  ) => invoke<SearchHit[]>('search', { query, journalId, kind, limit }),
+
+  notes: (query: NoteQuery = {}) => invoke<NoteSummary[]>('list_notes', { query }),
+  note: (id: NoteId) => invoke<Note>('get_note', { id }),
+  newNote: () => invoke<Note>('new_note'),
+  /**
+   * Save a note, refusing to overwrite an edit made since `expect` was read.
+   *
+   * The same contract `saveEntry` has, for the same reason: a note is typed
+   * into and autosaved, so two windows on one vault find each other.
+   */
+  saveNote: (note: Note, expect: string | null) =>
+    invoke<void>('save_note', { note, expect }, newRequestId()),
+  saveNoteForce: (note: Note) => invoke<void>('save_note_force', { note }),
+  deleteNote: (id: NoteId) => invoke<void>('delete_note', { id }),
+  noteTags: () => invoke<string[]>('note_tags'),
 
   /**
    * Import a file the user dropped or picked; returns its content address.

@@ -49,6 +49,11 @@ pub enum Scope {
     /// Everything. What a paired desktop client is issued today.
     All,
     Journals,
+    /// Notes. Its own scope rather than a corner of `Journals`, because the
+    /// two records answer different questions and a client may well want one
+    /// without the other -- a browser extension that clips a page into a note
+    /// has no business reading anybody's diary.
+    Notes,
     Tasks,
     Calendars,
     Library,
@@ -76,6 +81,7 @@ impl Scope {
         match self {
             Scope::All => "all",
             Scope::Journals => "journals",
+            Scope::Notes => "notes",
             Scope::Tasks => "tasks",
             Scope::Calendars => "calendars",
             Scope::Library => "library",
@@ -92,6 +98,7 @@ impl Scope {
     pub const ALL: &'static [Scope] = &[
         Scope::All,
         Scope::Journals,
+        Scope::Notes,
         Scope::Tasks,
         Scope::Calendars,
         Scope::Library,
