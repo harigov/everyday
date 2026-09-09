@@ -28,6 +28,8 @@
   import Icon from './Icon.svelte'
   import TrackerIcon from './TrackerIcon.svelte'
   import PurposeField from './PurposeField.svelte'
+  import LogReading from './LogReading.svelte'
+  import { dismissable } from '../lib/dismiss'
 
   // Loaded when the view appears rather than when the store is imported, so
   // a vault whose owner never opens this app never pays for the queries.
@@ -37,6 +39,15 @@
   const weekStart = localeWeekStart()
   let pickedRole = $state<string | null>(null)
   let newGoal = $state<Record<string, string>>({})
+  let logging = $state(false)
+
+  // A tray action can ask for the field before this view exists to give it.
+  $effect(() => {
+    if (overview.wantsLog) {
+      overview.wantsLog = false
+      logging = true
+    }
+  })
 
   const rows = $derived(overview.roles)
   const today = $derived(todayIso())
@@ -175,9 +186,36 @@
           </div>
         </div>
 
-        <h2 class="section">Today's habits</h2>
+        <div class="sectionhead">
+          <h2 class="section">Today's habits</h2>
+          <div class="logwrap">
+            <button
+              class="quiet add"
+              aria-haspopup="dialog"
+              aria-expanded={logging}
+              onclick={() => (logging = !logging)}
+            >
+              <Icon name="plus" size={14} /> Record something
+            </button>
+            {#if logging}
+              <div
+                class="logpop"
+                role="dialog"
+                aria-label="Record a reading"
+                use:dismissable={{ onaway: () => (logging = false), within: '.logwrap .add' }}
+              >
+                <!-- No journal and no entry: this was ticked on no page at
+                     all, which is exactly what a nullable journal pointer on
+                     a reading is for. -->
+                <LogReading date={today} onclose={() => (logging = false)} />
+              </div>
+            {/if}
+          </div>
+        </div>
         {#if tracking.live.length === 0}
-          <p class="dim">No trackers yet. A journal's settings is where they are made.</p>
+          <p class="dim">
+            Nothing tracked yet. “Record something” above makes one out of what you type.
+          </p>
         {:else}
           <div class="chips">
             {#each tracking.live as tracker (tracker.id)}
@@ -527,6 +565,41 @@
     margin: var(--sp-2) 0 0;
     font-size: var(--text-base);
     font-weight: 600;
+  }
+
+  .sectionhead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+  }
+
+  .logwrap {
+    position: relative;
+  }
+
+  .logwrap .add {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    padding: var(--sp-1) var(--sp-2);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
+  }
+
+  .logwrap .add:hover {
+    background: var(--bg-hover);
+  }
+
+  .logpop {
+    position: absolute;
+    z-index: 40;
+    top: calc(100% + 4px);
+    right: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-raised);
+    box-shadow: var(--shadow-lg);
   }
 
   .chips {

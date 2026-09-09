@@ -23,6 +23,7 @@
   import { todayIso } from '../lib/time'
   import Icon from './Icon.svelte'
   import TrackerIcon from './TrackerIcon.svelte'
+  import LogReading from './LogReading.svelte'
 
   let { journalId, date }: { journalId: string; date: string } = $props()
 
@@ -36,6 +37,8 @@
   /** The number in the panel's field, as typed. */
   let draft = $state('')
   let strip = $state<HTMLDivElement>()
+  /** Whether the "record something else" popover is open. */
+  let logging = $state(false)
 
   const locale = navigator.language || 'en'
   const timeFmt = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' })
@@ -153,7 +156,11 @@
   }
 </script>
 
-{#if tracking.enabled && trackers.length > 0}
+<!-- The strip appears whenever this vault can hold readings, not only when
+     this journal already draws a chip. The plus is exactly what somebody
+     with no trackers yet needs, and hiding the whole row until one exists is
+     how a feature stays undiscovered. -->
+{#if tracking.enabled}
   <div class="strip" bind:this={strip}>
     {#each trackers as tracker (tracker.id)}
       {@const readings = readingsOf(tracker)}
@@ -295,10 +302,64 @@
         {/if}
       </div>
     {/each}
+
+    <!-- The way to record something there is no chip for yet.
+         A plus at the end of the strip rather than a trip to the journal's
+         settings: a tracker somebody has to define before they can note an
+         hour in the pool is a tracker that never gets defined, and the note
+         never gets made. -->
+    <div class="slot">
+      <button
+        class="add"
+        aria-haspopup="dialog"
+        aria-expanded={logging}
+        title="Record something else"
+        onclick={() => (logging = !logging)}
+      >
+        <Icon name="plus" size={15} />
+      </button>
+
+      {#if logging}
+        <div
+          class="panel wide"
+          role="dialog"
+          aria-label="Record a reading"
+          use:dismissable={{ onaway: () => (logging = false), within: '.add' }}
+        >
+          <LogReading
+            {journalId}
+            {date}
+            entryId={app.entry?.id ?? null}
+            onclose={() => (logging = false)}
+          />
+        </div>
+      {/if}
+    </div>
   </div>
 {/if}
 
 <style>
+  .add {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border: 1px dashed var(--border);
+    border-radius: 999px;
+    background: none;
+    color: var(--fg-faint);
+  }
+
+  .add:hover {
+    border-style: solid;
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+
+  .panel.wide {
+    padding: 0;
+  }
+
   .strip {
     display: flex;
     flex-wrap: wrap;

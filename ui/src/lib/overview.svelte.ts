@@ -57,6 +57,15 @@ class OverviewState {
   selectedTracker = $state<string | null>(null)
   /** Which role's section is collapsed, by id. Chrome, not vault contents. */
   collapsed = $state<Set<RoleId>>(new Set())
+  /**
+   * A request to open the log field, made before the view was there to
+   * take it.
+   *
+   * The ordinary case for a tray action: the request arrives while another
+   * app is on screen and this view mounts a frame later. The same
+   * arrangement the todo app's capture line uses.
+   */
+  wantsLog = $state(false)
 
   // ── what has been loaded for it ──────────────────────────────────────
 
@@ -288,6 +297,21 @@ tray.register('overview', TRAY_ORDER.overview, () => {
       raise: true,
       run: async () => {
         if (await app.goTo('overview')) overview.setPane('week')
+      },
+    },
+    {
+      id: 'overview.log',
+      label: 'Record a reading',
+      raise: true,
+      run: async () => {
+        // Straight to the pane that has the field, and the field opens
+        // itself. A quick action from the menu bar has no component to reach
+        // for, which is the same problem `focusCapture` solves for the todo
+        // app's line.
+        if (await app.goTo('overview')) {
+          overview.setPane('today')
+          overview.wantsLog = true
+        }
       },
     },
     {

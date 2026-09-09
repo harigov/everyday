@@ -11,8 +11,10 @@
 // this store does, so `days` asks and does not cache.
 
 import { api } from './api'
+import { parseQuickTrack } from './quicktrack'
 import { app, handle, isLocked } from './state.svelte'
-import type { JournalId, Reading, Tracker, TrackerDay, TrackerKind } from './types'
+import { todayIso } from './time'
+import type { EntryId, JournalId, Reading, Tracker, TrackerDay, TrackerKind } from './types'
 
 class TrackingState {
   /** Every tracker in the vault, archived ones included. */
@@ -228,6 +230,64 @@ class TrackingState {
     } finally {
       this.busy = null
     }
+  }
+
+  /**
+   * Record one line, making the tracker if there is not one yet.
+   *
+   * The lazy half of capture, and the reason it is in the store rather than
+   * in the popover: three call sites want it — the strip's plus chip, the
+   * Overview's today pane, and the tray — and the resolve-or-create step
+   * must not be reimplemented in any of them.
+   *
+   * Returns what happened, so the caller can say it. `null` means the line
+   * named nothing, which is a real answer and not a failure.
+   */
+  async logLine(
+    line: string,
+    where: { journalId?: JournalId | null; entryId?: EntryId | null; date?: string } = {},
+  ): Promise<{ tracker: Tracker; created: boolean } | null> {
+    if (!this.enabled) return null
+    const parsed = parseQuickTrack(line, this.trackers)
+    if (!parsed.target) return null
+
+    let tracker: Tracker | null = null
+    let created = false
+    if (parsed.target.kind === 'existing') {
+      tracker = parsed.target.tracker
+    } else {
+      const spec = parsed.target
+      const made = await this.addTracker(spec.name, spec.trackerKind)
+      if (!made) return null
+      created = true
+      // The unit and the ceiling the line implied. Written as a second save
+      // rather than passed to `newTracker`, which mints defaults and knows
+      // nothing about a grammar the interface owns.
+      const next: Tracker = {
+        ...made,
+        unit: spec.unit,
+        scaleMax: spec.scaleMax,
+        defaultValue: spec.trackerKind === 'check' ? 1 : parsed.value || 1,
+      }
+      await this.saveTracker(next)
+      tracker = this.tracker(made.id) ?? next
+    }
+
+    const date = where.date ?? this.#date ?? todayIso()
+    try {
+      await api.logReading({
+        trackerId: tracker.id,
+        value: parsed.value,
+        date,
+        journalId: where.journalId ?? null,
+        entryId: where.entryId ?? null,
+      })
+    } catch (e) {
+      await handle(e)
+      return null
+    }
+    await this.refresh()
+    return { tracker, created }
   }
 
   /** Change a reading that exists: a corrected dose, a note, a time. */
