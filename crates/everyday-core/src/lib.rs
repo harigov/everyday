@@ -65,6 +65,7 @@ pub mod id;
 pub mod library;
 pub mod lockfile;
 pub mod model;
+pub mod purpose;
 pub mod richtext;
 pub mod search;
 pub mod store;
@@ -74,24 +75,29 @@ pub mod vault;
 pub mod websearch;
 
 pub use agent::{
-    AgentSettings, Conversation, Memory, Message, ModelConfig, Provider, Role, ToolCall,
+    AgentSettings, Conversation, Memory, Message, ModelConfig, Provider, Role as MessageRole,
+    ToolCall,
 };
 pub use blobstore::FileBlobStore;
 pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatus, SyncReport};
 pub use error::{Error, Result};
 pub use id::{
-    BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, ItemId, JournalId, KindId,
-    LogId, MemoryId, MessageId, ProjectId, ReadingId, TaskId, TrackerId,
+    BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, GoalId, ItemId, JournalId,
+    KindId, LogId, MemoryId, MessageId, ProjectId, ReadingId, RoleId, TaskId, TrackerId,
 };
 pub use library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,
     LogEntry, LogEvent, Progress, Verbs,
 };
 pub use model::{Attachment, Entry, EntrySummary, Journal, Location, MediaKind, Weather};
+pub use purpose::{
+    Goal, GoalActivity, GoalStatus, Purpose, PurposeMinutes, Role, RoleEventMinutes,
+};
 pub use richtext::RichDoc;
 pub use store::agent::{AgentStore, ConversationQuery};
 pub use store::calendars::{CalendarStore, EventQuery};
 pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
+pub use store::purpose::{GoalQuery, PurposeStore, PurposeWindow};
 pub use store::tasks::{BlockQuery, ParentScope, ProjectScope, TaskQuery, TaskSort, TaskStore};
 pub use store::trackers::{ReadingQuery, TrackerDay, TrackerStore};
 pub use store::{

@@ -100,6 +100,7 @@ mod agent;
 mod calendars;
 mod journals;
 mod library;
+mod purpose;
 mod tasks;
 mod trackers;
 
@@ -226,7 +227,7 @@ impl SqlStore {
 
     /// What every driver of this crate can do.
     ///
-    /// All six domains, on both databases. The optional accessors on
+    /// All seven domains, on both databases. The optional accessors on
     /// `JournalStore` stay optional for the sake of backends that are not
     /// this one, not because a SQL vault might be missing the todo app.
     pub(crate) fn capabilities(&self) -> Capabilities {
@@ -239,6 +240,7 @@ impl SqlStore {
             calendars: true,
             library: true,
             trackers: true,
+            goals: true,
             agent: true,
         }
     }
@@ -348,8 +350,18 @@ impl SqlStore {
         }
         let holes = placeholders(1, ids.len());
         let args: Vec<Value> = ids.iter().map(|id| Value::Text(id.clone())).collect();
+        // The blocks are gone with the tasks, so their pointer rows go too.
+        // Collected before the delete, because afterwards there is nothing
+        // left to ask which blocks these were.
+        let blocks: Vec<String> = tx
+            .query(&format!("SELECT id FROM time_blocks WHERE task_id IN ({holes})"), &args)?
+            .into_iter()
+            .map(|r| r.text(0))
+            .collect::<Result<_>>()?;
         tx.execute(&format!("DELETE FROM time_blocks WHERE task_id IN ({holes})"), &args)?;
         tx.execute(&format!("DELETE FROM tasks WHERE id IN ({holes})"), &args)?;
+        crate::purpose::forget_purposes(tx, crate::purpose::RecordKind::Block, &blocks)?;
+        crate::purpose::forget_purposes(tx, crate::purpose::RecordKind::Task, ids)?;
         Ok(())
     }
 

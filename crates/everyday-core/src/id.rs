@@ -110,6 +110,14 @@ typed_id!(LogId, "log");
 typed_id!(TrackerId, "tracker");
 typed_id!(ReadingId, "reading");
 
+// The purpose domain. A `RoleId` names who you are being -- parent,
+// engineer, yourself -- and a `GoalId` one outcome under one of those. Two
+// newtypes rather than one because they are not interchangeable in either
+// direction: a goal always belongs to exactly one role, and a record that
+// points straight at a role is saying something a goal cannot say.
+typed_id!(RoleId, "role");
+typed_id!(GoalId, "goal");
+
 // The assistant's domain. A `ConversationId` names a thread, a `MessageId`
 // one turn in it, and a `MemoryId` one fact the assistant was asked to keep
 // across all of them. The third is separate from the first two for the

@@ -31,6 +31,7 @@ use everyday_core::store::library::{
 };
 
 use crate::conn::{SqlExt, Value};
+use crate::purpose::{RecordKind, forget_purposes, set_purpose};
 use crate::{SqlStore, date_str, to_us, vals};
 
 impl LibraryStore for SqlStore {
@@ -81,12 +82,20 @@ impl LibraryStore for SqlStore {
         // items to be reached at all.
         let mut conn = self.conn();
         let mut tx = conn.begin()?;
+        // Collected before the delete, because afterwards there is nothing
+        // left to ask which items were on this shelf.
+        let doomed: Vec<String> = tx
+            .query("SELECT id FROM items WHERE kind_id = ?1", &vals![id.to_string()])?
+            .into_iter()
+            .map(|r| r.text(0))
+            .collect::<Result<_>>()?;
         tx.execute(
             "DELETE FROM logs WHERE item_id IN (SELECT id FROM items WHERE kind_id = ?1)",
             &vals![id.to_string()],
         )?;
         tx.execute("DELETE FROM items WHERE kind_id = ?1", &vals![id.to_string()])?;
         tx.execute("DELETE FROM kinds WHERE id = ?1", &vals![id.to_string()])?;
+        forget_purposes(tx.as_mut(), RecordKind::Item, &doomed)?;
         tx.commit()
     }
 
@@ -192,6 +201,12 @@ impl LibraryStore for SqlStore {
                     data,
                 ],
             )?;
+            set_purpose(
+                tx.as_mut(),
+                RecordKind::Item,
+                &item.id.to_string(),
+                item.purpose.as_ref(),
+            )?;
         }
         tx.commit()
     }
@@ -201,6 +216,7 @@ impl LibraryStore for SqlStore {
         let mut tx = conn.begin()?;
         tx.execute("DELETE FROM logs WHERE item_id = ?1", &vals![id.to_string()])?;
         tx.execute("DELETE FROM items WHERE id = ?1", &vals![id.to_string()])?;
+        forget_purposes(tx.as_mut(), RecordKind::Item, &[id.to_string()])?;
         tx.commit()
     }
 

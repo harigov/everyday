@@ -18,7 +18,12 @@ import type {
   Calendar,
   CalendarEvent,
   CalendarInfo,
+  BalanceReport,
   EventQuery,
+  Goal,
+  GoalActivity,
+  GoalQuery,
+  GoalStatus,
   Item,
   ItemQuery,
   ItemStatus,
@@ -29,6 +34,10 @@ import type {
   LogEvent,
   LogQuery,
   ProviderInfo,
+  Purpose,
+  PurposeMinutes,
+  Role,
+  RoleEventMinutes,
   SearchRequest,
   SearchResult,
   SourceInfo,
@@ -51,7 +60,7 @@ import type {
   TrackerKind,
   VaultStatus,
 } from './types'
-import { TASK_STATUSES, VaultError, isAhead, isOpen, priorityRank } from './types'
+import { TASK_STATUSES, VaultError, goalIsOpen, isAhead, isOpen, priorityRank } from './types'
 import type { AgentEvent, AgentMessage, AgentSettings, Conversation, Memory } from './types'
 import { DEFAULT_COLORS } from './colors'
 
@@ -941,6 +950,7 @@ const projects: Project[] = [
   {
     id: 'p-house',
     name: 'Move house',
+    purpose: { type: 'role', id: 'r-parent' },
     notes: 'Completion is the 12th. Everything hangs off that.',
     color: '#c2410c',
     icon: '\u{1f4e6}',
@@ -957,6 +967,7 @@ const projects: Project[] = [
   {
     id: 'p-site',
     name: 'Rebuild the site',
+    purpose: { type: 'goal', id: 'g-ship' },
     notes: 'Static, fast, and no analytics.',
     color: '#0f766e',
     icon: '\u{1f5a5}\u{fe0f}',
@@ -1180,6 +1191,7 @@ const calendars: CalendarInfo[] = [
   {
     id: 'c-work',
     name: 'Priya — Work',
+    roleId: 'r-work',
     color: '#0369a1',
     origin: { type: 'url', url: 'https://calendar.google.com/calendar/ical/…/basic.ics' },
     provider: 'google',
@@ -1428,6 +1440,162 @@ const readings: Reading[] = (() => {
   return out
 })()
 
+// ── Roles and goals ──────────────────────────────────────────────────────
+//
+// Five roles and six goals, deliberately uneven: one role with three goals,
+// one with none, one goal finished and one paused. A balance view drawn
+// against a tidy set of five equal rows looks finished when it is not, and
+// the interesting cases here are the empty role and the goal nothing has
+// touched since March.
+
+const roles: Role[] = [
+  role('r-work', 'Work', '#0369a1', '\u{1f4bc}', 0),
+  role('r-parent', 'Parent', '#c2410c', '\u{1f3e1}', 1),
+  role('r-health', 'Health', '#15803d', '\u{1f331}', 2),
+  role('r-friends', 'Friends', '#a21caf', '\u{1f465}', 3),
+  role('r-self', 'Myself', '#4338ca', '\u{1f9ed}', 4),
+]
+
+function role(id: string, name: string, color: string, icon: string, sortOrder: number): Role {
+  return {
+    id,
+    name,
+    color,
+    icon,
+    notes: '',
+    archived: false,
+    sortOrder,
+    createdAt: iso(200),
+    updatedAt: iso(30),
+  }
+}
+
+const goals: Goal[] = [
+  goal('g-ship', 'r-work', 'Ship the vault rewrite', 'active', ahead(60), 0),
+  goal('g-hire', 'r-work', 'Hire a second engineer', 'paused', null, 1),
+  goal('g-review', 'r-work', 'Finish the pay review', 'done', null, 2),
+  goal('g-bike', 'r-parent', 'Viya rides without stabilisers', 'active', ahead(180), 0),
+  goal('g-run', 'r-health', 'Run 10k without stopping', 'active', ahead(90), 0),
+  // Nothing points at this one, which is what makes it the interesting row:
+  // the Overview has to say "not touched since March" well.
+  goal('g-write', 'r-self', 'Write something every week', 'active', null, 0),
+]
+
+function goal(
+  id: string,
+  roleId: string,
+  title: string,
+  status: GoalStatus,
+  horizon: string | null,
+  sortOrder: number,
+): Goal {
+  return {
+    id,
+    roleId,
+    title,
+    notes: '',
+    status,
+    horizon,
+    sortOrder,
+    createdAt: iso(150),
+    updatedAt: iso(10),
+    completedAt: status === 'done' ? iso(20) : null,
+  }
+}
+
+/**
+ * Resolve one block's purpose the way the SQL does: its own, else its
+ * task's, else that task's project's.
+ *
+ * Duplicated here rather than imported because that is what a mock backend
+ * is — the *behaviour* of the store, reimplemented, so that a bug in one
+ * shows up as a disagreement with the other rather than being shared by
+ * both.
+ */
+function purposeOfBlock(b: TimeBlock): Purpose | null {
+  if (b.purpose) return b.purpose
+  const taskId = b.subject.type === 'task' ? b.subject.id : null
+  const task = taskId ? tasks.find((t) => t.id === taskId) : undefined
+  if (task?.purpose) return task.purpose
+  const projectId = task?.projectId ?? (b.subject.type === 'project' ? b.subject.id : null)
+  const project = projectId ? projects.find((p) => p.id === projectId) : undefined
+  return project?.purpose ?? null
+}
+
+function samePurpose(a: Purpose | null, b: Purpose | null): boolean {
+  if (!a || !b) return a === b
+  return a.type === b.type && a.id === b.id
+}
+
+function balanceReport(from: string, to: string): BalanceReport {
+  const within = (d: string) => d >= from && d <= to
+  const purposes: PurposeMinutes[] = []
+  for (const b of blocks) {
+    if (!within(b.localDate)) continue
+    const purpose = purposeOfBlock(b)
+    let row = purposes.find((r) => samePurpose(r.purpose ?? null, purpose))
+    if (!row) {
+      row = { purpose, actualMinutes: 0, plannedMinutes: 0, blocks: 0 }
+      purposes.push(row)
+    }
+    const minutes = Math.max(
+      0,
+      Math.round((new Date(b.end).getTime() - new Date(b.start).getTime()) / 60_000),
+    )
+    if (b.kind === 'actual') row.actualMinutes += minutes
+    else row.plannedMinutes += minutes
+    row.blocks += 1
+  }
+
+  const byRole = new Map<string | null, RoleEventMinutes>()
+  for (const e of events) {
+    if (e.endDate < from || e.localDate > to) continue
+    const cal = calendars.find((c) => c.id === e.calendarId)
+    const roleId = cal?.roleId ?? null
+    const row = byRole.get(roleId) ?? { roleId, minutes: 0, events: 0 }
+    row.minutes += Math.max(
+      0,
+      Math.round((new Date(e.end).getTime() - new Date(e.start).getTime()) / 60_000),
+    )
+    row.events += 1
+    byRole.set(roleId, row)
+  }
+  return { purposes, events: [...byRole.values()] }
+}
+
+function goalActivity(id: string): GoalActivity {
+  const points = (p: Purpose | null | undefined) => p?.type === 'goal' && p.id === id
+  const out: GoalActivity = {
+    openTasks: 0,
+    doneTasks: 0,
+    projects: projects.filter((p) => points(p.purpose)).length,
+    actualMinutes: 0,
+    entries: entries.filter((e) => points(e.purpose)).length,
+    readings: 0,
+    items: items.filter((i) => points(i.purpose)).length,
+    lastTouched: null,
+  }
+  const touch = (at: string | null | undefined) => {
+    if (at && (!out.lastTouched || at > out.lastTouched)) out.lastTouched = at
+  }
+  for (const t of tasks) {
+    const project = t.projectId ? projects.find((p) => p.id === t.projectId) : undefined
+    if (!points(t.purpose ?? project?.purpose)) continue
+    if (t.status === 'done' || t.status === 'cancelled') out.doneTasks += 1
+    else out.openTasks += 1
+    touch(t.updatedAt)
+  }
+  for (const b of blocks) {
+    if (b.kind !== 'actual' || !points(purposeOfBlock(b))) continue
+    out.actualMinutes += Math.max(
+      0,
+      Math.round((new Date(b.end).getTime() - new Date(b.start).getTime()) / 60_000),
+    )
+    touch(b.start)
+  }
+  return out
+}
+
 let nextId = 100
 
 // ── The assistant ────────────────────────────────────────────────────────
@@ -1525,6 +1693,7 @@ function status(): VaultStatus {
           calendars: true,
           library: true,
           trackers: true,
+          goals: true,
           agent: true,
         }
       : undefined,
@@ -2481,6 +2650,135 @@ export const mockInvoke = async <T>(
     case 'library_stats':
       requireUnlocked()
       return libraryStats() as T
+
+    // ── Roles and goals ──────────────────────────────────────────────
+
+    case 'list_roles': {
+      requireUnlocked()
+      return roles.map((r) => ({
+        ...r,
+        goals: goals.filter((g) => g.roleId === r.id).length,
+        open: goals.filter((g) => g.roleId === r.id && goalIsOpen(g.status)).length,
+      })) as T
+    }
+
+    case 'new_role': {
+      requireUnlocked()
+      const now = new Date().toISOString()
+      return {
+        id: `r-${nextId++}`,
+        name: str(args.name, 'Role').trim(),
+        color: '#c2410c',
+        icon: '\u{1f9ed}',
+        notes: '',
+        archived: false,
+        sortOrder: roles.length,
+        createdAt: now,
+        updatedAt: now,
+      } as T
+    }
+
+    case 'save_role': {
+      requireUnlocked()
+      const role = args.role as Role
+      const at = roles.findIndex((r) => r.id === role.id)
+      if (at >= 0) roles[at] = role
+      else roles.push(role)
+      return undefined as T
+    }
+
+    case 'delete_role': {
+      requireUnlocked()
+      const id = str(args.id)
+      // Refused while goals point at it, as the real store refuses — so the
+      // interface's message for this case can actually be seen.
+      const held = goals.filter((g) => g.roleId === id).length
+      if (held > 0) {
+        throw new VaultError(
+          'invalid',
+          `this role still has ${held} goal${held === 1 ? '' : 's'} under it. ` +
+            'Move them to another role, or archive this one to keep its history.',
+        )
+      }
+      const at = roles.findIndex((r) => r.id === id)
+      if (at >= 0) roles.splice(at, 1)
+      return undefined as T
+    }
+
+    case 'seed_roles':
+      requireUnlocked()
+      // The mock ships with roles, so this always answers zero — which is
+      // the branch the Overview takes on a vault that already has some.
+      return 0 as T
+
+    case 'list_goals': {
+      requireUnlocked()
+      const query = (args.query ?? {}) as GoalQuery
+      let out = goals.slice()
+      if (query.roleId) out = out.filter((g) => g.roleId === query.roleId)
+      if (query.statuses?.length) out = out.filter((g) => query.statuses!.includes(g.status))
+      if (query.horizonTo) out = out.filter((g) => !!g.horizon && g.horizon <= query.horizonTo!)
+      out.sort(
+        (a, b) =>
+          a.sortOrder - b.sortOrder || a.title.toLowerCase().localeCompare(b.title.toLowerCase()),
+      )
+      if (query.limit) out = out.slice(0, query.limit)
+      return structuredClone(out) as T
+    }
+
+    case 'get_goal': {
+      requireUnlocked()
+      const goal = goals.find((g) => g.id === str(args.id))
+      if (!goal) throw new VaultError('notFound', 'no such goal')
+      return structuredClone(goal) as T
+    }
+
+    case 'new_goal': {
+      requireUnlocked()
+      const now = new Date().toISOString()
+      return {
+        id: `g-${nextId++}`,
+        roleId: str(args.roleId),
+        title: str(args.title).trim(),
+        notes: '',
+        status: 'active',
+        horizon: null,
+        sortOrder: goals.length,
+        createdAt: now,
+        updatedAt: now,
+        completedAt: null,
+      } as T
+    }
+
+    case 'save_goal':
+    case 'save_goals': {
+      requireUnlocked()
+      const incoming = (cmd === 'save_goal' ? [args.goal] : (args.goals ?? [])) as Goal[]
+      for (const goal of incoming) {
+        if (!roles.some((r) => r.id === goal.roleId)) {
+          throw new VaultError('notFound', 'no such role')
+        }
+        const at = goals.findIndex((g) => g.id === goal.id)
+        if (at >= 0) goals[at] = goal
+        else goals.push(goal)
+      }
+      return undefined as T
+    }
+
+    case 'delete_goal': {
+      requireUnlocked()
+      const at = goals.findIndex((g) => g.id === str(args.id))
+      if (at >= 0) goals.splice(at, 1)
+      return undefined as T
+    }
+
+    case 'time_by_purpose':
+      requireUnlocked()
+      return balanceReport(str(args.from), str(args.to)) as T
+
+    case 'goal_activity':
+      requireUnlocked()
+      return goalActivity(str(args.id)) as T
 
     // ── Web search ───────────────────────────────────────────────────
 

@@ -272,4 +272,16 @@ export const ICONS = {
   copy:
     '<rect width="12" height="12" x="8.5" y="8.5" rx="2.5"/>' +
     '<path d="M5.5 15.5H5a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v.5"/>',
+
+  // ── Purpose ────────────────────────────────────────────────────────────
+
+  // A compass, for the Overview. Not a chart: what that app is for is
+  // knowing which way you are facing, and a bar chart on the bar would
+  // promise a report rather than a place to start the day.
+  compass: '<circle cx="12" cy="12" r="9"/>' + '<path d="m15.5 8.5-2 5-5 2 2-5Z"/>',
+
+  // A target, for a goal. Two rings and a centre, so it reads at 14px.
+  target:
+    '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/>' +
+    '<circle cx="12" cy="12" r="1"/>',
 } as const

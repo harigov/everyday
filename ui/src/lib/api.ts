@@ -14,6 +14,7 @@ import type {
   BlockKind,
   BlockQuery,
   BlockSubject,
+  BalanceReport,
   Bootstrap,
   Conversation,
   ConversationId,
@@ -28,6 +29,10 @@ import type {
   EntrySummary,
   EventId,
   EventQuery,
+  Goal,
+  GoalActivity,
+  GoalId,
+  GoalQuery,
   Item,
   ItemId,
   ItemQuery,
@@ -50,6 +55,9 @@ import type {
   Reading,
   ReadingId,
   ReadingQuery,
+  Role,
+  RoleId,
+  RoleInfo,
   SearchHit,
   SearchRequest,
   SearchResult,
@@ -430,6 +438,49 @@ export const api = {
    * else, so a cover has to come home before it can be drawn.
    */
   fetchImage: (url: string) => invoke<string>('fetch_image', { url }),
+
+  // ── Roles and goals ────────────────────────────────────────────────
+  //
+  // Available only when `status.capabilities.goals` is true. The two records
+  // are small; the interesting call is `balance`, which is the whole reason
+  // the purpose pointer exists.
+
+  roles: () => invoke<RoleInfo[]>('list_roles'),
+
+  /** Mints an unsaved role; fill it in and pass it to `saveRole`. */
+  newRole: (name: string) => invoke<Role>('new_role', { name }),
+  saveRole: (role: Role) => invoke<void>('save_role', { role }),
+
+  /**
+   * Delete a role. Refused, with a message naming the count, while goals
+   * still point at it — unlike a project, which takes its tasks with it.
+   */
+  deleteRole: (id: RoleId) => invoke<void>('delete_role', { id }),
+
+  /**
+   * Offer a starting set of roles, and answer 0 if there are any already.
+   *
+   * Never called on unlock, unlike the library's shelves: a list of what a
+   * life is made of is a claim, and writing one unasked would be this
+   * application telling somebody who they are.
+   */
+  seedRoles: () => invoke<number>('seed_roles'),
+
+  goals: (query: GoalQuery = {}) => invoke<Goal[]>('list_goals', { query }),
+  goal: (id: GoalId) => invoke<Goal>('get_goal', { id }),
+  newGoal: (roleId: RoleId, title: string) => invoke<Goal>('new_goal', { roleId, title }),
+  saveGoal: (goal: Goal) => invoke<void>('save_goal', { goal }),
+  saveGoals: (goals: Goal[]) => invoke<void>('save_goals', { goals }),
+  deleteGoal: (id: GoalId) => invoke<void>('delete_goal', { id }),
+
+  /**
+   * Minutes per purpose over a window, and the meetings somebody else
+   * booked, in one call — the Overview draws them together, and two round
+   * trips would let one arrive without the other.
+   */
+  balance: (from: string, to: string) => invoke<BalanceReport>('time_by_purpose', { from, to }),
+
+  goalActivity: (id: GoalId) => invoke<GoalActivity>('goal_activity', { id }),
 
   // ── The tracking domain ────────────────────────────────────────────
   //

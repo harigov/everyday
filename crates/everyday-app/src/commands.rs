@@ -33,10 +33,12 @@ use everyday_core::agent::{AgentSettings, Conversation, Memory, Message as Agent
 use everyday_core::calendar::{Calendar, CalendarProvider, Event, SyncReport};
 use everyday_core::library::{Item, ItemStatus, Kind, LibraryStats, LogEntry, LogEvent, Progress};
 use everyday_core::model::{local_date_in, system_tz, today_local};
+use everyday_core::purpose::{Goal, GoalActivity, PurposeMinutes, Role, RoleEventMinutes};
 use everyday_core::search::SearchHit;
 use everyday_core::store::agent::ConversationQuery;
 use everyday_core::store::calendars::EventQuery;
 use everyday_core::store::library::{ItemQuery, LogQuery};
+use everyday_core::store::purpose::{GoalQuery, PurposeWindow};
 use everyday_core::store::tasks::{BlockQuery, TaskQuery};
 use everyday_core::store::trackers::{ReadingQuery, TrackerDay};
 use everyday_core::store::{EntryQuery, StoreStats};
@@ -46,10 +48,11 @@ use everyday_core::task::{
 use everyday_core::tracker::{Reading, Tracker, TrackerKind};
 use everyday_core::websearch::{SearchRequest, SearchResult, Source};
 use everyday_core::{
-    BlobId, BlockId, CalendarId, ConversationId, Entry, EntryId, EventId, ItemId, Journal,
-    JournalId, KindId, LogId, MemoryId, ProjectId, ReadingId, TaskId, TrackerId, Vault,
+    BlobId, BlockId, CalendarId, ConversationId, Entry, EntryId, EventId, GoalId, ItemId, Journal,
+    JournalId, KindId, LogId, MemoryId, ProjectId, ReadingId, RoleId, TaskId, TrackerId, Vault,
     VaultConfig, VaultStatus,
 };
+use jiff::civil::Date;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1190,6 +1193,145 @@ pub async fn library_stats(state: State<'_, AppState>) -> CommandResult<LibraryS
     let vault = state.require()?;
     let year = today_local().year();
     blocking(move || Ok(vault.library_stats(year)?)).await
+}
+
+// ---- roles and goals ----------------------------------------------------
+//
+// The Overview's own records. Everything below is the plain shape: require
+// the vault, do the work on the blocking pool. The two reports at the foot
+// are the only interesting ones, and their interest is entirely in the SQL
+// they delegate to.
+
+/// A role with the two counts the sidebar draws under its name.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleInfo {
+    #[serde(flatten)]
+    pub role: Role,
+    /// Goals under it, in any state.
+    pub goals: u64,
+    /// Of those, the ones still being pursued.
+    pub open: u64,
+}
+
+#[tauri::command]
+pub async fn list_roles(state: State<'_, AppState>) -> CommandResult<Vec<RoleInfo>> {
+    let vault = state.require()?;
+    blocking(move || {
+        let mut out = Vec::new();
+        for role in vault.roles()? {
+            // Two `COUNT(*)`s over a clear index column, so a sidebar of six
+            // roles decrypts six records and nothing else.
+            let (goals, open) = vault.count_goals(role.id).unwrap_or((0, 0));
+            out.push(RoleInfo { role, goals, open });
+        }
+        Ok(out)
+    })
+    .await
+}
+
+/// Mint a role. Unsaved: fill it in and pass it to `save_role`.
+///
+/// Minted in the shell rather than in the interface so the id, the colour
+/// and the two timestamps come from one place, exactly as `new_kind` does.
+#[tauri::command]
+pub fn new_role(state: State<'_, AppState>, name: String) -> CommandResult<Role> {
+    let _ = state.require()?;
+    Ok(Role::new(name.trim()))
+}
+
+#[tauri::command]
+pub async fn save_role(state: State<'_, AppState>, role: Role) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.save_role(&role)?)).await
+}
+
+/// Delete a role. Refused, with a message naming the count, while goals
+/// still point at it.
+#[tauri::command]
+pub async fn delete_role(state: State<'_, AppState>, id: RoleId) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.delete_role(id)?)).await
+}
+
+/// Offer a starting set of roles, and answer zero if there are any already.
+#[tauri::command]
+pub async fn seed_roles(state: State<'_, AppState>) -> CommandResult<usize> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.seed_roles()?)).await
+}
+
+#[tauri::command]
+pub async fn list_goals(state: State<'_, AppState>, query: GoalQuery) -> CommandResult<Vec<Goal>> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.goals(&query)?)).await
+}
+
+#[tauri::command]
+pub async fn get_goal(state: State<'_, AppState>, id: GoalId) -> CommandResult<Goal> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.goal(id)?)).await
+}
+
+/// Mint a goal under a role. Unsaved.
+#[tauri::command]
+pub fn new_goal(state: State<'_, AppState>, role_id: RoleId, title: String) -> CommandResult<Goal> {
+    let _ = state.require()?;
+    Ok(Goal::new(role_id, title.trim()))
+}
+
+#[tauri::command]
+pub async fn save_goal(state: State<'_, AppState>, goal: Goal) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.save_goal(&goal)?)).await
+}
+
+#[tauri::command]
+pub async fn save_goals(state: State<'_, AppState>, goals: Vec<Goal>) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.save_goals(&goals)?)).await
+}
+
+#[tauri::command]
+pub async fn delete_goal(state: State<'_, AppState>, id: GoalId) -> CommandResult<()> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.delete_goal(id)?)).await
+}
+
+/// What the balance report is made of: minutes per purpose, and the events
+/// somebody else booked, over one window.
+///
+/// Both halves in one call because the Overview always draws them together
+/// and two round trips would let one arrive without the other, which shows
+/// up as a chart that changes shape twice.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BalanceReport {
+    pub purposes: Vec<PurposeMinutes>,
+    pub events: Vec<RoleEventMinutes>,
+}
+
+#[tauri::command]
+pub async fn time_by_purpose(
+    state: State<'_, AppState>,
+    from: Date,
+    to: Date,
+) -> CommandResult<BalanceReport> {
+    let vault = state.require()?;
+    blocking(move || {
+        let window = PurposeWindow::new(from, to);
+        Ok(BalanceReport {
+            purposes: vault.time_by_purpose(window)?,
+            events: vault.events_by_role(window).unwrap_or_default(),
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn goal_activity(state: State<'_, AppState>, id: GoalId) -> CommandResult<GoalActivity> {
+    let vault = state.require()?;
+    blocking(move || Ok(vault.goal_activity(id)?)).await
 }
 
 // ---- web search ---------------------------------------------------------

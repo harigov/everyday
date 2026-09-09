@@ -5,6 +5,7 @@
 //! knows about SQL tables or Markdown frontmatter.
 
 use crate::id::{BlobId, EntryId, JournalId, TrackerId};
+use crate::purpose::Purpose;
 use crate::richtext::RichDoc;
 use crate::tracker::Tracker;
 use jiff::{Timestamp, civil::Date};
@@ -174,6 +175,14 @@ pub struct Entry {
     pub updated_at: Timestamp,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// What this day's writing was *for*, if it was for anything.
+    ///
+    /// Most entries will never set it, and that is the expected shape: a
+    /// journal is not a work log. It exists so that the fortnight you wrote
+    /// every evening about learning to sail is evidence the goal was alive,
+    /// which is a thing no task and no block records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<Purpose>,
     #[serde(default)]
     pub starred: bool,
     #[serde(default)]
@@ -211,6 +220,7 @@ impl Entry {
             location: None,
             weather: None,
             attachments: Vec::new(),
+            purpose: None,
         }
     }
 

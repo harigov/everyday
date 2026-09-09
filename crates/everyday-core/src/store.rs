@@ -32,6 +32,7 @@ use crate::model::{Entry, EntrySummary, Journal};
 use crate::store::agent::AgentStore;
 use crate::store::calendars::CalendarStore;
 use crate::store::library::LibraryStore;
+use crate::store::purpose::PurposeStore;
 use crate::store::tasks::TaskStore;
 use crate::store::trackers::TrackerStore;
 use jiff::civil::Date;
@@ -79,6 +80,15 @@ pub struct Capabilities {
     /// not offering it.
     #[serde(default)]
     pub trackers: bool,
+    /// Backend implements [`purpose::PurposeStore`], so the roles you play
+    /// and the goals under them have somewhere to live — and so the reports
+    /// that answer "where did my week go, by role" can be asked at all.
+    ///
+    /// False hides the Overview app entirely, including the pickers that set
+    /// a purpose on a task or a block: offering to file something under a
+    /// goal that cannot be stored is worse than not offering it.
+    #[serde(default)]
+    pub goals: bool,
     /// Backend implements [`agent::AgentStore`], so the assistant has
     /// somewhere to keep its settings, its threads and its memory.
     ///
@@ -410,6 +420,16 @@ pub trait JournalStore: Send + Sync {
         None
     }
 
+    /// Storage for the purpose domain, if this backend has any.
+    ///
+    /// Same shape and same reasoning as the four above. See
+    /// [`purpose`](crate::store::purpose) for the two records it holds, the
+    /// cascade it deliberately refuses, and why the reports are SQL rather
+    /// than a fold in Rust.
+    fn purpose(&self) -> Option<&dyn PurposeStore> {
+        None
+    }
+
     /// Storage for the assistant, if this backend has any.
     ///
     /// Same shape and same reasoning as the four above. See
@@ -699,6 +719,7 @@ impl BackendRegistry {
 pub mod agent;
 pub mod calendars;
 pub mod library;
+pub mod purpose;
 pub mod tasks;
 pub mod trackers;
 

@@ -34,6 +34,7 @@
 //! garbage-collector's job unchanged.
 
 use crate::id::{BlockId, ProjectId, TaskId};
+use crate::purpose::Purpose;
 use jiff::{
     Timestamp,
     civil::{Date, Time},
@@ -190,6 +191,11 @@ pub struct Project {
     pub estimate_minutes: Option<u32>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// What this body of work is *for*. Inherited by every task and every
+    /// block under it that does not say otherwise, which is what makes
+    /// attribution one decision rather than a hundred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<Purpose>,
     /// Manual ordering in the sidebar; ties broken by `name`.
     #[serde(default)]
     pub sort_order: i32,
@@ -214,6 +220,7 @@ impl Project {
             due_date: None,
             estimate_minutes: None,
             tags: Vec::new(),
+            purpose: None,
             sort_order: 0,
             created_at: now,
             updated_at: now,
@@ -293,6 +300,11 @@ pub struct Task {
     pub estimate_minutes: Option<u32>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// What this task is *for*. `None` means "whatever the project is for",
+    /// which is the usual case and the reason the field is cheap to leave
+    /// alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<Purpose>,
     /// Manual ordering within its board column / list section.
     #[serde(default)]
     pub sort_order: i32,
@@ -320,6 +332,7 @@ impl Task {
             due_time: None,
             estimate_minutes: None,
             tags: Vec::new(),
+            purpose: None,
             sort_order: 0,
             created_at: now,
             updated_at: now,
@@ -468,6 +481,12 @@ pub struct TimeBlock {
     pub notes: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// What this hour was *for*. `None` falls through to the task's, then
+    /// the project's — see [`crate::purpose`] for the chain. An `Adhoc`
+    /// block with a purpose set directly is how the dentist appointment
+    /// lands under looking after yourself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<Purpose>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -490,9 +509,17 @@ impl TimeBlock {
             kind: BlockKind::Planned,
             notes: String::new(),
             tags: Vec::new(),
+            purpose: None,
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// File this block under a goal or a role directly, overriding whatever
+    /// it would otherwise inherit.
+    pub fn for_purpose(mut self, purpose: Purpose) -> Self {
+        self.purpose = Some(purpose);
+        self
     }
 
     pub fn of_kind(mut self, kind: BlockKind) -> Self {
