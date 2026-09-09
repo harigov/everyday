@@ -34,6 +34,15 @@ import { TASK_STATUSES, isOpen } from './types'
 /** How far ahead "Upcoming" looks. */
 const UPCOMING_DAYS = 14
 
+/**
+ * Idle delay before a keystroke in the filter box becomes a query.
+ *
+ * A shade longer than the journal's search debounce because this one is
+ * heavier -- filtering matches against sealed titles and notes, so it is a
+ * decrypt pass rather than an index lookup.
+ */
+const FILTER_MS = 160
+
 /** What the sidebar has selected. */
 export type Scope =
   | { kind: 'today' }
@@ -77,6 +86,10 @@ class TodoState {
   /** Tasks edited since the last write, and the timer that writes them. */
   #saves = new Autosave<TaskId>((ids) => this.#writeTasks(ids))
   #started = false
+  /** Which load is the current one. See `refresh`. */
+  #generation = 0
+  /** Pending keystroke-debounce for the filter box. See `setFilter`. */
+  #filterTimer: ReturnType<typeof setTimeout> | null = null
 
   /**
    * How to put the cursor in the capture line, registered by the view.
@@ -120,6 +133,11 @@ class TodoState {
 
   reset() {
     this.#saves.cancel()
+    if (this.#filterTimer) clearTimeout(this.#filterTimer)
+    this.#filterTimer = null
+    // Nothing loaded after a lock may land: the vault is shut and the rows
+    // it would put on screen are the ones this reset exists to drop.
+    this.#generation++
     this.#captureWanted = false
     this.projects = []
     this.tasks = []
@@ -142,8 +160,18 @@ class TodoState {
     await this.refresh()
   }
 
+  /**
+   * Re-read everything the todo app draws for the current scope and filter.
+   *
+   * Numbered, because these overlap: a scope change and a filter keystroke
+   * are two queries in the air at once, and the backend is under no
+   * obligation to answer the older one last. Only the newest load is allowed
+   * to land, so the list can never end up showing the results of a filter
+   * that has already been typed past.
+   */
   async refresh() {
     if (!app.supportsTasks) return
+    const generation = ++this.#generation
     this.loading = true
     try {
       const [projects, tasks, stats, tags] = await Promise.all([
@@ -152,6 +180,7 @@ class TodoState {
         api.taskStats(),
         api.taskTags(),
       ])
+      if (generation !== this.#generation) return
       this.projects = projects
       this.tasks = tasks
       this.stats = stats
@@ -164,7 +193,7 @@ class TodoState {
     } catch (e) {
       await handle(e)
     } finally {
-      this.loading = false
+      if (generation === this.#generation) this.loading = false
     }
   }
 
@@ -227,9 +256,22 @@ class TodoState {
     void this.refresh()
   }
 
+  /**
+   * Filter the list by free text. Debounced, like the journal's search and
+   * the library's.
+   *
+   * It was not, and a filter keystroke is not a cheap thing to repeat: each
+   * one is four backend calls, one of which decrypts every task in scope to
+   * match against its title and notes. Typing six characters fired that
+   * twenty-four times and drew the list from whichever answer arrived last.
+   */
   setFilter(text: string) {
     this.filter = text
-    void this.refresh()
+    if (this.#filterTimer) clearTimeout(this.#filterTimer)
+    this.#filterTimer = setTimeout(() => {
+      this.#filterTimer = null
+      void this.refresh()
+    }, FILTER_MS)
   }
 
   // ── the task tree ────────────────────────────────────────────────────

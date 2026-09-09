@@ -32,14 +32,13 @@
   {#if detail}<p class="hint">{detail}</p>{/if}
   <div class="sheet-row">
     <span class="spacer"></span>
-    <button class="btn" onclick={oncancel}>Cancel</button>
-    <!-- Focused rather than the destructive one: Enter should not delete. -->
-    <button
-      class="btn"
-      class:btn-danger={danger}
-      class:btn-primary={!danger}
-      use:focusOnMount
-      onclick={onconfirm}>{confirmLabel}</button
+    <!-- Focus lands here, not on the destructive button beside it: this
+         dialog appears *because* something irreversible was asked for, and
+         Enter on a dialog you have not finished reading should not be the
+         thing that deletes an entry. Tab reaches the other one in one step. -->
+    <button class="btn" use:focusOnMount onclick={oncancel}>Cancel</button>
+    <button class="btn" class:btn-danger={danger} class:btn-primary={!danger} onclick={onconfirm}
+      >{confirmLabel}</button
     >
   </div>
 </div>

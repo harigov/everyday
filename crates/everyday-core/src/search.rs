@@ -33,6 +33,19 @@ const TITLE_BOOST: f32 = 3.0;
 /// Characters of context either side of a snippet match.
 const SNIPPET_RADIUS: usize = 90;
 
+/// How many tombstones the index tolerates before it compacts.
+///
+/// Editing a document is a remove followed by an insert, and an open entry
+/// is re-inserted on every autosave — once every 700 ms of typing. Without a
+/// sweep, an afternoon's writing leaves tens of thousands of dead documents
+/// in `docs` and a dead posting in every list the entry ever touched, so the
+/// index grows without bound and every query walks the wreckage.
+///
+/// The floor keeps a small vault from compacting on its third edit; the
+/// proportion keeps the sweep amortised, since reaching it again costs as
+/// many inserts as there are live documents.
+const COMPACT_FLOOR: usize = 64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Posting {
     doc: u32,
@@ -145,11 +158,73 @@ impl SearchIndex {
         self.by_id.insert(entry.id, doc_id);
         self.live_docs += 1;
         self.total_len += u64::from(len);
+        self.compact_if_needed();
     }
 
-    /// Remove an entry. Posting lists keep the tombstoned doc id; it is
-    /// filtered at query time. Rebuilding on unlock keeps this from growing
-    /// without bound across sessions.
+    /// Number of tombstoned documents still occupying space.
+    fn dead_docs(&self) -> usize {
+        self.docs.len() - self.live_docs as usize
+    }
+
+    /// Sweep the tombstones out when they start to outnumber the real work.
+    fn compact_if_needed(&mut self) {
+        let dead = self.dead_docs();
+        if dead > COMPACT_FLOOR && dead >= self.live_docs as usize {
+            self.compact();
+        }
+    }
+
+    /// Drop every tombstoned document and the postings that point at it.
+    ///
+    /// Doc ids are positions in `docs`, so removing a document renumbers
+    /// everything after it: the remap is built first and every surviving
+    /// posting is rewritten through it. Nothing outside this type holds a
+    /// doc id, so the renumbering is invisible.
+    ///
+    /// This is a walk of the postings rather than a re-tokenisation of the
+    /// documents — the terms are already here, and re-deriving them would
+    /// cost the same as building the index from scratch.
+    fn compact(&mut self) {
+        let mut remap: Vec<Option<u32>> = Vec::with_capacity(self.docs.len());
+        let mut next = 0u32;
+        for doc in &self.docs {
+            if doc.live {
+                remap.push(Some(next));
+                next += 1;
+            } else {
+                remap.push(None);
+            }
+        }
+
+        self.docs.retain(|d| d.live);
+        for postings in self.postings.values_mut() {
+            postings.retain_mut(|p| match remap[p.doc as usize] {
+                Some(to) => {
+                    p.doc = to;
+                    true
+                }
+                None => false,
+            });
+        }
+        // A term whose every document is gone is a key nothing can match,
+        // and it would still be walked by every prefix range scan.
+        self.postings.retain(|_, postings| !postings.is_empty());
+
+        for (id, doc_id) in self.by_id.iter_mut() {
+            debug_assert!(
+                remap[*doc_id as usize].is_some(),
+                "{id:?} is live but was remapped away"
+            );
+            *doc_id = remap[*doc_id as usize].unwrap_or(*doc_id);
+        }
+    }
+
+    /// Remove an entry.
+    ///
+    /// Tombstoned rather than cut out, because doc ids are positions in
+    /// `docs` and every posting holds one. The tombstones are swept by
+    /// [`SearchIndex::compact`] once there are enough of them to be worth
+    /// renumbering for.
     pub fn remove(&mut self, id: EntryId) {
         let Some(doc_id) = self.by_id.remove(&id) else { return };
         let doc = &mut self.docs[doc_id as usize];
@@ -161,6 +236,7 @@ impl SearchIndex {
         doc.title.clear();
         self.live_docs -= 1;
         self.total_len -= u64::from(doc.len);
+        self.compact_if_needed();
     }
 
     /// Search. The final term is treated as a prefix so results update on
@@ -584,6 +660,61 @@ mod tests {
         let (idx, _, _) = index_of(&[("x", "heron herring herbs cat")]);
         assert_eq!(idx.terms_with_prefix("her", 10), ["herbs", "heron", "herring"]);
         assert!(idx.terms_with_prefix("zz", 10).is_empty());
+    }
+
+    #[test]
+    fn re_editing_one_entry_does_not_grow_the_index_without_bound() {
+        // An open entry is re-inserted on every autosave. Left to itself
+        // that added a document and a posting per keystroke-burst forever.
+        let jid = JournalId::new();
+        let mut e = entry(jid, "Monday", "heron");
+        let mut idx = SearchIndex::build(std::slice::from_ref(&e));
+        for i in 0..(COMPACT_FLOOR * 8) {
+            e.body = RichDoc::from_plain_text(&format!("heron {i}"));
+            idx.insert(&e);
+        }
+        assert_eq!(idx.len(), 1);
+        assert!(
+            idx.docs.len() <= COMPACT_FLOOR * 2,
+            "tombstones must be swept, not accumulated: {} documents for one entry",
+            idx.docs.len()
+        );
+        // And the sweep must not have broken what the index is for.
+        let hits = idx.search("heron", 10);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, e.id);
+        assert!(idx.search("kingfisher", 10).is_empty());
+    }
+
+    #[test]
+    fn compaction_keeps_every_surviving_entry_findable() {
+        // Half the vault deleted, which is what drives the sweep from the
+        // other direction, and the half left behind must still be intact.
+        // The body terms are zero-padded so that no one of them is a prefix
+        // of another -- the last term of a query is matched as a prefix.
+        let jid = JournalId::new();
+        let count = COMPACT_FLOOR * 4;
+        let entries: Vec<Entry> = (0..count)
+            .map(|i| entry(jid, &format!("title{i:04}"), &format!("heron body{i:04}")))
+            .collect();
+        let mut idx = SearchIndex::build(&entries);
+        let doomed = |i: usize| i % 2 == 0;
+        for (_, e) in entries.iter().enumerate().filter(|(i, _)| doomed(*i)) {
+            idx.remove(e.id);
+        }
+        assert_eq!(idx.len(), count / 2);
+        assert!(idx.docs.len() < count, "the sweep should have run");
+
+        for (i, e) in entries.iter().enumerate() {
+            let hits = idx.search(&format!("body{i:04}"), 10);
+            if doomed(i) {
+                assert!(hits.is_empty(), "{} was deleted", e.title);
+            } else {
+                assert_eq!(hits.len(), 1, "{} should still be findable", e.title);
+                assert_eq!(hits[0].id, e.id);
+                assert_eq!(hits[0].title, e.title, "titles must survive renumbering");
+            }
+        }
     }
 
     #[test]

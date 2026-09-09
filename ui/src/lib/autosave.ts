@@ -64,6 +64,18 @@ export class Autosave<Id> {
   #write: (ids: ReadonlySet<Id>) => Promise<void>
   #delay: number
   #retryDelay: number | null = null
+  /**
+   * The tail of the chain of writes, so that only one is ever in the air.
+   *
+   * Without it, `flush` was "cancel the timer, and if nothing is dirty
+   * return" -- which is a lie while a previous write is still on the wire.
+   * The save-before-close handshake calls `flush` on all four stores and
+   * closes the window when they resolve, so a flush that returned early
+   * during an in-flight write reported "everything is on disk" about a write
+   * that had not landed yet. Chaining also keeps two writes of the same
+   * record from racing each other into the backend.
+   */
+  #queue: Promise<void> = Promise.resolve()
 
   constructor(write: (ids: ReadonlySet<Id>) => Promise<void>, delay = AUTOSAVE_MS) {
     this.#write = write
@@ -91,9 +103,22 @@ export class Autosave<Id> {
     return this.#dirty.size > 0
   }
 
-  /** Write everything outstanding now. Safe to call when nothing is dirty. */
-  async flush(): Promise<void> {
+  /**
+   * Write everything outstanding now. Safe to call when nothing is dirty.
+   *
+   * Resolves once every write queued before it has landed, not merely once
+   * the dirty set looks empty -- see `#queue`.
+   */
+  flush(): Promise<void> {
     this.#cancelTimer()
+    const next = this.#queue.then(() => this.#drain())
+    // The tail never rejects, so one failed write cannot poison every flush
+    // that follows it. `#drain` already reports failures its own way.
+    this.#queue = next.catch(() => {})
+    return next
+  }
+
+  async #drain(): Promise<void> {
     if (this.#dirty.size === 0) return
     // Taken and cleared before the await, so an edit arriving during the
     // write is queued again rather than lost with the set that held it.
