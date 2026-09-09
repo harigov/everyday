@@ -6,6 +6,7 @@
 //! mobile shell later, and it is why the entry point is a library: Tauri
 //! builds iOS and Android targets from `run()` rather than from `main`.
 
+mod agent;
 mod commands;
 mod error;
 mod feeds;
@@ -67,6 +68,10 @@ pub fn run() {
         // appears at launch holding only "Quit" is worse than one that
         // appears a moment later holding the actions.
         .manage(Tray::default())
+        // Confirmations the assistant is waiting on. Process-wide rather
+        // than per turn because the answer arrives as a separate command
+        // from the webview, which has no handle on the run that asked.
+        .manage(std::sync::Arc::new(agent::Pending::default()))
         // Registered here rather than on the icon, and once rather than per
         // icon: Tauri appends a menu handler given to `TrayIconBuilder` to a
         // process-wide list it never prunes, and dispatches every menu event
@@ -160,6 +165,19 @@ pub fn run() {
             commands::ready_to_close,
             commands::set_tray_menu,
             commands::hide_tray,
+            commands::agent_settings,
+            commands::save_agent_settings,
+            commands::set_agent_key,
+            commands::clear_agent_key,
+            commands::list_conversations,
+            commands::new_conversation,
+            commands::conversation_messages,
+            commands::delete_conversation,
+            commands::send_message,
+            commands::confirm_tool_call,
+            commands::list_memories,
+            commands::save_memory,
+            commands::delete_memory,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
