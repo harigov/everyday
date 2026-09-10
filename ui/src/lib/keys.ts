@@ -166,17 +166,37 @@ export function chordOf(event: {
   })
 }
 
-/** Split a binding's `keys` into its chords, canonicalised. */
-export function sequence(keys: string): string[] {
-  return keys
-    .trim()
-    .split(/\s+/)
-    .map((step) => {
-      const parts = step.split('+')
-      const key = parts.pop() ?? ''
-      const has = (name: string) => parts.some((p) => p.toLowerCase() === name)
-      return chord({ key, mod: has('mod'), alt: has('alt'), shift: has('shift') })
-    })
+/**
+ * Split a binding's `keys` into its chords, canonicalised.
+ *
+ * Memoised on the spelling, which costs nothing and is worth a great deal:
+ * `match` parses the sequence of every candidate binding on *every*
+ * keystroke, including every keystroke typed into an editor, so the split
+ * and rejoin below used to run several times per character. The keys of the
+ * table are a fixed handful of string literals, so the map is bounded by the
+ * table and the answer for one can never go stale.
+ *
+ * The array is frozen because it is now shared: a caller that sorted or
+ * reversed what it got back would be editing every other caller's copy.
+ */
+const sequences = new Map<string, readonly string[]>()
+
+export function sequence(keys: string): readonly string[] {
+  const known = sequences.get(keys)
+  if (known) return known
+  const steps = Object.freeze(
+    keys
+      .trim()
+      .split(/\s+/)
+      .map((step) => {
+        const parts = step.split('+')
+        const key = parts.pop() ?? ''
+        const has = (name: string) => parts.some((p) => p.toLowerCase() === name)
+        return chord({ key, mod: has('mod'), alt: has('alt'), shift: has('shift') })
+      }),
+  )
+  sequences.set(keys, steps)
+  return steps
 }
 
 /** What matching a run of chords against the table came to. */

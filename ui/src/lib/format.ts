@@ -13,6 +13,50 @@
 
 import { isoDate, locale, startOfDay } from './time'
 
+// ── the formatters ─────────────────────────────────────────────────────
+//
+// `Intl` objects are *built* rather than looked up: constructing one resolves
+// a locale, loads its data and compiles a pattern, and it costs some eighty
+// times what formatting a date with the result does. Everything below used to
+// construct a fresh one per call, which put that price on every row of every
+// list -- and, worse, on the typing path: the notes editor's status bar reads
+// `updatedAt`, which moves on every keystroke, so a character typed into a
+// note built a relative-time formatter before it was drawn.
+//
+// So they are made once and kept. The cache is keyed on the locale as well as
+// the options, because `locale()` reads `navigator.language`: a machine whose
+// language is changed under a running window must not go on being formatted
+// in the old one.
+
+const dateFormats = new Map<string, Intl.DateTimeFormat>()
+const relativeFormats = new Map<string, Intl.RelativeTimeFormat>()
+
+/** The `Intl.DateTimeFormat` for these options, made once per locale. */
+function dateFormat(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const tag = locale()
+  // The options here are literals written in this file, so their keys always
+  // come out in the same order and the key is stable.
+  const id = `${tag}\u0000${JSON.stringify(options)}`
+  let made = dateFormats.get(id)
+  if (!made) {
+    made = new Intl.DateTimeFormat(tag, options)
+    dateFormats.set(id, made)
+  }
+  return made
+}
+
+/** The same for `Intl.RelativeTimeFormat`. */
+function relativeFormat(options: Intl.RelativeTimeFormatOptions): Intl.RelativeTimeFormat {
+  const tag = locale()
+  const id = `${tag}\u0000${JSON.stringify(options)}`
+  let made = relativeFormats.get(id)
+  if (!made) {
+    made = new Intl.RelativeTimeFormat(tag, options)
+    relativeFormats.set(id, made)
+  }
+  return made
+}
+
 export function daysBetween(a: Date, b: Date): number {
   return Math.round(
     (startOfDay(isoDate(b)).getTime() - startOfDay(isoDate(a)).getTime()) / 86_400_000,
@@ -27,10 +71,10 @@ export function friendlyDate(iso: string): string {
   if (ago === 1) return 'Yesterday'
   if (ago === -1) return 'Tomorrow'
   if (ago > 1 && ago < 7) {
-    return new Intl.DateTimeFormat(locale(), { weekday: 'long' }).format(d)
+    return dateFormat({ weekday: 'long' }).format(d)
   }
   const sameYear = d.getFullYear() === new Date().getFullYear()
-  return new Intl.DateTimeFormat(locale(), {
+  return dateFormat({
     day: 'numeric',
     month: 'long',
     year: sameYear ? undefined : 'numeric',
@@ -39,7 +83,7 @@ export function friendlyDate(iso: string): string {
 
 /** The big date shown above an open entry. */
 export function longDate(iso: string): string {
-  return new Intl.DateTimeFormat(locale(), {
+  return dateFormat({
     weekday: 'long',
     day: 'numeric',
     month: 'long',
@@ -59,7 +103,7 @@ export function groupLabel(iso: string): string {
   if (ago === 1) return 'Yesterday'
   if (ago < 7) return 'Earlier this week'
   const sameYear = d.getFullYear() === new Date().getFullYear()
-  return new Intl.DateTimeFormat(locale(), {
+  return dateFormat({
     month: 'long',
     year: sameYear ? undefined : 'numeric',
   }).format(d)
@@ -70,15 +114,13 @@ export function dayNumber(iso: string): string {
 }
 
 export function weekdayShort(iso: string): string {
-  return new Intl.DateTimeFormat(locale(), { weekday: 'short' })
-    .format(startOfDay(iso))
-    .replace('.', '')
+  return dateFormat({ weekday: 'short' }).format(startOfDay(iso)).replace('.', '')
 }
 
 export function relativeTime(isoTimestamp: string): string {
   const then = new Date(isoTimestamp).getTime()
   const secs = Math.round((then - Date.now()) / 1000)
-  const rtf = new Intl.RelativeTimeFormat(locale(), { numeric: 'auto' })
+  const rtf = relativeFormat({ numeric: 'auto' })
   const units: [Intl.RelativeTimeFormatUnit, number][] = [
     ['year', 31_536_000],
     ['month', 2_592_000],
@@ -152,14 +194,12 @@ export function formatClock(hms: string): string {
   const [h, m] = hms.split(':').map(Number)
   const at = new Date()
   at.setHours(h ?? 0, m ?? 0, 0, 0)
-  return new Intl.DateTimeFormat(locale(), { hour: 'numeric', minute: '2-digit' }).format(at)
+  return dateFormat({ hour: 'numeric', minute: '2-digit' }).format(at)
 }
 
 /** The time of day an instant falls on, for a row of time blocks. */
 export function formatInstantTime(isoTimestamp: string): string {
-  return new Intl.DateTimeFormat(locale(), { hour: 'numeric', minute: '2-digit' }).format(
-    new Date(isoTimestamp),
-  )
+  return dateFormat({ hour: 'numeric', minute: '2-digit' }).format(new Date(isoTimestamp))
 }
 
 /**

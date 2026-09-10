@@ -31,23 +31,11 @@
 
   const note = $derived(notes.open)
 
-  /**
-   * The getter the editor is bound to, and the sync that runs on teardown.
-   *
-   * Kept here rather than in the store because the store has no business
-   * knowing that a ProseMirror view exists; it is handed a document.
-   */
-  let body: (() => RichDoc) | null = null
-
-  function syncBody() {
-    if (notes.open && body) notes.open.body = body()
-  }
-
   function attach(a: Attachment) {
     const target = notes.open
     if (!target) return
     target.attachments = [...target.attachments, a]
-    notes.edited(target.body)
+    notes.edited()
   }
 
   function commitTag() {
@@ -74,7 +62,9 @@
   }
 
   onDestroy(() => {
-    syncBody()
+    // `RichText` captures the document on the way out; this makes sure it
+    // reaches disk. The journal's page ends the same way.
+    notes.syncBody()
     void notes.flush()
   })
 
@@ -186,12 +176,9 @@
           docId={note.id}
           doc={() => notes.open?.body}
           placeholder="Write…"
-          bindBody={(get: (() => RichDoc) | null) => (body = get)}
-          {syncBody}
-          onedit={() => {
-            syncBody()
-            if (notes.open) notes.edited(notes.open.body)
-          }}
+          bindBody={(get: (() => RichDoc) | null) => notes.bindBody(get)}
+          syncBody={() => notes.syncBody()}
+          onedit={() => notes.edited()}
           onattach={attach}
           onwords={(n: number) => (words = n)}
           onstoring={(f: string | null) => (storing = f)}

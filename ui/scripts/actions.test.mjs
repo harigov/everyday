@@ -34,8 +34,14 @@ globalThis.matchMedia ??= () => ({
   addEventListener: () => {},
   removeEventListener: () => {},
 })
+// Counted, not merely stubbed: one of the checks at the foot of this file is
+// about *how often* the table asks the document whether a dialog is open.
+let dialogQueries = 0
 globalThis.document ??= {
-  querySelector: () => null,
+  querySelector: (selector) => {
+    if (selector === '[aria-modal="true"]') dialogQueries += 1
+    return null
+  },
   documentElement: { style: { setProperty: () => {} }, classList: { toggle: () => {} } },
   addEventListener: () => {},
 }
@@ -61,7 +67,8 @@ const server = await createServer({
   logLevel: 'error',
 })
 
-const { ACTIONS, GROUPS } = await server.ssrLoadModule('/src/lib/shortcuts.svelte.ts')
+const { ACTIONS, GROUPS, shortcuts } = await server.ssrLoadModule('/src/lib/shortcuts.svelte.ts')
+const { app } = await server.ssrLoadModule('/src/lib/state.svelte.ts')
 
 // ── Every row is drawable ─────────────────────────────────────────────
 
@@ -163,6 +170,66 @@ for (const action of ACTIONS) {
     assert.equal(word, word.toLowerCase(), `${action.label}: keyword ${word} must be lower case`)
   }
 }
+
+// ── One key press asks the document about dialogs once ────────────────
+//
+// Whether a dialog is over the window is answered from the DOM, because
+// `panels` only knows about the two dialogs it owns and every other modal in
+// the application is raised by a component (see `dialogOpen`). That is the
+// right source. Asking it once per *binding* is not: `match` runs `when` on
+// every candidate row, most of those `when`s are `anywhere`, and the handler
+// runs on every keystroke -- including every keystroke typed into an editor,
+// where the answer is the same `false` several times in a row.
+//
+// Measured on a long journal entry, that repeated query was the largest piece
+// of this application's own code on the typing path. It is now answered once
+// per sweep of the table, which is what this pins down: bind the number to a
+// press rather than to how many rows happen to be gated on `anywhere`, or it
+// will drift back up the next time a shortcut is added.
+
+const press = (key, extra = {}) => {
+  let prevented = false
+  shortcuts.press({
+    key,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    altKey: false,
+    defaultPrevented: false,
+    target: null,
+    preventDefault: () => (prevented = true),
+    ...extra,
+  })
+  return prevented
+}
+
+app.screen = 'main'
+
+dialogQueries = 0
+press('q')
+assert.ok(
+  dialogQueries <= 1,
+  `a single key press asked the document about dialogs ${dialogQueries} times; ` +
+    `it must ask at most once per sweep of the table`,
+)
+
+// The caret being in a text field narrows the table to the `whileTyping` rows
+// and must not widen the question: this is the press that happens hundreds of
+// times a minute.
+dialogQueries = 0
+press('q', { target: { tagName: 'TEXTAREA' } })
+assert.ok(
+  dialogQueries <= 1,
+  `a key typed into a field asked the document about dialogs ${dialogQueries} times`,
+)
+
+// ...and the answer is not kept between presses. A dialog opened by one
+// keystroke has to be seen by the next, or a bare letter would go on reaching
+// the window behind it -- the bug `dialogOpen` was written to fix.
+dialogQueries = 0
+press('q')
+press('q')
+assert.equal(dialogQueries, 2, 'the dialog question must be asked afresh on each press')
 
 await server.close()
 console.log('actions: all checks passed')
