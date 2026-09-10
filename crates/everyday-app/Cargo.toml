@@ -22,6 +22,9 @@ everyday-core.workspace = true
 everyday-vault.workspace = true
 everyday-service.workspace = true
 everyday-server.workspace = true
+# Chunks of an archive arrive from the service base64'd inside JSON; the
+# shell decodes them straight into the file the user picked.
+base64 = "0.22"
 # `tray-icon` is not a default feature: it pulls in muda and the platform
 # status-item APIs, and an app without a tray should not carry them. See
 # `src/tray.rs`. On Linux it also wants libayatana-appindicator at runtime,

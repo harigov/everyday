@@ -11,7 +11,7 @@
 // lock screen appearing over it.
 
 /** The tabs the settings dialog offers, in the order it offers them. */
-export const SETTINGS_TABS = ['general', 'profile', 'assistant', 'vault'] as const
+export const SETTINGS_TABS = ['general', 'profile', 'assistant', 'data', 'vault'] as const
 export type SettingsTab = (typeof SETTINGS_TABS)[number]
 
 class Panels {

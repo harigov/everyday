@@ -160,8 +160,46 @@ pub enum Command {
     Attach { id: String, file: PathBuf },
     /// Delete an entry.
     Delete { id: String },
-    /// Export every entry as Markdown into a directory.
-    Export { dir: PathBuf },
+    /// Write your data out in formats other programs read.
+    ///
+    /// A `.zip` path gets an archive; anything else gets the same files in a
+    /// folder. Either way it is Markdown, iCalendar and CSV, with no Every
+    /// Day format anywhere in it -- see `everyday export --list`.
+    ///
+    /// This is not a backup. It is your writing with the encryption taken
+    /// off, and it leaves out the assistant's key and the devices you have
+    /// paired. `everyday backup` is the one that copies the vault sealed.
+    Export {
+        /// Where to write it. Not needed with `--list`.
+        path: Option<PathBuf>,
+        /// Which apps, by id. Repeatable. All of them by default.
+        #[arg(long = "part", value_name = "ID")]
+        parts: Vec<String>,
+        /// Leave out photographs, video and cover art.
+        #[arg(long)]
+        no_media: bool,
+        /// Say what could be exported, and how much of it there is, then stop.
+        #[arg(long)]
+        list: bool,
+    },
+    /// Read an export back in.
+    ///
+    /// Takes an archive or a folder -- including a folder of Markdown that
+    /// was never an export at all. Says what it found and stops unless
+    /// `--yes` is given, because reading one in changes records.
+    Import {
+        path: PathBuf,
+        /// Which apps, by id. Repeatable. Everything readable by default.
+        #[arg(long = "part", value_name = "ID")]
+        parts: Vec<String>,
+        /// Overwrite records this vault already has, rather than leaving them.
+        #[arg(long)]
+        replace: bool,
+        /// Do it. Without this, nothing is written and what would happen is
+        /// printed.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Change the vault password.
     Passwd,
     /// Copy the whole vault, sealed as it is, into a directory.
@@ -286,7 +324,10 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Search { query, limit } => search(&vault, &query.join(" "), limit),
         Command::Attach { id, file } => attach(&vault, &id, &file),
         Command::Delete { id } => delete(&vault, &id),
-        Command::Export { dir } => export(&vault, &dir),
+        Command::Export { path, parts, no_media, list } => {
+            export(&vault, path.as_deref(), parts, !no_media, list)
+        }
+        Command::Import { path, parts, replace, yes } => import(&vault, &path, parts, replace, yes),
         Command::Passwd => passwd(&vault, cli.password.as_deref()),
         Command::Backup { dir } => backup(&vault, &dir),
         Command::Backend { .. } => unreachable!("handled above"),
@@ -664,43 +705,179 @@ fn check(vault: &Vault) -> Result<()> {
     std::process::exit(1);
 }
 
-fn export(vault: &Vault, dir: &std::path::Path) -> Result<()> {
-    std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
-    let journals: std::collections::HashMap<JournalId, String> =
-        vault.journals()?.into_iter().map(|j| (j.id, j.name)).collect();
-
-    let mut count = 0;
-    for entry in vault.all_entries()? {
-        let journal = journals.get(&entry.journal_id).cloned().unwrap_or_else(|| "Unfiled".into());
-        let sub = dir.join(sanitize(&journal));
-        std::fs::create_dir_all(&sub).map_err(|e| Error::io(&sub, e))?;
-
-        let name = format!(
-            "{}-{}-{}.md",
-            entry.local_date,
-            sanitize(&entry.display_title()),
-            entry.id.short()
-        );
-        let mut text = format!("# {}\n\n_{}_\n\n", entry.display_title(), entry.local_date);
-        if !entry.tags.is_empty() {
-            text.push_str(&format!("Tags: {}\n\n", entry.tags.join(", ")));
+/// Write the archive, as a zip or as the folder it would unzip to.
+///
+/// The folder form is not a lesser one: it is the same files, and it is what
+/// somebody piping an export into `git` or `rsync` actually wants. Which one
+/// you get is decided by the extension, because that is the thing a person
+/// has already said by typing the path.
+fn export(
+    vault: &Vault,
+    path: Option<&std::path::Path>,
+    parts: Vec<String>,
+    media: bool,
+    list: bool,
+) -> Result<()> {
+    if list {
+        for part in everyday_transfer::survey(vault)? {
+            println!("{:<10} {:>8}  {}", part.id, part.records, part.summary);
         }
-        text.push_str(&entry.body.to_markdown());
-        text.push('\n');
-        std::fs::write(sub.join(&name), text).map_err(|e| Error::io(sub.join(&name), e))?;
-
-        // Attachments are written alongside so the export is self-contained.
-        for a in &entry.attachments {
-            let media = sub.join("media");
-            std::fs::create_dir_all(&media).map_err(|e| Error::io(&media, e))?;
-            let out = media.join(format!("{}-{}", &a.blob.to_hex()[..8], sanitize(&a.filename)));
-            if let Ok(bytes) = vault.blob(a.blob) {
-                std::fs::write(&out, bytes).map_err(|e| Error::io(&out, e))?;
-            }
-        }
-        count += 1;
+        return Ok(());
     }
-    println!("exported {count} entries to {}", dir.display());
+    let Some(path) = path else {
+        return Err(Error::Invalid("say where to write it, or use --list".into()));
+    };
+    for id in &parts {
+        if !everyday_transfer::PARTS.iter().any(|p| p.spec().id == id) {
+            return Err(Error::Invalid(format!(
+                "no such part: {id} -- `everyday export --list` says which there are"
+            )));
+        }
+    }
+    let opts = everyday_transfer::Options { parts, media };
+
+    let manifest = if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+        }
+        // Straight to the file rather than through memory: this is the path
+        // that has no ceiling, and the reason the settings dialog can point
+        // at it for a vault too big to hold in one.
+        let file = std::fs::File::create(path).map_err(|e| Error::io(path, e))?;
+        let (file, manifest) =
+            everyday_transfer::export(vault, &opts, std::io::BufWriter::new(file))?;
+        file.into_inner().map_err(|e| Error::io(path, e.into_error()))?;
+        manifest
+    } else {
+        let mut sink = Folder { root: path.to_path_buf() };
+        everyday_transfer::write_into(vault, &opts, &mut sink)?
+    };
+
+    println!(
+        "exported {} record(s) in {} file(s) to {}",
+        manifest.records(),
+        manifest.files(),
+        path.display()
+    );
+    for part in &manifest.parts {
+        println!("  {:<10} {:>8}  {}", part.id, part.records, part.format);
+    }
+    if !media {
+        println!("\nwithout attachments: the words are here, the pictures are not");
+    }
+    Ok(())
+}
+
+/// A [`Sink`](everyday_transfer::Sink) that is a directory on disk.
+struct Folder {
+    root: PathBuf,
+}
+
+impl everyday_transfer::Sink for Folder {
+    fn put(&mut self, name: &str, body: &[u8]) -> everyday_core::Result<()> {
+        // Names come from the parts, which build them out of `safe_name`, so
+        // this is a second lock on a door that is already shut. It is here
+        // because this is the one place where a name becomes a real path, and
+        // that is exactly where the check belongs rather than where it is
+        // convenient.
+        if name.contains("..") || name.starts_with('/') || name.contains('\\') {
+            return Err(Error::Invalid(format!("{name} is not a path an export may write")));
+        }
+        let path = name.split('/').fold(self.root.clone(), |at, part| at.join(part));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+        }
+        std::fs::write(&path, body).map_err(|e| Error::io(&path, e))
+    }
+}
+
+/// Read an archive, or a folder, back into the vault.
+fn import(
+    vault: &Vault,
+    path: &std::path::Path,
+    parts: Vec<String>,
+    replace: bool,
+    yes: bool,
+) -> Result<()> {
+    let archive = if path.is_dir() {
+        // A folder is read as though it had been zipped. Somebody who
+        // unpacked an export, edited it and never rezipped it should not have
+        // to, and a folder of Markdown from another program is the same shape.
+        let mut files = std::collections::BTreeMap::new();
+        collect(path, path, &mut files)?;
+        everyday_transfer::zip::Reader::from_files(files)
+    } else {
+        let bytes = std::fs::read(path).map_err(|e| Error::io(path, e))?;
+        everyday_transfer::zip::Reader::open(&bytes)?
+    };
+
+    let manifest = everyday_transfer::inspect(&archive)?;
+    println!("{}", path.display());
+    if !manifest.vault.is_empty() {
+        println!("  from the vault \"{}\"", manifest.vault);
+    }
+    for part in &manifest.parts {
+        let note = if part.imports { "" } else { "  (a reading copy; not read back)" };
+        println!("  {:<10} {:>8} file(s){note}", part.id, part.files);
+    }
+
+    let chosen: Vec<String> = if parts.is_empty() {
+        manifest.parts.iter().filter(|p| p.imports).map(|p| p.id.clone()).collect()
+    } else {
+        parts
+    };
+    let mode =
+        if replace { everyday_transfer::Mode::Replace } else { everyday_transfer::Mode::Skip };
+
+    if !yes {
+        println!(
+            "\nnothing has been read in. `--yes` does it{}.",
+            if replace { ", replacing what this vault already has" } else { "" }
+        );
+        return Ok(());
+    }
+
+    let reports = everyday_transfer::import(vault, &archive, &chosen, mode)?;
+    let mut problems = 0;
+    for report in &reports {
+        println!(
+            "  {:<10} {} added, {} replaced, {} left alone",
+            report.part, report.added, report.replaced, report.skipped
+        );
+        for problem in &report.problems {
+            eprintln!("    {problem}");
+            problems += 1;
+        }
+    }
+    if problems > 0 {
+        // Said out loud rather than buried above it: an import that quietly
+        // dropped four files is how somebody discovers a gap in a year.
+        eprintln!("\n{problems} file(s) could not be read; everything else was");
+    }
+    Ok(())
+}
+
+/// Every file under `dir`, keyed by its path relative to `root`.
+fn collect(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut std::collections::BTreeMap<String, Vec<u8>>,
+) -> Result<()> {
+    for entry in std::fs::read_dir(dir).map_err(|e| Error::io(dir, e))? {
+        let path = entry.map_err(|e| Error::io(dir, e))?.path();
+        if path.is_dir() {
+            collect(root, &path, out)?;
+        } else {
+            let name = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            out.insert(name, std::fs::read(&path).map_err(|e| Error::io(&path, e))?);
+        }
+    }
     Ok(())
 }
 
@@ -835,17 +1012,6 @@ fn truncate(s: &str, max: usize) -> String {
         return s.to_string();
     }
     s.chars().take(max.saturating_sub(1)).chain(['\u{2026}']).collect()
-}
-
-/// Make a string safe to use as a single path component.
-fn sanitize(s: &str) -> String {
-    let cleaned: String = s
-        .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
-        .collect();
-    let trimmed = cleaned.trim_matches('-');
-    let out: String = trimmed.chars().take(60).collect();
-    if out.is_empty() { "untitled".into() } else { out }
 }
 
 fn human_bytes(n: u64) -> String {
@@ -1096,16 +1262,6 @@ fn command_error(e: everyday_service::error::CommandError) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn sanitize_produces_a_safe_single_path_component() {
-        assert_eq!(sanitize("A Long Walk"), "A-Long-Walk");
-        assert_eq!(sanitize("../../etc/passwd"), "etc-passwd");
-        assert_eq!(sanitize(""), "untitled");
-        assert_eq!(sanitize("///"), "untitled");
-        assert!(!sanitize("a/b\\c").contains(['/', '\\']));
-        assert!(sanitize(&"x".repeat(200)).chars().count() <= 60);
-    }
 
     #[test]
     fn human_bytes_reads_naturally() {

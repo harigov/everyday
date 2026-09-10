@@ -534,6 +534,40 @@
     {
       "args": [
         {
+          "name": "handle",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "end_export",
+      "orScope": null,
+      "returns": "void",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "handle",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "end_import",
+      "orScope": null,
+      "returns": "void",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "url",
           "required": true,
           "type": "string"
@@ -934,6 +968,17 @@
       "orScope": null,
       "returns": "NoteSummary[]",
       "scope": "notes",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_parts",
+      "orScope": null,
+      "returns": "PartInfo[]",
+      "scope": "all",
       "sensitive": false,
       "streams": false
     },
@@ -1475,6 +1520,45 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "handle",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "offset",
+          "required": true,
+          "type": "number"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "read_export",
+      "orScope": null,
+      "returns": "ExportChunk",
+      "scope": "all",
+      "sensitive": true,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "handle",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "read_import",
+      "orScope": null,
+      "returns": "ArchiveManifest",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -1482,6 +1566,33 @@
       "orScope": null,
       "returns": "Template[]",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "handle",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "parts",
+          "required": true,
+          "type": "string[]"
+        },
+        {
+          "name": "mode",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "destructive",
+      "name": "run_import",
+      "orScope": null,
+      "returns": "ImportResult",
+      "scope": "all",
       "sensitive": false,
       "streams": false
     },
@@ -2215,6 +2326,50 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "parts",
+          "required": true,
+          "type": "string[]"
+        },
+        {
+          "name": "media",
+          "required": true,
+          "type": "boolean"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "start_export",
+      "orScope": null,
+      "returns": "ExportHandle",
+      "scope": "all",
+      "sensitive": true,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "bytes",
+          "required": true,
+          "type": "number"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "start_import",
+      "orScope": null,
+      "returns": "ImportUpload",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -2437,6 +2592,33 @@
       "orScope": null,
       "returns": "SearchResult[]",
       "scope": "web",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "handle",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "offset",
+          "required": true,
+          "type": "number"
+        },
+        {
+          "name": "data",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "write_import",
+      "orScope": null,
+      "returns": "ImportProgress",
+      "scope": "all",
       "sensitive": false,
       "streams": false
     }

@@ -1686,3 +1686,105 @@ export type AgentEvent =
     }
   | { type: 'finished'; messageId: MessageId }
   | { type: 'failed'; message: string }
+
+// ── Taking your data out, and putting it back ─────────────────────────
+//
+// Mirrors `everyday_transfer` and `domains::transfer`. An archive is a zip
+// of Markdown, iCalendar and CSV -- there is no Every Day format in it --
+// and it crosses this boundary in chunks because a whole journal does not
+// fit in one reply. See `lib/transfer.svelte.ts` for the two loops.
+
+/** One app's contribution to an export, and how much of it there is. */
+export interface PartInfo {
+  id: string
+  label: string
+  /** One line, for somebody deciding whether to tick it. */
+  summary: string
+  /** Named the way its own community names it: "iCalendar (.ics)". */
+  format: string
+  records: number
+  /** Does "include attachments" change anything here? */
+  media: boolean
+  /** Can it be read back? The assistant's transcripts cannot. */
+  imports: boolean
+}
+
+/** What an archive says about itself, or what was found by looking. */
+export interface ArchiveManifest {
+  application: string
+  formatVersion: number
+  exportedAt: string | null
+  vault: string
+  media: boolean
+  parts: ArchivePart[]
+}
+
+export interface ArchivePart {
+  id: string
+  label: string
+  format: string
+  records: number
+  files: number
+  bytes: number
+  /** Whether this build can read this part back. */
+  imports: boolean
+}
+
+/** An export that has been built and is waiting to be fetched. */
+export interface ExportHandle {
+  handle: string
+  bytes: number
+  name: string
+  chunk: number
+  manifest: ArchiveManifest
+}
+
+export interface ExportChunk {
+  /** Base64. Empty when there is nothing left. */
+  data: string
+  offset: number
+  done: boolean
+}
+
+export interface ImportUpload {
+  handle: string
+  chunk: number
+}
+
+export interface ImportProgress {
+  bytes: number
+  done: boolean
+}
+
+/** What one app's import did. */
+export interface ImportReport {
+  part: string
+  added: number
+  replaced: number
+  skipped: number
+  /** Files that could not be read, named. Never fatal on their own. */
+  problems: string[]
+}
+
+export interface ImportResult {
+  reports: ImportReport[]
+  added: number
+  replaced: number
+  skipped: number
+}
+
+/** What an import does with a record the vault already has. */
+export type ImportMode = 'skip' | 'replace'
+
+/**
+ * An archive the desktop shell picked and handed to the vault.
+ *
+ * Mirrors `transfer::Picked` in the shell. Not part of the command surface --
+ * the shell owns the file dialogs, because a path is a fact about this
+ * machine and a vault on another one must never be able to name one.
+ */
+export interface PickedFile {
+  handle: string
+  name: string
+  bytes: number
+}

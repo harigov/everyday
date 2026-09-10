@@ -24,6 +24,7 @@ use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult};
 use crate::events::{EventSink, Silent};
 use crate::idempotency::{Claim, Idempotency};
+use crate::transfers::Transfers;
 use everyday_core::{BlobId, CalendarId, Vault};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -52,6 +53,13 @@ pub struct Service {
     events: RwLock<Arc<dyn EventSink>>,
     pending: Arc<Pending>,
     idempotency: Idempotency,
+    /// Archives on their way out of this vault or into it.
+    ///
+    /// Here rather than in the domain that uses them for the reason the
+    /// assistant's `pending` is: they are session state that has to be
+    /// discarded when the vault locks, and the lock is this type's business.
+    /// See [`crate::transfers`] for why they are held in memory at all.
+    transfers: Arc<Transfers>,
     /// Subscriptions whose background refresh is failing and which the user
     /// has already been told about.
     ///
@@ -97,6 +105,7 @@ impl Service {
             events: RwLock::new(Arc::new(Silent)),
             pending: Arc::default(),
             idempotency: Idempotency::default(),
+            transfers: Arc::default(),
             reported_feeds: RwLock::new(HashSet::new()),
             reported_routines: RwLock::new(HashSet::new()),
             claimed_runs: RwLock::new(HashSet::new()),
@@ -123,6 +132,23 @@ impl Service {
         self.pending.clone()
     }
 
+    pub fn transfers(&self) -> Arc<Transfers> {
+        self.transfers.clone()
+    }
+
+    /// Say the vault has locked, and act on it.
+    ///
+    /// Every path that locks calls this rather than raising the event itself,
+    /// because there is now something that *must* happen alongside the event:
+    /// an export in flight is a plaintext copy of the vault held in memory,
+    /// and it has to go when the key does. One method rather than a rule to
+    /// remember in three places, one of which is a scheduler nobody is
+    /// watching.
+    pub fn locked(&self) {
+        self.transfers.clear();
+        self.events().lock_state(true);
+    }
+
     // ---- the vault ------------------------------------------------------
 
     pub fn set(&self, vault: Vault) -> Arc<Vault> {
@@ -145,6 +171,7 @@ impl Service {
     /// that follows must tolerate losing the race and coming up read-only
     /// rather than failing.
     pub fn close(&self) {
+        self.transfers.clear();
         self.reported_feeds.write().unwrap().clear();
         self.reported_routines.write().unwrap().clear();
         self.claimed_runs.write().unwrap().clear();

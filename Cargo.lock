@@ -1552,6 +1552,7 @@ dependencies = [
 name = "everyday-app"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "everyday-core",
  "everyday-server",
  "everyday-service",
@@ -1580,6 +1581,7 @@ dependencies = [
  "everyday-core",
  "everyday-server",
  "everyday-service",
+ "everyday-transfer",
  "everyday-vault",
  "jiff",
  "mime_guess",
@@ -1644,7 +1646,9 @@ dependencies = [
 name = "everyday-service"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "everyday-core",
+ "everyday-transfer",
  "everyday-vault",
  "futures",
  "jiff",
@@ -1694,6 +1698,22 @@ dependencies = [
  "jiff",
  "rusqlite",
  "tempfile",
+]
+
+[[package]]
+name = "everyday-transfer"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "everyday-core",
+ "everyday-vault",
+ "flate2",
+ "jiff",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

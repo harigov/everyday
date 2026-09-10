@@ -1,0 +1,28 @@
+[package]
+name = "everyday-transfer"
+description = "Getting a vault's contents out of it, and back in, in formats other programs read"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+everyday-core.workspace = true
+# Only for `media::sniff_mime`, which is how an imported picture learns what
+# it is. Every crate that depends on this one already depends on that one.
+everyday-vault.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+# Deflate for the archive, and its checksum. Neither is a new dependency:
+# both were already in the tree, so the archive costs this crate two `use`
+# lines and the build nothing at all. See `zip.rs` for why the container is
+# written here rather than taken from a crate.
+flate2 = "1"
+crc32fast = "1"
+
+[dev-dependencies]
+tempfile = "3"

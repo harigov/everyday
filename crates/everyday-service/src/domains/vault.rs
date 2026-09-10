@@ -97,7 +97,7 @@ async fn lock(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vau
         Ok(vault.status())
     })
     .await?;
-    svc.events().lock_state(true);
+    svc.locked();
     Ok(status)
 }
 
@@ -150,7 +150,7 @@ async fn touch(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<()
 async fn poll_auto_lock(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<bool> {
     let locked = svc.get().is_some_and(|v| v.forget_key_if_idle());
     if locked {
-        svc.events().lock_state(true);
+        svc.locked();
     }
     Ok(locked)
 }

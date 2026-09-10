@@ -16,6 +16,7 @@ mod remote;
 mod remotes;
 mod sharing;
 mod state;
+mod transfer;
 mod tray;
 
 use state::AppState;
@@ -139,6 +140,10 @@ pub fn run() {
             // neither -- that is the `everyday://` handler in `protocol.rs`.
             commands::put_blob,
             commands::send_message,
+            // A save dialog and a file picker. The archive between them never
+            // touches the webview: see `transfer.rs`.
+            transfer::save_export,
+            transfer::open_import,
             // This process's own furniture.
             commands::set_opens_itself,
             commands::ready_to_close,

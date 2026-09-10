@@ -10,6 +10,7 @@ import type {
   AddedItem,
   AgentMessage,
   AgentSettings,
+  ArchiveManifest,
   BalanceReport,
   BlockId,
   BlockKind,
@@ -28,10 +29,15 @@ import type {
   EntrySummary,
   EventId,
   EventQuery,
+  ExportChunk,
+  ExportHandle,
   Goal,
   GoalActivity,
   GoalId,
   GoalQuery,
+  ImportProgress,
+  ImportResult,
+  ImportUpload,
   Item,
   ItemId,
   ItemQuery,
@@ -52,6 +58,7 @@ import type {
   NoteId,
   NoteQuery,
   NoteSummary,
+  PartInfo,
   Profile,
   Project,
   ProjectId,
@@ -124,6 +131,8 @@ export interface Commands {
   deleteRun: { args: { id: RoutineRunId }; result: void }
   deleteTask: { args: { id: TaskId }; result: void }
   deleteTracker: { args: { id: TrackerId }; result: number }
+  endExport: { args: { handle: string }; result: void }
+  endImport: { args: { handle: string }; result: void }
   fetchImage: { args: { url: string }; result: string }
   flush: { args: Record<string, never>; result: void }
   getEntry: { args: { id: EntryId }; result: Entry }
@@ -155,6 +164,7 @@ export interface Commands {
   listLogs: { args: { query: LogQuery }; result: LogEntry[] }
   listMemories: { args: Record<string, never>; result: Memory[] }
   listNotes: { args: { query: NoteQuery }; result: NoteSummary[] }
+  listParts: { args: Record<string, never>; result: PartInfo[] }
   listProjects: { args: Record<string, never>; result: Project[] }
   listReadings: { args: { query: ReadingQuery }; result: Reading[] }
   listRoles: { args: Record<string, never>; result: RoleInfo[] }
@@ -205,7 +215,10 @@ export interface Commands {
   noteTags: { args: Record<string, never>; result: string[] }
   pollAutoLock: { args: Record<string, never>; result: boolean }
   profile: { args: Record<string, never>; result: Profile }
+  readExport: { args: { handle: string; offset: number }; result: ExportChunk }
+  readImport: { args: { handle: string }; result: ArchiveManifest }
   routineTemplates: { args: Record<string, never>; result: Template[] }
+  runImport: { args: { handle: string; parts: string[]; mode: string }; result: ImportResult }
   runRoutine: { args: { id: RoutineId }; result: RoutineRun }
   runTool: {
     args: { name: string; arguments?: unknown; confirmDestructive?: boolean }
@@ -252,6 +265,8 @@ export interface Commands {
     result: Item
   }
   setItemStatus: { args: { id: ItemId; status: ItemStatus; log: boolean }; result: Item }
+  startExport: { args: { parts: string[]; media: boolean }; result: ExportHandle }
+  startImport: { args: { name: string; bytes: number }; result: ImportUpload }
   status: { args: Record<string, never>; result: VaultStatus }
   subscribeCalendar: { args: { name: string; url: string; color: string }; result: CalendarInfo }
   syncCalendar: { args: { id: CalendarId }; result: SyncReport }
@@ -266,6 +281,7 @@ export interface Commands {
   vaultStats: { args: Record<string, never>; result: StoreStats }
   verifyPassword: { args: { password: string }; result: void }
   webSearch: { args: { request: SearchRequest }; result: SearchResult[] }
+  writeImport: { args: { handle: string; offset: number; data: string }; result: ImportProgress }
 }
 
 /** The name each method sends over the wire. */
@@ -297,6 +313,8 @@ export const COMMAND_NAMES = {
   deleteRun: 'delete_run',
   deleteTask: 'delete_task',
   deleteTracker: 'delete_tracker',
+  endExport: 'end_export',
+  endImport: 'end_import',
   fetchImage: 'fetch_image',
   flush: 'flush',
   getEntry: 'get_entry',
@@ -322,6 +340,7 @@ export const COMMAND_NAMES = {
   listLogs: 'list_logs',
   listMemories: 'list_memories',
   listNotes: 'list_notes',
+  listParts: 'list_parts',
   listProjects: 'list_projects',
   listReadings: 'list_readings',
   listRoles: 'list_roles',
@@ -353,7 +372,10 @@ export const COMMAND_NAMES = {
   noteTags: 'note_tags',
   pollAutoLock: 'poll_auto_lock',
   profile: 'profile',
+  readExport: 'read_export',
+  readImport: 'read_import',
   routineTemplates: 'routine_templates',
+  runImport: 'run_import',
   runRoutine: 'run_routine',
   runTool: 'run_tool',
   saveAgentSettings: 'save_agent_settings',
@@ -388,6 +410,8 @@ export const COMMAND_NAMES = {
   setForgetKey: 'set_forget_key',
   setItemProgress: 'set_item_progress',
   setItemStatus: 'set_item_status',
+  startExport: 'start_export',
+  startImport: 'start_import',
   status: 'status',
   subscribeCalendar: 'subscribe_calendar',
   syncCalendar: 'sync_calendar',
@@ -402,6 +426,7 @@ export const COMMAND_NAMES = {
   vaultStats: 'vault_stats',
   verifyPassword: 'verify_password',
   webSearch: 'web_search',
+  writeImport: 'write_import',
 } as const
 
 /**
@@ -443,6 +468,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_run',
   'delete_task',
   'delete_tracker',
+  'end_export',
+  'end_import',
   'fetch_image',
   'flush',
   'get_entry',
@@ -468,6 +495,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_logs',
   'list_memories',
   'list_notes',
+  'list_parts',
   'list_projects',
   'list_readings',
   'list_roles',
@@ -499,7 +527,10 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'note_tags',
   'poll_auto_lock',
   'profile',
+  'read_export',
+  'read_import',
   'routine_templates',
+  'run_import',
   'run_routine',
   'run_tool',
   'save_agent_settings',
@@ -533,6 +564,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_forget_key',
   'set_item_progress',
   'set_item_status',
+  'start_export',
+  'start_import',
   'status',
   'subscribe_calendar',
   'sync_calendar',
@@ -547,6 +580,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'vault_stats',
   'verify_password',
   'web_search',
+  'write_import',
 ])
 
 /**
@@ -589,6 +623,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'mark_runs_seen',
   'merge_trackers',
   'poll_auto_lock',
+  'run_import',
   'run_routine',
   'run_tool',
   'save_agent_settings',

@@ -753,6 +753,22 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     run: () => calendar.syncDue(true),
   },
   {
+    label: 'Export my data',
+    group: 'Vault',
+    keywords: ['export', 'download', 'markdown', 'csv', 'backup', 'leave', 'zip'],
+    icon: 'upload',
+    when: () => app.screen === 'main',
+    run: () => panels.openSettings('data'),
+  },
+  {
+    label: 'Import an export',
+    group: 'Vault',
+    keywords: ['import', 'restore', 'markdown', 'csv', 'zip', 'read in'],
+    icon: 'upload',
+    when: () => app.screen === 'main',
+    run: () => panels.openSettings('data'),
+  },
+  {
     label: 'Use a vault on another computer',
     group: 'Vault',
     keywords: ['remote', 'server', 'connect', 'pair'],

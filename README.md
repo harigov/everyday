@@ -6,8 +6,9 @@ for macOS, Linux and Windows. Rich text with photos and video, projects and
 tasks on a list or a board, your week with the plan and the record side by
 side, a shelf for everything you mean to read and watch and cook, standing
 work the assistant does on a schedule and leaves for you to read, storage on
-this computer or on a Postgres server you choose, and encryption you actually
-hold the key to.
+this computer or on a Postgres server you choose, encryption you actually hold
+the key to, and a door out of it: every app writes itself to Markdown,
+iCalendar and CSV you can walk away with.
 
 <!-- Screenshots live in docs/ once you have run the app. -->
 
@@ -66,7 +67,7 @@ of filters over the list below it. **Settings** and **Lock** are at the foot
 of the bar, under a rule, for the same reason: they belong to the vault
 rather than to whichever app is open.
 
-Settings is a dialog with tabs — General, Assistant, Vault — rather than a
+Settings is a dialog with tabs — General, You, Assistant, Data, Vault — rather than a
 popover hanging out of the side of the bar. It outgrew the popover twice:
 once when it acquired an instructions box somebody is expected to write a
 paragraph into, and again when that box had to become a *second* dialog
@@ -74,7 +75,9 @@ raised out of the first, so the application had two settings surfaces and one
 of them had to close before the other could open.
 
 Settings has a **You** tab as well, which is where the assistant learns whose
-vault this is. See [Who it works for](#who-it-works-for).
+vault this is (see [Who it works for](#who-it-works-for)), and a **Data** tab,
+which is where the vault is written out as files anything can read and read
+back again — see [leaving with your writing](#leaving-with-your-writing).
 
 Talking to the assistant is deliberately *not* on the bar. It is a round
 button in the bottom right-hand corner of whatever app is open, because that
@@ -1190,6 +1193,141 @@ If that trade is unacceptable, the storage abstraction is the answer: a
 backend that seals the index columns too — at the cost of full scans — drops
 in without the rest of the app noticing.
 
+## Leaving with your writing
+
+Encryption you hold the key to is half of a promise. The other half is that
+the door is not locked from the inside: an application that can only be read
+by itself is one you are trapped in, however good its cipher.
+
+**Settings → Data** writes your vault out as a folder of files other programs
+already read, and reads such a folder back. There is no Every Day format
+anywhere in it.
+
+| App | What you get |
+|---|---|
+| Journal | Markdown with YAML front matter, one file per entry, filed by journal and named by date |
+| Notes | the same, flat — a folder that drops straight into Obsidian |
+| Todo | `- [ ]` checklists, one file per project, plus `time.csv` and `time.ics` for the hours |
+| Calendar | `.ics`, one per subscription, plus a table of where each came from |
+| Library | CSV, one file per shelf, with that shelf's own columns |
+| Tracking | CSV, one file per tracker: date, time, value, note |
+| Roles and goals | one Markdown page, a heading per role and a checklist item per goal |
+| Assistant | transcripts as Markdown. **Export only** — see below |
+| You | one short page of what the assistant has been told about you |
+
+The whole is a zip, because that is what all three desktops open by
+double-clicking, with a `README.md` at the root explaining itself to whoever
+finds it in ten years and an `everyday.json` saying what is in it. Attachments
+are a switch, and the dialog says what they weigh before you throw it.
+
+### An app declares its own
+
+```text
+  Portable ── spec()    what this is, and what shape it is written in
+           ── tally()   how many records there are to hand over
+           ── export()  write them, into a folder that is yours alone
+           ── import()  read them back
+```
+
+One trait, in `everyday-transfer`, implemented once per app and registered in
+one list. Nothing else learns that an app exists: the chooser in settings is
+drawn from the specs, so is the archive's manifest, so is its README, and the
+commands take a list of part ids they never interpret. The sixth app becomes
+exportable by being written — which is the same argument that made the command
+table a concatenation of per-domain slices rather than a match arm somebody
+has to remember.
+
+Each app owns a folder in the archive and can see nothing outside it: on the
+way out every name it writes is prefixed, and on the way back in it is only
+offered the files under that prefix. Two apps cannot collide, and one cannot
+read another's records by reaching into its folder. That matters most for the
+app that will one day hold passwords.
+
+### The Markdown wins, and the sidecar is why it can
+
+An entry is a rich document, and Markdown cannot say quite everything one
+contains — an embedded video, a table, a highlight. So each is written twice:
+as the `.md` everything else reads, and as the exact tree in a hidden
+`.everyday/` folder beside it.
+
+On the way back in the sidecar is preferred **unless the Markdown has been
+edited since**, which is what the digest inside it is for. Editing an exported
+entry in a text editor is one of the two reasons anybody exports one; a
+sidecar that silently overrode that edit would make the feature a trap.
+
+A folder with no `.everyday` at all — somebody's own notes, a folder from
+another program, an archive rezipped by a tool that dropped the
+dot-directory — imports from the Markdown alone. That path is not a fallback
+that happens to work: it is the one that has to work, because it is the only
+one another program can produce. A bare `notes/Shopping.md` with no front
+matter arrives as a note called "Shopping"; a `journal/2026-01-02-a-day.md`
+arrives on the second of January.
+
+### What an import will and will not do
+
+It is three steps with a person in the middle: an archive arrives, it is
+described, and only then is there a button that changes anything. The
+description is not a courtesy. There are two modes and one of them is
+destructive:
+
+* **Only add what is missing** — the default. Anything this vault already has
+  is left exactly as it is, so nothing you have written can be lost by it.
+* **Replace what is here** — a record this vault already has is overwritten
+  from the file. This is what "I edited the export in a text editor" needs,
+  and it is the reason the dry run exists.
+
+Matching is by id, and every record keeps its id in its front matter. Leave it
+alone and your edit lands on the record it came from; delete it and the record
+arrives as a new one. That is also what makes importing an archive twice a
+no-op rather than a duplicate of everything.
+
+One unreadable file does not cost you the other three hundred and ninety-nine.
+It is skipped, named, and counted, because a silent skip is how somebody
+discovers a gap in a year.
+
+### This is not a backup, and the difference is the point
+
+An export is your writing **with the encryption taken off**. It is a plaintext
+file bound for a Downloads folder, so it deliberately leaves out every
+credential in the vault: the assistant's API key, the tokens paired devices
+hold, and the wrapped data key itself. A credential in an export is a
+credential leaked.
+
+`everyday backup` is the other verb. It copies the vault *sealed*, opens with
+the same password, needs no restore step, and keeps the things an export
+drops. Two verbs, two jobs — which is also why the assistant's part exports
+and does not import: a transcript is a record of something that happened, and
+a vault whose history could be authored from a file is a vault whose history
+means nothing.
+
+### Where the bytes go
+
+Nowhere near a temporary file. An archive is plaintext, and spilling an
+unencrypted copy of somebody's diary into `/tmp` — where it would outlive the
+session, the lock and very probably the person's memory of having made it —
+would undo the premise of the program to save some memory. It is held in
+memory instead, dropped when it has been read to the end, dropped after half
+an hour regardless, and **dropped the moment the vault locks**, along with the
+key.
+
+Neither direction sends a path across the boundary. On the desktop the shell
+opens the platform's own save dialog and pulls the archive straight into the
+file, so a four-gigabyte export costs four megabytes of memory; a browser
+attached to a paired vault has no shell and assembles the chunks itself.
+Either way the vault is only ever asked for the next four megabytes, exactly
+as it is for a video being scrubbed. The one path with no ceiling at all is
+the command line, which writes as it goes:
+
+```sh
+everyday export --list                 # what there is, and how much of it
+everyday export ~/journal.zip          # an archive
+everyday export ~/journal              # the same files, as a folder
+everyday export ~/j.zip --part notes --part journal --no-media
+everyday import ~/journal.zip          # says what it found, changes nothing
+everyday import ~/journal.zip --yes    # does it
+everyday import ~/some-markdown-folder --yes
+```
+
 ## Storage backends
 
 Storage sits behind one trait, [`JournalStore`], so alternatives can be tried
@@ -1451,7 +1589,8 @@ cargo run -p everyday-cli -- init --name "My Journal"
 echo "It rained all afternoon." | everyday new --journal Daily --tag weather
 everyday list
 everyday search rain
-everyday export ~/journal-backup   # readable Markdown, one file per entry
+everyday export ~/journal.zip      # Markdown, iCalendar and CSV; no Every Day format
+everyday import ~/journal.zip      # and back again, after saying what it found
 everyday backup ~/vault-copy       # the vault itself, still sealed
 everyday backend                   # what the storage backend is set to
 everyday check                     # look for storage-level damage
@@ -1463,12 +1602,14 @@ everyday do list_tools --list      # the assistant's verbs, without a model
 for scripts.
 
 `backup` and `export` are different things and you probably want both.
-`export` writes readable Markdown that any program can open, which is what
-you want in ten years when this app is gone. `backup` copies the vault as it
-is — sealed, with its attachments and its header — so it opens with the same
-password and needs no restore step; that is what you want at 2am when the
-disk has gone bad. `check` exits non-zero on damage, so it fits in a cron
-line.
+`export` writes files any program can open, which is what you want in ten
+years when this app is gone — and what you want today if you would rather
+keep your notes in a text editor. `backup` copies the vault as it is —
+sealed, with its attachments, its header and the credentials an export
+deliberately drops — so it opens with the same password and needs no restore
+step; that is what you want at 2am when the disk has gone bad. See [leaving
+with your writing](#leaving-with-your-writing). `check` exits non-zero on
+damage, so it fits in a cron line.
 
 While the app has a vault open, the CLI opens it read-only: `list`, `show`,
 `search`, `export`, `check` and `backup` work, and anything that writes says

@@ -24,6 +24,7 @@
   import { app } from '../lib/state.svelte'
   import { tray } from '../lib/tray.svelte'
   import AgentPanel from './AgentPanel.svelte'
+  import DataPanel from './DataPanel.svelte'
   import ProfilePanel from './ProfilePanel.svelte'
   import SharePanel from './SharePanel.svelte'
   import Icon from './Icon.svelte'
@@ -75,6 +76,7 @@
     { id: 'general', label: 'General', icon: 'settings' },
     { id: 'profile', label: 'You', icon: 'star' },
     { id: 'assistant', label: 'Assistant', icon: 'sparkle' },
+    { id: 'data', label: 'Data', icon: 'upload' },
     { id: 'vault', label: 'Vault', icon: 'lock' },
   ]
   // The assistant tab is not offered on a backend that cannot store a
@@ -218,6 +220,8 @@
         <AgentPanel />
       {:else if tab === 'profile'}
         <ProfilePanel />
+      {:else if tab === 'data'}
+        <DataPanel />
       {:else if tab === 'general'}
         <section>
           <span class="eyebrow">Appearance</span>

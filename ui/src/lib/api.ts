@@ -10,6 +10,7 @@ import type {
   AgentEvent,
   AgentMessage,
   AgentSettings,
+  ArchiveManifest,
   BalanceReport,
   BlockId,
   BlockKind,
@@ -32,11 +33,17 @@ import type {
   EntrySummary,
   EventId,
   EventQuery,
+  ExportChunk,
+  ExportHandle,
   Goal,
   GoalActivity,
   GoalId,
   GoalQuery,
   HotkeyStatus,
+  ImportMode,
+  ImportProgress,
+  ImportResult,
+  ImportUpload,
   Item,
   ItemId,
   ItemQuery,
@@ -57,6 +64,8 @@ import type {
   NoteId,
   NoteQuery,
   NoteSummary,
+  PartInfo,
+  PickedFile,
   Profile,
   Project,
   ProjectId,
@@ -850,6 +859,54 @@ export const api = {
    */
   saveMemory: (memory: Memory) => invoke<Memory[]>('save_memory', { memory }),
   deleteMemory: (id: MemoryId) => invoke<void>('delete_memory', { id }),
+
+  // ── Taking your data out, and putting it back ────────────────────────
+  //
+  // Nine calls rather than two because an archive does not fit in a reply:
+  // both directions are a handle and a series of chunks, exactly as an
+  // attachment is. `lib/transfer.svelte.ts` owns both loops; nothing else in
+  // the interface should be calling these by hand.
+
+  /** What this vault can hand over, and how much of it there is. */
+  exportableParts: () => invoke<PartInfo[]>('list_parts'),
+
+  /** Build the archive. The bytes stay on the vault's machine until read. */
+  startExport: (parts: string[], media: boolean) =>
+    invoke<ExportHandle>('start_export', { parts, media }),
+  readExport: (handle: string, offset: number) =>
+    invoke<ExportChunk>('read_export', { handle, offset }),
+  /** For a download that was abandoned; a finished one drops itself. */
+  endExport: (handle: string) => invoke<void>('end_export', { handle }),
+
+  startImport: (name: string, bytes: number) =>
+    invoke<ImportUpload>('start_import', { name, bytes }),
+  writeImport: (handle: string, offset: number, data: string) =>
+    invoke<ImportProgress>('write_import', { handle, offset, data }),
+  /** What is in it, changing nothing. The dry run the dialog shows. */
+  readImport: (handle: string) => invoke<ArchiveManifest>('read_import', { handle }),
+  runImport: (handle: string, parts: string[], mode: ImportMode) =>
+    invoke<ImportResult>('run_import', { handle, parts, mode }),
+  endImport: (handle: string) => invoke<void>('end_import', { handle }),
+
+  /**
+   * Ask the shell to save an already-built export where the user picks.
+   *
+   * Desktop only, and the reason it exists is that the bytes then never come
+   * through here at all: the shell pulls the chunks from the session straight
+   * into the file. A browser attached to a paired vault assembles them itself
+   * instead -- see `transfer.svelte.ts`. Answers false when the dialog was
+   * dismissed, which is not an error.
+   */
+  saveExport: (handle: string, name: string) => invoke<boolean>('save_export', { handle, name }),
+
+  /**
+   * Ask the shell for a file to import, and hand it to the vault.
+   *
+   * Nothing has been read into the vault when this returns: what comes back
+   * is the handle to inspect and then, separately, to import with. `null`
+   * means the picker was dismissed.
+   */
+  openImport: () => invoke<PickedFile | null>('open_import'),
 }
 
 /**

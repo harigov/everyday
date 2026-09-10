@@ -319,6 +319,11 @@ mod tests {
             // Answers a question a turn is parked on. What follows is the
             // turn's own writes, each of which announces itself.
             "confirm_tool_call",
+            // The one write that touches many kinds at once. A single
+            // `change:` would name one of them and leave every other list
+            // stale, so it emits one event per kind an imported app could
+            // have moved. See `domains::transfer::kinds_of`.
+            "run_import",
         ];
         for command in catalog() {
             if command.effect.is_write() && !INVISIBLE.contains(&command.name) {

@@ -3430,9 +3430,167 @@ export const mockInvoke = async <T>(
       return undefined as T
     }
 
+    // ── Taking your data out, and putting it back ────────────────────
+    //
+    // Enough of the protocol to drive both loops in the pane: a chooser with
+    // real counts, an archive that is bytes rather than a zip -- nothing here
+    // parses one -- and an import that describes what it was given and says
+    // it read it. What this cannot exercise is the formats themselves, which
+    // is what `everyday-transfer`'s own round-trip test is for.
+
+    case 'list_parts': {
+      requireUnlocked()
+      return [
+        {
+          id: 'journal',
+          label: 'Journal',
+          summary: 'Every entry, in the journal it was written in.',
+          format: 'Markdown with YAML front matter',
+          records: entries.length,
+          media: true,
+          imports: true,
+        },
+        {
+          id: 'notes',
+          label: 'Notes',
+          summary: 'Every note, with its tags.',
+          format: 'Markdown with YAML front matter',
+          records: notes.length,
+          media: true,
+          imports: true,
+        },
+        {
+          id: 'todo',
+          label: 'Todo',
+          summary: 'Projects, tasks and the hours booked against them.',
+          format: 'Markdown task lists, plus CSV for the hours',
+          records: tasks.length,
+          media: false,
+          imports: true,
+        },
+        {
+          id: 'library',
+          label: 'Library',
+          summary: 'Everything on every shelf.',
+          format: 'CSV, one file per shelf',
+          records: items.length,
+          media: true,
+          imports: true,
+        },
+        {
+          id: 'assistant',
+          label: 'Assistant',
+          summary: 'Transcripts and standing work. A reading copy.',
+          format: 'Markdown',
+          records: conversations.length,
+          media: false,
+          imports: false,
+        },
+      ] as T
+    }
+
+    case 'start_export': {
+      requireUnlocked()
+      const parts = (args.parts as string[]) ?? []
+      const body = new TextEncoder().encode(
+        `Every Day mock export\n\nparts: ${parts.join(', ')}\nmedia: ${String(args.media)}\n`,
+      )
+      mockArchives.set('mock-export', body)
+      return {
+        handle: 'mock-export',
+        bytes: body.length,
+        name: 'Every Day (mock).zip',
+        chunk: 4 << 20,
+        manifest: mockManifest(parts),
+      } as T
+    }
+
+    case 'read_export': {
+      const body = mockArchives.get(args.handle as string)
+      if (!body) throw new VaultError('not_found', 'that transfer is no longer in progress')
+      const offset = Math.min((args.offset as number) ?? 0, body.length)
+      const slice = body.subarray(offset, body.length)
+      return { data: toBase64(slice), offset: body.length, done: true } as T
+    }
+
+    case 'end_export':
+    case 'end_import':
+      mockArchives.delete(args.handle as string)
+      return undefined as T
+
+    case 'start_import': {
+      requireUnlocked()
+      mockArchives.set('mock-import', new Uint8Array(0))
+      return { handle: 'mock-import', chunk: 4 << 20 } as T
+    }
+
+    case 'write_import':
+      return { bytes: (args.offset as number) ?? 0, done: true } as T
+
+    case 'read_import': {
+      requireUnlocked()
+      return mockManifest(['journal', 'notes', 'todo', 'assistant']) as T
+    }
+
+    case 'run_import': {
+      requireUnlocked()
+      const parts = (args.parts as string[]) ?? []
+      return {
+        reports: parts.map((part) => ({
+          part,
+          added: 3,
+          replaced: args.mode === 'replace' ? 1 : 0,
+          skipped: args.mode === 'replace' ? 0 : 1,
+          problems: part === 'journal' ? ['journal/2019-04-01-odd.md: no usable date'] : [],
+        })),
+        added: parts.length * 3,
+        replaced: args.mode === 'replace' ? parts.length : 0,
+        skipped: args.mode === 'replace' ? 0 : parts.length,
+      } as T
+    }
+
     default:
       throw new VaultError('unknown', `no mock for command ${cmd}`)
   }
+}
+
+/** Archives in flight, keyed by the handle the pane was given. */
+const mockArchives = new Map<string, Uint8Array>()
+
+function mockManifest(parts: string[]) {
+  const known: Record<string, [string, string, boolean]> = {
+    journal: ['Journal', 'Markdown with YAML front matter', true],
+    notes: ['Notes', 'Markdown with YAML front matter', true],
+    todo: ['Todo', 'Markdown task lists', true],
+    library: ['Library', 'CSV, one file per shelf', true],
+    assistant: ['Assistant', 'Markdown', false],
+  }
+  return {
+    application: 'Every Day',
+    formatVersion: 1,
+    exportedAt: new Date().toISOString(),
+    vault: 'Mock',
+    media: true,
+    parts: parts
+      .filter((id) => id in known)
+      .map((id) => ({
+        id,
+        label: known[id]![0],
+        format: known[id]![1],
+        records: 12,
+        files: 14,
+        bytes: 4096,
+        imports: known[id]![2],
+      })),
+  }
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  }
+  return btoa(binary)
 }
 
 /** Confirmations the scripted turn below is waiting on. */

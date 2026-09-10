@@ -15,6 +15,7 @@ path = "src/main.rs"
 everyday-core.workspace = true
 everyday-vault.workspace = true
 everyday-service.workspace = true
+everyday-transfer.workspace = true
 everyday-server.workspace = true
 serde_json.workspace = true
 jiff.workspace = true

@@ -18,6 +18,7 @@ pub mod purpose;
 pub mod routines;
 pub mod tasks;
 pub mod trackers;
+pub mod transfer;
 pub mod vault;
 pub mod web;
 
@@ -54,6 +55,7 @@ pub fn catalog() -> &'static [&'static Command] {
             trackers::COMMANDS,
             purpose::COMMANDS,
             routines::COMMANDS,
+            transfer::COMMANDS,
             web::COMMANDS,
             assistant::COMMANDS,
             meta::COMMANDS,

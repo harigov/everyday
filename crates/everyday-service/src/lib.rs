@@ -29,6 +29,9 @@
 //! hundred megabytes of video should not be an array of numbers; and a turn of
 //! the assistant ([`Service::send_message`]), because it answers with a stream.
 //!
+//! A fourth is JSON and is chunked for the same reason as the first: an
+//! export of a whole vault. See [`domains::transfer`] and [`transfers`].
+//!
 //! # What is deliberately absent
 //!
 //! Opening a vault, creating one, and deciding which one this session is about.
@@ -46,6 +49,7 @@ pub mod http;
 pub mod idempotency;
 pub mod scheduler;
 pub mod service;
+pub mod transfers;
 pub mod websearch;
 
 pub use command::{Command, Signature};

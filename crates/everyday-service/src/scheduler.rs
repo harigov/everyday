@@ -100,7 +100,7 @@ pub async fn tick(service: &Arc<Service>) {
         return;
     }
     if vault.forget_key_if_idle() {
-        service.events().lock_state(true);
+        service.locked();
         return;
     }
     // A second copy of the application holds the write claim. Reading is
