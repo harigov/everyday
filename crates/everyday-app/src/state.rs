@@ -6,10 +6,12 @@
 //! and where this session's remarks are emitted -- plus the choice between a
 //! vault in this process and one on another machine.
 
+use everyday_server::Registry;
 use everyday_service::Service;
+use everyday_service::error::{CommandError, CommandResult};
 use everyday_service::events::EventSink;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::mcp::Mcp;
 use crate::remote::Session;
@@ -34,6 +36,20 @@ pub struct AppState {
     sharing: Arc<Sharing>,
     /// Serving this vault's tools to an MCP client, when that is on.
     mcp: Arc<Mcp>,
+    /// The one open handle onto `devices.json`, for the life of this
+    /// process.
+    ///
+    /// `None` until first asked for, then kept. `sharing` and `mcp` are two
+    /// independent switches over the *same* device list -- a paired phone
+    /// and an issued MCP token are rows in one file -- and
+    /// [`everyday_server::Registry`]'s own doc explains why that file must
+    /// never be behind two open `Registry`s in one process: each keeps the
+    /// whole list in memory and writes all of it back on every change, so a
+    /// write through one copy is invisible to, and gets overwritten by, the
+    /// other. `registry()` below is the one place this process opens that
+    /// file; `Sharing` and `Mcp` themselves hold no path to it at all, only
+    /// whatever `Arc` a caller hands them.
+    registry: Mutex<Option<Arc<Registry>>>,
 }
 
 impl Default for AppState {
@@ -52,6 +68,7 @@ impl AppState {
             sink: RwLock::new(None),
             sharing: Arc::default(),
             mcp: Arc::default(),
+            registry: Mutex::new(None),
         }
     }
 
@@ -65,6 +82,27 @@ impl AppState {
 
     pub fn service(&self) -> Arc<Service> {
         self.service.clone()
+    }
+
+    /// The shared device registry, opened the first time anything asks and
+    /// reused after that.
+    ///
+    /// See this struct's own doc on `registry` for why there must be only
+    /// one. Every caller in this crate that needs to read or write
+    /// `devices.json` -- starting sharing, starting MCP, revoking a device,
+    /// drawing either settings pane -- goes through here rather than
+    /// opening the file itself.
+    pub fn registry(&self) -> CommandResult<Arc<Registry>> {
+        let mut slot = self.registry.lock().unwrap();
+        if let Some(registry) = slot.as_ref() {
+            return Ok(registry.clone());
+        }
+        let dir = everyday_vault::config_dir();
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| CommandError::new("io", format!("{}: {e}", dir.display())))?;
+        let registry = Arc::new(Registry::open(dir.join(everyday_server::DEVICES_FILE))?);
+        *slot = Some(registry.clone());
+        Ok(registry)
     }
 
     /// Should closing the window leave the process running?

@@ -19,10 +19,42 @@
   import type { McpStatus } from '../lib/types'
   import Icon from './Icon.svelte'
 
+  // The domains a token can be narrowed to, in `everyday_service::domains::
+  // meta::scope_of`'s order, labelled the way the app bar names them rather
+  // than with the raw scope string a settings pane has no business showing.
+  // `all`, `admin` and `any` are not here on purpose: `all` is what ticking
+  // every box below already means, and the other two are never something a
+  // token is issued.
+  const DOMAIN_SCOPES: { scope: string; label: string }[] = [
+    { scope: 'journals', label: 'Journal' },
+    { scope: 'notes', label: 'Notes' },
+    { scope: 'tasks', label: 'Tasks' },
+    { scope: 'calendars', label: 'Calendar' },
+    { scope: 'library', label: 'Library' },
+    { scope: 'trackers', label: 'Tracking' },
+    { scope: 'purpose', label: 'Overview' },
+    { scope: 'agent', label: 'Assistant' },
+  ]
+
   let mcp = $state<McpStatus | null>(null)
   let busy = $state(false)
   let address = $state('')
   let port = $state('')
+  // What the next token issued may reach. Every box ticked to start with --
+  // that is what issuing a token has always done, and narrowing it is a
+  // choice somebody makes on purpose, not the default they have to notice
+  // and opt out of.
+  let scopes = $state<Set<string>>(new Set(DOMAIN_SCOPES.map((d) => d.scope)))
+  const allScopesTicked = $derived(scopes.size === DOMAIN_SCOPES.length)
+  const noScopesTicked = $derived(scopes.size === 0)
+
+  function toggleScope(scope: string, checked: boolean) {
+    const next = new Set(scopes)
+    if (checked) next.add(scope)
+    else next.delete(scope)
+    scopes = next
+  }
+
   // The plaintext token, held only in this component's memory for as long as
   // this window stays open. It came back from one call, is shown once, and
   // is never asked for again -- reloading this pane loses it, which is the
@@ -72,9 +104,16 @@
   }
 
   async function issueToken() {
+    if (noScopesTicked) return
     busy = true
     try {
-      token = await api.mcpIssueToken()
+      // `all` when every box is ticked, rather than the same eight scopes
+      // spelt out -- that is the grant a token has always been issued, and
+      // leaving every box ticked should read as "everything", not as a list
+      // that happens to cover everything today. Otherwise exactly what is
+      // ticked: `mcp_issue_token` never widens a narrower list back to
+      // `all` on its own.
+      token = await api.mcpIssueToken(allScopesTicked ? ['all'] : Array.from(scopes))
       mcp = await api.mcpStatus()
     } catch (e) {
       notify.error(e instanceof Error ? e.message : String(e))
@@ -154,16 +193,38 @@
           </div>
         </div>
       {:else}
-        <div>
-          <button class="btn" disabled={busy} onclick={issueToken}>
-            <Icon name="sparkle" /> Issue a token…
-          </button>
-          {#if mcp.hasToken}
-            <p class="hint">
-              A token has already been issued for this vault. It is the row named "MCP client" in
-              the paired list above; issuing another adds a second one rather than replacing it.
-            </p>
-          {/if}
+        <div class="scopes">
+          <span class="eyebrow">What it can reach</span>
+          <div class="scope-grid">
+            {#each DOMAIN_SCOPES as d (d.scope)}
+              <label class="scope">
+                <input
+                  type="checkbox"
+                  checked={scopes.has(d.scope)}
+                  disabled={busy}
+                  onchange={(e) => toggleScope(d.scope, e.currentTarget.checked)}
+                />
+                {d.label}
+              </label>
+            {/each}
+          </div>
+          <div>
+            <button class="btn" disabled={busy || noScopesTicked} onclick={issueToken}>
+              <Icon name="sparkle" /> Issue a token…
+            </button>
+            {#if noScopesTicked}
+              <p class="hint">
+                Tick at least one app -- a token has to reach something, and an empty list is
+                refused rather than quietly handed the whole vault.
+              </p>
+            {/if}
+            {#if mcp.hasToken}
+              <p class="hint">
+                A token has already been issued for this vault. It is the row named "MCP client" in
+                the paired list above; issuing another adds a second one rather than replacing it.
+              </p>
+            {/if}
+          </div>
         </div>
       {/if}
 
@@ -225,6 +286,25 @@
     padding: 0.75rem;
     border: 1px solid var(--border);
     border-radius: var(--radius);
+  }
+
+  .scopes {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .scope-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.3rem 0.75rem;
+  }
+
+  .scope {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: var(--text-sm);
   }
 
   .row {

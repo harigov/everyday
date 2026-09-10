@@ -397,9 +397,15 @@ export const api = {
    * at all. Off by default; see `docs/plans/mcp.md`'s "Destructive tools
    * are absent, not refused". */
   mcpSetDestructive: (allow: boolean) => invoke<McpStatus>('mcp_set_destructive', { allow }),
-  /** Mint a token and hand it back once. There is no second call that shows
-   * it again -- copy it now, or issue a new one. */
-  mcpIssueToken: () => invoke<string>('mcp_issue_token'),
+  /**
+   * Mint a token scoped to `scopes` and hand it back once. There is no
+   * second call that shows it again -- copy it now, or issue a new one.
+   *
+   * Never empty: `mcp_issue_token` refuses that outright rather than
+   * quietly widening it to everything, so `McpPanel` disables the button
+   * before it can ask.
+   */
+  mcpIssueToken: (scopes: string[]) => invoke<string>('mcp_issue_token', { scopes }),
 
   // ── The OS-wide hotkey ─────────────────────────────────────────────
 

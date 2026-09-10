@@ -23,8 +23,19 @@
 //! below take an `other` list of whatever the other switch is currently
 //! contributing, supplied by the caller in `commands.rs`, and fold it in
 //! through [`crate::fanout::compose`].
+//!
+//! # One registry, handed in
+//!
+//! [`crate::mcp::Mcp`] is also a second, independent switch over the same
+//! *device list* -- a paired phone and an issued MCP token are rows in the
+//! one `devices.json`. Every method below that touches it therefore takes
+//! an `&Registry` or `Arc<Registry>` from its caller rather than opening
+//! the file itself; `commands.rs` gets that handle from
+//! [`crate::state::AppState::registry`], which opens it once for the whole
+//! process. See [`everyday_server::Registry`]'s own doc for why a second
+//! `Registry::open` of the same file is a bug and not just untidiness.
 
-use everyday_server::{Broadcaster, Config, Running};
+use everyday_server::{Broadcaster, Config, Registry, Running};
 use everyday_service::error::{CommandError, CommandResult};
 use everyday_service::events::EventSink;
 use serde::Serialize;
@@ -52,14 +63,19 @@ pub struct ShareStatus {
 #[derive(Default)]
 pub struct Sharing {
     running: Mutex<Option<Running>>,
-    /// Kept across a stop and start so a device does not have to pair again
-    /// when somebody toggles the switch.
+    /// Kept across a stop and start so the broadcaster's own state --
+    /// nothing today, but see `Broadcaster`'s own doc -- does not have to be
+    /// rebuilt for no reason when somebody toggles the switch.
+    ///
+    /// Holds no [`Registry`] of its own: the device list is
+    /// [`crate::state::AppState`]'s to open, once, and every method here
+    /// that needs it is handed the same `Arc` that a running server
+    /// authenticates against, whether or not one happens to be running.
     parts: Mutex<Option<SharedParts>>,
     invitation: Mutex<Option<everyday_server::pairing::Invitation>>,
 }
 
 struct SharedParts {
-    registry: Arc<everyday_server::Registry>,
     broadcaster: Arc<Broadcaster>,
 }
 
@@ -84,7 +100,11 @@ impl Sharing {
     /// which races the old listener's shutdown, and losing that race left
     /// sharing switched off with "address already in use" behind it. The
     /// server holds it as an atomic and reads it per request.
-    pub fn set_remote_unlock(&self, allow: bool) -> CommandResult<ShareStatus> {
+    pub fn set_remote_unlock(
+        &self,
+        registry: &Registry,
+        allow: bool,
+    ) -> CommandResult<ShareStatus> {
         if let Some(running) = self.running.lock().unwrap().as_ref() {
             running.server.set_allow_remote_unlock(allow);
         }
@@ -92,17 +112,23 @@ impl Sharing {
         let mut config = Config::load(&dir);
         config.allow_remote_unlock = allow;
         config.save(&dir)?;
-        Ok(self.status())
+        Ok(self.status(registry))
     }
 
     /// Start answering, and point the service's events at the window, every
     /// connected device, and whatever else (MCP) is already listening.
+    ///
+    /// `registry` is the process's one [`Registry`] over `devices.json` --
+    /// see this module's doc's "One registry, handed in" -- and is handed
+    /// straight to [`everyday_server::prepare_with`] rather than opened
+    /// again here.
     pub async fn start(
         &self,
         service: Arc<everyday_service::Service>,
         window_sink: Arc<dyn EventSink>,
         other: Vec<Arc<dyn EventSink>>,
         mut config: Config,
+        registry: Arc<Registry>,
     ) -> CommandResult<ShareStatus> {
         // Awaited, not merely signalled: what follows binds an address, and
         // the old listener may still be holding it.
@@ -110,8 +136,7 @@ impl Sharing {
         everyday_server::install_crypto_provider();
 
         let dir = Self::dir();
-        let parts = everyday_server::prepare(&dir, &config)?;
-        let registry = parts.registry.clone();
+        let parts = everyday_server::prepare_with(&dir, &config, registry.clone())?;
         let broadcaster = parts.broadcaster.clone();
 
         // The window still needs its events, so does every paired device,
@@ -126,9 +151,9 @@ impl Sharing {
 
         config.enabled = true;
         config.save(&dir)?;
-        *self.parts.lock().unwrap() = Some(SharedParts { registry, broadcaster });
+        *self.parts.lock().unwrap() = Some(SharedParts { broadcaster });
         *self.running.lock().unwrap() = Some(running);
-        Ok(self.status())
+        Ok(self.status(&registry))
     }
 
     /// Stop answering. Paired devices are remembered.
@@ -154,6 +179,7 @@ impl Sharing {
     /// Stop answering, and remember not to start next time.
     pub fn stop_and_remember(
         &self,
+        registry: &Registry,
         window_sink: Arc<dyn EventSink>,
         other: Vec<Arc<dyn EventSink>>,
         service: &everyday_service::Service,
@@ -168,11 +194,11 @@ impl Sharing {
         let mut config = Config::load(&dir);
         config.enabled = false;
         config.save(&dir)?;
-        Ok(self.status())
+        Ok(self.status(registry))
     }
 
     /// Offer to pair, for the next five minutes.
-    pub fn invite(&self) -> CommandResult<ShareStatus> {
+    pub fn invite(&self, registry: &Registry) -> CommandResult<ShareStatus> {
         let invitation = {
             let running = self.running.lock().unwrap();
             let running = running
@@ -188,28 +214,21 @@ impl Sharing {
         };
         *self.invitation.lock().unwrap() = Some(invitation);
         // `status` takes the same lock, so the borrow above has to be over.
-        Ok(self.status())
+        Ok(self.status(registry))
     }
 
     /// Withdraw the offer.
-    pub fn cancel_invite(&self) -> ShareStatus {
+    pub fn cancel_invite(&self, registry: &Registry) -> ShareStatus {
         if let Some(running) = self.running.lock().unwrap().as_ref() {
             running.server.registry.clear_pairing_code();
         }
         *self.invitation.lock().unwrap() = None;
-        self.status()
+        self.status(registry)
     }
 
-    pub fn revoke(&self, id: &str) -> CommandResult<ShareStatus> {
-        if let Some(parts) = self.parts.lock().unwrap().as_ref() {
-            parts.registry.revoke(id)?;
-        } else {
-            // Sharing is off, but the list is still on disk and somebody is
-            // looking at it. Open it just to take the row out.
-            everyday_server::Registry::open(Self::dir().join(everyday_server::DEVICES_FILE))?
-                .revoke(id)?;
-        }
-        Ok(self.status())
+    pub fn revoke(&self, registry: &Registry, id: &str) -> CommandResult<ShareStatus> {
+        registry.revoke(id)?;
+        Ok(self.status(registry))
     }
 
     /// Is a server actually listening right now?
@@ -230,17 +249,14 @@ impl Sharing {
         self.parts.lock().unwrap().as_ref().map(|p| p.broadcaster.clone() as Arc<dyn EventSink>)
     }
 
-    pub fn status(&self) -> ShareStatus {
+    /// `registry` is read directly rather than through `parts`: it is the
+    /// same [`Arc`] whether or not a server happens to be running right
+    /// now, so there is no "sharing is off" fallback to open a second copy
+    /// of the file for -- see this module's doc's "One registry, handed
+    /// in".
+    pub fn status(&self, registry: &Registry) -> ShareStatus {
         let running = self.running.lock().unwrap();
         let config = Self::config();
-        let devices = match self.parts.lock().unwrap().as_ref() {
-            Some(parts) => parts.registry.devices(),
-            None => {
-                everyday_server::Registry::open(Self::dir().join(everyday_server::DEVICES_FILE))
-                    .map(|r| r.devices())
-                    .unwrap_or_default()
-            }
-        };
         ShareStatus {
             sharing: running.is_some(),
             address: running.as_ref().map(|r| r.address.to_string()),
@@ -252,7 +268,7 @@ impl Sharing {
                 .as_ref()
                 .map(|r| r.server.allow_remote_unlock())
                 .unwrap_or(config.allow_remote_unlock),
-            devices,
+            devices: registry.devices(),
             invitation: self.invitation.lock().unwrap().clone(),
             listeners: self
                 .parts

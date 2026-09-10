@@ -1579,6 +1579,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "everyday-core",
+ "everyday-mcp",
  "everyday-server",
  "everyday-service",
  "everyday-transfer",

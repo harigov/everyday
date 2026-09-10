@@ -1244,12 +1244,15 @@ fn terminal_qr(url: &str) -> String {
 /// a running copy of Every Day already serves.
 ///
 /// This is the whole of `everyday mcp`: it opens no vault, and it does not
-/// link against `everyday-mcp` -- the protocol crate that actually knows
-/// what a JSON-RPC message means. Every line read here is forwarded
-/// byte-for-byte as an HTTP body and every reply is written back
-/// byte-for-byte; the "translation" is entirely HTTP framing, done once,
-/// in `everyday-server::mcp`, for every client rather than reimplemented
-/// per transport. See `docs/plans/mcp.md`'s "Streamable HTTP is the
+/// link against `everyday-mcp` for anything that decides what a JSON-RPC
+/// message *means* -- only for `expected_headers`, which reads what the
+/// body already implies so this pipe can mirror it into the headers the
+/// modern binding requires, without a second implementation of that rule
+/// to drift out of step with the first. Every line read here is forwarded
+/// byte-for-byte as an HTTP body; the "translation" beyond that -- what a
+/// method or a tool call means -- is entirely HTTP framing, done once, in
+/// `everyday-server::mcp`, for every client rather than reimplemented per
+/// transport. See `docs/plans/mcp.md`'s "Streamable HTTP is the
 /// transport; stdio is a pipe to it" for why that is the design and not a
 /// shortcut.
 ///
@@ -1262,11 +1265,13 @@ fn terminal_qr(url: &str) -> String {
 /// a way the client cannot recover from, because there is no way to tell
 /// "that line was a message" from "that line was a banner". So every
 /// human-readable word this function has to say, success or failure, goes
-/// to `stderr`, and the only thing this function ever writes to `stdout`
-/// is a reply this process read verbatim from the HTTP response body. Do
-/// not add a startup banner, a progress message, or a debug `dbg!` that
-/// writes to stdout -- however harmless it looks, it breaks every message
-/// that follows it.
+/// to `stderr`, and the only things this function ever writes to `stdout`
+/// are a reply -- usually read verbatim from the HTTP response body, or
+/// synthesised in its place when that body has nothing in it a client
+/// could read (see [`mcp_status_error`]) -- and, for a notification,
+/// nothing at all. Do not add a startup banner, a progress message, or a
+/// debug `dbg!` that writes to stdout -- however harmless it looks, it
+/// breaks every message that follows it.
 fn mcp(port: Option<u16>, token: Option<String>) -> Result<()> {
     let config = everyday_server::mcp::Config::load(&everyday_vault::config_dir());
     let (url, token) = mcp_endpoint(&config, port, token);
@@ -1274,8 +1279,13 @@ fn mcp(port: Option<u16>, token: Option<String>) -> Result<()> {
 
     let client = reqwest::blocking::Client::new();
     let stdin = std::io::stdin();
+    // `Stdout`, not `stdout.lock()`: `mcp_pipe` shares its writer with an
+    // SSE thread (see its doc), and `StdoutLock` is not `Send` -- there is
+    // no locking to give up by passing the unlocked handle instead, since
+    // `mcp_pipe` puts it behind a `Mutex` of its own and every write to it
+    // already goes through `Stdout`'s internal lock besides.
     let stdout = std::io::stdout();
-    mcp_pipe(&client, &url, &token, stdin.lock(), stdout.lock())
+    mcp_pipe(&client, &url, &token, stdin.lock(), stdout)
 }
 
 /// Work out which listener to talk to and which token to present, from
@@ -1325,6 +1335,30 @@ fn mcp_endpoint(
 /// on every other transport it is not a thing that can happen.
 const ENDPOINT_UNREACHABLE: i64 = -31000;
 
+/// The JSON-RPC error code this pipe answers with when the listener *did*
+/// answer, but with a status whose body is empty by design -- `401`,
+/// `403`, `405`, or anything else that carries nothing to just forward.
+///
+/// Kept apart from [`ENDPOINT_UNREACHABLE`]: that code means no HTTP
+/// answer arrived at all; this one means an answer arrived and said no.
+/// Same reasoning places it in the same implementation-defined space
+/// outside `-32768`..`-32000` rather than MCP's own reserved block -- see
+/// `ENDPOINT_UNREACHABLE`'s doc.
+const REQUEST_REFUSED: i64 = -31001;
+
+/// The shape every JSON-RPC error this pipe invents shares, so
+/// [`mcp_transport_error`] and [`mcp_status_error`] spell "code plus
+/// message, echoing the request's id" the same way once rather than each
+/// building the envelope by hand and drifting apart on some field name.
+fn json_rpc_error(id: &serde_json::Value, code: i64, message: String) -> String {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": { "code": code, "message": message },
+    });
+    body.to_string()
+}
+
 /// Build the JSON-RPC error this pipe answers with when a request could
 /// not be completed -- the listener not running being the ordinary case,
 /// since the switch it depends on is off by default. See [`mcp`]'s doc:
@@ -1336,19 +1370,85 @@ const ENDPOINT_UNREACHABLE: i64 = -31000;
 /// could not even be parsed enough to find one -- the same convention
 /// `everyday-mcp` uses for a request it cannot correlate.
 fn mcp_transport_error(id: &serde_json::Value, detail: &str) -> String {
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "error": {
-            "code": ENDPOINT_UNREACHABLE,
-            "message": format!(
-                "could not reach this vault's MCP listener ({detail}). Turn it \
-                 on in Settings, under Vault, \"Let an AI agent use this \
-                 vault\"."
-            ),
-        },
-    });
-    body.to_string()
+    json_rpc_error(
+        id,
+        ENDPOINT_UNREACHABLE,
+        format!(
+            "could not reach this vault's MCP listener ({detail}). Turn it \
+             on in Settings, under Vault, \"Let an AI agent use this \
+             vault\"."
+        ),
+    )
+}
+
+/// Build the JSON-RPC error this pipe answers with when the listener
+/// replied with one of the statuses whose body is empty on purpose, so a
+/// client waiting on `id` gets a readable reply instead of a blank line --
+/// see [`mcp_pipe`]'s doc for why a blank line is not a safe substitute for
+/// a reply. Each of `401`, `403` and `405` gets the plain-words reading a
+/// person can act on; anything else empty gets a generic one, on the same
+/// principle.
+fn mcp_status_error(id: &serde_json::Value, status: reqwest::StatusCode) -> String {
+    let meaning = match status.as_u16() {
+        401 => "the token in `mcp.json` was refused; re-issue it from Settings".to_string(),
+        403 => "the request's Origin header was refused".to_string(),
+        405 => "this endpoint does not accept that HTTP method".to_string(),
+        other => format!("the listener answered with no body (HTTP {other})"),
+    };
+    json_rpc_error(id, REQUEST_REFUSED, format!("HTTP {}: {meaning}", status.as_u16()))
+}
+
+/// Write one reply line to the shared writer, holding the lock across both
+/// the write and the flush.
+///
+/// `output` is shared -- the main loop and, while a `subscriptions/listen`
+/// stream is open, a thread of its own both write to it -- so locking only
+/// around `writeln!` and flushing separately would let the two interleave
+/// a half-written line between them exactly as a stray `println!` would.
+/// A poisoned lock (the other side panicked mid-write) is recovered rather
+/// than propagated: losing one writer's panic is better than every
+/// subsequent reply silently stopping too.
+fn mcp_pipe_write<W: Write>(output: &std::sync::Mutex<W>, line: &str) -> std::io::Result<()> {
+    let mut output = output.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    writeln!(output, "{line}")?;
+    output.flush()
+}
+
+/// Drain a `subscriptions/listen` response on a thread of its own, writing
+/// each SSE `data:` payload to `output` as it arrives.
+///
+/// The response is `text/event-stream`: a stream that answers
+/// `notifications/tools/list_changed` on vault unlock and otherwise stays
+/// open indefinitely. Reading it the way an ordinary reply is read --
+/// `.text()`, which drains to EOF -- would block on a stream that never
+/// reaches EOF, and with it the whole pipe: no ack, no later request
+/// answered, nothing but silence until the client times out and reports
+/// the misleading "could not reach this vault's MCP listener". Reading it
+/// here, off [`mcp_pipe`]'s main loop, is what lets that loop carry on
+/// reading stdin while this stream stays open.
+fn mcp_pipe_stream_sse<W: Write>(
+    response: reqwest::blocking::Response,
+    output: &std::sync::Mutex<W>,
+) {
+    let mut reader = std::io::BufReader::new(response);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        let text = line.trim_end_matches(['\r', '\n']);
+        // Keep-alive comments (`: ...`) and the blank lines separating SSE
+        // events carry no payload of ours; only a `data:` line does.
+        if text.is_empty() || text.starts_with(':') {
+            continue;
+        }
+        let Some(payload) = text.strip_prefix("data:") else { continue };
+        if mcp_pipe_write(output, payload.trim_start()).is_err() {
+            return;
+        }
+    }
 }
 
 /// Read JSON-RPC lines from `input`, post each to `url`, and write the
@@ -1361,41 +1461,107 @@ fn mcp_transport_error(id: &serde_json::Value, detail: &str) -> String {
 /// try again, or to tell the person what happened, and either needs this
 /// loop still running. Only the end of `input` -- stdin closing -- ends
 /// it.
-fn mcp_pipe(
+///
+/// `output` is taken by value rather than `&mut`, because it is about to
+/// be shared: a `subscriptions/listen` reply hands its stream to a thread
+/// of its own (see [`mcp_pipe_stream_sse`]), and that thread writes to the
+/// same destination as this loop. `std::thread::scope` is what lets those
+/// threads borrow `client`, `url` and `token` without demanding `'static`,
+/// and guarantees every one of them has finished -- and so has stopped
+/// touching `output` -- before this function can return.
+fn mcp_pipe<W: Write + Send>(
     client: &reqwest::blocking::Client,
     url: &str,
     token: &str,
     input: impl BufRead,
-    mut output: impl Write,
+    output: W,
 ) -> Result<()> {
-    for line in input.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
+    let output = std::sync::Mutex::new(output);
+
+    std::thread::scope(|scope| {
+        for line in input.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            // Parsed once and reused for both the `id` a reply echoes and
+            // the headers the modern binding requires mirrored from the
+            // body -- see `everyday_mcp::expected_headers`'s own doc for
+            // why deriving those twice, in two crates, is the mistake this
+            // avoids.
+            let value = serde_json::from_str::<serde_json::Value>(&line).ok();
+            let id = value
+                .as_ref()
+                .and_then(|v| v.get("id").cloned())
+                .unwrap_or(serde_json::Value::Null);
+            let expected = value.as_ref().map(everyday_mcp::expected_headers).unwrap_or_default();
+
+            let mut request = client
+                .post(url)
+                .bearer_auth(token)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .header(reqwest::header::ACCEPT, "application/json, text/event-stream");
+            if let Some(protocol_version) = &expected.protocol_version {
+                request = request.header("MCP-Protocol-Version", protocol_version);
+            }
+            if let Some(method) = &expected.method {
+                request = request.header("Mcp-Method", method);
+            }
+            if let Some(name) = &expected.name {
+                request = request.header("Mcp-Name", name);
+            }
+
+            let response = match request.body(line).send() {
+                Ok(response) => response,
+                Err(e) => {
+                    mcp_pipe_write(&output, &mcp_transport_error(&id, &e.to_string()))?;
+                    continue;
+                }
+            };
+
+            // A `subscriptions/listen` reply is the one response this pipe
+            // must not read to completion on this loop -- see
+            // `mcp_pipe_stream_sse`'s doc. Everything else is an ordinary,
+            // bounded body.
+            let is_sse = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.starts_with("text/event-stream"));
+            if is_sse {
+                let output = &output;
+                scope.spawn(move || mcp_pipe_stream_sse(response, output));
+                continue;
+            }
+
+            let status = response.status();
+            let body = match response.text() {
+                Ok(body) => body,
+                Err(e) => {
+                    mcp_pipe_write(&output, &mcp_transport_error(&id, &e.to_string()))?;
+                    continue;
+                }
+            };
+
+            if status == reqwest::StatusCode::ACCEPTED {
+                // The correct answer to a JSON-RPC *notification*, and a
+                // notification must never be replied to -- not even with
+                // a blank line. Writing nothing here is the fix, not an
+                // oversight.
+                continue;
+            }
+            let reply = if body.trim().is_empty() {
+                // `401`, `403`, `405` and any other empty-bodied answer:
+                // without this, the line written below would be blank,
+                // and a client waiting on `id` would get no reply at all.
+                mcp_status_error(&id, status)
+            } else {
+                body
+            };
+            mcp_pipe_write(&output, &reply)?;
         }
-        let id = serde_json::from_str::<serde_json::Value>(&line)
-            .ok()
-            .and_then(|v| v.get("id").cloned())
-            .unwrap_or(serde_json::Value::Null);
-
-        let reply = client
-            .post(url)
-            .bearer_auth(token)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .header(reqwest::header::ACCEPT, "application/json, text/event-stream")
-            .body(line)
-            .send()
-            .and_then(|response| response.text());
-
-        let body = match reply {
-            Ok(text) => text,
-            Err(e) => mcp_transport_error(&id, &e.to_string()),
-        };
-
-        writeln!(output, "{body}")?;
-        output.flush()?;
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Run one of the assistant's tools.
@@ -1570,12 +1736,19 @@ mod tests {
         }
     }
 
-    /// The test that proves the feature: a real `tools/list` call, sent as
-    /// a line on stdin, comes back on stdout as the same catalogue
-    /// `everyday-server`'s own tests get over the wire directly -- with no
-    /// vault open in this process at all.
-    #[test]
-    fn a_real_tools_list_call_round_trips_through_the_pipe() {
+    /// Stand up a real `everyday_server::mcp` listener against a fresh
+    /// vault, and issue it a token, so a test can drive `mcp_pipe` against
+    /// an actual HTTP endpoint rather than fake the shape of one.
+    ///
+    /// Shared by every test below that needs a real listener, so each one
+    /// reads as "send this, expect that" rather than repeating the
+    /// eight-line ritual of standing one up.
+    ///
+    /// The two temporary directories are leaked with `.keep()` rather than
+    /// dropped at the end of this function: the listener they back runs on
+    /// a thread that outlives this call, and a `TempDir` dropped while
+    /// still in use would delete the vault out from under it.
+    fn start_test_mcp_listener() -> (reqwest::blocking::Client, String, String) {
         let vault_dir = tempfile::tempdir().unwrap();
         let vault = everyday_vault::create(
             vault_dir.path(),
@@ -1591,6 +1764,7 @@ mod tests {
         )
         .unwrap();
         vault.save_journal(&Journal::new("Journal")).unwrap();
+        let _ = vault_dir.keep();
 
         let service = std::sync::Arc::new(everyday_service::Service::new());
         service.set(vault);
@@ -1605,13 +1779,14 @@ mod tests {
             vec![everyday_service::Scope::All],
         )
         .unwrap();
+        let _ = config_dir.keep();
 
         // The listener runs on a runtime of its own, on a thread of its
         // own, deliberately: `mcp_pipe` uses a *blocking* client, which
         // panics if it is ever called from inside a Tokio runtime's own
         // worker thread. Keeping the server's runtime on a separate OS
-        // thread is what lets this test call the exact function `mcp`
-        // calls, rather than a `.await`-flavoured stand-in for it.
+        // thread is what lets a test call the exact function `mcp` calls,
+        // rather than a `.await`-flavoured stand-in for it.
         let (address_tx, address_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -1626,7 +1801,7 @@ mod tests {
                 let running =
                     everyday_server::mcp::start(service, registry, &config).await.unwrap();
                 address_tx.send(running.address).unwrap();
-                // The test's assertions run on the main thread; this one
+                // Every test's assertions run on its own thread; this one
                 // just has to keep the listener alive until the process
                 // exits at the end of the test binary.
                 std::future::pending::<()>().await;
@@ -1636,6 +1811,16 @@ mod tests {
 
         let client = reqwest::blocking::Client::new();
         let url = format!("http://{address}/mcp");
+        (client, url, token)
+    }
+
+    /// The test that proves the feature: a real `tools/list` call, sent as
+    /// a line on stdin, comes back on stdout as the same catalogue
+    /// `everyday-server`'s own tests get over the wire directly -- with no
+    /// vault open in this process at all.
+    #[test]
+    fn a_real_tools_list_call_round_trips_through_the_pipe() {
+        let (client, url, token) = start_test_mcp_listener();
         let request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}\n";
         let mut output = Vec::new();
         mcp_pipe(&client, &url, &token, request.as_bytes(), &mut output).unwrap();
@@ -1647,5 +1832,169 @@ mod tests {
         assert_eq!(reply["id"], 1);
         let tools = reply["result"]["tools"].as_array().expect(&text);
         assert!(!tools.is_empty(), "{text}");
+    }
+
+    /// Defect 1: `mcp_pipe` used to send only `Authorization`,
+    /// `Content-Type` and `Accept` -- never the `MCP-Protocol-Version`,
+    /// `Mcp-Method` and `Mcp-Name` headers the modern era's
+    /// `check_header_mirroring` requires, so every modern request through
+    /// this pipe came back `-32020` no matter how well-formed its body
+    /// was. This sends a `tools/list` call carrying modern `_meta` --
+    /// `io.modelcontextprotocol/protocolVersion` and
+    /// `io.modelcontextprotocol/clientCapabilities` -- and asserts a
+    /// `result` comes back, not that error.
+    #[test]
+    fn a_modern_era_tools_list_call_round_trips_through_the_pipe() {
+        let (client, url, token) = start_test_mcp_listener();
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/list",
+            "params": {
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": everyday_mcp::MODERN,
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                },
+            },
+        });
+        let mut output = Vec::new();
+        mcp_pipe(&client, &url, &token, format!("{request}\n").as_bytes(), &mut output).unwrap();
+
+        let text = String::from_utf8(output).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 1, "{text}");
+        let reply: serde_json::Value = serde_json::from_str(lines[0]).expect(&text);
+        assert_eq!(reply["id"], 7);
+        assert!(reply.get("error").is_none(), "{text}");
+        let tools = reply["result"]["tools"].as_array().expect(&text);
+        assert!(!tools.is_empty(), "{text}");
+    }
+
+    /// Defect 3, the notification half: `202 Accepted` is the correct
+    /// answer to a JSON-RPC notification (a message with no `id`), and a
+    /// notification must never be replied to -- not even with a blank
+    /// line, which is what the pipe used to write for every empty body it
+    /// saw. Sending one and finding stdout still empty is what proves that
+    /// distinction is drawn correctly.
+    #[test]
+    fn a_notification_produces_no_line_on_stdout() {
+        let (client, url, token) = start_test_mcp_listener();
+        let notification = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n";
+        let mut output = Vec::new();
+        mcp_pipe(&client, &url, &token, notification.as_bytes(), &mut output).unwrap();
+
+        assert!(output.is_empty(), "{}", String::from_utf8_lossy(&output));
+    }
+
+    /// Defect 3, the error half: `401` also answers with an empty body,
+    /// but unlike a notification's `202` it is not a reply this pipe may
+    /// skip -- the request it refuses carries an `id` a caller is waiting
+    /// on. A bad token must come back as a readable JSON-RPC error, not
+    /// the blank line the pipe used to write for every empty-bodied
+    /// answer regardless of which one it was.
+    #[test]
+    fn an_unauthorised_request_answers_with_a_json_dash_rpc_error_not_a_blank_line() {
+        let (client, url, _token) = start_test_mcp_listener();
+        let request = "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/list\",\"params\":{}}\n";
+        let mut output = Vec::new();
+        mcp_pipe(&client, &url, "not-the-issued-token", request.as_bytes(), &mut output).unwrap();
+
+        let text = String::from_utf8(output).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 1, "{text}");
+        let reply: serde_json::Value = serde_json::from_str(lines[0]).expect(&text);
+        assert_eq!(reply["id"], 9);
+        assert_eq!(reply["error"]["code"], REQUEST_REFUSED, "{text}");
+        assert!(reply["error"]["message"].as_str().unwrap().contains("token"), "{text}");
+    }
+
+    /// A `Write` shared between `mcp_pipe`'s main loop and the SSE thread
+    /// it spawns, so a test can poll what has been written so far without
+    /// waiting for `mcp_pipe` itself to return -- which, for as long as a
+    /// `subscriptions/listen` stream stays open, it never does. Test-only:
+    /// the real pipe shares `Stdout` the same way, through the `Mutex`
+    /// `mcp_pipe` builds internally, but has no need to peek at partial
+    /// output from outside itself.
+    #[derive(Clone, Default)]
+    struct SharedSink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Write for SharedSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Defect 2: an SSE answer used to be read with `.text()`, which
+    /// drains to EOF -- fine for an ordinary reply, fatal for
+    /// `subscriptions/listen`'s response, which is a stream that never
+    /// ends. That blocked the whole pipe: no ack, and no answer to
+    /// anything sent afterwards, until the client gave up.
+    ///
+    /// `mcp_pipe` never returns while that stream is still open (its
+    /// internal `thread::scope` waits for the reader thread, and nothing
+    /// in this test closes the connection), so this drives it from a
+    /// thread of its own and polls the shared output for both expected
+    /// lines rather than waiting on the call to return. The timeout is a
+    /// hang backstop, not the pass condition -- the test succeeds the
+    /// moment both lines appear, however soon that is, and only fails if
+    /// they never do.
+    #[test]
+    fn a_subscriptions_listen_ack_arrives_while_a_later_request_still_gets_its_answer() {
+        let (client, url, token) = start_test_mcp_listener();
+        let listen = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "subscriptions/listen",
+            "params": {
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": everyday_mcp::MODERN,
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                },
+            },
+        });
+        let request = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n";
+        let input = format!("{listen}\n{request}");
+
+        let sink = SharedSink::default();
+        let probe = sink.clone();
+        std::thread::spawn(move || {
+            // Abandoned deliberately at the end of this closure: see the
+            // doc above for why `mcp_pipe` does not return here, and why
+            // that is fine to leave running past this test.
+            let _ = mcp_pipe(&client, &url, &token, input.as_bytes(), sink);
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let text = loop {
+            let text = String::from_utf8(probe.0.lock().unwrap().clone()).unwrap();
+            if text.lines().count() >= 2 {
+                break text;
+            }
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for both replies");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+
+        let parsed: Vec<serde_json::Value> = text
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .collect();
+        let ack = parsed
+            .iter()
+            .find(|v| v["method"] == "notifications/subscriptions/acknowledged")
+            .unwrap_or_else(|| panic!("no acknowledgement line in {text}"));
+        assert!(
+            ack["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"].as_str().is_some(),
+            "{text}"
+        );
+
+        let reply = parsed
+            .iter()
+            .find(|v| v["id"] == 2)
+            .unwrap_or_else(|| panic!("no reply to the second request in {text}"));
+        assert!(reply.get("result").is_some(), "{text}");
     }
 }

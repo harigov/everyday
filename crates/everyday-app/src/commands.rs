@@ -181,16 +181,26 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
     let config = crate::sharing::Sharing::config();
     if config.enabled
         && service.get().is_some()
-        && !state.sharing().status().sharing
+        && !state.sharing().is_running()
         && let Some(sink) = state.sink()
     {
-        let other = state.mcp().sink().into_iter().collect();
-        if let Err(e) = state.sharing().start(service.clone(), sink, other, config).await {
-            // Not fatal, and not a dialog. A port already taken, or a network
-            // that is not up yet, should not stop somebody reading their
-            // journal; the sharing pane says what happened when they go
-            // looking.
-            tracing::warn!(error = %e, "could not resume sharing this vault");
+        // A registry that cannot be opened is not fatal here either, for the
+        // same reason a bind failure below is not: it is named in the
+        // sharing pane, not a dialog blocking the journal.
+        match state.registry() {
+            Ok(registry) => {
+                let other = state.mcp().sink().into_iter().collect();
+                if let Err(e) =
+                    state.sharing().start(service.clone(), sink, other, config, registry).await
+                {
+                    // Not fatal, and not a dialog. A port already taken, or a
+                    // network that is not up yet, should not stop somebody
+                    // reading their journal; the sharing pane says what
+                    // happened when they go looking.
+                    tracing::warn!(error = %e, "could not resume sharing this vault");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "could not open the device registry"),
         }
     }
 
@@ -199,12 +209,19 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
     let mcp_config = crate::mcp::Mcp::config();
     if mcp_config.enabled
         && service.get().is_some()
-        && !state.mcp().status().running
+        && !state.mcp().is_running()
         && let Some(sink) = state.sink()
     {
-        let other = state.sharing().sink().into_iter().collect();
-        if let Err(e) = state.mcp().start(service.clone(), sink, other, mcp_config).await {
-            tracing::warn!(error = %e, "could not resume serving MCP");
+        match state.registry() {
+            Ok(registry) => {
+                let other = state.sharing().sink().into_iter().collect();
+                if let Err(e) =
+                    state.mcp().start(service.clone(), sink, other, mcp_config, registry).await
+                {
+                    tracing::warn!(error = %e, "could not resume serving MCP");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "could not open the device registry"),
         }
     }
 
@@ -495,7 +512,8 @@ pub async fn ready_to_close(
 pub async fn share_status(
     state: State<'_, AppState>,
 ) -> CommandResult<crate::sharing::ShareStatus> {
-    Ok(state.sharing().status())
+    let registry = state.registry()?;
+    Ok(state.sharing().status(&registry))
 }
 
 /// Change whether a connected computer may unlock this vault.
@@ -509,7 +527,8 @@ pub async fn set_remote_unlock(
     state: State<'_, AppState>,
     allow: bool,
 ) -> CommandResult<crate::sharing::ShareStatus> {
-    state.sharing().set_remote_unlock(allow)
+    let registry = state.registry()?;
+    state.sharing().set_remote_unlock(&registry, allow)
 }
 
 /// Start answering other machines.
@@ -547,7 +566,7 @@ pub async fn share_start(
     config.listen = std::net::SocketAddr::new(ip, port);
 
     let other = state.mcp().sink().into_iter().collect();
-    state.sharing().start(state.service(), sink, other, config).await
+    state.sharing().start(state.service(), sink, other, config, state.registry()?).await
 }
 
 /// Stop answering, and remember not to start next time.
@@ -556,7 +575,8 @@ pub async fn share_stop(state: State<'_, AppState>) -> CommandResult<crate::shar
     let sink =
         state.sink().ok_or_else(|| CommandError::new("internal", "the window is not ready yet"))?;
     let other = state.mcp().sink().into_iter().collect();
-    state.sharing().stop_and_remember(sink, other, &state.service())
+    let registry = state.registry()?;
+    state.sharing().stop_and_remember(&registry, sink, other, &state.service())
 }
 
 /// Offer to pair, for the next five minutes.
@@ -564,7 +584,8 @@ pub async fn share_stop(state: State<'_, AppState>) -> CommandResult<crate::shar
 pub async fn new_pairing_code(
     state: State<'_, AppState>,
 ) -> CommandResult<crate::sharing::ShareStatus> {
-    state.sharing().invite()
+    let registry = state.registry()?;
+    state.sharing().invite(&registry)
 }
 
 /// Withdraw the offer.
@@ -572,7 +593,8 @@ pub async fn new_pairing_code(
 pub async fn cancel_pairing(
     state: State<'_, AppState>,
 ) -> CommandResult<crate::sharing::ShareStatus> {
-    Ok(state.sharing().cancel_invite())
+    let registry = state.registry()?;
+    Ok(state.sharing().cancel_invite(&registry))
 }
 
 /// Take a device's access away. It has to pair again to get it back.
@@ -581,7 +603,8 @@ pub async fn revoke_device(
     state: State<'_, AppState>,
     id: String,
 ) -> CommandResult<crate::sharing::ShareStatus> {
-    state.sharing().revoke(&id)
+    let registry = state.registry()?;
+    state.sharing().revoke(&registry, &id)
 }
 
 // ---- letting an MCP client use this vault --------------------------------
@@ -624,7 +647,7 @@ pub async fn mcp_start(
     config.listen = std::net::SocketAddr::new(ip, port);
 
     let other = state.sharing().sink().into_iter().collect();
-    state.mcp().start(state.service(), sink, other, config).await
+    state.mcp().start(state.service(), sink, other, config, state.registry()?).await
 }
 
 /// Stop answering, and remember not to start next time.
@@ -646,7 +669,7 @@ pub async fn mcp_set_destructive(
     let sink =
         state.sink().ok_or_else(|| CommandError::new("internal", "the window is not ready yet"))?;
     let other = state.sharing().sink().into_iter().collect();
-    state.mcp().set_destructive(state.service(), sink, other, allow).await
+    state.mcp().set_destructive(state.service(), sink, other, allow, state.registry()?).await
 }
 
 /// Mint a token for an MCP client, and hand it back once.
@@ -654,15 +677,18 @@ pub async fn mcp_set_destructive(
 /// The interface shows it exactly once, with a copy button and a warning
 /// that it will not be shown again -- this call is the only moment it exists
 /// in plaintext outside `mcp.json`. `scopes` defaults to
-/// [`everyday_service::Scope::All`], which is what a paired desktop is
-/// issued today and what `run_tool` requires regardless; narrowing it is
-/// phase 6 of `docs/plans/mcp.md`, not this one.
+/// [`everyday_service::Scope::All`], matching what a paired desktop is
+/// issued and what turning the switch on has always implied; the settings
+/// panel offers checkboxes to narrow it, and `Registry::issue` itself is
+/// what refuses an empty list rather than silently widening it back to
+/// `All` -- see that function's own doc.
 #[tauri::command]
 pub async fn mcp_issue_token(
     state: State<'_, AppState>,
     scopes: Option<Vec<everyday_service::Scope>>,
 ) -> CommandResult<String> {
-    state.mcp().issue_token(scopes.unwrap_or_else(|| vec![everyday_service::Scope::All]))
+    let registry = state.registry()?;
+    state.mcp().issue_token(&registry, scopes.unwrap_or_else(|| vec![everyday_service::Scope::All]))
 }
 
 // ---- the OS-wide hotkey -------------------------------------------------

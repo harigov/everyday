@@ -38,6 +38,17 @@
 //! per-request mutable state to hold one in the way sharing's routes do.
 //! Going through `start` costs a rebind, but never that bug, because the
 //! wait is already there.
+//!
+//! # One registry, handed in
+//!
+//! [`crate::sharing::Sharing`] is also a second, independent switch over
+//! the same *device list* -- a paired phone and an issued MCP token are
+//! rows in the one `devices.json`. `start` and `issue_token` below both
+//! take an `&Registry` or `Arc<Registry>` from their caller rather than
+//! opening the file themselves; `commands.rs` gets that handle from
+//! [`crate::state::AppState::registry`], which opens it once for the whole
+//! process. See [`everyday_server::Registry`]'s own doc for why a second
+//! `Registry::open` of the same file is a bug and not just untidiness.
 
 use everyday_server::Registry;
 use everyday_server::mcp::{Config, Running, issue_token};
@@ -71,16 +82,6 @@ pub struct McpStatus {
 #[derive(Default)]
 pub struct Mcp {
     running: Mutex<Option<Running>>,
-    /// The registry a running listener is authenticating against -- the
-    /// exact [`Arc`] passed into [`everyday_server::mcp::start`], not a
-    /// second [`Registry::open`] of the same file. Kept so [`Mcp::issue_token`]
-    /// mints into the copy the live listener is already checking requests
-    /// against: a token minted while the switch is on has to work
-    /// immediately, with no restart in between, or "turning it on issues a
-    /// token" (see `README.md`) would be a lie the first time somebody
-    /// tried it. `None` while the switch is off, when there is no live
-    /// listener for a second copy to disagree with -- see `issue_token`.
-    registry: Mutex<Option<Arc<Registry>>>,
 }
 
 impl Mcp {
@@ -117,20 +118,23 @@ impl Mcp {
     /// listening.
     ///
     /// See the module doc's "Restarting rebinds the port" for why
-    /// `stop_and_wait` comes first, and "Composing with sharing" for `other`.
+    /// `stop_and_wait` comes first, and "Composing with sharing" for
+    /// `other`. `registry` is the process's one [`Registry`] over
+    /// `devices.json` -- see this module's doc's "One registry, handed
+    /// in" -- and is handed straight to [`everyday_server::mcp::start`]
+    /// rather than opened again here.
     pub async fn start(
         &self,
         service: Arc<everyday_service::Service>,
         window_sink: Arc<dyn EventSink>,
         other: Vec<Arc<dyn EventSink>>,
         mut config: Config,
+        registry: Arc<Registry>,
     ) -> CommandResult<McpStatus> {
         self.stop_and_wait().await;
 
         let dir = Self::dir();
-        let registry = Arc::new(Registry::open(dir.join(everyday_server::DEVICES_FILE))?);
-        let running =
-            everyday_server::mcp::start(service.clone(), registry.clone(), &config).await?;
+        let running = everyday_server::mcp::start(service.clone(), registry, &config).await?;
 
         // The window still needs its events, so does every open MCP stream
         // -- `running.sink` is what carries `lock_state` to
@@ -142,7 +146,6 @@ impl Mcp {
 
         config.enabled = true;
         config.save(&dir)?;
-        *self.registry.lock().unwrap() = Some(registry);
         *self.running.lock().unwrap() = Some(running);
         Ok(self.status())
     }
@@ -152,7 +155,6 @@ impl Mcp {
         if let Some(running) = self.running.lock().unwrap().take() {
             running.stop();
         }
-        *self.registry.lock().unwrap() = None;
     }
 
     /// Stop answering, and wait for the port to be released.
@@ -161,7 +163,6 @@ impl Mcp {
     /// is not the same moment as the socket actually being free.
     pub async fn stop_and_wait(&self) {
         let previous = self.running.lock().unwrap().take();
-        *self.registry.lock().unwrap() = None;
         if let Some(running) = previous {
             running.stop_and_wait().await;
         }
@@ -200,12 +201,13 @@ impl Mcp {
         window_sink: Arc<dyn EventSink>,
         other: Vec<Arc<dyn EventSink>>,
         allow: bool,
+        registry: Arc<Registry>,
     ) -> CommandResult<McpStatus> {
         let dir = Self::dir();
         let mut config = Config::load(&dir);
         config.allow_destructive = allow;
         if self.is_running() {
-            return self.start(service, window_sink, other, config).await;
+            return self.start(service, window_sink, other, config, registry).await;
         }
         config.save(&dir)?;
         Ok(self.status())
@@ -213,22 +215,15 @@ impl Mcp {
 
     /// Mint a token for an MCP client, and hand it back once.
     ///
-    /// Reuses the registry a running listener already holds -- see this
-    /// struct's own doc on `registry` -- so a token minted while the switch
-    /// is on authenticates immediately, against the exact copy the listener
-    /// is checking requests against. When the switch is off, opens the
-    /// registry file fresh, mints into it, and lets it go: there is no live
-    /// listener for a second in-memory copy to fall out of step with.
-    pub fn issue_token(&self, scopes: Vec<Scope>) -> CommandResult<String> {
+    /// `registry` is the process's one [`Registry`], the same `Arc` a
+    /// running listener is authenticating against if the switch happens to
+    /// be on -- see this module's doc's "One registry, handed in" -- so a
+    /// token minted while it is on authenticates immediately, with no
+    /// restart in between, and one minted while it is off is still in the
+    /// list a start moments later will use.
+    pub fn issue_token(&self, registry: &Registry, scopes: Vec<Scope>) -> CommandResult<String> {
         let dir = Self::dir();
-        let live = self.registry.lock().unwrap().clone();
-        match live {
-            Some(registry) => issue_token(&registry, &dir, scopes),
-            None => {
-                let registry = Registry::open(dir.join(everyday_server::DEVICES_FILE))?;
-                issue_token(&registry, &dir, scopes)
-            }
-        }
+        issue_token(registry, &dir, scopes)
     }
 
     pub fn status(&self) -> McpStatus {

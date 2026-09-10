@@ -142,6 +142,27 @@ impl Attempts {
 }
 
 /// The devices this server knows, and the state that guards them.
+///
+/// # One file, one `Registry`
+///
+/// The in-memory `devices` list is the unit of writing: [`save_locked`]
+/// writes the *whole* list, every time, and [`Registry::open`] reads the
+/// whole list back exactly once, at construction. That makes one process
+/// holding two `Registry`s over the same `devices.json` a bug and not
+/// merely a waste of a file handle. Each copy believes its own snapshot is
+/// current; a `last_seen` stamp written through one copy is invisible to
+/// the other; and whichever copy saves last overwrites the other's most
+/// recent write with its own stale one -- silently, because both writes
+/// succeed. A device minted a moment ago through one copy can vanish from
+/// disk the next time the other copy so much as touches a timestamp.
+///
+/// So: one `Registry` per process per device file, opened once and shared
+/// -- by an `Arc`, not by opening the path again -- with everything in that
+/// process that needs to read or write the device list. See
+/// [`crate::prepare_with`] for the constructor built for a caller with more
+/// than one such user.
+///
+/// [`save_locked`]: Registry::save_locked
 pub struct Registry {
     path: PathBuf,
     devices: Mutex<Vec<Device>>,

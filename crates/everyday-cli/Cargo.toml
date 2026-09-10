@@ -17,6 +17,12 @@ everyday-vault.workspace = true
 everyday-service.workspace = true
 everyday-transfer.workspace = true
 everyday-server.workspace = true
+# For `expected_headers`: the pipe mirrors the same `_meta` fields into
+# headers that `everyday-server` validates, and must derive them the exact
+# same way rather than growing a second implementation of the rule to drift
+# out of step with the first. A tiny, dependency-free crate to pull in for
+# that alone.
+everyday-mcp.workspace = true
 serde_json.workspace = true
 jiff.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
