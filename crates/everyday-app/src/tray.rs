@@ -142,12 +142,20 @@ impl Tray {
         let mut all: Vec<&dyn IsMenuItem<Wry>> = quick.iter().map(Box::as_ref).collect();
 
         let separator = PredefinedMenuItem::separator(app).map_err(menu_error)?;
+        // Disabled, because it is a statement rather than a thing to press.
+        let assistant = match assistant_line(app) {
+            Some(line) => Some(MenuItem::new(app, line, false, NO_ACCEL).map_err(menu_error)?),
+            None => None,
+        };
         let show = MenuItem::with_id(app, SHOW_ID, "Open Every Day", true, NO_ACCEL)
             .map_err(menu_error)?;
         let quit = MenuItem::with_id(app, QUIT_ID, "Quit Every Day", true, NO_ACCEL)
             .map_err(menu_error)?;
         if !all.is_empty() {
             all.push(&separator);
+        }
+        if let Some(line) = &assistant {
+            all.push(line);
         }
         all.push(&show);
         all.push(&quit);

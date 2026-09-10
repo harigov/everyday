@@ -1,5 +1,50 @@
 # The assistant as a resident: notes, routines, and a sixth and seventh app
 
+> **Delivered.** All nine phases are built, tested and on this branch. Read
+> this for the reasoning; read the commits for what was actually done. Six
+> things went differently from the plan below, each for a reason worth
+> keeping:
+>
+> - **`web_search` is not a core tool.** The plan gave it a `Domain::Web` in
+>   `everyday-core/src/agent/tools.rs`, which cannot work: that crate has no
+>   async runtime, no TLS stack and no way to open a socket, and the calendar
+>   and library features are both built to keep that true. It is declared in
+>   `everyday-service`, beside the crate that does have those things, and
+>   registered onto the agent alongside the core catalogue. It is therefore
+>   absent from `list_tools`, which is honest — it is not a verb the CLI or
+>   the palette can run.
+> - **The search index took notes, and `SearchHit` became a tagged union.**
+>   The plan said "grows a second input and a result carries which kind it
+>   is" and understated it: an entry hit carries a journal and a day and a
+>   note hit carries neither, so the fields hang off the variant, the way
+>   `Purpose` does. The journal's own box narrows to entries, and the
+>   narrowing happens in the store rather than as a cast at the drawing end.
+> - **`Editor.svelte` became two components rather than growing props.** The
+>   canvas — toolbar, document, media, both load-bearing effects — is
+>   `RichText`, and the journal and the notes app each wrap it with their own
+>   page. Lifting it was the only way to keep one set of caret bugs.
+> - **The autounlock keychain helper lives in `everyday-vault`, not the
+>   shell.** Two front ends want it: the desktop switch and
+>   `everyday serve --keychain`. The vault crate is the assembly point and
+>   already owns the platform paths.
+> - **`RoutineRun` carries `routine_name` and `slot`.** Neither was in the
+>   plan's shape. The name so a log row still reads after a rename or a
+>   delete; the slot so two ticks cannot both claim one moment, which is also
+>   what makes "run once per meeting" expressible for the query triggers.
+> - **A skipped run is born `seen`.** There is nothing to look at, so it must
+>   not put a number on the app bar. The plan did not say, and the first
+>   version of the conformance suite caught it.
+>
+> One bug the suite found on the way through is worth recording: `seen` lives
+> in a clear column *and* inside the sealed payload, and marking every run
+> seen with one `UPDATE` moved the column and left the record saying
+> otherwise — so the next client to read it would have put the number
+> straight back on the app bar. It is a read-modify-write now.
+>
+> Everything else — the two locks, the profile, the unattended refusal, the
+> serial scheduler, the templates, the transcript in place of a review queue
+> — is as written below.
+
 A plan for turning the assistant from a rail beside whichever app is open
 into something that lives in the service, does work on a schedule while
 nobody is watching, and has a place of its own to show what it did — and

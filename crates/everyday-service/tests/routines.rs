@@ -10,7 +10,6 @@
 //! that always says the same thing. No key, no network, no bill.
 
 use everyday_core::routine::{Outcome, Routine, Trigger, Weekday};
-use everyday_core::store::calendars::CalendarStore;
 use everyday_core::store::routines::RunQuery;
 use everyday_service::Service;
 use everyday_service::events::{Change, EventSink, Notification};
@@ -276,55 +275,29 @@ async fn a_scheduled_run_may_not_delete_anything() {
     // than parked on a question nobody will ever see -- and the run still
     // finishes, because the model is told plainly and can say so in its report.
     //
-    // The vault has to exist before the model can be scripted with an id from
-    // it, so this one builds the vault first and points a second service at
-    // the same directory.
-    let dir = tempfile::tempdir().unwrap();
-    let entry_id = {
-        let config = everyday_core::VaultConfig {
-            name: "Test".into(),
-            backend: "sqlite".into(),
-            settings: Default::default(),
-            password: None,
-            kdf: Default::default(),
-            auto_lock_seconds: 900,
-            forget_key_seconds: 0,
-        };
-        let vault = everyday_vault::create(dir.path(), config).unwrap();
-        let journal = everyday_core::Journal::new("Journal");
-        vault.save_journal(&journal).unwrap();
-        let mut entry = everyday_core::Entry::new(journal.id, "UTC");
-        entry.title = "Do not delete me".into();
-        vault.save_entry(&entry, None).unwrap();
-        entry.id
-    };
+    // The endpoint is pointed at the model *after* the vault exists, because
+    // the script has to name an id from it.
+    let (svc, _dir) = service("http://127.0.0.1:1/v1");
+    let vault = svc.get().unwrap();
+    let journal = vault.journals().unwrap()[0].id;
+    let mut entry = everyday_core::Entry::new(journal, "UTC");
+    entry.title = "Do not delete me".into();
+    vault.save_entry(&entry, None).unwrap();
 
     let model = fake_model(calls(
         "delete_entry",
-        serde_json::json!({ "entry_id": entry_id.to_string() }).to_string(),
+        serde_json::json!({ "entry_id": entry.id.to_string() }).to_string(),
         "It needs deleting and I could not do it.",
     ))
     .await;
-
-    let vault = Arc::new(everyday_vault::open(dir.path()).unwrap());
-    vault.unlock(None).unwrap();
-    let mut settings = everyday_core::AgentSettings {
-        enabled: true,
-        timezone: Some("UTC".into()),
-        ..Default::default()
-    };
+    let mut settings = vault.agent_settings().unwrap();
     settings.model.base_url = Some(model.endpoint.clone());
-    settings.model.model = "scripted".into();
     vault.save_agent_settings(&settings).unwrap();
-
-    let svc = Arc::new(Service::new());
-    svc.set(Arc::try_unwrap(vault).ok().expect("the only handle"));
     due_now(&svc, "Tidy up.");
 
     everyday_service::scheduler::tick(&svc).await;
 
-    let vault = svc.get().unwrap();
-    assert!(vault.entry(entry_id).is_ok(), "nothing may be deleted with nobody watching");
+    assert!(vault.entry(entry.id).is_ok(), "nothing may be deleted with nobody watching");
     let run = &vault.runs(&RunQuery::default()).unwrap()[0];
     assert_eq!(run.outcome, Outcome::Done, "the run still finishes and reports");
     assert_eq!(run.summary, "It needs deleting and I could not do it.");

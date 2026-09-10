@@ -50,8 +50,10 @@ impl RunQuery {
         {
             return false;
         }
+        // `unseen: Some(true)` wants the ones nobody has looked at, so the
+        // flag it is matching against is the opposite of the field.
         if let Some(unseen) = self.unseen
-            && run.seen != !unseen
+            && run.seen == unseen
         {
             return false;
         }
