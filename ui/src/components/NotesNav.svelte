@@ -18,7 +18,7 @@
   // Loaded when the sidebar appears rather than when the store is imported,
   // so a vault whose owner never opens this app never pays for the query.
   // Idempotent, so coming back refreshes instead of blanking.
-  void notes.load()
+  void notes.start()
 
   let pendingDelete = $state<NoteSummary | null>(null)
 
@@ -231,14 +231,6 @@
     align-items: center;
     justify-content: space-between;
     padding: var(--sp-5) var(--sp-2) var(--sp-2);
-  }
-
-  .eyebrow {
-    font-size: var(--text-xs);
-    font-weight: 650;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--fg-faint);
   }
 
   .plus {

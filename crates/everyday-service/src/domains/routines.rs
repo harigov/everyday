@@ -1,12 +1,13 @@
 //! The assistant's standing work: the routines, and the log of what they did.
 //!
-//! Nine commands, and the only one worth reading is `run_routine`: it does not
+//! Eleven commands, and the only one worth reading is `run_routine`: it does not
 //! run anything. It writes a `Running` row with no slot and returns its id,
 //! and the scheduler picks it up on the next tick. That is not laziness -- it
 //! is what keeps "one run at a time" true. A command that ran the turn itself
 //! would let three impatient clicks start three model calls that race each
 //! other for the vault's single writer.
 
+use super::Nothing;
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::CommandResult;
@@ -17,9 +18,6 @@ use everyday_core::{RoutineId, RoutineRunId};
 use jiff::civil::time;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-
-#[derive(Deserialize)]
-pub struct Nothing {}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

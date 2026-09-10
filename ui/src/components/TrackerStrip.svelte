@@ -20,7 +20,7 @@
   import type { Reading, Tracker } from '../lib/types'
   import { dismissable } from '../lib/dismiss'
   import { focusOnMount } from '../lib/focus'
-  import { todayIso } from '../lib/time'
+  import { locale, todayIso } from '../lib/time'
   import Icon from './Icon.svelte'
   import TrackerIcon from './TrackerIcon.svelte'
   import LogReading from './LogReading.svelte'
@@ -40,8 +40,7 @@
   /** Whether the "record something else" popover is open. */
   let logging = $state(false)
 
-  const locale = navigator.language || 'en'
-  const timeFmt = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' })
+  const timeFmt = new Intl.DateTimeFormat(locale(), { hour: 'numeric', minute: '2-digit' })
 
   $effect(() => {
     void tracking.open(journalId, date)

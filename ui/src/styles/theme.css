@@ -83,14 +83,14 @@
   --sidebar-w: 248px;
   --list-w: 366px;
 
-  /* Every header across the four apps, and the empty cap above the app bar
+  /* Every header across every app, and the empty cap above the app bar
      that lines up with them. It was written as a bare `46px` in eight
      stylesheets, which is how a row of headings drifts out of alignment the
      first time one of them is adjusted. */
   --header-h: 54px;
 
   /* One row in a sidebar, a menu or a list. Set here for the same reason as
-     the header: the same target size in four apps should be one number. */
+     the header: the same target size in every app should be one number. */
   --row-h: 32px;
 
   /* The floating assistant button, and the room anything in the bottom

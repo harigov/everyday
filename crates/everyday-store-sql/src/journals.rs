@@ -1,9 +1,11 @@
 //! The journal domain: journals, entries, blobs and housekeeping.
 //!
-//! This is [`JournalStore`], the trait every backend must implement. The five
-//! optional domains are in `tasks.rs`, `calendars.rs`, `library.rs`,
-//! `trackers.rs` and `agent.rs`, mirroring the split `everyday_core::store`
-//! already makes between the trait and its siblings.
+//! This is [`JournalStore`], the trait every backend must implement. Each
+//! optional domain has a file of its own beside this one -- `notes.rs`,
+//! `tasks.rs`, `calendars.rs`, `library.rs`, `trackers.rs`, `purpose.rs`,
+//! `routines.rs`, `agent.rs` -- mirroring the split `everyday_core::store`
+//! already makes between the trait and its siblings. Unnumbered and unlisted
+//! by count, because both go stale the release after they are written.
 
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{BlobId, EntryId, JournalId};

@@ -1,7 +1,7 @@
 //! The library domain: things you are interested in, and what you did with
 //! them.
 //!
-//! This is the fourth domain in the vault. It holds a reading list, a watch
+//! One of the vault's optional domains. It holds a reading list, a watch
 //! list, a shelf of games, the restaurants worth going back to and the
 //! recipes worth cooking again — the *metadata* about them, never the things
 //! themselves. Nothing here stores a book; it stores that you want to read

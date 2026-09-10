@@ -1,6 +1,6 @@
 // Roles and goals, and the one thing every other app needs from them.
 //
-// The fifth store, and the smallest. Almost nothing in the interface wants
+// The smallest of the stores. Almost nothing in the interface wants
 // to *edit* a role — that happens in one place, the Overview — but a great
 // deal of it wants to turn a `Purpose` into a name and a colour: a task
 // detail panel, a block's context menu, a chip on a card. So the two lists
@@ -53,7 +53,7 @@ class PurposeState {
   }
 
   get enabled(): boolean {
-    return app.status?.capabilities?.goals === true
+    return app.status?.capabilities?.purpose === true
   }
 
   /** Roles worth offering in a picker: everything not retired. */

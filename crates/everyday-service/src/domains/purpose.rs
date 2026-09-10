@@ -26,8 +26,8 @@ use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use super::Nothing;
 use super::journals::Named;
-use super::vault::Nothing;
 
 /// A role with the two counts the sidebar draws under its name.
 #[derive(Debug, Serialize)]
@@ -104,7 +104,7 @@ pub struct Window {
     pub to: Date,
 }
 
-async fn list_roles(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<Vec<RoleInfo>> {
+async fn list_roles(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<RoleInfo>> {
     let vault = svc.require()?;
     blocking(move || {
         let mut out = Vec::new();
@@ -123,61 +123,65 @@ async fn list_roles(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<Ve
 ///
 /// Minted here rather than in a client so the id, the colour and the two
 /// timestamps come from one place, exactly as `new_kind` does.
-async fn new_role(svc: Arc<Service>, _c: Ctx, args: Named) -> CommandResult<Role> {
+async fn new_role(svc: Arc<Service>, _ctx: Ctx, args: Named) -> CommandResult<Role> {
     let _ = svc.require()?;
     Ok(Role::new(args.name.trim()))
 }
 
-async fn save_role(svc: Arc<Service>, _c: Ctx, args: SaveRole) -> CommandResult<()> {
+async fn save_role(svc: Arc<Service>, _ctx: Ctx, args: SaveRole) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.save_role(&args.role)?)).await
 }
 
 /// Delete a role. Refused, with a message naming the count, while goals still
 /// point at it.
-async fn delete_role(svc: Arc<Service>, _c: Ctx, args: RoleRef) -> CommandResult<()> {
+async fn delete_role(svc: Arc<Service>, _ctx: Ctx, args: RoleRef) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.delete_role(args.id)?)).await
 }
 
 /// Offer a starting set of roles, and answer zero if there are any already.
-async fn seed_roles(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<usize> {
+async fn seed_roles(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<usize> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.seed_roles()?)).await
 }
 
-async fn list_goals(svc: Arc<Service>, _c: Ctx, args: Goals) -> CommandResult<Vec<Goal>> {
+async fn list_goals(svc: Arc<Service>, _ctx: Ctx, args: Goals) -> CommandResult<Vec<Goal>> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.goals(&args.query)?)).await
 }
 
-async fn get_goal(svc: Arc<Service>, _c: Ctx, args: GoalRef) -> CommandResult<Goal> {
+async fn get_goal(svc: Arc<Service>, _ctx: Ctx, args: GoalRef) -> CommandResult<Goal> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.goal(args.id)?)).await
 }
 
 /// Mint a goal under a role. Unsaved.
-async fn new_goal(svc: Arc<Service>, _c: Ctx, args: NewGoal) -> CommandResult<Goal> {
+async fn new_goal(svc: Arc<Service>, _ctx: Ctx, args: NewGoal) -> CommandResult<Goal> {
     let _ = svc.require()?;
     Ok(Goal::new(args.role_id, args.title.trim()))
 }
 
-async fn save_goal(svc: Arc<Service>, _c: Ctx, args: SaveGoal) -> CommandResult<()> {
+async fn save_goal(svc: Arc<Service>, _ctx: Ctx, args: SaveGoal) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.save_goal(&args.goal)?)).await
 }
 
-async fn save_goals(svc: Arc<Service>, _c: Ctx, args: SaveGoals) -> CommandResult<()> {
+async fn save_goals(svc: Arc<Service>, _ctx: Ctx, args: SaveGoals) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.save_goals(&args.goals)?)).await
 }
 
-async fn delete_goal(svc: Arc<Service>, _c: Ctx, args: GoalRef) -> CommandResult<()> {
+async fn delete_goal(svc: Arc<Service>, _ctx: Ctx, args: GoalRef) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.delete_goal(args.id)?)).await
 }
 
-async fn time_by_purpose(svc: Arc<Service>, _c: Ctx, args: Window) -> CommandResult<BalanceReport> {
+async fn time_by_purpose(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: Window,
+) -> CommandResult<BalanceReport> {
     let vault = svc.require()?;
     blocking(move || {
         let window = PurposeWindow::new(args.from, args.to);
@@ -189,7 +193,7 @@ async fn time_by_purpose(svc: Arc<Service>, _c: Ctx, args: Window) -> CommandRes
     .await
 }
 
-async fn goal_activity(svc: Arc<Service>, _c: Ctx, args: GoalRef) -> CommandResult<GoalActivity> {
+async fn goal_activity(svc: Arc<Service>, _ctx: Ctx, args: GoalRef) -> CommandResult<GoalActivity> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.goal_activity(args.id)?)).await
 }

@@ -49,7 +49,7 @@ const COALESCE_MS = 250
  * that happened to call the same method. They never matched, so a calendar
  * sync reloaded the grid three times in a row.
  */
-export const RELOAD: Record<string, () => Promise<unknown> | void> = {
+export const RELOAD = {
   journals: () => app.refreshJournals(),
   entries: () => app.queueListRefresh(),
   todo: () => todo.refresh(),
@@ -63,7 +63,18 @@ export const RELOAD: Record<string, () => Promise<unknown> | void> = {
   // Settings that moved: the auto-lock, the assistant's configuration. What
   // draws them re-reads on open, so the useful thing is the status word.
   status: () => app.refreshStatus(),
-}
+} satisfies Record<string, () => Promise<unknown> | void>
+
+/**
+ * The name of something in [`RELOAD`].
+ *
+ * A union of the actual keys rather than `string`, which is what the table was
+ * annotated as. `Record<string, ...>` made `keyof typeof RELOAD` mean `string`,
+ * so a misrouted kind -- `'liberry'` for `'library'` -- typechecked, and the
+ * only thing standing between that and an app that silently stopped refreshing
+ * was a runtime assertion in `live.test.mjs`.
+ */
+export type ReloadTarget = keyof typeof RELOAD
 
 /**
  * The kinds that can carry a purpose, and so change what the reports say.
@@ -91,7 +102,7 @@ const PURPOSE_BEARING: ReadonlySet<ChangeKind> = new Set([
 ])
 
 /** Which of those a change of each kind asks for. */
-export const RELOADS: Record<ChangeKind, keyof typeof RELOAD | null> = {
+export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   journal: 'journals',
   entry: 'entries',
   note: 'notes',
@@ -111,14 +122,15 @@ export const RELOADS: Record<ChangeKind, keyof typeof RELOAD | null> = {
   // carries both.
   role: 'overview',
   goal: 'overview',
-  // The assistant's own thread. The panel reads it when it is opened, and a
-  // reply arriving on another machine is not something to interrupt this one
-  // with -- so nothing reloads, and the event exists for a future history list.
   // The assistant's standing work, and the log of what it did. The routines
   // pane redraws for either, and the count on the app bar is read from the
   // same reload.
   routine: 'assistant',
   routineRun: 'assistant',
+  // The assistant's own thread. The panel reads it when it is opened, and a
+  // reply arriving on another machine is not something to interrupt this one
+  // with -- so nothing reloads, and the event exists for a future history
+  // list. Its memory is the same argument: the list is read when it is shown.
   conversation: null,
   memory: null,
   settings: 'status',
@@ -130,7 +142,7 @@ export const RELOADS: Record<ChangeKind, keyof typeof RELOAD | null> = {
  * Its own function so the collapsing is testable without the stores: it is a
  * rule about a table, and the rule is the part that was wrong.
  */
-export function targetsFor(kinds: ChangeKind[], overviewShowing = false): string[] {
+export function targetsFor(kinds: ChangeKind[], overviewShowing = false): ReloadTarget[] {
   const targets = new Set(kinds.map((kind) => RELOADS[kind]).filter((t) => t !== null))
   // See `PURPOSE_BEARING`: these do not name the Overview and still change what
   // it says, but only matter while somebody is looking at it.
@@ -199,7 +211,7 @@ class Live {
       // project both reload the todo app, and doing it twice is a wasted round
       // trip on a connection that may be a phone's.
       for (const target of targetsFor(kinds, app.section === 'overview')) {
-        void Promise.resolve(RELOAD[target]!()).catch(() => {})
+        void Promise.resolve(RELOAD[target]()).catch(() => {})
       }
     }, COALESCE_MS)
   }

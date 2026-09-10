@@ -11,7 +11,7 @@ use everyday_core::{Entry, EntryId, EntrySummary, Journal, JournalId};
 use serde::Deserialize;
 use std::sync::Arc;
 
-use super::vault::Nothing;
+use super::Nothing;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,7 +81,11 @@ pub struct Search {
     pub limit: usize,
 }
 
-async fn list_journals(svc: Arc<Service>, _ctx: Ctx, _a: Nothing) -> CommandResult<Vec<Journal>> {
+async fn list_journals(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    _args: Nothing,
+) -> CommandResult<Vec<Journal>> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.journals()?)).await
 }
@@ -193,7 +197,7 @@ fn refused(scope: Scope) -> CommandError {
     CommandError::new("forbidden", format!("this needs the {} scope", scope.as_str()))
 }
 
-async fn list_tags(svc: Arc<Service>, _ctx: Ctx, _a: Nothing) -> CommandResult<Vec<String>> {
+async fn list_tags(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<String>> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.entry_tags()?.into_iter().map(|(tag, _)| tag).collect())).await
 }

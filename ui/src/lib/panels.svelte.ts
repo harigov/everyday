@@ -1,7 +1,7 @@
 // Which window-level panel is open.
 //
-// Three pieces of state that belong to the window rather than to any of the
-// four apps, and that more than one thing needs to set: the app bar opens
+// Three pieces of state that belong to the window rather than to any one
+// app, and that more than one thing needs to set: the app bar opens
 // settings, so does a shortcut, and so does the assistant's own "not set up
 // yet" screen. Passing a callback down three component trees to say so is
 // how a boolean ends up existing twice.

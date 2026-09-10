@@ -1,11 +1,11 @@
 // State for the calendar app.
 //
-// The third store, a sibling of `state.svelte.ts` and `todo.svelte.ts`. The
-// comment at the top of the todo store said the calendar would be a third
-// file rather than a third of one very large one, and this is it.
+// A sibling of `state.svelte.ts` and `todo.svelte.ts`. The comment at the top
+// of the todo store said the calendar would be a file of its own rather than
+// a third of one very large one, and this is it.
 //
-// What makes this store different from the other two: it is the only one
-// that *reads across* domains. The grid draws five things at once —
+// What makes this store different from its siblings: it is the only one that
+// *reads across* domains. The grid draws five things at once —
 //
 //   external events    other people's calendars, read-only          (calendar)
 //   planned blocks     what you intend to do                             (task)
@@ -239,6 +239,7 @@ class CalendarState {
 
   constructor() {
     app.onLock(() => this.reset())
+    app.onFlush(() => this.flush())
     // Read here rather than in `start`, because `start` runs when the
     // calendar view mounts and the timer is asked about before that: the
     // tray offers "track time" from launch, and a store that believed

@@ -22,8 +22,8 @@ use everyday_core::{BlockId, ProjectId, TaskId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use super::Nothing;
 use super::journals::Named;
-use super::vault::Nothing;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -109,33 +109,37 @@ pub struct TagCount {
     pub count: u32,
 }
 
-async fn list_projects(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<Vec<Project>> {
+async fn list_projects(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    _args: Nothing,
+) -> CommandResult<Vec<Project>> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.projects()?)).await
 }
 
-async fn new_project(svc: Arc<Service>, _c: Ctx, args: Named) -> CommandResult<Project> {
+async fn new_project(svc: Arc<Service>, _ctx: Ctx, args: Named) -> CommandResult<Project> {
     let _ = svc.require()?;
     Ok(Project::new(args.name))
 }
 
-async fn save_project(svc: Arc<Service>, _c: Ctx, args: SaveProject) -> CommandResult<()> {
+async fn save_project(svc: Arc<Service>, _ctx: Ctx, args: SaveProject) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.save_project(&args.project)?)).await
 }
 
 /// Delete a project, its tasks and every block of time booked against them.
-async fn delete_project(svc: Arc<Service>, _c: Ctx, args: ProjectRef) -> CommandResult<()> {
+async fn delete_project(svc: Arc<Service>, _ctx: Ctx, args: ProjectRef) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.delete_project(args.id)?)).await
 }
 
-async fn list_tasks(svc: Arc<Service>, _c: Ctx, args: Tasks) -> CommandResult<Vec<Task>> {
+async fn list_tasks(svc: Arc<Service>, _ctx: Ctx, args: Tasks) -> CommandResult<Vec<Task>> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.tasks(&args.query)?)).await
 }
 
-async fn get_task(svc: Arc<Service>, _c: Ctx, args: TaskRef) -> CommandResult<Task> {
+async fn get_task(svc: Arc<Service>, _ctx: Ctx, args: TaskRef) -> CommandResult<Task> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.task(args.id)?)).await
 }
@@ -145,7 +149,7 @@ async fn get_task(svc: Arc<Service>, _c: Ctx, args: TaskRef) -> CommandResult<Ta
 /// The caller fills in the title and whatever the quick-add line parsed out of
 /// it, then calls `save_task`. Two round trips rather than one, in exchange for
 /// one shape of task travelling in each direction.
-async fn new_task(svc: Arc<Service>, _c: Ctx, args: NewTask) -> CommandResult<Task> {
+async fn new_task(svc: Arc<Service>, _ctx: Ctx, args: NewTask) -> CommandResult<Task> {
     let _ = svc.require()?;
     let mut task = Task::new(String::new()).in_project(args.project_id).under(args.parent_id);
     if let Some(status) = args.status {
@@ -154,25 +158,25 @@ async fn new_task(svc: Arc<Service>, _c: Ctx, args: NewTask) -> CommandResult<Ta
     Ok(task)
 }
 
-async fn save_task(svc: Arc<Service>, _c: Ctx, args: SaveTask) -> CommandResult<()> {
+async fn save_task(svc: Arc<Service>, _ctx: Ctx, args: SaveTask) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.save_task(&args.task)?)).await
 }
 
 /// Write several tasks at once. This is what dragging a card across a board is:
 /// two columns renumbered, which must land as one change or not at all.
-async fn save_tasks(svc: Arc<Service>, _c: Ctx, args: SaveTasks) -> CommandResult<()> {
+async fn save_tasks(svc: Arc<Service>, _ctx: Ctx, args: SaveTasks) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.save_tasks(&args.tasks)?)).await
 }
 
 /// Delete a task, its subtasks and their time blocks.
-async fn delete_task(svc: Arc<Service>, _c: Ctx, args: TaskRef) -> CommandResult<()> {
+async fn delete_task(svc: Arc<Service>, _ctx: Ctx, args: TaskRef) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.delete_task(args.id)?)).await
 }
 
-async fn list_blocks(svc: Arc<Service>, _c: Ctx, args: Blocks) -> CommandResult<Vec<TimeBlock>> {
+async fn list_blocks(svc: Arc<Service>, _ctx: Ctx, args: Blocks) -> CommandResult<Vec<TimeBlock>> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.blocks(&args.query)?)).await
 }
@@ -182,7 +186,7 @@ async fn list_blocks(svc: Arc<Service>, _c: Ctx, args: Blocks) -> CommandResult<
 /// The time zone is the machine's, resolved here rather than in a webview, so
 /// that `local_date` -- the column a calendar's week query scans -- is decided
 /// by the same code that decides an entry's.
-async fn new_block(svc: Arc<Service>, _c: Ctx, args: NewBlock) -> CommandResult<TimeBlock> {
+async fn new_block(svc: Arc<Service>, _ctx: Ctx, args: NewBlock) -> CommandResult<TimeBlock> {
     let _ = svc.require()?;
     let tz = system_tz();
     let mut block = TimeBlock::new(args.subject, args.start, args.minutes, &tz);
@@ -192,18 +196,18 @@ async fn new_block(svc: Arc<Service>, _c: Ctx, args: NewBlock) -> CommandResult<
     Ok(block)
 }
 
-async fn save_block(svc: Arc<Service>, _c: Ctx, args: SaveBlock) -> CommandResult<()> {
+async fn save_block(svc: Arc<Service>, _ctx: Ctx, args: SaveBlock) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.save_block(&args.block)?)).await
 }
 
-async fn delete_block(svc: Arc<Service>, _c: Ctx, args: BlockRef) -> CommandResult<()> {
+async fn delete_block(svc: Arc<Service>, _ctx: Ctx, args: BlockRef) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.delete_block(args.id)?)).await
 }
 
 /// Every tag used anywhere in the task domain, most used first.
-async fn task_tags(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<Vec<TagCount>> {
+async fn task_tags(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<TagCount>> {
     let vault = svc.require()?;
     blocking(move || {
         Ok(vault.task_tags()?.into_iter().map(|(tag, count)| TagCount { tag, count }).collect())
@@ -216,7 +220,7 @@ async fn task_tags(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<Vec
 /// The day is resolved here rather than in the core, and here rather than in a
 /// webview, so that "overdue" is decided by the same code that decides which
 /// day an entry is filed under.
-async fn task_stats(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<TaskStats> {
+async fn task_stats(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<TaskStats> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.task_stats(today_local())?)).await
 }

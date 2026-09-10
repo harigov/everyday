@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The Overview: four panes over what the other four apps already store.
+  // The Overview: four panes over what the other apps already store.
   //
   // Each pane answers one question and nothing is drawn that does not change
   // what somebody does next. That is the whole editorial rule here, and it

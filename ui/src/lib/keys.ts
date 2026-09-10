@@ -1,6 +1,6 @@
 // The mechanics of a keyboard shortcut. Not the shortcuts themselves.
 //
-// Those are in `shortcuts.ts`, which reads the stores; this file knows
+// Those are in `shortcuts.svelte.ts`, which reads the stores; this file knows
 // nothing about journals or tasks and is therefore the part that can be
 // tested without a backend. The split is the same one `menu.ts` makes
 // against `menu.svelte.ts`.
@@ -15,9 +15,10 @@
 //     '?'          a bare key
 //
 // The sequence is the Superhuman idea and the reason this module exists. A
-// desktop application has four apps to switch between, a create action in
-// each, a search in each and a panel to open, and there are not enough
-// modifier combinations left that some other program has not already claimed.
+// desktop application has an app for each thing a vault holds, a create
+// action in each, a search in each and a panel to open, and there are not
+// enough modifier combinations left that some other program has not already
+// claimed.
 // `g` then `j` costs one more keystroke and reads as a sentence -- *go to
 // journal* -- which is what makes twenty of them learnable.
 //
@@ -26,6 +27,8 @@
 // Always written `mod` and never `ctrl` or `meta`: it is Command on a Mac and
 // Control everywhere else, and a binding table that spelled that out twice
 // would be two tables to keep in step.
+
+import type { IconName } from './icons'
 
 /**
  * One thing the application can do.
@@ -70,7 +73,7 @@ export interface Binding {
    */
   keywords?: string[]
   /** Drawn beside the label in the palette. */
-  icon?: string
+  icon?: IconName
   /**
    * Offer this in the system tray as well.
    *

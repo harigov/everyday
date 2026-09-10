@@ -96,12 +96,44 @@ function stepEntry(step: 1 | -1) {
 }
 
 /**
+ * The headings actions are filed under, in the order every surface draws
+ * them.
+ *
+ * One list rather than two. The help sheet and the system tray both draw the
+ * table under headings, and each used to decide the order for itself -- the
+ * tray from a `TRAY_GROUPS` list of its own, the sheet from whichever row
+ * happened to be declared first. So an app added later sat fifth in one menu
+ * and last in the other, for no reason anybody could see. The order here is
+ * the app bar's, with the two headings that belong to no app at the top and
+ * the vault's at the foot.
+ */
+export const GROUPS = [
+  'Everywhere',
+  'Go to',
+  'Journal',
+  'Notes',
+  'Todo',
+  'Calendar',
+  'Library',
+  'Overview',
+  'Assistant',
+  'Vault',
+] as const
+export type Group = (typeof GROUPS)[number]
+
+/**
  * The table.
  *
- * Ordered by group, and the groups by how often they are reached for. The
- * help sheet draws it in this order, so this is also the reading order.
+ * Grouped by app, keyboard rows first and then the quick actions, so a new
+ * shortcut has an obvious place to go. What the *reader* sees is ordered by
+ * [`GROUPS`] rather than by this file, so where a row sits here decides only
+ * its place within its own heading.
+ *
+ * `group` is narrowed to [`Group`] rather than left as `Binding`'s wider
+ * `string`: a misspelt heading would otherwise be a section of one that no
+ * surface knows how to order.
  */
-export const ACTIONS: Binding[] = [
+export const ACTIONS: (Binding & { group: Group })[] = [
   // ── The palette ─────────────────────────────────────────────────────
   //
   // First in the table because it is the way to everything else in it. The
@@ -221,6 +253,8 @@ export const ACTIONS: Binding[] = [
     keys: 'mod+,',
     label: 'Settings',
     group: 'Everywhere',
+    keywords: ['preferences', 'options', 'configure'],
+    icon: 'settings',
     whileTyping: true,
     when: anywhere,
     run: () => panels.openSettings(),
@@ -236,12 +270,11 @@ export const ACTIONS: Binding[] = [
     group: 'Everywhere',
     whileTyping: true,
     when: () => app.screen === 'main',
-    run: () => {
-      void app.flush()
-      void todo.flush()
-      void calendar.flush()
-      void library.flush()
-    },
+    // Every store that debounces a write, through the one registry -- not a
+    // list of them kept here. This row named four stores and the notes app
+    // was never added to it, so the only shortcut in the application whose
+    // whole promise is "everything, now" quietly did not write notes.
+    run: () => void app.flushAll(),
   },
   {
     keys: 'mod+l',
@@ -636,14 +669,6 @@ export const ACTIONS: Binding[] = [
   // what stops the shortcut table growing a second tier of unmemorable
   // three-key sequences.
   {
-    label: 'Settings',
-    group: 'Everywhere',
-    keywords: ['preferences', 'options', 'configure'],
-    icon: 'settings',
-    when: () => app.screen === 'main',
-    run: () => panels.openSettings(),
-  },
-  {
     label: 'About you',
     group: 'Everywhere',
     keywords: ['profile', 'name', 'birthday', 'me', 'owner'],
@@ -799,10 +824,29 @@ export const shortcuts = new Shortcuts()
 export function applicableActions(): Binding[] {
   panels.listing = true
   try {
-    return ACTIONS.filter((a) => !a.when || a.when())
+    return distinct(ACTIONS.filter((a) => !a.when || a.when()))
   } finally {
     panels.listing = false
   }
+}
+
+/**
+ * One row per thing somebody can do, in declaration order.
+ *
+ * Two chords for one action -- `c` and Ctrl+N, `/` and Ctrl+F -- are one
+ * offer, not two, and the first declared is the one that carries it. Both
+ * surfaces that *list* the table have to agree about that, and until this was
+ * shared only the help sheet did it: the palette drew each pair twice under
+ * one key, which Svelte refuses outright.
+ */
+function distinct(bindings: Binding[]): Binding[] {
+  const seen = new Set<string>()
+  return bindings.filter((b) => {
+    const key = `${b.group}\u0000${b.label}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 /**
@@ -810,8 +854,8 @@ export function applicableActions(): Binding[] {
  *
  * `panels.listing` is raised for the duration, so the sheet does not
  * disqualify the very shortcuts it exists to list -- see the field's own
- * comment. It is lowered in a `finally`, because a `when` closure reads four
- * stores and a throw from any of them would otherwise leave the window
+ * comment. It is lowered in a `finally`, because a `when` closure reads the
+ * apps' stores and a throw from any of them would otherwise leave the window
  * believing no dialog is open.
  */
 export function applicableBindings(): { group: string; items: Binding[] }[] {
@@ -823,26 +867,20 @@ export function applicableBindings(): { group: string; items: Binding[] }[] {
   }
 }
 
+/**
+ * The applicable bindings, under their headings, in [`GROUPS`] order.
+ *
+ * A heading nothing applies to is left out rather than drawn empty: on a
+ * vault whose backend holds journals and nothing else, most of them are.
+ */
 function group(bindings: Binding[]): { group: string; items: Binding[] }[] {
-  const out: { group: string; items: Binding[] }[] = []
-  const seen = new Map<string, Set<string>>()
-  for (const binding of bindings) {
-    if (binding.when && !binding.when()) continue
-    let group = out.find((g) => g.group === binding.group)
-    if (!group) {
-      group = { group: binding.group, items: [] }
-      out.push(group)
-      seen.set(binding.group, new Set())
-    }
-    // Two chords for one action -- `c` and Ctrl+N, `/` and Ctrl+F -- is one
-    // row in the sheet with both spellings on it, not two rows saying the
-    // same thing. The first one declared wins the row.
-    const labels = seen.get(binding.group)!
-    if (labels.has(binding.label)) continue
-    labels.add(binding.label)
-    group.items.push(binding)
+  const items = new Map<string, Binding[]>()
+  for (const binding of distinct(bindings.filter((b) => !b.when || b.when()))) {
+    const under = items.get(binding.group)
+    if (under) under.push(binding)
+    else items.set(binding.group, [binding])
   }
-  return out
+  return GROUPS.filter((g) => items.has(g)).map((g) => ({ group: g, items: items.get(g)! }))
 }
 
 /** Every spelling of one action, for the row the sheet draws. */

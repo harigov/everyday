@@ -25,7 +25,7 @@ export const PANE_LABELS: Record<Pane, string> = {
   memory: 'What it remembers',
 }
 
-class Assistant {
+class AssistantState {
   pane = $state<Pane>('runs')
   routines = $state<RoutineInfo[]>([])
   runs = $state<RoutineRun[]>([])
@@ -206,6 +206,24 @@ class Assistant {
   }
 
   /** Ask for a run now. Queued; the scheduler carries it out. */
+  /**
+   * Drop one run from the log.
+   *
+   * Here rather than in the view, like every other action this app offers.
+   * `AssistantView` called `api.deleteRun` directly and awaited it from a
+   * `void` context, so a failure -- a read-only vault, one another window had
+   * locked -- left the row on screen, said nothing, and became an unhandled
+   * rejection nobody sees.
+   */
+  async removeRun(id: RoutineRunId) {
+    try {
+      await api.deleteRun(id)
+      await this.refresh()
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
   async runNow(id: RoutineId) {
     try {
       await api.runRoutine(id)
@@ -277,4 +295,4 @@ class Assistant {
   }
 }
 
-export const assistant = new Assistant()
+export const assistant = new AssistantState()

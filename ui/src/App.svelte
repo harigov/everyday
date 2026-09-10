@@ -1,30 +1,39 @@
 <script lang="ts">
   import { api, onSaveAndClose } from './lib/api'
-  import { app } from './lib/state.svelte'
-  import { menu } from './lib/menu.svelte'
-  import { notify } from './lib/notify.svelte'
+  // The stores, then the components, rather than the two interleaved.
+  //
+  // Importing a store is also what *constructs* it, and construction is what
+  // registers its lock and flush hooks with `app`. So every app's store is
+  // named here even when this file has nothing else to say to it -- those are
+  // the side-effect imports below, and they are the reason a lock writes out a
+  // half-typed note belonging to an app this component never mentions.
+  //
+  // App bar order first, then what every app shares, then the window's own.
+  import { app, type Section } from './lib/state.svelte'
+  import './lib/notes.svelte'
   import { todo } from './lib/todo.svelte'
-  import { calendar } from './lib/calendar.svelte'
+  import './lib/calendar.svelte'
   import { library } from './lib/library.svelte'
+  import { assistant } from './lib/assistant.svelte'
   import { purpose } from './lib/purpose.svelte'
   import { tracking } from './lib/tracking.svelte'
-  import { tray } from './lib/tray.svelte'
   import { agent } from './lib/agent.svelte'
+  import { live } from './lib/live.svelte'
+  import { menu } from './lib/menu.svelte'
+  import { notify } from './lib/notify.svelte'
   import { panels } from './lib/panels.svelte'
   import { shortcuts } from './lib/shortcuts.svelte'
-  import { live } from './lib/live.svelte'
+  import { tray } from './lib/tray.svelte'
   import AppBar from './components/AppBar.svelte'
   import Sidebar from './components/Sidebar.svelte'
   import EntryList from './components/EntryList.svelte'
   import Editor from './components/Editor.svelte'
+  import NotesView from './components/NotesView.svelte'
   import TodoView from './components/TodoView.svelte'
   import CalendarView from './components/CalendarView.svelte'
   import LibraryView from './components/LibraryView.svelte'
-  import { assistant } from './lib/assistant.svelte'
-  import { notes } from './lib/notes.svelte'
-  import AssistantView from './components/AssistantView.svelte'
-  import NotesView from './components/NotesView.svelte'
   import OverviewView from './components/OverviewView.svelte'
+  import AssistantView from './components/AssistantView.svelte'
   import LockScreen from './components/LockScreen.svelte'
   import Setup from './components/Setup.svelte'
   import ErrorScreen from './components/ErrorScreen.svelte'
@@ -57,8 +66,8 @@
   live.start()
 
   // Put the quick actions in the menu bar, and keep them in step with the
-  // vault from here on. The four apps have already registered what they
-  // offer by the time this runs -- the imports above are what does it.
+  // vault from here on. What is in it is a filtered view over the one action
+  // table, so there is nothing for an app to register first.
   tray.start()
 
   // Whether the assistant's rail was showing is remembered across launches:
@@ -97,20 +106,24 @@
 
   // Each app tints the window with the accent of whatever it has selected:
   // the journal you are in, the project you are looking at, the shelf you are
-  // browsing, or -- since the calendar spans every project at once -- the
+  // browsing, or -- for the apps that span every one of those at once -- the
   // vault's own accent.
-  const accent = $derived(
-    app.section === 'todo'
-      ? todo.accent
-      : app.section === 'calendar' ||
-          app.section === 'overview' ||
-          app.section === 'notes' ||
-          app.section === 'assistant'
-        ? 'var(--accent)'
-        : app.section === 'library'
-          ? library.accent
-          : app.accent,
-  )
+  //
+  // A table keyed by `Section` rather than a chain of ternaries with a
+  // fallback on the end. The chain had grown a clause per app and quietly
+  // gave any new one the *journal's* accent, which is the one answer that is
+  // wrong everywhere; this does not compile until the new app says which of
+  // the two it wants.
+  const ACCENTS: Record<Section, () => string> = {
+    journal: () => app.accent,
+    notes: () => 'var(--accent)',
+    todo: () => todo.accent,
+    calendar: () => 'var(--accent)',
+    library: () => library.accent,
+    overview: () => 'var(--accent)',
+    assistant: () => 'var(--accent)',
+  }
+  const accent = $derived(ACCENTS[app.section]())
 
   /**
    * The window's one keyboard handler.
@@ -123,6 +136,7 @@
    * two apps cannot quietly claim the same key.
    */
   function onKeydown(e: KeyboardEvent) {
+    app.touch()
     shortcuts.press(e)
   }
 
@@ -142,13 +156,7 @@
    */
   onSaveAndClose(async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
-      await Promise.allSettled([
-        app.flush(),
-        notes.flush(),
-        todo.flush(),
-        calendar.flush(),
-        library.flush(),
-      ])
+      await app.flushAll()
       if (!app.saveFailing) break
     }
     await api.readyToClose().catch(() => {})
@@ -158,15 +166,21 @@
   // did not close itself. It cannot be awaited here, so it is a second line
   // of defence behind the handshake above rather than the mechanism.
   function onBeforeUnload() {
-    void app.flush()
-    void notes.flush()
-    void todo.flush()
-    void calendar.flush()
-    void library.flush()
+    void app.flushAll()
   }
 </script>
 
-<svelte:window onkeydown={onKeydown} onbeforeunload={onBeforeUnload} />
+<!-- The three that mean somebody is there. `touch` defers the screen lock and,
+     on the machine holding the vault, the timer that forgets its key -- so
+     every app has to be able to say so, not just the two with an editor in
+     them. A press and a wheel cover the apps nobody types prose into: dragging
+     a block, working the board, reading down a long entry. -->
+<svelte:window
+  onkeydown={onKeydown}
+  onpointerdown={() => app.touch()}
+  onwheel={() => app.touch()}
+  onbeforeunload={onBeforeUnload}
+/>
 
 <!-- Outside the screen switch on purpose: a notification is a fact about
      the application, so it has to arrive on the lock screen and the error
@@ -187,8 +201,8 @@
     <LockScreen />
   {:else}
     <!-- Above the panes, not inside one: a conflict or a read-only vault is
-         a fact about the whole window, and it must be visible whichever of
-         the four apps is open. -->
+         a fact about the whole window, and it must be visible whichever app
+         is open. -->
     <div class="shell">
       <Notices />
       <div class="panes">
@@ -211,7 +225,7 @@
           <main class="main"><Editor /></main>
         {/if}
         <!-- Last in the row, so it is the right-hand rail whichever app is
-             open: the assistant works on all four. -->
+             open: the assistant works on every one of them. -->
         {#if agent.open && agent.supported}
           <ChatPanel />
         {/if}
@@ -286,7 +300,7 @@
   }
 
   /* Above the panes and clear of the window's edge. `fixed` rather than
-     absolute inside a pane: every one of the four scrolls, and a button that
+     absolute inside a pane: every one of the panes scrolls, and a button that
      scrolled away with the list would not be the standing offer it is meant
      to be. */
   .float {

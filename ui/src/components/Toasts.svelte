@@ -3,7 +3,7 @@
 
   It sits outside the screen switch in `App.svelte`, above everything, and
   that placement is the whole design. A notification is a fact about the
-  application, not about whichever of the four apps happens to be open, and
+  application, not about whichever app happens to be open, and
   it must still arrive on the lock screen and the error screen -- those are
   exactly the moments something is going wrong.
 

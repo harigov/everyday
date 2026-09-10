@@ -89,8 +89,12 @@ pub struct Capabilities {
     /// False hides the Overview app entirely, including the pickers that set
     /// a purpose on a task or a block: offering to file something under a
     /// goal that cannot be stored is worse than not offering it.
+    ///
+    /// Named for the domain rather than for `Goal`, as every flag here is:
+    /// this one answers for roles and the balance report too, and it was the
+    /// only one of the eight named after a record.
     #[serde(default)]
-    pub goals: bool,
+    pub purpose: bool,
     /// Backend implements [`notes::NoteStore`], so writing that is not
     /// filed under a day has somewhere to live.
     ///
@@ -398,7 +402,7 @@ pub trait JournalStore: Send + Sync {
     /// Storage for the task domain, if this backend has any.
     ///
     /// Returning `None` -- the default -- is a backend saying "journals are
-    /// all I do". Every backend shipped today carries all four domains, but
+    /// all I do". Every backend shipped today carries every domain, but
     /// the accessors stay optional because the alternative is worse: folding
     /// a kanban board into the journal trait would oblige a read-only import
     /// source, or a store built for one app, to grow a todo list it has no
@@ -430,7 +434,7 @@ pub trait JournalStore: Send + Sync {
 
     /// Storage for the tracking domain, if this backend has any.
     ///
-    /// Same shape and same reasoning as the three above. See
+    /// Same shape and same reasoning as [`JournalStore::tasks`]. See
     /// [`trackers`](crate::store::trackers) for why a stream of timestamped
     /// numbers is its own trait — and why the *definitions* are not in it.
     fn trackers(&self) -> Option<&dyn TrackerStore> {
@@ -439,7 +443,7 @@ pub trait JournalStore: Send + Sync {
 
     /// Storage for the purpose domain, if this backend has any.
     ///
-    /// Same shape and same reasoning as the four above. See
+    /// Same shape and same reasoning as [`JournalStore::tasks`]. See
     /// [`purpose`](crate::store::purpose) for the two records it holds, the
     /// cascade it deliberately refuses, and why the reports are SQL rather
     /// than a fold in Rust.
@@ -447,26 +451,27 @@ pub trait JournalStore: Send + Sync {
         None
     }
 
-    /// Storage for notes, if this backend has any.
+    /// Storage for the note domain, if this backend has any.
     ///
-    /// Same shape and same reasoning as the four above. See
+    /// Same shape and same reasoning as [`JournalStore::tasks`]. See
     /// [`notes`](crate::store::notes) for what a note is and what it is not.
     fn notes(&self) -> Option<&dyn NoteStore> {
         None
     }
 
-    /// Storage for the assistant's standing work, if this backend has any.
+    /// Storage for the routine domain -- the assistant's standing work -- if
+    /// this backend has any.
     ///
-    /// Same shape and same reasoning as the five above. See
+    /// Same shape and same reasoning as [`JournalStore::tasks`]. See
     /// [`routines`](crate::store::routines) for the two records it holds and
     /// the one cascade it does have.
     fn routines(&self) -> Option<&dyn RoutineStore> {
         None
     }
 
-    /// Storage for the assistant, if this backend has any.
+    /// Storage for the assistant's own domain, if this backend has any.
     ///
-    /// Same shape and same reasoning as the four above. See
+    /// Same shape and same reasoning as [`JournalStore::tasks`]. See
     /// [`agent`](crate::store::agent) for why a chat transcript is its own
     /// trait -- and why none of it is left in the clear.
     fn agent(&self) -> Option<&dyn AgentStore> {

@@ -267,7 +267,7 @@ impl SqlStore {
 
     /// What every driver of this crate can do.
     ///
-    /// All seven domains, on both databases. The optional accessors on
+    /// Every domain, on both databases. The optional accessors on
     /// `JournalStore` stay optional for the sake of backends that are not
     /// this one, not because a SQL vault might be missing the todo app.
     pub(crate) fn capabilities(&self) -> Capabilities {
@@ -280,7 +280,7 @@ impl SqlStore {
             calendars: true,
             library: true,
             trackers: true,
-            goals: true,
+            purpose: true,
             notes: true,
             routines: true,
             agent: true,

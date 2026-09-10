@@ -9,7 +9,7 @@
 //! [`JournalStore`](super::JournalStore) would oblige it to grow one. It is
 //! reached through [`JournalStore::purpose`](super::JournalStore::purpose),
 //! which returns `None` by default, and the interface reads
-//! [`Capabilities::goals`](super::Capabilities::goals) to know whether to
+//! [`Capabilities::purpose`](super::Capabilities::purpose) to know whether to
 //! offer the app at all.
 //!
 //! # Two records, and the cascade that is refused

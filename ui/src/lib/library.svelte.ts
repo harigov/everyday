@@ -1,9 +1,9 @@
 // State for the library app.
 //
-// The fourth store, a sibling of `state.svelte.ts`, `todo.svelte.ts` and
-// `calendar.svelte.ts`. Where the calendar store is unusual for reading
-// across domains, this one is unusual for reading across the *network*: it is
-// the only store whose contents can be filled in by somebody else's server.
+// A sibling of `state.svelte.ts`, `todo.svelte.ts` and `calendar.svelte.ts`.
+// Where the calendar store is unusual for reading across domains, this one is
+// unusual for reading across the *network*: it is the only store whose
+// contents can be filled in by somebody else's server.
 //
 // That shapes almost everything here. Three rules, and the third is the one
 // that keeps coming up:
@@ -142,6 +142,7 @@ class LibraryState {
     const remembered = localStorage.getItem('everyday.library.view')
     if (remembered === 'grid' || remembered === 'list') this.view = remembered
     this.captureShelf = localStorage.getItem('everyday.library.capture')
+    app.onFlush(() => this.flush())
   }
 
   /**

@@ -112,7 +112,7 @@ pub enum Domain {
     Calendars,
     Library,
     Trackers,
-    Goals,
+    Purpose,
     /// The assistant's own standing work.
     Routines,
     Agent,
@@ -152,7 +152,7 @@ impl Domain {
                 Domain::Calendars => vault.supports_calendars(),
                 Domain::Library => vault.supports_library(),
                 Domain::Trackers => vault.supports_trackers(),
-                Domain::Goals => vault.supports_goals(),
+                Domain::Purpose => vault.supports_purpose(),
                 Domain::Routines => vault.supports_routines(),
                 Domain::Agent => vault.supports_agent(),
             }
@@ -175,7 +175,7 @@ impl Domain {
             // its contents, and the assistant is specifically for reasoning
             // about them -- "what did I actually spend the week on" is the
             // question the Overview exists to answer.
-            | Domain::Goals
+            | Domain::Purpose
             // Its own work. A routine that made a routine is the one
             // recursion worth thinking about, and the answer is in
             // `run_create_routine`: an unattended run may not.
@@ -484,6 +484,28 @@ pub fn find(name: &str) -> Option<&'static Tool> {
 ///
 /// `None` when there is nothing useful to say, which the interface draws as
 /// a card with no subject rather than as an id nobody can check.
+/// The destructive tools [`describe`] knows how to name a subject for.
+///
+/// A second list beside the match below, which is not something this file does
+/// lightly -- but the failure it guards is silent and permanent. A destructive
+/// tool added without an arm falls through to `_ => None`, and the card that is
+/// the only thing between a misreading and an unrecoverable delete is drawn
+/// with no subject on it at all. `delete_note` and `delete_routine` arrived
+/// that way and nothing said so. The test below binds this to the catalogue,
+/// so the next one fails the build instead.
+#[cfg(test)]
+const DESCRIBED: &[&str] = &[
+    "delete_entry",
+    "delete_note",
+    "delete_routine",
+    "delete_project",
+    "delete_task",
+    "delete_item",
+    "delete_goal",
+    "delete_time_block",
+    "forget",
+];
+
 pub fn describe(ctx: &ToolContext<'_>, name: &str, arguments: &Value) -> Option<String> {
     let args = Args::new("describe", arguments);
     let vault = ctx.vault;
@@ -491,6 +513,14 @@ pub fn describe(ctx: &ToolContext<'_>, name: &str, arguments: &Value) -> Option<
         "delete_entry" => {
             let id: EntryId = args.opt_id("entry_id", "entry").ok()??;
             vault.entry(id).ok().map(|e| e.display_title())
+        }
+        "delete_note" => {
+            let id: NoteId = args.opt_id("note_id", "note").ok()??;
+            vault.note(id).ok().map(|n| n.display_title())
+        }
+        "delete_routine" => {
+            let id: RoutineId = args.opt_id("routine_id", "routine").ok()??;
+            vault.routine(id).ok().map(|r| r.name)
         }
         "delete_project" => {
             let id: ProjectId = args.opt_id("project_id", "project").ok()??;
@@ -1138,7 +1168,7 @@ static ALL: &[Tool] = &[
     tool!(
         "list_roles",
         Read,
-        Goals,
+        Purpose,
         empty_schema(),
         "The parts of a life this vault is organised around \u{2014} parent, work, \
          yourself \u{2014} with how many goals sit under each.",
@@ -1147,7 +1177,7 @@ static ALL: &[Tool] = &[
     tool!(
         "list_goals",
         Read,
-        Goals,
+        Purpose,
         schema(
             vec![
                 ("role_id", text("From list_roles. Omit for every role.")),
@@ -1166,7 +1196,7 @@ static ALL: &[Tool] = &[
     tool!(
         "create_goal",
         Write,
-        Goals,
+        Purpose,
         schema(
             vec![
                 ("role_id", text("From list_roles. Required: every goal sits under one.")),
@@ -1182,7 +1212,7 @@ static ALL: &[Tool] = &[
     tool!(
         "update_goal",
         Write,
-        Goals,
+        Purpose,
         schema(
             vec![
                 ("goal_id", text("From list_goals.")),
@@ -1202,7 +1232,7 @@ static ALL: &[Tool] = &[
     tool!(
         "delete_goal",
         Destructive,
-        Goals,
+        Purpose,
         schema(vec![("goal_id", text("From list_goals."))], &["goal_id"]),
         "Permanently delete a goal. Whatever was filed under it is kept but stops \
          being counted towards it. To record giving up on something, use \
@@ -1212,7 +1242,7 @@ static ALL: &[Tool] = &[
     tool!(
         "set_purpose",
         Write,
-        Goals,
+        Purpose,
         schema(
             vec![
                 (
@@ -1238,7 +1268,7 @@ static ALL: &[Tool] = &[
     tool!(
         "time_by_role",
         Read,
-        Goals,
+        Purpose,
         schema(
             vec![
                 ("from", day("Start of the window, inclusive. Defaults to 7 days back.")),
@@ -1413,7 +1443,7 @@ fn task_json(t: &Task) -> Value {
     });
     let m = v.as_object_mut().unwrap();
     if t.priority != Priority::None {
-        m.insert("priority".into(), json!(priority_str(t.priority)));
+        m.insert("priority".into(), json!(t.priority.as_str()));
     }
     if let Some(p) = t.project_id {
         m.insert("project_id".into(), json!(p.to_string()));
@@ -1447,7 +1477,7 @@ fn project_json(p: &Project, open_tasks: Option<u64>) -> Value {
     });
     let m = v.as_object_mut().unwrap();
     if p.priority != Priority::None {
-        m.insert("priority".into(), json!(priority_str(p.priority)));
+        m.insert("priority".into(), json!(p.priority.as_str()));
     }
     if let Some(d) = p.due_date {
         m.insert("due_date".into(), json!(d.to_string()));
@@ -1477,16 +1507,6 @@ fn rating_out_of_ten(args: &Args<'_>) -> Result<Option<u8>> {
         return Err(args.bad(format!("`rating` is out of 10, got {raw}")));
     }
     Ok(Some((raw * 10.0).round() as u8))
-}
-
-fn priority_str(p: Priority) -> &'static str {
-    match p {
-        Priority::None => "none",
-        Priority::Low => "low",
-        Priority::Medium => "medium",
-        Priority::High => "high",
-        Priority::Urgent => "urgent",
-    }
 }
 
 fn entry_summary_json(e: &crate::model::EntrySummary) -> Value {
@@ -1627,7 +1647,7 @@ fn run_overview(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
         m.insert("trackers".into(), json!(trackers));
     }
 
-    if vault.supports_goals() {
+    if vault.supports_purpose() {
         // The parts of a life and what is wanted from each, so a model
         // knows the vocabulary before it is asked a question in it. Names
         // and ids only -- the hours are `time_by_role`'s answer and the
@@ -3237,6 +3257,27 @@ mod tests {
         }
     }
 
+    /// Every tool that deletes something can name what it is about to delete.
+    ///
+    /// The confirmation card is the whole of the protection here -- there is no
+    /// undo in this application -- and a card with no subject on it asks
+    /// somebody to approve the deletion of a record they cannot identify. Two
+    /// tools shipped without an arm in `describe`, so this is the check that
+    /// was missing rather than a restatement of one that was there.
+    #[test]
+    fn every_destructive_tool_can_name_what_it_would_delete() {
+        for tool in ALL {
+            if tool.effect == Effect::Destructive {
+                assert!(
+                    DESCRIBED.contains(&tool.name),
+                    "{} deletes something and `describe` has no arm for it, so its \
+                     confirmation card would name nothing",
+                    tool.name
+                );
+            }
+        }
+    }
+
     /// Every domain has said which it is. The match in `sensitivity` is
     /// exhaustive, so this is really a check that the list below was updated
     /// when a variant was added -- which is the moment the decision is made.
@@ -3248,7 +3289,7 @@ mod tests {
             Domain::Calendars,
             Domain::Library,
             Domain::Trackers,
-            Domain::Goals,
+            Domain::Purpose,
             Domain::Agent,
         ] {
             assert_eq!(domain.sensitivity(), Sensitivity::Ordinary, "{domain:?}");
@@ -3314,7 +3355,7 @@ mod tests {
             Domain::Calendars,
             Domain::Library,
             Domain::Trackers,
-            Domain::Goals,
+            Domain::Purpose,
             Domain::Agent,
         ] {
             assert!(

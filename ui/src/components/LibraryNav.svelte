@@ -1,4 +1,12 @@
 <script lang="ts">
+  // The library app's half of the sidebar: what is still ahead of you across
+  // every shelf, and then the shelves.
+  //
+  // A shelf -- a `Kind` -- is defined here rather than in Settings, for the
+  // reason the Overview's roles are: a thing is defined where its data is
+  // seen, and a shelf you have to go to Settings for is a shelf you will not
+  // rename. Everything one can have done to it is on its right-click menu.
+
   import { article } from '../lib/format'
   import { focusOnMount } from '../lib/focus'
   import { library } from '../lib/library.svelte'
@@ -239,13 +247,6 @@
     align-items: center;
     justify-content: space-between;
     padding: var(--sp-5) var(--sp-2) var(--sp-2);
-  }
-  .eyebrow {
-    font-size: var(--text-xs);
-    font-weight: 650;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--fg-faint);
   }
   .plus {
     width: 20px;

@@ -524,11 +524,15 @@
     border-left: 1px solid var(--border);
   }
 
+  /* The same height as every other header in the window, and for the reason
+     `--header-h` exists: this row is the top of the rightmost pane, so it sits
+     on the same line as the brand row and the shelf header beside it. It was a
+     bare 42px, which put it twelve pixels shy of both. */
   .top {
     display: flex;
     align-items: center;
     gap: 2px;
-    height: 42px;
+    height: var(--header-h);
     flex: none;
     padding: 0 var(--sp-2) 0 var(--sp-4);
     border-bottom: 1px solid var(--border);

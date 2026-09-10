@@ -145,14 +145,11 @@
     display: block;
     margin-bottom: var(--sp-5);
   }
+  /* Only what this sheet adds to the shared `.eyebrow` in `app.css`: here a
+     heading is a block over its group rather than a label on a row. */
   .eyebrow {
     display: block;
     margin-bottom: var(--sp-2);
-    font-size: var(--text-xs);
-    font-weight: 650;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--fg-faint);
   }
 
   .line {

@@ -13,6 +13,23 @@
 // block's `start` and its `localDate`, and it is why a meeting booked in
 // Berlin still draws at the right hour when you open the vault in Chennai.
 
+/**
+ * Whose calendar this is, as a BCP 47 tag.
+ *
+ * Here, and read through this function everywhere, because the expression was
+ * written out ten times -- in eight components and in both of these two
+ * modules -- and every copy is a place the fallback could be spelt
+ * differently. It is also the one seam an explicit language setting would go
+ * through, and ten copies is ten things to find on the day that is wanted.
+ *
+ * Read on each call rather than captured once: `navigator.language` follows
+ * the platform, and a long-lived window should not go on formatting dates in
+ * the language it was opened in.
+ */
+export function locale(): string {
+  return navigator.language || 'en'
+}
+
 /** Minutes a scheduled thing snaps to when dragged. */
 export const SNAP_MINUTES = 15
 
@@ -92,9 +109,9 @@ export function daysFrom(iso: string, count: number): string[] {
  * Monday for the rest is a better guess than assuming one for everybody.
  */
 export function localeWeekStart(): number {
-  const locale = navigator.language || 'en'
+  const tag = locale()
   try {
-    const info = new Intl.Locale(locale) as unknown as {
+    const info = new Intl.Locale(tag) as unknown as {
       getWeekInfo?: () => { firstDay: number }
       weekInfo?: { firstDay: number }
     }
@@ -104,7 +121,7 @@ export function localeWeekStart(): number {
   } catch {
     /* fall through to the guess */
   }
-  return /^(en-US|en-CA|ja|he|ar|pt-BR|ko)/i.test(locale) ? 0 : 1
+  return /^(en-US|en-CA|ja|he|ar|pt-BR|ko)/i.test(tag) ? 0 : 1
 }
 
 /** The six-week block a month view draws, beginning on `weekStart`. */

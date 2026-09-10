@@ -1,3 +1,12 @@
+//! The one error type this crate returns, and the [`Result`] alias over it.
+//!
+//! Flat rather than nested per domain, and deliberately: a caller almost never
+//! wants to know *which* layer failed, it wants to know whether to ask for a
+//! password, show a conflict, or say something went wrong. The variants are
+//! therefore named after what the reader must do about them -- [`Error::Locked`],
+//! [`Error::Conflict`], [`Error::BadPassword`] -- rather than after where they
+//! were raised.
+
 use std::path::PathBuf;
 
 /// Every fallible operation in the Every Day core returns this error.

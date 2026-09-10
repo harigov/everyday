@@ -15,7 +15,7 @@
 //! is what lets one set of queries run against both.
 //!
 //! The steps are also numbered identically, so a Postgres database created
-//! today is at version 5 exactly as a SQLite one written a year ago is. That
+//! today is at the same version a SQLite one written a year ago reaches. That
 //! matters for the obvious reason -- one `SCHEMA_VERSION` constant, one place
 //! to bump -- and for a less obvious one: it keeps a vault's records portable
 //! between the two, because there is only ever one shape they can be in.
@@ -40,11 +40,12 @@ pub trait VersionStore {
 
 /// Bring the database up to [`SCHEMA_VERSION`].
 ///
-/// Stepped rather than all-or-nothing: a vault written by an earlier build
-/// has entries in it, so version 2 must *add* the task tables beside them
-/// rather than recreate the database, version 3 the calendar tables beside
-/// both, version 4 the library tables beside all three, version 5 the
-/// readings beside all four and version 6 the assistant beside all five.
+/// Stepped rather than all-or-nothing: a vault written by an earlier build has
+/// records in it, so a step *adds* its domain's tables beside whatever is
+/// already there rather than recreating the database. Every step after the
+/// first is one domain arriving -- see the `vN` functions below, which say
+/// which -- and none of them touches a table an earlier step made.
+///
 /// Each step is idempotent and runs in its own transaction, and the recorded
 /// version is only advanced once they all land.
 pub fn migrate(
@@ -654,7 +655,7 @@ fn v7(d: Dialect) -> Vec<String> {
     ]
 }
 
-/// Version 8 — notes, the profile, and the assistant's routines.
+/// Version 8: notes, the profile, and the assistant's routines.
 ///
 /// Three additions and one singleton, all `CREATE TABLE IF NOT EXISTS`, so
 /// the step replays like every step since version 4.

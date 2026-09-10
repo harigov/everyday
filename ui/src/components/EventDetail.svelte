@@ -14,16 +14,19 @@
 
   import { calendar } from '../lib/calendar.svelte'
   import { formatMinutes, friendlyDate } from '../lib/format'
-  import { minutesBetween, offsetInDay } from '../lib/time'
+  import { locale, minutesBetween, offsetInDay } from '../lib/time'
   import { menu } from '../lib/menu.svelte'
   import { blockMenu, calendarTaskMenu, eventMenu } from '../lib/menus'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import type { CalendarEvent, Task, TimeBlock } from '../lib/types'
 
-  const locale = navigator.language || 'en'
-  const timeFmt = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' })
-  const dayFmt = new Intl.DateTimeFormat(locale, { weekday: 'long', day: 'numeric', month: 'long' })
+  const timeFmt = new Intl.DateTimeFormat(locale(), { hour: 'numeric', minute: '2-digit' })
+  const dayFmt = new Intl.DateTimeFormat(locale(), {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+  })
 
   let pendingDelete = $state<TimeBlock | null>(null)
 

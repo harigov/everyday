@@ -3,10 +3,10 @@
   // edge of the window.
   //
   // They were a segmented control at the top of the sidebar, which was the
-  // right shape for two of them and the wrong one for four: the labels
-  // stopped fitting on a row, so it wrapped to two rows of two -- and a
-  // wrapped segmented control reads as a set of filters over what is below
-  // it rather than as the thing that decides what the whole window is.
+  // right shape for two of them and the wrong one for four, let alone for
+  // what there are now: the labels stopped fitting on a row, so it wrapped --
+  // and a wrapped segmented control reads as a set of filters over what is
+  // below it rather than as the thing that decides what the whole window is.
   //
   // A bar says it better. Each app is a target you can hit without aiming,
   // with its name under its mark rather than beside it, and it sits outside
@@ -20,14 +20,23 @@
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { panels } from '../lib/panels.svelte'
   import { tray, type TrayEntry } from '../lib/tray.svelte'
+  import type { Group } from '../lib/shortcuts.svelte'
   import Icon from './Icon.svelte'
   import type { IconName } from '../lib/icons'
 
   interface AppEntry {
     id: Section
-    label: string
+    /**
+     * What the tab says, and -- the same word, deliberately -- the heading
+     * this app's quick actions are filed under in the action table.
+     *
+     * Typed as a `Group` so the two cannot come apart. There used to be a
+     * separate `source` field holding the same name in lower case, and two
+     * spellings of one name is how the right-click menu below would quietly
+     * come back empty after the table was renamed.
+     */
+    label: Group
     icon: IconName
-    /** The key its quick actions are registered under; see `tray.svelte.ts`. */
   }
 
   // Each tab is hidden on a backend that cannot carry it, so a vault never
@@ -38,9 +47,9 @@
     { id: 'todo', label: 'Todo', icon: 'check' },
     { id: 'calendar', label: 'Calendar', icon: 'calendar' },
     { id: 'library', label: 'Library', icon: 'book' },
-    // Last, and deliberately: it is a view over what the four above store,
-    // so it reads left to right as the things you do and then the thing
-    // they add up to.
+    // Last but for the assistant, and deliberately: it is a view over what
+    // the apps above store, so the bar reads top to bottom as the things you
+    // do and then the thing they add up to.
     { id: 'overview', label: 'Overview', icon: 'compass' },
     { id: 'assistant', label: 'Assistant', icon: 'sparkle' },
   ]
@@ -81,10 +90,6 @@
         run: () => app.setSection(entry.id),
       },
       SEP,
-      // By label, which is the name of the group in the action table. There
-      // used to be a separate `source` field here holding the same word in
-      // lower case; two spellings of one name is how this menu would quietly
-      // come back empty after the table was renamed.
       ...tray.entriesFor(entry.label).map(toItem),
     ])
   }
@@ -104,7 +109,7 @@
       {#each shown as a (a.id)}
         {@const on = app.section === a.id}
         <button
-          class="barbtn app"
+          class="barbtn"
           class:on
           aria-current={on ? 'page' : undefined}
           onclick={() => app.setSection(a.id)}
@@ -213,8 +218,7 @@
   /* The same active treatment the editor's toolbar uses for a mark that is
      on, in the accent of whatever is open -- so the bar is tinted by the
      journal or the project the rest of the window is already tinted by. */
-  .barbtn.on,
-  .app.on {
+  .barbtn.on {
     background: color-mix(in oklab, var(--journal-accent, var(--accent)) 14%, transparent);
     color: var(--journal-accent, var(--accent));
   }

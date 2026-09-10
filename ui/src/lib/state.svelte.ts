@@ -52,7 +52,7 @@ export type Screen = 'loading' | 'setup' | 'locked' | 'main' | 'error'
  * A vault holds more than a journal now. The section is the one piece of
  * chrome state that outlives a lock, so it is remembered locally -- coming
  * back to the app you were last in is what makes it feel like one program
- * rather than four bolted together.
+ * rather than a handful bolted together.
  */
 export const SECTIONS = [
   'journal',
@@ -193,14 +193,25 @@ class AppState {
   /**
    * Things to drop when the vault locks.
    *
-   * The todo and library stores register one of these rather than being
-   * imported here.
-   * A lock must clear *every* decrypted thing the interface is holding, and
-   * the alternative -- this file reaching into each app's store -- is a
-   * circular import and a list that is quietly wrong the first time someone
-   * adds an app and forgets to extend it.
+   * Every app's store registers one of these from its constructor rather than
+   * being imported here. A lock must clear *every* decrypted thing the
+   * interface is holding, and the alternative -- this file reaching into each
+   * store -- is a circular import and a list that is quietly wrong the first
+   * time someone adds an app and forgets to extend it.
    */
   #resetHooks: (() => void)[] = []
+  /**
+   * Everything with a debounced write, to be emptied before the interface
+   * gives up what it is holding.
+   *
+   * The same arrangement as `#resetHooks` above, and added for the same reason
+   * the list of resets is a registry rather than a list of imports: the four
+   * places that had to write everything out kept the roster by hand, and by
+   * the time the notes app arrived only one of the four had heard of it. A
+   * store that registers a flush here cannot be left out of a lock, a Ctrl+S
+   * or a window close, because none of them names it.
+   */
+  #flushHooks: (() => Promise<unknown>)[] = []
 
   #saveTimer: ReturnType<typeof setTimeout> | null = null
   /** The tail of the chain of saves, so only one is ever in the air. */
@@ -391,6 +402,31 @@ class AppState {
     this.#resetHooks.push(reset)
   }
 
+  /**
+   * Register a debounced writer to be emptied before anything is given up.
+   *
+   * Called from a store's constructor, beside its `onLock`. See `flushAll`.
+   */
+  onFlush(flush: () => Promise<unknown>) {
+    this.#flushHooks.push(flush)
+  }
+
+  /**
+   * Write out everything anybody has typed, everywhere.
+   *
+   * What a lock, an explicit save and the close handshake all need. `flush`
+   * above is the *journal entry* alone, which is the right thing when the
+   * journal is switching entries and the wrong thing at every moment the
+   * interface is about to stop holding what it has.
+   *
+   * `allSettled`, because one store failing to write must not stop the others
+   * from trying: the alternative is a save that gave up on four apps because
+   * the first one it reached had a conflict on screen.
+   */
+  async flushAll(): Promise<void> {
+    await Promise.allSettled([this.flush(), ...this.#flushHooks.map((f) => f())])
+  }
+
   /** Does this vault's backend carry the task domain? */
   get supportsTasks(): boolean {
     return this.status?.capabilities?.tasks === true
@@ -442,7 +478,7 @@ class AppState {
    * wrong rather than short.
    */
   get supportsOverview(): boolean {
-    return this.status?.capabilities?.goals === true && this.supportsTrackers
+    return this.status?.capabilities?.purpose === true && this.supportsTrackers
   }
 
   /**
@@ -476,15 +512,34 @@ class AppState {
     return this.status?.capabilities?.agent === true
   }
 
-  /** Is this section available on the vault that is open? */
+  /**
+   * Is this section available on the vault that is open?
+   *
+   * A switch over every `Section` rather than a chain of `if`s with a `true`
+   * at the end. The chain answered "yes" for anything it had not been told
+   * about, so an app added without a line here was offered on a backend that
+   * cannot carry it and failed at the first query; the switch does not
+   * compile until the new section says what it needs.
+   */
   canShow(section: Section): boolean {
-    if (section === 'assistant') return this.supportsAssistant
-    if (section === 'notes') return this.supportsNotes
-    if (section === 'todo') return this.supportsTasks
-    if (section === 'calendar') return this.supportsCalendar
-    if (section === 'library') return this.supportsLibrary
-    if (section === 'overview') return this.supportsOverview
-    return true
+    switch (section) {
+      // The one app every backend can carry: a store that cannot hold
+      // journals is not a vault.
+      case 'journal':
+        return true
+      case 'notes':
+        return this.supportsNotes
+      case 'todo':
+        return this.supportsTasks
+      case 'calendar':
+        return this.supportsCalendar
+      case 'library':
+        return this.supportsLibrary
+      case 'overview':
+        return this.supportsOverview
+      case 'assistant':
+        return this.supportsAssistant
+    }
   }
 
   setSection(section: Section) {
@@ -512,10 +567,10 @@ class AppState {
   /**
    * Move to the next app the open vault can offer. What Ctrl/Cmd J does.
    *
-   * A cycle rather than a toggle, now that there are four, and it skips
-   * what the backend does not carry -- so on a vault whose backend holds
-   * journals only, the shortcut is a no-op rather than a way to reach a
-   * screen that cannot work.
+   * A cycle rather than a toggle, now that there are more than two, and it
+   * skips what the backend does not carry -- so on a vault whose backend
+   * holds journals only, the shortcut is a no-op rather than a way to reach
+   * a screen that cannot work.
    */
   nextSection() {
     const available = SECTIONS.filter((s) => this.canShow(s))
@@ -607,7 +662,7 @@ class AppState {
     if (this.#locking || this.screen !== 'main') return
     this.#locking = true
     try {
-      await this.flush()
+      await this.flushAll()
       this.#teardown()
       this.screenOnly = true
       this.screen = 'locked'
@@ -629,9 +684,11 @@ class AppState {
   }
 
   async #lock() {
-    // Write before dropping the entry, or a lock taken within the autosave
-    // window throws away whatever was typed in it.
-    await this.flush()
+    // Write before dropping anything, or a lock taken within the autosave
+    // window throws away whatever was typed in it. *Everything*, not just the
+    // open entry: `#teardown` below blanks every app's store, so a note or a
+    // task half-written a moment ago has nowhere left to be written from.
+    await this.flushAll()
     this.#teardown()
     this.status = await api.lock()
     this.screenOnly = false
@@ -714,8 +771,25 @@ class AppState {
     this.#listTimer = null
   }
 
-  /** Called from real user interaction. Defers both lock clocks. */
+  /**
+   * Called from real user interaction. Defers both lock clocks.
+   *
+   * Wired to the window in `App.svelte` -- a key, a press, a scroll -- and not
+   * only to the editors. It used to be reached from the two rich-text
+   * `onUpdate` handlers and nowhere else, which meant the screen clock was
+   * deferred by *typing prose* and by nothing else at all: an hour spent
+   * dragging blocks around the calendar, working a task board or talking to
+   * the assistant looked exactly like an empty chair, and the window dropped
+   * to the lock screen mid-use. Reading a long entry did the same.
+   *
+   * Deliberately not `pointermove`. A screen lock is meant to fire while
+   * somebody is away from the keyboard, and a mouse nudged by a passing lorry
+   * is not somebody being there.
+   */
   touch() {
+    // Past the lock screen only. A key pressed at the password box is not the
+    // vault being used, and must not defer the timer that forgets its key.
+    if (this.screen !== 'main') return
     this.#idleSince = Date.now()
     // The backend needs to know the user is alive, not how fast they type.
     // Unthrottled this was one IPC round trip per keystroke.

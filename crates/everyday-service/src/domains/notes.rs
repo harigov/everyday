@@ -1,11 +1,12 @@
 //! Notes: writing that is not a day.
 //!
-//! Five commands and nothing surprising in any of them. The one thing worth
+//! Seven commands and nothing surprising in any of them. The one thing worth
 //! knowing is that `save_note` is conditional and `save_note_force` is not,
 //! exactly as the entry pair is: a note is a document somebody types into for
 //! minutes at a time and the interface autosaves, so two windows on one vault
 //! meet the conflict dialog rather than losing an edit between them.
 
+use super::Nothing;
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::CommandResult;
@@ -16,9 +17,6 @@ use everyday_core::store::notes::NoteQuery;
 use jiff::Timestamp;
 use serde::Deserialize;
 use std::sync::Arc;
-
-#[derive(Deserialize)]
-pub struct Nothing {}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,7 +80,7 @@ async fn delete_note(svc: Arc<Service>, _ctx: Ctx, args: NoteRef) -> CommandResu
     blocking(move || Ok(vault.delete_note(args.id)?)).await
 }
 
-async fn note_tags(svc: Arc<Service>, _ctx: Ctx, _a: Nothing) -> CommandResult<Vec<String>> {
+async fn note_tags(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<String>> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.note_tags()?.into_iter().map(|(tag, _)| tag).collect())).await
 }

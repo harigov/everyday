@@ -36,7 +36,6 @@
 //! timeouts. The whole turn is wrapped in one here instead.
 
 use crate::agent::{AgentEvent, Turn};
-use crate::ctx::{Caller, Ctx, Scope};
 use crate::events::{Change, Kind, Notification, Op};
 use crate::service::Service;
 use everyday_core::routine::{Due, Outcome, Routine, RoutineRun, Trigger};
@@ -44,7 +43,7 @@ use everyday_core::store::calendars::EventQuery;
 use everyday_core::store::routines::RunQuery;
 use everyday_core::store::tasks::TaskQuery;
 use everyday_core::task::TaskStatus;
-use everyday_core::{Conversation, RoutineRunId, Vault};
+use everyday_core::{Conversation, Vault};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -446,9 +445,11 @@ async fn resume(
         unattended: Some(run.id),
     };
 
+    let mut wrote = Vec::new();
     match tokio::time::timeout(RUN_TIMEOUT, crate::agent::run_turn(turn)).await {
         Ok(Ok(turned)) => {
             run.steps = turned.steps;
+            wrote = turned.wrote;
             run.finish(Outcome::Done, turned.text);
         }
         Ok(Err(e)) => run.fail(e.to_string()),
@@ -464,25 +465,51 @@ async fn resume(
         stamp(vault, routine, slot);
     }
     announce(service, routine, &run);
+    // What the run *wrote*, and then the run itself. Only the second of these
+    // used to be raised, so a window with the Notes app open went on showing
+    // yesterday's list after the morning brief had written into it: the run
+    // appeared in the Assistant app and the note it made appeared nowhere
+    // until somebody switched apps.
+    for kind in wrote {
+        service.events().changed(Change {
+            kind,
+            op: Op::Updated,
+            id: None,
+            origin: Some("assistant".to_string()),
+        });
+    }
     service.events().changed(run_change());
 }
 
 /// Say something, once.
 ///
-/// Keyed by the routine, so a routine whose endpoint has been unreachable
-/// every morning for a week says so once rather than seven times -- the same
-/// courtesy `feed_failed` extends to a calendar that has stopped answering.
-/// The title names the routine and never carries what it found: this is the
-/// one notification in the application that will routinely be drawn over a
-/// lock screen.
+/// Keyed so that a repetition replaces its predecessor rather than stacking:
+/// a routine whose endpoint has been unreachable every morning for a week says
+/// so once rather than seven times -- the same courtesy `feed_failed` extends
+/// to a calendar that has stopped answering. The title names the routine and
+/// never carries what it found: this is the one notification in the
+/// application that will routinely be drawn over a lock screen.
+///
+/// The *subject* is part of the key on the way out, and is not on the way in.
+/// A query trigger produces one run, and one notification, per thing it
+/// matched -- two meetings in the next hour are two briefs -- and keyed on the
+/// routine alone the second silently replaced the first, so one of the two
+/// pieces of work was never seen. A failure is still keyed on the routine
+/// alone, because a routine that cannot reach its model fails once per subject
+/// for the same single reason, and saying so ten times is the noise the key
+/// exists to prevent.
 fn announce(service: &Arc<Service>, routine: &Routine, run: &RoutineRun) {
-    let key = format!("routine:{}", routine.id);
+    let routine_key = format!("routine:{}", routine.id);
     match run.outcome {
         Outcome::Done => {
             service.routine_recovered(routine.id.to_string());
             if run.summary.trim().is_empty() && run.steps == 0 {
                 return;
             }
+            let key = match &run.subject {
+                Some(subject) => format!("{routine_key}:{subject}"),
+                None => routine_key,
+            };
             service.events().notify(
                 Notification::new(crate::events::Level::Info, format!("{} is ready", routine.name))
                     .for_user()
@@ -495,7 +522,7 @@ fn announce(service: &Arc<Service>, routine: &Routine, run: &RoutineRun) {
                     Notification::warning(format!("{} could not run", routine.name))
                         .body(run.reason.clone())
                         .for_user()
-                        .key(key),
+                        .key(routine_key),
                 );
             }
         }
@@ -532,21 +559,6 @@ fn run_change() -> Change {
         op: Op::Updated,
         id: None,
         origin: Some("assistant".to_string()),
-    }
-}
-
-/// The context a run's own commands would be issued under.
-///
-/// Not used by the turn -- the tools reach the vault directly, as they do in a
-/// chat -- but this is the shape a run has, and it is the reason
-/// `Caller::Assistant` exists: everything it writes is stamped `assistant`, so
-/// a window draws it instead of mistaking it for its own.
-pub fn context_for(run: RoutineRunId) -> Ctx {
-    Ctx {
-        caller: Caller::Assistant(run.to_string()),
-        scopes: vec![Scope::All],
-        proved_at: None,
-        request_id: None,
     }
 }
 

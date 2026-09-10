@@ -70,6 +70,11 @@ impl AppState {
     /// closing the window of an application that is only an application should
     /// quit it, and a process lingering invisibly in a tray nobody asked for is
     /// how a laptop ends up with four of them.
+    ///
+    /// This answers only "is there work here". Whether there is a way *back* to
+    /// a hidden window is the caller's question, and it has to be asked too --
+    /// see the close handler in `lib.rs`. A process with work to do and no tray
+    /// icon and no hotkey is not resident, it is stranded.
     pub fn stays_resident(&self) -> bool {
         if self.sharing.is_running() {
             return true;

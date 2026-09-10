@@ -244,9 +244,9 @@ button {
 }
 
 /* ── The app bar ───────────────────────────────────────────────────────
-   Shared by the four apps and by the two buttons under them, which are not
-   apps at all. They look the same on purpose: a column of identical targets
-   is what makes a bar read as one thing rather than as a list of things that
+   Shared by every app and by the two buttons under them, which are not apps
+   at all. They look the same on purpose: a column of identical targets is
+   what makes a bar read as one thing rather than as a list of things that
    happen to be stacked. */
 
 .barbtn {
@@ -278,7 +278,7 @@ button {
 /* ── Filter bars ───────────────────────────────────────────────────────
    Every app has a row of chips that narrows what is below it, and until
    these existed each app drew its own: different heights, different radii,
-   different idea of where the row belonged. They read as four unrelated
+   different idea of where the row belonged. They read as a set of unrelated
    controls, which is the opposite of what a filter is for -- you learn it
    once and then it is furniture.
 

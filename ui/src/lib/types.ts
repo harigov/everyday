@@ -1,7 +1,22 @@
 // Mirrors the serde representations in `everyday-core`. Kept hand-written
 // rather than generated: the surface is small, and a hand-written type is a
 // place to document what the field *means* to the interface.
+//
+// Two conventions hold throughout, so a domain added later reads like the
+// ones before it:
+//
+//   Ids          every `XId` is a `string`, and they are all declared
+//                together below rather than beside their own records.
+//
+//   Closed sets  the *array* is the declaration and the type is derived from
+//                it: `export const X = [...] as const`, then
+//                `export type T = (typeof X)[number]`. Written the other way
+//                round -- a union with an array typed `T[]` beside it -- the
+//                two drift, because a member added to the union and forgotten
+//                in the array still compiles and the picker it feeds silently
+//                loses a row.
 
+// ── Ids, every domain's at once ──────────────────────────────────────────
 export type JournalId = string
 export type EntryId = string
 export type NoteId = string
@@ -20,6 +35,9 @@ export type MessageId = string
 export type MemoryId = string
 export type RoleId = string
 export type GoalId = string
+export type KindId = string
+export type ItemId = string
+export type LogId = string
 
 /** A ProseMirror document. Opaque to everything but the editor. */
 export type RichDoc = { type: 'doc'; content?: unknown[] }
@@ -80,9 +98,8 @@ export interface RoleInfo extends Role {
   open: number
 }
 
-export type GoalStatus = 'active' | 'paused' | 'done' | 'dropped'
-
-export const GOAL_STATUSES: GoalStatus[] = ['active', 'paused', 'done', 'dropped']
+export const GOAL_STATUSES = ['active', 'paused', 'done', 'dropped'] as const
+export type GoalStatus = (typeof GOAL_STATUSES)[number]
 
 /** Paused counts as open: it is on the books, just not this month. */
 export function goalIsOpen(status: GoalStatus): boolean {
@@ -177,17 +194,17 @@ export interface GoalActivity {
 // and a number. The kind decides how the interface *collects* that number
 // and how a chart should *aggregate* it, and nothing else.
 
-export type TrackerKind =
+export const TRACKER_KINDS = [
   /** Done or not done. `value` is 1 or 0; no reading at all means unrecorded. */
-  | 'check'
+  'check',
   /** Something taken, in a dose. One reading per dose, so a day is a sum. */
-  | 'dose'
+  'dose',
   /** Something felt, `0..=scaleMax`. Several a day is normal. */
-  | 'scale'
+  'scale',
   /** A quantity: minutes, pages, glasses. */
-  | 'amount'
-
-export const TRACKER_KINDS: TrackerKind[] = ['check', 'dose', 'scale', 'amount']
+  'amount',
+] as const
+export type TrackerKind = (typeof TRACKER_KINDS)[number]
 
 /** How readings combine over a day or a week. Fixed per kind. */
 export type Aggregate = 'count' | 'sum' | 'mean'
@@ -199,9 +216,8 @@ export function aggregateOf(kind: TrackerKind): Aggregate {
 }
 
 /** How often a habit is meant to happen. */
-export type Period = 'day' | 'week' | 'month'
-
-export const PERIODS: Period[] = ['day', 'week', 'month']
+export const PERIODS = ['day', 'week', 'month'] as const
+export type Period = (typeof PERIODS)[number]
 
 /**
  * A count and a period: "3× a week".
@@ -617,6 +633,11 @@ export interface StoreStats {
   blobBytes: number
 }
 
+/**
+ * What a backend can and cannot do, in the order `store::Capabilities`
+ * declares it. The interface reads this to hide an app a backend cannot
+ * carry, rather than to surface an error when somebody clicks it.
+ */
 export interface Capabilities {
   blobs: boolean
   transactional: boolean
@@ -655,7 +676,21 @@ export interface Capabilities {
    * to file a task under a goal that cannot be stored is worse than not
    * offering it.
    */
-  goals: boolean
+  purpose: boolean
+  /**
+   * Backend carries the note domain, so writing that is not filed under a day
+   * has somewhere to live. False hides the Notes app, and takes the
+   * assistant's note tools with it.
+   */
+  notes: boolean
+  /**
+   * Backend carries the routine domain, so the assistant can have standing
+   * work and a log of what it did.
+   *
+   * False hides the routines. The rail still works: talking to it needs
+   * nothing from there.
+   */
+  routines: boolean
   /**
    * Backend carries the assistant's own domain, so its settings, threads and
    * memory have somewhere to live.
@@ -664,20 +699,6 @@ export interface Capabilities {
    * conversation vanishes when the window closes.
    */
   agent: boolean
-  /**
-   * Backend implements the note store, so writing that is not filed under a
-   * day has somewhere to live. False hides the Notes app, and takes the
-   * assistant's note tools with it.
-   */
-  notes: boolean
-  /**
-   * Backend implements the routine store, so the assistant can have standing
-   * work and a log of what it did.
-   *
-   * False hides the routines. The rail still works: talking to it needs
-   * nothing from there.
-   */
-  routines: boolean
 }
 
 export interface VaultStatus {
@@ -752,13 +773,6 @@ export interface Bootstrap {
 }
 
 /**
- * A vault on another computer that this copy has paired with.
- *
- * The token is deliberately not here. It is a bearer credential to an unlocked
- * vault and lives in the operating system's keychain; this is what the picker
- * needs to draw a row and what the client needs to pin a certificate.
- */
-/**
  * What connecting to another computer answers with.
  *
  * Both halves, because neither can be derived from the other. The interface
@@ -771,6 +785,13 @@ export interface Connected {
   connection: Connection
 }
 
+/**
+ * A vault on another computer that this copy has paired with.
+ *
+ * The token is deliberately not here. It is a bearer credential to an unlocked
+ * vault and lives in the operating system's keychain; this is what the picker
+ * needs to draw a row and what the client needs to pin a certificate.
+ */
 export interface Connection {
   id: string
   /** What that vault calls itself. */
@@ -863,12 +884,12 @@ export interface Task {
   dueTime?: string | null
   estimateMinutes?: number | null
   tags: string[]
-  /** Position within its board column or list section. */
   /**
    * What this is *for*: a goal, or a role directly. Optional everywhere
    * and never required by capture. See `Purpose`.
    */
   purpose?: Purpose | null
+  /** Position within its board column or list section. */
   sortOrder: number
   createdAt: string
   updatedAt: string
@@ -1272,10 +1293,6 @@ export type TrayMenuItem =
 // add rather than something we ship; a *log entry* is a record rather than a
 // field, so reading something twice does not overwrite the first time. See
 // the core module's docs for both arguments in full.
-
-export type KindId = string
-export type ItemId = string
-export type LogId = string
 
 /** How a shelf's extra fields are written. Presentation, never validation. */
 export type FieldType = 'text' | 'multiline' | 'number' | 'date' | 'url'

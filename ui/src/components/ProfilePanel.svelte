@@ -154,14 +154,6 @@
     line-height: 1.55;
   }
 
-  .eyebrow {
-    font-size: var(--text-xs);
-    font-weight: 650;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--fg-faint);
-  }
-
   .pair {
     display: grid;
     grid-template-columns: 1fr 1fr;

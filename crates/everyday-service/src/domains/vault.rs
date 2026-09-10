@@ -4,6 +4,7 @@
 //! choosing which one this session is about. Those decide what the service
 //! *is* and belong to whatever owns the process -- see [`crate::service`].
 
+use super::Nothing;
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult};
@@ -13,9 +14,6 @@ use everyday_core::profile::Profile;
 use everyday_core::store::StoreStats;
 use serde::Deserialize;
 use std::sync::Arc;
-
-#[derive(Deserialize)]
-pub struct Nothing {}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -1,10 +1,11 @@
-// The assistant's side of the window.
+// The assistant's rail, which works in every app.
 //
-// A fifth store beside `app`, `todo`, `calendar` and `library`, and the only
-// one whose state is mostly *in flight*: a turn arrives over a channel as a
-// stream of events, and this is what turns those into something a panel can
-// draw. See `AgentEvent` in `types.ts` for the shapes, and `crate::agent` in
-// the shell for what emits them.
+// A store beside the apps' own rather than one of them -- the Assistant app's
+// three panes are `assistant.svelte.ts` -- and the only one whose state is
+// mostly *in flight*: a turn arrives over a channel as a stream of events,
+// and this is what turns those into something a panel can draw. See
+// `AgentEvent` in `types.ts` for the shapes, and `crate::agent` in the shell
+// for what emits them.
 //
 // What is deliberately not here: any notion of what a tool does. The panel
 // draws a card saying `create_task` ran and what it said about itself; it has

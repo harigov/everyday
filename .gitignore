@@ -1,6 +1,9 @@
 /target
 **/node_modules
 /ui/dist
+# Vite's dependency-optimiser cache. Written at the repo root because the test
+# scripts start a server whose root is `ui/`, and committed once by accident.
+/.vite
 /crates/everyday-app/gen
 *.log
 .DS_Store

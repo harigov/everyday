@@ -1,5 +1,6 @@
 //! Command definitions and their implementations.
 
+use clap::{Parser, Subcommand};
 use everyday_core::crypto::KdfParams;
 use everyday_core::model::{Attachment, MediaKind};
 use everyday_core::search::{Found, SearchScope};
@@ -26,8 +27,6 @@ pub struct Cli {
     #[command(subcommand)]
     command: Command,
 }
-
-use clap::{Parser, Subcommand};
 
 #[derive(Subcommand, Debug)]
 pub enum Command {

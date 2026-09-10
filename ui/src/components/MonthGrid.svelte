@@ -11,7 +11,7 @@
   // changes as you page through the year makes everything below it jump.
 
   import { calendar } from '../lib/calendar.svelte'
-  import { daysFrom, startOfWeek, todayIso } from '../lib/time'
+  import { daysFrom, locale, startOfWeek, todayIso } from '../lib/time'
   import { menu } from '../lib/menu.svelte'
   import { calendarTaskMenu, dayMenu, eventMenu, readingMenu, slotMenu } from '../lib/menus'
   import Icon from './Icon.svelte'
@@ -19,10 +19,9 @@
 
   let { days }: { days: string[] } = $props()
 
-  const locale = navigator.language || 'en'
-  const weekdayFmt = new Intl.DateTimeFormat(locale, { weekday: 'short' })
-  const timeFmt = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' })
-  const monthFmt = new Intl.DateTimeFormat(locale, { month: 'short' })
+  const weekdayFmt = new Intl.DateTimeFormat(locale(), { weekday: 'short' })
+  const timeFmt = new Intl.DateTimeFormat(locale(), { hour: 'numeric', minute: '2-digit' })
+  const monthFmt = new Intl.DateTimeFormat(locale(), { month: 'short' })
 
   /** Most rows a cell shows before collapsing into "+n more". */
   const MAX_ROWS = 4

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
-use super::vault::Nothing;
+use super::Nothing;
 
 /// One command, as a client generator sees it.
 #[derive(Debug, Serialize)]
@@ -96,7 +96,7 @@ pub fn title_of(name: &str) -> String {
     words
 }
 
-async fn list_commands(_s: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<Surface> {
+async fn list_commands(_svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Surface> {
     let commands = crate::command::catalog()
         .iter()
         .map(|c| CommandInfo {
@@ -144,7 +144,7 @@ async fn list_commands(_s: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<
 /// The same filtered set the assistant is given, which matters for more than
 /// tidiness: a domain classed as secret is absent from both, so a palette
 /// cannot offer what a model is not allowed to know exists.
-async fn list_tools(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<Vec<ToolInfo>> {
+async fn list_tools(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<ToolInfo>> {
     let vault = svc.require()?;
     blocking(move || {
         Ok(tools::available(&vault)
@@ -167,7 +167,7 @@ async fn list_tools(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<Ve
 /// is the assistant's own: a destructive tool is refused unless the caller has
 /// said, in this call, that it means it. There is no undo in this application,
 /// so a script that deletes a project has to be a script that asked to.
-async fn run_tool(svc: Arc<Service>, _c: Ctx, args: RunTool) -> CommandResult<Value> {
+async fn run_tool(svc: Arc<Service>, _ctx: Ctx, args: RunTool) -> CommandResult<Value> {
     let vault = svc.require()?;
     let Some(tool) = tools::find(&args.name) else {
         return Err(CommandError::new(

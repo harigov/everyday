@@ -161,6 +161,8 @@ class TodoState {
   constructor() {
     // A lock must leave nothing decrypted behind in here either.
     app.onLock(() => this.reset())
+    // ...and must not throw away what the reset is about to drop.
+    app.onFlush(() => this.flush())
   }
 
   /** Register (or with `null`, retire) the capture line's focus. */

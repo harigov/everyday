@@ -11,9 +11,7 @@
 // of "the local calendar day" is four places for the same off-by-a-timezone
 // bug to be fixed in three of.
 
-import { isoDate, startOfDay } from './time'
-
-const locale = () => navigator.language || 'en'
+import { isoDate, locale, startOfDay } from './time'
 
 export function daysBetween(a: Date, b: Date): number {
   return Math.round(

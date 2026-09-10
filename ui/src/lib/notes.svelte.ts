@@ -1,7 +1,7 @@
 // State for the notes app.
 //
-// The sixth store, and the simplest of them: a list, one open note, and a
-// tag filter. What is worth knowing is what it does *not* do.
+// The simplest of the app stores: a list, one open note, and a tag filter.
+// What is worth knowing is what it does *not* do.
 //
 // It does not own the editor. `Editor.svelte` takes a document and a callback
 // and knows nothing about which record it came from, so the journal and this
@@ -14,7 +14,7 @@
 // one index and one ranking, because a half-remembered phrase should be found
 // wherever it was written down.
 
-import { api } from './api'
+import { api, newRequestId } from './api'
 import { Autosave } from './autosave'
 import { app, handle, isConflict, isLocked } from './state.svelte'
 import type { Note, NoteHit, NoteId, NoteSort, NoteSummary } from './types'
@@ -32,7 +32,7 @@ export const SORTS: { value: NoteSort; label: string }[] = [
   { value: 'titleAsc', label: 'By title' },
 ]
 
-class Notes {
+class NotesState {
   /** The list, pinned first. */
   list = $state<NoteSummary[]>([])
   /** The note in the editor, whole. `null` when nothing is open. */
@@ -56,11 +56,31 @@ class Notes {
    * them losing its work silently.
    */
   #base: string | null = null
+  /**
+   * The id of the write currently being attempted, held across its retries.
+   *
+   * Minted once per *logical* write and reused by every retry of it, which is
+   * the whole contract `newRequestId` documents. It was minted inside
+   * `api.saveNote` instead, so every retry carried a fresh one, the backend's
+   * idempotency map never recognised the second attempt as the first, and a
+   * save whose answer was lost to a dropped connection came back as a conflict
+   * against the version it had itself just written.
+   *
+   * Cleared on success, and by `#edited` when the text moves under it -- a
+   * retry of superseded text must not be answered from the record, because the
+   * record holds the older version.
+   */
+  #stamp: string | null = null
   #searchTimer: ReturnType<typeof setTimeout> | null = null
 
   #saver = new Autosave<NoteId>(async () => {
     const note = this.open
     if (!note) return
+    // Nothing is written while a conflict is unresolved. Retrying would only
+    // be refused again, and the author has a choice in front of them -- so
+    // without this, every pause in typing under the banner cost another
+    // doomed round trip. The same guard the journal's `#write` has.
+    if (this.conflict) return
     // The version this write is *sending*, captured before the await. Read
     // back afterwards it would be whatever the editor had reached by then: a
     // keystroke landing during the round trip stamps a new `updatedAt` on the
@@ -69,8 +89,10 @@ class Notes {
     // edit nobody else touched. This is what `#writeStamp` guards in the
     // journal, for the same reason.
     const sending = note.updatedAt
+    this.#stamp ??= newRequestId()
     try {
-      await api.saveNote(note, this.#base)
+      await api.saveNote($state.snapshot(note), this.#base, this.#stamp)
+      this.#stamp = null
       this.#base = sending
       await this.refresh()
     } catch (e) {
@@ -95,6 +117,7 @@ class Notes {
 
   constructor() {
     app.onLock(() => this.reset())
+    app.onFlush(() => this.flush())
   }
 
   reset() {
@@ -109,22 +132,18 @@ class Notes {
   }
 
   /**
-   * Load the list. Idempotent, so switching back into the app refreshes it
-   * rather than blanking it on the way in.
+   * Load the list. Called by `NotesNav`, which is where the list is drawn.
+   *
+   * Named and shaped as every other app store's entry point: idempotent, so
+   * switching back into the app refreshes it rather than blanking it on the
+   * way in, and doing nothing of its own beyond showing that a first load is
+   * under way.
    */
-  async load() {
+  async start() {
     if (!app.supportsNotes) return
     this.loading = true
     try {
-      this.list = await api.notes({
-        tags: this.tag ? [this.tag] : [],
-        sort: this.sort,
-        limit: PAGE,
-      })
-      this.tags = await api.noteTags()
-    } catch (e) {
-      if (isLocked(e)) return
-      await handle(e)
+      await this.refresh()
     } finally {
       this.loading = false
     }
@@ -148,12 +167,12 @@ class Notes {
 
   async setSort(sort: NoteSort) {
     this.sort = sort
-    await this.load()
+    await this.refresh()
   }
 
   async setTag(tag: string | null) {
     this.tag = tag
-    await this.load()
+    await this.refresh()
   }
 
   async openNote(id: NoteId) {
@@ -191,33 +210,46 @@ class Notes {
     }
   }
 
+  /**
+   * Stamp the open note as changed and put it on the autosave timer.
+   *
+   * The four editors below all did this by hand, and each had to remember the
+   * `updatedAt` line as well as the `touch`. Now that a request id has to be
+   * retired here too -- see `#stamp` -- one of the four forgetting a line
+   * would be a write answered from the record with the *older* text in it.
+   */
+  #edited() {
+    if (!this.open) return
+    this.open.updatedAt = new Date().toISOString()
+    // The text has moved, so any write still being retried is superseded and
+    // must not be answered as though it were this one.
+    this.#stamp = null
+    this.#saver.touch(this.open.id)
+  }
+
   /** Called by the editor on every change. */
   edited(body: Note['body']) {
     if (!this.open) return
     this.open.body = body
-    this.open.updatedAt = new Date().toISOString()
-    this.#saver.touch(this.open.id)
+    this.#edited()
   }
 
   setTitle(title: string) {
     if (!this.open) return
     this.open.title = title
-    this.open.updatedAt = new Date().toISOString()
-    this.#saver.touch(this.open.id)
+    this.#edited()
   }
 
   async setTags(tags: string[]) {
     if (!this.open) return
     this.open.tags = tags
-    this.open.updatedAt = new Date().toISOString()
-    this.#saver.touch(this.open.id)
+    this.#edited()
   }
 
   async togglePinned() {
     if (!this.open) return
     this.open.pinned = !this.open.pinned
-    this.open.updatedAt = new Date().toISOString()
-    this.#saver.touch(this.open.id)
+    this.#edited()
     await this.flush()
   }
 
@@ -243,9 +275,18 @@ class Notes {
   /** Take theirs: throw away this window's edit and reload. */
   async takeTheirs() {
     const id = this.open?.id
-    if (!id) return
+    if (!id || !this.conflict) return
     this.#saver.forget(id)
     this.conflict = false
+    // Dropped before it is re-opened, so the editor is rebuilt rather than
+    // left exactly as it was. `RichText` replaces its document only when
+    // `docId` changes, and re-opening the same note does not change it -- so
+    // without this line the pane goes on showing the text this window has
+    // just agreed to discard, while `#base` moves to the other writer's
+    // version. The next keystroke would then overwrite them, with no second
+    // conflict to stop it. The journal's `takeTheirs` drops `entry` for
+    // exactly this reason.
+    this.open = null
     await this.openNote(id)
   }
 
@@ -311,4 +352,4 @@ class Notes {
   }
 }
 
-export const notes = new Notes()
+export const notes = new NotesState()

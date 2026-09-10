@@ -25,7 +25,7 @@ use everyday_core::{CalendarId, EventId, Vault};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use super::vault::Nothing;
+use super::Nothing;
 
 /// A calendar and how much is in it.
 ///
@@ -126,8 +126,8 @@ pub struct Import {
 
 async fn list_calendars(
     svc: Arc<Service>,
-    _c: Ctx,
-    _a: Nothing,
+    _ctx: Ctx,
+    _args: Nothing,
 ) -> CommandResult<Vec<CalendarInfo>> {
     let vault = svc.require()?;
     blocking(move || {
@@ -143,23 +143,23 @@ async fn list_calendars(
     .await
 }
 
-async fn save_calendar(svc: Arc<Service>, _c: Ctx, args: SaveCalendar) -> CommandResult<()> {
+async fn save_calendar(svc: Arc<Service>, _ctx: Ctx, args: SaveCalendar) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.save_calendar(&args.calendar)?)).await
 }
 
 /// Unsubscribe: the calendar and every event that came from it.
-async fn delete_calendar(svc: Arc<Service>, _c: Ctx, args: CalendarRef) -> CommandResult<()> {
+async fn delete_calendar(svc: Arc<Service>, _ctx: Ctx, args: CalendarRef) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.delete_calendar(args.id)?)).await
 }
 
-async fn list_events(svc: Arc<Service>, _c: Ctx, args: Events) -> CommandResult<Vec<Event>> {
+async fn list_events(svc: Arc<Service>, _ctx: Ctx, args: Events) -> CommandResult<Vec<Event>> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.events(&args.query)?)).await
 }
 
-async fn get_event(svc: Arc<Service>, _c: Ctx, args: EventRef) -> CommandResult<Event> {
+async fn get_event(svc: Arc<Service>, _ctx: Ctx, args: EventRef) -> CommandResult<Event> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.event(args.id)?)).await
 }
@@ -172,7 +172,11 @@ async fn get_event(svc: Arc<Service>, _c: Ctx, args: EventRef) -> CommandResult<
 /// subscription -- because the alternative, a calendar that empties itself when
 /// the wifi drops, is the one failure of an automatic sync that people notice
 /// and never forgive.
-async fn sync_calendar(svc: Arc<Service>, _c: Ctx, args: CalendarRef) -> CommandResult<SyncReport> {
+async fn sync_calendar(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: CalendarRef,
+) -> CommandResult<SyncReport> {
     let vault = svc.require()?;
     let report = sync_one(&vault, args.id).await?;
     // A hand-driven refresh that works ends the outage as much as a background
@@ -190,7 +194,7 @@ async fn sync_calendar(svc: Arc<Service>, _c: Ctx, args: CalendarRef) -> Command
 /// being down must not stop the other three.
 async fn sync_due_calendars(
     svc: Arc<Service>,
-    _c: Ctx,
+    _ctx: Ctx,
     args: SyncDue,
 ) -> CommandResult<Vec<SyncReport>> {
     let vault = svc.require()?;
@@ -302,7 +306,7 @@ fn record_failure(vault: &Arc<Vault>, id: CalendarId, why: &str) {
 /// nothing at all.
 async fn subscribe_calendar(
     svc: Arc<Service>,
-    _c: Ctx,
+    _ctx: Ctx,
     args: Subscribe,
 ) -> CommandResult<CalendarInfo> {
     let vault = svc.require()?;
@@ -318,7 +322,11 @@ async fn subscribe_calendar(
 /// API. No path crosses the boundary and nothing on disk is opened by this
 /// process, so "import a calendar" cannot be talked into reading a file the
 /// user did not pick.
-async fn import_calendar(svc: Arc<Service>, _c: Ctx, args: Import) -> CommandResult<CalendarInfo> {
+async fn import_calendar(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: Import,
+) -> CommandResult<CalendarInfo> {
     let vault = svc.require()?;
     let calendar = Calendar::imported(args.name.trim(), args.label).with_color(args.color);
     add_calendar(&vault, calendar, args.ics, "Imported calendar").await
@@ -374,8 +382,8 @@ async fn add_calendar(
 /// what the set is.
 async fn calendar_providers(
     svc: Arc<Service>,
-    _c: Ctx,
-    _a: Nothing,
+    _ctx: Ctx,
+    _args: Nothing,
 ) -> CommandResult<Vec<ProviderInfo>> {
     let _ = svc.require()?;
     Ok(CalendarProvider::ALL.iter().map(|p| ProviderInfo::of(*p)).collect())

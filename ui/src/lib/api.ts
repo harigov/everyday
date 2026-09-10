@@ -10,21 +10,22 @@ import type {
   AgentEvent,
   AgentMessage,
   AgentSettings,
+  BalanceReport,
   BlockId,
   BlockKind,
   BlockQuery,
   BlockSubject,
-  BalanceReport,
   Bootstrap,
+  Calendar,
+  CalendarEvent,
+  CalendarId,
+  CalendarInfo,
+  ChangeEvent,
   Connected,
   Connection,
   Conversation,
   ConversationId,
   ConversationSummary,
-  Calendar,
-  CalendarEvent,
-  CalendarId,
-  CalendarInfo,
   Entry,
   EntryId,
   EntryQuery,
@@ -35,6 +36,7 @@ import type {
   GoalActivity,
   GoalId,
   GoalQuery,
+  HotkeyStatus,
   Item,
   ItemId,
   ItemQuery,
@@ -51,6 +53,11 @@ import type {
   LogQuery,
   Memory,
   MemoryId,
+  Note,
+  NoteId,
+  NoteQuery,
+  NoteSummary,
+  Profile,
   Project,
   ProjectId,
   ProviderInfo,
@@ -60,24 +67,18 @@ import type {
   Role,
   RoleId,
   RoleInfo,
-  SearchHit,
-  SearchKind,
-  Profile,
   Routine,
   RoutineId,
   RoutineInfo,
   RoutineRun,
   RoutineRunId,
   RunQuery,
-  Template,
-  Note,
-  NoteId,
-  NoteQuery,
-  NoteSummary,
+  SearchHit,
+  SearchKind,
   SearchRequest,
-  HotkeyStatus,
   SearchResult,
   ShareStatus,
+  ShellNotification,
   SourceInfo,
   SyncReport,
   TagCount,
@@ -86,6 +87,7 @@ import type {
   TaskQuery,
   TaskStats,
   TaskStatus,
+  Template,
   TimeBlock,
   Tracker,
   TrackerDay,
@@ -95,7 +97,6 @@ import type {
   VaultStatus,
 } from './types'
 import { VaultError } from './types'
-import type { ChangeEvent, ShellNotification } from './types'
 import { SERVICE_COMMANDS } from './generated/commands'
 
 // Decided at BUILD time, not run time.
@@ -429,8 +430,7 @@ export const api = {
    * `expect` is the `updatedAt` this window last read for the entry, or
    * `null` for one it has just created. A mismatch rejects with code
    * `conflict` and writes nothing.
-   */
-  /**
+   *
    * `requestId` identifies one logical write. Pass the *same* one when
    * retrying, so a save that landed and whose answer was lost is answered from
    * the record rather than refused as a conflict against itself. See
@@ -497,10 +497,14 @@ export const api = {
    * Save a note, refusing to overwrite an edit made since `expect` was read.
    *
    * The same contract `saveEntry` has, for the same reason: a note is typed
-   * into and autosaved, so two windows on one vault find each other.
+   * into and autosaved, so two windows on one vault find each other -- and
+   * `requestId` is the caller's for the same reason again. This minted its own
+   * with `newRequestId()` here, which is the one thing that function's own
+   * doc comment says not to do: a fresh id per attempt is an id the retry
+   * cannot be recognised by.
    */
-  saveNote: (note: Note, expect: string | null) =>
-    invoke<void>('save_note', { note, expect }, newRequestId()),
+  saveNote: (note: Note, expect: string | null, requestId?: string) =>
+    invoke<void>('save_note', { note, expect }, requestId),
   saveNoteForce: (note: Note) => invoke<void>('save_note_force', { note }),
   deleteNote: (id: NoteId) => invoke<void>('delete_note', { id }),
   noteTags: () => invoke<string[]>('note_tags'),
@@ -697,7 +701,7 @@ export const api = {
 
   // ── Roles and goals ────────────────────────────────────────────────
   //
-  // Available only when `status.capabilities.goals` is true. The two records
+  // Available only when `status.capabilities.purpose` is true. The two records
   // are small; the interesting call is `balance`, which is the whole reason
   // the purpose pointer exists.
 
@@ -837,10 +841,13 @@ export const api = {
 
   memories: () => invoke<Memory[]>('list_memories'),
 
-  /** Saving by hand also pins: a fact somebody typed is not one the
-   *  assistant's own housekeeping may drop. Returns what it evicted. */
   /** A blank memory with an id, pinned. The core allocates it. */
   newMemory: () => invoke<Memory>('new_memory'),
+
+  /**
+   * Saving by hand also pins: a fact somebody typed is not one the
+   * assistant's own housekeeping may drop. Returns what it evicted.
+   */
   saveMemory: (memory: Memory) => invoke<Memory[]>('save_memory', { memory }),
   deleteMemory: (id: MemoryId) => invoke<void>('delete_memory', { id }),
 }

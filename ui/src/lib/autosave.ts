@@ -1,6 +1,6 @@
 // Debounce-and-write, once.
 //
-// All four apps do the same thing with an edit: mutate the record in place
+// Every app does the same thing with an edit: mutate the record in place
 // so every view of it redraws from the same object, mark it dirty, and put it
 // on disk a beat after the typing stops. That was written out three times --
 // a private `Set` of ids, a private timer, a `patch` that reset the timer and
@@ -69,7 +69,8 @@ export class Autosave<Id> {
    *
    * Without it, `flush` was "cancel the timer, and if nothing is dirty
    * return" -- which is a lie while a previous write is still on the wire.
-   * The save-before-close handshake calls `flush` on all four stores and
+   * The save-before-close handshake calls `flush` on every store that has
+   * one and
    * closes the window when they resolve, so a flush that returned early
    * during an in-flight write reported "everything is on disk" about a write
    * that had not landed yet. Chaining also keeps two writes of the same

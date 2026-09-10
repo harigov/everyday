@@ -260,7 +260,23 @@ async fn call(
     // the same lockout. A screen that was cheaper to guess at than a vault
     // would simply become the way in.
     if name == "unlock" || name == "verify_password" {
-        if !server.allow_remote_unlock() && transport == Transport::Network {
+        // ...but they are not the same *policy*. `--no-remote-unlock` says a
+        // sealed vault is opened at the machine holding it and nowhere else.
+        // Applied to `verify_password` as well, it locked people out of a
+        // vault that was already open: a remote window whose own screen timed
+        // out could never answer for itself again, and there was nothing to do
+        // at the host either, because the vault it holds was never locked.
+        //
+        // So the refusal is `unlock`'s, plus the one case where verifying
+        // would be a way around it -- a sealed vault, where an answer of "yes,
+        // that is the password" is exactly the thing the flag is keeping on
+        // the other machine. With the vault open there is no such answer to
+        // buy: the caller is already holding a token that reads it.
+        let sealed = server.service.get().is_none_or(|v| !v.is_unlocked());
+        if !server.allow_remote_unlock()
+            && transport == Transport::Network
+            && (name == "unlock" || sealed)
+        {
             return Err(CommandError::new(
                 "forbidden",
                 "this vault must be unlocked on the machine holding it",

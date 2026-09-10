@@ -9,6 +9,7 @@
   import { onMount } from 'svelte'
   import { calendar, type Layer, type View } from '../lib/calendar.svelte'
   import { formatMinutes } from '../lib/format'
+  import { locale } from '../lib/time'
   import Icon from './Icon.svelte'
   import TimeGrid from './TimeGrid.svelte'
   import MonthGrid from './MonthGrid.svelte'
@@ -21,8 +22,6 @@
   // to the calendar is the moment this store can learn about them. `start`
   // only runs once in a session; this runs every time the app is shown.
   onMount(() => void calendar.refreshReadings())
-
-  const locale = navigator.language || 'en'
 
   const VIEWS: { id: View; label: string; icon: IconName; key: string }[] = [
     { id: 'day', label: 'Day', icon: 'day', key: 'D' },
@@ -42,14 +41,14 @@
     const first = new Date(days[0] + 'T00:00')
     const last = new Date(days[days.length - 1] + 'T00:00')
     if (calendar.view === 'day') {
-      return new Intl.DateTimeFormat(locale, {
+      return new Intl.DateTimeFormat(locale(), {
         weekday: 'long',
         day: 'numeric',
         month: 'long',
       }).format(first)
     }
     if (calendar.view === 'month') {
-      return new Intl.DateTimeFormat(locale, { month: 'long', year: 'numeric' }).format(
+      return new Intl.DateTimeFormat(locale(), { month: 'long', year: 'numeric' }).format(
         new Date(calendar.anchor + 'T00:00'),
       )
     }
@@ -59,7 +58,7 @@
     // replaces did not: asking for a day and a year with no month between
     // them is a combination `Intl` has no pattern for, so a week inside one
     // month came out reading "Sep 6 – 2026 (day: 12)".
-    return new Intl.DateTimeFormat(locale, {
+    return new Intl.DateTimeFormat(locale(), {
       day: 'numeric',
       month: 'short',
       year: 'numeric',
@@ -132,7 +131,7 @@
 
     <!-- Plan and record, as the chips every other app narrows its list with.
          They were a segmented control in the top right corner, which is
-         where each of the four apps used to put its own idea of a filter --
+         where each app used to put its own idea of a filter --
          so the same job looked like three different controls depending on
          which app you were in. The row is centred on the pane and the
          summary is pushed to its edge; see `.toolbar` in `app.css`.

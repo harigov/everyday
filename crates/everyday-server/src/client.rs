@@ -2,9 +2,9 @@
 //! hold.
 //!
 //! This is what makes a remote client the *same app* rather than a viewer. It
-//! offers the same three entry points the [`Service`] does -- `call`, the blob
-//! pair, and `send_message` -- so the shell above it can hold either and the
-//! interface never learns which.
+//! offers the same three entry points [`everyday_service::Service`] does --
+//! `call`, the blob calls, and `send_message` -- so the shell above it can
+//! hold either and the interface never learns which.
 //!
 //! # Why the pinning is here and not in the webview
 //!

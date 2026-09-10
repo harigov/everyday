@@ -10,7 +10,6 @@
   // The rail is not part of this app. It works here as it works everywhere,
   // and opening a run puts that run's transcript in it.
 
-  import { api } from '../lib/api'
   import { assistant, PANE_LABELS } from '../lib/assistant.svelte'
   import { agent } from '../lib/agent.svelte'
   import { app } from '../lib/state.svelte'
@@ -109,14 +108,9 @@
         label: 'Remove from the log',
         icon: 'trash',
         danger: true,
-        run: () => void removeRun(run),
+        run: () => void assistant.removeRun(run.id),
       },
     ])
-  }
-
-  async function removeRun(run: RoutineRun) {
-    await api.deleteRun(run.id)
-    await assistant.refresh()
   }
 
   function commitMemory() {
@@ -266,7 +260,7 @@
               <span class="eyebrow">When</span>
               <div class="when">
                 <input
-                  class="field lead"
+                  class="field mins"
                   type="number"
                   min="5"
                   max="1440"
@@ -581,14 +575,6 @@
     gap: var(--sp-2);
   }
 
-  .eyebrow {
-    font-size: var(--text-xs);
-    font-weight: 650;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--fg-faint);
-  }
-
   .area {
     resize: vertical;
     font-family: inherit;
@@ -612,7 +598,12 @@
     width: 8rem;
   }
 
-  .lead {
+  /* The lead-minutes box on a `beforeEvent` trigger. Named for what it is
+     rather than `lead`, which this stylesheet already uses for the paragraph
+     that introduces a pane -- two rules of that name in one file, and the
+     narrower of them won, so every explanatory paragraph in this app was
+     drawn in an eighty-pixel column. */
+  .mins {
     width: 5rem;
   }
 

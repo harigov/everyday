@@ -30,6 +30,7 @@
   import {
     MIN_BLOCK_MINUTES,
     SNAP_MINUTES,
+    locale,
     minutesOfDay,
     packLanes,
     snap,
@@ -46,10 +47,9 @@
   /** How close to the bottom edge counts as "resize" rather than "move". */
   const RESIZE_GRIP = 7
 
-  const locale = navigator.language || 'en'
-  const weekdayFmt = new Intl.DateTimeFormat(locale, { weekday: 'short' })
-  const hourFmt = new Intl.DateTimeFormat(locale, { hour: 'numeric' })
-  const timeFmt = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' })
+  const weekdayFmt = new Intl.DateTimeFormat(locale(), { weekday: 'short' })
+  const hourFmt = new Intl.DateTimeFormat(locale(), { hour: 'numeric' })
+  const timeFmt = new Intl.DateTimeFormat(locale(), { hour: 'numeric', minute: '2-digit' })
 
   let body = $state<HTMLDivElement | null>(null)
 

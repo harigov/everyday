@@ -399,25 +399,6 @@ impl Vault {
                 supported: FORMAT_VERSION,
             });
         }
-        // A vault written before the lock was split into two.
-        //
-        // `auto_lock_seconds` used to drop the key; it now hides a screen, and
-        // the timer that drops the key is `forget_key_seconds`. Somebody who
-        // had set fifteen minutes had set fifteen minutes for *the key*, and
-        // an upgrade that silently turned that into "never" would have made
-        // their vault less careful than they left it. So the old value is
-        // carried across, once, on the first open by a build that knows about
-        // both. Zero is honoured as zero -- "never" was already sayable.
-        if header.forget_key_seconds == 0
-            && header.auto_lock_seconds > 0
-            && header.migrated_lock.is_none()
-        {
-            header.forget_key_seconds = header.auto_lock_seconds;
-            header.migrated_lock = Some(true);
-            // Best effort: a read-only open cannot write it, and will try
-            // again next time. Nothing here depends on it having landed.
-            let _ = write_header(root, &header);
-        }
         // Claim the vault for writing if nobody else has it. Failing to get
         // it is not an error: the vault opens read-only, so `everyday list`
         // beside an open window still works and only the writes are refused.
@@ -427,6 +408,37 @@ impl Vault {
                 path = %root.display(),
                 "vault is open for writing elsewhere; opening read-only"
             );
+        }
+
+        // A vault written before the lock was split into two.
+        //
+        // `auto_lock_seconds` used to drop the key; it now hides a screen, and
+        // the timer that drops the key is `forget_key_seconds`. Somebody who
+        // had set fifteen minutes had set fifteen minutes for *the key*, and
+        // an upgrade that silently turned that into "never" would have made
+        // their vault less careful than they left it. So the old value is
+        // carried across, once, on the first open by a build that knows about
+        // both. Zero is honoured as zero -- "never" was already sayable.
+        //
+        // *After* the write lock, and only while holding it. This ran before
+        // it and wrote the header regardless, which made a read-only open a
+        // writing one: `everyday list` in a terminal would read the header,
+        // and a moment later write its own stale copy back over whatever the
+        // open window had done in between -- a `change_password` landing in
+        // that window leaves the new salt and wrapped key overwritten by the
+        // old pair, and the new password no longer opens the vault. Every
+        // other header write in this file is gated on `writable()`; this is
+        // the same gate, taken before there is a `self` to ask.
+        if write_lock.is_some()
+            && header.forget_key_seconds == 0
+            && header.auto_lock_seconds > 0
+            && header.migrated_lock.is_none()
+        {
+            header.forget_key_seconds = header.auto_lock_seconds;
+            header.migrated_lock = Some(true);
+            // Best effort: a failure here is retried on the next open, and
+            // nothing below depends on it having landed.
+            let _ = write_header(root, &header);
         }
 
         let encrypted = header.is_encrypted();
@@ -735,10 +747,21 @@ impl Vault {
         write_header(&self.root, &header)
     }
 
+    /// Set how long before this window hides what it is showing. 0 means
+    /// never; the vault stays open either way.
     pub fn set_auto_lock(&self, seconds: u64) -> Result<()> {
         self.writable()?;
         let mut header = self.header_write();
         header.auto_lock_seconds = seconds;
+        // Setting either half of the split is a choice about both, so the
+        // migration in `open_inner` must not run afterwards. Without this, a
+        // vault whose `auto_lock_seconds` was 0 -- so the migration's `> 0`
+        // guard never fired and the flag was never stamped -- would have the
+        // *screen* timeout chosen here copied into `forget_key_seconds` on the
+        // next open. The machine would then start dropping the key on a timer
+        // nobody asked for: the seven o'clock routine finds a locked vault,
+        // and anything being served to a phone is shut out.
+        header.migrated_lock = Some(true);
         write_header(&self.root, &header)
     }
 
@@ -775,8 +798,15 @@ impl Vault {
         if timeout == 0 || !self.is_unlocked() {
             return None;
         }
-        let idle_ms =
-            self.epoch.elapsed().as_millis() as u64 - self.last_activity_ms.load(Ordering::Relaxed);
+        // Saturating, because the two loads are a moment apart and the
+        // scheduler now polls this from its own thread while a request thread
+        // is calling `touch`. Read `elapsed` first and `touch` lands after it,
+        // and the plain subtraction underflows: a debug build panics, a
+        // release build wraps to something enormous, `saturating_sub` then
+        // answers `Some(0)`, and the vault locks in the instant somebody used
+        // it.
+        let idle_ms = (self.epoch.elapsed().as_millis() as u64)
+            .saturating_sub(self.last_activity_ms.load(Ordering::Relaxed));
         Some(timeout.saturating_sub(idle_ms / 1000))
     }
 
@@ -1523,14 +1553,14 @@ impl Vault {
 
     // ---- roles and goals -------------------------------------------------
     //
-    // The sixth domain, on exactly the terms of the four before it. What is
-    // different is that almost nothing here is *about* roles and goals: the
+    // The purpose domain, on exactly the terms of every domain before it. What
+    // is different is that almost nothing here is *about* roles and goals: the
     // two records are small and dull, and the interesting half is the pair
     // of reports, which read every other domain's tables and are the only
     // reason the pointer exists.
 
     /// Does this vault's backend store roles and goals?
-    pub fn supports_goals(&self) -> bool {
+    pub fn supports_purpose(&self) -> bool {
         self.read(|u| Ok(u.store.purpose().is_some())).unwrap_or(false)
     }
 
@@ -2556,7 +2586,7 @@ mod tests {
                 calendars: false,
                 library: false,
                 trackers: false,
-                goals: false,
+                purpose: false,
                 agent: false,
             }
         }

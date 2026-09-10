@@ -332,13 +332,6 @@
     gap: var(--sp-3);
     min-width: 0;
   }
-  .eyebrow {
-    font-size: var(--text-xs);
-    font-weight: 650;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--fg-faint);
-  }
 
   .toggle {
     display: flex;

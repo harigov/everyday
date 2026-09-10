@@ -18,7 +18,7 @@ use everyday_core::websearch::{SearchRequest, SearchResult, Source};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use super::vault::Nothing;
+use super::Nothing;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,7 +72,11 @@ pub struct FetchImage {
 /// Takes a whole [`SearchRequest`] rather than a bare string so that the choice
 /// of source, the kind hint and the limit are the caller's, and so that adding
 /// a source later is not a new command.
-async fn web_search(svc: Arc<Service>, _c: Ctx, args: Search) -> CommandResult<Vec<SearchResult>> {
+async fn web_search(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: Search,
+) -> CommandResult<Vec<SearchResult>> {
     // A locked vault is not a technical obstacle to a search -- nothing here
     // touches storage -- but it is the wrong moment for one. The lock screen
     // must not be a place from which requests leave the machine.
@@ -81,7 +85,11 @@ async fn web_search(svc: Arc<Service>, _c: Ctx, args: Search) -> CommandResult<V
 }
 
 /// The sources a search can be run against, for the picker.
-async fn search_sources(_s: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<Vec<SourceInfo>> {
+async fn search_sources(
+    _svc: Arc<Service>,
+    _ctx: Ctx,
+    _args: Nothing,
+) -> CommandResult<Vec<SourceInfo>> {
     Ok(Source::ALL.iter().map(|s| SourceInfo::of(*s)).collect())
 }
 
@@ -89,7 +97,7 @@ async fn search_sources(_s: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult
 /// plain web search when that source draws a blank.
 async fn lookup_metadata(
     svc: Arc<Service>,
-    _c: Ctx,
+    _ctx: Ctx,
     args: Lookup,
 ) -> CommandResult<Vec<SearchResult>> {
     let vault = svc.require_unlocked()?;
@@ -108,7 +116,7 @@ async fn lookup_metadata(
 /// re-fetch. Even then it leaves notes, your rating and the status alone -- see
 /// `everyday_core::websearch::apply`, which is where that rule lives and is
 /// tested.
-async fn apply_metadata(svc: Arc<Service>, _c: Ctx, args: Apply) -> CommandResult<Item> {
+async fn apply_metadata(svc: Arc<Service>, _ctx: Ctx, args: Apply) -> CommandResult<Item> {
     let vault = svc.require_unlocked()?;
     let id = args.id;
     let (mut item, kind) = {
@@ -135,7 +143,7 @@ async fn apply_metadata(svc: Arc<Service>, _c: Ctx, args: Apply) -> CommandResul
 /// blob id the `everyday://` protocol will serve. Nothing in the interface ever
 /// loads a remote image directly -- see `websearch.rs` for why, and the content
 /// security policy for the check that outlives the reason.
-async fn fetch_image(svc: Arc<Service>, _c: Ctx, args: FetchImage) -> CommandResult<String> {
+async fn fetch_image(svc: Arc<Service>, _ctx: Ctx, args: FetchImage) -> CommandResult<String> {
     // Checked *before* the fetch, like `web_search`, and not left to the blob
     // store to refuse afterwards. Without this a locked vault still put a
     // request on the wire and only failed once the answer came back, which is

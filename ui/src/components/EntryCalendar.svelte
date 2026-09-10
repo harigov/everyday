@@ -14,11 +14,10 @@
   // list is how you read *around* a day and losing it is the opposite of
   // what a jump is for.
 
-  import { addMonths, localeWeekStart, monthGrid, startOfDay, todayIso } from '../lib/time'
+  import { addMonths, locale, localeWeekStart, monthGrid, startOfDay, todayIso } from '../lib/time'
   import { app } from '../lib/state.svelte'
   import Icon from './Icon.svelte'
 
-  const locale = navigator.language || 'en'
   const weekStart = localeWeekStart()
 
   /** The month on screen. Starts on today's, follows the open entry after. */
@@ -28,14 +27,16 @@
 
   const days = $derived(monthGrid(anchor, weekStart))
   const month = $derived(
-    new Intl.DateTimeFormat(locale, { month: 'long', year: 'numeric' }).format(startOfDay(anchor)),
+    new Intl.DateTimeFormat(locale(), { month: 'long', year: 'numeric' }).format(
+      startOfDay(anchor),
+    ),
   )
   const today = todayIso()
 
   // The single-letter column headings, in the reader's own locale and week
   // order. Built from the grid's own first week, so they cannot disagree
   // with the columns under them.
-  const initialFmt = new Intl.DateTimeFormat(locale, { weekday: 'narrow' })
+  const initialFmt = new Intl.DateTimeFormat(locale(), { weekday: 'narrow' })
   const headings = $derived(days.slice(0, 7).map((iso) => initialFmt.format(startOfDay(iso))))
 
   /** Is this date in the month the grid is centred on, rather than a spill? */
@@ -109,8 +110,9 @@
         class:on={!!id && id === app.selectedEntry}
         class:today={iso === today}
         disabled={!id}
-        aria-label={new Intl.DateTimeFormat(locale, { dateStyle: 'full' }).format(startOfDay(iso)) +
-          (id ? ' — has an entry' : ' — nothing written')}
+        aria-label={new Intl.DateTimeFormat(locale(), { dateStyle: 'full' }).format(
+          startOfDay(iso),
+        ) + (id ? ' — has an entry' : ' — nothing written')}
         onclick={() => id && void app.openEntry(id)}
       >
         {Number(iso.slice(8))}

@@ -4,11 +4,12 @@
 //! the vault, the sink its remarks go to, the confirmations the assistant is
 //! waiting on, and the record of which requests have already been answered.
 //!
-//! Three entry points, because three things cross the boundary and only one of
-//! them is JSON: [`Service::call`] for the eighty-odd ordinary commands,
-//! [`Service::put_blob`] and [`Service::blob_range`] for bytes, and
-//! [`Service::send_message`] for a turn of the assistant, which answers with a
-//! stream rather than a value.
+//! Three entry points, because three kinds of thing cross the boundary and only
+//! one of them is JSON: [`Service::call`] for every ordinary command in the
+//! table -- which is most of the surface, and is why the number is not written
+//! here; [`Service::put_blob`], [`Service::blob_len`] and
+//! [`Service::blob_range`] for bytes; and [`Service::send_message`] for a turn
+//! of the assistant, which answers with a stream rather than a value.
 //!
 //! # What is *not* here
 //!
@@ -329,7 +330,7 @@ impl Service {
         let args: crate::domains::assistant::SendMessage =
             crate::command::parse("send_message", args)?;
         let vault = self.require()?;
-        crate::agent::run_turn(crate::agent::Turn {
+        let turned = crate::agent::run_turn(crate::agent::Turn {
             vault,
             pending: self.pending(),
             conversation: args.conversation_id,
@@ -341,11 +342,24 @@ impl Service {
             unattended: None,
         })
         .await?;
+        let origin = ctx.caller.origin().map(str::to_string);
+        // What its tools wrote, before the thread itself. The assistant reaches
+        // the vault directly rather than back through here, so these are writes
+        // nothing else on this path can see -- and the list a person asked it
+        // to add a task to is open in front of them.
+        for kind in turned.wrote {
+            self.events().changed(crate::events::Change {
+                kind,
+                op: crate::events::Op::Updated,
+                id: None,
+                origin: origin.clone(),
+            });
+        }
         self.events().changed(crate::events::Change {
             kind: crate::events::Kind::Conversation,
             op: crate::events::Op::Updated,
             id: Some(args.conversation_id.to_string()),
-            origin: ctx.caller.origin().map(str::to_string),
+            origin,
         });
         Ok(())
     }

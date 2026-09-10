@@ -1,4 +1,12 @@
 <script lang="ts">
+  // The library app's main pane: the capture line, the filter chips, and the
+  // shelf itself as covers or as a list.
+  //
+  // Covers by default, and that is the editorial point of the app. A shelf
+  // people recognise at a glance is one they browse; a table of titles is one
+  // they only ever search. The list is one keystroke away for when a shelf has
+  // grown past the point where pictures help.
+
   import { article, plural } from '../lib/format'
   import { FILTERS, coverRatio, library, type Filter } from '../lib/library.svelte'
   import { menu } from '../lib/menu.svelte'
@@ -165,7 +173,7 @@
 
     <!-- The chips centred on the pane, with the capture line pushed to the
          right and a matching spacer on the left holding it there. See
-         `.toolbar` in `app.css`: this is the shape all four apps use. -->
+         `.toolbar` in `app.css`: this is the shape every app uses. -->
     <div class="toolbar">
       <div class="toolbar-end">
         <button

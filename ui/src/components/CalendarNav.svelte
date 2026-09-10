@@ -7,7 +7,7 @@
   // day is the cheapest possible answer to "is there anything on then".
 
   import { calendar } from '../lib/calendar.svelte'
-  import { addMonths, daysFrom, monthGrid, startOfWeek, todayIso } from '../lib/time'
+  import { addMonths, daysFrom, locale, monthGrid, startOfWeek, todayIso } from '../lib/time'
   import { relativeTime } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
@@ -17,9 +17,8 @@
   import AddCalendar from './AddCalendar.svelte'
   import type { CalendarInfo } from '../lib/types'
 
-  const locale = navigator.language || 'en'
-  const monthFmt = new Intl.DateTimeFormat(locale, { month: 'long', year: 'numeric' })
-  const initialFmt = new Intl.DateTimeFormat(locale, { weekday: 'narrow' })
+  const monthFmt = new Intl.DateTimeFormat(locale(), { month: 'long', year: 'numeric' })
+  const initialFmt = new Intl.DateTimeFormat(locale(), { weekday: 'narrow' })
 
   let adding = $state(false)
   let pendingDelete = $state<CalendarInfo | null>(null)
@@ -263,7 +262,7 @@
 {/if}
 
 <style>
-  /* The same metrics as the other navs: one sidebar, four apps, and a
+  /* The same metrics as the other navs: one sidebar, many apps, and a
      row that changed height when you switched would read as three programs. */
   .nav {
     flex: 1;

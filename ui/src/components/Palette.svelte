@@ -23,6 +23,7 @@
   import { applicableActions } from '../lib/shortcuts.svelte'
   import { keysLabel } from '../lib/keys'
   import type { Binding } from '../lib/keys'
+  import type { IconName } from '../lib/icons'
   import { panels } from '../lib/panels.svelte'
   import { app } from '../lib/state.svelte'
   import { todo } from '../lib/todo.svelte'
@@ -50,7 +51,7 @@
    */
   type Row =
     | { kind: 'action'; action: Binding; score: number }
-    | { kind: 'capture'; label: string; icon: string; hint: string; run: () => Promise<unknown> }
+    | { kind: 'capture'; label: string; icon: IconName; hint: string; run: () => Promise<unknown> }
 
   /**
    * How well `action` matches what has been typed.
@@ -265,7 +266,7 @@
               >
                 {#if row.kind === 'action'}
                   <span class="glyph">
-                    {#if row.action.icon}<Icon name={row.action.icon as never} />{/if}
+                    {#if row.action.icon}<Icon name={row.action.icon} />{/if}
                   </span>
                   <span class="label">{row.action.label}</span>
                   {#if row.action.checked?.()}
@@ -275,7 +276,7 @@
                     <kbd>{keysLabel(row.action.keys, mac)}</kbd>
                   {/if}
                 {:else}
-                  <span class="glyph"><Icon name={row.icon as never} /></span>
+                  <span class="glyph"><Icon name={row.icon} /></span>
                   <span class="label">{row.label}</span>
                   {#if row.hint}<span class="hint">{row.hint}</span>{/if}
                 {/if}

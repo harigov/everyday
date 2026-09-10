@@ -23,7 +23,7 @@
 // chosen. See `crates/everyday-app/src/tray.rs`.
 
 import { api, isMock, onTrayAction } from './api'
-import { ACTIONS } from './shortcuts.svelte'
+import { ACTIONS, GROUPS, type Group } from './shortcuts.svelte'
 import type { Binding } from './keys'
 import type { TrayMenuItem } from './types'
 
@@ -57,26 +57,6 @@ export interface TrayAction {
 export type TrayEntry =
   TrayAction | { separator: true } | { label: string; enabled?: boolean; items: TrayEntry[] }
 
-/**
- * The groups the tray draws, top to bottom.
- *
- * The *names* of groups in the action table, so the menu's shape is the
- * table's reading order rather than the order modules happened to be
- * imported. There used to be a `TRAY_ORDER` map of numbers for that, which
- * each app read when it registered its own actions; there is one table now,
- * so the order is where a row sits in it.
- */
-export const TRAY_GROUPS = [
-  'Journal',
-  'Notes',
-  'Todo',
-  'Calendar',
-  'Library',
-  'Overview',
-  'Assistant',
-  'Vault',
-] as const
-
 const SHOW_KEY = 'everyday.tray'
 
 /**
@@ -86,9 +66,9 @@ const SHOW_KEY = 'everyday.tray'
  * for a tray row -- it is what crosses to Rust and comes back -- so a row
  * wearing `tray` without one is a mistake worth skipping rather than sending.
  */
-function trayEntries(group: string): TrayAction[] {
+function trayEntries(group: Group): TrayAction[] {
   return ACTIONS.filter(
-    (a): a is Binding & { id: string } =>
+    (a): a is Binding & { group: Group; id: string } =>
       a.tray === true && a.group === group && a.id !== undefined && (!a.when || a.when()),
   ).map((a) => ({
     id: a.id,
@@ -161,12 +141,14 @@ class TrayRegistry {
    * One app's quick actions, as that app would offer them right now.
    *
    * `group` is the heading in the action table -- `Journal`, `Todo` -- not a
-   * section id. For a menu that is not the tray's: the app bar raises this on
-   * a right-click, and it has to be the same list rather than a second one
-   * written beside it. Two answers to "what can this app start right now"
-   * drift, and the one nobody is looking at is always the stale one.
+   * section id, and it is typed as one so that a caller cannot ask for a
+   * heading the table has never heard of and get an empty menu back. For a
+   * menu that is not the tray's: the app bar raises this on a right-click,
+   * and it has to be the same list rather than a second one written beside
+   * it. Two answers to "what can this app start right now" drift, and the one
+   * nobody is looking at is always the stale one.
    */
-  entriesFor(group: string): TrayEntry[] {
+  entriesFor(group: Group): TrayEntry[] {
     return trayEntries(group)
   }
 
@@ -181,7 +163,7 @@ class TrayRegistry {
     onTrayAction((id) => void this.#run(id).catch(() => {}))
 
     // A reactive scope with no component to own it: the tray outlives every
-    // view, and its contents depend on state spread across all four stores.
+    // view, and its contents depend on state spread across every app's store.
     // The alternative -- each store calling a `sync()` after every mutation
     // that might matter -- is a list that is quietly wrong the first time
     // somebody forgets one, and a stale menu is worse than no menu because
@@ -203,6 +185,11 @@ class TrayRegistry {
    * Every group's actions, in order, with a rule between the groups that
    * offered any.
    *
+   * The order is `GROUPS`, the one the help sheet reads too, rather than a
+   * list of its own kept beside it: two orderings of the same headings is how
+   * an app ends up fifth in one menu and last in the other. Groups with
+   * nothing in the tray -- `Everywhere`, `Go to` -- simply come back empty.
+   *
    * The separators are put in here rather than by the apps because only this
    * knows which groups came back empty -- and a menu that opens with a rule,
    * or shows two in a row where the todo app had nothing to say, is the
@@ -210,7 +197,7 @@ class TrayRegistry {
    */
   #compose(): TrayEntry[] {
     const out: TrayEntry[] = []
-    for (const group of TRAY_GROUPS) {
+    for (const group of GROUPS) {
       const entries = trayEntries(group)
       if (entries.length === 0) continue
       if (out.length > 0) out.push({ separator: true })

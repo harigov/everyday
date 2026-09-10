@@ -17,7 +17,7 @@ use everyday_core::{ConversationId, MemoryId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use super::vault::Nothing;
+use super::Nothing;
 
 /// One row per thread for the history list, with how long each one is.
 #[derive(Debug, Serialize)]
@@ -93,14 +93,18 @@ pub struct SendMessage {
 
 /// How the assistant is configured. Never carries the API key; see
 /// [`everyday_core::agent`] for why that is structural rather than a habit.
-async fn agent_settings(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<AgentSettings> {
+async fn agent_settings(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    _args: Nothing,
+) -> CommandResult<AgentSettings> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.agent_settings()?)).await
 }
 
 async fn save_agent_settings(
     svc: Arc<Service>,
-    _c: Ctx,
+    _ctx: Ctx,
     args: SaveSettings,
 ) -> CommandResult<AgentSettings> {
     let vault = svc.require()?;
@@ -115,19 +119,19 @@ async fn save_agent_settings(
 }
 
 /// Store the API key. There is no command that reads one back.
-async fn set_agent_key(svc: Arc<Service>, _c: Ctx, args: SetKey) -> CommandResult<()> {
+async fn set_agent_key(svc: Arc<Service>, _ctx: Ctx, args: SetKey) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.set_agent_key(&args.key)?)).await
 }
 
-async fn clear_agent_key(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<()> {
+async fn clear_agent_key(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.clear_agent_key()?)).await
 }
 
 async fn list_conversations(
     svc: Arc<Service>,
-    _c: Ctx,
+    _ctx: Ctx,
     args: Conversations,
 ) -> CommandResult<Vec<ConversationSummary>> {
     let vault = svc.require()?;
@@ -148,14 +152,18 @@ async fn list_conversations(
 
 /// Mint a thread, without saving it. The id is the core's to allocate, for the
 /// reason given on `new_journal`.
-async fn new_conversation(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<Conversation> {
+async fn new_conversation(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    _args: Nothing,
+) -> CommandResult<Conversation> {
     let _ = svc.require()?;
     Ok(Conversation::new())
 }
 
 async fn conversation_messages(
     svc: Arc<Service>,
-    _c: Ctx,
+    _ctx: Ctx,
     args: ConversationRef,
 ) -> CommandResult<Vec<Message>> {
     let vault = svc.require()?;
@@ -164,7 +172,7 @@ async fn conversation_messages(
 
 async fn delete_conversation(
     svc: Arc<Service>,
-    _c: Ctx,
+    _ctx: Ctx,
     args: ConversationRef,
 ) -> CommandResult<()> {
     let vault = svc.require()?;
@@ -176,11 +184,11 @@ async fn delete_conversation(
 /// Returns whether anything was still waiting: a turn that was cancelled
 /// between the question and the click leaves a card on screen with nothing
 /// behind it, and the panel dismisses it rather than showing an error.
-async fn confirm_tool_call(svc: Arc<Service>, _c: Ctx, args: Confirm) -> CommandResult<bool> {
+async fn confirm_tool_call(svc: Arc<Service>, _ctx: Ctx, args: Confirm) -> CommandResult<bool> {
     Ok(svc.pending().answer(&args.call_id, args.approved))
 }
 
-async fn list_memories(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<Vec<Memory>> {
+async fn list_memories(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<Memory>> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.memories()?)).await
 }
@@ -193,7 +201,7 @@ async fn list_memories(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult
 /// argument. `pinned` is set, because the one caller is somebody typing a
 /// fact by hand and a fact somebody typed is not one the assistant's own
 /// housekeeping should evict to make room. They can clear it again.
-async fn new_memory(_svc: Arc<Service>, _c: Ctx, _args: Nothing) -> CommandResult<Memory> {
+async fn new_memory(_svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Memory> {
     Ok(Memory { pinned: true, ..Memory::new(String::new()) })
 }
 
@@ -205,12 +213,12 @@ async fn new_memory(_svc: Arc<Service>, _c: Ctx, _args: Nothing) -> CommandResul
 /// flag when it adds one, and can clear it again. Forcing it here meant a
 /// person could not unpin a fact they had pinned by accident, and meant the
 /// pane's own switch did nothing.
-async fn save_memory(svc: Arc<Service>, _c: Ctx, args: SaveMemory) -> CommandResult<Vec<Memory>> {
+async fn save_memory(svc: Arc<Service>, _ctx: Ctx, args: SaveMemory) -> CommandResult<Vec<Memory>> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.save_memory(&args.memory)?)).await
 }
 
-async fn delete_memory(svc: Arc<Service>, _c: Ctx, args: MemoryRef) -> CommandResult<()> {
+async fn delete_memory(svc: Arc<Service>, _ctx: Ctx, args: MemoryRef) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.delete_memory(args.id)?)).await
 }
@@ -220,7 +228,7 @@ async fn delete_memory(svc: Arc<Service>, _c: Ctx, args: MemoryRef) -> CommandRe
 /// In the catalogue so that a client generator, the introspection endpoint and
 /// the surface snapshot all see the whole surface. Never reached: dispatch
 /// refuses a streaming command before it gets here.
-async fn send_message(_s: Arc<Service>, _c: Ctx, _a: SendMessage) -> CommandResult<()> {
+async fn send_message(_svc: Arc<Service>, _ctx: Ctx, _args: SendMessage) -> CommandResult<()> {
     Err(CommandError::new("unknown_command", "send_message answers with a stream"))
 }
 

@@ -61,8 +61,7 @@ const server = await createServer({
   logLevel: 'error',
 })
 
-const { ACTIONS } = await server.ssrLoadModule('/src/lib/shortcuts.svelte.ts')
-const { TRAY_GROUPS } = await server.ssrLoadModule('/src/lib/tray.svelte.ts')
+const { ACTIONS, GROUPS } = await server.ssrLoadModule('/src/lib/shortcuts.svelte.ts')
 
 // ── Every row is drawable ─────────────────────────────────────────────
 
@@ -100,27 +99,37 @@ for (const row of trayRows) {
 const ids = trayRows.map((r) => r.id)
 assert.equal(new Set(ids).size, ids.length, `two tray rows share an id: ${ids}`)
 
-// ── ...and its group is one the tray draws ────────────────────────────
+// ── ...and its heading is one the surfaces know how to order ──────────
 //
 // The regression this file was written for. `entriesFor` and the tray menu
 // both look a row up by its *group*, and the app bar used to pass a separate
 // lower-case `source` field holding the same word. Renaming one of the two
 // spellings emptied every right-click menu on the bar, silently.
+//
+// `GROUPS` is now the single ordered list -- the help sheet reads it and the
+// tray composes from it -- so a row filed under a heading that is not in it
+// is drawn by neither.
 
-for (const row of trayRows) {
+for (const action of ACTIONS) {
   assert.ok(
-    TRAY_GROUPS.includes(row.group),
-    `${row.id} is in group ${JSON.stringify(row.group)}, which the tray does not draw. ` +
-      `It would never appear. Groups drawn: ${TRAY_GROUPS.join(', ')}`,
+    GROUPS.includes(action.group),
+    `${action.label} is in group ${JSON.stringify(action.group)}, which no surface orders. ` +
+      `It would never appear. Groups drawn: ${GROUPS.join(', ')}`,
   )
 }
 
-// Every group the tray draws has something in it, so the menu never grows a
-// separator with nothing after it.
-for (const group of TRAY_GROUPS) {
+// A heading listed twice would draw twice, with the rows split between them.
+assert.equal(new Set(GROUPS).size, GROUPS.length, `a heading is listed twice in GROUPS`)
+
+// Every app's heading has at least one tray row under it, so a right-click on
+// a tab in the app bar offers something. `Everywhere` and `Go to` are the two
+// headings that belong to no app: they are keyboard and palette rows, and the
+// tray skips them for being empty rather than drawing a stray separator.
+for (const group of GROUPS) {
+  if (group === 'Everywhere' || group === 'Go to') continue
   assert.ok(
     trayRows.some((r) => r.group === group),
-    `the tray draws group ${group} and no action is in it`,
+    `the app bar offers group ${group} and no tray action is in it`,
   )
 }
 

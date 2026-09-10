@@ -16,7 +16,7 @@ use everyday_core::{EntryId, JournalId, ReadingId, TrackerId};
 use serde::Deserialize;
 use std::sync::Arc;
 
-use super::vault::Nothing;
+use super::Nothing;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,7 +85,7 @@ pub struct ReadingRef {
 /// the packaged webview does not always provide, and a tracker that silently
 /// fails to get an id is a tracker whose readings all pile up under the same
 /// one.
-async fn new_tracker(svc: Arc<Service>, _c: Ctx, args: NewTracker) -> CommandResult<Tracker> {
+async fn new_tracker(svc: Arc<Service>, _ctx: Ctx, args: NewTracker) -> CommandResult<Tracker> {
     let _ = svc.require()?;
     let mut tracker = Tracker::new(args.name, args.kind);
     tracker.normalize();
@@ -101,7 +101,11 @@ async fn new_tracker(svc: Arc<Service>, _c: Ctx, args: NewTracker) -> CommandRes
 /// work on the unlock path makes every unlock slower for a thing that happens
 /// once. It runs at most once per vault -- see
 /// `Vault::migrate_journal_trackers`, which is idempotent by construction.
-async fn list_trackers(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<Vec<Tracker>> {
+async fn list_trackers(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    _args: Nothing,
+) -> CommandResult<Vec<Tracker>> {
     let vault = svc.require()?;
     blocking(move || {
         if let Err(e) = vault.migrate_journal_trackers() {
@@ -115,19 +119,23 @@ async fn list_trackers(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult
     .await
 }
 
-async fn save_tracker(svc: Arc<Service>, _c: Ctx, args: SaveTracker) -> CommandResult<()> {
+async fn save_tracker(svc: Arc<Service>, _ctx: Ctx, args: SaveTracker) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.save_tracker(&args.tracker)?)).await
 }
 
 /// Fold one tracker into another, keeping both histories, and answer how many
 /// readings moved.
-async fn merge_trackers(svc: Arc<Service>, _c: Ctx, args: MergeTrackers) -> CommandResult<u64> {
+async fn merge_trackers(svc: Arc<Service>, _ctx: Ctx, args: MergeTrackers) -> CommandResult<u64> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.merge_trackers(args.from, args.into)?)).await
 }
 
-async fn list_readings(svc: Arc<Service>, _c: Ctx, args: Readings) -> CommandResult<Vec<Reading>> {
+async fn list_readings(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: Readings,
+) -> CommandResult<Vec<Reading>> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.readings(&args.query)?)).await
 }
@@ -135,7 +143,7 @@ async fn list_readings(svc: Arc<Service>, _c: Ctx, args: Readings) -> CommandRes
 /// One row per tracker per day: the aggregate every chart is built from.
 async fn tracker_days(
     svc: Arc<Service>,
-    _c: Ctx,
+    _ctx: Ctx,
     args: Readings,
 ) -> CommandResult<Vec<TrackerDay>> {
     let vault = svc.require()?;
@@ -154,7 +162,7 @@ async fn tracker_days(
 ///   Writing up Tuesday on Thursday says something true about Tuesday and
 ///   nothing whatever about 23:04, and a defaulted timestamp there would put a
 ///   mark on the calendar at an hour nothing happened.
-async fn log_reading(svc: Arc<Service>, _c: Ctx, args: LogReading) -> CommandResult<Reading> {
+async fn log_reading(svc: Arc<Service>, _ctx: Ctx, args: LogReading) -> CommandResult<Reading> {
     let vault = svc.require()?;
     blocking(move || {
         let tz = system_tz();
@@ -182,12 +190,12 @@ async fn log_reading(svc: Arc<Service>, _c: Ctx, args: LogReading) -> CommandRes
 }
 
 /// Update a reading that already exists: a corrected dose, a note, a time.
-async fn save_reading(svc: Arc<Service>, _c: Ctx, args: SaveReading) -> CommandResult<()> {
+async fn save_reading(svc: Arc<Service>, _ctx: Ctx, args: SaveReading) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.save_reading(&args.reading)?)).await
 }
 
-async fn delete_reading(svc: Arc<Service>, _c: Ctx, args: ReadingRef) -> CommandResult<()> {
+async fn delete_reading(svc: Arc<Service>, _ctx: Ctx, args: ReadingRef) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.delete_reading(args.id)?)).await
 }
@@ -195,7 +203,7 @@ async fn delete_reading(svc: Arc<Service>, _c: Ctx, args: ReadingRef) -> Command
 /// Delete a tracker along with every reading it ever made, returning how many
 /// went. Archiving is the non-destructive half and is a `save_tracker` with the
 /// flag set.
-async fn delete_tracker(svc: Arc<Service>, _c: Ctx, args: TrackerRef) -> CommandResult<u64> {
+async fn delete_tracker(svc: Arc<Service>, _ctx: Ctx, args: TrackerRef) -> CommandResult<u64> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.delete_tracker(args.id)?)).await
 }

@@ -1,9 +1,9 @@
 // State for the Overview: the app that reads every other one.
 //
-// The fifth store, and the odd one out. Every other app owns records and
+// The odd one out among the app stores. Every other app owns records and
 // shows them; this one owns two small records — roles and goals, which live
-// in `purpose.svelte.ts` — and spends the rest of its time asking the four
-// other domains what happened. That shapes what is here:
+// in `purpose.svelte.ts` — and spends the rest of its time asking the other
+// domains what happened. That shapes what is here:
 //
 //   1. Nothing is cached that a window decides. The balance report is keyed
 //      to a week and the habits to a span of days, so both are re-asked when

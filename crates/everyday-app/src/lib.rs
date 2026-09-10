@@ -134,7 +134,9 @@ pub fn run() {
             // The OS-wide key to the palette.
             commands::hotkey_status,
             commands::set_hotkey,
-            // The three that are not JSON in and JSON out.
+            // The two that are not JSON in and JSON out: one takes a raw
+            // body, the other answers with a stream. Reading bytes back is
+            // neither -- that is the `everyday://` handler in `protocol.rs`.
             commands::put_blob,
             commands::send_message,
             // This process's own furniture.
@@ -160,7 +162,20 @@ pub fn run() {
                 // notification centre: the routing that decides banner or
                 // toast lives in the interface, and a destroyed webview cannot
                 // run it. See `events.rs`.
-                if window.try_state::<AppState>().is_some_and(|s| s.stays_resident()) {
+                // ...but only if there is a way back to it.
+                //
+                // A hidden window is reachable from the tray icon or from the
+                // global hotkey, and on a desktop that offers neither -- a
+                // Wayland session with no StatusNotifier host and no shortcut
+                // portal is the real case -- hiding it leaves a process with
+                // no window, no icon, no hotkey and no way to be quit except
+                // the command line. Closing the window is then the last thing
+                // the person can do to this application, so it has to mean
+                // what it says.
+                let handle = window.app_handle();
+                let reachable =
+                    handle.state::<Tray>().is_showing() || hotkey::is_registered(handle);
+                if reachable && window.try_state::<AppState>().is_some_and(|s| s.stays_resident()) {
                     api.prevent_close();
                     let _ = window.hide();
                     return;

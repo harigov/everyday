@@ -118,6 +118,14 @@ pub struct Tray {
     icon: Mutex<Option<TrayIcon>>,
     /// Item id to "raise the window first", for the menu currently set.
     raise: Mutex<HashMap<String, bool>>,
+    /// Whether an icon is actually on screen right now.
+    ///
+    /// Not derivable from `icon`, which stays `Some` across a `hide` -- see
+    /// that method for why the handle is kept. What reads this is the decision
+    /// to keep the process alive with no window: a tray icon is the way back
+    /// to a hidden window, and on a desktop that has nowhere to put one there
+    /// is no way back at all.
+    showing: Mutex<bool>,
 }
 
 impl Tray {
@@ -168,6 +176,7 @@ impl Tray {
             tray.set_menu(Some(menu)).map_err(menu_error)?;
             // Puts it back if the setting was switched off and on again.
             tray.set_visible(true).map_err(menu_error)?;
+            *self.showing.lock().unwrap() = true;
             return Ok(true);
         }
 
@@ -190,6 +199,7 @@ impl Tray {
         match builder.build(app) {
             Ok(tray) => {
                 *slot = Some(tray);
+                *self.showing.lock().unwrap() = true;
                 Ok(true)
             }
             // Not an error to report: the application is fine, this desktop
@@ -212,7 +222,13 @@ impl Tray {
     /// replacement afterwards is what duplicates the menu handler described
     /// above. Visibility is the operation this actually wants: one icon, one
     /// handler, for the life of the process.
+    /// Is an icon on screen right now?
+    pub fn is_showing(&self) -> bool {
+        *self.showing.lock().unwrap()
+    }
+
     pub fn hide(&self) {
+        *self.showing.lock().unwrap() = false;
         if let Some(tray) = self.icon.lock().unwrap().as_ref() {
             // Nothing to do about a failure but carry on: the icon is a
             // convenience and the vault is not involved either way.

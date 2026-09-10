@@ -44,6 +44,7 @@
 //! assistant is told about and can respond to, rather than an error it has to
 //! interpret. The hook is `async`, which is what lets it wait for a person.
 
+use crate::events::Kind;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -149,11 +150,23 @@ impl Pending {
         }
     }
 
-    /// Drop every pending question. Called when a turn ends for any reason,
-    /// so a confirmation card cannot outlive the run that raised it and
-    /// answer a later one.
-    fn clear(&self) {
-        self.waiting.lock().unwrap().clear();
+    /// Drop the questions a finished turn raised, and only those.
+    ///
+    /// This map belongs to the process, not to a turn, and there is more than
+    /// one turn in this process now: the scheduler runs routines on its own
+    /// thread while somebody is chatting. Clearing the whole map at the end of
+    /// every turn meant an unattended routine finishing at the wrong moment
+    /// dropped the waiter behind a confirmation card the user had on screen --
+    /// the tool came back "not confirmed", and pressing Confirm did nothing,
+    /// because `answer` had nothing left to answer.
+    ///
+    /// A card still cannot outlive the run that raised it, which is what the
+    /// clearing was for: the ids it is given are exactly that run's.
+    fn forget(&self, call_ids: &[String]) {
+        let mut waiting = self.waiting.lock().unwrap();
+        for id in call_ids {
+            waiting.remove(id);
+        }
     }
 }
 
@@ -165,6 +178,11 @@ impl Pending {
 /// cannot slip past this by being called something else.
 struct ConfirmGate {
     pending: Arc<Pending>,
+    /// The call ids this turn has registered a waiter for.
+    ///
+    /// So the turn can retire its own questions without touching another
+    /// turn's. See [`Pending::forget`].
+    issued: Arc<Mutex<Vec<String>>>,
     channel: Sink,
     /// Off when the person has turned confirmation off in settings. The gate
     /// is still installed, because the events it emits are also how the panel
@@ -246,6 +264,7 @@ impl AgentHook for ConfirmGate {
         }
 
         let waiter = self.pending.register(&call_id);
+        self.issued.lock().unwrap().push(call_id.clone());
         (self.channel)(AgentEvent::ConfirmationRequired {
             call_id: call_id.clone(),
             name: name.clone(),
@@ -570,6 +589,54 @@ pub struct Turned {
     pub text: String,
     /// How many tools it called.
     pub steps: u32,
+    /// One [`Kind`] per domain this turn wrote to.
+    ///
+    /// The assistant's tools reach the vault directly rather than through
+    /// `Service::call`, so nothing on the command path sees their writes and
+    /// nothing raised a change for them. An open window therefore went on
+    /// showing yesterday's list after the seven o'clock routine had written
+    /// into it -- the routine's own run appeared, because the scheduler
+    /// announces that, and the note it wrote did not.
+    ///
+    /// Reported rather than emitted here, because a turn has no sink: the two
+    /// callers have one, and each already raises a change of its own.
+    pub wrote: Vec<Kind>,
+}
+
+/// One [`Kind`] per domain the tools in `ran` wrote to, in no order and
+/// without repeats.
+///
+/// A representative kind rather than the exact record: a tool knows which
+/// domain it belongs to and not which table it touched, and the interface
+/// routes a change to an *app* anyway -- `Kind::Task` and `Kind::Project` both
+/// reload the todo app. So one per domain is all the precision there is to
+/// have, and all that is wanted.
+///
+/// Reads only the tools that write. A turn that spent ten steps reading is not
+/// a reason to reload anything.
+fn kinds_written(ran: &[Ran]) -> Vec<Kind> {
+    let mut kinds: Vec<Kind> = Vec::new();
+    for entry in ran {
+        let Some(tool) = tools::find(&entry.call.name) else { continue };
+        if !tool.effect.is_write() {
+            continue;
+        }
+        let kind = match tool.domain {
+            tools::Domain::Journals => Kind::Entry,
+            tools::Domain::Notes => Kind::Note,
+            tools::Domain::Tasks => Kind::Task,
+            tools::Domain::Calendars => Kind::Block,
+            tools::Domain::Library => Kind::Item,
+            tools::Domain::Trackers => Kind::Reading,
+            tools::Domain::Purpose => Kind::Goal,
+            tools::Domain::Routines => Kind::Routine,
+            tools::Domain::Agent => Kind::Memory,
+        };
+        if !kinds.contains(&kind) {
+            kinds.push(kind);
+        }
+    }
+    kinds
 }
 
 /// Run one turn: send what was typed, stream what comes back, write it down.
@@ -617,8 +684,10 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     let agent =
         build(vault.clone(), &settings, key, conversation, context.as_deref(), unattended_run)?;
     let ledger: Arc<Mutex<Vec<Ran>>> = Arc::default();
+    let issued: Arc<Mutex<Vec<String>>> = Arc::default();
     let gate = ConfirmGate {
         pending: pending.clone(),
+        issued: issued.clone(),
         channel: channel.clone(),
         enabled: settings.confirm_destructive,
         unattended: unattended.is_some(),
@@ -631,13 +700,16 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     let outcome =
         stream(&agent, gate, &prompt, history, &channel, settings.max_steps as usize).await;
 
-    // Whatever happened, nothing may still be waiting on a person: a
-    // confirmation card that outlived its run would answer the next one.
-    pending.clear();
+    // Whatever happened, none of *this turn's* questions may still be waiting
+    // on a person: a confirmation card that outlived its run would answer the
+    // next one. Only this turn's, because the map is the process's and another
+    // turn may be waiting on a card that is on screen right now.
+    pending.forget(&std::mem::take(&mut *issued.lock().unwrap()));
 
     // What ran, whether or not the turn as a whole succeeded. A run that
     // failed after deleting a project must still show the deletion.
     let ran = std::mem::take(&mut *ledger.lock().unwrap());
+    let wrote = kinds_written(&ran);
 
     match outcome {
         Ok(text) => {
@@ -649,7 +721,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
             vault.save_message(&finished)?;
             write_results(&vault, conversation, &ran);
             (channel)(AgentEvent::Finished { message_id: reply.id.to_string() });
-            Ok(Turned { text: finished.content, steps: ran.len() as u32 })
+            Ok(Turned { text: finished.content, steps: ran.len() as u32, wrote })
         }
         Err(e) => {
             if ran.is_empty() {
@@ -802,4 +874,55 @@ fn friendly(raw: &str) -> String {
         return "The provider is rate limiting this key. Try again shortly.".into();
     }
     raw.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ran(name: &str) -> Ran {
+        Ran {
+            call: ToolCall {
+                id: name.to_string(),
+                name: name.to_string(),
+                arguments: serde_json::json!({}),
+            },
+            outcome: None,
+        }
+    }
+
+    /// A turn that only read is not a reason to reload anything.
+    #[test]
+    fn reading_writes_nothing() {
+        assert!(kinds_written(&[ran("list_notes"), ran("list_tasks")]).is_empty());
+    }
+
+    /// One kind per domain, however many tools of it were called -- the
+    /// interface routes a change to an app, and reloading that app twice for
+    /// one turn is a wasted round trip on a connection that may be a phone's.
+    #[test]
+    fn a_domain_written_to_twice_is_reported_once() {
+        let kinds = kinds_written(&[ran("create_task"), ran("update_task"), ran("create_project")]);
+        assert_eq!(kinds, vec![Kind::Task]);
+    }
+
+    /// Every domain the assistant can write to reports something, so no app is
+    /// left drawing a stale list after a routine has been through it. Written
+    /// against the catalogue rather than a list here, so a domain added later
+    /// is caught by this rather than by somebody noticing months on.
+    #[test]
+    fn every_writable_domain_reports_a_kind() {
+        for tool in tools::catalog() {
+            if !tool.effect.is_write() {
+                continue;
+            }
+            assert_eq!(
+                kinds_written(std::slice::from_ref(&ran(tool.name))).len(),
+                1,
+                "{} writes and reports no kind, so the app that draws what it \
+                 touched is never told to reload",
+                tool.name
+            );
+        }
+    }
 }

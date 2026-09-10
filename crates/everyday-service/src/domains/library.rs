@@ -25,7 +25,7 @@ use everyday_core::{ItemId, KindId, LogId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use super::vault::Nothing;
+use super::Nothing;
 
 /// A shelf, and how much is on it.
 ///
@@ -154,7 +154,7 @@ pub struct LogRef {
 /// button. It runs at most once per vault -- see `Vault::seed_library`, which
 /// does nothing whenever there is any shelf at all, so a deleted shelf stays
 /// deleted.
-async fn list_kinds(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<Vec<KindInfo>> {
+async fn list_kinds(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<KindInfo>> {
     let vault = svc.require()?;
     blocking(move || {
         if let Err(e) = vault.seed_library() {
@@ -184,7 +184,7 @@ async fn list_kinds(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<Ve
 /// The slug is derived from the name here rather than in a client, because it
 /// is the key metadata lookups and quick capture match on and it has to be
 /// stable, lower case and free of spaces whatever somebody typed.
-async fn new_kind(svc: Arc<Service>, _c: Ctx, args: NewKind) -> CommandResult<Kind> {
+async fn new_kind(svc: Arc<Service>, _ctx: Ctx, args: NewKind) -> CommandResult<Kind> {
     let _ = svc.require()?;
     let name = args.name.trim();
     let singular = if args.singular.trim().is_empty() { name } else { args.singular.trim() };
@@ -202,40 +202,40 @@ fn slugify(name: &str) -> String {
     if out.is_empty() { "custom".to_string() } else { out }
 }
 
-async fn save_kind(svc: Arc<Service>, _c: Ctx, args: SaveKind) -> CommandResult<()> {
+async fn save_kind(svc: Arc<Service>, _ctx: Ctx, args: SaveKind) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.save_kind(&args.kind)?)).await
 }
 
 /// Delete the shelf, everything on it, and every log row those items had.
-async fn delete_kind(svc: Arc<Service>, _c: Ctx, args: KindRef) -> CommandResult<()> {
+async fn delete_kind(svc: Arc<Service>, _ctx: Ctx, args: KindRef) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.delete_kind(args.id)?)).await
 }
 
-async fn list_items(svc: Arc<Service>, _c: Ctx, args: Items) -> CommandResult<Vec<Item>> {
+async fn list_items(svc: Arc<Service>, _ctx: Ctx, args: Items) -> CommandResult<Vec<Item>> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.items(&args.query)?)).await
 }
 
-async fn get_item(svc: Arc<Service>, _c: Ctx, args: ItemRef) -> CommandResult<Item> {
+async fn get_item(svc: Arc<Service>, _ctx: Ctx, args: ItemRef) -> CommandResult<Item> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.item(args.id)?)).await
 }
 
-async fn save_item(svc: Arc<Service>, _c: Ctx, args: SaveItem) -> CommandResult<()> {
+async fn save_item(svc: Arc<Service>, _ctx: Ctx, args: SaveItem) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.save_item(&args.item)?)).await
 }
 
 /// One write for many items: what a re-ordered shelf is.
-async fn save_items(svc: Arc<Service>, _c: Ctx, args: SaveItems) -> CommandResult<()> {
+async fn save_items(svc: Arc<Service>, _ctx: Ctx, args: SaveItems) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.save_items(&args.items)?)).await
 }
 
 /// Delete the item and its whole log.
-async fn delete_item(svc: Arc<Service>, _c: Ctx, args: ItemRef) -> CommandResult<()> {
+async fn delete_item(svc: Arc<Service>, _ctx: Ctx, args: ItemRef) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.delete_item(args.id)?)).await
 }
@@ -317,7 +317,7 @@ async fn add_item(svc: Arc<Service>, ctx: Ctx, args: AddItem) -> CommandResult<A
 ///
 /// `Vault::save_item` still does the writing, so nothing here can produce an
 /// item the ordinary save path would refuse.
-async fn set_item_status(svc: Arc<Service>, _c: Ctx, args: SetStatus) -> CommandResult<Item> {
+async fn set_item_status(svc: Arc<Service>, _ctx: Ctx, args: SetStatus) -> CommandResult<Item> {
     let vault = svc.require()?;
     let today = today_local();
     let tz = system_tz();
@@ -353,7 +353,7 @@ async fn set_item_status(svc: Arc<Service>, _c: Ctx, args: SetStatus) -> Command
 /// The log row is what makes a reading pace visible later; the field on the
 /// item is what the card draws now. Both, from one action, for the reason given
 /// on [`set_item_status`].
-async fn set_item_progress(svc: Arc<Service>, _c: Ctx, args: SetProgress) -> CommandResult<Item> {
+async fn set_item_progress(svc: Arc<Service>, _ctx: Ctx, args: SetProgress) -> CommandResult<Item> {
     let vault = svc.require()?;
     let today = today_local();
     let tz = system_tz();
@@ -386,7 +386,7 @@ async fn set_item_progress(svc: Arc<Service>, _c: Ctx, args: SetProgress) -> Com
     .await
 }
 
-async fn list_logs(svc: Arc<Service>, _c: Ctx, args: Logs) -> CommandResult<Vec<LogEntry>> {
+async fn list_logs(svc: Arc<Service>, _ctx: Ctx, args: Logs) -> CommandResult<Vec<LogEntry>> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.logs(&args.query)?)).await
 }
@@ -396,23 +396,27 @@ async fn list_logs(svc: Arc<Service>, _c: Ctx, args: Logs) -> CommandResult<Vec<
 /// The date and the time zone are resolved here rather than in a webview so
 /// that "what did I finish today" is decided by the same code that decides
 /// which day a journal entry is filed under.
-async fn new_log(svc: Arc<Service>, _c: Ctx, args: NewLog) -> CommandResult<LogEntry> {
+async fn new_log(svc: Arc<Service>, _ctx: Ctx, args: NewLog) -> CommandResult<LogEntry> {
     let _ = svc.require()?;
     Ok(LogEntry::new(args.item_id, args.event, today_local(), system_tz()))
 }
 
-async fn save_log(svc: Arc<Service>, _c: Ctx, args: SaveLog) -> CommandResult<()> {
+async fn save_log(svc: Arc<Service>, _ctx: Ctx, args: SaveLog) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.save_log(&args.log)?)).await
 }
 
-async fn delete_log(svc: Arc<Service>, _c: Ctx, args: LogRef) -> CommandResult<()> {
+async fn delete_log(svc: Arc<Service>, _ctx: Ctx, args: LogRef) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || Ok(vault.delete_log(args.id)?)).await
 }
 
 /// Counts for the library sidebar, as of the machine's own calendar year.
-async fn library_stats(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<LibraryStats> {
+async fn library_stats(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    _args: Nothing,
+) -> CommandResult<LibraryStats> {
     let vault = svc.require()?;
     let year = today_local().year();
     blocking(move || Ok(vault.library_stats(year)?)).await

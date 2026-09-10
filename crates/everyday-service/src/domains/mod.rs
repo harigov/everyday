@@ -22,6 +22,19 @@ pub mod vault;
 pub mod web;
 
 use crate::command::Command;
+use serde::Deserialize;
+
+/// The arguments of a command that takes none.
+///
+/// Here rather than in whichever domain happened to need it first. It was
+/// `vault`'s, imported from there by eight other modules -- while two more had
+/// quietly declared a second copy beside their own commands. One empty struct,
+/// in the module every domain is already a child of.
+///
+/// A struct rather than `()`: arguments arrive as a JSON object, and an object
+/// is what `{}` deserialises into.
+#[derive(Deserialize)]
+pub struct Nothing {}
 
 /// Every command, in the order a person would read them.
 ///
