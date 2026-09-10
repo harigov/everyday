@@ -48,8 +48,8 @@
 pub mod tools;
 
 use crate::error::{Error, Result};
-use crate::quick::QuickPolicy;
 use crate::id::{ConversationId, MemoryId, MessageId};
+use crate::quick::QuickPolicy;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 

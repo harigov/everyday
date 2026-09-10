@@ -56,16 +56,29 @@
     // asking about the entry as it was a moment ago.
     app.syncBody()
     await app.flush()
-    await readSlot.run(
-      'journal.readings',
-      () => api.quickEntryReadings(target.id),
-      (rows) => {
-        reading = false
-        found = rows ?? []
-        readingChips = found.map((r, i) => ({ key: String(i), label: r.label || r.name }))
-      },
-    )
+
+    // Both jobs on the one press. They read the same entry, and making
+    // somebody ask twice about the day they just wrote -- once for the
+    // numbers, once for the tags -- would be two round trips and two buttons
+    // for one question.
+    const [rows, labels] = await Promise.all([
+      ask('journal.readings', () => api.quickEntryReadings(target.id)),
+      ask('journal.labels', () => api.quickEntryLabels(target.id)),
+    ])
+
     reading = false
+    found = rows ?? []
+    readingChips = found.map((r, i) => ({ key: String(i), label: r.label || r.name }))
+    tagChips = (labels?.tags ?? []).map((t) => ({ key: t, label: `#${t}` }))
+  }
+
+  let tagChips = $state<{ key: string; label: string }[]>([])
+
+  function acceptTag(tag: string) {
+    const target = app.entry
+    if (!target || target.tags.some((t) => t.toLowerCase() === tag.toLowerCase())) return
+    target.tags = [...target.tags, tag]
+    app.scheduleSave()
   }
 
   async function acceptReading(key: string) {
@@ -181,10 +194,10 @@
                private text this vault holds. -->
           {#if quick.enabled('journal.readings') || quick.enabled('journal.title')}
             <div class="quick-row">
-              {#if quick.enabled('journal.readings')}
+              {#if quick.enabled('journal.readings') || quick.enabled('journal.labels')}
                 <button class="quick-btn" disabled={reading} onclick={() => void readTheDay()}>
                   <Icon name="sparkle" size={12} />
-                  Anything to track?
+                  Read the day back
                 </button>
               {/if}
               {#if quick.enabled('journal.title') && !entry.title.trim()}
@@ -199,8 +212,14 @@
             items={readingChips}
             busy={reading}
             label="Record:"
-            onaccept={(key) => void acceptReading(key)}
+            onaccept={(key: string) => void acceptReading(key)}
             ondismiss={() => readSlot.dismiss(() => (readingChips = []))}
+          />
+          <Suggestions
+            items={tagChips}
+            label="Tag it:"
+            onaccept={acceptTag}
+            ondismiss={() => (tagChips = [])}
           />
         </header>
 

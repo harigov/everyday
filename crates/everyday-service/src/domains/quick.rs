@@ -178,7 +178,9 @@ fn purpose_at(roles: &[Role], goals: &[Goal], choice: Option<usize>) -> Option<P
 /// Tags already in use, so a suggestion prefers an existing one over
 /// inventing a synonym — which is the whole difference between tags that
 /// aggregate and tags that do not.
-fn known_tags<N: Copy + Into<u64>>(counted: everyday_core::Result<Vec<(String, N)>>) -> Vec<String> {
+fn known_tags<N: Copy + Into<u64>>(
+    counted: everyday_core::Result<Vec<(String, N)>>,
+) -> Vec<String> {
     let mut tags = counted.unwrap_or_default();
     // Commonest first, and only a handful: the point is to make an existing
     // tag the near option, not to recite the vocabulary.
@@ -214,10 +216,7 @@ pub struct Reading {
     pub label: String,
 }
 
-fn readings_from(
-    trackers: &[Tracker],
-    answer: quick::ReadingsAnswer,
-) -> Vec<Reading> {
+fn readings_from(trackers: &[Tracker], answer: quick::ReadingsAnswer) -> Vec<Reading> {
     answer
         .readings
         .into_iter()
@@ -321,10 +320,9 @@ async fn quick_kind_draft(
     args: KindName,
 ) -> CommandResult<quick::KindDraft> {
     let name = args.name.clone();
-    let mut draft: quick::KindDraft = ask(&svc, &ctx, "library.kind", move |_, qctx| {
-        Ok(quick::library_kind(qctx, &name))
-    })
-    .await?;
+    let mut draft: quick::KindDraft =
+        ask(&svc, &ctx, "library.kind", move |_, qctx| Ok(quick::library_kind(qctx, &name)))
+            .await?;
     draft.clamp();
     Ok(draft)
 }
@@ -803,10 +801,9 @@ async fn quick_front_matter(
 ) -> CommandResult<quick::MappingAnswer> {
     let FrontMatter { ours, theirs } = args;
     let (o, t) = (ours.clone(), theirs.clone());
-    let mut answer: quick::MappingAnswer = ask(&svc, &ctx, "data.import_map", move |_, qctx| {
-        Ok(quick::data_import_map(qctx, &o, &t))
-    })
-    .await?;
+    let mut answer: quick::MappingAnswer =
+        ask(&svc, &ctx, "data.import_map", move |_, qctx| Ok(quick::data_import_map(qctx, &o, &t)))
+            .await?;
     answer.clamp(&ours, &theirs);
     Ok(answer)
 }

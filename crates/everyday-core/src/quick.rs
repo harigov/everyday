@@ -194,9 +194,7 @@ pub fn jobs_by_app() -> Vec<(QuickApp, Vec<&'static QuickJob>)> {
     let mut apps: Vec<QuickApp> = JOBS.iter().map(|j| j.app).collect();
     apps.sort();
     apps.dedup();
-    apps.into_iter()
-        .map(|app| (app, JOBS.iter().filter(|j| j.app == app).collect()))
-        .collect()
+    apps.into_iter().map(|app| (app, JOBS.iter().filter(|j| j.app == app).collect())).collect()
 }
 
 // ── The policy ───────────────────────────────────────────────────────────
@@ -573,9 +571,7 @@ impl LabelsAnswer {
         for tag in &mut self.tags {
             *tag = tag.trim().trim_start_matches('#').to_lowercase();
         }
-        self.tags.retain(|t| {
-            !t.is_empty() && !existing.iter().any(|e| e.eq_ignore_ascii_case(t))
-        });
+        self.tags.retain(|t| !t.is_empty() && !existing.iter().any(|e| e.eq_ignore_ascii_case(t)));
         let mut seen = BTreeSet::new();
         self.tags.retain(|t| seen.insert(t.clone()));
         self.tags.truncate(MAX_SUGGESTED_TAGS);
@@ -951,9 +947,7 @@ impl MappingAnswer {
     /// hallucinated column name is thousands of wrong records rather than
     /// one.
     pub fn clamp(&mut self, ours: &[String], theirs: &[String]) {
-        self.columns.retain(|k, v| {
-            ours.iter().any(|o| o == k) && theirs.iter().any(|t| t == v)
-        });
+        self.columns.retain(|k, v| ours.iter().any(|o| o == k) && theirs.iter().any(|t| t == v));
     }
 }
 
@@ -1316,15 +1310,7 @@ pub fn library_fields(
     let found = results
         .iter()
         .take(3)
-        .map(|r| {
-            format!(
-                "--- {}\n{}\n{}\n{}",
-                r.title,
-                r.byline(),
-                r.url,
-                excerpt(&r.summary)
-            )
-        })
+        .map(|r| format!("--- {}\n{}\n{}\n{}", r.title, r.byline(), r.url, excerpt(&r.summary)))
         .collect::<Vec<_>>()
         .join("\n");
     let user = format!(
@@ -1349,16 +1335,11 @@ pub fn library_pick(
 ) -> Prompt {
     let list = numbered(results.iter().map(|r| {
         let byline = r.byline();
-        if byline.is_empty() {
-            r.title.clone()
-        } else {
-            format!("{} — {}", r.title, byline)
-        }
+        if byline.is_empty() { r.title.clone() } else { format!("{} — {}", r.title, byline) }
     }));
     let user = format!(
         "They typed: {query}\nOn the shelf: {} (one of them is a {})\n\nResults:\n{list}",
-        kind.name,
-        kind.singular,
+        kind.name, kind.singular,
     );
     Prompt::new(job_or_panic("library.pick"), ctx, user)
 }
@@ -1559,11 +1540,7 @@ pub fn tracker_draft(ctx: &QuickContext, name: &str, line: &str) -> Prompt {
 
 /// P1 — a goal phrased as an outcome.
 pub fn purpose_goal(ctx: &QuickContext, goal: &str, role: &str) -> Prompt {
-    Prompt::new(
-        job_or_panic("purpose.goal"),
-        ctx,
-        format!("Role: {role}\nGoal as written: {goal}"),
-    )
+    Prompt::new(job_or_panic("purpose.goal"), ctx, format!("Role: {role}\nGoal as written: {goal}"))
 }
 
 /// P2 — which existing records serve a goal that has just been written.
@@ -1853,8 +1830,12 @@ mod tests {
             ReadingDraft { tracker: None, name: "  ".into(), value: 1.0, ..Default::default() };
         assert!(!anonymous.clamp());
 
-        let mut named =
-            ReadingDraft { tracker: None, name: "Swimming".into(), value: 60.0, ..Default::default() };
+        let mut named = ReadingDraft {
+            tracker: None,
+            name: "Swimming".into(),
+            value: 60.0,
+            ..Default::default()
+        };
         assert!(named.clamp());
 
         let mut nonsense = ReadingDraft { tracker: Some(1), value: f64::NAN, ..Default::default() };
@@ -1886,7 +1867,8 @@ mod tests {
         // An unrecognised kind becomes an amount rather than a check: an
         // amount stores the number that was said, which is at worst
         // incomplete, where a check would silently discard it.
-        let mut odd = TrackerDraft { name: "Steps".into(), kind: "steps".into(), ..Default::default() };
+        let mut odd =
+            TrackerDraft { name: "Steps".into(), kind: "steps".into(), ..Default::default() };
         assert!(odd.clamp());
         assert_eq!(odd.kind, "amount");
     }

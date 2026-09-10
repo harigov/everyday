@@ -87,7 +87,7 @@
   function acceptBackfill(taskId: string) {
     const target = purpose.selected
     if (!target) return
-    todo.patch(taskId as QuickBackfillPick['taskId'], {
+    todo.patch(taskId, {
       purpose: { type: 'goal', id: target },
     })
   }
@@ -244,7 +244,7 @@
         items={[{ key: 'w', label: wording.text }]}
         label="Or:"
         onaccept={() => {
-          purpose.saveGoal({ ...$state.snapshot(goal), title: wording!.text })
+          void purpose.saveGoal({ ...$state.snapshot(goal), title: wording!.text })
           wording = null
         }}
         ondismiss={() => (wording = null)}

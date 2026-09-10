@@ -153,12 +153,18 @@ export interface Commands {
   getRun: { args: { id: RoutineRunId }; result: RoutineRun }
   getTask: { args: { id: TaskId }; result: Task }
   goalActivity: { args: { id: GoalId }; result: GoalActivity }
-  importCalendar: { args: { name: string; label: string; color: string; ics: string }; result: CalendarInfo }
+  importCalendar: {
+    args: { name: string; label: string; color: string; ics: string }
+    result: CalendarInfo
+  }
   libraryStats: { args: Record<string, never>; result: LibraryStats }
   listBlocks: { args: { query: BlockQuery }; result: TimeBlock[] }
   listCalendars: { args: Record<string, never>; result: CalendarInfo[] }
   listCommands: { args: Record<string, never>; result: Surface }
-  listConversations: { args: { limit?: number | null; includeRuns?: boolean }; result: ConversationSummary[] }
+  listConversations: {
+    args: { limit?: number | null; includeRuns?: boolean }
+    result: ConversationSummary[]
+  }
   listEntries: { args: { query: EntryQuery }; result: EntrySummary[] }
   listEvents: { args: { query: EventQuery }; result: CalendarEvent[] }
   listGoals: { args: { query: GoalQuery }; result: Goal[] }
@@ -179,11 +185,27 @@ export interface Commands {
   listTools: { args: Record<string, never>; result: ToolInfo[] }
   listTrackers: { args: Record<string, never>; result: Tracker[] }
   lock: { args: Record<string, never>; result: VaultStatus }
-  logReading: { args: { trackerId: TrackerId; value: number; date: string; at?: string | null; journalId?: JournalId | null; entryId?: EntryId | null }; result: Reading }
-  lookupMetadata: { args: { kindId: KindId; query: string; limit?: number | null }; result: SearchResult[] }
+  logReading: {
+    args: {
+      trackerId: TrackerId
+      value: number
+      date: string
+      at?: string | null
+      journalId?: JournalId | null
+      entryId?: EntryId | null
+    }
+    result: Reading
+  }
+  lookupMetadata: {
+    args: { kindId: KindId; query: string; limit?: number | null }
+    result: SearchResult[]
+  }
   markRunsSeen: { args: { ids?: RoutineRunId[] }; result: void }
   mergeTrackers: { args: { from: TrackerId; into: TrackerId }; result: number }
-  newBlock: { args: { subject: BlockSubject; start: string; minutes: number; kind?: BlockKind | null }; result: TimeBlock }
+  newBlock: {
+    args: { subject: BlockSubject; start: string; minutes: number; kind?: BlockKind | null }
+    result: TimeBlock
+  }
   newConversation: { args: Record<string, never>; result: Conversation }
   newEntry: { args: { journalId: JournalId }; result: Entry }
   newGoal: { args: { roleId: RoleId; title: string }; result: Goal }
@@ -195,13 +217,22 @@ export interface Commands {
   newProject: { args: { name: string }; result: Project }
   newRole: { args: { name: string }; result: Role }
   newRoutine: { args: Record<string, never>; result: Routine }
-  newTask: { args: { projectId?: ProjectId | null; parentId?: TaskId | null; status?: TaskStatus | null }; result: Task }
+  newTask: {
+    args: { projectId?: ProjectId | null; parentId?: TaskId | null; status?: TaskStatus | null }
+    result: Task
+  }
   newTracker: { args: { name: string; kind: TrackerKind }; result: Tracker }
   noteTags: { args: Record<string, never>; result: string[] }
   pollAutoLock: { args: Record<string, never>; result: boolean }
   profile: { args: Record<string, never>; result: Profile }
-  quickEntryLabels: { args: { entryId: EntryId; journalId?: JournalId | null }; result: QuickLabels }
-  quickEntryReadings: { args: { entryId: EntryId; journalId?: JournalId | null }; result: QuickReading[] }
+  quickEntryLabels: {
+    args: { entryId: EntryId; journalId?: JournalId | null }
+    result: QuickLabels
+  }
+  quickEntryReadings: {
+    args: { entryId: EntryId; journalId?: JournalId | null }
+    result: QuickReading[]
+  }
   quickEntryTitle: { args: { entryId: EntryId; journalId?: JournalId | null }; result: string }
   quickEstimate: { args: { taskId: TaskId }; result: number | null }
   quickEventFromLine: { args: { line: string }; result: QuickEventDraft | null }
@@ -209,14 +240,20 @@ export interface Commands {
   quickFrontMatter: { args: { ours: string[]; theirs: string[] }; result: QuickMapping }
   quickGoalBackfill: { args: { goalId: GoalId }; result: QuickBackfillPick[] }
   quickGoalWording: { args: { title: string; roleId: RoleId }; result: string }
-  quickImportColumns: { args: { kindId: KindId; columns: string[]; sample?: string[] }; result: QuickMapping }
+  quickImportColumns: {
+    args: { kindId: KindId; columns: string[]; sample?: string[] }
+    result: QuickMapping
+  }
   quickItemFields: { args: { itemId: ItemId }; result: QuickFields }
   quickJobs: { args: Record<string, never>; result: QuickJobRow[] }
   quickKindDraft: { args: { name: string }; result: QuickKindDraft }
   quickNoteLabels: { args: { noteId: NoteId }; result: QuickLabels }
   quickNoteTasks: { args: { noteId: NoteId }; result: QuickTaskDraft[] }
   quickNoteTitle: { args: { noteId: NoteId }; result: string }
-  quickPickResult: { args: { kindId: KindId; query: string; results: SearchResult[] }; result: number | null }
+  quickPickResult: {
+    args: { kindId: KindId; query: string; results: SearchResult[] }
+    result: number | null
+  }
   quickReadingFromLine: { args: { line: string }; result: QuickReading | null }
   quickSubtasks: { args: { taskId: TaskId }; result: QuickTaskDraft[] }
   quickTaskFromLine: { args: { line: string }; result: QuickTaskDraft | null }
@@ -228,7 +265,10 @@ export interface Commands {
   routineTemplates: { args: Record<string, never>; result: Template[] }
   runImport: { args: { handle: string; parts: string[]; mode: string }; result: ImportResult }
   runRoutine: { args: { id: RoutineId }; result: RoutineRun }
-  runTool: { args: { name: string; arguments?: unknown; confirmDestructive?: boolean }; result: unknown }
+  runTool: {
+    args: { name: string; arguments?: unknown; confirmDestructive?: boolean }
+    result: unknown
+  }
   saveAgentSettings: { args: { settings: AgentSettings }; result: AgentSettings }
   saveBlock: { args: { block: TimeBlock }; result: void }
   saveCalendar: { args: { calendar: Calendar }; result: void }
@@ -252,14 +292,23 @@ export interface Commands {
   saveTask: { args: { task: Task }; result: void }
   saveTasks: { args: { tasks: Task[] }; result: void }
   saveTracker: { args: { tracker: Tracker }; result: void }
-  search: { args: { query: string; journalId?: JournalId | null; kind?: SearchKind | null; limit: number }; result: SearchHit[] }
+  search: {
+    args: { query: string; journalId?: JournalId | null; kind?: SearchKind | null; limit: number }
+    result: SearchHit[]
+  }
   searchSources: { args: Record<string, never>; result: SourceInfo[] }
   seedRoles: { args: Record<string, never>; result: number }
-  sendMessage: { args: { conversationId: ConversationId; prompt: string; context?: string | null }; result: void }
+  sendMessage: {
+    args: { conversationId: ConversationId; prompt: string; context?: string | null }
+    result: void
+  }
   setAgentKey: { args: { key: string }; result: void }
   setAutoLock: { args: { seconds: number }; result: void }
   setForgetKey: { args: { seconds: number }; result: void }
-  setItemProgress: { args: { id: ItemId; position: number; total?: number | null; log: boolean }; result: Item }
+  setItemProgress: {
+    args: { id: ItemId; position: number; total?: number | null; log: boolean }
+    result: Item
+  }
   setItemStatus: { args: { id: ItemId; status: ItemStatus; log: boolean }; result: Item }
   setQuickJob: { args: { name: string; on: boolean }; result: QuickJobRow[] }
   startExport: { args: { parts: string[]; media: boolean }; result: ExportHandle }

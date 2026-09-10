@@ -15,7 +15,7 @@
   import { friendlyDate, formatClock, formatMinutes } from '../lib/format'
   import { focusOnMount } from '../lib/focus'
   import Icon from './Icon.svelte'
-  import type { QuickLabels, QuickTaskDraft, Task, TaskId, TaskStatus } from '../lib/types'
+  import type { Task, TaskId, TaskStatus } from '../lib/types'
   import Suggestions from './Suggestions.svelte'
 
   let {
@@ -104,6 +104,12 @@
     // next task.
     const residue = hasResidue(line)
     value = ''
+    // Whatever was suggested about the *previous* task goes now. Twelve tasks
+    // in a row is what this box is for, and a chip offering a due date for
+    // the one before is one tap from filing it on the wrong task.
+    suggestSlot.cancel()
+    chips = []
+    pending = null
     chain = chain
       .then(() => todo.add(line, { parentId, status }))
       .then((task) => {
@@ -125,12 +131,35 @@
     const found: { key: string; label: string }[] = []
     const patch: Partial<Task> = {}
 
+    // Through the slot, so an answer about a task two Enters ago is dropped
+    // rather than drawn. Without it the round trip outlives the task it was
+    // about, which at typing speed is the common case rather than the edge.
+    await suggestSlot.track(
+      async () => {
+        await gather(task, line, residue, found, patch)
+        return null
+      },
+      () => {
+        if (found.length === 0) return
+        pending = { task, patch }
+        chips = found
+      },
+    )
+  }
+
+  async function gather(
+    task: Task,
+    line: string,
+    residue: boolean,
+    found: { key: string; label: string }[],
+    patch: Partial<Task>,
+  ) {
     const [draft, labels] = await Promise.all([
       residue && quick.enabled('todo.parse')
-        ? (api.quickTaskFromLine(line).catch(() => null) as Promise<QuickTaskDraft | null>)
+        ? api.quickTaskFromLine(line).catch(() => null)
         : Promise.resolve(null),
       quick.enabled('todo.purpose')
-        ? (api.quickTaskLabels(task.title).catch(() => null) as Promise<QuickLabels | null>)
+        ? api.quickTaskLabels(task.title).catch(() => null)
         : Promise.resolve(null),
     ])
 
@@ -139,7 +168,8 @@
       patch.dueTime = draft.dueTime
       found.push({
         key: 'due',
-        label: friendlyDate(draft.dueDate) + (draft.dueTime ? ` ${formatClock(draft.dueTime)}` : ''),
+        label:
+          friendlyDate(draft.dueDate) + (draft.dueTime ? ` ${formatClock(draft.dueTime)}` : ''),
       })
     }
     if (draft?.estimateMinutes && task.estimateMinutes == null) {
@@ -150,10 +180,6 @@
       patch.purpose = labels.purpose
       found.push({ key: 'purpose', label: purposeStore.describe(labels.purpose).name })
     }
-
-    if (found.length === 0) return
-    pending = { task, patch }
-    chips = found
   }
 
   /** Apply one chip. The write is the ordinary one; nothing here is special. */

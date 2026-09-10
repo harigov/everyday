@@ -18,6 +18,8 @@
 // appointment. Everything here that writes, writes a `TimeBlock`.
 
 import { api } from './api'
+import { SvelteMap } from 'svelte/reactivity'
+import { ask, quick } from './quick.svelte'
 import { Autosave } from './autosave'
 import { app, errorMessage, handle, isLocked } from './state.svelte'
 import { todo } from './todo.svelte'
@@ -519,7 +521,7 @@ class CalendarState {
       out.push({
         key: `event:${event.id}`,
         kind: 'event',
-        title: event.title,
+        title: this.tidyTitle(event.title),
         subtitle: event.location || calendar?.name || '',
         color: calendar?.color ?? 'var(--fg-subtle)',
         start: Math.max(dayStart, start),
@@ -770,6 +772,77 @@ class CalendarState {
       await handle(e)
       return null
     }
+  }
+
+  /**
+   * Book what a sentence describes.
+   *
+   * The quick model reads "lunch with Sam Thursday 1pm at the usual place";
+   * everything after that is the ordinary `book`. Answers null and does
+   * nothing when the sentence names no date -- an appointment with no day is
+   * not an appointment, and guessing today would put somebody's Thursday
+   * lunch on a Tuesday.
+   *
+   * An hour when no end was given, because that is what `bookNow` assumes
+   * too and a block of unknown length has to be drawn as something.
+   */
+  /**
+   * A readable title for a subscribed event.
+   *
+   * `[EXT] FW: Re: Weekly Sync // Zoom` is what a work feed actually
+   * contains, and it is what the grid has to draw in a 90px column. This
+   * answers the tidied title once the model has said, and the raw one until
+   * then -- never a blank, and never a spinner in a calendar cell.
+   *
+   * Three things make it safe to do at all:
+   *
+   *   * **It is display only.** The event record is never written. The feed
+   *     will be re-fetched and it is not ours to rewrite.
+   *   * **It is cached on the raw string**, in memory. The same six meeting
+   *     names recur every week forever, so a month of grid is a handful of
+   *     requests rather than one per cell per render.
+   *   * **It defaults off**, because the titles of somebody's meetings are
+   *     the names of the people in them.
+   */
+  #titles = new SvelteMap<string, string>()
+  #asking = new Set<string>()
+
+  tidyTitle(raw: string): string {
+    if (!raw.trim() || !quick.enabled('calendar.title')) return raw
+    const known = this.#titles.get(raw)
+    if (known !== undefined) return known || raw
+    if (!this.#asking.has(raw)) {
+      this.#asking.add(raw)
+      void ask('calendar.title', () => api.quickEventTitle(raw)).then((tidy) => {
+        // An empty answer is the common and correct one -- most titles are
+        // already clean -- and it is cached as empty so it is asked once.
+        this.#titles.set(raw, tidy ?? '')
+      })
+    }
+    return raw
+  }
+
+  async bookFromSentence(line: string): Promise<TimeBlock | null> {
+    /** `HH:MM` to minutes since midnight. The core already validated it. */
+    const clockMinutes = (clock: string): number => {
+      const [h = '0', m = '0'] = clock.split(':')
+      return Number(h) * 60 + Number(m)
+    }
+
+    const draft = await ask('calendar.parse', () => api.quickEventFromLine(line))
+    if (!draft?.date) return null
+    await this.start()
+    const start = draft.start ? clockMinutes(draft.start) : 9 * 60
+    const minutes = draft.end ? Math.max(15, clockMinutes(draft.end) - start) : 60
+    if (!this.days.includes(draft.date)) this.goto(draft.date)
+    return this.book({
+      subject: { type: 'adhoc' },
+      day: draft.date,
+      startMinutes: start,
+      minutes,
+      kind: 'planned',
+      title: draft.location ? `${draft.title} — ${draft.location}` : draft.title,
+    })
   }
 
   /**

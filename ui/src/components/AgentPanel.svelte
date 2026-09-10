@@ -239,14 +239,19 @@
 
       <label class="setting">
         <span>Model name</span>
-        <input bind:value={draft.assistantModel.model} placeholder="gpt-5.1-mini" spellcheck="false" />
+        <input
+          bind:value={draft.assistantModel.model}
+          placeholder="gpt-5.1-mini"
+          spellcheck="false"
+        />
       </label>
 
       <label class="setting">
         <span>Base URL</span>
         <input
           value={draft.providerConfig.baseUrl ?? ''}
-          oninput={(e) => draft && (draft.providerConfig.baseUrl = e.currentTarget.value.trim() || null)}
+          oninput={(e) =>
+            draft && (draft.providerConfig.baseUrl = e.currentTarget.value.trim() || null)}
           placeholder="https://api.openai.com/v1"
           spellcheck="false"
         />
@@ -293,8 +298,8 @@
       </label>
       <p class="hint">
         A separate switch from the assistant, and deliberately: wanting your shelves filled in is
-        not the same as wanting something to talk to. It uses the endpoint and the key above, with
-        a cheaper model — and it is never allowed to change what you already typed.
+        not the same as wanting something to talk to. It uses the endpoint and the key above, with a
+        cheaper model — and it is never allowed to change what you already typed.
       </p>
 
       {#if draft.quickModel}
@@ -337,8 +342,8 @@
           {/each}
         </div>
         <p class="hint">
-          Each one says what it sends, because “AI features: on” is not a decision anybody can
-          make. The ones that read a journal entry start switched off.
+          Each one says what it sends, because “AI features: on” is not a decision anybody can make.
+          The ones that read a journal entry start switched off.
         </p>
       {/if}
     </section>

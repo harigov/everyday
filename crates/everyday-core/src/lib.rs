@@ -100,8 +100,7 @@ pub mod websearch;
 
 pub use agent::{
     AgentSettings, Conversation, LLMModelConfig, LLMProviderConfig, Memory, Message, Provider,
-    Role as MessageRole,
-    ToolCall,
+    Role as MessageRole, ToolCall,
 };
 pub use blobstore::FileBlobStore;
 pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatus, SyncReport};

@@ -1814,39 +1814,165 @@ let nextId = 100
  * *behaviour* it drives is all in Rust, so a drift here costs a mock pane
  * that lists the wrong jobs and nothing else.
  */
-const MOCK_QUICK_JOBS: QuickJobRow[] = [
-  ['library.fields', 'Fill in a shelf\u2019s fields', 'Library', true],
-  ['library.pick', 'Choose the right search result', 'Library', true],
-  ['library.kind', 'Draft a new shelf', 'Library', true],
-  ['library.import_map', 'Map an imported list\u2019s columns', 'Library', true],
-  ['todo.purpose', 'Suggest a role or goal', 'Todo', true],
-  ['todo.parse', 'Read a task written as a sentence', 'Todo', true],
-  ['todo.subtasks', 'Break a task into steps', 'Todo', true],
-  ['todo.estimate', 'Suggest how long a task will take', 'Todo', true],
-  ['calendar.parse', 'Read an appointment written as a sentence', 'Calendar', true],
-  ['calendar.title', 'Tidy a subscribed event\u2019s title', 'Calendar', false],
-  ['journal.readings', 'Find numbers worth tracking in an entry', 'Journal', false],
-  ['journal.title', 'Suggest a title for an entry', 'Journal', false],
-  ['journal.labels', 'Suggest tags for an entry', 'Journal', false],
-  ['tracker.parse', 'Read a reading written as a sentence', 'Tracking', true],
-  ['tracker.draft', 'Propose a new tracker\u2019s settings', 'Tracking', true],
-  ['notes.title', 'Suggest a title for a note', 'Notes', true],
-  ['notes.tasks', 'Find the tasks in a note', 'Notes', true],
-  ['notes.labels', 'Suggest tags for a note', 'Notes', true],
-  ['purpose.goal', 'Sharpen a goal\u2019s wording', 'Roles and goals', true],
-  ['purpose.backfill', 'Match existing records to a new goal', 'Roles and goals', true],
-  ['overview.week', 'Write the week in a sentence or two', 'Overview', false],
-  ['data.import_map', 'Map an imported folder\u2019s front matter', 'Data', true],
-].map(([name, label, app, defaultOn]) => ({
-  name: name as string,
-  label: label as string,
-  blurb: 'Sends what you typed, and nothing else.',
-  app: app as string,
-  on: defaultOn as boolean,
-  defaultOn: defaultOn as boolean,
+const MOCK_QUICK_JOBS: QuickJobRow[] = (
+  [
+    [
+      'library.fields',
+      'Fill in a shelf\u2019s fields',
+      'Library',
+      true,
+      'the title you looked up and the search results it found',
+    ],
+    [
+      'library.pick',
+      'Choose the right search result',
+      'Library',
+      true,
+      'what you typed and the titles of the results found',
+    ],
+    [
+      'library.kind',
+      'Draft a new shelf',
+      'Library',
+      true,
+      'the shelf name you typed, and nothing else',
+    ],
+    [
+      'library.import_map',
+      'Map an imported list\u2019s columns',
+      'Library',
+      true,
+      'the column names of the file you are importing, and one example row',
+    ],
+    [
+      'todo.purpose',
+      'Suggest a role or goal',
+      'Todo',
+      true,
+      'the task\u2019s title and the names of your roles and goals',
+    ],
+    [
+      'todo.parse',
+      'Read a task written as a sentence',
+      'Todo',
+      true,
+      'the line you typed into the capture box',
+    ],
+    [
+      'todo.subtasks',
+      'Break a task into steps',
+      'Todo',
+      true,
+      'the task\u2019s title and description',
+    ],
+    [
+      'todo.estimate',
+      'Suggest how long a task will take',
+      'Todo',
+      true,
+      'the task\u2019s title and how long similar past tasks took',
+    ],
+    [
+      'calendar.parse',
+      'Read an appointment written as a sentence',
+      'Calendar',
+      true,
+      'the line you typed into the capture box',
+    ],
+    [
+      'calendar.title',
+      'Tidy a subscribed event\u2019s title',
+      'Calendar',
+      false,
+      'the titles of events from calendars you subscribe to',
+    ],
+    [
+      'journal.readings',
+      'Find numbers worth tracking in an entry',
+      'Journal',
+      false,
+      'the text of the journal entry you just wrote',
+    ],
+    [
+      'journal.title',
+      'Suggest a title for an entry',
+      'Journal',
+      false,
+      'the text of the journal entry you just wrote',
+    ],
+    [
+      'journal.labels',
+      'Suggest tags for an entry',
+      'Journal',
+      false,
+      'the text of the journal entry you just wrote',
+    ],
+    [
+      'tracker.parse',
+      'Read a reading written as a sentence',
+      'Tracking',
+      true,
+      'the line you typed, and the names of your trackers',
+    ],
+    [
+      'tracker.draft',
+      'Propose a new tracker\u2019s settings',
+      'Tracking',
+      true,
+      'the tracker name and the line you first recorded against it',
+    ],
+    ['notes.title', 'Suggest a title for a note', 'Notes', true, 'the text of the note'],
+    ['notes.tasks', 'Find the tasks in a note', 'Notes', true, 'the text of the note'],
+    ['notes.labels', 'Suggest tags for a note', 'Notes', true, 'the text of the note'],
+    [
+      'purpose.goal',
+      'Sharpen a goal\u2019s wording',
+      'Roles and goals',
+      true,
+      'the goal you typed and the role it sits under',
+    ],
+    [
+      'purpose.backfill',
+      'Match existing records to a new goal',
+      'Roles and goals',
+      true,
+      'the goal\u2019s name and the titles of records that have no purpose yet',
+    ],
+    [
+      'overview.week',
+      'Write the week in a sentence or two',
+      'Overview',
+      false,
+      'this week\u2019s totals: hours by role, tasks done, entries written',
+    ],
+    [
+      'data.import_map',
+      'Map an imported folder\u2019s front matter',
+      'Data',
+      true,
+      'the front-matter keys found in the files you are importing',
+    ],
+  ] as const
+).map(([name, label, app, defaultOn, sends]) => ({
+  name,
+  label,
+  // The blurb is the sentence somebody reads to decide, so the mock carries
+  // the real ones: a pane of twenty identical placeholders cannot be
+  // reviewed for the thing it is for.
+  blurb: `Sends ${sends}.`,
+  app,
+  on: defaultOn,
+  defaultOn,
 }))
 
-/** Jobs switched off in this session. See `set_quick_job`. */
+/**
+ * The quick-job policy, as the difference from the defaults.
+ *
+ * Two sets rather than one, mirroring `QuickPolicy` in the core -- a single
+ * "off" set cannot express a job switched *on* that defaults off, which is
+ * every one of the journal's.
+ */
+const mockQuickOn = new Set<string>()
 const mockQuickOff = new Set<string>()
 
 let agentSettings: AgentSettings = {
@@ -3392,14 +3518,15 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       if (cmd === 'set_quick_job') {
         const { name, on } = args as { name: string; on: boolean }
-        if (on) mockQuickOff.delete(name)
-        else mockQuickOff.add(name)
+        mockQuickOn.delete(name)
+        mockQuickOff.delete(name)
+        const job = MOCK_QUICK_JOBS.find((j) => j.name === name)
+        if (job && on !== job.defaultOn) (on ? mockQuickOn : mockQuickOff).add(name)
       }
       return MOCK_QUICK_JOBS.map((job) => ({
         ...job,
-        on: mockQuickOff.has(job.name) ? false : job.defaultOn,
+        on: mockQuickOn.has(job.name) || (job.defaultOn && !mockQuickOff.has(job.name)),
       })) as T
-
     }
 
     case 'quick_item_fields': {
@@ -3448,7 +3575,7 @@ export const mockInvoke = async <T>(
 
     case 'quick_task_from_line': {
       requireUnlocked()
-      const line = String(args.line ?? '')
+      const line = (args.line as string | undefined) ?? ''
       if (line.includes('nothing')) return null as T
       return {
         title: line.trim() || 'Something to do',
@@ -3488,7 +3615,7 @@ export const mockInvoke = async <T>(
 
     case 'quick_event_from_line': {
       requireUnlocked()
-      const line = String(args.line ?? '')
+      const line = (args.line as string | undefined) ?? ''
       if (line.includes('nothing')) return null as T
       return {
         title: line.trim() || 'Lunch',
@@ -3501,7 +3628,7 @@ export const mockInvoke = async <T>(
 
     case 'quick_event_title':
       requireUnlocked()
-      return String(args.title ?? '')
+      return ((args.title as string | undefined) ?? '')
         .replace(/^(\[[^\]]*\]|FW:|RE:|Fwd:)\s*/gi, '')
         .trim() as T
 
@@ -3510,7 +3637,13 @@ export const mockInvoke = async <T>(
       const first = trackers[0]
       if (!first) return [] as T
       return [
-        { trackerId: first.id, name: first.name, value: 1, at: '08:00', label: `${first.name}, 8am` },
+        {
+          trackerId: first.id,
+          name: first.name,
+          value: 1,
+          at: '08:00',
+          label: `${first.name}, 8am`,
+        },
       ] as T
     }
 
@@ -3530,7 +3663,7 @@ export const mockInvoke = async <T>(
     case 'quick_tracker_draft':
       requireUnlocked()
       return {
-        name: String(args.name ?? 'Something'),
+        name: (args.name as string | undefined) ?? 'Something',
         kind: 'amount',
         unit: 'minutes',
         scaleMax: null,

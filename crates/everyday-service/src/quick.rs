@@ -141,7 +141,8 @@ pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value>
 
     // The timeout wraps the whole exchange rather than one request, because
     // the failure it exists for is a model that answers slowly twice.
-    let turn = tokio::time::timeout(TIMEOUT, agent.prompt(prompt.user.as_str()).max_turns(MAX_TURNS));
+    let turn =
+        tokio::time::timeout(TIMEOUT, agent.prompt(prompt.user.as_str()).max_turns(MAX_TURNS));
     match turn.await {
         Ok(Ok(_)) => {}
         // A model that ran out of turns may still have called `submit` on the

@@ -27,9 +27,11 @@
   import { panels } from '../lib/panels.svelte'
   import { app } from '../lib/state.svelte'
   import { todo } from '../lib/todo.svelte'
+  import { calendar } from '../lib/calendar.svelte'
   import { library } from '../lib/library.svelte'
   import { notify } from '../lib/notify.svelte'
   import { parseQuickAdd } from '../lib/quickadd'
+  import { quick as quickState } from '../lib/quick.svelte'
   import { describeQuickTrack, parseQuickTrack } from '../lib/quicktrack'
   import { tracking } from '../lib/tracking.svelte'
   import { trapFocus } from '../lib/focus'
@@ -121,6 +123,18 @@
           run: () => tracking.logLine(text),
         })
       }
+    }
+    // An appointment written as a sentence. A row rather than a parse: no
+    // request is made until somebody picks this, which is what keeps "nothing
+    // is looked up unless you ask" true of the palette as well as the shelf.
+    if (app.supportsCalendar && quickState.enabled('calendar.parse')) {
+      rows.push({
+        kind: 'capture',
+        label: `Book: ${text}`,
+        icon: 'calendar',
+        hint: 'reads the date and time from the sentence',
+        run: () => calendar.bookFromSentence(text),
+      })
     }
     if (app.supportsLibrary && library.kinds.length > 0) {
       const shelf = library.kind ?? library.kinds[0]!

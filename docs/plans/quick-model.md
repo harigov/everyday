@@ -1,9 +1,43 @@
 # A second model, for the small jobs
 
-> **Proposal.** Nothing below is built. It is one settings change, one new
-> core module, and a list of twenty-odd places that change from "a form you
-> fill in" to "a guess you correct" — ordered by whether they are worth
-> doing.
+> **Delivered**, except where noted at the foot. Read this for the reasoning;
+> read the commits for what was done. Seven things went differently from the
+> plan below, each for a reason worth keeping:
+>
+> - **The split is `LLMProviderConfig` + `LLMModelConfig`, not `quick:
+>   Option<QuickConfig>`.** The first draft had the quick model as a bare
+>   model name with a doc comment saying "the endpoint is the other one's".
+>   That is a convention somebody forgets. Naming the connection as its own
+>   record makes it impossible to express two endpoints, and lets
+>   `is_usable` ask "is a key needed here" once rather than once per model.
+> - **Temperature stayed, and defaults to nought.** The plan said not to
+>   offer it. That was wrong in the useful direction: temperature 0 is
+>   exactly what a schema-constrained extraction wants, so it is a reason to
+>   keep the field rather than hide it — and somebody on a local model whose
+>   model rejects the parameter can turn it back off.
+> - **`rig`'s `Extractor` could not be used.** It wants one Rust type per
+>   answer with `JsonSchema` derived at compile time; the schemas here are
+>   values built from a catalogue. `everyday_service::quick` does by hand
+>   what `Extractor` does internally — one dynamic `submit` tool carrying the
+>   job's schema, tool choice forced — which is the same trade `crate::agent`
+>   already made for its tools, for the same reason.
+> - **`Scope::Quick` exists.** Not in the plan. A client granted `Agent` can
+>   read somebody's threads, and that is no reason for it to be able to spend
+>   their tokens filling in a shelf. The argument is `Scope::Web`'s.
+> - **The migration is not a `serde` alias.** The old shape has to be *split*
+>   across two new fields, which an alias cannot do, and a sealed payload
+>   cannot be migrated in SQL because a migration step is handed a connection
+>   and not the cipher. `AgentSettings::normalize` folds it and the store
+>   calls it; the obligation is stated on the trait beside the existing one
+>   about `has_key`.
+> - **`newShelf` applies its draft instead of offering it.** The one
+>   exception in the feature, argued in the commit: the record is being
+>   created that instant, has no content to argue with, and every field is
+>   editable afterwards.
+> - **`QuickPolicy` stores the difference from the defaults**, not the list
+>   of what is on — so a job added in a later build arrives at its own
+>   default rather than switched off because a settings record written last
+>   year did not mention it.
 
 The assistant we have is a reasoning engine with twenty tools, a system
 prompt carrying the profile and every memory, and a budget of twenty-four
@@ -276,6 +310,29 @@ like a violation if it arrives without being asked for.
 **Five — the assistant's own.** A1 and A2. Cost work rather than feature
 work, which is why it is last and not first: it should be measured against
 what the big model actually spends, not assumed.
+
+## What is not wired
+
+Two of the twenty-two have their prompt, their schema, their clamp and their
+command, and no interface — because the thing they would feed does not exist
+yet:
+
+- **L5, mapping an imported list's columns.** There is no CSV importer for a
+  shelf. The mapping is the easy half; the importer that consumes it is a
+  feature of its own.
+- **X1, mapping somebody else's front matter.** `everyday-transfer`'s import
+  reads what its export wrote. Accepting an arbitrary folder — Obsidian, Day
+  One, Bear — is the change; a column mapping is what it would need *after*
+  that, not instead of it.
+
+Both are reachable from the CLI and over MCP today, and both stay in the
+catalogue rather than being deleted, because the missing half is an importer
+and not a doubt about the job.
+
+The assistant's own five — A1 through A4, and the router — are deliberately
+not built. Feeding the reasoning model its memories and tool schemas is what
+it is *for*, and optimising that is a separate argument to have with
+measurements in hand rather than a paragraph.
 
 ## The thing to keep an eye on
 

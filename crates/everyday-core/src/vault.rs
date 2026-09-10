@@ -1964,9 +1964,7 @@ impl Vault {
         settings.validate()?;
         let key = self.with_agent(|a| a.secret())?;
         if key.is_none() && settings.provider_config.needs_key() {
-            return Err(Error::Invalid(
-                "no API key is set; add one in Settings".into(),
-            ));
+            return Err(Error::Invalid("no API key is set; add one in Settings".into()));
         }
         Ok((settings, key))
     }

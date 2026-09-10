@@ -122,6 +122,27 @@ export function slot<T>() {
       onResult(value)
     },
     /**
+     * The same staleness guard, for a caller that does its own gating.
+     *
+     * `run` checks one job name, which is right when a slot serves one job.
+     * A caller combining two -- the capture box asks `todo.parse` and
+     * `todo.purpose` together -- has already checked each, and passing either
+     * name to `run` would let one switch being off suppress the other.
+     */
+    async track(work: () => Promise<T>, onResult: (value: T | null) => void) {
+      const mine = ++generation
+      dismissed = false
+      let value: T | null = null
+      try {
+        value = await work()
+      } catch (e) {
+        console.debug('a quick suggestion did not arrive', e)
+      }
+      if (mine !== generation || dismissed) return
+      onResult(value)
+    },
+
+    /**
      * Throw away what is showing and refuse whatever is in flight.
      *
      * Bumping the generation as well as setting the flag is what makes a

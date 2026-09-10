@@ -926,7 +926,8 @@ export const api = {
     invoke<QuickMapping>('quick_import_columns', args),
 
   quickTaskLabels: (title: string) => invoke<QuickLabels>('quick_task_labels', { title }),
-  quickTaskFromLine: (line: string) => invoke<QuickTaskDraft | null>('quick_task_from_line', { line }),
+  quickTaskFromLine: (line: string) =>
+    invoke<QuickTaskDraft | null>('quick_task_from_line', { line }),
   quickSubtasks: (taskId: TaskId) => invoke<QuickTaskDraft[]>('quick_subtasks', { taskId }),
   quickEstimate: (taskId: TaskId) => invoke<number | null>('quick_estimate', { taskId }),
 

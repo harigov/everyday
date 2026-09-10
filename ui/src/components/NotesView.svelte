@@ -101,7 +101,9 @@
     // somebody to wait through three round trips to find out that a note has
     // no tasks in it.
     const [title, tasks, labels] = await Promise.all([
-      target.title.trim() ? Promise.resolve(null) : ask('notes.title', () => api.quickNoteTitle(target.id)),
+      target.title.trim()
+        ? Promise.resolve(null)
+        : ask('notes.title', () => api.quickNoteTitle(target.id)),
       ask('notes.tasks', () => api.quickNoteTasks(target.id)),
       ask('notes.labels', () => api.quickNoteLabels(target.id)),
     ])
@@ -280,7 +282,7 @@
             items={taskChips}
             busy={scanning}
             label="Make a task:"
-            onaccept={(key) => void acceptTask(key)}
+            onaccept={(key: string) => void acceptTask(key)}
             ondismiss={() => taskSlot.dismiss(() => (taskChips = []))}
           />
           <Suggestions

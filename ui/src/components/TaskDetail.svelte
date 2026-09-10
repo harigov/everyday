@@ -220,7 +220,11 @@
             {task.estimateMinutes ? formatMinutes(task.estimateMinutes) : 'minutes'}
           </span>
           {#if quick.enabled('todo.estimate') && task.estimateMinutes == null}
-            <button class="mini" onclick={() => void suggestEstimate()} title="Guess from similar tasks">
+            <button
+              class="mini"
+              onclick={() => void suggestEstimate()}
+              title="Guess from similar tasks"
+            >
               <Icon name="sparkle" size={11} />
             </button>
           {/if}
@@ -306,7 +310,7 @@
         <Suggestions
           items={stepChips}
           busy={breaking}
-          onaccept={(key) => void acceptStep(key)}
+          onaccept={(key: string) => void acceptStep(key)}
           ondismiss={() => stepSlot.dismiss(() => (stepChips = []))}
         />
       {/if}

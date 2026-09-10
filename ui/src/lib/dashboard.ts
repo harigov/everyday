@@ -170,6 +170,15 @@ export const WIDGETS = {
     sizes: ['medium', 'large'],
     needs: ['balance', 'purpose'],
   },
+  weekInWords: {
+    label: 'The week, in words',
+    note: 'Two sentences about what changed, written by the quick model from the totals above.',
+    group: 'Your time',
+    icon: 'sparkle',
+    size: 'medium',
+    sizes: ['medium', 'large'],
+    needs: ['balance', 'purpose'],
+  },
   roleShare: {
     label: 'Share of your week',
     note: 'The same hours as a single bar, so the proportions are the point.',
