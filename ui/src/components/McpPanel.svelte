@@ -20,11 +20,19 @@
   import Icon from './Icon.svelte'
 
   // The domains a token can be narrowed to, in `everyday_service::domains::
-  // meta::scope_of`'s order, labelled the way the app bar names them rather
-  // than with the raw scope string a settings pane has no business showing.
+  // meta::scope_of`'s order, labelled for what each one *grants* rather than
+  // with the raw scope string a settings pane has no business showing.
   // `all`, `admin` and `any` are not here on purpose: `all` is what ticking
   // every box below already means, and the other two are never something a
   // token is issued.
+  //
+  // Most read as the app bar's own names, and one deliberately does not.
+  // `purpose` was labelled "Overview" when the Overview owned roles and
+  // goals; it does not any more -- roles are defined in Settings and goals
+  // live in the todo app, and the Overview is a page of cards drawn from
+  // every domain at once. Ticking a box named after that page would be
+  // granting an agent something quite different from what the page shows, so
+  // this one is named for the records.
   const DOMAIN_SCOPES: { scope: string; label: string }[] = [
     { scope: 'journals', label: 'Journal' },
     { scope: 'notes', label: 'Notes' },
@@ -32,7 +40,7 @@
     { scope: 'calendars', label: 'Calendar' },
     { scope: 'library', label: 'Library' },
     { scope: 'trackers', label: 'Tracking' },
-    { scope: 'purpose', label: 'Overview' },
+    { scope: 'purpose', label: 'Roles and goals' },
     { scope: 'agent', label: 'Assistant' },
   ]
 
