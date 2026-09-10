@@ -62,6 +62,12 @@ import type {
   Role,
   RoleId,
   RoleInfo,
+  Routine,
+  RoutineId,
+  RoutineInfo,
+  RoutineRun,
+  RoutineRunId,
+  RunQuery,
   SearchHit,
   SearchKind,
   SearchRequest,
@@ -76,6 +82,7 @@ import type {
   TaskQuery,
   TaskStats,
   TaskStatus,
+  Template,
   TimeBlock,
   ToolInfo,
   Tracker,
@@ -113,6 +120,8 @@ export interface Commands {
   deleteProject: { args: { id: ProjectId }; result: void }
   deleteReading: { args: { id: ReadingId }; result: void }
   deleteRole: { args: { id: RoleId }; result: void }
+  deleteRoutine: { args: { id: RoutineId }; result: void }
+  deleteRun: { args: { id: RoutineRunId }; result: void }
   deleteTask: { args: { id: TaskId }; result: void }
   deleteTracker: { args: { id: TrackerId }; result: number }
   fetchImage: { args: { url: string }; result: string }
@@ -122,6 +131,7 @@ export interface Commands {
   getGoal: { args: { id: GoalId }; result: Goal }
   getItem: { args: { id: ItemId }; result: Item }
   getNote: { args: { id: NoteId }; result: Note }
+  getRun: { args: { id: RoutineRunId }; result: RoutineRun }
   getTask: { args: { id: TaskId }; result: Task }
   goalActivity: { args: { id: GoalId }; result: GoalActivity }
   importCalendar: {
@@ -132,7 +142,10 @@ export interface Commands {
   listBlocks: { args: { query: BlockQuery }; result: TimeBlock[] }
   listCalendars: { args: Record<string, never>; result: CalendarInfo[] }
   listCommands: { args: Record<string, never>; result: Surface }
-  listConversations: { args: { limit?: number | null }; result: ConversationSummary[] }
+  listConversations: {
+    args: { limit?: number | null; includeRuns?: boolean }
+    result: ConversationSummary[]
+  }
   listEntries: { args: { query: EntryQuery }; result: EntrySummary[] }
   listEvents: { args: { query: EventQuery }; result: CalendarEvent[] }
   listGoals: { args: { query: GoalQuery }; result: Goal[] }
@@ -145,6 +158,8 @@ export interface Commands {
   listProjects: { args: Record<string, never>; result: Project[] }
   listReadings: { args: { query: ReadingQuery }; result: Reading[] }
   listRoles: { args: Record<string, never>; result: RoleInfo[] }
+  listRoutines: { args: Record<string, never>; result: RoutineInfo[] }
+  listRuns: { args: { query: RunQuery }; result: RoutineRun[] }
   listTags: { args: Record<string, never>; result: string[] }
   listTasks: { args: { query: TaskQuery }; result: Task[] }
   listTools: { args: Record<string, never>; result: ToolInfo[] }
@@ -165,6 +180,7 @@ export interface Commands {
     args: { kindId: KindId; query: string; limit?: number | null }
     result: SearchResult[]
   }
+  markRunsSeen: { args: { ids?: RoutineRunId[] }; result: void }
   mergeTrackers: { args: { from: TrackerId; into: TrackerId }; result: number }
   newBlock: {
     args: { subject: BlockSubject; start: string; minutes: number; kind?: BlockKind | null }
@@ -187,6 +203,8 @@ export interface Commands {
   noteTags: { args: Record<string, never>; result: string[] }
   pollAutoLock: { args: Record<string, never>; result: boolean }
   profile: { args: Record<string, never>; result: Profile }
+  routineTemplates: { args: Record<string, never>; result: Template[] }
+  runRoutine: { args: { id: RoutineId }; result: RoutineRun }
   runTool: {
     args: { name: string; arguments?: unknown; confirmDestructive?: boolean }
     result: unknown
@@ -210,6 +228,7 @@ export interface Commands {
   saveProject: { args: { project: Project }; result: void }
   saveReading: { args: { reading: Reading }; result: void }
   saveRole: { args: { role: Role }; result: void }
+  saveRoutine: { args: { routine: Routine }; result: Routine }
   saveTask: { args: { task: Task }; result: void }
   saveTasks: { args: { tasks: Task[] }; result: void }
   saveTracker: { args: { tracker: Tracker }; result: void }
@@ -241,6 +260,7 @@ export interface Commands {
   touch: { args: Record<string, never>; result: void }
   trackerDays: { args: { query: ReadingQuery }; result: TrackerDay[] }
   unlock: { args: { password: string }; result: VaultStatus }
+  unseenRuns: { args: Record<string, never>; result: number }
   vaultStats: { args: Record<string, never>; result: StoreStats }
   verifyPassword: { args: { password: string }; result: void }
   webSearch: { args: { request: SearchRequest }; result: SearchResult[] }
@@ -271,6 +291,8 @@ export const COMMAND_NAMES = {
   deleteProject: 'delete_project',
   deleteReading: 'delete_reading',
   deleteRole: 'delete_role',
+  deleteRoutine: 'delete_routine',
+  deleteRun: 'delete_run',
   deleteTask: 'delete_task',
   deleteTracker: 'delete_tracker',
   fetchImage: 'fetch_image',
@@ -280,6 +302,7 @@ export const COMMAND_NAMES = {
   getGoal: 'get_goal',
   getItem: 'get_item',
   getNote: 'get_note',
+  getRun: 'get_run',
   getTask: 'get_task',
   goalActivity: 'goal_activity',
   importCalendar: 'import_calendar',
@@ -300,6 +323,8 @@ export const COMMAND_NAMES = {
   listProjects: 'list_projects',
   listReadings: 'list_readings',
   listRoles: 'list_roles',
+  listRoutines: 'list_routines',
+  listRuns: 'list_runs',
   listTags: 'list_tags',
   listTasks: 'list_tasks',
   listTools: 'list_tools',
@@ -307,6 +332,7 @@ export const COMMAND_NAMES = {
   lock: 'lock',
   logReading: 'log_reading',
   lookupMetadata: 'lookup_metadata',
+  markRunsSeen: 'mark_runs_seen',
   mergeTrackers: 'merge_trackers',
   newBlock: 'new_block',
   newConversation: 'new_conversation',
@@ -323,6 +349,8 @@ export const COMMAND_NAMES = {
   noteTags: 'note_tags',
   pollAutoLock: 'poll_auto_lock',
   profile: 'profile',
+  routineTemplates: 'routine_templates',
+  runRoutine: 'run_routine',
   runTool: 'run_tool',
   saveAgentSettings: 'save_agent_settings',
   saveBlock: 'save_block',
@@ -343,6 +371,7 @@ export const COMMAND_NAMES = {
   saveProject: 'save_project',
   saveReading: 'save_reading',
   saveRole: 'save_role',
+  saveRoutine: 'save_routine',
   saveTask: 'save_task',
   saveTasks: 'save_tasks',
   saveTracker: 'save_tracker',
@@ -365,6 +394,7 @@ export const COMMAND_NAMES = {
   touch: 'touch',
   trackerDays: 'tracker_days',
   unlock: 'unlock',
+  unseenRuns: 'unseen_runs',
   vaultStats: 'vault_stats',
   verifyPassword: 'verify_password',
   webSearch: 'web_search',
@@ -405,6 +435,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_project',
   'delete_reading',
   'delete_role',
+  'delete_routine',
+  'delete_run',
   'delete_task',
   'delete_tracker',
   'fetch_image',
@@ -414,6 +446,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'get_goal',
   'get_item',
   'get_note',
+  'get_run',
   'get_task',
   'goal_activity',
   'import_calendar',
@@ -434,6 +467,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_projects',
   'list_readings',
   'list_roles',
+  'list_routines',
+  'list_runs',
   'list_tags',
   'list_tasks',
   'list_tools',
@@ -441,6 +476,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'lock',
   'log_reading',
   'lookup_metadata',
+  'mark_runs_seen',
   'merge_trackers',
   'new_block',
   'new_conversation',
@@ -457,6 +493,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'note_tags',
   'poll_auto_lock',
   'profile',
+  'routine_templates',
+  'run_routine',
   'run_tool',
   'save_agent_settings',
   'save_block',
@@ -477,6 +515,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_project',
   'save_reading',
   'save_role',
+  'save_routine',
   'save_task',
   'save_tasks',
   'save_tracker',
@@ -498,6 +537,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'touch',
   'tracker_days',
   'unlock',
+  'unseen_runs',
   'vault_stats',
   'verify_password',
   'web_search',
@@ -531,6 +571,8 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_project',
   'delete_reading',
   'delete_role',
+  'delete_routine',
+  'delete_run',
   'delete_task',
   'delete_tracker',
   'fetch_image',
@@ -538,8 +580,10 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'import_calendar',
   'lock',
   'log_reading',
+  'mark_runs_seen',
   'merge_trackers',
   'poll_auto_lock',
+  'run_routine',
   'run_tool',
   'save_agent_settings',
   'save_block',
@@ -560,6 +604,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_project',
   'save_reading',
   'save_role',
+  'save_routine',
   'save_task',
   'save_tasks',
   'save_tracker',
@@ -598,11 +643,15 @@ export const CHANGE_KINDS: Readonly<Record<string, string>> = {
   delete_project: 'project',
   delete_reading: 'reading',
   delete_role: 'role',
+  delete_routine: 'routine',
+  delete_run: 'routineRun',
   delete_task: 'task',
   delete_tracker: 'tracker',
   import_calendar: 'calendar',
   log_reading: 'reading',
+  mark_runs_seen: 'routineRun',
   merge_trackers: 'tracker',
+  run_routine: 'routineRun',
   save_agent_settings: 'settings',
   save_block: 'block',
   save_calendar: 'calendar',
@@ -622,6 +671,7 @@ export const CHANGE_KINDS: Readonly<Record<string, string>> = {
   save_project: 'project',
   save_reading: 'reading',
   save_role: 'role',
+  save_routine: 'routine',
   save_task: 'task',
   save_tasks: 'task',
   save_tracker: 'tracker',

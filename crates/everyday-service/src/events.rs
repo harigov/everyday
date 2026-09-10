@@ -149,6 +149,10 @@ pub enum Kind {
     /// An outcome under a role.
     Goal,
     Conversation,
+    /// The assistant's standing work.
+    Routine,
+    /// One run of it. What the count on the app bar is drawn from.
+    RoutineRun,
     Memory,
     /// The vault's own settings: auto-lock, the assistant's configuration.
     Settings,

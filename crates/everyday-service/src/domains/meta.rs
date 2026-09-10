@@ -128,6 +128,8 @@ async fn list_commands(_s: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult<
                 crate::events::Kind::Reading => "reading",
                 crate::events::Kind::Role => "role",
                 crate::events::Kind::Goal => "goal",
+                crate::events::Kind::Routine => "routine",
+                crate::events::Kind::RoutineRun => "routineRun",
                 crate::events::Kind::Conversation => "conversation",
                 crate::events::Kind::Memory => "memory",
                 crate::events::Kind::Settings => "settings",
@@ -196,8 +198,14 @@ async fn run_tool(svc: Arc<Service>, _c: Ctx, args: RunTool) -> CommandResult<Va
 
     blocking(move || {
         let tz = system_tz();
-        let ctx =
-            tools::ToolContext { vault: &vault, today: today_local(), tz: &tz, conversation: None };
+        let ctx = tools::ToolContext {
+            vault: &vault,
+            today: today_local(),
+            tz: &tz,
+            conversation: None,
+            // A script or a palette entry. Somebody pressed something.
+            unattended: false,
+        };
         tools::dispatch(&ctx, &args.name, &args.arguments).map_err(CommandError::from)
     })
     .await

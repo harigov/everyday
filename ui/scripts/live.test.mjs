@@ -61,6 +61,8 @@ const KINDS = [
   'journal',
   'entry',
   'note',
+  'routine',
+  'routineRun',
   'project',
   'task',
   'block',

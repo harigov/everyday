@@ -44,6 +44,41 @@ const SHOW_ID: &str = "everyday:show";
 const QUIT_ID: &str = "everyday:quit";
 const TRAY_ID: &str = "everyday";
 
+/// What the assistant is up to, in a line, or nothing to say.
+///
+/// Nothing to say is the ordinary case: a vault with no routines on it has no
+/// assistant to report on, and a menu that said "Assistant: off" to everybody
+/// would be an advertisement rather than a status.
+///
+/// Built here rather than sent by the interface for the reason the whole
+/// feature exists: the window may be hidden, and its stores dropped, at
+/// exactly the moment somebody opens this menu to ask what the process is
+/// still doing.
+fn assistant_line(app: &AppHandle) -> Option<String> {
+    let state = app.try_state::<crate::state::AppState>()?;
+    let service = state.service();
+    if let Some(name) = service.running_routine() {
+        return Some(format!("Assistant: running \u{201c}{name}\u{201d}"));
+    }
+    let vault = service.get()?;
+    if !vault.is_unlocked() {
+        // Worth saying, because it is the answer to "why did nothing happen
+        // this morning".
+        return Some("Assistant: waiting for the password".into());
+    }
+    if !vault.supports_routines() {
+        return None;
+    }
+    let routines = vault.routines().ok()?;
+    let live = routines.iter().filter(|r| r.enabled).count();
+    match (routines.len(), live) {
+        (0, _) => None,
+        (_, 0) => Some("Assistant: every routine is switched off".into()),
+        (_, 1) => Some("Assistant: idle, 1 routine".into()),
+        (_, n) => Some(format!("Assistant: idle, {n} routines")),
+    }
+}
+
 /// One entry in the tray menu, as the interface describes it.
 ///
 /// Deliberately a small language rather than a general one: an item that

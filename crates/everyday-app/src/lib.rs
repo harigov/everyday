@@ -82,6 +82,22 @@ pub fn run() {
             // the settings pane says whether it was granted, and the tray is
             // the way in regardless. See `hotkey`.
             hotkey::install(&handle);
+            // The assistant's routines. On Tauri's own runtime, never a second
+            // one: two runtimes would double the blocking pool and, worse,
+            // would mean the vault's single-writer rule was being kept by two
+            // sets of threads that know nothing about each other.
+            //
+            // Spawned once for the life of the process rather than per vault.
+            // It does nothing at all while there is no vault or the vault is
+            // locked, which is most of the time and is the point: a window
+            // that has never been opened must not be what decides whether the
+            // seven o'clock brief happens.
+            let service = app.state::<AppState>().service();
+            let (_stop, listen) = tokio::sync::watch::channel(false);
+            // Held for the life of the process. The scheduler stops when the
+            // process does, and nothing else should be able to stop it.
+            std::mem::forget(_stop);
+            tauri::async_runtime::spawn(everyday_service::scheduler::run(service, listen));
             Ok(())
         })
         // Registered here rather than on the icon, and once rather than per
@@ -128,6 +144,27 @@ pub fn run() {
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
+                // Closing the window is not always quitting any more.
+                //
+                // A vault with a routine on it, or one being served to another
+                // machine, has work to do with no window in front of it: the
+                // seven o'clock brief has to happen whether or not anybody
+                // opened anything. So in that case the window hides and the
+                // process stays, reachable from the tray. Quit -- from the
+                // tray, or the platform's own quit -- still quits, and still
+                // locks on the way out.
+                //
+                // Hiding rather than destroying also keeps the webview, which
+                // is what lets a notification raised at seven reach the
+                // notification centre: the routing that decides banner or
+                // toast lives in the interface, and a destroyed webview cannot
+                // run it. See `events.rs`.
+                if window.try_state::<AppState>().is_some_and(|s| s.stays_resident()) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    return;
+                }
+
                 // Hold the window open for one round trip.
                 //
                 // The interface autosaves on a timer, so at the moment a

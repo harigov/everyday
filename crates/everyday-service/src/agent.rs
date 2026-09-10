@@ -47,6 +47,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use everyday_core::RoutineRunId;
 use everyday_core::agent::tools::{self, Effect, ToolContext};
 use everyday_core::agent::{AgentSettings, Conversation, Message as VaultMessage, Role, ToolCall};
 use everyday_core::model::system_tz;
@@ -163,6 +164,11 @@ struct ConfirmGate {
     /// is still installed, because the events it emits are also how the panel
     /// draws what ran.
     enabled: bool,
+    /// Whether there is anybody to ask.
+    ///
+    /// A scheduled run has nobody, so with `enabled` set the answer is a
+    /// refusal rather than a question. See `on_tool_call`.
+    unattended: bool,
     /// For naming what a destructive call is about to act on. Every such tool
     /// takes an id and nothing else, so the name has to be read.
     vault: Arc<Vault>,
@@ -207,6 +213,30 @@ impl AgentHook for ConfirmGate {
         if !destructive || !self.enabled {
             (self.channel)(AgentEvent::ToolStarted { call_id, name, arguments });
             return ToolCallAction::Run;
+        }
+
+        // Nobody is there. Declined on the spot rather than asked about:
+        // registering a waiter would park a scheduled run on a question nobody
+        // will ever see, every night, until its own timeout.
+        //
+        // The wording is the refusal a person's "Don't" produces, deliberately.
+        // The model is told plainly that it was not done and why, so it can say
+        // so in its report rather than trying again. Somebody who wants a
+        // routine to delete things turns the confirmation off, having read the
+        // sentence beside the switch.
+        if self.unattended {
+            (self.channel)(AgentEvent::ToolFinished {
+                call_id,
+                name,
+                ok: false,
+                summary: "declined: nobody was there to confirm it".into(),
+            });
+            return ToolCallAction::Skip(
+                "This deletes something, and this is a scheduled run with nobody watching, \
+                 so it was refused. Do not try it again or work around it. Say in your \
+                 reply that it needs doing and leave it to them."
+                    .into(),
+            );
         }
 
         let waiter = self.pending.register(&call_id);
@@ -276,8 +306,13 @@ impl ConfirmGate {
     /// project" with no subject asks somebody to think, and one that says
     /// "delete 0192f8b2-..." asks them to guess.
     fn describe(&self, name: &str, arguments: &Value) -> String {
-        let ctx =
-            ToolContext { vault: &self.vault, today: self.today, tz: &self.tz, conversation: None };
+        let ctx = ToolContext {
+            vault: &self.vault,
+            today: self.today,
+            tz: &self.tz,
+            conversation: None,
+            unattended: self.unattended,
+        };
         tools::describe(&ctx, name, arguments).unwrap_or_default()
     }
 }
@@ -302,6 +337,7 @@ fn build(
     key: Option<String>,
     conversation: ConversationId,
     context: Option<&str>,
+    unattended: bool,
 ) -> CommandResult<Agent> {
     let model = &settings.model;
 
@@ -353,7 +389,9 @@ fn build(
             move |arguments: serde_json::Value| {
                 let vault = vault.clone();
                 let zone = zone.clone();
-                Box::pin(async move { run_tool(vault, name, arguments, conversation, zone).await })
+                Box::pin(async move {
+                    run_tool(vault, name, arguments, conversation, zone, unattended).await
+                })
             },
         )
     };
@@ -387,6 +425,7 @@ async fn run_tool(
     arguments: serde_json::Value,
     conversation: ConversationId,
     zone: String,
+    unattended: bool,
 ) -> Result<ToolOutput, ToolExecutionError> {
     let outcome = tokio::task::spawn_blocking(move || {
         // Read per call rather than once per turn: a conversation left open
@@ -401,6 +440,7 @@ async fn run_tool(
             today: now.date(),
             tz: &zone,
             conversation: Some(conversation),
+            unattended,
         };
         tools::dispatch(&ctx, name, &arguments)
     })
@@ -425,6 +465,28 @@ pub struct Turn {
     /// What the person is looking at, if the interface said.
     pub context: Option<String>,
     pub channel: Sink,
+    /// Set when this turn is a scheduled run rather than something somebody
+    /// typed.
+    ///
+    /// Two things follow, and both are about there being nobody there. A
+    /// destructive call is refused rather than asked about -- see
+    /// [`ConfirmGate`] -- and the context says plainly that no question can be
+    /// answered, so a model that would otherwise stop and ask writes down what
+    /// it needs and carries on.
+    ///
+    /// What does *not* change is the tool catalogue: a run is offered exactly
+    /// what the rail is offered. Everything the assistant can make already
+    /// lives in this application, and a routine that could read a shelf but
+    /// not add to it would be a secretary who could only take notes.
+    pub unattended: Option<RoutineRunId>,
+}
+
+/// What a turn did, for a caller that has to write it down.
+pub struct Turned {
+    /// The model's last message: what it has to say for itself.
+    pub text: String,
+    /// How many tools it called.
+    pub steps: u32,
 }
 
 /// Run one turn: send what was typed, stream what comes back, write it down.
@@ -436,8 +498,8 @@ pub struct Turn {
 /// stream must not leave a thread with no record that a reply was attempted.
 ///
 /// [`AgentStore::put_message`]: everyday_core::store::agent::AgentStore::put_message
-pub async fn run_turn(turn: Turn) -> CommandResult<()> {
-    let Turn { vault, pending, conversation, prompt, context, channel } = turn;
+pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
+    let Turn { vault, pending, conversation, prompt, context, channel, unattended } = turn;
 
     let (settings, key) = vault.agent_credentials()?;
 
@@ -454,12 +516,29 @@ pub async fn run_turn(turn: Turn) -> CommandResult<()> {
     vault.save_message(&reply)?;
     (channel)(AgentEvent::Started { message_id: reply.id.to_string() });
 
-    let agent = build(vault.clone(), &settings, key, conversation, context.as_deref())?;
+    // The context for an unattended run replaces "what the person is looking
+    // at", because there is no person and nothing on screen. What it says
+    // instead is the thing a model most needs to know and cannot infer: that
+    // asking a question is not an option here.
+    let unattended_context = unattended.is_some().then(|| {
+        "This is a scheduled run of one of their routines. Nobody is watching and nobody \
+         can answer a question, so do not ask one: pick the sensible reading and act. If \
+         something genuinely cannot be done without a decision, say so in your reply and \
+         leave it. If you have more than a paragraph to hand over, write it as a note \
+         rather than putting it all in your reply."
+            .to_string()
+    });
+    let context = unattended_context.or(context);
+
+    let unattended_run = unattended.is_some();
+    let agent =
+        build(vault.clone(), &settings, key, conversation, context.as_deref(), unattended_run)?;
     let ledger: Arc<Mutex<Vec<Ran>>> = Arc::default();
     let gate = ConfirmGate {
         pending: pending.clone(),
         channel: channel.clone(),
         enabled: settings.confirm_destructive,
+        unattended: unattended.is_some(),
         vault: vault.clone(),
         today: settings.now().date(),
         tz: zone_name(&settings),
@@ -487,7 +566,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<()> {
             vault.save_message(&finished)?;
             write_results(&vault, conversation, &ran);
             (channel)(AgentEvent::Finished { message_id: reply.id.to_string() });
-            Ok(())
+            Ok(Turned { text: finished.content, steps: ran.len() as u32 })
         }
         Err(e) => {
             if ran.is_empty() {

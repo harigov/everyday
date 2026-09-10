@@ -20,6 +20,7 @@
 import { onChange, onLockState, onPalette } from './api'
 import { calendar } from './calendar.svelte'
 import { library } from './library.svelte'
+import { assistant } from './assistant.svelte'
 import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
 import { panels } from './panels.svelte'
@@ -54,6 +55,7 @@ export const RELOAD: Record<string, () => Promise<unknown> | void> = {
   todo: () => todo.refresh(),
   calendar: () => calendar.refresh(),
   notes: () => notes.refresh(),
+  assistant: () => assistant.refresh(),
   shelves: () => library.refreshKinds(),
   library: () => library.refresh(),
   tracking: () => tracking.refresh(),
@@ -112,6 +114,11 @@ export const RELOADS: Record<ChangeKind, keyof typeof RELOAD | null> = {
   // The assistant's own thread. The panel reads it when it is opened, and a
   // reply arriving on another machine is not something to interrupt this one
   // with -- so nothing reloads, and the event exists for a future history list.
+  // The assistant's standing work, and the log of what it did. The routines
+  // pane redraws for either, and the count on the app bar is read from the
+  // same reload.
+  routine: 'assistant',
+  routineRun: 'assistant',
   conversation: null,
   memory: null,
   settings: 'status',

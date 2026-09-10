@@ -63,6 +63,15 @@ pub struct Service {
     /// already records the failure itself, and reopening the app is a
     /// reasonable moment to be told again.
     reported_feeds: RwLock<HashSet<CalendarId>>,
+    /// Routines whose failure has already been reported this session. See
+    /// [`Service::routine_failed`].
+    reported_routines: RwLock<HashSet<String>>,
+    /// The routine running right now, by name, if one is.
+    ///
+    /// Here rather than derived from a `Running` row, because a row is also
+    /// what a run abandoned by a dead process looks like. This is in memory
+    /// and therefore cannot lie about the present.
+    running_routine: RwLock<Option<String>>,
 }
 
 impl Default for Service {
@@ -80,6 +89,8 @@ impl Service {
             pending: Arc::default(),
             idempotency: Idempotency::default(),
             reported_feeds: RwLock::new(HashSet::new()),
+            reported_routines: RwLock::new(HashSet::new()),
+            running_routine: RwLock::new(None),
         }
     }
 
@@ -125,6 +136,8 @@ impl Service {
     /// rather than failing.
     pub fn close(&self) {
         self.reported_feeds.write().unwrap().clear();
+        self.reported_routines.write().unwrap().clear();
+        self.running_routine.write().unwrap().take();
         let previous = self.vault.write().unwrap().take();
         if let Some(vault) = &previous {
             // Drop the key and the decrypted index now rather than whenever the
@@ -187,6 +200,34 @@ impl Service {
     /// Note that `id`'s refresh worked, so the next outage is news again.
     pub fn feed_recovered(&self, id: CalendarId) {
         self.reported_feeds.write().unwrap().remove(&id);
+    }
+
+    // ---- routines --------------------------------------------------------
+
+    /// Note that a routine's run failed. True the first time, so a routine
+    /// whose endpoint has been unreachable every morning for a week says so
+    /// once rather than seven times. The same courtesy `feed_failed` extends
+    /// to a calendar that has stopped answering, and the same session scope:
+    /// cleared when the vault closes, so the next outage is news again.
+    pub fn routine_failed(&self, id: String) -> bool {
+        self.reported_routines.write().unwrap().insert(id)
+    }
+
+    /// Note that a routine ran, so its next failure is news.
+    pub fn routine_recovered(&self, id: String) {
+        self.reported_routines.write().unwrap().remove(&id);
+    }
+
+    /// Say which routine is running, or `None` when none is.
+    ///
+    /// Read by the tray, so that a process staying resident to keep its
+    /// appointments can say what it is doing rather than merely being there.
+    pub fn set_running_routine(&self, name: Option<String>) {
+        *self.running_routine.write().unwrap() = name;
+    }
+
+    pub fn running_routine(&self) -> Option<String> {
+        self.running_routine.read().unwrap().clone()
     }
 
     // ---- dispatch -------------------------------------------------------
@@ -270,6 +311,9 @@ impl Service {
             prompt: args.prompt,
             context: args.context,
             channel: sink,
+            // Somebody is sitting in front of this one, so a destructive call
+            // stops and asks them.
+            unattended: None,
         })
         .await?;
         self.events().changed(crate::events::Change {

@@ -63,6 +63,13 @@ import type {
   SearchHit,
   SearchKind,
   Profile,
+  Routine,
+  RoutineId,
+  RoutineInfo,
+  RoutineRun,
+  RoutineRunId,
+  RunQuery,
+  Template,
   Note,
   NoteId,
   NoteQuery,
@@ -448,6 +455,27 @@ export const api = {
    */
   profile: () => invoke<Profile>('profile'),
   saveProfile: (profile: Profile) => invoke<Profile>('save_profile', { profile }),
+
+  /** The assistant's standing work, with when each next runs. */
+  routines: () => invoke<RoutineInfo[]>('list_routines'),
+  saveRoutine: (routine: Routine) => invoke<Routine>('save_routine', { routine }),
+  deleteRoutine: (id: RoutineId) => invoke<void>('delete_routine', { id }),
+  /**
+   * Ask for a routine to run now.
+   *
+   * Queued rather than run: the scheduler carries it out on its next tick, so
+   * that runs stay serial however many times the button is pressed. Pressing it
+   * twice returns the same queued run rather than paying for two model calls.
+   */
+  runRoutine: (id: RoutineId) => invoke<RoutineRun>('run_routine', { id }),
+  runs: (query: RunQuery = {}) => invoke<RoutineRun[]>('list_runs', { query }),
+  run: (id: RoutineRunId) => invoke<RoutineRun>('get_run', { id }),
+  deleteRun: (id: RoutineRunId) => invoke<void>('delete_run', { id }),
+  /** Mark runs as looked at. An empty list means all of them. */
+  markRunsSeen: (ids: RoutineRunId[] = []) => invoke<void>('mark_runs_seen', { ids }),
+  /** How many runs nobody has looked at. The number on the app bar. */
+  unseenRuns: () => invoke<number>('unseen_runs'),
+  routineTemplates: () => invoke<Template[]>('routine_templates'),
 
   notes: (query: NoteQuery = {}) => invoke<NoteSummary[]>('list_notes', { query }),
   note: (id: NoteId) => invoke<Note>('get_note', { id }),

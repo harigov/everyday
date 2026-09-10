@@ -45,6 +45,13 @@ import type {
   Entry,
   Note,
   Profile,
+  Routine,
+  RoutineInfo,
+  RoutineRun,
+  RunQuery,
+  Template,
+  Trigger,
+  Weekday,
   NoteQuery,
   NoteSummary,
   EntryQuery,
@@ -1006,6 +1013,139 @@ const notes: Note[] = [
 function ahead(days: number): string {
   return day(-days)
 }
+
+/**
+ * Two routines and a run, so the Assistant app has something in it.
+ *
+ * One of them is switched off, because a list where everything is on does not
+ * show what the switch looks like.
+ */
+const routines: Routine[] = [
+  {
+    id: 'ro-brief',
+    name: 'Morning brief',
+    instructions:
+      'Look at what is due today and overdue, what is on the calendar, and any habit I am behind on. Write me a short note with the three or four things that actually matter.',
+    trigger: { type: 'schedule', at: '07:00', days: ['mon', 'tue', 'wed', 'thu', 'fri'] },
+    graceMinutes: 60,
+    enabled: true,
+    lastRunAt: iso(1),
+    createdAt: iso(30),
+    updatedAt: iso(30),
+  },
+  {
+    id: 'ro-review',
+    name: 'Weekly review',
+    instructions:
+      'Look back over the last seven days: where the time went by role, which goals were touched and which were not, and how the habits went. Write it up as a note.',
+    trigger: { type: 'schedule', at: '17:00', days: ['fri'] },
+    graceMinutes: 240,
+    enabled: false,
+    createdAt: iso(20),
+    updatedAt: iso(20),
+  },
+]
+
+const runs: RoutineRun[] = [
+  {
+    id: 'run-1',
+    routineId: 'ro-brief',
+    routineName: 'Morning brief',
+    slot: iso(1),
+    startedAt: iso(1),
+    finishedAt: iso(1),
+    outcome: 'done',
+    reason: '',
+    summary:
+      'Three things are due today and one is a day overdue. Nothing on the calendar until three. Swimming is one short of the week.',
+    conversationId: 'c-1',
+    seen: false,
+    steps: 2,
+  },
+  {
+    id: 'run-2',
+    routineId: 'ro-brief',
+    routineName: 'Morning brief',
+    slot: iso(4),
+    startedAt: iso(4),
+    finishedAt: iso(4),
+    outcome: 'skipped',
+    reason: 'its 07:00 was 6 hours ago, past the 60 minutes it allows',
+    summary: '',
+    seen: true,
+    steps: 0,
+  },
+]
+
+/** The trigger in words. The real one derives this in Rust; see `Trigger`. */
+function describeTrigger(t: Trigger): string {
+  if (t.type === 'manual') return 'Only when you ask'
+  if (t.type === 'taskDue')
+    return t.leadDays === 1 ? 'The day before a task is due' : 'When a task falls due'
+  if (t.type === 'beforeEvent') return `${t.leadMinutes} minutes before a meeting`
+  const days = t.days
+  if (days.length === 0 || days.length === 7) return `Every day at ${t.at}`
+  const weekdays = ['mon', 'tue', 'wed', 'thu', 'fri']
+  if (days.length === 5 && weekdays.every((d) => days.includes(d as Weekday))) {
+    return `Weekdays at ${t.at}`
+  }
+  if (days.length === 2 && days.includes('sat') && days.includes('sun')) {
+    return `Weekends at ${t.at}`
+  }
+  return `${days.join(', ')} at ${t.at}`
+}
+
+/** Roughly when a schedule next fires. Good enough for a demo build. */
+function nextSlot(t: Extract<Trigger, { type: 'schedule' }>): string {
+  const [hour, minute] = t.at.split(':').map(Number)
+  const next = new Date()
+  next.setHours(hour ?? 7, minute ?? 0, 0, 0)
+  if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1)
+  return next.toISOString()
+}
+
+const TEMPLATES: Template[] = [
+  {
+    name: 'Morning brief',
+    instructions:
+      'Look at what is due today and overdue, what is on the calendar, and any habit I am behind on. Write me a short note with the three or four things that actually matter, and say plainly if there is nothing much on.',
+    trigger: { type: 'schedule', at: '07:00', days: ['mon', 'tue', 'wed', 'thu', 'fri'] },
+    note: 'What is on today, before you open anything.',
+    available: true,
+  },
+  {
+    name: 'Weekly review',
+    instructions:
+      'Look back over the last seven days: where the time went by role, which goals were touched and which were not, how the habits went against their cadence, and what is still open. Write it up as a note. Be honest about the roles that got nothing.',
+    trigger: { type: 'schedule', at: '17:00', days: ['fri'] },
+    note: 'An honest account of the week, written down.',
+    available: true,
+  },
+  {
+    name: 'Weekend planner',
+    instructions:
+      'Look at the weekend: what is on the calendar, what is due, and which parts of my life have had no time this week. Suggest a shape for Saturday and Sunday and block out time for two or three things worth doing. Leave plenty unbooked.',
+    trigger: { type: 'schedule', at: '18:00', days: ['thu'] },
+    note: 'Something planned for the weekend, before it arrives.',
+    available: true,
+  },
+  {
+    name: 'Something to read',
+    instructions:
+      'Look at what is on my shelves and what I have finished lately. Pick two or three things from what is already there that fit what I seem interested in, and write me a note saying why each one.',
+    trigger: { type: 'schedule', at: '20:00', days: ['sun'] },
+    note: 'A nudge towards what is already on the shelf.',
+    available: true,
+  },
+  {
+    name: 'Meeting prep',
+    instructions:
+      'Before this meeting, look through my journal, my tasks and my notes for anything about the people in it or the subject, and write me a short note: who they are, what we last said, and what is outstanding.',
+    trigger: { type: 'beforeEvent', leadMinutes: 60, roleId: null },
+    note: 'Who is coming, and what you last said to them.',
+    available: true,
+  },
+]
 
 const projects: Project[] = [
   {
@@ -2038,6 +2178,98 @@ export const mockInvoke = async <T>(
       if (at >= 0) notes.splice(at, 1)
       return undefined as T
     }
+
+    case 'list_routines':
+      requireUnlocked()
+      return routines.map((r) => ({
+        ...r,
+        when: describeTrigger(r.trigger),
+        nextDue: r.enabled && r.trigger.type === 'schedule' ? nextSlot(r.trigger) : undefined,
+      })) satisfies RoutineInfo[] as T
+
+    case 'save_routine': {
+      requireUnlocked()
+      const next = { ...(args.routine as Routine), updatedAt: new Date().toISOString() }
+      const at = routines.findIndex((r) => r.id === next.id)
+      if (at < 0) routines.push(next)
+      else routines[at] = next
+      return next as T
+    }
+
+    case 'delete_routine': {
+      requireUnlocked()
+      const at = routines.findIndex((r) => r.id === args.id)
+      if (at >= 0) routines.splice(at, 1)
+      for (let i = runs.length - 1; i >= 0; i -= 1) {
+        if (runs[i]!.routineId === args.id) runs.splice(i, 1)
+      }
+      return undefined as T
+    }
+
+    case 'run_routine': {
+      requireUnlocked()
+      const routine = routines.find((r) => r.id === args.id)
+      if (!routine) throw new VaultError('not_found', 'no such routine')
+      // The real one queues and lets the scheduler do it. There is no
+      // scheduler here, so this finishes at once and says something plausible
+      // -- the demo build has no model to ask.
+      const run: RoutineRun = {
+        id: `run-${nextId++}`,
+        routineId: routine.id,
+        routineName: routine.name,
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        outcome: 'done',
+        reason: '',
+        summary: 'There is no model configured in the demo build, so this is a stand-in.',
+        seen: false,
+        steps: 0,
+      }
+      runs.unshift(run)
+      return run as T
+    }
+
+    case 'list_runs': {
+      requireUnlocked()
+      const q = (args.query ?? {}) as RunQuery
+      let rows = [...runs]
+      if (q.routineId) rows = rows.filter((r) => r.routineId === q.routineId)
+      if (q.unseen != null) rows = rows.filter((r) => r.seen === !q.unseen)
+      if (q.outcomes?.length) rows = rows.filter((r) => q.outcomes!.includes(r.outcome))
+      rows.sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      return rows.slice(0, q.limit ?? rows.length) as T
+    }
+
+    case 'get_run': {
+      requireUnlocked()
+      const found = runs.find((r) => r.id === args.id)
+      if (!found) throw new VaultError('not_found', 'no such run')
+      return found as T
+    }
+
+    case 'delete_run': {
+      requireUnlocked()
+      const at = runs.findIndex((r) => r.id === args.id)
+      if (at >= 0) runs.splice(at, 1)
+      return undefined as T
+    }
+
+    case 'mark_runs_seen': {
+      requireUnlocked()
+      const ids = (args.ids ?? []) as string[]
+      for (const run of runs) {
+        if (ids.length === 0 || ids.includes(run.id)) run.seen = true
+      }
+      return undefined as T
+    }
+
+    case 'unseen_runs':
+      requireUnlocked()
+      return runs.filter((r) => !r.seen).length as T
+
+    case 'routine_templates':
+      requireUnlocked()
+      return TEMPLATES as T
 
     case 'profile':
       requireUnlocked()
@@ -3145,11 +3377,15 @@ export const mockInvoke = async <T>(
 
     case 'save_memory': {
       requireUnlocked()
-      const memory = { ...(args.memory as Memory), pinned: true }
+      // The pin is whatever was sent, as the real one now is: the Memory pane
+      // sets it when it adds a fact, and can clear it again.
+      const memory = args.memory as Memory
       const i = memories.findIndex((m) => m.id === memory.id)
       if (i >= 0) memories[i] = memory
       else memories.push(memory)
-      return [] as T
+      // Answers with the whole list, so a caller can redraw without a second
+      // call. Nothing is evicted here; the cap is the real one's business.
+      return [...memories] as T
     }
 
     case 'delete_memory': {

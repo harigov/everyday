@@ -196,6 +196,11 @@ impl Sharing {
         Ok(self.status())
     }
 
+    /// Is a server actually listening right now?
+    pub fn is_running(&self) -> bool {
+        self.running.lock().unwrap().is_some()
+    }
+
     pub fn status(&self) -> ShareStatus {
         let running = self.running.lock().unwrap();
         let config = Self::config();

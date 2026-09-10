@@ -433,6 +433,44 @@
         {
           "name": "id",
           "required": true,
+          "type": "RoutineId"
+        }
+      ],
+      "changes": {
+        "kind": "routine",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_routine",
+      "returns": "void",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "RoutineRunId"
+        }
+      ],
+      "changes": {
+        "kind": "routineRun",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_run",
+      "returns": "void",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "TaskId"
         }
       ],
@@ -569,6 +607,22 @@
       "name": "get_note",
       "returns": "Note",
       "scope": "notes",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "RoutineRunId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_run",
+      "returns": "RoutineRun",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -871,6 +925,32 @@
       "args": [],
       "changes": null,
       "effect": "read",
+      "name": "list_routines",
+      "returns": "RoutineInfo[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "RunQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_runs",
+      "returns": "RoutineRun[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
       "name": "list_tags",
       "returns": "string[]",
       "scope": "journals",
@@ -990,6 +1070,25 @@
       "name": "lookup_metadata",
       "returns": "SearchResult[]",
       "scope": "web",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "ids",
+          "required": false,
+          "type": "RoutineRunId[]"
+        }
+      ],
+      "changes": {
+        "kind": "routineRun",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "mark_runs_seen",
+      "returns": "void",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -1269,6 +1368,35 @@
       "name": "profile",
       "returns": "Profile",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "routine_templates",
+      "returns": "Template[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "RoutineId"
+        }
+      ],
+      "changes": {
+        "kind": "routineRun",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "run_routine",
+      "returns": "RoutineRun",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -1666,6 +1794,25 @@
       "name": "save_role",
       "returns": "void",
       "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "routine",
+          "required": true,
+          "type": "Routine"
+        }
+      ],
+      "changes": {
+        "kind": "routine",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_routine",
+      "returns": "Routine",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -2086,6 +2233,16 @@
       "name": "unlock",
       "returns": "VaultStatus",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "unseen_runs",
+      "returns": "number",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },

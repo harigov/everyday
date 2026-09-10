@@ -883,6 +883,13 @@ fn serve(
             .await
             .map_err(command_error)?;
 
+        // The assistant's routines, on this runtime rather than one of their
+        // own. This is the shape the feature was built for: a machine under a
+        // desk, no window anywhere, and a seven o'clock brief that happens
+        // anyway. It does nothing until the first client unlocks the vault.
+        let (stop_scheduler, listen) = tokio::sync::watch::channel(false);
+        let scheduling = tokio::spawn(everyday_service::scheduler::run(service.clone(), listen));
+
         // The local socket as well, always. It is how `everyday new` writes
         // through a running server instead of coming up read-only beside it,
         // and how a browser-extension host will reach a vault that is not
@@ -934,6 +941,11 @@ fn serve(
         tokio::signal::ctrl_c().await.ok();
         println!();
         println!("Stopping.");
+        // The scheduler first, and waited on: a routine mid-run holds the
+        // vault's writer, and flushing underneath it would be a checkpoint
+        // taken halfway through somebody's morning brief.
+        let _ = stop_scheduler.send(true);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), scheduling).await;
         running.stop();
         // Give the vault its checkpoint before the process goes.
         if let Some(v) = service.get() {
@@ -1022,6 +1034,9 @@ fn run_tool(
         today: everyday_core::model::today_local(),
         tz: &tz,
         conversation: None,
+        // Somebody typed `everyday do`. Not unattended in the sense that
+        // matters: a person is reading the output.
+        unattended: false,
     };
     let value = tools::dispatch(&ctx, &name, &arguments)?;
     println!("{}", serde_json::to_string_pretty(&value)?);

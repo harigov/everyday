@@ -1007,7 +1007,7 @@ mod tests {
     const TODAY: jiff::civil::Date = jiff::civil::Date::constant(2026, 9, 8);
 
     fn ctx(vault: &Vault) -> ToolContext<'_> {
-        ToolContext { vault, today: TODAY, tz: "UTC", conversation: None }
+        ToolContext { vault, today: TODAY, tz: "UTC", conversation: None, unattended: false }
     }
 
     fn call(vault: &Vault, tool: &str, args: serde_json::Value) -> serde_json::Value {
@@ -1737,6 +1737,7 @@ mod tests {
                 "delete_time_block",
                 "delete_item",
                 "delete_goal",
+                "delete_routine",
                 "forget",
             ]
         );

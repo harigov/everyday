@@ -187,9 +187,17 @@ async fn list_memories(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult
 
 /// Write a memory by hand, which also pins it: a fact somebody typed is not one
 /// the assistant's own housekeeping may drop.
+/// Write a memory.
+///
+/// This used to force `pinned: true`, on the argument that a fact somebody
+/// typed is not one the assistant's own housekeeping may drop. The argument
+/// still holds and has moved to where it belongs: the Memory pane sets the
+/// flag when it adds one, and can clear it again. Forcing it here meant a
+/// person could not unpin a fact they had pinned by accident, and meant the
+/// pane's own switch did nothing.
 async fn save_memory(svc: Arc<Service>, _c: Ctx, args: SaveMemory) -> CommandResult<Vec<Memory>> {
     let vault = svc.require()?;
-    blocking(move || Ok(vault.save_memory(&Memory { pinned: true, ..args.memory })?)).await
+    blocking(move || Ok(vault.save_memory(&args.memory)?)).await
 }
 
 async fn delete_memory(svc: Arc<Service>, _c: Ctx, args: MemoryRef) -> CommandResult<()> {

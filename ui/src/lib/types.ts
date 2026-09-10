@@ -5,6 +5,8 @@
 export type JournalId = string
 export type EntryId = string
 export type NoteId = string
+export type RoutineId = string
+export type RoutineRunId = string
 export type BlobId = string
 export type ProjectId = string
 export type TaskId = string
@@ -420,6 +422,118 @@ export interface Profile {
   /** Anything else worth knowing, in their own words. */
   about: string
   updatedAt?: string | null
+}
+
+/** A day of the week, in the spelling the wire uses. */
+export type Weekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun'
+
+/**
+ * What sets a routine going.
+ *
+ * A tagged union rather than a bag of optional fields, because a clock time
+ * with weekdays and a lead time before a meeting have nothing in common but
+ * the word "when", and a routine has exactly one of them.
+ */
+export type Trigger =
+  /** A time of day, on the given days. An empty list means every day. */
+  | { type: 'schedule'; at: string; days: Weekday[] }
+  /** Before a calendar event starts. Answered by a query on each tick. */
+  | { type: 'beforeEvent'; leadMinutes: number; roleId?: RoleId | null }
+  /** Before a task falls due. Also a query. */
+  | { type: 'taskDue'; leadDays: number }
+  /** Never on its own. Run now, and nothing else. */
+  | { type: 'manual' }
+
+/**
+ * Standing work: what the assistant does without being asked.
+ *
+ * A trigger, an instruction in the person's own words, and a switch. The
+ * instructions are the prompt: nothing else about the conversation that set it
+ * up survives.
+ */
+export interface Routine {
+  id: RoutineId
+  name: string
+  instructions: string
+  trigger: Trigger
+  /**
+   * Minutes past its moment that it will still run.
+   *
+   * A morning brief missed by six hours is not a morning brief; a weekly
+   * review missed by a day still is. Past this the run is recorded as skipped
+   * with a reason, rather than running late or saying nothing.
+   */
+  graceMinutes: number
+  enabled: boolean
+  lastRunAt?: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+/** How a run ended. */
+export type Outcome = 'running' | 'done' | 'failed' | 'skipped'
+
+/** One run of a routine. */
+export interface RoutineRun {
+  id: RoutineRunId
+  routineId: RoutineId
+  /** What the routine was called when it ran, so a log row survives a rename. */
+  routineName: string
+  /** The scheduled moment this run is for. Absent when somebody asked by hand. */
+  slot?: string | null
+  startedAt: string
+  finishedAt?: string | null
+  outcome: Outcome
+  /** Why it failed or was skipped. Empty when it simply worked. */
+  reason: string
+  /** What it was about: the meeting, the task. Only query triggers set one. */
+  subject?: string | null
+  /** The transcript, openable in the rail. Absent if it never reached the model. */
+  conversationId?: ConversationId | null
+  /** The model's last message: what it has to say for itself. */
+  summary: string
+  /** Whether anybody has looked at it. The count on the app bar. */
+  seen: boolean
+  steps: number
+}
+
+export interface RunQuery {
+  routineId?: RoutineId | null
+  outcomes?: Outcome[]
+  unseen?: boolean | null
+  since?: string | null
+  limit?: number | null
+}
+
+/**
+ * A routine, with the two things a list has to say that the record does not.
+ *
+ * `when` and `nextDue` are derived in the core rather than here, so the
+ * interface and the assistant cannot spell "Weekdays at 07:00" two different
+ * ways.
+ */
+export interface RoutineInfo extends Routine {
+  /** The trigger in words. */
+  when: string
+  /** When it next runs, or absent for a trigger that is not a clock. */
+  nextDue?: string
+}
+
+/**
+ * A routine somebody could start from, filled in.
+ *
+ * Offered, never imposed: a template is only an editor with words already in
+ * it. They come from the service because the assistant offers them too — asked
+ * to set up a morning brief, it should propose what the plus button does.
+ */
+export interface Template {
+  name: string
+  instructions: string
+  trigger: Trigger
+  /** Why somebody would want this one. Drawn under the name. */
+  note: string
+  /** False for a template whose trigger needs something this vault has not got. */
+  available: boolean
 }
 
 /** How a note list is ordered. Fewer choices than an entry list has. */
@@ -1003,6 +1117,8 @@ export type ChangeKind =
   | 'journal'
   | 'entry'
   | 'note'
+  | 'routine'
+  | 'routineRun'
   | 'project'
   | 'task'
   | 'block'

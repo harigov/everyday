@@ -2663,6 +2663,7 @@ mod tests {
             today: jiff::civil::Date::constant(2026, 9, 8),
             tz: "UTC",
             conversation: None,
+            unattended: false,
         };
         let err = tools::dispatch(&ctx, "create_task", &serde_json::json!({ "title": "x" }))
             .expect_err("a tool the backend cannot serve must be refused");

@@ -54,7 +54,15 @@ export type Screen = 'loading' | 'setup' | 'locked' | 'main' | 'error'
  * back to the app you were last in is what makes it feel like one program
  * rather than four bolted together.
  */
-export const SECTIONS = ['journal', 'notes', 'todo', 'calendar', 'library', 'overview'] as const
+export const SECTIONS = [
+  'journal',
+  'notes',
+  'todo',
+  'calendar',
+  'library',
+  'overview',
+  'assistant',
+] as const
 export type Section = (typeof SECTIONS)[number]
 
 /**
@@ -441,8 +449,30 @@ class AppState {
     return this.status?.capabilities?.notes === true
   }
 
+  /**
+   * Does this vault hold the assistant's standing work?
+   *
+   * Separate from `supportsAssistant`: a backend could hold conversations and
+   * not routines, and the rail would still work. The Assistant app is offered
+   * on the first; its routines pane is drawn on the second.
+   */
+  get supportsRoutines(): boolean {
+    return this.status?.capabilities?.routines === true
+  }
+
+  /**
+   * Does this vault hold the assistant's own records at all?
+   *
+   * The same flag the rail reads. The Assistant app needs nothing more: even
+   * without routines it has a memory list and a thread history.
+   */
+  get supportsAssistant(): boolean {
+    return this.status?.capabilities?.agent === true
+  }
+
   /** Is this section available on the vault that is open? */
   canShow(section: Section): boolean {
+    if (section === 'assistant') return this.supportsAssistant
     if (section === 'notes') return this.supportsNotes
     if (section === 'todo') return this.supportsTasks
     if (section === 'calendar') return this.supportsCalendar
