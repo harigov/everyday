@@ -16,6 +16,9 @@
   import { onDestroy } from 'svelte'
   import { isLoopback } from '../lib/agent'
   import { agent } from '../lib/agent.svelte'
+  import { app } from '../lib/state.svelte'
+  import { assistant } from '../lib/assistant.svelte'
+  import { panels } from '../lib/panels.svelte'
   import type { AgentSettings } from '../lib/types'
   import Icon from './Icon.svelte'
 
@@ -264,15 +267,28 @@
       </p>
     </section>
 
+    <!-- The list used to be here, and this is what is left of it: a pointer.
+         It grew past what a settings tab should hold the moment a fact could
+         be edited, pinned and traced back to the conversation that taught it,
+         and a list you can only delete from is not a list you can correct. It
+         lives in the Assistant app now, beside the routines that read it. -->
     {#if agent.memories.length > 0}
       <section>
         <span class="eyebrow">What it remembers</span>
-        {#each agent.memories as memory (memory.id)}
-          <div class="memory">
-            <span>{memory.text}</span>
-            <button class="link" onclick={() => void agent.forget(memory.id)}>Forget</button>
-          </div>
-        {/each}
+        <p class="hint">
+          {agent.memories.length}
+          {agent.memories.length === 1 ? 'thing' : 'things'}, read at the start of every
+          conversation.
+          <button
+            class="link"
+            onclick={() => {
+              panels.closeSettings()
+              void app.goTo('assistant').then(() => assistant.setPane('memory'))
+            }}
+          >
+            See them
+          </button>
+        </p>
       </section>
     {/if}
   </div>
@@ -416,33 +432,7 @@
   }
 
   .stored,
-  .memory {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--sp-3);
-    padding: var(--sp-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg);
-    font-size: var(--text-sm);
-    min-width: 0;
-  }
   .stored span,
-  .memory span {
-    display: flex;
-    flex: 1;
-    align-items: baseline;
-    gap: var(--sp-2);
-    min-width: 0;
-    line-height: var(--leading-normal);
-    color: var(--fg-muted);
-    /* A remembered note is a sentence somebody's model wrote, and it can be
-       one very long word. It wraps rather than widening the panel. */
-    overflow-wrap: anywhere;
-  }
-  .memory + .memory {
-    margin-top: calc(var(--sp-2) * -1 + var(--sp-2));
-  }
   .link {
     flex: none;
     color: var(--accent);

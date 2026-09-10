@@ -36,6 +36,7 @@ import { library } from './library.svelte'
 import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
 import { panels } from './panels.svelte'
+import { assistant } from './assistant.svelte'
 import { app, type Section } from './state.svelte'
 import { todo } from './todo.svelte'
 
@@ -161,6 +162,13 @@ export const ACTIONS: Binding[] = [
     group: 'Go to',
     when: () => anywhere() && app.canShow('overview'),
     run: () => app.setSection('overview'),
+  },
+  {
+    keys: 'g a',
+    label: 'Assistant',
+    group: 'Go to',
+    when: () => anywhere() && app.canShow('assistant'),
+    run: () => app.setSection('assistant'),
   },
   {
     keys: 'mod+j',
@@ -537,6 +545,40 @@ export const ACTIONS: Binding[] = [
     },
   },
   {
+    id: 'assistant:runs',
+    label: 'What the assistant did',
+    group: 'Assistant',
+    keywords: ['runs', 'log', 'routine', 'brief', 'report'],
+    icon: 'inbox',
+    tray: true,
+    when: () => app.screen === 'main' && app.supportsAssistant,
+    run: async () => {
+      if (await app.goTo('assistant')) assistant.setPane('runs')
+    },
+  },
+  {
+    id: 'assistant:new-routine',
+    label: 'New routine',
+    group: 'Assistant',
+    keywords: ['schedule', 'standing', 'every day', 'automate'],
+    icon: 'clock',
+    tray: true,
+    when: () => app.screen === 'main' && app.supportsRoutines,
+    run: async () => {
+      if (await app.goTo('assistant')) await assistant.draft()
+    },
+  },
+  {
+    label: 'What the assistant remembers',
+    group: 'Assistant',
+    keywords: ['memory', 'facts', 'forget'],
+    icon: 'sparkle',
+    when: () => app.screen === 'main' && app.supportsAssistant,
+    run: async () => {
+      if (await app.goTo('assistant')) assistant.setPane('memory')
+    },
+  },
+  {
     id: 'notes:new',
     label: 'New note',
     group: 'Notes',
@@ -645,7 +687,8 @@ export const ACTIONS: Binding[] = [
 
 /** What "the next thing" means in the app that is open. */
 function create() {
-  if (app.section === 'notes') void notes.create()
+  if (app.section === 'assistant') void assistant.draft()
+  else if (app.section === 'notes') void notes.create()
   else if (app.section === 'todo') todo.focusCapture()
   else if (app.section === 'calendar') void calendar.bookNow()
   else if (app.section === 'library') library.focusCapture()

@@ -73,6 +73,7 @@ export const TRAY_GROUPS = [
   'Calendar',
   'Library',
   'Overview',
+  'Assistant',
   'Vault',
 ] as const
 

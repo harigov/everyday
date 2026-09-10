@@ -15,6 +15,7 @@
   // pressed, and the bar does not.
 
   import { app, type Section } from '../lib/state.svelte'
+  import { assistant } from '../lib/assistant.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { panels } from '../lib/panels.svelte'
@@ -41,6 +42,7 @@
     // so it reads left to right as the things you do and then the thing
     // they add up to.
     { id: 'overview', label: 'Overview', icon: 'compass' },
+    { id: 'assistant', label: 'Assistant', icon: 'sparkle' },
   ]
   const shown = $derived(APPS.filter((a) => app.canShow(a.id)))
 
@@ -108,7 +110,15 @@
           onclick={() => app.setSection(a.id)}
           oncontextmenu={(e) => menu.show(e, appMenu(a))}
         >
-          <span><Icon name={a.icon} size={21} weight={1.7} /></span>
+          <span class="glyph">
+            <Icon name={a.icon} size={21} weight={1.7} />
+            <!-- How anybody finds out the assistant did something while they
+                 were away. A number rather than a stream of banners: work
+                 done overnight is a queue, not an interruption. -->
+            {#if a.id === 'assistant' && assistant.unseen > 0}
+              <span class="badge">{assistant.unseen > 9 ? '9+' : assistant.unseen}</span>
+            {/if}
+          </span>
           <span class="barlabel">{a.label}</span>
         </button>
       {/each}
@@ -155,6 +165,29 @@
   .cap {
     height: var(--header-h);
     flex: none;
+  }
+
+  .glyph {
+    position: relative;
+    display: grid;
+    place-items: center;
+  }
+
+  .badge {
+    position: absolute;
+    top: -4px;
+    right: -7px;
+    display: grid;
+    place-items: center;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
   }
 
   nav {

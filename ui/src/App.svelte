@@ -20,6 +20,8 @@
   import TodoView from './components/TodoView.svelte'
   import CalendarView from './components/CalendarView.svelte'
   import LibraryView from './components/LibraryView.svelte'
+  import { assistant } from './lib/assistant.svelte'
+  import AssistantView from './components/AssistantView.svelte'
   import NotesView from './components/NotesView.svelte'
   import OverviewView from './components/OverviewView.svelte'
   import LockScreen from './components/LockScreen.svelte'
@@ -86,6 +88,10 @@
     // records — the one migration that cannot be a SQL step, since the old
     // definitions are inside a sealed journal payload no migration can read.
     void tracking.load()
+    // Only the number, not the three lists behind it. The app bar draws it in
+    // every app, so it must not cost a query per app; the Assistant app loads
+    // the rest when it is opened.
+    void assistant.refreshCount()
   })
 
   // Each app tints the window with the accent of whatever it has selected:
@@ -95,7 +101,10 @@
   const accent = $derived(
     app.section === 'todo'
       ? todo.accent
-      : app.section === 'calendar' || app.section === 'overview' || app.section === 'notes'
+      : app.section === 'calendar' ||
+          app.section === 'overview' ||
+          app.section === 'notes' ||
+          app.section === 'assistant'
         ? 'var(--accent)'
         : app.section === 'library'
           ? library.accent
@@ -177,7 +186,9 @@
       <div class="panes">
         <AppBar />
         <Sidebar />
-        {#if app.section === 'notes'}
+        {#if app.section === 'assistant'}
+          <AssistantView />
+        {:else if app.section === 'notes'}
           <NotesView />
         {:else if app.section === 'todo'}
           <TodoView />
