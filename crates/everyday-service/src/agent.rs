@@ -364,7 +364,8 @@ fn build(
     context: Option<&str>,
     unattended: bool,
 ) -> CommandResult<Agent> {
-    let model = &settings.model;
+    let model = &settings.assistant_model;
+    let connection = &settings.provider_config;
 
     // A local model needs no credential and is usually configured without
     // one, and the endpoint ignores whatever is sent -- so a keyless
@@ -372,7 +373,7 @@ fn build(
     // which would leave the builder's auth type unresolved. See
     // `Provider::needs_key` for when a key is insisted on at all.
     let client = openai::CompletionsClient::builder()
-        .base_url(model.endpoint())
+        .base_url(connection.endpoint())
         .api_key::<rig_agent::core::client::BearerAuth>(key.unwrap_or_default())
         .build()
         .map_err(|e| CommandError::new("agent", format!("could not start the assistant: {e}")))?;

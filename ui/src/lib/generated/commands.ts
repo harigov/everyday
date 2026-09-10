@@ -63,6 +63,16 @@ import type {
   Project,
   ProjectId,
   ProviderInfo,
+  QuickBackfillPick,
+  QuickEventDraft,
+  QuickFields,
+  QuickJobRow,
+  QuickKindDraft,
+  QuickLabels,
+  QuickMapping,
+  QuickReading,
+  QuickTaskDraft,
+  QuickTrackerDraft,
   Reading,
   ReadingId,
   ReadingQuery,
@@ -143,18 +153,12 @@ export interface Commands {
   getRun: { args: { id: RoutineRunId }; result: RoutineRun }
   getTask: { args: { id: TaskId }; result: Task }
   goalActivity: { args: { id: GoalId }; result: GoalActivity }
-  importCalendar: {
-    args: { name: string; label: string; color: string; ics: string }
-    result: CalendarInfo
-  }
+  importCalendar: { args: { name: string; label: string; color: string; ics: string }; result: CalendarInfo }
   libraryStats: { args: Record<string, never>; result: LibraryStats }
   listBlocks: { args: { query: BlockQuery }; result: TimeBlock[] }
   listCalendars: { args: Record<string, never>; result: CalendarInfo[] }
   listCommands: { args: Record<string, never>; result: Surface }
-  listConversations: {
-    args: { limit?: number | null; includeRuns?: boolean }
-    result: ConversationSummary[]
-  }
+  listConversations: { args: { limit?: number | null; includeRuns?: boolean }; result: ConversationSummary[] }
   listEntries: { args: { query: EntryQuery }; result: EntrySummary[] }
   listEvents: { args: { query: EventQuery }; result: CalendarEvent[] }
   listGoals: { args: { query: GoalQuery }; result: Goal[] }
@@ -175,27 +179,11 @@ export interface Commands {
   listTools: { args: Record<string, never>; result: ToolInfo[] }
   listTrackers: { args: Record<string, never>; result: Tracker[] }
   lock: { args: Record<string, never>; result: VaultStatus }
-  logReading: {
-    args: {
-      trackerId: TrackerId
-      value: number
-      date: string
-      at?: string | null
-      journalId?: JournalId | null
-      entryId?: EntryId | null
-    }
-    result: Reading
-  }
-  lookupMetadata: {
-    args: { kindId: KindId; query: string; limit?: number | null }
-    result: SearchResult[]
-  }
+  logReading: { args: { trackerId: TrackerId; value: number; date: string; at?: string | null; journalId?: JournalId | null; entryId?: EntryId | null }; result: Reading }
+  lookupMetadata: { args: { kindId: KindId; query: string; limit?: number | null }; result: SearchResult[] }
   markRunsSeen: { args: { ids?: RoutineRunId[] }; result: void }
   mergeTrackers: { args: { from: TrackerId; into: TrackerId }; result: number }
-  newBlock: {
-    args: { subject: BlockSubject; start: string; minutes: number; kind?: BlockKind | null }
-    result: TimeBlock
-  }
+  newBlock: { args: { subject: BlockSubject; start: string; minutes: number; kind?: BlockKind | null }; result: TimeBlock }
   newConversation: { args: Record<string, never>; result: Conversation }
   newEntry: { args: { journalId: JournalId }; result: Entry }
   newGoal: { args: { roleId: RoleId; title: string }; result: Goal }
@@ -207,23 +195,40 @@ export interface Commands {
   newProject: { args: { name: string }; result: Project }
   newRole: { args: { name: string }; result: Role }
   newRoutine: { args: Record<string, never>; result: Routine }
-  newTask: {
-    args: { projectId?: ProjectId | null; parentId?: TaskId | null; status?: TaskStatus | null }
-    result: Task
-  }
+  newTask: { args: { projectId?: ProjectId | null; parentId?: TaskId | null; status?: TaskStatus | null }; result: Task }
   newTracker: { args: { name: string; kind: TrackerKind }; result: Tracker }
   noteTags: { args: Record<string, never>; result: string[] }
   pollAutoLock: { args: Record<string, never>; result: boolean }
   profile: { args: Record<string, never>; result: Profile }
+  quickEntryLabels: { args: { entryId: EntryId; journalId?: JournalId | null }; result: QuickLabels }
+  quickEntryReadings: { args: { entryId: EntryId; journalId?: JournalId | null }; result: QuickReading[] }
+  quickEntryTitle: { args: { entryId: EntryId; journalId?: JournalId | null }; result: string }
+  quickEstimate: { args: { taskId: TaskId }; result: number | null }
+  quickEventFromLine: { args: { line: string }; result: QuickEventDraft | null }
+  quickEventTitle: { args: { title: string }; result: string }
+  quickFrontMatter: { args: { ours: string[]; theirs: string[] }; result: QuickMapping }
+  quickGoalBackfill: { args: { goalId: GoalId }; result: QuickBackfillPick[] }
+  quickGoalWording: { args: { title: string; roleId: RoleId }; result: string }
+  quickImportColumns: { args: { kindId: KindId; columns: string[]; sample?: string[] }; result: QuickMapping }
+  quickItemFields: { args: { itemId: ItemId }; result: QuickFields }
+  quickJobs: { args: Record<string, never>; result: QuickJobRow[] }
+  quickKindDraft: { args: { name: string }; result: QuickKindDraft }
+  quickNoteLabels: { args: { noteId: NoteId }; result: QuickLabels }
+  quickNoteTasks: { args: { noteId: NoteId }; result: QuickTaskDraft[] }
+  quickNoteTitle: { args: { noteId: NoteId }; result: string }
+  quickPickResult: { args: { kindId: KindId; query: string; results: SearchResult[] }; result: number | null }
+  quickReadingFromLine: { args: { line: string }; result: QuickReading | null }
+  quickSubtasks: { args: { taskId: TaskId }; result: QuickTaskDraft[] }
+  quickTaskFromLine: { args: { line: string }; result: QuickTaskDraft | null }
+  quickTaskLabels: { args: { title: string }; result: QuickLabels }
+  quickTrackerDraft: { args: { name: string; line?: string }; result: QuickTrackerDraft | null }
+  quickWeekNote: { args: { thisWeek: string; lastWeek?: string }; result: string }
   readExport: { args: { handle: string; offset: number }; result: ExportChunk }
   readImport: { args: { handle: string }; result: ArchiveManifest }
   routineTemplates: { args: Record<string, never>; result: Template[] }
   runImport: { args: { handle: string; parts: string[]; mode: string }; result: ImportResult }
   runRoutine: { args: { id: RoutineId }; result: RoutineRun }
-  runTool: {
-    args: { name: string; arguments?: unknown; confirmDestructive?: boolean }
-    result: unknown
-  }
+  runTool: { args: { name: string; arguments?: unknown; confirmDestructive?: boolean }; result: unknown }
   saveAgentSettings: { args: { settings: AgentSettings }; result: AgentSettings }
   saveBlock: { args: { block: TimeBlock }; result: void }
   saveCalendar: { args: { calendar: Calendar }; result: void }
@@ -247,24 +252,16 @@ export interface Commands {
   saveTask: { args: { task: Task }; result: void }
   saveTasks: { args: { tasks: Task[] }; result: void }
   saveTracker: { args: { tracker: Tracker }; result: void }
-  search: {
-    args: { query: string; journalId?: JournalId | null; kind?: SearchKind | null; limit: number }
-    result: SearchHit[]
-  }
+  search: { args: { query: string; journalId?: JournalId | null; kind?: SearchKind | null; limit: number }; result: SearchHit[] }
   searchSources: { args: Record<string, never>; result: SourceInfo[] }
   seedRoles: { args: Record<string, never>; result: number }
-  sendMessage: {
-    args: { conversationId: ConversationId; prompt: string; context?: string | null }
-    result: void
-  }
+  sendMessage: { args: { conversationId: ConversationId; prompt: string; context?: string | null }; result: void }
   setAgentKey: { args: { key: string }; result: void }
   setAutoLock: { args: { seconds: number }; result: void }
   setForgetKey: { args: { seconds: number }; result: void }
-  setItemProgress: {
-    args: { id: ItemId; position: number; total?: number | null; log: boolean }
-    result: Item
-  }
+  setItemProgress: { args: { id: ItemId; position: number; total?: number | null; log: boolean }; result: Item }
   setItemStatus: { args: { id: ItemId; status: ItemStatus; log: boolean }; result: Item }
+  setQuickJob: { args: { name: string; on: boolean }; result: QuickJobRow[] }
   startExport: { args: { parts: string[]; media: boolean }; result: ExportHandle }
   startImport: { args: { name: string; bytes: number }; result: ImportUpload }
   status: { args: Record<string, never>; result: VaultStatus }
@@ -372,6 +369,29 @@ export const COMMAND_NAMES = {
   noteTags: 'note_tags',
   pollAutoLock: 'poll_auto_lock',
   profile: 'profile',
+  quickEntryLabels: 'quick_entry_labels',
+  quickEntryReadings: 'quick_entry_readings',
+  quickEntryTitle: 'quick_entry_title',
+  quickEstimate: 'quick_estimate',
+  quickEventFromLine: 'quick_event_from_line',
+  quickEventTitle: 'quick_event_title',
+  quickFrontMatter: 'quick_front_matter',
+  quickGoalBackfill: 'quick_goal_backfill',
+  quickGoalWording: 'quick_goal_wording',
+  quickImportColumns: 'quick_import_columns',
+  quickItemFields: 'quick_item_fields',
+  quickJobs: 'quick_jobs',
+  quickKindDraft: 'quick_kind_draft',
+  quickNoteLabels: 'quick_note_labels',
+  quickNoteTasks: 'quick_note_tasks',
+  quickNoteTitle: 'quick_note_title',
+  quickPickResult: 'quick_pick_result',
+  quickReadingFromLine: 'quick_reading_from_line',
+  quickSubtasks: 'quick_subtasks',
+  quickTaskFromLine: 'quick_task_from_line',
+  quickTaskLabels: 'quick_task_labels',
+  quickTrackerDraft: 'quick_tracker_draft',
+  quickWeekNote: 'quick_week_note',
   readExport: 'read_export',
   readImport: 'read_import',
   routineTemplates: 'routine_templates',
@@ -410,6 +430,7 @@ export const COMMAND_NAMES = {
   setForgetKey: 'set_forget_key',
   setItemProgress: 'set_item_progress',
   setItemStatus: 'set_item_status',
+  setQuickJob: 'set_quick_job',
   startExport: 'start_export',
   startImport: 'start_import',
   status: 'status',
@@ -527,6 +548,29 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'note_tags',
   'poll_auto_lock',
   'profile',
+  'quick_entry_labels',
+  'quick_entry_readings',
+  'quick_entry_title',
+  'quick_estimate',
+  'quick_event_from_line',
+  'quick_event_title',
+  'quick_front_matter',
+  'quick_goal_backfill',
+  'quick_goal_wording',
+  'quick_import_columns',
+  'quick_item_fields',
+  'quick_jobs',
+  'quick_kind_draft',
+  'quick_note_labels',
+  'quick_note_tasks',
+  'quick_note_title',
+  'quick_pick_result',
+  'quick_reading_from_line',
+  'quick_subtasks',
+  'quick_task_from_line',
+  'quick_task_labels',
+  'quick_tracker_draft',
+  'quick_week_note',
   'read_export',
   'read_import',
   'routine_templates',
@@ -564,6 +608,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_forget_key',
   'set_item_progress',
   'set_item_status',
+  'set_quick_job',
   'start_export',
   'start_import',
   'status',
@@ -656,6 +701,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_forget_key',
   'set_item_progress',
   'set_item_status',
+  'set_quick_job',
   'subscribe_calendar',
   'sync_calendar',
   'sync_due_calendars',
@@ -723,6 +769,7 @@ export const CHANGE_KINDS: Readonly<Record<string, string>> = {
   set_forget_key: 'settings',
   set_item_progress: 'item',
   set_item_status: 'item',
+  set_quick_job: 'settings',
   subscribe_calendar: 'calendar',
   sync_calendar: 'event',
   sync_due_calendars: 'event',

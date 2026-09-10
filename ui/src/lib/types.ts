@@ -1597,14 +1597,39 @@ export interface SourceInfo {
 /** Which family of API the model is spoken to over. */
 export type Provider = 'openAi'
 
-export interface ModelConfig {
+/**
+ * Where the models are: one endpoint, one credential, however many models.
+ *
+ * Split from `LLMModelConfig` because the two change on different occasions.
+ * Which provider you talk to changes when you move house — a new endpoint, a
+ * new key. Which model you ask for changes whenever somebody ships one. There
+ * is deliberately no way to express a second endpoint: the quick model is the
+ * same provider, one tier down.
+ */
+export interface LLMProviderConfig {
   provider: Provider
-  /** As the endpoint spells it: `gpt-5.1`, `qwen3:32b`. */
-  model: string
   /** Overrides the provider default. What points this at a local model. */
   baseUrl: string | null
+}
+
+/** Which model to ask, and how to ask it. Carries nothing about where it is. */
+export interface LLMModelConfig {
+  /** As the endpoint spells it: `gpt-5.1`, `qwen3:32b`. */
+  model: string
   temperature: number | null
   maxTokens: number | null
+}
+
+/**
+ * Which quick jobs may run, as the difference from the defaults.
+ *
+ * Stored this way rather than as a list of what is on so that a job added in
+ * a later build arrives at its own default, instead of arriving switched off
+ * because a settings record written last year did not mention it.
+ */
+export interface QuickPolicy {
+  allowed?: string[]
+  denied?: string[]
 }
 
 export interface AgentSettings {
@@ -1615,7 +1640,21 @@ export interface AgentSettings {
    * assistant" in the rail's header and in its own system prompt.
    */
   name: string
-  model: ModelConfig
+  /** Where the models are. Shared by every model this vault asks for. */
+  providerConfig: LLMProviderConfig
+  /** The model that holds conversations: tools, memories, a turn budget. */
+  assistantModel: LLMModelConfig
+  /**
+   * The cheap, fast model behind the suggestions in the capture boxes.
+   *
+   * `null` means those jobs are not done. It deliberately does *not* fall back
+   * to `assistantModel`: these run per keystroke-ish interaction, and a blank
+   * field that silently billed at reasoning-model rates would be a bill nobody
+   * could account for.
+   */
+  quickModel: LLMModelConfig | null
+  /** Which quick jobs are allowed, by job name. */
+  quickJobs: QuickPolicy
   /** The person's own standing instructions. */
   instructions: string
   /** Whether a destructive tool call stops and asks first. */
@@ -1643,6 +1682,108 @@ export interface AgentSettings {
   web: boolean
   /** Whether a key is stored. Never the key. */
   hasKey: boolean
+}
+
+// ── The quick model ──────────────────────────────────────────────────────
+//
+// The answers the small, fast model gives. Every one of them is a *proposal*
+// drawn beside a field somebody already filled in or a record already saved —
+// none of these types is ever written straight to the vault, and the core has
+// already clamped each one by the time it gets here.
+
+/** One switch in the settings pane's list of quick jobs. */
+export interface QuickJobRow {
+  name: string
+  label: string
+  /** What this job sends. The sentence somebody reads to decide. */
+  blurb: string
+  /** Which app it belongs to, for grouping. */
+  app: string
+  on: boolean
+  defaultOn: boolean
+}
+
+/** Fields pulled out of a page: what a shelf wants to know about a thing. */
+export interface QuickFields {
+  creator: string
+  year: number | null
+  summary: string
+  /** Only keys this kind declared; anything else was dropped in the core. */
+  facts: Record<string, string>
+}
+
+export interface QuickKindFieldDraft {
+  key: string
+  label: string
+}
+
+/** A proposed shelf: what "Wines" looks like before anybody edits it. */
+export interface QuickKindDraft {
+  icon: string
+  color: string
+  wishlistVerb: string
+  activeVerb: string
+  doneVerb: string
+  itemNoun: string
+  fields: QuickKindFieldDraft[]
+  source: string
+}
+
+/** Tags and a purpose, with the purpose already resolved to an id. */
+export interface QuickLabels {
+  tags: string[]
+  purpose: Purpose | null
+}
+
+/** A task the model proposes: from a sentence, from a note, or as one step. */
+export interface QuickTaskDraft {
+  title: string
+  dueDate: string | null
+  dueTime: string | null
+  priority: Priority | null
+  estimateMinutes: number | null
+  tags: string[]
+}
+
+/** Something with a time on it, read out of a sentence. */
+export interface QuickEventDraft {
+  title: string
+  date: string | null
+  start: string | null
+  end: string | null
+  location: string
+}
+
+/** A number found in a sentence, against a tracker that may not exist yet. */
+export interface QuickReading {
+  /** `null` when it is proposing a tracker that does not exist yet. */
+  trackerId: TrackerId | null
+  name: string
+  value: number
+  at: string | null
+  /** What the chip says, so it can be accepted without reasoning about units. */
+  label: string
+}
+
+/** A proposed tracker, for the one made by the act of recording. */
+export interface QuickTrackerDraft {
+  name: string
+  kind: TrackerKind
+  unit: string
+  scaleMax: number | null
+  icon: string
+  color: string
+}
+
+/** Somebody else's column names, mapped onto ours. Ours is the key. */
+export interface QuickMapping {
+  columns: Record<string, string>
+}
+
+/** One record a newly written goal might already cover. */
+export interface QuickBackfillPick {
+  taskId: TaskId
+  title: string
 }
 
 /**

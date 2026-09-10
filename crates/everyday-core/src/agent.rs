@@ -48,6 +48,7 @@
 pub mod tools;
 
 use crate::error::{Error, Result};
+use crate::quick::QuickPolicy;
 use crate::id::{ConversationId, MemoryId, MessageId};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -137,45 +138,43 @@ fn is_loopback(url: &str) -> bool {
         })
 }
 
-/// Which model, spoken to how.
+/// Where the models are: one endpoint, one credential, however many models.
+///
+/// Split from [`LLMModelConfig`] because the two change on different
+/// occasions and for different reasons. Which *provider* you talk to changes
+/// when you move house — a new endpoint, a new key, everything downstream
+/// invalidated. Which *model* you ask for changes whenever somebody ships
+/// one, which is most weeks, and invalidates nothing.
+///
+/// Keeping them apart is what lets a vault hold two models against one
+/// connection without holding two connections. There is deliberately no way
+/// to express a second endpoint: a quick model at a different host would be
+/// a second place a credential lives and a second server that learns
+/// something about this vault, for a feature whose whole premise is "the
+/// same provider, a smaller model". If that is ever wanted it should arrive
+/// looking like the override it is.
+///
+/// It is also the reason [`AgentSettings::is_usable`] can ask "is a key
+/// needed here" once. Two model records each carrying their own URL would
+/// be two answers to that question, and they would eventually disagree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ModelConfig {
+pub struct LLMProviderConfig {
     pub provider: Provider,
-    /// The model name as the endpoint spells it: `gpt-5.1`, `qwen3:32b`,
-    /// whatever the gateway in the middle calls it. Free text rather than an
-    /// enum, because the list changes weekly and a stale enum is how an app
-    /// stops being able to reach the current model.
-    pub model: String,
     /// Overrides [`Provider::default_base_url`]. The whole reason this app
     /// can be pointed at a model running on the same machine.
     ///
-    /// Stored with no trailing slash; see [`ModelConfig::endpoint`].
+    /// Stored with no trailing slash; see [`LLMProviderConfig::endpoint`].
     pub base_url: Option<String>,
-    /// `None` leaves it to the endpoint, which is the right default: some
-    /// models reject the parameter outright and others have a sensible one.
-    pub temperature: Option<f64>,
-    /// Cap on a single reply. `None` means the endpoint's own limit.
-    pub max_tokens: Option<u32>,
 }
 
-impl Default for ModelConfig {
+impl Default for LLMProviderConfig {
     fn default() -> Self {
-        Self {
-            provider: Provider::OpenAi,
-            model: DEFAULT_MODEL.into(),
-            base_url: None,
-            temperature: None,
-            max_tokens: None,
-        }
+        Self { provider: Provider::OpenAi, base_url: None }
     }
 }
 
-/// What a fresh install proposes. Chosen because tool calling is the whole
-/// feature and this is the cheapest model that does it reliably.
-pub const DEFAULT_MODEL: &str = "gpt-5.1-mini";
-
-impl ModelConfig {
+impl LLMProviderConfig {
     /// The base URL to actually use, trailing slash removed.
     ///
     /// The normalisation matters because a pasted URL routinely ends in one
@@ -190,20 +189,28 @@ impl ModelConfig {
             .unwrap_or_else(|| self.provider.default_base_url())
     }
 
-    /// Whether this configuration needs an API key to be usable.
+    /// Whether this connection needs an API key to be usable.
     pub fn needs_key(&self) -> bool {
         self.provider.needs_key(self.base_url.as_deref())
     }
 
-    /// Reject a configuration the request layer could not act on.
+    /// Whether the models are on this machine.
+    ///
+    /// Read by the interface to decide what to say about what leaves the
+    /// machine, and by [`AgentSettings::default_quick_model`] to decide
+    /// whether the quick model starts switched on — pulling four fields out
+    /// of a paragraph is the one job in this application a small local model
+    /// is unambiguously good enough for, so the private configuration is
+    /// also the one that can afford to have it on.
+    pub fn is_local(&self) -> bool {
+        self.base_url.as_deref().is_some_and(is_loopback)
+    }
+
+    /// Reject a connection the request layer could not act on.
     ///
     /// Checked here rather than at the first message because the settings
-    /// pane is where a person can still fix it. An empty model name reaches
-    /// the endpoint as a 400 whose text names a field they never saw.
+    /// pane is where a person can still fix it.
     pub fn validate(&self) -> Result<()> {
-        if self.model.trim().is_empty() {
-            return Err(Error::Invalid("a model name is required".into()));
-        }
         if let Some(url) = &self.base_url
             && !url.trim().is_empty()
         {
@@ -225,6 +232,84 @@ impl ModelConfig {
                         .into(),
                 ));
             }
+        }
+        Ok(())
+    }
+}
+
+/// Which model to ask, and how to ask it.
+///
+/// One of these per job the vault has for a model — see
+/// [`AgentSettings::assistant_model`] and [`AgentSettings::quick_model`].
+/// It carries nothing about *where* the model is, which is
+/// [`LLMProviderConfig`]'s business and is shared.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LLMModelConfig {
+    /// The model name as the endpoint spells it: `gpt-5.1`, `qwen3:32b`,
+    /// whatever the gateway in the middle calls it. Free text rather than an
+    /// enum, because the list changes weekly and a stale enum is how an app
+    /// stops being able to reach the current model.
+    pub model: String,
+    /// `None` leaves it to the endpoint, which is the right default: some
+    /// models reject the parameter outright and others have a sensible one.
+    pub temperature: Option<f64>,
+    /// Cap on a single reply. `None` means the endpoint's own limit.
+    pub max_tokens: Option<u32>,
+}
+
+impl Default for LLMModelConfig {
+    fn default() -> Self {
+        Self::assistant()
+    }
+}
+
+/// What a fresh install proposes for the assistant. Chosen because tool
+/// calling is the whole feature and this is the cheapest model that does it
+/// reliably.
+pub const DEFAULT_MODEL: &str = "gpt-5.1-mini";
+
+/// What a fresh install proposes for the quick model. Chosen on the same
+/// grounds one tier down: the cheapest thing at this endpoint that reliably
+/// returns the schema it was asked for.
+pub const DEFAULT_QUICK_MODEL: &str = "gpt-5.1-nano";
+
+/// Cap on a quick job's reply.
+///
+/// These return a small object with a handful of fields, so the ceiling is
+/// there to stop a model that has decided to write an essay from being paid
+/// for it. A quick job that needs more than this is not a quick job.
+pub const QUICK_MAX_TOKENS: u32 = 1_024;
+
+impl LLMModelConfig {
+    /// The assistant's default: the endpoint's own temperature, its own
+    /// reply limit, and a model that can call tools.
+    pub fn assistant() -> Self {
+        Self { model: DEFAULT_MODEL.into(), temperature: None, max_tokens: None }
+    }
+
+    /// The quick model's default.
+    ///
+    /// Temperature nought, and not a hidden field. Every quick job is an
+    /// extraction into a schema somebody else declared, and there is no
+    /// reading of "pull the author out of this paragraph" under which a
+    /// person wants more variety in the answer. Leaving it visible is also
+    /// how somebody pointing this at a local model can turn it back up when
+    /// their model refuses the parameter.
+    pub fn quick() -> Self {
+        Self {
+            model: DEFAULT_QUICK_MODEL.into(),
+            temperature: Some(0.0),
+            max_tokens: Some(QUICK_MAX_TOKENS),
+        }
+    }
+
+    /// Reject a model the request layer could not act on.
+    pub fn validate(&self) -> Result<()> {
+        if self.model.trim().is_empty() {
+            // An empty model name reaches the endpoint as a 400 whose text
+            // names a field they never saw.
+            return Err(Error::Invalid("a model name is required".into()));
         }
         if let Some(t) = self.temperature
             && !(0.0..=2.0).contains(&t)
@@ -262,7 +347,49 @@ pub struct AgentSettings {
     /// not choose, in the one place that is most theirs.
     #[serde(default)]
     pub name: String,
-    pub model: ModelConfig,
+    /// Where the models are. Shared by every model this vault asks for.
+    #[serde(default)]
+    pub provider_config: LLMProviderConfig,
+    /// The model that holds conversations: the one with the tools, the
+    /// memories and the turn budget.
+    #[serde(default)]
+    pub assistant_model: LLMModelConfig,
+    /// The cheap, fast model used for one-shot extraction and suggestion —
+    /// pulling fields out of a search result, reading a tracker's number out
+    /// of a sentence, proposing the fields a new shelf should have.
+    ///
+    /// `None` means those jobs are simply not done. It deliberately does
+    /// *not* fall back to [`assistant_model`](Self::assistant_model): these
+    /// run in capture boxes, several of them per keystroke-ish interaction,
+    /// and a blank field that silently billed at reasoning-model rates would
+    /// be a bill nobody could account for. The failure mode of "no quick
+    /// model" has to be that the suggestion does not appear.
+    #[serde(default)]
+    pub quick_model: Option<LLMModelConfig>,
+    /// Which quick jobs are allowed to run, by [`QuickJob::name`].
+    ///
+    /// Not a single switch, because "AI features: on" is not consent to
+    /// having the day's prose read. Empty means every job whose default is
+    /// on — see [`QuickPolicy`].
+    #[serde(default)]
+    pub quick_jobs: QuickPolicy,
+    /// Settings written before the endpoint and the model were separate
+    /// records.
+    ///
+    /// Read, never written: `skip_serializing` means a save rewrites in the
+    /// new shape and the old key disappears. The fold lives in
+    /// [`AgentSettings::normalize`], which a backend must call on the way
+    /// out — a sealed payload cannot be migrated in SQL, because a migration
+    /// step is handed a connection and not the cipher.
+    ///
+    /// Public only because a private field would break
+    /// `..Default::default()` in every crate that builds one of these, which
+    /// is most of them. Nothing outside a store backend should read it — see
+    /// [`AgentStore::settings`](crate::store::agent::AgentStore::settings),
+    /// which states the obligation to fold it alongside the existing one
+    /// about `has_key`.
+    #[serde(default, rename = "model", skip_serializing)]
+    pub legacy_model: Option<LegacyModelConfig>,
     /// The person's own instructions: personality, preferences, house style,
     /// anything they want true of every reply. Prepended to the assistant's
     /// own operating instructions rather than replacing them — see
@@ -314,7 +441,11 @@ impl Default for AgentSettings {
         Self {
             enabled: false,
             name: String::new(),
-            model: ModelConfig::default(),
+            provider_config: LLMProviderConfig::default(),
+            assistant_model: LLMModelConfig::assistant(),
+            quick_model: None,
+            quick_jobs: QuickPolicy::default(),
+            legacy_model: None,
             instructions: String::new(),
             confirm_destructive: true,
             max_steps: DEFAULT_MAX_STEPS,
@@ -351,7 +482,11 @@ pub const MAX_INSTRUCTIONS_BYTES: usize = 8_000;
 
 impl AgentSettings {
     pub fn validate(&self) -> Result<()> {
-        self.model.validate()?;
+        self.provider_config.validate()?;
+        self.assistant_model.validate()?;
+        if let Some(quick) = &self.quick_model {
+            quick.validate()?;
+        }
         if self.name.chars().count() > MAX_NAME_CHARS {
             return Err(Error::Invalid(format!(
                 "a name must be under {MAX_NAME_CHARS} characters"
@@ -411,8 +546,87 @@ impl AgentSettings {
     /// What the interface reads to decide between an input box and a link to
     /// settings. Enabled but keyless is the common half-configured state.
     pub fn is_usable(&self) -> bool {
-        self.enabled && self.model.validate().is_ok() && (self.has_key || !self.model.needs_key())
+        self.enabled && self.assistant_model.validate().is_ok() && self.connected()
     }
+
+    /// Whether the quick jobs could run right now.
+    ///
+    /// Independent of [`enabled`](Self::enabled), and that is the point. A
+    /// person who wants shelf metadata parsed but does not want a resident
+    /// assistant is not a strange person, and the reverse is commoner still.
+    /// The two features share an endpoint and a key; they do not share a
+    /// switch.
+    pub fn quick_is_usable(&self) -> bool {
+        self.quick_model.as_ref().is_some_and(|m| m.validate().is_ok()) && self.connected()
+    }
+
+    /// Whether a named quick job may run: the model is configured, and the
+    /// policy allows this one.
+    pub fn quick_allows(&self, job: &str) -> bool {
+        self.quick_is_usable() && self.quick_jobs.allows(job)
+    }
+
+    /// Whether the endpoint could be reached: valid, and keyed if it needs
+    /// to be. Asked once, of the connection, rather than once per model.
+    fn connected(&self) -> bool {
+        self.provider_config.validate().is_ok()
+            && (self.has_key || !self.provider_config.needs_key())
+    }
+
+    /// What to propose for the quick model when the pane first draws it.
+    ///
+    /// `Some` for a local endpoint, and that asymmetry is deliberate. The
+    /// quick jobs are the one place in this application where a small model
+    /// on this machine is genuinely good enough, so the most private
+    /// configuration is also the one that can have the feature switched on
+    /// without anybody's writing leaving the machine. Anywhere else it costs
+    /// money and sends text to somebody's server, so somebody has to ask.
+    pub fn default_quick_model(&self) -> Option<LLMModelConfig> {
+        self.provider_config.is_local().then(LLMModelConfig::quick)
+    }
+
+    /// Fold a pre-split settings record into the current shape.
+    ///
+    /// Called by the store on the way out. Sealed payloads cannot be
+    /// migrated in SQL — a migration step is handed a connection and not the
+    /// cipher — so a shape change to this record is handled here or not at
+    /// all. Writing the record back drops the old key, because
+    /// `legacy_model` is never serialised.
+    ///
+    /// Guarded on the new fields still being at their defaults so that a
+    /// record holding both (which nothing writes, but a hand-edited or
+    /// half-migrated one could) keeps the newer answer.
+    pub fn normalize(&mut self) {
+        let Some(old) = self.legacy_model.take() else { return };
+        if self.provider_config == LLMProviderConfig::default()
+            && self.assistant_model == LLMModelConfig::assistant()
+        {
+            self.provider_config =
+                LLMProviderConfig { provider: old.provider, base_url: old.base_url };
+            self.assistant_model = LLMModelConfig {
+                model: old.model,
+                temperature: old.temperature,
+                max_tokens: old.max_tokens,
+            };
+        }
+    }
+}
+
+/// The shape [`AgentSettings`] stored its model in before the endpoint and
+/// the model became separate records. Deserialised, never written.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyModelConfig {
+    #[serde(default)]
+    pub provider: Provider,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub temperature: Option<f64>,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
 }
 
 /// Who said something.
@@ -781,7 +995,7 @@ mod tests {
 
     #[test]
     fn the_endpoint_defaults_to_the_provider_and_loses_a_trailing_slash() {
-        let mut cfg = ModelConfig::default();
+        let mut cfg = LLMProviderConfig::default();
         assert_eq!(cfg.endpoint(), "https://api.openai.com/v1");
 
         cfg.base_url = Some("http://localhost:11434/v1/".into());
@@ -794,7 +1008,7 @@ mod tests {
 
     #[test]
     fn a_local_model_needs_no_api_key() {
-        let mut cfg = ModelConfig::default();
+        let mut cfg = LLMProviderConfig::default();
         assert!(cfg.needs_key(), "a remote endpoint needs a credential");
 
         for url in ["http://localhost:11434/v1", "http://127.0.0.1:1234/v1", "http://[::1]:8080"] {
@@ -808,7 +1022,7 @@ mod tests {
 
     #[test]
     fn plain_http_is_refused_anywhere_but_this_machine() {
-        let mut cfg = ModelConfig {
+        let mut cfg = LLMProviderConfig {
             base_url: Some("http://localhost:11434/v1".into()),
             ..Default::default()
         };
@@ -833,8 +1047,101 @@ mod tests {
         // ...unless the model is on this machine, where there is no key to
         // have and the feature must still work.
         let mut local = AgentSettings { enabled: true, ..Default::default() };
-        local.model.base_url = Some("http://localhost:11434/v1".into());
+        local.provider_config.base_url = Some("http://localhost:11434/v1".into());
         assert!(local.is_usable(), "a local model should need no setup beyond its address");
+    }
+
+    #[test]
+    fn settings_written_before_the_split_still_load() {
+        // The shape this record had when one model was the only model. A
+        // person upgrading has this in their vault, sealed, and it cannot be
+        // migrated in SQL -- so if this fold breaks, their endpoint and their
+        // model name are silently replaced by the defaults on next unlock.
+        let old = serde_json::json!({
+            "enabled": true,
+            "name": "Robin",
+            "model": {
+                "provider": "openAi",
+                "model": "qwen3:32b",
+                "baseUrl": "http://localhost:11434/v1",
+                "temperature": 0.3,
+                "maxTokens": 2048
+            },
+            "instructions": "be brief",
+            "confirmDestructive": true,
+            "maxSteps": 12,
+            "remember": true
+        });
+        let mut settings: AgentSettings = serde_json::from_value(old).unwrap();
+        settings.normalize();
+
+        assert_eq!(settings.provider_config.base_url.as_deref(), Some("http://localhost:11434/v1"));
+        assert_eq!(settings.assistant_model.model, "qwen3:32b");
+        assert_eq!(settings.assistant_model.temperature, Some(0.3));
+        assert_eq!(settings.assistant_model.max_tokens, Some(2048));
+        assert_eq!(settings.name, "Robin");
+        assert!(settings.quick_model.is_none(), "an upgrade must not switch a new feature on");
+
+        // Writing it back drops the old key, so the fold happens once.
+        let written = serde_json::to_value(&settings).unwrap();
+        assert!(written.get("model").is_none(), "the old shape must not be written again");
+        assert_eq!(written["assistantModel"]["model"], "qwen3:32b");
+    }
+
+    #[test]
+    fn a_record_already_in_the_new_shape_is_left_alone() {
+        // Nothing writes both, but a hand-edited or half-migrated record
+        // could have both -- and the newer answer has to win.
+        let both = serde_json::json!({
+            "enabled": false,
+            "instructions": "",
+            "confirmDestructive": true,
+            "maxSteps": 24,
+            "remember": true,
+            "model": { "provider": "openAi", "model": "old-model", "baseUrl": null },
+            "assistantModel": { "model": "new-model", "temperature": null, "maxTokens": null }
+        });
+        let mut settings: AgentSettings = serde_json::from_value(both).unwrap();
+        settings.normalize();
+        assert_eq!(settings.assistant_model.model, "new-model");
+    }
+
+    #[test]
+    fn the_quick_model_has_its_own_switch_and_does_not_borrow_the_assistant_s() {
+        let mut s = AgentSettings { has_key: true, ..Default::default() };
+        assert!(!s.is_usable(), "the assistant is off");
+        assert!(!s.quick_is_usable(), "no quick model is configured");
+
+        s.quick_model = Some(LLMModelConfig::quick());
+        // Still off, and the quick jobs still work. Somebody who wants shelf
+        // metadata parsed but no resident assistant is the case this is for.
+        assert!(!s.is_usable());
+        assert!(s.quick_is_usable());
+        assert!(s.quick_allows("library.fields"));
+        assert!(!s.quick_allows("journal.title"), "reading a journal is opted into");
+    }
+
+    #[test]
+    fn a_missing_quick_model_does_not_fall_back_to_the_expensive_one() {
+        // The whole reason this is an Option. These run in capture boxes, and
+        // a blank field that silently billed at reasoning-model rates would
+        // be a bill nobody could account for.
+        let s = AgentSettings { enabled: true, has_key: true, ..Default::default() };
+        assert!(s.is_usable());
+        assert!(!s.quick_is_usable());
+        assert!(!s.quick_allows("library.fields"));
+    }
+
+    #[test]
+    fn the_quick_model_is_proposed_only_where_nothing_leaves_the_machine() {
+        let remote = AgentSettings::default();
+        assert!(remote.default_quick_model().is_none(), "somebody has to ask for a paid feature");
+
+        let mut local = AgentSettings::default();
+        local.provider_config.base_url = Some("http://localhost:11434/v1".into());
+        let proposed = local.default_quick_model().expect("a local endpoint can have it on");
+        assert_eq!(proposed.model, DEFAULT_QUICK_MODEL);
+        assert_eq!(proposed.temperature, Some(0.0), "an extraction wants no variety");
     }
 
     #[test]
@@ -974,7 +1281,7 @@ mod tests {
         // Not merely a missed optimisation: an unrecognised http:// host is
         // refused outright as unencrypted, so the setting will not save.
         for url in ["http://LocalHost:11434/v1", "http://LOCALHOST:1234", "http://[::1]:8080"] {
-            let cfg = ModelConfig { base_url: Some(url.into()), ..Default::default() };
+            let cfg = LLMProviderConfig { base_url: Some(url.into()), ..Default::default() };
             assert!(!cfg.needs_key(), "{url} runs on this machine");
             assert!(cfg.validate().is_ok(), "{url} should be saveable");
         }

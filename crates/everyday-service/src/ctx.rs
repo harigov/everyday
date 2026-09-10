@@ -67,6 +67,16 @@ pub enum Scope {
     /// exist, how much time each takes -- without reading a single entry.
     Purpose,
     Agent,
+    /// Spending the quick model: the small extractions in
+    /// [`everyday_core::quick`].
+    ///
+    /// Its own scope rather than a corner of [`Scope::Agent`], for the same
+    /// reason [`Scope::Web`] is its own: it is a capability that costs money
+    /// and puts a request on a network, and it is deliberately not gated on
+    /// the assistant being switched on. A client granted `Agent` can read
+    /// somebody's threads; that is no reason for it to be able to spend their
+    /// tokens filling in a shelf.
+    Quick,
     /// Searching the web and fetching a picture. Its own scope because it is
     /// the one capability that puts a request on the network, and a client
     /// that only wants to read a shelf has no business asking for it.
@@ -109,6 +119,7 @@ impl Scope {
             Scope::Trackers => "trackers",
             Scope::Purpose => "purpose",
             Scope::Agent => "agent",
+            Scope::Quick => "quick",
             Scope::Web => "web",
             Scope::Admin => "admin",
             Scope::Any => "any",
@@ -129,6 +140,7 @@ impl Scope {
         Scope::Trackers,
         Scope::Purpose,
         Scope::Agent,
+        Scope::Quick,
         Scope::Web,
         Scope::Admin,
     ];

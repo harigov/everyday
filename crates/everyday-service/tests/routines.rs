@@ -37,8 +37,8 @@ fn service(endpoint: &str) -> (Arc<Service>, tempfile::TempDir) {
         timezone: Some("UTC".into()),
         ..Default::default()
     };
-    settings.model.base_url = Some(endpoint.to_string());
-    settings.model.model = "scripted".into();
+    settings.provider_config.base_url = Some(endpoint.to_string());
+    settings.assistant_model.model = "scripted".into();
     vault.save_agent_settings(&settings).unwrap();
 
     let svc = Arc::new(Service::new());
@@ -291,7 +291,7 @@ async fn a_scheduled_run_may_not_delete_anything() {
     ))
     .await;
     let mut settings = vault.agent_settings().unwrap();
-    settings.model.base_url = Some(model.endpoint.clone());
+    settings.provider_config.base_url = Some(model.endpoint.clone());
     vault.save_agent_settings(&settings).unwrap();
     due_now(&svc, "Tidy up.");
 
