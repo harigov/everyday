@@ -1088,6 +1088,115 @@ The other half of the split is who counts as a person. `Vault::read` and
 who is asking and the assistant reads this vault every minute of every day. The
 service defers it instead, for every caller except the assistant's own.
 
+## Letting another agent in
+
+The assistant in the rail is not the only thing that can use this vault's
+verbs. The same catalogue — the thirty-odd tools it has, with the same
+descriptions, the same schemas and the same rules — is served over the
+[Model Context Protocol](https://modelcontextprotocol.io), so Claude Code,
+Claude Desktop, an OpenAI agent or anything else that speaks MCP can read a
+day, add a task or write a note.
+
+Off by default. There is a switch and a port in Settings, under Vault, beside
+sharing, and the trade is stated on that screen rather than in this document:
+the agent on the other end is somebody else's program, and what it reads goes
+into its context.
+
+```
+Settings -> Vault -> "Let an AI agent use this vault"
+```
+
+Turning it on issues a token and shows it once. It is a device like any
+other — it appears in the same list a paired phone appears in, and revoking it
+is the same act.
+
+**In Claude Code:**
+
+```sh
+claude mcp add --transport http everyday http://127.0.0.1:7398/mcp \
+  --header "Authorization: Bearer <the token>"
+```
+
+**In a client that only launches a command:**
+
+```json
+{ "mcpServers": { "everyday": { "command": "everyday", "args": ["mcp"] } } }
+```
+
+`everyday mcp` is a pipe, not a second server: it forwards to the port above
+and holds no vault of its own. That is not tidiness — the second process to
+open a vault opens it *read-only*, so a server that opened one beside a
+running app could list your tasks and never add one.
+
+### What it will not do
+
+Three rules, and none of them is a setting on the client's side.
+
+**A locked vault offers nothing.** Not a filtered list and not an error —
+`tools/list` comes back empty, which is the accurate statement about what a
+locked vault can do. Unlock it and the server says so, and a client that
+asked to hear about changes picks up the catalogue without being restarted.
+
+**Deleting is off unless you say otherwise.** With the switch off, the tools
+that remove something are not in the list at all rather than in it and
+refused. A refusal that explains how to get past it is not a refusal: the
+message would say "call again with confirmDestructive", and a model reads
+that and does exactly that. Turn it on and the client's own approval prompt
+is what stands in front of a delete — which is somebody else's interface
+enforcing this vault's rule, so it is a deliberate choice and the panel says
+what it means.
+
+**Passwords are not in the catalogue.** A domain marked secret is absent from
+what the assistant is offered and absent from this too, and there is no flag
+that changes it. See *Web search is a facility, not a feature* for the same
+reasoning applied to the other direction.
+
+You can also narrow what a token reaches — tasks and notes but not the
+journal, say — when you issue it.
+
+### Local, and meant to stay that way
+
+The server binds to `127.0.0.1` unless you pick an address, and checks the
+`Origin` header on every request: one that is present and is not a local
+address is refused outright. That is not paperwork. A plain HTTP server on a
+loopback port is otherwise reachable by any web page you have open, through
+DNS rebinding, and this route has no pinned certificate in front of it the
+way the sharing port does. An *absent* `Origin` is allowed, because that is
+what every client which is not a browser sends.
+
+`GET` is the notification stream an older client opens to hear that the vault
+has unlocked — newer ones ask for it by name instead. `DELETE` is refused.
+
+Serving it across a network works — the address picker offers what this
+machine has, best first — but put it on a WireGuard or Tailscale address
+rather than a coffee-shop wifi.
+
+### On a machine with no screen
+
+`everyday serve` takes `--mcp`, which serves the same endpoint beside the
+vault server. The port and the token come from `mcp.json`; the *decision*
+does not. A switch thrown in a settings panel, by somebody at a keyboard, for
+a listener that answers only to that machine is not the same act as starting
+a daemon other people can reach — and a configuration directory travels, in
+synced dotfiles or a shared home or an image built from somebody's laptop.
+So the switch is not read here, and `serve` says so on startup when it finds
+one set rather than ignoring it quietly.
+
+A machine that has never issued a token is given one, printed once:
+
+```sh
+everyday serve --mcp                      # loopback, from mcp.json
+everyday serve --mcp --mcp-listen 0.0.0.0 # reachable, and it will say so
+```
+
+The second of those is plaintext on a network — there is no TLS on this
+endpoint, because an MCP client has nothing to pin — so it warns, and it is
+never what you get by default.
+
+Hosted connectors, where ChatGPT or claude.ai reach in from the cloud, are a
+different thing and are not supported: they need a public HTTPS endpoint and
+an OAuth server, which is a great deal of machinery for a journal on a desk.
+
 ## Encryption
 
 ```

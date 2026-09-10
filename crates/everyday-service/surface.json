@@ -1084,7 +1084,7 @@
       "name": "list_tools",
       "orScope": null,
       "returns": "ToolInfo[]",
-      "scope": "journals",
+      "scope": "any",
       "sensitive": false,
       "streams": false
     },
@@ -1639,7 +1639,7 @@
       "name": "run_tool",
       "orScope": null,
       "returns": "unknown",
-      "scope": "all",
+      "scope": "any",
       "sensitive": false,
       "streams": false
     },

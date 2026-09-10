@@ -1200,6 +1200,13 @@ export interface ToolInfo {
   title: string
   description: string
   effect: 'read' | 'write' | 'destructive'
+  /**
+   * The scope a caller must hold to run this one, from the domain it belongs
+   * to. `list_tools` already filters by it, so this is not a thing to check
+   * before offering a tool -- it is what lets a panel say *why* a token that
+   * was issued narrowly sees a short list.
+   */
+  scope: string
   /** JSON Schema for the arguments. */
   schema: unknown
 }
@@ -1246,6 +1253,27 @@ export interface Invitation {
   host: string
   fingerprint: string
   qrSvg: string
+}
+
+// ── Letting an MCP client use this vault ────────────────────────────────
+
+/** What the MCP pane draws. */
+export interface McpStatus {
+  running: boolean
+  /** Where it is actually answering. */
+  address: string | null
+  /** Addresses beyond this machine that can reach it, best first. Loopback
+   * is not in this list -- the panel offers it as its own default option,
+   * the same way it is the address picker's default rather than a member
+   * of it. */
+  addresses: string[]
+  port: number
+  allowDestructive: boolean
+  /** Whether a token has ever been issued. It is shown in plaintext exactly
+   * once, at the moment it is minted, and never again -- this only says
+   * whether that moment happened. */
+  hasToken: boolean
+  deviceId: string | null
 }
 
 /**

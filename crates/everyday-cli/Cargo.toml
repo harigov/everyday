@@ -17,6 +17,12 @@ everyday-vault.workspace = true
 everyday-service.workspace = true
 everyday-transfer.workspace = true
 everyday-server.workspace = true
+# For `expected_headers`: the pipe mirrors the same `_meta` fields into
+# headers that `everyday-server` validates, and must derive them the exact
+# same way rather than growing a second implementation of the rule to drift
+# out of step with the first. A tiny, dependency-free crate to pull in for
+# that alone.
+everyday-mcp.workspace = true
 serde_json.workspace = true
 jiff.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
@@ -27,6 +33,12 @@ mime_guess = "2"
 # would be a cost paid by the common case for the sake of the rare one.
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal"] }
 qrcode = { version = "0.14", default-features = false }
+# `mcp`'s blocking client, for the same reason `serve` gets a runtime of its
+# own rather than `main` becoming async: this is otherwise a synchronous
+# binary. The version is pinned to match `everyday-server`'s -- that crate is
+# already a dependency of this one, so this is the one `reqwest` already in
+# the tree rather than a second copy with its own feature set.
+reqwest = { version = "0.13", features = ["blocking"] }
 
 [dev-dependencies]
 tempfile = "3"

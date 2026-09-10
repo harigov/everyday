@@ -15,6 +15,8 @@
 
 use std::path::PathBuf;
 
+mod support;
+
 fn snapshot_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("surface.json")
 }
@@ -60,27 +62,18 @@ fn current() -> String {
 
 #[test]
 fn the_command_surface_is_what_was_written_down() {
-    let path = snapshot_path();
-    let current = current();
-
-    if std::env::var("UPDATE_SURFACE").is_ok() {
-        std::fs::write(&path, &current).expect("could not write the surface snapshot");
-        return;
-    }
-
-    let recorded = std::fs::read_to_string(&path).unwrap_or_default();
-    if recorded != current {
-        panic!(
-            "the command surface has changed.\n\n\
-             This is the wire that every client is generated from, so the change is worth \
-             looking at rather than accepting:\n\
-             * removing a command, or an argument, or narrowing one, needs PROTOCOL bumped in \
-               `service.rs`;\n\
-             * adding a command, or an optional argument, does not.\n\n\
-             Then: UPDATE_SURFACE=1 cargo test -p everyday-service --test surface\n\
-             and:  npm --prefix ui run gen:api\n"
-        );
-    }
+    support::compare(
+        &snapshot_path(),
+        &current(),
+        "the command surface has changed.\n\n\
+         This is the wire that every client is generated from, so the change is worth \
+         looking at rather than accepting:\n\
+         * removing a command, or an argument, or narrowing one, needs PROTOCOL bumped in \
+           `service.rs`;\n\
+         * adding a command, or an optional argument, does not.",
+        "UPDATE_SURFACE=1 cargo test -p everyday-service --test surface\n\
+         and:  npm --prefix ui run gen:api",
+    );
 }
 
 /// Nothing on the wire may be spelled in snake_case.

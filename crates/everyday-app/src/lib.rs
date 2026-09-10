@@ -10,7 +10,9 @@
 
 mod commands;
 mod events;
+mod fanout;
 mod hotkey;
+mod mcp;
 mod protocol;
 mod remote;
 mod remotes;
@@ -132,6 +134,12 @@ pub fn run() {
             commands::cancel_pairing,
             commands::revoke_device,
             commands::set_remote_unlock,
+            // Letting another program use this vault's tools over MCP.
+            commands::mcp_status,
+            commands::mcp_start,
+            commands::mcp_stop,
+            commands::mcp_set_destructive,
+            commands::mcp_issue_token,
             // The OS-wide key to the palette.
             commands::hotkey_status,
             commands::set_hotkey,

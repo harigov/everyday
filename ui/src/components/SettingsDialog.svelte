@@ -25,6 +25,7 @@
   import { tray } from '../lib/tray.svelte'
   import AgentPanel from './AgentPanel.svelte'
   import DataPanel from './DataPanel.svelte'
+  import McpPanel from './McpPanel.svelte'
   import ProfilePanel from './ProfilePanel.svelte'
   import SharePanel from './SharePanel.svelte'
   import Icon from './Icon.svelte'
@@ -428,6 +429,8 @@
         {/if}
 
         <SharePanel />
+
+        <McpPanel />
 
         {#if notice}<p class="notice">{notice}</p>{/if}
 

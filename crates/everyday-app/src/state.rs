@@ -6,11 +6,14 @@
 //! and where this session's remarks are emitted -- plus the choice between a
 //! vault in this process and one on another machine.
 
+use everyday_server::Registry;
 use everyday_service::Service;
+use everyday_service::error::{CommandError, CommandResult};
 use everyday_service::events::EventSink;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
+use crate::mcp::Mcp;
 use crate::remote::Session;
 use crate::sharing::Sharing;
 
@@ -31,6 +34,22 @@ pub struct AppState {
     sink: RwLock<Option<Arc<dyn EventSink>>>,
     /// Serving this window's vault to other machines, when that is on.
     sharing: Arc<Sharing>,
+    /// Serving this vault's tools to an MCP client, when that is on.
+    mcp: Arc<Mcp>,
+    /// The one open handle onto `devices.json`, for the life of this
+    /// process.
+    ///
+    /// `None` until first asked for, then kept. `sharing` and `mcp` are two
+    /// independent switches over the *same* device list -- a paired phone
+    /// and an issued MCP token are rows in one file -- and
+    /// [`everyday_server::Registry`]'s own doc explains why that file must
+    /// never be behind two open `Registry`s in one process: each keeps the
+    /// whole list in memory and writes all of it back on every change, so a
+    /// write through one copy is invisible to, and gets overwritten by, the
+    /// other. `registry()` below is the one place this process opens that
+    /// file; `Sharing` and `Mcp` themselves hold no path to it at all, only
+    /// whatever `Arc` a caller hands them.
+    registry: Mutex<Option<Arc<Registry>>>,
 }
 
 impl Default for AppState {
@@ -48,6 +67,8 @@ impl AppState {
             closing: AtomicBool::new(false),
             sink: RwLock::new(None),
             sharing: Arc::default(),
+            mcp: Arc::default(),
+            registry: Mutex::new(None),
         }
     }
 
@@ -55,16 +76,42 @@ impl AppState {
         self.sharing.clone()
     }
 
+    pub fn mcp(&self) -> Arc<Mcp> {
+        self.mcp.clone()
+    }
+
     pub fn service(&self) -> Arc<Service> {
         self.service.clone()
+    }
+
+    /// The shared device registry, opened the first time anything asks and
+    /// reused after that.
+    ///
+    /// See this struct's own doc on `registry` for why there must be only
+    /// one. Every caller in this crate that needs to read or write
+    /// `devices.json` -- starting sharing, starting MCP, revoking a device,
+    /// drawing either settings pane -- goes through here rather than
+    /// opening the file itself.
+    pub fn registry(&self) -> CommandResult<Arc<Registry>> {
+        let mut slot = self.registry.lock().unwrap();
+        if let Some(registry) = slot.as_ref() {
+            return Ok(registry.clone());
+        }
+        let dir = everyday_vault::config_dir();
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| CommandError::new("io", format!("{}: {e}", dir.display())))?;
+        let registry = Arc::new(Registry::open(dir.join(everyday_server::DEVICES_FILE))?);
+        *slot = Some(registry.clone());
+        Ok(registry)
     }
 
     /// Should closing the window leave the process running?
     ///
     /// True when there is work here that does not need a window: a routine the
-    /// assistant is expected to run on a schedule, or a vault being served to
-    /// another machine. Both would stop dead if the process went, and neither
-    /// is something a person closing a window is asking to stop.
+    /// assistant is expected to run on a schedule, a vault being served to
+    /// another machine, or a vault being served to an MCP client. All three
+    /// would stop dead if the process went, and none of them is something a
+    /// person closing a window is asking to stop.
     ///
     /// False in the ordinary case, which is the one nearly everybody is in:
     /// closing the window of an application that is only an application should
@@ -76,7 +123,7 @@ impl AppState {
     /// see the close handler in `lib.rs`. A process with work to do and no tray
     /// icon and no hotkey is not resident, it is stranded.
     pub fn stays_resident(&self) -> bool {
-        if self.sharing.is_running() {
+        if self.sharing.is_running() || self.mcp.is_running() {
             return true;
         }
         let Some(vault) = self.service.get() else { return false };

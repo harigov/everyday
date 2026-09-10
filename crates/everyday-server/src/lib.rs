@@ -41,6 +41,7 @@
 
 pub mod auth;
 pub mod client;
+pub mod mcp;
 pub mod pairing;
 pub mod routes;
 pub mod sse;
@@ -177,10 +178,32 @@ pub struct Parts {
 /// Postgres vault can be served from two machines and each has its own devices,
 /// and `everyday backup` copies the vault -- so a private key kept there would
 /// end up in every backup the user ever made.
+///
+/// Opens its own [`Registry`]. Right for a caller -- `everyday serve` is the
+/// one today -- that runs nothing else over the same `devices.json` in this
+/// process. A caller that does, such as the desktop app running sharing and
+/// an MCP listener together, must use [`prepare_with`] instead: see that
+/// function's doc for why.
 pub fn prepare(dir: &Path, config: &Config) -> CommandResult<Parts> {
+    let registry = Arc::new(Registry::open(dir.join(DEVICES_FILE))?);
+    prepare_with(dir, config, registry)
+}
+
+/// As [`prepare`], but over a [`Registry`] the caller already has open.
+///
+/// A `Registry` keeps the whole device list in memory and writes all of it
+/// back on every change -- see that type's own doc. Two processes may each
+/// open `devices.json` safely, because the file itself is the arbiter; two
+/// `Registry`s open in the *same* process are not, because neither one's
+/// in-memory list knows the other wrote anything, and whichever saves last
+/// wins, erasing the other's write. A process that starts more than one
+/// thing over the same device list -- sharing and an MCP listener, in the
+/// desktop app -- must therefore open the file once and hand every user of
+/// it the same `Arc<Registry>`, which is what this function lets it do:
+/// `prepare` opens one for you, this takes yours.
+pub fn prepare_with(dir: &Path, config: &Config, registry: Arc<Registry>) -> CommandResult<Parts> {
     std::fs::create_dir_all(dir)
         .map_err(|e| CommandError::new("io", format!("{}: {e}", dir.display())))?;
-    let registry = Arc::new(Registry::open(dir.join(DEVICES_FILE))?);
     let identity = if config.no_tls {
         None
     } else {
