@@ -78,7 +78,67 @@ function dialogOpen(): boolean {
   // about the window it will not be covering. See `panels.listing`.
   if (panels.listing) return false
   if (panels.settings !== null || panels.shortcuts || panels.palette) return true
-  return document.querySelector('[aria-modal="true"]') !== null
+  return modalInDom()
+}
+
+/**
+ * The DOM half of `dialogOpen`, answered once per sweep of the table.
+ *
+ * The query itself is cheap; asking it once per *binding* is not. `match`
+ * calls `when` on every candidate row and most of the `when`s here are
+ * `anywhere`, so a single press asked the document thirty-two times -- four
+ * even with the caret in a field, where the table narrows to the chords that
+ * fire while typing. And the keyboard handler runs on every keystroke,
+ * including every keystroke typed into an editor, where nothing is over the
+ * window and the answer is the same `false` every time.
+ *
+ * It is also worse than it looks in a micro-benchmark: typing mutates the
+ * document, which throws away whatever the engine had cached about the
+ * selector, so each of those queries is a fresh walk. Measured on a long
+ * journal entry this was the largest piece of the application's own code on
+ * the typing path -- more than the editor's own `onUpdate`.
+ *
+ * Scoped rather than cached outright, because the answer genuinely does
+ * change: a dialog opens and the next keystroke must see it. `oneSweep` holds
+ * it for the length of one pass over the table and drops it on the way out,
+ * so nothing that runs *between* two passes -- an action opening a dialog,
+ * a component mounting one -- can be answered from a stale reading.
+ *
+ * And the scope belongs to whoever opened it. `sweeping` is what makes that
+ * true: this table has readers other than the keyboard -- the tray composing
+ * its menu, the app bar building a right-click menu from `entriesFor` -- and
+ * they run outside any sweep. Caching for them as well would mean a menu
+ * built from whatever was on screen at some unrelated earlier moment, which
+ * a dialog dismissed with the mouse leaves nothing behind to correct.
+ */
+let sweeping = false
+let modalSeen: boolean | null = null
+
+function modalInDom(): boolean {
+  if (!sweeping) return document.querySelector('[aria-modal="true"]') !== null
+  modalSeen ??= document.querySelector('[aria-modal="true"]') !== null
+  return modalSeen
+}
+
+/**
+ * Run `sweep` with one shared answer to "is a dialog over the window?".
+ *
+ * Wrap a pass over the table, never the running of what it found: an action
+ * is entitled to open a dialog, and the next thing to ask has to see it.
+ *
+ * The outer state is put back rather than cleared, so that a sweep nested
+ * inside another -- there is none today, and an action reading the table
+ * would make one -- cannot end the answer the outer pass is still using.
+ */
+function oneSweep<T>(sweep: () => T): T {
+  const outer = sweeping
+  sweeping = true
+  try {
+    return sweep()
+  } finally {
+    sweeping = outer
+    if (!outer) modalSeen = null
+  }
 }
 
 /** Anywhere past the lock screen, with no dialog over the window. */
@@ -768,7 +828,10 @@ class Shortcuts {
 
     const typing = isTyping(event.target)
     const pressed = chord === 'Escape' ? [chord] : [...this.pending, chord]
-    const { hit, pending } = match(ACTIONS, pressed, typing)
+    // One pass over the table, and -- see `oneSweep` -- one answer to the
+    // dialog question for the whole of it. `run` is deliberately outside:
+    // what it opens must be visible to the next press, not to this one.
+    const { hit, pending } = oneSweep(() => match(ACTIONS, pressed, typing))
 
     if (hit) {
       this.#clear()

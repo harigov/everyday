@@ -72,10 +72,14 @@ class NotesState {
    */
   #stamp: string | null = null
   #searchTimer: ReturnType<typeof setTimeout> | null = null
+  /** How to ask the editor for its document. See `bindBody`. */
+  #bodySource: (() => Note['body']) | null = null
 
   #saver = new Autosave<NoteId>(async () => {
     const note = this.open
     if (!note) return
+    // The one place the editor's document is walked. See `bindBody`.
+    this.syncBody()
     // Nothing is written while a conflict is unresolved. Retrying would only
     // be refused again, and the author has a choice in front of them -- so
     // without this, every pause in typing under the banner cost another
@@ -227,10 +231,37 @@ class NotesState {
     this.#saver.touch(this.open.id)
   }
 
-  /** Called by the editor on every change. */
-  edited(body: Note['body']) {
-    if (!this.open) return
-    this.open.body = body
+  /**
+   * Register (or with `null`, retire) the editor's document getter.
+   *
+   * The same arrangement the journal has, and adopted here for the same
+   * measured reason. This app used to take the *document* on every change --
+   * `edited(body)`, called from the editor's `onUpdate` -- which walked the
+   * whole of ProseMirror's tree and rebuilt it as JSON once per character.
+   * That is work proportional to everything already written, paid on every
+   * keystroke, so a note grew slower to type into the longer it got: on a
+   * two-hundred-thousand-character note it was some seven times what the
+   * journal spent in the same callback, and the journal was drawing the same
+   * editor over the same text.
+   *
+   * So the store keeps a way to *ask* instead, and asks once per save.
+   */
+  bindBody(fn: (() => Note['body']) | null) {
+    this.#bodySource = fn
+  }
+
+  /**
+   * Pull the editor's current document into the open note.
+   *
+   * Called before every write and by the editor on the way out, which is
+   * what makes it safe for the note in memory to lag the caret in between.
+   */
+  syncBody() {
+    if (this.open && this.#bodySource) this.open.body = this.#bodySource()
+  }
+
+  /** Called by the editor on every change. The document is left where it is. */
+  edited() {
     this.#edited()
   }
 
@@ -262,6 +293,9 @@ class NotesState {
   async keepMine() {
     const note = this.open
     if (!note) return
+    // Not on the autosave path, so it does its own pull -- this is a save
+    // like any other and must send what is on screen. See `bindBody`.
+    this.syncBody()
     try {
       await api.saveNoteForce(note)
       this.#base = note.updatedAt
