@@ -15,7 +15,11 @@
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
-  import type { Attachment, RichDoc } from '../lib/types'
+  import type { Attachment, QuickReading, RichDoc } from '../lib/types'
+  import { api } from '../lib/api'
+  import { ask, quick, slot } from '../lib/quick.svelte'
+  import { tracking } from '../lib/tracking.svelte'
+  import Suggestions from './Suggestions.svelte'
 
   let editor = $state<TipTapEditor | null>(null)
   let words = $state(0)
@@ -25,6 +29,65 @@
   let confirmingDelete = $state(false)
 
   const entry = $derived(app.entry)
+
+  // ── what the day's writing said in numbers ───────────────────────────
+  //
+  // `tracker.rs` opens by naming this exact gap: "Slept badly again, took the
+  // ibuprofen around eight" is the sentence you want to write and precisely
+  // the sentence nobody can plot. This offers the two readings it contains as
+  // chips; tapping one records it against the day.
+  //
+  // It runs on demand, from a button, and never as you type. This is the most
+  // private text in the vault -- so the job defaults off, has its own switch,
+  // and even switched on will not read an entry nobody asked it to.
+
+  let readingChips = $state<{ key: string; label: string }[]>([])
+  let found = $state<QuickReading[]>([])
+  let reading = $state(false)
+  let title = $state('')
+  const readSlot = slot<QuickReading[]>()
+
+  async function readTheDay() {
+    const target = app.entry
+    if (!target) return
+    reading = true
+    // The body has to be on disk before it can be read back. Flushing first
+    // is what makes "write a sentence, press the button" work rather than
+    // asking about the entry as it was a moment ago.
+    app.syncBody()
+    await app.flush()
+    await readSlot.run(
+      'journal.readings',
+      () => api.quickEntryReadings(target.id),
+      (rows) => {
+        reading = false
+        found = rows ?? []
+        readingChips = found.map((r, i) => ({ key: String(i), label: r.label || r.name }))
+      },
+    )
+    reading = false
+  }
+
+  async function acceptReading(key: string) {
+    const target = app.entry
+    const row = found[Number(key)]
+    if (!row || !target) return
+    await tracking.recordSuggested(row, {
+      journalId: target.journalId,
+      entryId: target.id,
+      date: target.localDate,
+    })
+  }
+
+  /** J2: a title for a day, offered only when there is not one already. */
+  async function suggestTitle() {
+    const target = app.entry
+    if (!target) return
+    app.syncBody()
+    await app.flush()
+    const suggested = await ask('journal.title', () => api.quickEntryTitle(target.id))
+    title = suggested ?? ''
+  }
 
   function attach(a: Attachment) {
     const target = app.entry
@@ -90,6 +153,21 @@
             }}
             spellcheck="false"
           />
+          <!-- Offered only into an empty title. A title you wrote is not a
+               gap, and this is never allowed to argue with one. -->
+          {#if title && !entry.title.trim()}
+            <Suggestions
+              items={[{ key: 'title', label: title }]}
+              label="Call it:"
+              onaccept={() => {
+                entry.title = title
+                title = ''
+                app.scheduleSave()
+                app.touch()
+              }}
+              ondismiss={() => (title = '')}
+            />
+          {/if}
           <EntryMeta {entry} />
           <!-- What the day recorded in numbers, under what it recorded in
                prose. Keyed on the journal and the date rather than on the
@@ -97,6 +175,33 @@
                entry being deleted, and it can be recorded on a day nothing
                was written at all. -->
           <TrackerStrip journalId={entry.journalId} date={entry.localDate} />
+
+          <!-- Numbers the prose stated, offered as chips. On demand and never
+               as you type: this reads the day's writing, which is the most
+               private text this vault holds. -->
+          {#if quick.enabled('journal.readings') || quick.enabled('journal.title')}
+            <div class="quick-row">
+              {#if quick.enabled('journal.readings')}
+                <button class="quick-btn" disabled={reading} onclick={() => void readTheDay()}>
+                  <Icon name="sparkle" size={12} />
+                  Anything to track?
+                </button>
+              {/if}
+              {#if quick.enabled('journal.title') && !entry.title.trim()}
+                <button class="quick-btn" onclick={() => void suggestTitle()}>
+                  <Icon name="sparkle" size={12} />
+                  Suggest a title
+                </button>
+              {/if}
+            </div>
+          {/if}
+          <Suggestions
+            items={readingChips}
+            busy={reading}
+            label="Record:"
+            onaccept={(key) => void acceptReading(key)}
+            ondismiss={() => readSlot.dismiss(() => (readingChips = []))}
+          />
         </header>
 
         <RichText
@@ -149,6 +254,39 @@
 {/if}
 
 <style>
+  /* Under the tracker strip and above the prose, because that is where the
+     numbers live on this page. Quiet by default: these are offers, and a page
+     you write on should not be a page of buttons. */
+  .quick-row {
+    display: flex;
+    gap: var(--sp-2);
+    margin-top: var(--sp-2);
+  }
+
+  .quick-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+    padding: 2px var(--sp-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: none;
+    color: var(--fg-subtle);
+    font: inherit;
+    font-size: var(--text-xs);
+    cursor: pointer;
+  }
+
+  .quick-btn:hover:not(:disabled) {
+    border-color: var(--border-strong);
+    color: var(--fg-muted);
+  }
+
+  .quick-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
   .editor {
     position: relative;
     display: flex;

@@ -7,12 +7,16 @@
   // the parsed fields are echoed back so you can see the shorthand landed,
   // and Escape gets you out of an input you opened by accident.
 
+  import { api } from '../lib/api'
+  import { purpose as purposeStore } from '../lib/purpose.svelte'
+  import { quick, slot } from '../lib/quick.svelte'
   import { todo } from '../lib/todo.svelte'
   import { QUICK_ADD_HINT, parseQuickAdd } from '../lib/quickadd'
   import { friendlyDate, formatClock, formatMinutes } from '../lib/format'
   import { focusOnMount } from '../lib/focus'
   import Icon from './Icon.svelte'
-  import type { TaskId, TaskStatus } from '../lib/types'
+  import type { QuickLabels, QuickTaskDraft, Task, TaskId, TaskStatus } from '../lib/types'
+  import Suggestions from './Suggestions.svelte'
 
   let {
     parentId = undefined,
@@ -61,17 +65,116 @@
         parsed.status !== null),
   )
 
+  // ── what the quick model noticed ─────────────────────────────────────
+  //
+  // Two jobs, and both of them arrive *after* the task exists. The grammar
+  // above is deterministic, offline, instant and tested, and for the lines it
+  // handles it is better than a model -- so the model is only ever asked
+  // about the residue: a line that parsed to no fields at all and still reads
+  // like it had a date in it, and the purpose the grammar has no syntax for.
+  //
+  // Nothing here is allowed to delay the Enter. `submit` clears the field and
+  // queues the write exactly as it did; these hang off the end of that chain.
+
+  let chips = $state<{ key: string; label: string }[]>([])
+  let pending = $state<{ task: Task; patch: Partial<Task> } | null>(null)
+  const suggestSlot = slot<null>()
+
+  /**
+   * Is there anything left for a model to find?
+   *
+   * False when the grammar already understood the line, which is the common
+   * case and the one that must cost nothing. `showing` is the same predicate
+   * the echo row under the field uses, so the rule is: if the shorthand is
+   * visibly working, the model is not asked.
+   */
+  function hasResidue(line: string): boolean {
+    if (showing) return false
+    // A bare noun phrase -- "milk", "ring the vet" -- has no residue either.
+    // Three words and a hint of time is the cheapest filter that separates
+    // "book the flights sometime next week" from "milk".
+    return /\b(today|tomorrow|tonight|next|this|before|after|by|on|at|in)\b/i.test(line)
+  }
+
   function submit() {
     const line = value
     if (!line.trim()) return
     // Cleared synchronously, before anything is awaited: at typing speed the
     // round trip is long enough to type into, and clearing late eats the
     // next task.
+    const residue = hasResidue(line)
     value = ''
     chain = chain
       .then(() => todo.add(line, { parentId, status }))
+      .then((task) => {
+        if (task) void suggest(task, line, residue)
+      })
       .catch(() => {})
       .finally(() => field?.focus())
+  }
+
+  /**
+   * Ask about a task that has already been written.
+   *
+   * Both answers become chips against the *same* task, so adding three tasks
+   * quickly leaves the suggestions for the last one -- which is the one still
+   * on screen. The slot's generation counter is what makes that true rather
+   * than a race.
+   */
+  async function suggest(task: Task, line: string, residue: boolean) {
+    const found: { key: string; label: string }[] = []
+    const patch: Partial<Task> = {}
+
+    const [draft, labels] = await Promise.all([
+      residue && quick.enabled('todo.parse')
+        ? (api.quickTaskFromLine(line).catch(() => null) as Promise<QuickTaskDraft | null>)
+        : Promise.resolve(null),
+      quick.enabled('todo.purpose')
+        ? (api.quickTaskLabels(task.title).catch(() => null) as Promise<QuickLabels | null>)
+        : Promise.resolve(null),
+    ])
+
+    if (draft?.dueDate && !task.dueDate) {
+      patch.dueDate = draft.dueDate
+      patch.dueTime = draft.dueTime
+      found.push({
+        key: 'due',
+        label: friendlyDate(draft.dueDate) + (draft.dueTime ? ` ${formatClock(draft.dueTime)}` : ''),
+      })
+    }
+    if (draft?.estimateMinutes && task.estimateMinutes == null) {
+      patch.estimateMinutes = draft.estimateMinutes
+      found.push({ key: 'estimate', label: formatMinutes(draft.estimateMinutes) })
+    }
+    if (labels?.purpose && !task.purpose) {
+      patch.purpose = labels.purpose
+      found.push({ key: 'purpose', label: purposeStore.describe(labels.purpose).name })
+    }
+
+    if (found.length === 0) return
+    pending = { task, patch }
+    chips = found
+  }
+
+  /** Apply one chip. The write is the ordinary one; nothing here is special. */
+  function accept(key: string) {
+    const held = pending
+    if (!held) return
+    const { task, patch } = held
+    if (key === 'due') {
+      task.dueDate = patch.dueDate ?? null
+      task.dueTime = patch.dueTime ?? null
+    } else if (key === 'estimate') {
+      task.estimateMinutes = patch.estimateMinutes ?? null
+    } else if (key === 'purpose') {
+      task.purpose = patch.purpose ?? null
+    }
+    todo.patch(task.id, {
+      dueDate: task.dueDate,
+      dueTime: task.dueTime,
+      estimateMinutes: task.estimateMinutes,
+      purpose: task.purpose,
+    })
   }
 
   export function focus() {
@@ -103,6 +206,15 @@
     }}
   />
 </div>
+
+<!-- After the task exists, never before. A suggestion that delayed the Enter
+     would have broken the one thing this component is for. -->
+<Suggestions
+  items={chips}
+  label="Also:"
+  onaccept={accept}
+  ondismiss={() => suggestSlot.dismiss(() => (chips = []))}
+/>
 
 {#if showing}
   <div class="parsed" aria-live="polite">

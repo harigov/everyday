@@ -1,14 +1,17 @@
 <script lang="ts">
+  import { api } from '../lib/api'
   import { friendlyDate, plural, pluralWord } from '../lib/format'
+  import { ask, quick, slot } from '../lib/quick.svelte'
   import { coverRatio, library } from '../lib/library.svelte'
   import { ratingLabel } from '../lib/rating'
   import { sourceLabel } from '../lib/websearch'
   import { ITEM_STATUSES } from '../lib/types'
-  import type { Item, KindInfo, LogEvent, SearchResult } from '../lib/types'
+  import type { Item, KindInfo, LogEvent, QuickFields, SearchResult } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Cover from './Cover.svelte'
   import Icon from './Icon.svelte'
   import Rating from './Rating.svelte'
+  import Suggestions from './Suggestions.svelte'
 
   let {
     item,
@@ -35,6 +38,67 @@
   let matchError = $state<string | null>(null)
   let showMatches = $state(false)
 
+  // ── what the quick model found ───────────────────────────────────────
+  //
+  // Two jobs, and they sit at opposite ends of the same lookup. `library.pick`
+  // decides which of six results is the thing; `library.fields` reads the top
+  // few and fills in the shelf's own declared fields, which is the only way
+  // an article, a recipe or a shelf somebody invented ever gets anything but
+  // a blurb -- `SearchResult::facts` is empty for a plain web search.
+  //
+  // Neither writes. The fields arrive as chips, one per field, because
+  // accepting "the author is Frank Herbert" and rejecting "the year is 2021"
+  // has to be two decisions.
+
+  let fieldChips = $state<{ key: string; label: string }[]>([])
+  let fieldValues = $state<Record<string, string>>({})
+  let fieldsBusy = $state(false)
+  const fieldSlot = slot<QuickFields>()
+
+  async function suggestFields() {
+    fieldsBusy = true
+    await fieldSlot.run(
+      'library.fields',
+      () => api.quickItemFields(item.id),
+      (found) => {
+        fieldsBusy = false
+        if (!found) return
+        const chips: { key: string; label: string }[] = []
+        const values: Record<string, string> = {}
+        // Gaps only. What is already on the record survives a lookup that
+        // disagrees with it -- the same rule `websearch::apply` enforces in
+        // Rust, applied here so the chip is never even offered.
+        if (found.creator && !item.creator.trim()) {
+          chips.push({ key: 'creator', label: found.creator })
+          values.creator = found.creator
+        }
+        if (found.year != null && item.year == null) {
+          chips.push({ key: 'year', label: String(found.year) })
+          values.year = String(found.year)
+        }
+        for (const [key, value] of Object.entries(found.facts)) {
+          if ((item.facts[key] ?? '').trim()) continue
+          const label = kind?.fields.find((f) => f.key === key)?.label ?? key
+          chips.push({ key: `fact:${key}`, label: `${label}: ${value}` })
+          values[`fact:${key}`] = value
+        }
+        fieldChips = chips
+        fieldValues = values
+      },
+    )
+    fieldsBusy = false
+  }
+
+  function acceptField(key: string) {
+    const value = fieldValues[key]
+    if (value == null) return
+    edit(() => {
+      if (key === 'creator') item.creator = value
+      else if (key === 'year') item.year = Number(value)
+      else item.facts[key.slice('fact:'.length)] = value
+    })
+  }
+
   async function findMatches() {
     if (!kind) return
     showMatches = true
@@ -47,10 +111,24 @@
       const outcome = await library.lookup(kind.id, item.title, 6)
       matches = outcome.results
       matchError = outcome.error
+      // Which of them is the thing. A hint drawn on one row rather than a
+      // choice made for anybody: the list is on screen and somebody is
+      // looking at it, so the most this is allowed to do is point.
+      suggested = null
+      if (matches.length > 1) {
+        void ask('library.pick', () =>
+          api.quickPickResult({ kindId: kind.id, query: item.title, results: matches }),
+        ).then((index) => {
+          suggested = index
+        })
+      }
     } finally {
       matching = false
     }
   }
+
+  /** Which result the quick model thinks is the thing. Null is a real answer. */
+  let suggested = $state<number | null>(null)
 
   async function choose(hit: SearchResult) {
     showMatches = false
@@ -461,11 +539,30 @@
     <section>
       <div class="head-row">
         <h3>Metadata</h3>
-        <button class="mini" disabled={library.enriching || matching} onclick={findMatches}>
-          <Icon name="sparkle" size={12} />
-          {item.source ? 'Look up again' : 'Look this up'}
-        </button>
+        <div class="head-actions">
+          {#if quick.enabled('library.fields')}
+            <button class="mini" disabled={fieldsBusy} onclick={() => void suggestFields()}>
+              <Icon name="sparkle" size={12} />
+              Fill in the gaps
+            </button>
+          {/if}
+          <button class="mini" disabled={library.enriching || matching} onclick={findMatches}>
+            <Icon name="sparkle" size={12} />
+            {item.source ? 'Look up again' : 'Look this up'}
+          </button>
+        </div>
       </div>
+
+      <!-- One chip per field, because accepting the author and rejecting the
+           year has to be two decisions. Only fields that are empty are ever
+           offered: what you typed survives a lookup that disagrees. -->
+      <Suggestions
+        items={fieldChips}
+        busy={fieldsBusy}
+        label="Found:"
+        onaccept={acceptField}
+        ondismiss={() => fieldSlot.dismiss(() => (fieldChips = []))}
+      />
 
       {#if showMatches}
         {#if matching}
@@ -481,8 +578,13 @@
           </p>
           <div class="matches">
             {#each matches as hit, i (hit.url || hit.title + i)}
-              <button class="match" onclick={() => void choose(hit)}>
-                <span class="m-title">{hit.title}</span>
+              <button class="match" class:picked={suggested === i} onclick={() => void choose(hit)}>
+                <span class="m-title">
+                  {hit.title}
+                  {#if suggested === i}
+                    <span class="hint-tag"><Icon name="sparkle" size={10} /> likely</span>
+                  {/if}
+                </span>
                 {#if hit.creator || hit.year}
                   <span class="m-sub"
                     >{hit.creator}{#if hit.creator && hit.year}&nbsp;·&nbsp;{/if}{hit.year ??
@@ -514,6 +616,27 @@
 {/if}
 
 <style>
+  .head-actions {
+    display: flex;
+    gap: var(--sp-2);
+  }
+
+  /* A hint on one row, not a choice made for anybody: the list is on screen
+     and somebody is looking at it, so the most this may do is point. */
+  .match.picked {
+    border-color: color-mix(in oklab, var(--accent) 40%, transparent);
+    background: color-mix(in oklab, var(--accent) 7%, transparent);
+  }
+
+  .hint-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: var(--sp-2);
+    color: var(--fg-subtle);
+    font-size: var(--text-xs);
+  }
+
   .detail {
     width: 380px;
     flex: none;

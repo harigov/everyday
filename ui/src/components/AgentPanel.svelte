@@ -19,7 +19,8 @@
   import { app } from '../lib/state.svelte'
   import { assistant } from '../lib/assistant.svelte'
   import { panels } from '../lib/panels.svelte'
-  import type { AgentSettings } from '../lib/types'
+  import { quick } from '../lib/quick.svelte'
+  import type { AgentSettings, LLMModelConfig, QuickJobRow } from '../lib/types'
   import Icon from './Icon.svelte'
 
   // Edited on a copy. The pane has a Save, so a half-typed base URL must not
@@ -54,6 +55,7 @@
   // tab can be opened before the round trip has come back.
   void agent.load()
   void agent.loadMemories()
+  void quick.load()
 
   $effect(() => {
     if (!draft && agent.settings) draft = structuredClone($state.snapshot(agent.settings))
@@ -83,6 +85,52 @@
     { label: 'OpenRouter', url: 'https://openrouter.ai/api/v1' },
   ]
 
+  /** What a fresh quick model looks like when the switch is turned on. */
+  const QUICK_DEFAULT: LLMModelConfig = { model: 'gpt-5.1-nano', temperature: 0, maxTokens: 1024 }
+
+  /**
+   * The job switches, grouped the way the app bar is.
+   *
+   * Grouped rather than listed because twenty checkboxes in one column is a
+   * wall nobody reads, and the decision somebody is actually making is
+   * per-app: "the library may look things up, the journal may not".
+   */
+  const grouped = $derived(
+    quick.jobs.reduce<Record<string, QuickJobRow[]>>((acc, job) => {
+      ;(acc[job.app] ??= []).push(job)
+      return acc
+    }, {}),
+  )
+
+  /**
+   * Turning the quick model on and off.
+   *
+   * Off writes `null` rather than an empty model name, because those mean
+   * different things: null is "do not do the small jobs", and an empty name
+   * is a configuration that fails at the endpoint. The Rust refuses the
+   * second, which is the right place for it, and this makes sure the pane
+   * cannot produce one.
+   */
+  function toggleQuick(on: boolean) {
+    if (!draft) return
+    draft.quickModel = on ? { ...QUICK_DEFAULT } : null
+  }
+
+  /**
+   * A job switch, saved on the spot rather than with the pane.
+   *
+   * These are twenty checkboxes somebody flicks one at a time, and
+   * round-tripping the whole settings record per flick is how two panes open
+   * at once overwrite one another. Its own command, for that reason.
+   */
+  async function setJob(name: string, on: boolean) {
+    try {
+      await quick.setJob(name, on)
+    } catch (e) {
+      notice = e instanceof Error ? e.message : String(e)
+    }
+  }
+
   /**
    * Is the model on this machine?
    *
@@ -95,7 +143,7 @@
    * -- whether to demand an API key, and what to say about where your journal
    * goes -- disagreeing about the second is the one that matters.
    */
-  const local = $derived(isLoopback(draft?.model.baseUrl ?? null))
+  const local = $derived(isLoopback(draft?.providerConfig.baseUrl ?? null))
 
   async function save() {
     if (!draft) return
@@ -176,13 +224,13 @@
     </section>
 
     <section>
-      <span class="eyebrow">Model</span>
+      <span class="eyebrow">Where the models are</span>
       <div class="presets">
         {#each PRESETS as preset (preset.label)}
           <button
             class="chip"
-            class:on={(draft.model.baseUrl ?? '') === preset.url}
-            onclick={() => draft && (draft.model.baseUrl = preset.url || null)}
+            class:on={(draft.providerConfig.baseUrl ?? '') === preset.url}
+            onclick={() => draft && (draft.providerConfig.baseUrl = preset.url || null)}
           >
             {preset.label}
           </button>
@@ -191,19 +239,22 @@
 
       <label class="setting">
         <span>Model name</span>
-        <input bind:value={draft.model.model} placeholder="gpt-5.1-mini" spellcheck="false" />
+        <input bind:value={draft.assistantModel.model} placeholder="gpt-5.1-mini" spellcheck="false" />
       </label>
 
       <label class="setting">
         <span>Base URL</span>
         <input
-          value={draft.model.baseUrl ?? ''}
-          oninput={(e) => draft && (draft.model.baseUrl = e.currentTarget.value.trim() || null)}
+          value={draft.providerConfig.baseUrl ?? ''}
+          oninput={(e) => draft && (draft.providerConfig.baseUrl = e.currentTarget.value.trim() || null)}
           placeholder="https://api.openai.com/v1"
           spellcheck="false"
         />
       </label>
-      <p class="hint">Anything that speaks the OpenAI chat API. Leave empty for OpenAI itself.</p>
+      <p class="hint">
+        Anything that speaks the OpenAI chat API. Leave empty for OpenAI itself. One endpoint and
+        one key, however many models — the quick model below is the same provider, one tier down.
+      </p>
     </section>
 
     <section>
@@ -228,6 +279,68 @@
         Encrypted with everything else in the vault, so it is unreadable while the vault is locked —
         and the assistant cannot spend it while locked either.
       </p>
+    </section>
+
+    <section>
+      <span class="eyebrow">The quick model</span>
+      <label class="toggle">
+        <input
+          type="checkbox"
+          checked={draft.quickModel != null}
+          onchange={(e) => toggleQuick(e.currentTarget.checked)}
+        />
+        <span>Fill in fields and suggest things, using a smaller model</span>
+      </label>
+      <p class="hint">
+        A separate switch from the assistant, and deliberately: wanting your shelves filled in is
+        not the same as wanting something to talk to. It uses the endpoint and the key above, with
+        a cheaper model — and it is never allowed to change what you already typed.
+      </p>
+
+      {#if draft.quickModel}
+        <label class="setting">
+          <span>Model name</span>
+          <input
+            bind:value={draft.quickModel.model}
+            placeholder="gpt-5.1-nano"
+            spellcheck="false"
+          />
+        </label>
+        <p class="hint">
+          {#if local}
+            On this machine, so nothing leaves it. A small local model is enough for this work —
+            pulling four fields out of a paragraph is not a job that rewards a large one.
+          {:else}
+            A nano-tier model. These are one-shot extractions with a schema, so the cheapest thing
+            your endpoint offers is usually the right answer.
+          {/if}
+        </p>
+
+        <div class="jobs">
+          {#each Object.entries(grouped) as [app, jobs] (app)}
+            <div class="group">
+              <span class="group-name">{app}</span>
+              {#each jobs as job (job.name)}
+                <label class="job">
+                  <input
+                    type="checkbox"
+                    checked={job.on}
+                    onchange={(e) => void setJob(job.name, e.currentTarget.checked)}
+                  />
+                  <span class="job-text">
+                    <span class="job-label">{job.label}</span>
+                    <span class="job-blurb">{job.blurb}</span>
+                  </span>
+                </label>
+              {/each}
+            </div>
+          {/each}
+        </div>
+        <p class="hint">
+          Each one says what it sends, because “AI features: on” is not a decision anybody can
+          make. The ones that read a journal entry start switched off.
+        </p>
+      {/if}
     </section>
 
     <section>
@@ -330,6 +443,51 @@
 {/if}
 
 <style>
+  /* The job switches. Grouped by app, and each one carries the sentence that
+     says what it sends -- which is the only thing that makes the checkbox a
+     decision rather than a shrug. */
+  .jobs {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-4);
+    margin-top: var(--sp-3);
+  }
+
+  .group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+
+  .group-name {
+    color: var(--fg-subtle);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .job {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-2);
+    cursor: pointer;
+  }
+
+  .job-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .job-label {
+    font-size: var(--text-sm);
+  }
+
+  .job-blurb {
+    color: var(--fg-subtle);
+    font-size: var(--text-xs);
+  }
+
   /* Every box in here is `width: 100%` of a column that has `min-width: 0`.
      Both halves are needed and neither is obvious: a flex item's default
      `min-width: auto` is its *content* width, so a text input -- which has an

@@ -79,11 +79,11 @@ class AgentState {
    */
   get ready(): boolean {
     const s = this.settings
-    if (!s?.enabled || !s.model.model.trim()) return false
+    if (!s?.enabled || !s.assistantModel.model.trim()) return false
     // A model on this machine needs no key, which is the whole reason the
     // base URL is a setting. Mirrors `Provider::needs_key` in the core; if
     // they ever disagree the backend is the one that decides, and says so.
-    return s.hasKey || isLoopback(s.model.baseUrl)
+    return s.hasKey || isLoopback(s.providerConfig.baseUrl)
   }
 
   async toggle() {
