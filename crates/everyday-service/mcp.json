@@ -1,0 +1,1733 @@
+{
+  "tools": [
+    {
+      "domain": "journals",
+      "effect": "write",
+      "name": "create_entry",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "description": "The entry text. Markdown: paragraphs, headings, lists.",
+            "type": "string"
+          },
+          "date": {
+            "description": "File it under this day instead of today. Back-dating is fine. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "journal_id": {
+            "description": "Which journal to file it in. From list_journals.",
+            "type": "string"
+          },
+          "tags": {
+            "description": "Tags to attach.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "description": "Optional heading. Omit and the first line becomes one.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "journal_id",
+          "body"
+        ],
+        "type": "object"
+      },
+      "scope": "journals",
+      "sensitivity": "ordinary",
+      "title": "Create entry"
+    },
+    {
+      "domain": "purpose",
+      "effect": "write",
+      "name": "create_goal",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "horizon": {
+            "description": "When it would ideally be true by. Soft; nothing is notified. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "notes": {
+            "description": "What done would look like.",
+            "type": "string"
+          },
+          "role_id": {
+            "description": "From list_roles. Required: every goal sits under one.",
+            "type": "string"
+          },
+          "title": {
+            "description": "What is wanted.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role_id",
+          "title"
+        ],
+        "type": "object"
+      },
+      "scope": "purpose",
+      "sensitivity": "ordinary",
+      "title": "Create goal"
+    },
+    {
+      "domain": "library",
+      "effect": "write",
+      "name": "create_item",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "creator": {
+            "description": "Author, director, developer.",
+            "type": "string"
+          },
+          "notes": {
+            "description": "Anything worth saying about it.",
+            "type": "string"
+          },
+          "rating": {
+            "description": "Out of 10, so 8 means four stars.",
+            "type": "number"
+          },
+          "shelf_id": {
+            "description": "Which shelf. From list_shelves.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Defaults to wishlist.",
+            "enum": [
+              "wishlist",
+              "active",
+              "paused",
+              "done",
+              "abandoned"
+            ],
+            "type": "string"
+          },
+          "tags": {
+            "description": "Tags to attach.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "description": "What it is called.",
+            "type": "string"
+          },
+          "year": {
+            "description": "Year it came out.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "shelf_id",
+          "title"
+        ],
+        "type": "object"
+      },
+      "scope": "library",
+      "sensitivity": "ordinary",
+      "title": "Create item"
+    },
+    {
+      "domain": "notes",
+      "effect": "write",
+      "name": "create_note",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "description": "The text. Markdown: paragraphs, headings, lists, tables.",
+            "type": "string"
+          },
+          "pinned": {
+            "description": "Keep it at the top of the list.",
+            "type": "boolean"
+          },
+          "tags": {
+            "description": "Tags to attach.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "description": "What to call it. Worth setting: notes are found by name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "type": "object"
+      },
+      "scope": "notes",
+      "sensitivity": "ordinary",
+      "title": "Create note"
+    },
+    {
+      "domain": "tasks",
+      "effect": "write",
+      "name": "create_project",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "due_date": {
+            "description": "Deadline for the whole project. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "name": {
+            "description": "What to call it.",
+            "type": "string"
+          },
+          "notes": {
+            "description": "A description.",
+            "type": "string"
+          },
+          "priority": {
+            "description": "Defaults to none.",
+            "enum": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "urgent"
+            ],
+            "type": "string"
+          },
+          "start_date": {
+            "description": "Earliest sensible start. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Defaults to active.",
+            "enum": [
+              "active",
+              "paused",
+              "done",
+              "archived"
+            ],
+            "type": "string"
+          },
+          "tags": {
+            "description": "Tags to attach.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "scope": "tasks",
+      "sensitivity": "ordinary",
+      "title": "Create project"
+    },
+    {
+      "domain": "routines",
+      "effect": "write",
+      "name": "create_routine",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "Time of day, 24-hour, as HH:MM. For example 07:00.",
+            "type": "string"
+          },
+          "days": {
+            "description": "Days it runs: mon, tue, wed, thu, fri, sat, sun. Omit for every day.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "grace_minutes": {
+            "description": "How long after its time it will still run before the run is recorded as missed. Default 60.",
+            "type": "integer"
+          },
+          "instructions": {
+            "description": "What to do when it runs, addressed to yourself, in their words where you have them. This is the whole prompt you will be given: nothing else about the conversation you are having now survives, so say what to look at and what to produce.",
+            "type": "string"
+          },
+          "name": {
+            "description": "What to call it. Short: it goes in a list.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "instructions",
+          "at"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Create routine"
+    },
+    {
+      "domain": "tasks",
+      "effect": "write",
+      "name": "create_task",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "due_date": {
+            "description": "Deadline. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "estimate_minutes": {
+            "description": "Expected effort in minutes.",
+            "type": "integer"
+          },
+          "notes": {
+            "description": "Detail that does not fit in the title.",
+            "type": "string"
+          },
+          "parent_id": {
+            "description": "Make it a subtask of this task.",
+            "type": "string"
+          },
+          "priority": {
+            "description": "Defaults to none.",
+            "enum": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "urgent"
+            ],
+            "type": "string"
+          },
+          "project_id": {
+            "description": "Which project it belongs to. Omit for the inbox.",
+            "type": "string"
+          },
+          "start_date": {
+            "description": "Earliest sensible start. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Defaults to todo.",
+            "enum": [
+              "backlog",
+              "todo",
+              "doing",
+              "blocked",
+              "done",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          "tags": {
+            "description": "Tags to attach.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "description": "What to do. A verb phrase reads best.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "type": "object"
+      },
+      "scope": "tasks",
+      "sensitivity": "ordinary",
+      "title": "Create task"
+    },
+    {
+      "domain": "tasks",
+      "effect": "write",
+      "name": "create_time_block",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "date": {
+            "description": "The day it falls on. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "end_time": {
+            "description": "End, as HH:MM. Must be after the start.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "planned (setting time aside) or actual (recording what it took). Defaults to planned.",
+            "enum": [
+              "planned",
+              "actual"
+            ],
+            "type": "string"
+          },
+          "label": {
+            "description": "Or a free-text label, if it is neither.",
+            "type": "string"
+          },
+          "notes": {
+            "description": "Anything worth noting.",
+            "type": "string"
+          },
+          "project_id": {
+            "description": "Or which project, if it is not one task.",
+            "type": "string"
+          },
+          "start_time": {
+            "description": "Start, as HH:MM in 24-hour time.",
+            "type": "string"
+          },
+          "task_id": {
+            "description": "Which task this is time for.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "date",
+          "start_time",
+          "end_time"
+        ],
+        "type": "object"
+      },
+      "scope": "tasks",
+      "sensitivity": "ordinary",
+      "title": "Create time block"
+    },
+    {
+      "domain": "journals",
+      "effect": "destructive",
+      "name": "delete_entry",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "entry_id": {
+            "description": "Id of the entry to delete.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entry_id"
+        ],
+        "type": "object"
+      },
+      "scope": "journals",
+      "sensitivity": "ordinary",
+      "title": "Delete entry"
+    },
+    {
+      "domain": "purpose",
+      "effect": "destructive",
+      "name": "delete_goal",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "goal_id": {
+            "description": "From list_goals.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "goal_id"
+        ],
+        "type": "object"
+      },
+      "scope": "purpose",
+      "sensitivity": "ordinary",
+      "title": "Delete goal"
+    },
+    {
+      "domain": "library",
+      "effect": "destructive",
+      "name": "delete_item",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "description": "Id from list_items.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id"
+        ],
+        "type": "object"
+      },
+      "scope": "library",
+      "sensitivity": "ordinary",
+      "title": "Delete item"
+    },
+    {
+      "domain": "notes",
+      "effect": "destructive",
+      "name": "delete_note",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "note_id": {
+            "description": "Id of the note to delete.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note_id"
+        ],
+        "type": "object"
+      },
+      "scope": "notes",
+      "sensitivity": "ordinary",
+      "title": "Delete note"
+    },
+    {
+      "domain": "tasks",
+      "effect": "destructive",
+      "name": "delete_project",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Id of the project to delete.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "type": "object"
+      },
+      "scope": "tasks",
+      "sensitivity": "ordinary",
+      "title": "Delete project"
+    },
+    {
+      "domain": "routines",
+      "effect": "destructive",
+      "name": "delete_routine",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "routine_id": {
+            "description": "Id of the routine to delete.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "routine_id"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Delete routine"
+    },
+    {
+      "domain": "tasks",
+      "effect": "destructive",
+      "name": "delete_task",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "description": "Id of the task to delete.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "scope": "tasks",
+      "sensitivity": "ordinary",
+      "title": "Delete task"
+    },
+    {
+      "domain": "tasks",
+      "effect": "destructive",
+      "name": "delete_time_block",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "block_id": {
+            "description": "Id from list_time_blocks.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "block_id"
+        ],
+        "type": "object"
+      },
+      "scope": "tasks",
+      "sensitivity": "ordinary",
+      "title": "Delete time block"
+    },
+    {
+      "domain": "agent",
+      "effect": "destructive",
+      "name": "forget",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "description": "Id from list_memories.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "memory_id"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Forget"
+    },
+    {
+      "domain": "journals",
+      "effect": "read",
+      "name": "get_entry",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "entry_id": {
+            "description": "Id from list_entries or search.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entry_id"
+        ],
+        "type": "object"
+      },
+      "scope": "journals",
+      "sensitivity": "ordinary",
+      "title": "Get entry"
+    },
+    {
+      "domain": "notes",
+      "effect": "read",
+      "name": "get_note",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "note_id": {
+            "description": "Id from list_notes or search.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note_id"
+        ],
+        "type": "object"
+      },
+      "scope": "notes",
+      "sensitivity": "ordinary",
+      "title": "Get note"
+    },
+    {
+      "domain": "tasks",
+      "effect": "read",
+      "name": "get_task",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "description": "Id from list_tasks.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "scope": "tasks",
+      "sensitivity": "ordinary",
+      "title": "Get task"
+    },
+    {
+      "domain": "journals",
+      "effect": "read",
+      "name": "list_entries",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "Earliest date, inclusive. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "journal_id": {
+            "description": "Restrict to one journal.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "starred": {
+            "description": "Keep only starred entries.",
+            "type": "boolean"
+          },
+          "tags": {
+            "description": "Keep only entries carrying every one of these tags.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "to": {
+            "description": "Latest date, inclusive. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "journals",
+      "sensitivity": "ordinary",
+      "title": "List entries"
+    },
+    {
+      "domain": "calendars",
+      "effect": "read",
+      "name": "list_events",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "Start of the window, inclusive. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "to": {
+            "description": "End of the window, inclusive. Defaults to a week out. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "calendars",
+      "sensitivity": "ordinary",
+      "title": "List events"
+    },
+    {
+      "domain": "purpose",
+      "effect": "read",
+      "name": "list_goals",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "include_activity": {
+            "description": "Also say what has been recorded against each.",
+            "type": "boolean"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "role_id": {
+            "description": "From list_roles. Omit for every role.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Only goals in this state.",
+            "enum": [
+              "active",
+              "paused",
+              "done",
+              "dropped"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "purpose",
+      "sensitivity": "ordinary",
+      "title": "List goals"
+    },
+    {
+      "domain": "library",
+      "effect": "read",
+      "name": "list_items",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "favourite": {
+            "description": "Keep only favourites.",
+            "type": "boolean"
+          },
+          "finished_from": {
+            "description": "Finished on or after this day. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "finished_to": {
+            "description": "Finished on or before this day. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "shelf_id": {
+            "description": "Restrict to one shelf. From list_shelves.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Restrict to one status.",
+            "enum": [
+              "wishlist",
+              "active",
+              "paused",
+              "done",
+              "abandoned"
+            ],
+            "type": "string"
+          },
+          "text": {
+            "description": "Case-insensitive substring of the title or creator.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "library",
+      "sensitivity": "ordinary",
+      "title": "List items"
+    },
+    {
+      "domain": "journals",
+      "effect": "read",
+      "name": "list_journals",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "journals",
+      "sensitivity": "ordinary",
+      "title": "List journals"
+    },
+    {
+      "domain": "agent",
+      "effect": "read",
+      "name": "list_memories",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "List memories"
+    },
+    {
+      "domain": "notes",
+      "effect": "read",
+      "name": "list_notes",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "pinned": {
+            "description": "Keep only pinned notes.",
+            "type": "boolean"
+          },
+          "tags": {
+            "description": "Keep only notes carrying every one of these tags.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "notes",
+      "sensitivity": "ordinary",
+      "title": "List notes"
+    },
+    {
+      "domain": "tasks",
+      "effect": "read",
+      "name": "list_projects",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "include_archived": {
+            "description": "Include archived projects. Off by default.",
+            "type": "boolean"
+          },
+          "status": {
+            "description": "Restrict to one status.",
+            "enum": [
+              "active",
+              "paused",
+              "done",
+              "archived"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "tasks",
+      "sensitivity": "ordinary",
+      "title": "List projects"
+    },
+    {
+      "domain": "trackers",
+      "effect": "read",
+      "name": "list_readings",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "Start of the window, inclusive. Defaults to 30 days back. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "timed_only": {
+            "description": "Only readings that know their time of day.",
+            "type": "boolean"
+          },
+          "to": {
+            "description": "End of the window, inclusive. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "tracker_id": {
+            "description": "From list_trackers. Omit for every tracker.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "trackers",
+      "sensitivity": "ordinary",
+      "title": "List readings"
+    },
+    {
+      "domain": "purpose",
+      "effect": "read",
+      "name": "list_roles",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "purpose",
+      "sensitivity": "ordinary",
+      "title": "List roles"
+    },
+    {
+      "domain": "routines",
+      "effect": "read",
+      "name": "list_routines",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "List routines"
+    },
+    {
+      "domain": "routines",
+      "effect": "read",
+      "name": "list_runs",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "routine_id": {
+            "description": "Only this routine's runs. Omit for all of them.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "List runs"
+    },
+    {
+      "domain": "library",
+      "effect": "read",
+      "name": "list_shelves",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "library",
+      "sensitivity": "ordinary",
+      "title": "List shelves"
+    },
+    {
+      "domain": "tasks",
+      "effect": "read",
+      "name": "list_tasks",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "due_from": {
+            "description": "Earliest deadline, inclusive. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "due_to": {
+            "description": "Latest deadline, inclusive. Use today's date for 'due now'. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "inbox_only": {
+            "description": "Only tasks in no project.",
+            "type": "boolean"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "open_only": {
+            "description": "Shorthand for the statuses that are not done or cancelled.",
+            "type": "boolean"
+          },
+          "parent_id": {
+            "description": "Only the subtasks of this task.",
+            "type": "string"
+          },
+          "priority_at_least": {
+            "description": "Keep only tasks at or above this.",
+            "enum": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "urgent"
+            ],
+            "type": "string"
+          },
+          "project_id": {
+            "description": "Only tasks in this project.",
+            "type": "string"
+          },
+          "statuses": {
+            "description": "Keep only these statuses. Defaults to every status.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tags": {
+            "description": "Keep only tasks carrying every one of these tags.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "text": {
+            "description": "Case-insensitive substring of the title, notes or tags.",
+            "type": "string"
+          },
+          "top_level_only": {
+            "description": "Exclude subtasks.",
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "tasks",
+      "sensitivity": "ordinary",
+      "title": "List tasks"
+    },
+    {
+      "domain": "tasks",
+      "effect": "read",
+      "name": "list_time_blocks",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "Start of the window, inclusive. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "task_id": {
+            "description": "Only blocks against this task.",
+            "type": "string"
+          },
+          "to": {
+            "description": "End of the window, inclusive. Defaults to a week out. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "tasks",
+      "sensitivity": "ordinary",
+      "title": "List time blocks"
+    },
+    {
+      "domain": "trackers",
+      "effect": "read",
+      "name": "list_trackers",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "trackers",
+      "sensitivity": "ordinary",
+      "title": "List trackers"
+    },
+    {
+      "domain": "trackers",
+      "effect": "write",
+      "name": "log_reading",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "date": {
+            "description": "The day it belongs to. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "note": {
+            "description": "Anything worth noting alongside it.",
+            "type": "string"
+          },
+          "tracker_id": {
+            "description": "From list_trackers.",
+            "type": "string"
+          },
+          "value": {
+            "description": "The number. For a yes/no tracker, 1 or 0.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "tracker_id",
+          "value"
+        ],
+        "type": "object"
+      },
+      "scope": "trackers",
+      "sensitivity": "ordinary",
+      "title": "Log reading"
+    },
+    {
+      "domain": "journals",
+      "effect": "read",
+      "name": "overview",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "journals",
+      "sensitivity": "ordinary",
+      "title": "Overview"
+    },
+    {
+      "domain": "agent",
+      "effect": "write",
+      "name": "remember",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "fact": {
+            "description": "One sentence, in the third person: 'Plans the week on Sunday evening.'",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fact"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Remember"
+    },
+    {
+      "domain": "routines",
+      "effect": "write",
+      "name": "run_routine",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "routine_id": {
+            "description": "Id from list_routines.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "routine_id"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Run routine"
+    },
+    {
+      "domain": "journals",
+      "effect": "read",
+      "name": "search",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "journal_id": {
+            "description": "Restrict to one journal. Omit to search all of them.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "Words to look for. Full-text over entry titles and bodies.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "scope": "journals",
+      "sensitivity": "ordinary",
+      "title": "Search"
+    },
+    {
+      "domain": "purpose",
+      "effect": "write",
+      "name": "set_purpose",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "clear": {
+            "description": "Unfile it instead.",
+            "type": "boolean"
+          },
+          "goal_id": {
+            "description": "File it under this goal. From list_goals.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The record's id, from whichever list tool found it.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "What sort of record to file.",
+            "enum": [
+              "project",
+              "task",
+              "block",
+              "entry",
+              "item",
+              "tracker"
+            ],
+            "type": "string"
+          },
+          "role_id": {
+            "description": "Or under this role directly. From list_roles.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "type": "object"
+      },
+      "scope": "purpose",
+      "sensitivity": "ordinary",
+      "title": "Set purpose"
+    },
+    {
+      "domain": "purpose",
+      "effect": "read",
+      "name": "time_by_role",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "Start of the window, inclusive. Defaults to 7 days back. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "to": {
+            "description": "End of the window, inclusive. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "purpose",
+      "sensitivity": "ordinary",
+      "title": "Time by role"
+    },
+    {
+      "domain": "trackers",
+      "effect": "read",
+      "name": "tracker_summary",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "Start of the window, inclusive. Defaults to 30 days back. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "to": {
+            "description": "End of the window, inclusive. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "tracker_id": {
+            "description": "From list_trackers. Omit for every tracker.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "trackers",
+      "sensitivity": "ordinary",
+      "title": "Tracker summary"
+    },
+    {
+      "domain": "journals",
+      "effect": "write",
+      "name": "update_entry",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "description": "Replaces the whole body. Markdown. Omit to leave it alone.",
+            "type": "string"
+          },
+          "date": {
+            "description": "Re-file under a different day. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "entry_id": {
+            "description": "Id of the entry to change.",
+            "type": "string"
+          },
+          "starred": {
+            "description": "Star or unstar it.",
+            "type": "boolean"
+          },
+          "tags": {
+            "description": "Replaces the tags entirely. Omit to leave them alone.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "description": "Replaces the title. Omit to leave it alone.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entry_id"
+        ],
+        "type": "object"
+      },
+      "scope": "journals",
+      "sensitivity": "ordinary",
+      "title": "Update entry"
+    },
+    {
+      "domain": "purpose",
+      "effect": "write",
+      "name": "update_goal",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "goal_id": {
+            "description": "From list_goals.",
+            "type": "string"
+          },
+          "horizon": {
+            "description": "When it would ideally be true by. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "notes": {
+            "description": "What done would look like.",
+            "type": "string"
+          },
+          "role_id": {
+            "description": "Move it under a different role.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Where it has got to.",
+            "enum": [
+              "active",
+              "paused",
+              "done",
+              "dropped"
+            ],
+            "type": "string"
+          },
+          "title": {
+            "description": "A new title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "goal_id"
+        ],
+        "type": "object"
+      },
+      "scope": "purpose",
+      "sensitivity": "ordinary",
+      "title": "Update goal"
+    },
+    {
+      "domain": "library",
+      "effect": "write",
+      "name": "update_item",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "creator": {
+            "description": "Change the author or director.",
+            "type": "string"
+          },
+          "favourite": {
+            "description": "Mark or unmark a favourite.",
+            "type": "boolean"
+          },
+          "finished_on": {
+            "description": "The day you finished. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "item_id": {
+            "description": "Id from list_items.",
+            "type": "string"
+          },
+          "notes": {
+            "description": "Replace the notes.",
+            "type": "string"
+          },
+          "rating": {
+            "description": "Out of 10.",
+            "type": "number"
+          },
+          "started_on": {
+            "description": "The day you started. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Move it. `done` records that you got through it.",
+            "enum": [
+              "wishlist",
+              "active",
+              "paused",
+              "done",
+              "abandoned"
+            ],
+            "type": "string"
+          },
+          "tags": {
+            "description": "Replaces the tags entirely.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "description": "Rename it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id"
+        ],
+        "type": "object"
+      },
+      "scope": "library",
+      "sensitivity": "ordinary",
+      "title": "Update item"
+    },
+    {
+      "domain": "notes",
+      "effect": "write",
+      "name": "update_note",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "description": "Replaces the whole body. Markdown. Omit to leave it alone.",
+            "type": "string"
+          },
+          "note_id": {
+            "description": "Id of the note to change.",
+            "type": "string"
+          },
+          "pinned": {
+            "description": "Pin or unpin it.",
+            "type": "boolean"
+          },
+          "tags": {
+            "description": "Replaces the tags entirely. Omit to leave them alone.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "description": "Replaces the title. Omit to leave it alone.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note_id"
+        ],
+        "type": "object"
+      },
+      "scope": "notes",
+      "sensitivity": "ordinary",
+      "title": "Update note"
+    },
+    {
+      "domain": "tasks",
+      "effect": "write",
+      "name": "update_project",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "due_date": {
+            "description": "Set the deadline. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Rename it.",
+            "type": "string"
+          },
+          "notes": {
+            "description": "Replace the description.",
+            "type": "string"
+          },
+          "priority": {
+            "description": "Change its priority.",
+            "enum": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "urgent"
+            ],
+            "type": "string"
+          },
+          "project_id": {
+            "description": "Id of the project to change.",
+            "type": "string"
+          },
+          "start_date": {
+            "description": "Set the start date. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Move it to this status.",
+            "enum": [
+              "active",
+              "paused",
+              "done",
+              "archived"
+            ],
+            "type": "string"
+          },
+          "tags": {
+            "description": "Replaces the tags entirely.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "type": "object"
+      },
+      "scope": "tasks",
+      "sensitivity": "ordinary",
+      "title": "Update project"
+    },
+    {
+      "domain": "routines",
+      "effect": "write",
+      "name": "update_routine",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "New time of day as HH:MM.",
+            "type": "string"
+          },
+          "days": {
+            "description": "Replaces the days entirely.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "enabled": {
+            "description": "Switch it on or off without deleting it.",
+            "type": "boolean"
+          },
+          "grace_minutes": {
+            "description": "New grace, in minutes.",
+            "type": "integer"
+          },
+          "instructions": {
+            "description": "Replaces the instructions. Omit to leave them alone.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Replaces the name. Omit to leave it alone.",
+            "type": "string"
+          },
+          "routine_id": {
+            "description": "Id from list_routines.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "routine_id"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Update routine"
+    },
+    {
+      "domain": "tasks",
+      "effect": "write",
+      "name": "update_task",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "clear_due_date": {
+            "description": "Remove the deadline.",
+            "type": "boolean"
+          },
+          "clear_project": {
+            "description": "Move it back to the inbox.",
+            "type": "boolean"
+          },
+          "due_date": {
+            "description": "Set the deadline. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "estimate_minutes": {
+            "description": "Expected effort in minutes.",
+            "type": "integer"
+          },
+          "notes": {
+            "description": "Replace the notes.",
+            "type": "string"
+          },
+          "priority": {
+            "description": "Change its priority.",
+            "enum": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "urgent"
+            ],
+            "type": "string"
+          },
+          "project_id": {
+            "description": "Move it to this project.",
+            "type": "string"
+          },
+          "start_date": {
+            "description": "Set the start date. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Move it. Use done to complete a task.",
+            "enum": [
+              "backlog",
+              "todo",
+              "doing",
+              "blocked",
+              "done",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          "tags": {
+            "description": "Replaces the tags entirely.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "task_id": {
+            "description": "Id of the task to change.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Rename it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "scope": "tasks",
+      "sensitivity": "ordinary",
+      "title": "Update task"
+    }
+  ]
+}

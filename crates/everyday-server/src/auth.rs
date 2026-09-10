@@ -297,10 +297,53 @@ impl Registry {
         }
         lock(&self.pair_attempts).succeeded();
 
+        // A pairing request that asks for nothing is asking for a desktop
+        // client, and gets what one has always been given. The default lives
+        // here rather than in `issue` because it belongs to *this* exchange:
+        // the scope list arrives from a wire where omitting it has always
+        // meant "everything", and a caller minting a token deliberately must
+        // not have an empty list quietly widened the same way.
+        let scopes =
+            if scopes.iter().all(|s| *s == Scope::Admin) { vec![Scope::All] } else { scopes };
+        self.issue(name, scopes)
+    }
+
+    /// Mint a token for a client that has no code to present.
+    ///
+    /// The minting half of [`Registry::pair`], lifted out because pairing is
+    /// two separable things: proving you were told a code, and being written
+    /// into the device list. An MCP client cannot do the first -- there is no
+    /// second screen to show a code on, and the process that will hold the
+    /// token is a configuration file somebody edits -- but it must still do
+    /// the second, so that "what can reach this vault" keeps having one
+    /// answer and one list to revoke from.
+    ///
+    /// Not reachable over either transport, and it must stay that way: the
+    /// whole of the pairing gate is that a token is minted only for somebody
+    /// who was told a code. This is called from the desktop's own settings
+    /// pane, on the machine holding the vault, where the person asking is the
+    /// person at the keyboard.
+    pub fn issue(&self, name: &str, scopes: Vec<Scope>) -> CommandResult<(String, String)> {
         // `Admin` is never issued over a wire. A device that could pair another
         // device would make revoking one a suggestion rather than a fact.
-        let scopes: Vec<Scope> = scopes.into_iter().filter(|s| *s != Scope::Admin).collect();
-        let scopes = if scopes.is_empty() { vec![Scope::All] } else { scopes };
+        // `Any` is not a grant at all -- it is what a command *requires* of
+        // whoever is calling -- and a token carrying it would satisfy that
+        // requirement while holding nothing.
+        let scopes: Vec<Scope> =
+            scopes.into_iter().filter(|s| *s != Scope::Admin && *s != Scope::Any).collect();
+
+        // Refused rather than defaulted, and this is the whole reason the
+        // default lives in `pair` instead. Widening an empty list to `All`
+        // here would mean that asking for a token scoped to nothing but
+        // `Admin` -- which is stripped a line above -- handed back one that
+        // could read the entire vault. A narrowing filter that can widen its
+        // input is not a filter.
+        if scopes.is_empty() {
+            return Err(CommandError::new(
+                "invalid",
+                "a token must be issued at least one scope it may actually reach",
+            ));
+        }
 
         let token = random_token();
         let now = jiff::Timestamp::now();
@@ -510,6 +553,60 @@ mod tests {
             registry.pair("WRONGONE", "x", vec![Scope::All]).unwrap_err().code,
             "too_many_attempts"
         );
+    }
+
+    #[test]
+    fn a_token_can_be_issued_without_a_code_and_is_a_device_like_any_other() {
+        // What the MCP settings pane does. No code, because there is no
+        // second screen to show one on -- but the same list, so revoking it
+        // is the same act as revoking a paired phone.
+        let (registry, _dir) = registry();
+        let (token, id) = registry.issue("Claude Code", vec![Scope::Tasks]).unwrap();
+
+        let ctx = registry.authenticate(&token).unwrap();
+        assert_eq!(ctx.caller, Caller::Device(id.clone()));
+        assert!(ctx.holds(Scope::Tasks));
+        assert!(!ctx.holds(Scope::Journals), "an issued token must not widen to everything");
+
+        assert!(registry.devices().iter().any(|d| d.id == id), "it belongs in the device list");
+        assert!(registry.revoke(&id).unwrap());
+        assert_eq!(registry.authenticate(&token).unwrap_err().code, "unauthorized");
+    }
+
+    #[test]
+    fn issuing_a_token_strips_admin_like_pairing_does() {
+        let (registry, _dir) = registry();
+        let (token, _) = registry.issue("Agent", vec![Scope::Admin, Scope::Notes]).unwrap();
+        let ctx = registry.authenticate(&token).unwrap();
+        assert!(!ctx.holds(Scope::Admin));
+        assert!(ctx.holds(Scope::Notes));
+    }
+
+    #[test]
+    fn a_narrow_request_can_never_widen_into_a_token_that_holds_everything() {
+        let (registry, _dir) = registry();
+
+        // Both of these reduce to an empty list once the scopes that are
+        // never granted are stripped. Defaulting that to `All` -- which is
+        // right for a pairing request that named nothing -- would turn
+        // "issue me the least you can" into a token that reads the diary.
+        for asked in [vec![], vec![Scope::Admin], vec![Scope::Any], vec![Scope::Admin, Scope::Any]]
+        {
+            let err = registry.issue("Agent", asked.clone()).unwrap_err();
+            assert_eq!(err.code, "invalid", "issue({asked:?}) should refuse, not widen");
+        }
+
+        // Nothing was written down on the way to refusing.
+        assert!(registry.devices().is_empty());
+    }
+
+    #[test]
+    fn pairing_without_naming_a_scope_still_means_everything() {
+        // The behaviour the wire has always had, kept where it belongs.
+        let (registry, _dir) = registry();
+        let code = registry.new_pairing_code();
+        let (token, _) = registry.pair(&code, "Laptop", vec![]).unwrap();
+        assert!(registry.authenticate(&token).unwrap().holds(Scope::Journals));
     }
 
     #[test]

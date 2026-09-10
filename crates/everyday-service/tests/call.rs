@@ -131,6 +131,77 @@ async fn a_scope_the_caller_lacks_is_refused_before_the_body_runs() {
 }
 
 #[tokio::test]
+async fn a_narrow_token_reaches_the_tools_of_its_own_domain_and_no_others() {
+    // The arrangement an MCP token depends on, and the one that is easy to
+    // break from a distance: `run_tool`'s row declares `Scope::Any`, so the
+    // command table lets this caller through and the handler is what refuses
+    // it. A row that named a domain instead -- which is what it used to do --
+    // turned this whole test into one `forbidden` on the first call.
+    let (svc, _dir) = service();
+    let tasks_only = Ctx {
+        caller: Caller::Device("agent".into()),
+        scopes: vec![Scope::Tasks],
+        proved_at: None,
+        request_id: None,
+    };
+
+    // A tool in the domain it holds: reached, and actually run.
+    let made = svc
+        .call(
+            tasks_only.clone(),
+            "run_tool",
+            json!({ "name": "create_task", "arguments": { "title": "Buy milk" } }),
+        )
+        .await
+        .expect("a Tasks token must be able to run a Tasks tool");
+    assert_eq!(made["ok"], true);
+    assert_eq!(made["kind"], "task");
+    assert_eq!(made["name"], "Buy milk");
+
+    // A tool in a domain it does not hold: refused, and refused by scope
+    // rather than by anything that would say whether the tool exists here.
+    let e = svc
+        .call(
+            tasks_only.clone(),
+            "run_tool",
+            json!({ "name": "create_note", "arguments": { "title": "x" } }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, "forbidden");
+    assert!(e.message.contains("notes"), "{}", e.message);
+
+    // And the catalogue it is shown matches what it may actually call, so a
+    // model is never offered a tool it will be refused.
+    let listed = svc.call(tasks_only, "list_tools", json!({})).await.expect("list_tools");
+    let names: Vec<&str> =
+        listed.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"create_task"), "a Tasks tool belongs in the list: {names:?}");
+    assert!(!names.iter().any(|n| n.contains("note")), "no Notes tool may appear: {names:?}");
+    assert!(names.iter().all(|n| !n.contains("journal") && !n.contains("entry")), "{names:?}");
+}
+
+#[tokio::test]
+async fn a_caller_holding_nothing_at_all_is_not_somebody() {
+    // `Scope::Any` asks whether the caller is anybody, and an empty scope
+    // list is the one answer that must be no. Getting this wrong would make
+    // the two tool commands reachable by a token that holds nothing.
+    let (svc, _dir) = service();
+    let nobody = Ctx {
+        caller: Caller::Device("x".into()),
+        scopes: vec![],
+        proved_at: None,
+        request_id: None,
+    };
+    assert_eq!(
+        svc.call(nobody.clone(), "list_tools", json!({})).await.unwrap_err().code,
+        "forbidden"
+    );
+    let e = svc.call(nobody, "run_tool", json!({ "name": "create_task", "arguments": {} })).await;
+    assert_eq!(e.unwrap_err().code, "forbidden");
+}
+
+#[tokio::test]
 async fn a_write_announces_what_it_touched_and_who_did_it() {
     let (svc, _dir) = service();
     let collector = Arc::new(Collector::default());

@@ -35,9 +35,10 @@ use serde::{Deserialize, Serialize};
 
 /// What a caller is allowed to reach.
 ///
-/// One per domain, plus two that are not domains: [`Scope::All`], which every
-/// token gets today, and [`Scope::Admin`], for the commands that configure
-/// the server itself rather than touch the vault.
+/// One per domain, plus three that are not domains: [`Scope::All`], which
+/// every token gets today, [`Scope::Admin`], for the commands that configure
+/// the server itself rather than touch the vault, and [`Scope::Any`], which is
+/// required by one command and granted to nobody.
 ///
 /// The two that do not exist yet -- `Contacts`, `Passwords` -- are absent on
 /// purpose. A scope is added with the domain it guards, in the same change,
@@ -74,6 +75,26 @@ pub enum Scope {
     /// a device that could pair another device would make revocation a
     /// suggestion rather than a fact.
     Admin,
+    /// Some scope, any scope -- a caller who is somebody rather than nobody.
+    ///
+    /// The one scope that is *required* and never *granted*, which is why it
+    /// is absent from [`Scope::ALL`] and therefore unreachable through
+    /// [`Scope::parse`]: no wire can ask for it and no token can carry it.
+    ///
+    /// It exists for `run_tool`, and for anything later that is shaped the
+    /// same way. That command's declared scope cannot be honest, because what
+    /// a call actually needs depends on *which tool it names* -- `add_task`
+    /// wants `Tasks` and `delete_note` wants `Notes` -- and one field on one
+    /// row cannot say so. Declaring `All` there meant the narrow tokens this
+    /// exists to support could not call it at all; declaring any single domain
+    /// meant refusing every caller who did not happen to hold that one.
+    ///
+    /// So the row asks only that the caller be authenticated, and the handler
+    /// does the real check against the tool's own domain. That is a weaker
+    /// table-level promise than every other row makes, and it is only sound
+    /// because the handler's check is not optional -- see
+    /// `domains::meta::run_tool`, where it is the first thing that happens.
+    Any,
 }
 
 impl Scope {
@@ -90,11 +111,14 @@ impl Scope {
             Scope::Agent => "agent",
             Scope::Web => "web",
             Scope::Admin => "admin",
+            Scope::Any => "any",
         }
     }
 
     /// Every scope a token may be issued, `All` included. `Admin` is in the
     /// list because the local window holds it; nothing issues it over a wire.
+    /// `Any` is deliberately absent: it is a requirement, never a grant, and
+    /// its absence here is what makes it unaskable through [`Scope::parse`].
     pub const ALL: &'static [Scope] = &[
         Scope::All,
         Scope::Journals,
@@ -185,6 +209,13 @@ impl Ctx {
     }
 
     pub fn holds(&self, scope: Scope) -> bool {
+        // `Any` asks a different question from every other scope: not "were
+        // you granted this" but "were you granted anything". A caller with an
+        // empty scope list is nobody, and must not slip through a check that
+        // was written to mean "somebody".
+        if scope == Scope::Any {
+            return !self.scopes.is_empty();
+        }
         self.scopes.iter().any(|s| *s == Scope::All || *s == scope)
     }
 

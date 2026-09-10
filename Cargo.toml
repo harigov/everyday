@@ -7,6 +7,7 @@ members = [
     "crates/everyday-store-postgres",
     "crates/everyday-vault",
     "crates/everyday-transfer",
+    "crates/everyday-mcp",
     "crates/everyday-service",
     "crates/everyday-server",
     "crates/everyday-cli",
@@ -25,6 +26,7 @@ default-members = [
     "crates/everyday-store-postgres",
     "crates/everyday-vault",
     "crates/everyday-transfer",
+    "crates/everyday-mcp",
     "crates/everyday-service",
     "crates/everyday-server",
     "crates/everyday-cli",
@@ -44,6 +46,7 @@ everyday-store-sqlite = { path = "crates/everyday-store-sqlite" }
 everyday-store-postgres = { path = "crates/everyday-store-postgres" }
 everyday-vault = { path = "crates/everyday-vault" }
 everyday-transfer = { path = "crates/everyday-transfer" }
+everyday-mcp = { path = "crates/everyday-mcp" }
 everyday-service = { path = "crates/everyday-service" }
 everyday-server = { path = "crates/everyday-server" }
 

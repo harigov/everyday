@@ -1200,6 +1200,13 @@ export interface ToolInfo {
   title: string
   description: string
   effect: 'read' | 'write' | 'destructive'
+  /**
+   * The scope a caller must hold to run this one, from the domain it belongs
+   * to. `list_tools` already filters by it, so this is not a thing to check
+   * before offering a tool -- it is what lets a panel say *why* a token that
+   * was issued narrowly sees a short list.
+   */
+  scope: string
   /** JSON Schema for the arguments. */
   schema: unknown
 }

@@ -1612,6 +1612,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "everyday-mcp"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "everyday-server"
 version = "0.1.0"
 dependencies = [
