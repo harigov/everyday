@@ -399,6 +399,17 @@ export const api = {
   setAutoLock: (seconds: number) => invoke<void>('set_auto_lock', { seconds }),
   /** How long before the machine holding the vault drops its key. 0 is never. */
   setForgetKey: (seconds: number) => invoke<void>('set_forget_key', { seconds }),
+  /**
+   * Keep this vault's key in this machine's keychain, or take it out again.
+   *
+   * The password is asked for on the way *on*, and only then: this is the one
+   * switch whose whole effect is that the password stops being needed, so
+   * pressing it should cost the password once from somebody who knows it,
+   * rather than being available to anybody who wandered past an unlocked
+   * screen. Answers with what the setting now is.
+   */
+  setOpensItself: (on: boolean, password: string | null) =>
+    invoke<boolean>('set_opens_itself', { on, password }),
   /** Defers the moment the key is dropped; called on real user interaction. */
   touch: () => invoke<void>('touch'),
   /** Returns true if the vault has just dropped its key. Polled on a timer. */

@@ -744,6 +744,11 @@ export interface Bootstrap {
   remotes: Connection[]
   /** The one this window is looking at, if it is looking at one. */
   remote: Connection | null
+  /**
+   * Whether this machine holds the key, so the vault opens without a password
+   * when the process starts. Off unless somebody turned it on.
+   */
+  opensItself: boolean
 }
 
 /**

@@ -19,7 +19,7 @@
   import { api } from '../lib/api'
   import { agent } from '../lib/agent.svelte'
   import { humanBytes, plural } from '../lib/format'
-  import { trapFocus } from '../lib/focus'
+  import { focusOnMount, trapFocus } from '../lib/focus'
   import { panels, type SettingsTab } from '../lib/panels.svelte'
   import { app } from '../lib/state.svelte'
   import { tray } from '../lib/tray.svelte'
@@ -104,6 +104,53 @@
   async function setForgetKey(seconds: number) {
     await api.setForgetKey(seconds)
     app.status = await api.status()
+  }
+
+  let opensItself = $state(app.opensItself)
+  let askingForKey = $state(false)
+  let keyPassword = $state('')
+
+  /**
+   * Turning it on asks for the password; turning it off does not.
+   *
+   * The asymmetry is the point. This is the one switch whose whole effect is
+   * that the password stops being needed, so switching it *on* should cost the
+   * password once, from somebody who knows it. Switching it off only ever
+   * makes things stricter, and should not be gated behind a thing somebody may
+   * have turned this on precisely because they cannot remember.
+   */
+  async function setOpensItself(on: boolean) {
+    notice = null
+    if (on) {
+      askingForKey = true
+      return
+    }
+    try {
+      opensItself = await api.setOpensItself(false, null)
+      app.opensItself = opensItself
+      notice = 'It will ask for the password again.'
+    } catch (err) {
+      notice = err instanceof Error ? err.message : String(err)
+    }
+  }
+
+  async function confirmOpensItself(e: Event) {
+    e.preventDefault()
+    try {
+      opensItself = await api.setOpensItself(true, keyPassword)
+      app.opensItself = opensItself
+      notice = "The key is in this computer's keychain."
+    } catch (err) {
+      notice = err instanceof Error ? err.message : String(err)
+    } finally {
+      keyPassword = ''
+      askingForKey = false
+    }
+  }
+
+  function cancelOpensItself() {
+    keyPassword = ''
+    askingForKey = false
   }
 
   // The same strip of the screen has three names. Calling it the wrong one
@@ -289,6 +336,48 @@
               own routines. Forgetting it stops all of them until somebody types the password again.
               Quitting always forgets it.
             </p>
+          </section>
+
+          <section>
+            <span class="eyebrow">Opening this vault</span>
+            <label class="toggle">
+              <input
+                type="checkbox"
+                checked={opensItself}
+                onchange={(e) => void setOpensItself(e.currentTarget.checked)}
+              />
+              <span>
+                <b>Open without a password when the app starts</b>
+                <small>
+                  This computer keeps the key in its own keychain. The vault is then as safe as your
+                  login here, rather than as safe as its password — anybody already sitting at this
+                  desk, logged in as you, can read it.
+                </small>
+              </span>
+            </label>
+            <p class="hint">
+              Worth it for one thing: the assistant's routines run where the vault is, and a vault
+              that is shut from the moment this machine boots until somebody types a password is a
+              vault whose morning brief does not happen.
+            </p>
+            {#if askingForKey}
+              <form onsubmit={confirmOpensItself}>
+                <input
+                  class="field"
+                  type="password"
+                  placeholder="Your vault password"
+                  bind:value={keyPassword}
+                  autocomplete="current-password"
+                  use:focusOnMount
+                />
+                <div class="row">
+                  <button class="btn" type="button" onclick={cancelOpensItself}>Cancel</button>
+                  <button class="btn btn-primary" type="submit" disabled={!keyPassword}>
+                    Keep the key
+                  </button>
+                </div>
+              </form>
+            {/if}
           </section>
 
           <section>

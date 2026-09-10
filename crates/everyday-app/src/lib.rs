@@ -138,6 +138,7 @@ pub fn run() {
             commands::put_blob,
             commands::send_message,
             // This process's own furniture.
+            commands::set_opens_itself,
             commands::ready_to_close,
             commands::set_tray_menu,
             commands::hide_tray,

@@ -9,6 +9,7 @@
 //! Adding a storage backend means implementing
 //! [`everyday_core::StoreFactory`] and adding one line to [`registry`].
 
+pub mod autounlock;
 pub mod media;
 
 use everyday_core::store::{BackendInfo, BackendRegistry, BackendSettings, SettingSpec};

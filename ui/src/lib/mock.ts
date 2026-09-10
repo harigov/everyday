@@ -2049,6 +2049,9 @@ export const mockInvoke = async <T>(
         // never be exercised against anything.
         remotes: [],
         remote: null,
+        // No keychain in a browser, and nothing to keep a key in. The switch
+        // draws as off and says why when it is pressed.
+        opensItself: false,
       } satisfies Bootstrap as T
 
     case 'unlock':
@@ -2071,6 +2074,13 @@ export const mockInvoke = async <T>(
     case 'change_password':
       if (args.current !== PASSWORD) throw new VaultError('bad_password', 'incorrect password')
       return undefined as T
+
+    case 'set_opens_itself':
+      requireUnlocked()
+      throw new VaultError(
+        'no_keychain',
+        'a browser has no keychain to keep a key in. This works in the desktop app.',
+      )
 
     case 'verify_password':
       if (args.password !== PASSWORD) throw new VaultError('bad_password', 'incorrect password')

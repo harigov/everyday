@@ -431,6 +431,47 @@ impl Vault {
         self.data_key(password).map(|_| ())
     }
 
+    /// The vault's data key, hex-encoded, for a caller that means to keep it.
+    ///
+    /// Deliberately awkward to reach for, and named to say what it is. There
+    /// is exactly one caller: the switch that lets a vault open itself when
+    /// the machine starts, which puts this in the operating system's own
+    /// keychain so that a routine set for seven in the morning happens on a
+    /// laptop that rebooted overnight.
+    ///
+    /// That is a real trade and the interface states it where the switch is:
+    /// a vault whose key is in the keychain is as safe as the login on that
+    /// computer, rather than as safe as its password. Nothing else in this
+    /// application ever asks for this, and nothing should: the key is not a
+    /// value to pass around, it is the thing the whole envelope protects.
+    pub fn export_data_key(&self, password: Option<&str>) -> Result<String> {
+        match self.data_key(password)? {
+            Some(key) => Ok(to_hex(key.expose())),
+            // A vault with no password has no key to keep, and opens by
+            // itself already. Saying so is better than handing back an empty
+            // string that would look like a key.
+            None => Err(Error::Invalid(
+                "this vault is not encrypted, so it already opens without a password".into(),
+            )),
+        }
+    }
+
+    /// Open the vault with a key rather than a password.
+    ///
+    /// The other half of [`Vault::export_data_key`]. A wrong key fails the
+    /// same way a wrong password does -- the AEAD tag on the first record it
+    /// reads -- so there is nothing here that a bad value can get past.
+    pub fn unlock_with_key(&self, hex: &str) -> Result<()> {
+        if self.is_unlocked() {
+            return Ok(());
+        }
+        let bytes = from_hex(hex)?;
+        let bytes: [u8; crate::crypto::KEY_LEN] = bytes
+            .try_into()
+            .map_err(|_| Error::Invalid("that is not a key for this vault".into()))?;
+        self.activate(Some(SecretKey::from_bytes(bytes)))
+    }
+
     /// Unwrap the data key with `password`, without opening anything.
     ///
     /// Separate from [`Vault::unlock`] because unlocking is two steps that
@@ -3389,5 +3430,54 @@ mod tests {
         assert_eq!(from_hex(&to_hex(&bytes)).unwrap(), bytes);
         assert!(from_hex("abc").is_err(), "odd length");
         assert!(from_hex("zz").is_err(), "non-hex digits");
+    }
+    #[test]
+    fn a_key_kept_in_a_keychain_opens_the_vault_it_came_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        let key = {
+            let v = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+            let mut j = Journal::new("Kept");
+            j.description = "written before the restart".into();
+            v.save_journal(&j).unwrap();
+            v.export_data_key(Some("pw")).unwrap()
+        };
+
+        // What a restart looks like: a fresh handle, no password anywhere.
+        let v = Vault::open(dir.path(), reg).unwrap();
+        assert!(!v.is_unlocked(), "a reopened vault starts shut");
+        v.unlock_with_key(&key).expect("the key from the keychain opens it");
+        assert_eq!(v.journals().unwrap()[0].description, "written before the restart");
+    }
+
+    #[test]
+    fn a_key_that_is_not_the_key_does_not_open_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+        // Something sealed, so there is a tag to fail against.
+        v.save_journal(&Journal::new("Sealed")).unwrap();
+        v.lock();
+
+        assert!(v.unlock_with_key("not hex").is_err(), "gibberish is refused");
+        assert!(v.unlock_with_key(&"aa".repeat(16)).is_err(), "so is a key of the wrong length");
+
+        // The right length and the wrong bytes opens the store -- there is
+        // nothing in the header to check a key against, deliberately -- and
+        // fails on the first record it reads. That is the same tag that
+        // catches a wrong password, and it is the only check there is.
+        let wrong = "bb".repeat(32);
+        let opened = v.unlock_with_key(&wrong);
+        assert!(
+            opened.is_err() || v.journals().is_err(),
+            "a key that is not this vault's cannot read this vault"
+        );
+    }
+
+    #[test]
+    fn an_unencrypted_vault_has_no_key_to_keep() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(dir.path(), cfg(None), registry()).unwrap();
+        let err = v.export_data_key(None).unwrap_err();
+        assert!(err.to_string().contains("already opens"), "got {err}");
     }
 }

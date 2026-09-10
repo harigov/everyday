@@ -156,6 +156,11 @@ class AppState {
    * you are, or open the vault. See `unlock`.
    */
   screenOnly = $state(false)
+  /**
+   * Whether this machine holds the key, so the vault opens without a password
+   * when the process starts. Off unless somebody turned it on.
+   */
+  opensItself = $state(false)
   /** Servers this copy has paired with, for the picker. */
   remotes = $state<Connection[]>([])
 
@@ -279,6 +284,7 @@ class AppState {
       this.status = boot.status
       this.remote = boot.remote
       this.remotes = boot.remotes
+      this.opensItself = boot.opensItself
       this.error = null
       if (!boot.vaultExists && !boot.remote) this.screen = 'setup'
       else if (boot.status?.unlocked) await this.enterMain()

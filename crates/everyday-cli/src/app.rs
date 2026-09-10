@@ -85,6 +85,14 @@ pub enum Command {
         /// certificate. Clients then pin nothing and must reach it over https.
         #[arg(long)]
         no_tls: bool,
+        /// Open the vault with the key this machine has in its keychain,
+        /// rather than waiting for a client to type a password.
+        ///
+        /// Only works where the desktop app has been told to keep one --
+        /// Settings, Vault, "open this vault without a password". A headless
+        /// machine with no keychain says so and carries on locked.
+        #[arg(long)]
+        keychain: bool,
     },
     /// Run one of the assistant's tools, with no model in the loop.
     ///
@@ -230,12 +238,26 @@ pub fn run(cli: Cli) -> Result<()> {
     // deliberately: an unattended server that had to be given a password would
     // be a server keeping one in an environment file. The first client to
     // connect unlocks it instead.
-    if let Command::Serve { listen, port, pair, no_remote_unlock, no_tls } = &cli.command {
+    if let Command::Serve { listen, port, pair, no_remote_unlock, no_tls, keychain } = &cli.command
+    {
         let vault = everyday_vault::open(&path)?;
         if let Some(password) = cli.password.as_deref()
             && !vault.is_unlocked()
         {
             vault.unlock(Some(password))?;
+        }
+        // A machine under a desk that reboots overnight. Best effort and
+        // never fatal: a headless box with no keychain, or a key that no
+        // longer fits, leaves the vault locked -- which is where it would
+        // have been anyway, and the first client to connect can still open it.
+        if *keychain && !vault.is_unlocked() {
+            match everyday_vault::autounlock::recall(&path).map(|k| vault.unlock_with_key(&k)) {
+                Some(Ok(())) => println!("Opened with the key from this machine's keychain."),
+                Some(Err(e)) => eprintln!("warning: the key in the keychain did not fit ({e})"),
+                None => {
+                    eprintln!("warning: this machine has no key for that vault in its keychain")
+                }
+            }
         }
         return serve(vault, &path, listen, *port, *pair, *no_remote_unlock, *no_tls);
     }
