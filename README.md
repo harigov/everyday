@@ -1171,6 +1171,28 @@ Serving it across a network works — the address picker offers what this
 machine has, best first — but put it on a WireGuard or Tailscale address
 rather than a coffee-shop wifi.
 
+### On a machine with no screen
+
+`everyday serve` takes `--mcp`, which serves the same endpoint beside the
+vault server. The port and the token come from `mcp.json`; the *decision*
+does not. A switch thrown in a settings panel, by somebody at a keyboard, for
+a listener that answers only to that machine is not the same act as starting
+a daemon other people can reach — and a configuration directory travels, in
+synced dotfiles or a shared home or an image built from somebody's laptop.
+So the switch is not read here, and `serve` says so on startup when it finds
+one set rather than ignoring it quietly.
+
+A machine that has never issued a token is given one, printed once:
+
+```sh
+everyday serve --mcp                      # loopback, from mcp.json
+everyday serve --mcp --mcp-listen 0.0.0.0 # reachable, and it will say so
+```
+
+The second of those is plaintext on a network — there is no TLS on this
+endpoint, because an MCP client has nothing to pin — so it warns, and it is
+never what you get by default.
+
 Hosted connectors, where ChatGPT or claude.ai reach in from the cloud, are a
 different thing and are not supported: they need a public HTTPS endpoint and
 an OAuth server, which is a great deal of machinery for a journal on a desk.

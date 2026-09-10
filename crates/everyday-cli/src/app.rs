@@ -84,6 +84,27 @@ pub enum Command {
         /// certificate. Clients then pin nothing and must reach it over https.
         #[arg(long)]
         no_tls: bool,
+        /// Also serve the MCP endpoint, so an agent on this machine can use
+        /// this vault.
+        ///
+        /// Opt-in here rather than read from `mcp.json`'s switch, and the
+        /// distinction is deliberate. That switch is thrown by somebody at a
+        /// keyboard, for a listener that answers only on loopback; this is a
+        /// daemon an operator starts, often on a machine other people can
+        /// reach. The two are different decisions, and a configuration
+        /// directory that travels -- synced dotfiles, a shared home, an image
+        /// baked from somebody's laptop -- must not make the first one into
+        /// the second. The port and the token still come from `mcp.json`.
+        #[arg(long)]
+        mcp: bool,
+        /// Answer MCP on this address instead of the one `mcp.json` names.
+        ///
+        /// Takes `ADDR` or `ADDR:PORT`. There is no TLS on this endpoint --
+        /// an MCP client has no way to pin a certificate -- so anything but a
+        /// loopback address is plaintext on a network, and is never chosen
+        /// for you.
+        #[arg(long, value_name = "ADDR")]
+        mcp_listen: Option<String>,
         /// Open the vault with the key this machine has in its keychain,
         /// rather than waiting for a client to type a password.
         ///
@@ -314,7 +335,16 @@ pub fn run(cli: Cli) -> Result<()> {
     // deliberately: an unattended server that had to be given a password would
     // be a server keeping one in an environment file. The first client to
     // connect unlocks it instead.
-    if let Command::Serve { listen, port, pair, no_remote_unlock, no_tls, keychain } = &cli.command
+    if let Command::Serve {
+        listen,
+        port,
+        pair,
+        no_remote_unlock,
+        no_tls,
+        mcp,
+        mcp_listen,
+        keychain,
+    } = &cli.command
     {
         let vault = everyday_vault::open(&path)?;
         if let Some(password) = cli.password.as_deref()
@@ -337,7 +367,19 @@ pub fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
-        return serve(vault, &path, listen, *port, *pair, *no_remote_unlock, *no_tls);
+        return serve(
+            vault,
+            &path,
+            ServeOptions {
+                listen,
+                port: *port,
+                pair: *pair,
+                no_remote_unlock: *no_remote_unlock,
+                no_tls: *no_tls,
+                mcp: *mcp,
+                mcp_listen: mcp_listen.as_deref(),
+            },
+        );
     }
 
     let vault = everyday_vault::open(&path)?;
@@ -1072,15 +1114,29 @@ fn human_bytes(n: u64) -> String {
 /// Builds a runtime here rather than making `main` async: everything else this
 /// binary does is synchronous, and a runtime started for every `everyday list`
 /// would be a cost paid by the common case for the sake of the rare one.
-fn serve(
-    vault: Vault,
-    vault_path: &std::path::Path,
-    listen: &str,
-    port: u16,
-    pair: bool,
-    no_remote_unlock: bool,
-    no_tls: bool,
-) -> Result<()> {
+/// Everything `serve` was asked for, as one argument.
+///
+/// A struct rather than nine parameters, which is where this arrived once MCP
+/// gained a switch and an address of its own. They travel together, they all
+/// come from one `Command::Serve`, and a call site listing nine bare values in
+/// a row is one transposition away from serving the wrong thing on the wrong
+/// port.
+pub struct ServeOptions<'a> {
+    /// Address for the vault server itself.
+    pub listen: &'a str,
+    pub port: u16,
+    /// Print a pairing link and a QR code before serving.
+    pub pair: bool,
+    pub no_remote_unlock: bool,
+    pub no_tls: bool,
+    /// Serve the MCP endpoint too. See the flag's own documentation for why
+    /// this is not read from `mcp.json`.
+    pub mcp: bool,
+    pub mcp_listen: Option<&'a str>,
+}
+
+fn serve(vault: Vault, vault_path: &std::path::Path, options: ServeOptions<'_>) -> Result<()> {
+    let ServeOptions { listen, port, pair, no_remote_unlock, no_tls, mcp, mcp_listen } = options;
     let ip: std::net::IpAddr =
         listen.parse().map_err(|_| Error::Invalid(format!("{listen} is not an address")))?;
     let config = everyday_server::Config {
@@ -1106,11 +1162,39 @@ fn serve(
         let locked = !vault.is_unlocked();
         let service = std::sync::Arc::new(everyday_service::Service::new());
         service.set(vault);
-        service.set_events(broadcaster);
+        service.set_events(broadcaster.clone());
 
         let running = everyday_server::start(service.clone(), parts, &config, name.clone())
             .await
             .map_err(command_error)?;
+
+        // MCP, on the same runtime and -- this is the part that matters --
+        // the same `Registry`. Two of those over one `devices.json` write
+        // the whole list each and silently erase each other's rows; see
+        // `Registry`'s own doc.
+        let mcp_running = if mcp {
+            Some(serve_mcp(&dir, mcp_listen, service.clone(), registry.clone()).await?)
+        } else {
+            let config = everyday_server::mcp::Config::load(&dir);
+            if config.enabled {
+                // The switch in the settings panel is on, and this process is
+                // deliberately not reading it. Saying so is the whole point:
+                // a field that is quietly ignored by one of its two readers
+                // is worse than one that is not there.
+                eprintln!(
+                    "note: mcp.json has the MCP server switched on. This command does not \
+                     act on that switch;\n      pass --mcp to serve it here."
+                );
+            }
+            None
+        };
+        if let Some(running) = &mcp_running {
+            // Both sinks, so `lock_state` reaches every paired device *and*
+            // every open MCP stream -- which is what tells a client that
+            // connected to a locked vault to ask for the catalogue again.
+            service.set_events(everyday_server::fanout(running.sink.clone(), broadcaster.clone()));
+            println!("MCP endpoint: http://{}/mcp", running.address);
+        }
 
         // The assistant's routines, on this runtime rather than one of their
         // own. This is the shape the feature was built for: a machine under a
@@ -1243,6 +1327,70 @@ fn terminal_qr(url: &str) -> String {
 /// Pipe JSON-RPC between this process's stdin/stdout and the MCP listener
 /// a running copy of Every Day already serves.
 ///
+/// Start the MCP endpoint beside a headless server.
+///
+/// The address is resolved here rather than in the caller because there are
+/// three sources and a precedence between them: `--mcp-listen` if it was
+/// given, else whatever `mcp.json` holds, else the loopback default. An
+/// address is accepted with or without a port, since somebody who has gone
+/// to the trouble of naming one usually means both.
+///
+/// A machine with no token yet is given one, printed once. That is not a
+/// convenience: a headless box has no settings panel to issue one from, so
+/// without this `--mcp` would start a listener that answers `401` to
+/// everything and offers no way out of it.
+async fn serve_mcp(
+    dir: &std::path::Path,
+    listen: Option<&str>,
+    service: std::sync::Arc<everyday_service::Service>,
+    registry: std::sync::Arc<everyday_server::Registry>,
+) -> Result<everyday_server::mcp::Running> {
+    let mut config = everyday_server::mcp::Config::load(dir);
+
+    if let Some(raw) = listen {
+        config.listen = match raw.parse::<std::net::SocketAddr>() {
+            Ok(address) => address,
+            Err(_) => {
+                let ip: std::net::IpAddr =
+                    raw.parse().map_err(|_| Error::Invalid(format!("{raw} is not an address")))?;
+                std::net::SocketAddr::new(ip, config.listen.port())
+            }
+        };
+    }
+
+    if config.token.is_none() {
+        let token = everyday_server::mcp::issue_token(
+            &registry,
+            dir,
+            vec![everyday_service::ctx::Scope::All],
+        )
+        .map_err(command_error)?;
+        println!("MCP token:    {token}");
+        println!("              Kept in {}; this is the only time it is printed.", dir.display());
+        // Taken into the config we are about to serve with, rather than by
+        // re-reading the file `issue_token` just wrote. That file holds the
+        // *persisted* address, and re-reading it here threw away whatever
+        // `--mcp-listen` asked for -- so the endpoint came up on the stored
+        // port and announced it, which is a confusing way to be ignored.
+        config.token = Some(token);
+    }
+
+    if !config.listen.ip().is_loopback() {
+        // Said once, plainly, at the moment it becomes true. There is no TLS
+        // on this endpoint because an MCP client cannot pin a certificate, so
+        // an address other than loopback is somebody's journal in the clear
+        // on a network.
+        eprintln!(
+            "warning: MCP is answering on {}, which is not loopback, and that endpoint \
+             has no TLS.\n         Put it on a WireGuard or Tailscale address rather than \
+             a shared network.",
+            config.listen
+        );
+    }
+
+    everyday_server::mcp::start(service, registry, &config).await.map_err(command_error)
+}
+
 /// This is the whole of `everyday mcp`: it opens no vault, and it does not
 /// link against `everyday-mcp` for anything that decides what a JSON-RPC
 /// message *means* -- only for `expected_headers`, which reads what the
@@ -1642,6 +1790,41 @@ mod tests {
         assert_eq!(truncate("short", 10), "short");
         let out = truncate(&"\u{1f600}".repeat(50), 5);
         assert_eq!(out.chars().count(), 5);
+    }
+
+    /// `--mcp-listen` must reach the listener, including on the path that
+    /// mints a token first.
+    ///
+    /// This is a regression test for a bug that only a real run found: the
+    /// token-minting branch re-read `mcp.json` to pick the token back up, and
+    /// in doing so threw away the address the flag had asked for. The server
+    /// then came up on the stored port and announced it, which looks exactly
+    /// like the flag not existing.
+    #[test]
+    fn an_address_given_on_the_command_line_survives_minting_a_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = everyday_server::mcp::Config::load(dir.path());
+        assert!(config.token.is_none(), "a fresh directory has no token");
+        let stored = config.listen;
+
+        // What `serve_mcp` does with `--mcp-listen`, in the same order.
+        config.listen = "127.0.0.1:7654".parse().unwrap();
+        let registry =
+            everyday_server::Registry::open(dir.path().join(everyday_server::DEVICES_FILE))
+                .unwrap();
+        let token = everyday_server::mcp::issue_token(
+            &registry,
+            dir.path(),
+            vec![everyday_service::ctx::Scope::All],
+        )
+        .unwrap();
+        config.token = Some(token);
+
+        assert_eq!(config.listen.port(), 7654, "the flag must outlive the token");
+        assert!(config.token.is_some());
+        // And the file keeps the persisted address: a flag is for this run,
+        // not a way to rewrite somebody's configuration behind their back.
+        assert_eq!(everyday_server::mcp::Config::load(dir.path()).listen, stored);
     }
 
     #[test]
