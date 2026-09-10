@@ -212,6 +212,7 @@
           <!-- Into an empty title only. A title you wrote is not a gap. -->
           {#if titleIdea && !note.title.trim()}
             <Suggestions
+              scope={note.id}
               items={[{ key: 'title', label: titleIdea }]}
               label="Call it:"
               onaccept={() => {
@@ -279,6 +280,7 @@
                so a task made from a note is indistinguishable from one
                somebody wrote by hand. -->
           <Suggestions
+            scope={note.id}
             items={taskChips}
             busy={scanning}
             label="Make a task:"
@@ -286,6 +288,7 @@
             ondismiss={() => taskSlot.dismiss(() => (taskChips = []))}
           />
           <Suggestions
+            scope={note.id}
             items={tagChips}
             label="Tag it:"
             onaccept={acceptTag}
@@ -293,6 +296,7 @@
           />
           {#if pendingPurpose && !note.purpose}
             <Suggestions
+              scope={note.id}
               items={[{ key: 'p', label: purposeStore.describe(pendingPurpose).name }]}
               label="File it under:"
               onaccept={() => {

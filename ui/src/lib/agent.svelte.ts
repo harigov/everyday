@@ -111,6 +111,25 @@ class AgentState {
   }
 
   /** Settings and threads. Cheap, and repeated whenever the panel opens. */
+  /**
+   * The settings alone, without the threads.
+   *
+   * What `quick` needs, and it needs it without the rest: `load` also fetches
+   * fifty conversations and *starts a thread*, which is a write, and nothing
+   * about a shelf filling in its own fields should mint a conversation.
+   */
+  async loadSettings() {
+    if (!this.supported) return
+    if (this.settings) return
+    try {
+      this.settings = await api.agentSettings()
+    } catch (e) {
+      // Quiet: every caller of this draws a suggestion or nothing, and the
+      // rail's own `load` reports properly for the case somebody is looking.
+      if (isLocked(e)) return void (await handle(e))
+    }
+  }
+
   async load() {
     if (!this.supported) return
     try {

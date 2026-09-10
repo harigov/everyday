@@ -15,7 +15,7 @@
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
-  import type { Attachment, QuickReading, RichDoc } from '../lib/types'
+  import type { Attachment, Entry, QuickReading, RichDoc } from '../lib/types'
   import { api } from '../lib/api'
   import { ask, quick, slot } from '../lib/quick.svelte'
   import { tracking } from '../lib/tracking.svelte'
@@ -45,7 +45,9 @@
   let found = $state<QuickReading[]>([])
   let reading = $state(false)
   let title = $state('')
-  const readSlot = slot<QuickReading[]>()
+  /** What one press of "Read the day back" comes home with. */
+  type DayRead = { entry: Entry; rows: QuickReading[]; tags: string[] }
+  const readSlot = slot<DayRead>()
 
   async function readTheDay() {
     const target = app.entry
@@ -57,32 +59,61 @@
     app.syncBody()
     await app.flush()
 
-    // Both jobs on the one press. They read the same entry, and making
-    // somebody ask twice about the day they just wrote -- once for the
-    // numbers, once for the tags -- would be two round trips and two buttons
-    // for one question.
-    const [rows, labels] = await Promise.all([
-      ask('journal.readings', () => api.quickEntryReadings(target.id)),
-      ask('journal.labels', () => api.quickEntryLabels(target.id)),
-    ])
-
+    // Through the slot, and `track` rather than `run` because this presses
+    // two jobs at once and each has its own switch -- naming either one to
+    // `run` would let the other being off suppress it.
+    //
+    // The guard is load-bearing here in a way it is not in a capture box.
+    // Open Monday, press this, open Tuesday before it lands: without the
+    // generation counter Monday's readings draw under Tuesday's date, and
+    // `acceptReading` re-reads `app.entry` on the way out -- so a tap would
+    // file Monday's number against Tuesday's entry. Not a flicker; a wrong
+    // row in the tracker history with nothing to trace it back to.
+    await readSlot.track(
+      async () => {
+        // Both jobs on the one press. They read the same entry, and making
+        // somebody ask twice about the day they just wrote -- once for the
+        // numbers, once for the tags -- would be two round trips and two
+        // buttons for one question.
+        const [rows, labels] = await Promise.all([
+          ask('journal.readings', () => api.quickEntryReadings(target.id)),
+          ask('journal.labels', () => api.quickEntryLabels(target.id)),
+        ])
+        return { entry: target, rows: rows ?? [], tags: labels?.tags ?? [] }
+      },
+      (answer) => {
+        reading = false
+        if (!answer) return
+        // The entry these were read out of, so accepting one cannot use
+        // whatever happens to be open by then.
+        askedAbout = answer.entry
+        found = answer.rows
+        readingChips = found.map((r, i) => ({ key: String(i), label: r.label || r.name }))
+        tagChips = answer.tags.map((t) => ({ key: t, label: `#${t}` }))
+      },
+    )
     reading = false
-    found = rows ?? []
-    readingChips = found.map((r, i) => ({ key: String(i), label: r.label || r.name }))
-    tagChips = (labels?.tags ?? []).map((t) => ({ key: t, label: `#${t}` }))
   }
 
   let tagChips = $state<{ key: string; label: string }[]>([])
+  /**
+   * The entry the suggestions on screen were read out of.
+   *
+   * Accepting one writes against *this*, never against `app.entry`. The slot
+   * stops a stale answer being drawn at all; this is the second belt, for the
+   * gap between a chip being drawn and somebody tapping it.
+   */
+  let askedAbout = $state<Entry | null>(null)
 
   function acceptTag(tag: string) {
-    const target = app.entry
+    const target = askedAbout
     if (!target || target.tags.some((t) => t.toLowerCase() === tag.toLowerCase())) return
     target.tags = [...target.tags, tag]
     app.scheduleSave()
   }
 
   async function acceptReading(key: string) {
-    const target = app.entry
+    const target = askedAbout
     const row = found[Number(key)]
     if (!row || !target) return
     await tracking.recordSuggested(row, {
@@ -91,6 +122,19 @@
       date: target.localDate,
     })
   }
+
+  // Opening another day drops what was suggested about the last one. The slot
+  // refuses a late answer; this clears one that already landed.
+  $effect(() => {
+    const open = app.entry?.id
+    if (askedAbout && askedAbout.id !== open) {
+      readSlot.cancel()
+      readingChips = []
+      tagChips = []
+      found = []
+      askedAbout = null
+    }
+  })
 
   /** J2: a title for a day, offered only when there is not one already. */
   async function suggestTitle() {
@@ -170,6 +214,7 @@
                gap, and this is never allowed to argue with one. -->
           {#if title && !entry.title.trim()}
             <Suggestions
+              scope={entry.id}
               items={[{ key: 'title', label: title }]}
               label="Call it:"
               onaccept={() => {
@@ -192,7 +237,7 @@
           <!-- Numbers the prose stated, offered as chips. On demand and never
                as you type: this reads the day's writing, which is the most
                private text this vault holds. -->
-          {#if quick.enabled('journal.readings') || quick.enabled('journal.title')}
+          {#if quick.enabled('journal.readings') || quick.enabled('journal.labels') || quick.enabled('journal.title')}
             <div class="quick-row">
               {#if quick.enabled('journal.readings') || quick.enabled('journal.labels')}
                 <button class="quick-btn" disabled={reading} onclick={() => void readTheDay()}>
@@ -209,6 +254,7 @@
             </div>
           {/if}
           <Suggestions
+            scope={entry.id}
             items={readingChips}
             busy={reading}
             label="Record:"
@@ -216,6 +262,7 @@
             ondismiss={() => readSlot.dismiss(() => (readingChips = []))}
           />
           <Suggestions
+            scope={entry.id}
             items={tagChips}
             label="Tag it:"
             onaccept={acceptTag}

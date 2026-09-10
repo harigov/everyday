@@ -12,10 +12,12 @@
   // with it; and a field that fills itself is the thing the whole feature is
   // written to avoid -- what you typed has to survive being disagreed with.
 
+  import { NOTHING_TAKEN, exhausted, remaining, take, type Taken } from '../lib/suggestions'
   import Icon from './Icon.svelte'
 
   let {
     items = [],
+    scope = '',
     /** Drawn small and grey before the chips, e.g. "Also worth tracking". */
     label = '',
     /** Whether a request is in flight, so the row can say so rather than pop. */
@@ -24,6 +26,13 @@
     ondismiss,
   }: {
     items?: { key: string; label: string }[]
+    /**
+     * What these suggestions are *about* -- an entry id, a note id, a task
+     * id. Without it, two records whose suggestions happen to be an identical
+     * list share a round, and one accepted on the first is silently missing
+     * from the second. See `suggestions.ts`.
+     */
+    scope?: string
     label?: string
     busy?: boolean
     onaccept: (key: string) => void
@@ -31,23 +40,25 @@
   } = $props()
 
   /**
-   * Which chips have been taken, so they can leave without the parent having
-   * to rebuild the list.
+   * Which chips have been taken, and which list they were taken from.
    *
-   * Held here rather than by removing from `items` upstream because accepting
-   * one of four suggestions should not redraw the other three -- and because
-   * the parent's list is usually the answer it was given, which it should be
-   * free to keep for as long as the row is open.
+   * Taken chips leave without the parent having to rebuild its list, because
+   * accepting one of four suggestions should not redraw the other three --
+   * and the parent's list is usually the answer it was handed, which it
+   * should be free to keep for as long as the row is open.
+   *
+   * The rules live in `suggestions.ts`, pure and tested, because the way the
+   * *round* fails is quiet: this component stays mounted across rounds, so a
+   * bare set of accepted keys leaks from one entry's suggestions into the
+   * next one's and reads as the model getting worse. See the file.
    */
-  let taken = $state<Set<string>>(new Set())
-  const left = $derived(items.filter((i) => !taken.has(i.key)))
+  let taken = $state<Taken>(NOTHING_TAKEN)
+  const left = $derived(remaining(items, taken, scope))
 
   function accept(key: string) {
-    taken = new Set([...taken, key])
+    taken = take(items, taken, key, scope)
     onaccept(key)
-    // The last one taken closes the row: there is nothing left to look at,
-    // and an empty row with a close button is furniture.
-    if (taken.size >= items.length) ondismiss()
+    if (exhausted(items, taken, scope)) ondismiss()
   }
 </script>
 

@@ -136,6 +136,7 @@
        that nobody goes back and checks. -->
   {#if readingChip}
     <Suggestions
+      scope={readingChip.name}
       items={[{ key: 'r', label: readingChip.label || readingChip.name }]}
       label="Record:"
       onaccept={() => void acceptReading()}

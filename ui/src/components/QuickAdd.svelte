@@ -236,6 +236,7 @@
 <!-- After the task exists, never before. A suggestion that delayed the Enter
      would have broken the one thing this component is for. -->
 <Suggestions
+  scope={pending?.task.id ?? ''}
   items={chips}
   label="Also:"
   onaccept={accept}

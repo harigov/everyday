@@ -726,8 +726,15 @@ impl EventDraft {
         self.date = self.date.take().filter(|d| is_iso_date(d));
         self.start = self.start.take().filter(|t| is_clock(t));
         self.end = self.end.take().filter(|t| is_clock(t));
-        // An end before its start is the commonest way a parsed time goes
-        // wrong, and it draws as a block of negative height.
+        // An end with no start says nothing about how long anything is. "by
+        // 8am on Thursday" is a deadline, and a caller measuring it against
+        // whatever default start it assumes gets a negative duration -- which
+        // draws as a block of negative height, or clamps to a stub nobody
+        // asked for.
+        if self.start.is_none() {
+            self.end = None;
+        }
+        // An end before its start is the other way a parsed time goes wrong.
         if let (Some(s), Some(e)) = (&self.start, &self.end)
             && e <= s
         {
@@ -1248,8 +1255,11 @@ pub static JOBS: &[QuickJob] = &[
         default_on: false,
         system: "You write two sentences about somebody's week from its \
             totals, naming the one thing that changed most against the week \
-            before. State what the numbers say and stop. No encouragement, no \
-            advice, and no conclusions the numbers do not support.",
+            before. When the week before is empty or missing, describe this \
+            week alone and do not mention a comparison -- there is nothing to \
+            compare with, and inventing one is the failure this job is most \
+            prone to. State what the numbers say and stop. No encouragement, \
+            no advice, and no conclusions the numbers do not support.",
         schema: text_schema,
     },
     // -- data -------------------------------------------------------------
@@ -1574,10 +1584,18 @@ pub fn backfill_picks(answer: &LabelsAnswer, len: usize) -> Vec<usize> {
 
 /// O1 — the week, in a sentence or two.
 pub fn overview_week(ctx: &QuickContext, this_week: &str, last_week: &str) -> Prompt {
+    // An empty prior week is said in as many words rather than left as a
+    // blank heading. A heading with nothing under it reads as "nothing
+    // happened", which is a claim about a week that was never read -- and the
+    // instruction's job is to tell those two apart.
+    let before = match last_week.trim() {
+        "" => "(not available -- do not compare)".to_string(),
+        text => text.to_string(),
+    };
     Prompt::new(
         job_or_panic("overview.week"),
         ctx,
-        format!("This week:\n{this_week}\n\nThe week before:\n{last_week}"),
+        format!("This week:\n{this_week}\n\nThe week before:\n{before}"),
     )
 }
 
@@ -1822,6 +1840,21 @@ mod tests {
         // No date is not an appointment.
         let mut undated = EventDraft { title: "Lunch".into(), ..Default::default() };
         assert!(!undated.clamp());
+    }
+
+    #[test]
+    fn an_end_with_no_start_is_a_deadline_and_not_a_duration() {
+        // "Get the tax return in by 8am Thursday". A caller measuring this
+        // against whatever start time it defaults to gets a negative span.
+        let mut deadline = EventDraft {
+            title: "Tax return".into(),
+            date: Some("2026-09-10".into()),
+            end: Some("08:00".into()),
+            ..Default::default()
+        };
+        assert!(deadline.clamp());
+        assert_eq!(deadline.start, None);
+        assert_eq!(deadline.end, None, "an end alone cannot say how long");
     }
 
     #[test]

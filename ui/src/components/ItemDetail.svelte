@@ -557,6 +557,7 @@
            year has to be two decisions. Only fields that are empty are ever
            offered: what you typed survives a lookup that disagrees. -->
       <Suggestions
+        scope={item.id}
         items={fieldChips}
         busy={fieldsBusy}
         label="Found:"

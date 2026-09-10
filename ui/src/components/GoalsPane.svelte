@@ -241,6 +241,7 @@
          against a goal that already exists, so declining costs nothing. -->
     {#if wording && wording.goalId === goal.id}
       <Suggestions
+        scope={goal.id}
         items={[{ key: 'w', label: wording.text }]}
         label="Or:"
         onaccept={() => {
@@ -255,6 +256,7 @@
          looks abandoned on the day it was made. These are tasks with no
          purpose yet that it might already cover. -->
     <Suggestions
+      scope={goal.id}
       items={backfillChips}
       label="Already this?"
       onaccept={acceptBackfill}

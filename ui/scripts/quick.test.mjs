@@ -50,6 +50,22 @@ const server = await createServer({
 })
 
 const { ask, quick, slot } = await server.ssrLoadModule('/src/lib/quick.svelte.ts')
+const { agent } = await server.ssrLoadModule('/src/lib/agent.svelte.ts')
+
+/**
+ * Configure -- or unconfigure -- the quick model.
+ *
+ * Through `agent.settings`, because that is where `quick.configured` reads
+ * from. It is a getter rather than a copy for a reason worth not undoing: the
+ * two loads are separate round trips, and a snapshot taken here lands `false`
+ * whenever the settings arrive second, which switches the whole feature off
+ * silently with every switch still reading "on" in the pane.
+ */
+function configure(on) {
+  agent.settings = on
+    ? { quickModel: { model: 'gpt-5.1-nano', temperature: 0, maxTokens: 1024 } }
+    : { quickModel: null }
+}
 
 /** A promise that resolves when we say so. */
 function deferred() {
@@ -63,7 +79,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0))
 // ── A job that is off never reaches the network ──────────────────────────
 
 {
-  quick.configured = false
+  configure(false)
   quick.jobs = [{ name: 'notes.title', label: '', blurb: '', app: '', on: true, defaultOn: true }]
 
   let called = 0
@@ -75,7 +91,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0))
   assert.equal(called, 0, 'and no request either')
 
   // Configured, but this particular job switched off.
-  quick.configured = true
+  configure(true)
   quick.jobs = [{ name: 'notes.title', label: '', blurb: '', app: '', on: false, defaultOn: true }]
   called = 0
   assert.equal(await ask('notes.title', async () => ((called += 1), 'x')), null)
@@ -91,7 +107,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0))
 // ── A failure is silence, not an error ───────────────────────────────────
 
 {
-  quick.configured = true
+  configure(true)
   quick.jobs = [{ name: 'notes.title', label: '', blurb: '', app: '', on: true, defaultOn: true }]
 
   // A model endpoint that is down must not become a banner over somebody's
@@ -105,7 +121,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0))
 // ── The answer to a stale question is dropped ────────────────────────────
 
 {
-  quick.configured = true
+  configure(true)
   quick.jobs = [{ name: 'notes.title', label: '', blurb: '', app: '', on: true, defaultOn: true }]
 
   const first = deferred()
@@ -138,7 +154,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0))
 // ── A dismissal sticks against a request already in flight ───────────────
 
 {
-  quick.configured = true
+  configure(true)
   quick.jobs = [{ name: 'notes.title', label: '', blurb: '', app: '', on: true, defaultOn: true }]
 
   const inflight = deferred()
@@ -162,7 +178,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0))
 // ── Cancelling drops what is in flight without clearing what is drawn ────
 
 {
-  quick.configured = true
+  configure(true)
   quick.jobs = [{ name: 'notes.title', label: '', blurb: '', app: '', on: true, defaultOn: true }]
 
   const inflight = deferred()
@@ -179,6 +195,56 @@ const flush = () => new Promise((r) => setTimeout(r, 0))
   await flush()
 
   assert.deepEqual(seen, [], 'a cancel is silent in both directions')
+}
+
+// ── `track` gates on nothing, so two jobs can share one slot ─────────────
+
+{
+  configure(true)
+  // One job on, one off -- the journal's shape when somebody wants the
+  // numbers but not the tags.
+  quick.jobs = [
+    { name: 'journal.readings', label: '', blurb: '', app: '', on: true, defaultOn: false },
+    { name: 'journal.labels', label: '', blurb: '', app: '', on: false, defaultOn: false },
+  ]
+
+  const s = slot()
+  const seen = []
+  // `run` would take one job name and suppress the whole press when that one
+  // is off. `track` leaves the gating to the caller, which checks each.
+  await s.track(
+    async () => 'both asked',
+    (v) => seen.push(v),
+  )
+  assert.deepEqual(seen, ['both asked'])
+
+  // And it still drops a stale answer.
+  const first = deferred()
+  const second = deferred()
+  const later = []
+  void s.track(
+    () => first.promise,
+    (v) => later.push(v),
+  )
+  void s.track(
+    () => second.promise,
+    (v) => later.push(v),
+  )
+  second.resolve('newest')
+  await flush()
+  first.resolve('stale')
+  await flush()
+  assert.deepEqual(later, ['newest'], 'track guards staleness exactly as run does')
+
+  // A throw inside `track` is silence, like everything else here.
+  const quiet = []
+  await s.track(
+    async () => {
+      throw new Error('endpoint down')
+    },
+    (v) => quiet.push(v),
+  )
+  assert.deepEqual(quiet, [null])
 }
 
 await server.close()

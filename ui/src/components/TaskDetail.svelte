@@ -232,6 +232,7 @@
         {#if estimate != null && task.estimateMinutes == null}
           <span></span>
           <Suggestions
+            scope={task.id}
             items={[{ key: 'e', label: formatMinutes(estimate) }]}
             onaccept={() => {
               todo.patch(task.id, { estimateMinutes: estimate })
@@ -308,6 +309,7 @@
              -- a task with a parent -- rather than going through a second
              creation path that could drift from the first. -->
         <Suggestions
+          scope={task.id}
           items={stepChips}
           busy={breaking}
           onaccept={(key: string) => void acceptStep(key)}

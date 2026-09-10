@@ -42,8 +42,20 @@ import { VaultError } from './types'
  */
 class QuickState {
   jobs = $state<QuickJobRow[]>([])
-  /** Whether a quick model is configured at all. */
-  configured = $state(false)
+
+  /**
+   * Whether a quick model is configured at all.
+   *
+   * Read through from the assistant's settings rather than copied at load
+   * time, and that is not a style preference. `load` and `agent.load` are two
+   * round trips started together, so a snapshot taken here lands `false`
+   * whenever the settings arrive second -- and the whole feature then does
+   * nothing at all, quietly, with every switch still reading "on" in the
+   * pane. A getter cannot be stale.
+   */
+  get configured(): boolean {
+    return agent.settings?.quickModel != null
+  }
 
   /** Whether one named job may run right now. */
   enabled(job: string): boolean {
@@ -51,15 +63,21 @@ class QuickState {
     return this.jobs.find((j) => j.name === job)?.on ?? false
   }
 
+  /**
+   * The job rows, and the settings they are read against.
+   *
+   * `loadSettings` rather than `agent.load`: the latter also fetches fifty
+   * threads and starts one, and nothing about a shelf filling in its own
+   * fields should mint a conversation. It is a no-op once they have arrived.
+   */
   async load() {
     try {
-      this.jobs = await api.quickJobs()
-      this.configured = agent.settings?.quickModel != null
+      const [jobs] = await Promise.all([api.quickJobs(), agent.loadSettings()])
+      this.jobs = jobs
     } catch {
       // Same argument as everywhere else in this file: a settings read that
       // failed means no chips, not a banner.
       this.jobs = []
-      this.configured = false
     }
   }
 
@@ -69,7 +87,6 @@ class QuickState {
 
   reset() {
     this.jobs = []
-    this.configured = false
   }
 }
 

@@ -19,6 +19,7 @@
 
 import { api } from './api'
 import { SvelteMap } from 'svelte/reactivity'
+import { notify } from './notify.svelte'
 import { ask, quick } from './quick.svelte'
 import { Autosave } from './autosave'
 import { app, errorMessage, handle, isLocked } from './state.svelte'
@@ -775,18 +776,6 @@ class CalendarState {
   }
 
   /**
-   * Book what a sentence describes.
-   *
-   * The quick model reads "lunch with Sam Thursday 1pm at the usual place";
-   * everything after that is the ordinary `book`. Answers null and does
-   * nothing when the sentence names no date -- an appointment with no day is
-   * not an appointment, and guessing today would put somebody's Thursday
-   * lunch on a Tuesday.
-   *
-   * An hour when no end was given, because that is what `bookNow` assumes
-   * too and a block of unknown length has to be drawn as something.
-   */
-  /**
    * A readable title for a subscribed event.
    *
    * `[EXT] FW: Re: Weekly Sync // Zoom` is what a work feed actually
@@ -822,6 +811,25 @@ class CalendarState {
     return raw
   }
 
+  /**
+   * Book what a sentence describes.
+   *
+   * The quick model reads "lunch with Sam Thursday 1pm at the usual place";
+   * everything after that is the ordinary `book`. Answers null and does
+   * nothing when the sentence names no date -- an appointment with no day is
+   * not an appointment, and guessing today would put somebody's Thursday
+   * lunch on a Tuesday.
+   *
+   * An hour when no end was given, because that is what `bookNow` assumes too
+   * and a block of unknown length has to be drawn as something.
+   *
+   * The booking happens *before* the view moves, which is the opposite of the
+   * obvious order and the only one that works. `goto` fires an unawaited
+   * `refresh`, and that refresh ends by assigning `this.blocks` from a query
+   * issued before the save -- so navigating first drops the new block off the
+   * grid and clears the selection that was just made. Booking first means the
+   * refresh reads it back from storage, which is where it already is.
+   */
   async bookFromSentence(line: string): Promise<TimeBlock | null> {
     /** `HH:MM` to minutes since midnight. The core already validated it. */
     const clockMinutes = (clock: string): number => {
@@ -830,12 +838,26 @@ class CalendarState {
     }
 
     const draft = await ask('calendar.parse', () => api.quickEventFromLine(line))
-    if (!draft?.date) return null
+    if (!draft?.date) {
+      // Say so. This is reached from the palette, which has already closed
+      // over a visible pause -- so silence here is a command that appeared to
+      // do nothing, which is the worst answer available. `info` rather than
+      // `error`: a sentence with no day in it is a thing the person can fix,
+      // not a fault.
+      notify.info('Nothing to book', {
+        body: `“${line}” does not say which day.`,
+        reach: 'app',
+      })
+      return null
+    }
     await this.start()
     const start = draft.start ? clockMinutes(draft.start) : 9 * 60
-    const minutes = draft.end ? Math.max(15, clockMinutes(draft.end) - start) : 60
-    if (!this.days.includes(draft.date)) this.goto(draft.date)
-    return this.book({
+    // `end` without `start` cannot say how long anything is -- "by 8am
+    // Thursday" would be measured against the 09:00 default and come out
+    // negative. The core drops that pairing, and this is the second guard.
+    const span = draft.end && draft.start ? clockMinutes(draft.end) - start : 0
+    const minutes = span > 0 ? span : 60
+    const block = await this.book({
       subject: { type: 'adhoc' },
       day: draft.date,
       startMinutes: start,
@@ -843,6 +865,8 @@ class CalendarState {
       kind: 'planned',
       title: draft.location ? `${draft.title} — ${draft.location}` : draft.title,
     })
+    if (block && !this.days.includes(draft.date)) this.goto(draft.date)
+    return block
   }
 
   /**
@@ -860,13 +884,17 @@ class CalendarState {
     await this.start()
     const at = new Date()
     const start = snap(at.getHours() * 60 + at.getMinutes(), SNAP_MINUTES)
-    if (!this.days.includes(todayIso())) this.goto(todayIso())
+    // Booked before the view moves, for the reason `bookFromSentence` gives:
+    // `goto`'s refresh would otherwise overwrite `blocks` with a query that
+    // predates the save. Rare here, because the view is usually already on
+    // today -- which is exactly why it would have been found late.
     await this.book({
       subject: { type: 'adhoc' },
       day: todayIso(),
       startMinutes: start,
       minutes: DEFAULT_BLOCK_MINUTES,
     })
+    if (!this.days.includes(todayIso())) this.goto(todayIso())
   }
 
   /** Book a planned block for a task, defaulting to its own estimate. */

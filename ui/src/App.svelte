@@ -16,6 +16,7 @@
   import { library } from './lib/library.svelte'
   import { assistant } from './lib/assistant.svelte'
   import { purpose } from './lib/purpose.svelte'
+  import { quick } from './lib/quick.svelte'
   import { tracking } from './lib/tracking.svelte'
   import { agent } from './lib/agent.svelte'
   import { live } from './lib/live.svelte'
@@ -102,6 +103,11 @@
     // every app, so it must not cost a query per app; the Assistant app loads
     // the rest when it is opened.
     void assistant.refreshCount()
+    // Which quick jobs are on. Every capture box in the application reads
+    // this to decide whether to offer anything, so loading it on first use
+    // would mean the first shelf, the first task and the first note of every
+    // session silently got no suggestion.
+    void quick.load()
   })
 
   // Each app tints the window with the accent of whatever it has selected:
