@@ -103,11 +103,20 @@ function dialogOpen(): boolean {
  * it for the length of one pass over the table and drops it on the way out,
  * so nothing that runs *between* two passes -- an action opening a dialog,
  * a component mounting one -- can be answered from a stale reading.
+ *
+ * And the scope belongs to whoever opened it. `sweeping` is what makes that
+ * true: this table has readers other than the keyboard -- the tray composing
+ * its menu, the app bar building a right-click menu from `entriesFor` -- and
+ * they run outside any sweep. Caching for them as well would mean a menu
+ * built from whatever was on screen at some unrelated earlier moment, which
+ * a dialog dismissed with the mouse leaves nothing behind to correct.
  */
+let sweeping = false
 let modalSeen: boolean | null = null
 
 function modalInDom(): boolean {
-  if (modalSeen === null) modalSeen = document.querySelector('[aria-modal="true"]') !== null
+  if (!sweeping) return document.querySelector('[aria-modal="true"]') !== null
+  modalSeen ??= document.querySelector('[aria-modal="true"]') !== null
   return modalSeen
 }
 
@@ -116,13 +125,19 @@ function modalInDom(): boolean {
  *
  * Wrap a pass over the table, never the running of what it found: an action
  * is entitled to open a dialog, and the next thing to ask has to see it.
+ *
+ * The outer state is put back rather than cleared, so that a sweep nested
+ * inside another -- there is none today, and an action reading the table
+ * would make one -- cannot end the answer the outer pass is still using.
  */
 function oneSweep<T>(sweep: () => T): T {
-  modalSeen = null
+  const outer = sweeping
+  sweeping = true
   try {
     return sweep()
   } finally {
-    modalSeen = null
+    sweeping = outer
+    if (!outer) modalSeen = null
   }
 }
 

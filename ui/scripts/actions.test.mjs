@@ -34,12 +34,17 @@ globalThis.matchMedia ??= () => ({
   addEventListener: () => {},
   removeEventListener: () => {},
 })
-// Counted, not merely stubbed: one of the checks at the foot of this file is
-// about *how often* the table asks the document whether a dialog is open.
+// Counted and answerable, not merely stubbed: the checks at the foot of this
+// file are about *how often* the table asks the document whether a dialog is
+// open, and about it believing the answer afterwards.
 let dialogQueries = 0
+let dialogIsOpen = false
 globalThis.document ??= {
   querySelector: (selector) => {
-    if (selector === '[aria-modal="true"]') dialogQueries += 1
+    if (selector === '[aria-modal="true"]') {
+      dialogQueries += 1
+      return dialogIsOpen ? { tagName: 'DIV' } : null
+    }
     return null
   },
   documentElement: { style: { setProperty: () => {} }, classList: { toggle: () => {} } },
@@ -230,6 +235,52 @@ dialogQueries = 0
 press('q')
 press('q')
 assert.equal(dialogQueries, 2, 'the dialog question must be asked afresh on each press')
+
+// ── ...and nothing outside a press is answered from it ────────────────
+//
+// The scope belongs to the key press that opened it, and `when` is documented
+// as being re-read every time somebody looks. Those two only agree if the
+// sharing is confined to the sweep: a press must not leave an answer lying
+// about for the next reader that is not a press.
+//
+// The other readers are the tray composing its menu and the app bar building
+// a right-click menu, both through `trayEntries`, which calls `when` outside
+// any sweep. Neither trips this today -- every `tray` row is gated on the
+// screen and a capability, and none of them asks about dialogs -- so what is
+// checked here is the mechanism rather than one route through it. That is
+// deliberate: the rows that do ask are thirty-two of the keyboard's, the
+// pairing of tray rows with `when`s is not fixed, and the failure when it does
+// happen is a menu built from what was on screen at some unrelated earlier
+// moment. A dialog dismissed with the mouse leaves no keystroke behind to put
+// that right.
+
+const asksAboutDialogs = ACTIONS.find((a) => {
+  if (!a.when) return false
+  dialogQueries = 0
+  a.when()
+  return dialogQueries > 0
+})
+assert.ok(asksAboutDialogs, 'no row consults the document about dialogs; has the gate moved?')
+
+dialogIsOpen = false
+press('q') // opens a sweep, and must not leave its answer behind
+
+dialogIsOpen = true
+dialogQueries = 0
+const applies = asksAboutDialogs.when()
+assert.ok(dialogQueries > 0, 'a reader outside a press was answered from the press before it')
+assert.equal(
+  applies,
+  false,
+  `${asksAboutDialogs.label} still applied with a dialog over the window`,
+)
+
+dialogIsOpen = false
+assert.equal(
+  asksAboutDialogs.when(),
+  true,
+  `${asksAboutDialogs.label} stayed inapplicable after the dialog closed`,
+)
 
 await server.close()
 console.log('actions: all checks passed')
