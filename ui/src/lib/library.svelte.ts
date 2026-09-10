@@ -19,6 +19,7 @@
 //      not tell a stranger's server what is on your shelf.
 
 import { api } from './api'
+import { ask } from './quick.svelte'
 import { Autosave } from './autosave'
 import { app, errorMessage, handle, isLocked } from './state.svelte'
 import { web, type SearchOutcome } from './websearch'
@@ -312,6 +313,43 @@ class LibraryState {
       // secure context the packaged webview does not always provide.
       kind.sortOrder = this.kinds.length
       kind.color = DEFAULT_SHELF_COLORS[this.kinds.length % DEFAULT_SHELF_COLORS.length]!
+
+      // "A kind is data" is this app's best idea and its cost is a form
+      // nobody wants to fill in: an icon, a colour, four verbs and a fields
+      // editor, before you have shelved anything. So the shelf is drafted --
+      // Wines gets a glass, "To try / Tasting / Tasted", and Producer,
+      // Vintage, Region, Grape.
+      //
+      // Applied before the first save rather than offered as chips, and that
+      // is the one place in this feature where a suggestion lands without
+      // being tapped. It is defensible precisely here: the record is being
+      // created this instant, it has no content to argue with, every field is
+      // editable in the shelf's own settings, and the alternative is a person
+      // typing "Wines" and getting a bookmark icon and "In progress".
+      const draft = await ask('library.kind', () => api.quickKindDraft(trimmed))
+      if (draft) {
+        if (draft.icon) kind.icon = draft.icon
+        if (draft.color) kind.color = draft.color
+        if (draft.itemNoun) kind.singular = draft.itemNoun
+        if (draft.wishlistVerb) kind.verbs.wishlist = draft.wishlistVerb
+        if (draft.activeVerb) kind.verbs.active = draft.activeVerb
+        if (draft.doneVerb) {
+          kind.verbs.done = draft.doneVerb
+          // The log verb is the same word mid-sentence -- "read on 4 March"
+          // -- and is not worth a second field in the schema to be told.
+          kind.verbs.log = draft.doneVerb.toLowerCase()
+        }
+        if (draft.source) kind.source = draft.source
+        if (draft.fields.length > 0) {
+          kind.fields = draft.fields.map((f) => ({
+            key: f.key,
+            label: f.label,
+            fieldType: 'text' as const,
+            placeholder: '',
+          }))
+        }
+      }
+
       await api.saveKind(kind)
       await this.refreshKinds()
       await this.selectShelf(kind.id)

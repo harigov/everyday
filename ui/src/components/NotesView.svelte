@@ -19,7 +19,12 @@
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
-  import type { Attachment, Purpose, RichDoc } from '../lib/types'
+  import type { Attachment, Purpose, QuickTaskDraft, RichDoc } from '../lib/types'
+  import { api } from '../lib/api'
+  import { purpose as purposeStore } from '../lib/purpose.svelte'
+  import { ask, quick, slot } from '../lib/quick.svelte'
+  import { todo } from '../lib/todo.svelte'
+  import Suggestions from './Suggestions.svelte'
 
   let editor = $state<TipTapEditor | null>(null)
   let words = $state(0)
@@ -59,6 +64,81 @@
     if (!target) return
     target.purpose = next
     void notes.setTags(target.tags)
+  }
+
+  // ── what the quick model read out of the note ────────────────────────
+  //
+  // Three jobs, and all of them on demand. A note has less privacy weight
+  // than a journal entry -- it is a recipe, a reading list, the notes from a
+  // call -- so these default on, but they still do not fire as you type: a
+  // note being written is a note being changed, and a suggestion about a
+  // half-finished sentence is noise.
+  //
+  // `notes.tasks` is the one that earns its keep. The page of notes from a
+  // call becomes five tasks with dates, which is the thing people currently
+  // do by retyping.
+
+  let titleIdea = $state('')
+  let taskChips = $state<{ key: string; label: string }[]>([])
+  let taskDrafts = $state<QuickTaskDraft[]>([])
+  let tagChips = $state<{ key: string; label: string }[]>([])
+  let scanning = $state(false)
+  const taskSlot = slot<QuickTaskDraft[]>()
+
+  /** Get the body onto disk before asking anything to read it back. */
+  async function settle() {
+    app.syncBody()
+    await notes.flush()
+  }
+
+  async function readTheNote() {
+    const target = notes.open
+    if (!target) return
+    scanning = true
+    await settle()
+
+    // All three at once. They read the same note and there is no reason for
+    // somebody to wait through three round trips to find out that a note has
+    // no tasks in it.
+    const [title, tasks, labels] = await Promise.all([
+      target.title.trim() ? Promise.resolve(null) : ask('notes.title', () => api.quickNoteTitle(target.id)),
+      ask('notes.tasks', () => api.quickNoteTasks(target.id)),
+      ask('notes.labels', () => api.quickNoteLabels(target.id)),
+    ])
+
+    scanning = false
+    titleIdea = title ?? ''
+    taskDrafts = tasks ?? []
+    taskChips = taskDrafts.map((t, i) => ({ key: String(i), label: t.title }))
+    tagChips = (labels?.tags ?? []).map((t) => ({ key: t, label: `#${t}` }))
+    if (labels?.purpose && !target.purpose) pendingPurpose = labels.purpose
+  }
+
+  let pendingPurpose = $state<Purpose | null>(null)
+
+  /** Make one of the proposed tasks. The ordinary create, nothing special. */
+  async function acceptTask(key: string) {
+    const draft = taskDrafts[Number(key)]
+    if (!draft) return
+    // Back through the quick-add grammar rather than a second creation path:
+    // one place decides what a typed task becomes, and a task made from a
+    // note should be indistinguishable from one somebody typed.
+    const line = [
+      draft.title,
+      ...draft.tags.map((t) => `#${t}`),
+      draft.priority && draft.priority !== 'none' ? `!${draft.priority}` : '',
+      draft.estimateMinutes ? `~${draft.estimateMinutes}m` : '',
+      draft.dueDate ? `@${draft.dueDate}` : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+    await todo.add(line)
+  }
+
+  function acceptTag(tag: string) {
+    const target = notes.open
+    if (!target || target.tags.some((t) => t.toLowerCase() === tag.toLowerCase())) return
+    void notes.setTags([...target.tags, tag])
   }
 
   onDestroy(() => {
@@ -127,6 +207,19 @@
             spellcheck="false"
           />
 
+          <!-- Into an empty title only. A title you wrote is not a gap. -->
+          {#if titleIdea && !note.title.trim()}
+            <Suggestions
+              items={[{ key: 'title', label: titleIdea }]}
+              label="Call it:"
+              onaccept={() => {
+                notes.setTitle(titleIdea)
+                titleIdea = ''
+              }}
+              ondismiss={() => (titleIdea = '')}
+            />
+          {/if}
+
           <div class="meta">
             <button
               class="pin"
@@ -168,6 +261,44 @@
 
           {#if app.supportsOverview}
             <PurposeField value={note.purpose} onchange={setPurpose} />
+          {/if}
+
+          {#if quick.enabled('notes.tasks') || quick.enabled('notes.labels')}
+            <div class="quick-row">
+              <button class="quick-btn" disabled={scanning} onclick={() => void readTheNote()}>
+                <Icon name="sparkle" size={12} />
+                What is in here?
+              </button>
+            </div>
+          {/if}
+
+          <!-- The tasks a page of notes actually commits somebody to. Each
+               one goes through the same quick-add grammar a typed task does,
+               so a task made from a note is indistinguishable from one
+               somebody wrote by hand. -->
+          <Suggestions
+            items={taskChips}
+            busy={scanning}
+            label="Make a task:"
+            onaccept={(key) => void acceptTask(key)}
+            ondismiss={() => taskSlot.dismiss(() => (taskChips = []))}
+          />
+          <Suggestions
+            items={tagChips}
+            label="Tag it:"
+            onaccept={acceptTag}
+            ondismiss={() => (tagChips = [])}
+          />
+          {#if pendingPurpose && !note.purpose}
+            <Suggestions
+              items={[{ key: 'p', label: purposeStore.describe(pendingPurpose).name }]}
+              label="File it under:"
+              onaccept={() => {
+                setPurpose(pendingPurpose)
+                pendingPurpose = null
+              }}
+              ondismiss={() => (pendingPurpose = null)}
+            />
           {/if}
         </header>
 
@@ -219,6 +350,38 @@
 {/if}
 
 <style>
+  /* Quiet by default: these are offers, and a page you write on should not be
+     a page of buttons. Same treatment as the journal's. */
+  .quick-row {
+    display: flex;
+    gap: var(--sp-2);
+    margin-top: var(--sp-2);
+  }
+
+  .quick-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+    padding: 2px var(--sp-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: none;
+    color: var(--fg-subtle);
+    font: inherit;
+    font-size: var(--text-xs);
+    cursor: pointer;
+  }
+
+  .quick-btn:hover:not(:disabled) {
+    border-color: var(--border-strong);
+    color: var(--fg-muted);
+  }
+
+  .quick-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
   /* `flex: 1` and `min-width: 0`, because this component *is* the pane.
      The journal wraps its editor in a `<main class="main">` that carries
      both; this one is dropped straight into the window's flex row, so

@@ -11,7 +11,10 @@
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import { PRIORITIES, TASK_STATUSES } from '../lib/types'
-  import type { BlockKind, Priority, Purpose, TaskStatus } from '../lib/types'
+  import type { BlockKind, Priority, Purpose, QuickTaskDraft, TaskStatus } from '../lib/types'
+  import { api } from '../lib/api'
+  import { ask, quick, slot } from '../lib/quick.svelte'
+  import Suggestions from './Suggestions.svelte'
 
   const STATUS_LABELS: Record<TaskStatus, string> = {
     backlog: 'Backlog',
@@ -32,6 +35,52 @@
   let bookMinutes = $state(30)
   let bookKind = $state<BlockKind>('actual')
   let tagDraft = $state('')
+
+  // ── breaking it down, and sizing it ──────────────────────────────────
+  //
+  // Both on demand, from the panel, and both proposals. The estimate is the
+  // interesting one: the model is handed what *this person's* similar tasks
+  // were actually estimated at, so the answer is grounded in how they size
+  // work rather than in the model's own sense of how long things take.
+
+  let stepChips = $state<{ key: string; label: string }[]>([])
+  let steps = $state<QuickTaskDraft[]>([])
+  let breaking = $state(false)
+  let estimate = $state<number | null>(null)
+  const stepSlot = slot<QuickTaskDraft[]>()
+
+  async function breakDown() {
+    const target = task
+    if (!target) return
+    breaking = true
+    await todo.flush()
+    await stepSlot.run(
+      'todo.subtasks',
+      () => api.quickSubtasks(target.id),
+      (found) => {
+        breaking = false
+        steps = found ?? []
+        stepChips = steps.map((t, i) => ({ key: String(i), label: t.title }))
+      },
+    )
+    breaking = false
+  }
+
+  async function acceptStep(key: string) {
+    const draft = steps[Number(key)]
+    const target = task
+    if (!draft || !target) return
+    // A subtask is a task with a parent, so this is the ordinary add with the
+    // parent named -- not a second way of making one.
+    await todo.add(draft.title, { parentId: target.id })
+  }
+
+  async function suggestEstimate() {
+    const target = task
+    if (!target) return
+    await todo.flush()
+    estimate = await ask('todo.estimate', () => api.quickEstimate(target.id))
+  }
 
   function openBooking() {
     const now = new Date()
@@ -170,7 +219,23 @@
           <span class="unit">
             {task.estimateMinutes ? formatMinutes(task.estimateMinutes) : 'minutes'}
           </span>
+          {#if quick.enabled('todo.estimate') && task.estimateMinutes == null}
+            <button class="mini" onclick={() => void suggestEstimate()} title="Guess from similar tasks">
+              <Icon name="sparkle" size={11} />
+            </button>
+          {/if}
         </div>
+        {#if estimate != null && task.estimateMinutes == null}
+          <span></span>
+          <Suggestions
+            items={[{ key: 'e', label: formatMinutes(estimate) }]}
+            onaccept={() => {
+              todo.patch(task.id, { estimateMinutes: estimate })
+              estimate = null
+            }}
+            ondismiss={() => (estimate = null)}
+          />
+        {/if}
 
         <label class="lab" for="d-purpose">For</label>
         <div id="d-purpose">
@@ -226,6 +291,25 @@
         value={task.notes}
         oninput={(e) => todo.patch(task.id, { notes: e.currentTarget.value })}
       ></textarea>
+
+      {#if quick.enabled('todo.subtasks') && !task.parentId}
+        <div class="head">
+          <span class="eyebrow">Steps</span>
+          <button class="mini" disabled={breaking} onclick={() => void breakDown()}>
+            <Icon name="sparkle" size={12} />
+            Break it down
+          </button>
+        </div>
+        <!-- Proposals, one chip each. Tapping one makes an ordinary subtask
+             -- a task with a parent -- rather than going through a second
+             creation path that could drift from the first. -->
+        <Suggestions
+          items={stepChips}
+          busy={breaking}
+          onaccept={(key) => void acceptStep(key)}
+          ondismiss={() => stepSlot.dismiss(() => (stepChips = []))}
+        />
+      {/if}
 
       <div class="head">
         <span class="eyebrow">Time</span>
