@@ -63,6 +63,16 @@ import type {
   Project,
   ProjectId,
   ProviderInfo,
+  QuickBackfillPick,
+  QuickEventDraft,
+  QuickFields,
+  QuickJobRow,
+  QuickKindDraft,
+  QuickLabels,
+  QuickMapping,
+  QuickReading,
+  QuickTaskDraft,
+  QuickTrackerDraft,
   Reading,
   ReadingId,
   ReadingQuery,
@@ -215,6 +225,41 @@ export interface Commands {
   noteTags: { args: Record<string, never>; result: string[] }
   pollAutoLock: { args: Record<string, never>; result: boolean }
   profile: { args: Record<string, never>; result: Profile }
+  quickEntryLabels: {
+    args: { entryId: EntryId; journalId?: JournalId | null }
+    result: QuickLabels
+  }
+  quickEntryReadings: {
+    args: { entryId: EntryId; journalId?: JournalId | null }
+    result: QuickReading[]
+  }
+  quickEntryTitle: { args: { entryId: EntryId; journalId?: JournalId | null }; result: string }
+  quickEstimate: { args: { taskId: TaskId }; result: number | null }
+  quickEventFromLine: { args: { line: string }; result: QuickEventDraft | null }
+  quickEventTitle: { args: { title: string }; result: string }
+  quickFrontMatter: { args: { ours: string[]; theirs: string[] }; result: QuickMapping }
+  quickGoalBackfill: { args: { goalId: GoalId }; result: QuickBackfillPick[] }
+  quickGoalWording: { args: { title: string; roleId: RoleId }; result: string }
+  quickImportColumns: {
+    args: { kindId: KindId; columns: string[]; sample?: string[] }
+    result: QuickMapping
+  }
+  quickItemFields: { args: { itemId: ItemId }; result: QuickFields }
+  quickJobs: { args: Record<string, never>; result: QuickJobRow[] }
+  quickKindDraft: { args: { name: string }; result: QuickKindDraft }
+  quickNoteLabels: { args: { noteId: NoteId }; result: QuickLabels }
+  quickNoteTasks: { args: { noteId: NoteId }; result: QuickTaskDraft[] }
+  quickNoteTitle: { args: { noteId: NoteId }; result: string }
+  quickPickResult: {
+    args: { kindId: KindId; query: string; results: SearchResult[] }
+    result: number | null
+  }
+  quickReadingFromLine: { args: { line: string }; result: QuickReading | null }
+  quickSubtasks: { args: { taskId: TaskId }; result: QuickTaskDraft[] }
+  quickTaskFromLine: { args: { line: string }; result: QuickTaskDraft | null }
+  quickTaskLabels: { args: { title: string }; result: QuickLabels }
+  quickTrackerDraft: { args: { name: string; line?: string }; result: QuickTrackerDraft | null }
+  quickWeekNote: { args: { thisWeek: string; lastWeek?: string }; result: string }
   readExport: { args: { handle: string; offset: number }; result: ExportChunk }
   readImport: { args: { handle: string }; result: ArchiveManifest }
   routineTemplates: { args: Record<string, never>; result: Template[] }
@@ -265,6 +310,7 @@ export interface Commands {
     result: Item
   }
   setItemStatus: { args: { id: ItemId; status: ItemStatus; log: boolean }; result: Item }
+  setQuickJob: { args: { name: string; on: boolean }; result: QuickJobRow[] }
   startExport: { args: { parts: string[]; media: boolean }; result: ExportHandle }
   startImport: { args: { name: string; bytes: number }; result: ImportUpload }
   status: { args: Record<string, never>; result: VaultStatus }
@@ -372,6 +418,29 @@ export const COMMAND_NAMES = {
   noteTags: 'note_tags',
   pollAutoLock: 'poll_auto_lock',
   profile: 'profile',
+  quickEntryLabels: 'quick_entry_labels',
+  quickEntryReadings: 'quick_entry_readings',
+  quickEntryTitle: 'quick_entry_title',
+  quickEstimate: 'quick_estimate',
+  quickEventFromLine: 'quick_event_from_line',
+  quickEventTitle: 'quick_event_title',
+  quickFrontMatter: 'quick_front_matter',
+  quickGoalBackfill: 'quick_goal_backfill',
+  quickGoalWording: 'quick_goal_wording',
+  quickImportColumns: 'quick_import_columns',
+  quickItemFields: 'quick_item_fields',
+  quickJobs: 'quick_jobs',
+  quickKindDraft: 'quick_kind_draft',
+  quickNoteLabels: 'quick_note_labels',
+  quickNoteTasks: 'quick_note_tasks',
+  quickNoteTitle: 'quick_note_title',
+  quickPickResult: 'quick_pick_result',
+  quickReadingFromLine: 'quick_reading_from_line',
+  quickSubtasks: 'quick_subtasks',
+  quickTaskFromLine: 'quick_task_from_line',
+  quickTaskLabels: 'quick_task_labels',
+  quickTrackerDraft: 'quick_tracker_draft',
+  quickWeekNote: 'quick_week_note',
   readExport: 'read_export',
   readImport: 'read_import',
   routineTemplates: 'routine_templates',
@@ -410,6 +479,7 @@ export const COMMAND_NAMES = {
   setForgetKey: 'set_forget_key',
   setItemProgress: 'set_item_progress',
   setItemStatus: 'set_item_status',
+  setQuickJob: 'set_quick_job',
   startExport: 'start_export',
   startImport: 'start_import',
   status: 'status',
@@ -527,6 +597,29 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'note_tags',
   'poll_auto_lock',
   'profile',
+  'quick_entry_labels',
+  'quick_entry_readings',
+  'quick_entry_title',
+  'quick_estimate',
+  'quick_event_from_line',
+  'quick_event_title',
+  'quick_front_matter',
+  'quick_goal_backfill',
+  'quick_goal_wording',
+  'quick_import_columns',
+  'quick_item_fields',
+  'quick_jobs',
+  'quick_kind_draft',
+  'quick_note_labels',
+  'quick_note_tasks',
+  'quick_note_title',
+  'quick_pick_result',
+  'quick_reading_from_line',
+  'quick_subtasks',
+  'quick_task_from_line',
+  'quick_task_labels',
+  'quick_tracker_draft',
+  'quick_week_note',
   'read_export',
   'read_import',
   'routine_templates',
@@ -564,6 +657,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_forget_key',
   'set_item_progress',
   'set_item_status',
+  'set_quick_job',
   'start_export',
   'start_import',
   'status',
@@ -656,6 +750,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_forget_key',
   'set_item_progress',
   'set_item_status',
+  'set_quick_job',
   'subscribe_calendar',
   'sync_calendar',
   'sync_due_calendars',
@@ -723,6 +818,7 @@ export const CHANGE_KINDS: Readonly<Record<string, string>> = {
   set_forget_key: 'settings',
   set_item_progress: 'item',
   set_item_status: 'item',
+  set_quick_job: 'settings',
   subscribe_calendar: 'calendar',
   sync_calendar: 'event',
   sync_due_calendars: 'event',

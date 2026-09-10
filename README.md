@@ -999,6 +999,102 @@ same shape as a fetched page or an imported calendar — and the answer is the
 one already in place: no secret domain is ever offered to a model, a scheduled
 run cannot delete anything, and the transcript says what was done.
 
+### A second model, for the small jobs
+
+The assistant is a reasoning engine with thirty tools, every memory in its
+system prompt and a budget of twenty-four turns. That is the right shape for
+"look at my week and tell me what I am dropping" and completely the wrong
+shape for *this is a wine, what are its fields* — which wants no tools, no
+memories, one round trip, a rigid schema on the way back, an answer inside a
+second, and a cost near nothing, because it is asked every time somebody types
+into a capture box.
+
+So the vault holds **two model names against one endpoint**:
+
+```
+  LLMProviderConfig   provider, base URL   ── one key, one host
+       ├── assistantModel   gpt-5.1-mini   ── tools, memories, turns
+       └── quickModel       gpt-5.1-nano   ── one shot, one schema
+```
+
+There is deliberately no way to configure a *second endpoint*. A quick model
+at a different host would be a second place a credential lives and a second
+server that learns something about this vault, for a feature whose whole
+premise is "the same provider, one tier down". The split also means "does this
+endpoint need a key" is asked once rather than once per model, which is a
+question two records would eventually answer differently.
+
+Leaving `quickModel` unset means the small jobs are **not done** — never that
+they fall back to the expensive one. These run in capture boxes; a blank field
+that silently billed at reasoning-model rates would be a bill nobody could
+account for.
+
+It is **on by default when the endpoint is on this machine**, and off
+otherwise. Pulling four fields out of a paragraph is the one job in this
+application a small local model is unambiguously good enough for, so the most
+private configuration is also the one that can afford to have the feature
+switched on with nothing leaving the machine at all.
+
+#### What it is for
+
+Twenty-two jobs across seven apps. The ones that change how the app feels:
+
+| | |
+|---|---|
+| **Fill in a shelf's fields** | `SearchResult::facts` is empty for a plain web search, so an article, a recipe or any shelf you invented gets a blurb and nothing else today. This reads the top few results and fills the fields *that shelf declared* |
+| **Draft a new shelf** | Type "Wines" and get 🍷, a colour, *To try / Tasting / Tasted*, and Producer, Vintage, Region, Grape. "A kind is data" is this app's best idea and its cost was a form nobody fills in |
+| **Read the day back** | [Tracking](#tracking) opens by naming the problem: *"Slept badly again, took the ibuprofen around eight"* is the sentence you want to write and exactly the sentence nobody can plot. This offers the numbers in it as chips |
+| **Find the tasks in a note** | A page of call notes becomes five tasks, which is the thing people currently do by retyping |
+| **Suggest a role or goal** | The field that makes "where did my week go" answerable is the one least likely to be filled while typing at nine in the morning |
+
+#### The rules it inherits
+
+All four of the [library's metadata rules](#metadata-from-the-web), and they
+bind harder here because this touches capture boxes rather than a button
+somebody pressed:
+
+- **Nothing waits on it.** The task is created, the item is shelved, the entry
+  is saved — and the suggestion arrives afterwards or does not arrive. There
+  is no spinner in front of an Enter key. That is what decides the interaction
+  everywhere: **a chip you tap, never a field that fills itself while you look
+  at it.**
+- **It fills gaps and never argues.** What you typed survives. Notes, ratings
+  and statuses cannot be reached from it at all.
+- **It is not the assistant's switch.** Wanting your shelves filled in is not
+  the same as wanting something to talk to, and the reverse is commoner still.
+  They share an endpoint and a key; they do not share a switch.
+- **Every job is listable and refusable on its own.** "AI features: on" is not
+  a decision anybody can make, so settings lists all twenty-two grouped by
+  app, each with the sentence saying *what it sends*. Everything that reads a
+  journal entry starts switched off, and a test enforces that rather than a
+  habit.
+
+Where the grammar already works, the model is not asked. `#tag !high ~90m
+@fri` and `swim 60min` are deterministic, offline, instant and tested, and for
+the lines they handle they are *better* than a model — so the model only ever
+sees the residue, and only after Enter.
+
+Nothing it answers is ever written. Every one of these is a proposal some
+interface draws and a person accepts, and the accepting goes back through the
+ordinary `update_task`, `save_item` or `add_reading` — so a task a model
+suggested is indistinguishable from one you typed, and there is no second
+write path to drift.
+
+```
+  everyday_core::quick      builds every prompt, declares every schema,
+                            clamps every answer -- and cannot open a socket,
+                            which is why all of it is under test
+  everyday_service::quick   owns the socket. One `submit` tool carrying the
+                            job's schema, two turns, twelve seconds, no retry
+  ui/src/lib/quick.svelte.ts  the switch check, the cancellation, and a
+                            failure that is silence rather than a banner
+```
+
+The same split [`ics`](#the-calendar) and [`websearch`](#web-search-is-a-facility-not-a-feature)
+make, and the payoff is the one that matters for something running in a
+capture box: *"the quick model put the author in the year field"* is a test to
+write rather than a network trace to capture.
+
 ## One vault, many windows
 
 A vault can be served to other copies of this application. A client is not a

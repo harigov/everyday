@@ -18,6 +18,9 @@
 // appointment. Everything here that writes, writes a `TimeBlock`.
 
 import { api } from './api'
+import { SvelteMap } from 'svelte/reactivity'
+import { notify } from './notify.svelte'
+import { ask, quick } from './quick.svelte'
 import { Autosave } from './autosave'
 import { app, errorMessage, handle, isLocked } from './state.svelte'
 import { todo } from './todo.svelte'
@@ -519,7 +522,7 @@ class CalendarState {
       out.push({
         key: `event:${event.id}`,
         kind: 'event',
-        title: event.title,
+        title: this.tidyTitle(event.title),
         subtitle: event.location || calendar?.name || '',
         color: calendar?.color ?? 'var(--fg-subtle)',
         start: Math.max(dayStart, start),
@@ -773,6 +776,100 @@ class CalendarState {
   }
 
   /**
+   * A readable title for a subscribed event.
+   *
+   * `[EXT] FW: Re: Weekly Sync // Zoom` is what a work feed actually
+   * contains, and it is what the grid has to draw in a 90px column. This
+   * answers the tidied title once the model has said, and the raw one until
+   * then -- never a blank, and never a spinner in a calendar cell.
+   *
+   * Three things make it safe to do at all:
+   *
+   *   * **It is display only.** The event record is never written. The feed
+   *     will be re-fetched and it is not ours to rewrite.
+   *   * **It is cached on the raw string**, in memory. The same six meeting
+   *     names recur every week forever, so a month of grid is a handful of
+   *     requests rather than one per cell per render.
+   *   * **It defaults off**, because the titles of somebody's meetings are
+   *     the names of the people in them.
+   */
+  #titles = new SvelteMap<string, string>()
+  #asking = new Set<string>()
+
+  tidyTitle(raw: string): string {
+    if (!raw.trim() || !quick.enabled('calendar.title')) return raw
+    const known = this.#titles.get(raw)
+    if (known !== undefined) return known || raw
+    if (!this.#asking.has(raw)) {
+      this.#asking.add(raw)
+      void ask('calendar.title', () => api.quickEventTitle(raw)).then((tidy) => {
+        // An empty answer is the common and correct one -- most titles are
+        // already clean -- and it is cached as empty so it is asked once.
+        this.#titles.set(raw, tidy ?? '')
+      })
+    }
+    return raw
+  }
+
+  /**
+   * Book what a sentence describes.
+   *
+   * The quick model reads "lunch with Sam Thursday 1pm at the usual place";
+   * everything after that is the ordinary `book`. Answers null and does
+   * nothing when the sentence names no date -- an appointment with no day is
+   * not an appointment, and guessing today would put somebody's Thursday
+   * lunch on a Tuesday.
+   *
+   * An hour when no end was given, because that is what `bookNow` assumes too
+   * and a block of unknown length has to be drawn as something.
+   *
+   * The booking happens *before* the view moves, which is the opposite of the
+   * obvious order and the only one that works. `goto` fires an unawaited
+   * `refresh`, and that refresh ends by assigning `this.blocks` from a query
+   * issued before the save -- so navigating first drops the new block off the
+   * grid and clears the selection that was just made. Booking first means the
+   * refresh reads it back from storage, which is where it already is.
+   */
+  async bookFromSentence(line: string): Promise<TimeBlock | null> {
+    /** `HH:MM` to minutes since midnight. The core already validated it. */
+    const clockMinutes = (clock: string): number => {
+      const [h = '0', m = '0'] = clock.split(':')
+      return Number(h) * 60 + Number(m)
+    }
+
+    const draft = await ask('calendar.parse', () => api.quickEventFromLine(line))
+    if (!draft?.date) {
+      // Say so. This is reached from the palette, which has already closed
+      // over a visible pause -- so silence here is a command that appeared to
+      // do nothing, which is the worst answer available. `info` rather than
+      // `error`: a sentence with no day in it is a thing the person can fix,
+      // not a fault.
+      notify.info('Nothing to book', {
+        body: `“${line}” does not say which day.`,
+        reach: 'app',
+      })
+      return null
+    }
+    await this.start()
+    const start = draft.start ? clockMinutes(draft.start) : 9 * 60
+    // `end` without `start` cannot say how long anything is -- "by 8am
+    // Thursday" would be measured against the 09:00 default and come out
+    // negative. The core drops that pairing, and this is the second guard.
+    const span = draft.end && draft.start ? clockMinutes(draft.end) - start : 0
+    const minutes = span > 0 ? span : 60
+    const block = await this.book({
+      subject: { type: 'adhoc' },
+      day: draft.date,
+      startMinutes: start,
+      minutes,
+      kind: 'planned',
+      title: draft.location ? `${draft.title} — ${draft.location}` : draft.title,
+    })
+    if (block && !this.days.includes(draft.date)) this.goto(draft.date)
+    return block
+  }
+
+  /**
    * Set an hour aside, starting on the next quarter. What Ctrl/Cmd N does.
    *
    * The same key that starts an entry in the journal and a task in the todo
@@ -787,13 +884,17 @@ class CalendarState {
     await this.start()
     const at = new Date()
     const start = snap(at.getHours() * 60 + at.getMinutes(), SNAP_MINUTES)
-    if (!this.days.includes(todayIso())) this.goto(todayIso())
+    // Booked before the view moves, for the reason `bookFromSentence` gives:
+    // `goto`'s refresh would otherwise overwrite `blocks` with a query that
+    // predates the save. Rare here, because the view is usually already on
+    // today -- which is exactly why it would have been found late.
     await this.book({
       subject: { type: 'adhoc' },
       day: todayIso(),
       startMinutes: start,
       minutes: DEFAULT_BLOCK_MINUTES,
     })
+    if (!this.days.includes(todayIso())) this.goto(todayIso())
   }
 
   /** Book a planned block for a task, defaulting to its own estimate. */

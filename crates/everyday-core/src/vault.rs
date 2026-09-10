@@ -1932,12 +1932,39 @@ impl Vault {
         if !settings.enabled {
             return Err(Error::Invalid("the assistant is switched off".into()));
         }
-        settings.model.validate()?;
+        settings.validate()?;
         let key = self.with_agent(|a| a.secret())?;
-        if key.is_none() && settings.model.needs_key() {
+        if key.is_none() && settings.provider_config.needs_key() {
             return Err(Error::Invalid(
                 "no API key is set for the assistant; add one in Settings".into(),
             ));
+        }
+        Ok((settings, key))
+    }
+
+    /// The same, for a quick job.
+    ///
+    /// A separate door because it opens on a different condition: the quick
+    /// jobs do not consult [`AgentSettings::enabled`], and a person who wants
+    /// their shelves filled in but no resident assistant must be able to have
+    /// exactly that. The key and the endpoint are shared; the switch is not.
+    ///
+    /// Takes the job's name and refuses one the policy has not allowed, so
+    /// the check cannot be left to a caller that forgot — this is the only
+    /// way a quick job can get a credential, so it is the right place for the
+    /// gate.
+    pub fn quick_credentials(&self, job: &str) -> Result<(AgentSettings, Option<String>)> {
+        let settings = self.agent_settings()?;
+        if settings.quick_model.is_none() {
+            return Err(Error::Invalid("no quick model is configured".into()));
+        }
+        if !settings.quick_jobs.allows(job) {
+            return Err(Error::Invalid(format!("{job} is switched off")));
+        }
+        settings.validate()?;
+        let key = self.with_agent(|a| a.secret())?;
+        if key.is_none() && settings.provider_config.needs_key() {
+            return Err(Error::Invalid("no API key is set; add one in Settings".into()));
         }
         Ok((settings, key))
     }

@@ -14,7 +14,15 @@ import { api } from './api'
 import { parseQuickTrack } from './quicktrack'
 import { app, handle, isLocked } from './state.svelte'
 import { todayIso } from './time'
-import type { EntryId, JournalId, Reading, Tracker, TrackerDay, TrackerKind } from './types'
+import type {
+  EntryId,
+  JournalId,
+  QuickReading,
+  Reading,
+  Tracker,
+  TrackerDay,
+  TrackerKind,
+} from './types'
 
 class TrackingState {
   /** Every tracker in the vault, archived ones included. */
@@ -288,6 +296,48 @@ class TrackingState {
     }
     await this.refresh()
     return { tracker, created }
+  }
+
+  /**
+   * Record a number the quick model found in a day's writing.
+   *
+   * Separate from `record` because there is no line to parse: the value, the
+   * hour and the tracker have already been decided, either by matching one
+   * that exists or -- when the model proposed a name instead -- by making one
+   * here. What it shares with `record` is everything after that, which is the
+   * part that matters: the same `logReading`, the same refresh, and no
+   * special path through the store for a number a model suggested.
+   */
+  async recordSuggested(
+    suggestion: QuickReading,
+    where: { journalId?: JournalId; entryId?: EntryId; date?: string } = {},
+  ): Promise<Tracker | null> {
+    if (!this.enabled) return null
+    let tracker = suggestion.trackerId ? this.tracker(suggestion.trackerId) : null
+    if (!tracker) {
+      // A tracker made by the act of recording, exactly as `record` does it
+      // for a typed line. `Amount` rather than a guess at something cleverer:
+      // an amount stores the number that was actually said, which is at worst
+      // incomplete, where a check would silently discard it.
+      const made = await this.addTracker(suggestion.name, 'amount')
+      if (!made) return null
+      tracker = made
+    }
+    const date = where.date ?? this.#date ?? todayIso()
+    try {
+      await api.logReading({
+        trackerId: tracker.id,
+        value: suggestion.value,
+        date,
+        journalId: where.journalId ?? null,
+        entryId: where.entryId ?? null,
+      })
+    } catch (e) {
+      await handle(e)
+      return null
+    }
+    await this.refresh()
+    return tracker
   }
 
   /** Change a reading that exists: a corrected dose, a note, a time. */

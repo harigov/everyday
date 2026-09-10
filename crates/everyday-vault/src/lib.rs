@@ -973,7 +973,7 @@ mod tests {
         assert!(err.to_string().contains("API key"), "got {err}");
 
         // ...but a model on this machine needs no key at all.
-        settings.model.base_url = Some("http://localhost:11434/v1".into());
+        settings.provider_config.base_url = Some("http://localhost:11434/v1".into());
         vault.save_agent_settings(&settings).unwrap();
         let (_, key) = vault.agent_credentials().unwrap();
         assert!(key.is_none(), "a local model should work with nothing configured but its address");
@@ -985,11 +985,11 @@ mod tests {
         let vault = a_vault(dir.path());
 
         let mut settings = everyday_core::AgentSettings { enabled: true, ..Default::default() };
-        settings.model.model = String::new();
+        settings.assistant_model.model = String::new();
         assert!(vault.save_agent_settings(&settings).is_err(), "a model name is required");
 
-        settings.model.model = "gpt-5.1".into();
-        settings.model.base_url = Some("http://gateway.example.com/v1".into());
+        settings.assistant_model.model = "gpt-5.1".into();
+        settings.provider_config.base_url = Some("http://gateway.example.com/v1".into());
         assert!(
             vault.save_agent_settings(&settings).is_err(),
             "plain http off this machine would leak the key"

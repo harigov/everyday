@@ -22,7 +22,7 @@ use super::purpose::{GoalQuery, PurposeWindow};
 use super::tasks::{BlockQuery, ParentScope, ProjectScope, TaskQuery, TaskSort, TaskStore};
 use super::trackers::ReadingQuery;
 use super::{EntryQuery, JournalStore, SortOrder};
-use crate::agent::{AgentSettings, Conversation, Memory, Message, Role, ToolCall};
+use crate::agent::{AgentSettings, Conversation, LLMModelConfig, Memory, Message, Role, ToolCall};
 use crate::calendar::{Calendar, Event, EventStatus};
 use crate::id::{
     BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, GoalId, ItemId, JournalId,
@@ -206,10 +206,12 @@ fn settings_round_trip(store: &dyn AgentStore) {
         remember: false,
         ..Default::default()
     };
-    s.model.model = "gpt-5.1".into();
-    s.model.base_url = Some("https://gateway.example.com/v1".into());
-    s.model.temperature = Some(0.3);
-    s.model.max_tokens = Some(2048);
+    s.assistant_model.model = "gpt-5.1".into();
+    s.assistant_model.temperature = Some(0.3);
+    s.assistant_model.max_tokens = Some(2048);
+    s.provider_config.base_url = Some("https://gateway.example.com/v1".into());
+    s.quick_model = Some(LLMModelConfig::quick());
+    s.quick_jobs.set("journal.title", true);
 
     store.put_settings(&s).unwrap();
     let back = store.settings().unwrap();
@@ -218,11 +220,18 @@ fn settings_round_trip(store: &dyn AgentStore) {
     assert_eq!(back.confirm_destructive, s.confirm_destructive);
     assert_eq!(back.max_steps, s.max_steps);
     assert_eq!(back.remember, s.remember);
-    assert_eq!(back.model, s.model);
+    assert_eq!(back.assistant_model, s.assistant_model);
+    assert_eq!(back.provider_config, s.provider_config);
+    // The second model and the per-job policy round-trip too. They are the
+    // half of this record that a backend written before them would silently
+    // drop, which is exactly what a conformance test is for.
+    assert_eq!(back.quick_model, s.quick_model);
+    assert_eq!(back.quick_jobs, s.quick_jobs);
+    assert!(back.quick_jobs.allows("journal.title"));
 
     // Saving twice must update rather than accumulate.
     store.put_settings(&s).unwrap();
-    assert_eq!(store.settings().unwrap().model.model, "gpt-5.1");
+    assert_eq!(store.settings().unwrap().assistant_model.model, "gpt-5.1");
 
     store.put_settings(&AgentSettings::default()).unwrap();
     assert!(!store.settings().unwrap().enabled, "settings must be replaceable, not merged");

@@ -15,6 +15,7 @@ pub mod library;
 pub mod meta;
 pub mod notes;
 pub mod purpose;
+pub mod quick;
 pub mod routines;
 pub mod tasks;
 pub mod trackers;
@@ -58,6 +59,7 @@ pub fn catalog() -> &'static [&'static Command] {
             transfer::COMMANDS,
             web::COMMANDS,
             assistant::COMMANDS,
+            quick::COMMANDS,
             meta::COMMANDS,
         ]
         .into_iter()

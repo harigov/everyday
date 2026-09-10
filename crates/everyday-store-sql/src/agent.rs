@@ -42,6 +42,13 @@ impl AgentStore for SqlStore {
             None => AgentSettings::default(),
         };
 
+        // Settings written before the endpoint and the model were separate
+        // records still say `model`. A sealed payload cannot be migrated in
+        // SQL -- a migration step is handed a connection, not the cipher --
+        // so the fold happens here, and the old key disappears the next time
+        // anything saves.
+        settings.normalize();
+
         // The flag is derived, never stored. A `has_key` persisted alongside
         // the settings would be a second source of truth for a question the
         // secret table already answers, and the two would disagree the first

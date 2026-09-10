@@ -17,12 +17,15 @@
 
   import { formatMinutes, plural, relativeTime } from '../lib/format'
   import { calendar } from '../lib/calendar.svelte'
+  import { api } from '../lib/api'
   import { overview } from '../lib/overview.svelte'
+  import { ask, quick } from '../lib/quick.svelte'
   import { purpose } from '../lib/purpose.svelte'
   import { app } from '../lib/state.svelte'
   import { todo } from '../lib/todo.svelte'
   import { tracking } from '../lib/tracking.svelte'
   import { notes as noteStore } from '../lib/notes.svelte'
+  import { byRole, type RoleTotals } from '../lib/balance'
   import { describeStreak } from '../lib/habits'
   import { addDays, localeWeekStart, startOfWeek, todayIso } from '../lib/time'
   import { formatValue } from '../lib/tracker'
@@ -34,6 +37,7 @@
   import ShareBar from './ShareBar.svelte'
   import StatTile from './StatTile.svelte'
   import TrackerIcon from './TrackerIcon.svelte'
+  import Icon from './Icon.svelte'
 
   const { widget }: { widget: Widget } = $props()
 
@@ -62,6 +66,66 @@
       label: formatMinutes(r.actualMinutes + r.eventMinutes),
     })),
   )
+
+  // ── the week, in words ───────────────────────────────────────────────
+  //
+  // The totals are rendered here and sent as prose rather than re-derived in
+  // Rust, so the sentence and the bars above it cannot disagree about what
+  // the week contained.
+  //
+  // Cached in `localStorage` against the ISO week, beside the layout, for the
+  // reason the layout is there: it decides what is drawn, not what is true.
+  // The cache is the load-bearing part -- without it this card bills somebody
+  // every time they reopen the window.
+
+  const weekKey = $derived(`everyday:week-words:${overview.weekStart}`)
+  let composing = $state(false)
+  // Writable-derived: it re-reads when the week changes, and `writeTheWeek`
+  // assigns straight into it after a run. A `$state` plus an `$effect` would
+  // be the same thing with a frame of the previous week's sentence in it.
+  let weekWords = $derived(localStorage.getItem(weekKey) ?? '')
+
+  /** One line per role, as a model can read it. */
+  function render(rows: RoleTotals[]): string {
+    const lines = rows
+      .filter((r) => r.actualMinutes + r.eventMinutes > 0)
+      .map((r) => `${r.name}: ${formatMinutes(r.actualMinutes + r.eventMinutes)} recorded`)
+    return lines.join('\n') || 'Nothing recorded.'
+  }
+
+  async function writeTheWeek() {
+    composing = true
+
+    // The week before, fetched here rather than left empty. The job's
+    // instruction asks for "the one thing that changed most against the week
+    // before" and forbids conclusions the numbers do not support -- so
+    // sending nothing to compare against was asking for either an invented
+    // comparison or a refusal, and this card's whole claim is the comparison.
+    //
+    // One extra query, on a button, once a week. `overview` holds only the
+    // week on screen, and widening its load for a card that is off by default
+    // would make every other card pay for this one.
+    const priorStart = addDays(overview.weekStart, -7)
+    const prior = await api
+      .balance(priorStart, addDays(priorStart, 6))
+      .then((report) => byRole(report, purpose.roles, purpose.goals))
+      .catch(() => null)
+
+    const text = await ask('overview.week', () =>
+      api.quickWeekNote({
+        thisWeek: render(overview.roles),
+        // Empty rather than "Nothing recorded" when the query failed: the
+        // instruction treats an absent field as nothing to compare with,
+        // where a sentence saying nothing was recorded is a claim about a
+        // week we did not actually read.
+        lastWeek: prior ? render(prior) : '',
+      }),
+    )
+    composing = false
+    if (!text) return
+    weekWords = text
+    localStorage.setItem(weekKey, text)
+  }
 
   /** Open goals, freshest first, with how far through their tasks they are. */
   const goalRows = $derived(
@@ -258,6 +322,31 @@
     it.
   </p>
 
+  <!-- ── The week, in words ────────────────────────────────────────── -->
+  <!-- Every other widget on this page is a number; none of them says "you
+       logged eleven hours against Parent and two against Yourself, which is
+       the reverse of the fortnight before". The catalogue's editorial rule is
+       that a widget names something you would act on, and this one does.
+
+       Behind a button and cached per week, not fired on mount. The Overview
+       is the page the app opens on, and a card that made a request every time
+       somebody reopened a window would bill them for reopening a window. -->
+{:else if widget.type === 'weekInWords'}
+  {#if weekWords}
+    <p class="words">{weekWords}</p>
+    <button class="footnote-btn" onclick={() => void writeTheWeek()} disabled={composing}>
+      Write it again
+    </button>
+  {:else if composing}
+    <p class="footnote">Reading the week…</p>
+  {:else if quick.enabled('overview.week')}
+    <button class="footnote-btn" onclick={() => void writeTheWeek()}>
+      <Icon name="sparkle" size={12} /> Write the week
+    </button>
+  {:else}
+    <p class="footnote">Switch on “Write the week” under the quick model in Settings.</p>
+  {/if}
+
   <!-- ── Share of your week ────────────────────────────────────────── -->
 {:else if widget.type === 'roleShare'}
   <ShareBar slices={roleSlices} empty="No hours recorded in this week yet." />
@@ -407,6 +496,31 @@
 {/if}
 
 <style>
+  .words {
+    margin: 0;
+    color: var(--fg);
+    font-size: var(--text-sm);
+    line-height: var(--leading-normal);
+  }
+
+  .footnote-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+    margin-top: var(--sp-2);
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--fg-subtle);
+    font: inherit;
+    font-size: var(--text-xs);
+    cursor: pointer;
+  }
+
+  .footnote-btn:hover:not(:disabled) {
+    color: var(--fg-muted);
+  }
+
   .dim {
     margin: 0;
     color: var(--fg-faint);

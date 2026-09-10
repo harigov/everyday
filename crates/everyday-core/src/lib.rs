@@ -88,6 +88,7 @@ pub mod model;
 pub mod note;
 pub mod profile;
 pub mod purpose;
+pub mod quick;
 pub mod richtext;
 pub mod routine;
 pub mod search;
@@ -98,8 +99,8 @@ pub mod vault;
 pub mod websearch;
 
 pub use agent::{
-    AgentSettings, Conversation, Memory, Message, ModelConfig, Provider, Role as MessageRole,
-    ToolCall,
+    AgentSettings, Conversation, LLMModelConfig, LLMProviderConfig, Memory, Message, Provider,
+    Role as MessageRole, ToolCall,
 };
 pub use blobstore::FileBlobStore;
 pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatus, SyncReport};
@@ -119,6 +120,7 @@ pub use profile::Profile;
 pub use purpose::{
     Goal, GoalActivity, GoalStatus, Purpose, PurposeMinutes, Role, RoleEventMinutes,
 };
+pub use quick::{Prompt as QuickPrompt, QuickApp, QuickContext, QuickJob, QuickPolicy};
 pub use richtext::RichDoc;
 pub use routine::{Due, Outcome, Routine, RoutineRun, Trigger, Weekday};
 pub use store::agent::{AgentStore, ConversationQuery};

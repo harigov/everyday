@@ -20,7 +20,10 @@
   import { purpose } from '../lib/purpose.svelte'
   import { todo } from '../lib/todo.svelte'
   import { app } from '../lib/state.svelte'
-  import type { GoalStatus, RoleId } from '../lib/types'
+  import type { GoalId, GoalStatus, QuickBackfillPick, RoleId } from '../lib/types'
+  import { api } from '../lib/api'
+  import { ask, quick, slot } from '../lib/quick.svelte'
+  import Suggestions from './Suggestions.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
@@ -43,7 +46,50 @@
     if (!title) return
     newGoal = { ...newGoal, [roleId]: '' }
     const made = await purpose.addGoal(roleId, title)
-    if (made) purpose.selected = made.id
+    if (!made) return
+    purpose.selected = made.id
+
+    // Two things at once, both proposals against a goal that already exists.
+    //
+    // The wording, because "get fitter" is not a goal and "run 10k without
+    // stopping" is -- and the difference is what makes it possible to tell
+    // whether you got there.
+    //
+    // And the backfill, because a goal written today has nothing pointing at
+    // it: its activity chart is empty and it looks abandoned on the day it
+    // was made. Matching it against tasks that have no purpose yet is what
+    // makes the balance report useful in week one rather than month three.
+    void ask('purpose.goal', () => api.quickGoalWording({ title, roleId })).then((better) => {
+      if (better && better !== title) wording = { goalId: made.id, text: better }
+    })
+    void backfill(made.id)
+  }
+
+  // ── proposals against a goal just written ────────────────────────────
+
+  let wording = $state<{ goalId: GoalId; text: string } | null>(null)
+  let backfillPicks = $state<QuickBackfillPick[]>([])
+  let backfillChips = $state<{ key: string; label: string }[]>([])
+  const backfillSlot = slot<QuickBackfillPick[]>()
+
+  async function backfill(goalId: GoalId) {
+    await backfillSlot.run(
+      'purpose.backfill',
+      () => api.quickGoalBackfill(goalId),
+      (picks) => {
+        backfillPicks = picks ?? []
+        backfillChips = backfillPicks.map((p) => ({ key: p.taskId, label: p.title }))
+      },
+    )
+  }
+
+  /** File one existing task under the open goal. The ordinary patch. */
+  function acceptBackfill(taskId: string) {
+    const target = purpose.selected
+    if (!target) return
+    todo.patch(taskId, {
+      purpose: { type: 'goal', id: target },
+    })
   }
 
   function goalMenu(id: string, title: string, status: GoalStatus): MenuItem[] {
@@ -191,6 +237,39 @@
       </button>
     </header>
 
+    <!-- "Get fitter" is not a goal; "run 10k without stopping" is. Offered
+         against a goal that already exists, so declining costs nothing. -->
+    {#if wording && wording.goalId === goal.id}
+      <Suggestions
+        scope={goal.id}
+        items={[{ key: 'w', label: wording.text }]}
+        label="Or:"
+        onaccept={() => {
+          void purpose.saveGoal({ ...$state.snapshot(goal), title: wording!.text })
+          wording = null
+        }}
+        ondismiss={() => (wording = null)}
+      />
+    {/if}
+
+    <!-- A goal written today points at nothing, so its chart is empty and it
+         looks abandoned on the day it was made. These are tasks with no
+         purpose yet that it might already cover. -->
+    <Suggestions
+      scope={goal.id}
+      items={backfillChips}
+      label="Already this?"
+      onaccept={acceptBackfill}
+      ondismiss={() => backfillSlot.dismiss(() => (backfillChips = []))}
+    />
+
+    {#if quick.enabled('purpose.backfill') && backfillChips.length === 0}
+      <button class="mini-quick" onclick={() => void backfill(goal.id)}>
+        <Icon name="sparkle" size={12} />
+        Find work this already covers
+      </button>
+    {/if}
+
     <label class="lab" for="g-status">Status</label>
     <select
       id="g-status"
@@ -276,6 +355,27 @@
 {/if}
 
 <style>
+  .mini-quick {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+    align-self: flex-start;
+    margin-bottom: var(--sp-2);
+    padding: 2px var(--sp-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: none;
+    color: var(--fg-subtle);
+    font: inherit;
+    font-size: var(--text-xs);
+    cursor: pointer;
+  }
+
+  .mini-quick:hover {
+    border-color: var(--border-strong);
+    color: var(--fg-muted);
+  }
+
   /* The same metrics the task pane uses, and deliberately: switching between
      the two should not move the heading. Written out rather than shared,
      because Svelte scopes styles per component and the alternative is a

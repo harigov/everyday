@@ -105,6 +105,16 @@ import type {
   TrackerKind,
   TrayMenuItem,
   VaultStatus,
+  QuickBackfillPick,
+  QuickEventDraft,
+  QuickFields,
+  QuickJobRow,
+  QuickKindDraft,
+  QuickLabels,
+  QuickMapping,
+  QuickReading,
+  QuickTaskDraft,
+  QuickTrackerDraft,
 } from './types'
 import { VaultError } from './types'
 import { SERVICE_COMMANDS } from './generated/commands'
@@ -886,6 +896,70 @@ export const api = {
    */
   saveMemory: (memory: Memory) => invoke<Memory[]>('save_memory', { memory }),
   deleteMemory: (id: MemoryId) => invoke<void>('delete_memory', { id }),
+
+  // ── The quick model ────────────────────────────────────────────────
+  //
+  // One call per flow that has a use for a small, fast model. Every one is a
+  // read: nothing here writes a record. What comes back is a *proposal* that
+  // some component draws beside a field, and it is the ordinary `updateTask`,
+  // `saveItem` or `addReading` that applies it when somebody taps.
+  //
+  // Components should not call these directly -- go through `quick.svelte.ts`,
+  // which owns the switch check, the cancellation and the rule that a failure
+  // here is silence rather than an error.
+
+  quickJobs: () => invoke<QuickJobRow[]>('quick_jobs'),
+  setQuickJob: (args: { name: string; on: boolean }) =>
+    invoke<QuickJobRow[]>('set_quick_job', args),
+
+  /** The shelf's own declared fields, out of what a search found. */
+  quickItemFields: (itemId: ItemId) => invoke<QuickFields>('quick_item_fields', { itemId }),
+
+  /** Which result is the thing, or null when none of them is. */
+  quickPickResult: (args: { kindId: KindId; query: string; results: SearchResult[] }) =>
+    invoke<number | null>('quick_pick_result', args),
+
+  /** A whole shelf, drafted from its name. */
+  quickKindDraft: (name: string) => invoke<QuickKindDraft>('quick_kind_draft', { name }),
+
+  quickImportColumns: (args: { kindId: KindId; columns: string[]; sample?: string[] }) =>
+    invoke<QuickMapping>('quick_import_columns', args),
+
+  quickTaskLabels: (title: string) => invoke<QuickLabels>('quick_task_labels', { title }),
+  quickTaskFromLine: (line: string) =>
+    invoke<QuickTaskDraft | null>('quick_task_from_line', { line }),
+  quickSubtasks: (taskId: TaskId) => invoke<QuickTaskDraft[]>('quick_subtasks', { taskId }),
+  quickEstimate: (taskId: TaskId) => invoke<number | null>('quick_estimate', { taskId }),
+
+  quickEventFromLine: (line: string) =>
+    invoke<QuickEventDraft | null>('quick_event_from_line', { line }),
+  /** Display only: the feed's own record is never rewritten. */
+  quickEventTitle: (title: string) => invoke<string>('quick_event_title', { title }),
+
+  quickEntryReadings: (entryId: EntryId) =>
+    invoke<QuickReading[]>('quick_entry_readings', { entryId }),
+  quickEntryTitle: (entryId: EntryId) => invoke<string>('quick_entry_title', { entryId }),
+  quickEntryLabels: (entryId: EntryId) => invoke<QuickLabels>('quick_entry_labels', { entryId }),
+
+  quickNoteTitle: (noteId: NoteId) => invoke<string>('quick_note_title', { noteId }),
+  quickNoteTasks: (noteId: NoteId) => invoke<QuickTaskDraft[]>('quick_note_tasks', { noteId }),
+  quickNoteLabels: (noteId: NoteId) => invoke<QuickLabels>('quick_note_labels', { noteId }),
+
+  quickReadingFromLine: (line: string) =>
+    invoke<QuickReading | null>('quick_reading_from_line', { line }),
+  quickTrackerDraft: (args: { name: string; line?: string }) =>
+    invoke<QuickTrackerDraft | null>('quick_tracker_draft', args),
+
+  quickGoalWording: (args: { title: string; roleId: RoleId }) =>
+    invoke<string>('quick_goal_wording', args),
+  quickGoalBackfill: (goalId: GoalId) =>
+    invoke<QuickBackfillPick[]>('quick_goal_backfill', { goalId }),
+
+  quickWeekNote: (args: { thisWeek: string; lastWeek?: string }) =>
+    invoke<string>('quick_week_note', args),
+
+  quickFrontMatter: (args: { ours: string[]; theirs: string[] }) =>
+    invoke<QuickMapping>('quick_front_matter', args),
 
   // ── Taking your data out, and putting it back ────────────────────────
   //

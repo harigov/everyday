@@ -16,10 +16,13 @@
   // The trackers already in the vault are listed below, because the
   // commonest log is of something logged before and a click beats typing.
 
+  import { api } from '../lib/api'
+  import { slot } from '../lib/quick.svelte'
   import { QUICK_TRACK_HINT, describeQuickTrack, parseQuickTrack } from '../lib/quicktrack'
   import { tracking } from '../lib/tracking.svelte'
   import { formatValue } from '../lib/tracker'
-  import type { EntryId, JournalId, Tracker } from '../lib/types'
+  import type { EntryId, JournalId, QuickReading, Tracker } from '../lib/types'
+  import Suggestions from './Suggestions.svelte'
   import Icon from './Icon.svelte'
   import TrackerIcon from './TrackerIcon.svelte'
 
@@ -48,8 +51,49 @@
   const preview = $derived(describeQuickTrack(parsed))
   const ready = $derived(!!parsed.target)
 
+  // ── the lines the grammar could not read ─────────────────────────────
+  //
+  // `quicktrack.ts` handles "swim 60min", "mood 7/10" and "floss", and for
+  // those it is better than a model: instant, offline, and tested. So this
+  // only ever runs on the residue -- a line the grammar found no target in --
+  // and it runs *after* Enter, offering a chip rather than blocking the key.
+  //
+  // "three glasses of wine last night" is the case it is for.
+
+  let readingChip = $state<QuickReading | null>(null)
+  const readingSlot = slot<QuickReading | null>()
+
+  async function askAbout(line: string) {
+    await readingSlot.run(
+      'tracker.parse',
+      () => api.quickReadingFromLine(line),
+      (found) => (readingChip = found ?? null),
+    )
+  }
+
+  async function acceptReading() {
+    const row = readingChip
+    if (!row) return
+    readingChip = null
+    const tracker = await tracking.recordSuggested(row, {
+      journalId: journalId ?? undefined,
+      entryId: entryId ?? undefined,
+      date,
+    })
+    if (tracker) said = `Recorded ${tracker.name}.`
+  }
+
   function submit() {
     const line = draft.trim()
+    // A line the grammar cannot read is not refused any more: it is written
+    // off to the quick model, which either offers a reading or does not.
+    if (line && !ready) {
+      draft = ''
+      said = ''
+      void askAbout(line)
+      field?.focus()
+      return
+    }
     if (!line || !ready) return
     // Cleared synchronously, before any await: the field has to be empty and
     // focused by the time the next character arrives.
@@ -87,6 +131,19 @@
 </script>
 
 <div class="log">
+  <!-- The grammar could not read it, so the model was asked. Offered, never
+       applied: a number recorded on a misreading is a wrong point on a chart
+       that nobody goes back and checks. -->
+  {#if readingChip}
+    <Suggestions
+      scope={readingChip.name}
+      items={[{ key: 'r', label: readingChip.label || readingChip.name }]}
+      label="Record:"
+      onaccept={() => void acceptReading()}
+      ondismiss={() => readingSlot.dismiss(() => (readingChip = null))}
+    />
+  {/if}
+
   <div class="line">
     <Icon name="plus" size={14} />
     <!-- Focused on open: this popover exists to be typed into. -->

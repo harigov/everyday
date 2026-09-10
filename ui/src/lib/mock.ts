@@ -11,6 +11,7 @@
 
 import type {
   AddedItem,
+  QuickJobRow,
   BlockKind,
   BlockQuery,
   BlockSubject,
@@ -1803,16 +1804,187 @@ let nextId = 100
 // has to draw -- prose arriving in pieces, a tool card, a confirmation, and
 // a failure -- so the panel can be built and reviewed without a provider.
 
+/**
+ * The quick job catalogue, mirrored from `everyday_core::quick::JOBS`.
+ *
+ * A copy, and the only one in this file that is a copy of a Rust table rather
+ * than of a record shape -- which is a cost worth naming. It is here because
+ * the settings pane's list of switches is a thing to lay out and read, and
+ * laying it out against an empty array would be laying out nothing. The
+ * *behaviour* it drives is all in Rust, so a drift here costs a mock pane
+ * that lists the wrong jobs and nothing else.
+ */
+const MOCK_QUICK_JOBS: QuickJobRow[] = (
+  [
+    [
+      'library.fields',
+      'Fill in a shelf\u2019s fields',
+      'Library',
+      true,
+      'the title you looked up and the search results it found',
+    ],
+    [
+      'library.pick',
+      'Choose the right search result',
+      'Library',
+      true,
+      'what you typed and the titles of the results found',
+    ],
+    [
+      'library.kind',
+      'Draft a new shelf',
+      'Library',
+      true,
+      'the shelf name you typed, and nothing else',
+    ],
+    [
+      'library.import_map',
+      'Map an imported list\u2019s columns',
+      'Library',
+      true,
+      'the column names of the file you are importing, and one example row',
+    ],
+    [
+      'todo.purpose',
+      'Suggest a role or goal',
+      'Todo',
+      true,
+      'the task\u2019s title and the names of your roles and goals',
+    ],
+    [
+      'todo.parse',
+      'Read a task written as a sentence',
+      'Todo',
+      true,
+      'the line you typed into the capture box',
+    ],
+    [
+      'todo.subtasks',
+      'Break a task into steps',
+      'Todo',
+      true,
+      'the task\u2019s title and description',
+    ],
+    [
+      'todo.estimate',
+      'Suggest how long a task will take',
+      'Todo',
+      true,
+      'the task\u2019s title and how long similar past tasks took',
+    ],
+    [
+      'calendar.parse',
+      'Read an appointment written as a sentence',
+      'Calendar',
+      true,
+      'the line you typed into the capture box',
+    ],
+    [
+      'calendar.title',
+      'Tidy a subscribed event\u2019s title',
+      'Calendar',
+      false,
+      'the titles of events from calendars you subscribe to',
+    ],
+    [
+      'journal.readings',
+      'Find numbers worth tracking in an entry',
+      'Journal',
+      false,
+      'the text of the journal entry you just wrote',
+    ],
+    [
+      'journal.title',
+      'Suggest a title for an entry',
+      'Journal',
+      false,
+      'the text of the journal entry you just wrote',
+    ],
+    [
+      'journal.labels',
+      'Suggest tags for an entry',
+      'Journal',
+      false,
+      'the text of the journal entry you just wrote',
+    ],
+    [
+      'tracker.parse',
+      'Read a reading written as a sentence',
+      'Tracking',
+      true,
+      'the line you typed, and the names of your trackers',
+    ],
+    [
+      'tracker.draft',
+      'Propose a new tracker\u2019s settings',
+      'Tracking',
+      true,
+      'the tracker name and the line you first recorded against it',
+    ],
+    ['notes.title', 'Suggest a title for a note', 'Notes', true, 'the text of the note'],
+    ['notes.tasks', 'Find the tasks in a note', 'Notes', true, 'the text of the note'],
+    ['notes.labels', 'Suggest tags for a note', 'Notes', true, 'the text of the note'],
+    [
+      'purpose.goal',
+      'Sharpen a goal\u2019s wording',
+      'Roles and goals',
+      true,
+      'the goal you typed and the role it sits under',
+    ],
+    [
+      'purpose.backfill',
+      'Match existing records to a new goal',
+      'Roles and goals',
+      true,
+      'the goal\u2019s name and the titles of records that have no purpose yet',
+    ],
+    [
+      'overview.week',
+      'Write the week in a sentence or two',
+      'Overview',
+      false,
+      'this week\u2019s totals: hours by role, tasks done, entries written',
+    ],
+    [
+      'data.import_map',
+      'Map an imported folder\u2019s front matter',
+      'Data',
+      true,
+      'the front-matter keys found in the files you are importing',
+    ],
+  ] as const
+).map(([name, label, app, defaultOn, sends]) => ({
+  name,
+  label,
+  // The blurb is the sentence somebody reads to decide, so the mock carries
+  // the real ones: a pane of twenty identical placeholders cannot be
+  // reviewed for the thing it is for.
+  blurb: `Sends ${sends}.`,
+  app,
+  on: defaultOn,
+  defaultOn,
+}))
+
+/**
+ * The quick-job policy, as the difference from the defaults.
+ *
+ * Two sets rather than one, mirroring `QuickPolicy` in the core -- a single
+ * "off" set cannot express a job switched *on* that defaults off, which is
+ * every one of the journal's.
+ */
+const mockQuickOn = new Set<string>()
+const mockQuickOff = new Set<string>()
+
 let agentSettings: AgentSettings = {
   enabled: true,
   name: '',
-  model: {
-    provider: 'openAi',
-    model: 'gpt-5.1-mini',
-    baseUrl: null,
-    temperature: null,
-    maxTokens: null,
-  },
+  providerConfig: { provider: 'openAi', baseUrl: null },
+  assistantModel: { model: 'gpt-5.1-mini', temperature: null, maxTokens: null },
+  // The mock runs the quick jobs too -- see `quickJobs` below, which answers
+  // with the catalogue and canned suggestions, so the chips can be built and
+  // reviewed with no Rust, no vault and no provider.
+  quickModel: { model: 'gpt-5.1-nano', temperature: 0, maxTokens: 1024 },
+  quickJobs: {},
   instructions: '',
   confirmDestructive: true,
   maxSteps: 24,
@@ -3331,6 +3503,193 @@ export const mockInvoke = async <T>(
       // Any of the seeded jackets, so the "get the cover" button visibly
       // does something without a network.
       return (Object.keys(COVERS)[0] ?? '1'.repeat(64)) as T
+
+    // ── The quick model ────────────────────────────────────────────────
+    //
+    // Canned answers rather than a fake model: the point of these is that the
+    // *chips* can be built and reviewed -- where they sit, what dismissing
+    // one does, what happens when the answer is empty -- with no provider
+    // anywhere. So each returns something plausible for the shapes the
+    // components have to draw, and the empty-answer case is reachable by
+    // asking about anything whose text contains "nothing".
+
+    case 'quick_jobs':
+    case 'set_quick_job': {
+      requireUnlocked()
+      if (cmd === 'set_quick_job') {
+        const { name, on } = args as { name: string; on: boolean }
+        mockQuickOn.delete(name)
+        mockQuickOff.delete(name)
+        const job = MOCK_QUICK_JOBS.find((j) => j.name === name)
+        if (job && on !== job.defaultOn) (on ? mockQuickOn : mockQuickOff).add(name)
+      }
+      return MOCK_QUICK_JOBS.map((job) => ({
+        ...job,
+        on: mockQuickOn.has(job.name) || (job.defaultOn && !mockQuickOff.has(job.name)),
+      })) as T
+    }
+
+    case 'quick_item_fields': {
+      requireUnlocked()
+      return {
+        creator: 'Frank Herbert',
+        year: 1965,
+        summary: 'A desert planet, a spice, and a boy who is told what he is.',
+        facts: { pages: '412' },
+      } as T
+    }
+
+    case 'quick_pick_result':
+      requireUnlocked()
+      return ((args.results as unknown[]).length > 0 ? 0 : null) as T
+
+    case 'quick_kind_draft': {
+      requireUnlocked()
+      return {
+        icon: '\u{1f377}',
+        color: '#7a2f4a',
+        wishlistVerb: 'To try',
+        activeVerb: 'Tasting',
+        doneVerb: 'Tasted',
+        itemNoun: 'wine',
+        fields: [
+          { key: 'producer', label: 'Producer' },
+          { key: 'vintage', label: 'Vintage' },
+          { key: 'region', label: 'Region' },
+          { key: 'grape', label: 'Grape' },
+        ],
+        source: 'wikipedia',
+      } as T
+    }
+
+    case 'quick_import_columns':
+    case 'quick_front_matter':
+      requireUnlocked()
+      return { columns: { title: 'Title' } } as T
+
+    case 'quick_task_labels':
+    case 'quick_entry_labels':
+    case 'quick_note_labels':
+      requireUnlocked()
+      return { tags: ['travel'], purpose: null } as T
+
+    case 'quick_task_from_line': {
+      requireUnlocked()
+      const line = (args.line as string | undefined) ?? ''
+      if (line.includes('nothing')) return null as T
+      return {
+        title: line.trim() || 'Something to do',
+        dueDate: day(0),
+        dueTime: null,
+        priority: 'medium',
+        estimateMinutes: 30,
+        tags: [],
+      } as T
+    }
+
+    case 'quick_subtasks':
+    case 'quick_note_tasks':
+      requireUnlocked()
+      return [
+        {
+          title: 'Draft the list',
+          dueDate: null,
+          dueTime: null,
+          priority: null,
+          estimateMinutes: 20,
+          tags: [],
+        },
+        {
+          title: 'Send the invitations',
+          dueDate: null,
+          dueTime: null,
+          priority: null,
+          estimateMinutes: 15,
+          tags: [],
+        },
+      ] as T
+
+    case 'quick_estimate':
+      requireUnlocked()
+      return 45 as T
+
+    case 'quick_event_from_line': {
+      requireUnlocked()
+      const line = (args.line as string | undefined) ?? ''
+      if (line.includes('nothing')) return null as T
+      return {
+        title: line.trim() || 'Lunch',
+        date: day(0),
+        start: '13:00',
+        end: '14:00',
+        location: '',
+      } as T
+    }
+
+    case 'quick_event_title':
+      requireUnlocked()
+      return ((args.title as string | undefined) ?? '')
+        .replace(/^(\[[^\]]*\]|FW:|RE:|Fwd:)\s*/gi, '')
+        .trim() as T
+
+    case 'quick_entry_readings': {
+      requireUnlocked()
+      const first = trackers[0]
+      if (!first) return [] as T
+      return [
+        {
+          trackerId: first.id,
+          name: first.name,
+          value: 1,
+          at: '08:00',
+          label: `${first.name}, 8am`,
+        },
+      ] as T
+    }
+
+    case 'quick_reading_from_line': {
+      requireUnlocked()
+      const first = trackers[0]
+      if (!first) return null as T
+      return {
+        trackerId: first.id,
+        name: first.name,
+        value: 1,
+        at: null,
+        label: `${first.name} \u00d7 1`,
+      } as T
+    }
+
+    case 'quick_tracker_draft':
+      requireUnlocked()
+      return {
+        name: (args.name as string | undefined) ?? 'Something',
+        kind: 'amount',
+        unit: 'minutes',
+        scaleMax: null,
+        icon: '\u{1f3c3}',
+        color: '#2f6f4a',
+      } as T
+
+    case 'quick_entry_title':
+    case 'quick_note_title':
+      requireUnlocked()
+      return 'The long way round' as T
+
+    case 'quick_goal_wording':
+      requireUnlocked()
+      return 'Run 10k without stopping' as T
+
+    case 'quick_goal_backfill':
+      requireUnlocked()
+      return tasks
+        .filter((t) => !t.purpose)
+        .slice(0, 2)
+        .map((t) => ({ taskId: t.id, title: t.title })) as T
+
+    case 'quick_week_note':
+      requireUnlocked()
+      return 'You logged eleven hours against Parent this week and two against Yourself, which is the reverse of the fortnight before.' as T
 
     case 'agent_settings':
       requireUnlocked()

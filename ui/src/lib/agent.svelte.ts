@@ -79,11 +79,11 @@ class AgentState {
    */
   get ready(): boolean {
     const s = this.settings
-    if (!s?.enabled || !s.model.model.trim()) return false
+    if (!s?.enabled || !s.assistantModel.model.trim()) return false
     // A model on this machine needs no key, which is the whole reason the
     // base URL is a setting. Mirrors `Provider::needs_key` in the core; if
     // they ever disagree the backend is the one that decides, and says so.
-    return s.hasKey || isLoopback(s.model.baseUrl)
+    return s.hasKey || isLoopback(s.providerConfig.baseUrl)
   }
 
   async toggle() {
@@ -111,6 +111,25 @@ class AgentState {
   }
 
   /** Settings and threads. Cheap, and repeated whenever the panel opens. */
+  /**
+   * The settings alone, without the threads.
+   *
+   * What `quick` needs, and it needs it without the rest: `load` also fetches
+   * fifty conversations and *starts a thread*, which is a write, and nothing
+   * about a shelf filling in its own fields should mint a conversation.
+   */
+  async loadSettings() {
+    if (!this.supported) return
+    if (this.settings) return
+    try {
+      this.settings = await api.agentSettings()
+    } catch (e) {
+      // Quiet: every caller of this draws a suggestion or nothing, and the
+      // rail's own `load` reports properly for the case somebody is looking.
+      if (isLocked(e)) return void (await handle(e))
+    }
+  }
+
   async load() {
     if (!this.supported) return
     try {

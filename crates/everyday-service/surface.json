@@ -1522,6 +1522,446 @@
     {
       "args": [
         {
+          "name": "entryId",
+          "required": true,
+          "type": "EntryId"
+        },
+        {
+          "name": "journalId",
+          "required": false,
+          "type": "JournalId | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_entry_labels",
+      "orScope": null,
+      "returns": "QuickLabels",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "entryId",
+          "required": true,
+          "type": "EntryId"
+        },
+        {
+          "name": "journalId",
+          "required": false,
+          "type": "JournalId | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_entry_readings",
+      "orScope": null,
+      "returns": "QuickReading[]",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "entryId",
+          "required": true,
+          "type": "EntryId"
+        },
+        {
+          "name": "journalId",
+          "required": false,
+          "type": "JournalId | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_entry_title",
+      "orScope": null,
+      "returns": "string",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "taskId",
+          "required": true,
+          "type": "TaskId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_estimate",
+      "orScope": null,
+      "returns": "number | null",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "line",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_event_from_line",
+      "orScope": null,
+      "returns": "QuickEventDraft | null",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "title",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_event_title",
+      "orScope": null,
+      "returns": "string",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "ours",
+          "required": true,
+          "type": "string[]"
+        },
+        {
+          "name": "theirs",
+          "required": true,
+          "type": "string[]"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_front_matter",
+      "orScope": null,
+      "returns": "QuickMapping",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "goalId",
+          "required": true,
+          "type": "GoalId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_goal_backfill",
+      "orScope": null,
+      "returns": "QuickBackfillPick[]",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "title",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "roleId",
+          "required": true,
+          "type": "RoleId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_goal_wording",
+      "orScope": null,
+      "returns": "string",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "kindId",
+          "required": true,
+          "type": "KindId"
+        },
+        {
+          "name": "columns",
+          "required": true,
+          "type": "string[]"
+        },
+        {
+          "name": "sample",
+          "required": false,
+          "type": "string[]"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_import_columns",
+      "orScope": null,
+      "returns": "QuickMapping",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "itemId",
+          "required": true,
+          "type": "ItemId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_item_fields",
+      "orScope": null,
+      "returns": "QuickFields",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_jobs",
+      "orScope": null,
+      "returns": "QuickJobRow[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_kind_draft",
+      "orScope": null,
+      "returns": "QuickKindDraft",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "noteId",
+          "required": true,
+          "type": "NoteId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_note_labels",
+      "orScope": null,
+      "returns": "QuickLabels",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "noteId",
+          "required": true,
+          "type": "NoteId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_note_tasks",
+      "orScope": null,
+      "returns": "QuickTaskDraft[]",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "noteId",
+          "required": true,
+          "type": "NoteId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_note_title",
+      "orScope": null,
+      "returns": "string",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "kindId",
+          "required": true,
+          "type": "KindId"
+        },
+        {
+          "name": "query",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "results",
+          "required": true,
+          "type": "SearchResult[]"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_pick_result",
+      "orScope": null,
+      "returns": "number | null",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "line",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_reading_from_line",
+      "orScope": null,
+      "returns": "QuickReading | null",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "taskId",
+          "required": true,
+          "type": "TaskId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_subtasks",
+      "orScope": null,
+      "returns": "QuickTaskDraft[]",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "line",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_task_from_line",
+      "orScope": null,
+      "returns": "QuickTaskDraft | null",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "title",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_task_labels",
+      "orScope": null,
+      "returns": "QuickLabels",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "line",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_tracker_draft",
+      "orScope": null,
+      "returns": "QuickTrackerDraft | null",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "thisWeek",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "lastWeek",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_week_note",
+      "orScope": null,
+      "returns": "string",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "handle",
           "required": true,
           "type": "string"
@@ -2322,6 +2762,31 @@
       "orScope": null,
       "returns": "Item",
       "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "on",
+          "required": true,
+          "type": "boolean"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_quick_job",
+      "orScope": null,
+      "returns": "QuickJobRow[]",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },

@@ -93,6 +93,14 @@ pub trait AgentStore: Send + Sync {
     /// Implementations must set [`AgentSettings::has_key`] from
     /// [`AgentStore::has_secret`] rather than from anything stored in the
     /// settings record itself.
+    ///
+    /// They must also call [`AgentSettings::normalize`] on the decoded
+    /// record. A settings payload written before the endpoint and the model
+    /// were separate records still says `model`, and it cannot be migrated
+    /// where every other shape change in this store is — a migration step is
+    /// handed a connection, not the cipher, so a sealed record can only be
+    /// folded by whoever just decrypted it. Skipping it silently replaces
+    /// somebody's endpoint and model name with the defaults.
     fn settings(&self) -> Result<AgentSettings>;
 
     fn put_settings(&self, settings: &AgentSettings) -> Result<()>;
