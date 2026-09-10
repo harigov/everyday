@@ -23,6 +23,8 @@ use std::path::PathBuf;
 use everyday_core::agent::tools::{self, Effect, Sensitivity};
 use everyday_service::domains::meta::{scope_of, title_of};
 
+mod support;
+
 fn snapshot_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("mcp.json")
 }
@@ -75,25 +77,16 @@ fn current() -> String {
 
 #[test]
 fn the_tool_surface_is_what_was_written_down() {
-    let path = snapshot_path();
-    let current = current();
-
-    if std::env::var("UPDATE_SURFACE").is_ok() {
-        std::fs::write(&path, &current).expect("could not write the tool snapshot");
-        return;
-    }
-
-    let recorded = std::fs::read_to_string(&path).unwrap_or_default();
-    if recorded != current {
-        panic!(
-            "the tool surface has changed.\n\n\
-             This is what an MCP client sees, and what a model reads to choose between \
-             tools, so the change is worth looking at rather than accepting -- especially \
-             a tool that has gone missing, which this snapshot is the only thing that would \
-             notice.\n\n\
-             Then: UPDATE_SURFACE=1 cargo test -p everyday-service --test mcp\n"
-        );
-    }
+    support::compare(
+        &snapshot_path(),
+        &current(),
+        "the tool surface has changed.\n\n\
+         This is what an MCP client sees, and what a model reads to choose between \
+         tools, so the change is worth looking at rather than accepting -- especially \
+         a tool that has gone missing, which this snapshot is the only thing that would \
+         notice.",
+        "UPDATE_SURFACE=1 cargo test -p everyday-service --test mcp",
+    );
 }
 
 /// MCP's own rule for a tool name, checked here so a tool that would be

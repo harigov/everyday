@@ -48,21 +48,12 @@ pub fn expected_headers(message: &Value) -> ExpectedHeaders {
 
     let params = message.get("params");
 
-    let protocol_version = params
-        .and_then(|p| p.get("_meta"))
-        .and_then(|m| m.get(crate::META_PROTOCOL_VERSION))
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let protocol_version =
+        params.and_then(|p| crate::meta_str(p, crate::META_PROTOCOL_VERSION)).map(str::to_string);
 
-    // `Mcp-Name` only applies to methods that name a target. We implement
-    // exactly one such method, `tools/call`, whose target is
-    // `params.name` — the specification's other examples,
-    // `resources/read` and `prompts/get`, are methods this server does
-    // not answer at all.
-    let name = if method.as_deref() == Some("tools/call") {
-        params.and_then(|p| p.get("name")).and_then(Value::as_str).map(str::to_string)
-    } else {
-        None
+    let name = match (method.as_deref(), params) {
+        (Some(method), Some(params)) => crate::call_target(method, params).map(str::to_string),
+        _ => None,
     };
 
     ExpectedHeaders { protocol_version, method, name }

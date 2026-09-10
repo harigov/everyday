@@ -19,7 +19,6 @@ pub(crate) const METHOD_NOT_FOUND: i64 = -32601;
 pub(crate) const INVALID_PARAMS: i64 = -32602;
 pub(crate) const INTERNAL_ERROR: i64 = -32603;
 pub(crate) const HEADER_MISMATCH: i64 = -32020;
-pub(crate) const MISSING_CLIENT_CAPABILITY: i64 = -32021;
 pub(crate) const UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
 
 /// Build the `Outcome::Reply` for a JSON-RPC error, with the HTTP status
@@ -78,23 +77,6 @@ pub fn internal_error(id: &Value, detail: &str) -> Outcome {
 /// error object of its own.
 pub fn header_mismatch(id: &Value, detail: &str) -> Outcome {
     error_reply(id, HEADER_MISMATCH, "Header mismatch", Some(json!({ "detail": detail })), 400)
-}
-
-/// `-32021 MissingRequiredClientCapability`: `data.requiredCapabilities`
-/// names what was needed. Nothing this server does today requires a
-/// specific client capability — we neither sample nor elicit — so nothing
-/// in [`crate::handle`] raises this on its own. It is exposed anyway,
-/// because it is part of what dual-era MCP promises a caller it can raise,
-/// and the day a capability *is* required this is where the error comes
-/// from rather than a second definition invented at the call site.
-pub fn missing_required_client_capability(id: &Value, missing: &[&str]) -> Outcome {
-    error_reply(
-        id,
-        MISSING_CLIENT_CAPABILITY,
-        "Missing required client capability",
-        Some(json!({ "requiredCapabilities": missing })),
-        400,
-    )
 }
 
 /// `-32022 UnsupportedProtocolVersion`: `data.supported` lists

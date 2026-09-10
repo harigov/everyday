@@ -49,9 +49,30 @@ mod handle;
 mod headers;
 mod instructions;
 
+/// The one place that knows how a request's `_meta` is laid out.
+///
+/// Two call sites read the same keys out of the same nesting from different
+/// entry points -- [`handle`] from an already-parsed envelope, and
+/// [`expected_headers`] from the raw message -- and the whole reason
+/// `headers.rs` exists is that two implementations of one rule drift apart.
+/// It would be a poor joke to leave the *extraction* duplicated underneath
+/// the module written to stop the comparison being.
+pub(crate) fn meta_str<'a>(params: &'a Value, key: &str) -> Option<&'a str> {
+    params.get("_meta")?.get(key)?.as_str()
+}
+
+/// The target a method names, for the `Mcp-Name` header and for dispatch.
+///
+/// `tools/call` is the only method this server answers that names one. The
+/// specification's other examples, `resources/read` and `prompts/get`, are
+/// methods we do not implement at all.
+pub(crate) fn call_target<'a>(method: &str, params: &'a Value) -> Option<&'a str> {
+    (method == "tools/call").then(|| params.get("name")?.as_str()).flatten()
+}
+
 pub use errors::{
     header_mismatch, invalid_params, invalid_request, method_not_found,
-    missing_required_client_capability, unsupported_protocol_version,
+    unsupported_protocol_version,
 };
 pub use handle::{handle, tools_list_changed};
 pub use headers::{ExpectedHeaders, decode_header_value, expected_headers};

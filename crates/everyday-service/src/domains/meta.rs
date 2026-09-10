@@ -209,14 +209,19 @@ async fn list_tools(svc: Arc<Service>, ctx: Ctx, _args: Nothing) -> CommandResul
     blocking(move || {
         Ok(tools::available(&vault)
             .into_iter()
-            .filter(|t| ctx.holds(scope_of(t.domain)))
-            .map(|t| ToolInfo {
-                name: t.name,
-                title: title_of(t.name),
-                description: t.description,
-                effect: effect_name(t.effect),
-                scope: scope_of(t.domain).as_str(),
-                schema: t.parameters(),
+            .filter_map(|t| {
+                // Mapped once and then both filtered on and recorded. Two
+                // calls would be two answers to one question, which is one
+                // more than a filter and its result should ever disagree on.
+                let scope = scope_of(t.domain);
+                ctx.holds(scope).then(|| ToolInfo {
+                    name: t.name,
+                    title: title_of(t.name),
+                    description: t.description,
+                    effect: effect_name(t.effect),
+                    scope: scope.as_str(),
+                    schema: t.parameters(),
+                })
             })
             .collect())
     })

@@ -154,6 +154,23 @@ pub struct Registry {
     unlock_gate: tokio::sync::Mutex<()>,
 }
 
+/// May a token actually be granted this scope?
+///
+/// Two are not grants at all, for different reasons, and both were being
+/// spelled out separately at each of the places that had to exclude them.
+/// `Admin` configures the server rather than reaching the vault, and a device
+/// that could pair another device would make revoking one a suggestion rather
+/// than a fact. `Any` is what a *command* requires of whoever is calling --
+/// "somebody rather than nobody" -- so a token carrying it would satisfy that
+/// requirement while holding nothing at all.
+///
+/// One predicate rather than two filters, because the two had already drifted:
+/// a list of nothing but `Admin` was widened to `All` while a list of nothing
+/// but `Any` was refused, and neither spelling knew about the other.
+fn grantable(scope: Scope) -> bool {
+    !matches!(scope, Scope::Admin | Scope::Any)
+}
+
 impl Registry {
     /// Read the device file, or start with none.
     ///
@@ -303,8 +320,7 @@ impl Registry {
         // the scope list arrives from a wire where omitting it has always
         // meant "everything", and a caller minting a token deliberately must
         // not have an empty list quietly widened the same way.
-        let scopes =
-            if scopes.iter().all(|s| *s == Scope::Admin) { vec![Scope::All] } else { scopes };
+        let scopes = if scopes.iter().all(|s| !grantable(*s)) { vec![Scope::All] } else { scopes };
         self.issue(name, scopes)
     }
 
@@ -324,13 +340,7 @@ impl Registry {
     /// pane, on the machine holding the vault, where the person asking is the
     /// person at the keyboard.
     pub fn issue(&self, name: &str, scopes: Vec<Scope>) -> CommandResult<(String, String)> {
-        // `Admin` is never issued over a wire. A device that could pair another
-        // device would make revoking one a suggestion rather than a fact.
-        // `Any` is not a grant at all -- it is what a command *requires* of
-        // whoever is calling -- and a token carrying it would satisfy that
-        // requirement while holding nothing.
-        let scopes: Vec<Scope> =
-            scopes.into_iter().filter(|s| *s != Scope::Admin && *s != Scope::Any).collect();
+        let scopes: Vec<Scope> = scopes.into_iter().filter(|s| grantable(*s)).collect();
 
         // Refused rather than defaulted, and this is the whole reason the
         // default lives in `pair` instead. Widening an empty list to `All`

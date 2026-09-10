@@ -120,6 +120,22 @@ fn reply(outcome: Outcome) -> (u16, Value) {
     }
 }
 
+/// Answer `message` and assert it was refused with `code` and `status`.
+///
+/// The three lines this replaces were written out in five tests, which is
+/// four more places to get the status/code pairing subtly wrong in. The
+/// tests keep their own names rather than collapsing into one table: a
+/// failure that says which *rule* broke is worth more here than the handful
+/// of lines a table would save, and these names are the only place the
+/// rules are written down in English.
+#[track_caller]
+fn refused(host: &FakeHost, message: &Value, status: u16, code: i64) -> Value {
+    let (actual_status, body) = reply(block_on(handle(host, message)));
+    assert_eq!(actual_status, status, "status, for {body}");
+    assert_eq!(body["error"]["code"], code, "error code, for {body}");
+    body
+}
+
 // ---------------------------------------------------------------------
 // Modern (2026-07-28)
 // ---------------------------------------------------------------------
@@ -186,10 +202,7 @@ fn a_modern_request_missing_the_protocol_version_is_rejected() {
         "params": { "_meta": { "io.modelcontextprotocol/clientCapabilities": {} } },
     });
 
-    let (status, body) = reply(block_on(handle(&host, &message)));
-
-    assert_eq!(status, 400);
-    assert_eq!(body["error"]["code"], -32602);
+    refused(&host, &message, 400, -32602);
 }
 
 #[test]
@@ -202,10 +215,7 @@ fn a_modern_request_missing_client_capabilities_is_rejected() {
         "params": { "_meta": { "io.modelcontextprotocol/protocolVersion": MODERN } },
     });
 
-    let (status, body) = reply(block_on(handle(&host, &message)));
-
-    assert_eq!(status, 400);
-    assert_eq!(body["error"]["code"], -32602);
+    refused(&host, &message, 400, -32602);
 }
 
 #[test]
@@ -223,10 +233,7 @@ fn an_unsupported_protocol_version_is_named_in_the_error() {
         },
     });
 
-    let (status, body) = reply(block_on(handle(&host, &message)));
-
-    assert_eq!(status, 400);
-    assert_eq!(body["error"]["code"], -32022);
+    let body = refused(&host, &message, 400, -32022);
     assert_eq!(body["error"]["data"]["requested"], "1900-01-01");
     assert_eq!(body["error"]["data"]["supported"], json!(SUPPORTED_VERSIONS));
 }

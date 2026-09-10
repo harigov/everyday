@@ -35,6 +35,7 @@
 //! which is the code `everyday-service`'s `run_tool` already raises for
 //! exactly this case.
 
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value, json};
@@ -56,13 +57,19 @@ const DISCOVER_TTL_MS: u64 = 3_600_000;
 
 /// A message that at least parses as JSON-RPC, before we know what era it
 /// belongs to or whether it is one we answer.
-struct Envelope {
-    method: String,
-    params: Value,
+///
+/// Every field borrows from the message rather than copying out of it. The
+/// message outlives the envelope by construction -- `handle` takes it by
+/// reference and nothing here escapes the call -- and the alternative is a
+/// deep clone of `params` on every request, which for `tools/call` is the
+/// whole of a note body or an entry's text.
+struct Envelope<'a> {
+    method: &'a str,
+    params: &'a Value,
     /// `Some` for a request that wants a reply; `None` for a notification.
     /// The distinction is "has an `id` member at all", not "has a
     /// non-null one" -- see [`parse`].
-    id: Option<Value>,
+    id: Option<&'a Value>,
 }
 
 /// Pull `message` apart into an [`Envelope`], or say why it cannot be
@@ -75,7 +82,7 @@ struct Envelope {
 /// `id` is different: JSON-RPC spells a notification that way, and it is
 /// not an error, it is [`handle`] returning [`Outcome::Accepted`] instead
 /// of ever reaching this function's error path.
-fn parse(message: &Value) -> Result<Envelope, Outcome> {
+fn parse(message: &Value) -> Result<Envelope<'_>, Outcome> {
     let obj = message.as_object();
 
     let jsonrpc_ok = obj.and_then(|o| o.get("jsonrpc")).and_then(Value::as_str) == Some("2.0");
@@ -98,10 +105,14 @@ fn parse(message: &Value) -> Result<Envelope, Outcome> {
         return Err(errors::invalid_request(&id, "not a well-formed JSON-RPC 2.0 message"));
     }
 
-    let params = obj.and_then(|o| o.get("params")).cloned().unwrap_or_else(|| json!({}));
-    let id = if id_present { obj.and_then(|o| o.get("id")).cloned() } else { None };
+    // An absent `params` reads as an empty object, and the empty object is a
+    // `static` so that borrowing one is free and needs no owner to outlive.
+    static NO_PARAMS: OnceLock<Value> = OnceLock::new();
+    let params =
+        obj.and_then(|o| o.get("params")).unwrap_or_else(|| NO_PARAMS.get_or_init(|| json!({})));
+    let id = if id_present { obj.and_then(|o| o.get("id")) } else { None };
 
-    Ok(Envelope { method: method.expect("checked above").to_string(), params, id })
+    Ok(Envelope { method: method.expect("checked above"), params, id })
 }
 
 /// Whether `params` carries the modern per-request `_meta` this era is
@@ -128,7 +139,7 @@ pub async fn handle<H: Host>(host: &H, message: &Value) -> Outcome {
         Err(outcome) => return outcome,
     };
 
-    let Some(id) = envelope.id.clone() else {
+    let Some(id) = envelope.id else {
         // A notification. JSON-RPC notifications never get a JSON-RPC
         // response, whatever they name. `notifications/initialized` is
         // the only one a legacy client sends us; anything else arriving
@@ -142,19 +153,22 @@ pub async fn handle<H: Host>(host: &H, message: &Value) -> Outcome {
     // 2026-07-28 removed the handshake, so a modern client never sends
     // either. Everything else is sorted by whether it carries the modern
     // `_meta` -- see `is_modern_attempt`.
-    let modern = envelope.method != "initialize" && is_modern_attempt(&envelope.params);
+    let modern = envelope.method != "initialize" && is_modern_attempt(envelope.params);
 
     if modern {
-        handle_modern(host, &envelope, &id).await
+        handle_modern(host, &envelope, id).await
     } else {
-        handle_legacy(host, &envelope, &id).await
+        handle_legacy(host, &envelope, id).await
     }
 }
 
-async fn handle_modern<H: Host>(host: &H, envelope: &Envelope, id: &Value) -> Outcome {
-    let meta = envelope.params.get("_meta").and_then(Value::as_object);
-    let protocol_version = meta.and_then(|m| m.get(META_PROTOCOL_VERSION)).and_then(Value::as_str);
-    let has_capabilities = meta.is_some_and(|m| m.contains_key(META_CLIENT_CAPABILITIES));
+async fn handle_modern<H: Host>(host: &H, envelope: &Envelope<'_>, id: &Value) -> Outcome {
+    let protocol_version = crate::meta_str(envelope.params, META_PROTOCOL_VERSION);
+    let has_capabilities = envelope
+        .params
+        .get("_meta")
+        .and_then(Value::as_object)
+        .is_some_and(|m| m.contains_key(META_CLIENT_CAPABILITIES));
 
     let Some(version) = protocol_version else {
         return errors::invalid_params(
@@ -172,10 +186,10 @@ async fn handle_modern<H: Host>(host: &H, envelope: &Envelope, id: &Value) -> Ou
         return errors::unsupported_protocol_version(id, version);
     }
 
-    match envelope.method.as_str() {
+    match envelope.method {
         "server/discover" => discover_result(host, id),
         "tools/list" => tools_list(host, id, Era::Modern).await,
-        "tools/call" => tools_call(host, id, &envelope.params, Era::Modern).await,
+        "tools/call" => tools_call(host, id, envelope.params, Era::Modern).await,
         // Modern-only: the legacy standalone stream is a `GET`, which
         // never reaches `handle` at all, so this is the only era in which
         // a subscription is a JSON-RPC method.
@@ -184,11 +198,11 @@ async fn handle_modern<H: Host>(host: &H, envelope: &Envelope, id: &Value) -> Ou
     }
 }
 
-async fn handle_legacy<H: Host>(host: &H, envelope: &Envelope, id: &Value) -> Outcome {
-    match envelope.method.as_str() {
-        "initialize" => initialize_result(host, id, &envelope.params),
+async fn handle_legacy<H: Host>(host: &H, envelope: &Envelope<'_>, id: &Value) -> Outcome {
+    match envelope.method {
+        "initialize" => initialize_result(host, id, envelope.params),
         "tools/list" => tools_list(host, id, Era::Legacy).await,
-        "tools/call" => tools_call(host, id, &envelope.params, Era::Legacy).await,
+        "tools/call" => tools_call(host, id, envelope.params, Era::Legacy).await,
         other => errors::method_not_found(id, other),
     }
 }
@@ -219,18 +233,19 @@ fn reply(id: &Value, result: Value) -> Outcome {
 }
 
 fn discover_result<H: Host>(host: &H, id: &Value) -> Outcome {
-    reply(
-        id,
-        json!({
-            "resultType": "complete",
-            "supportedVersions": SUPPORTED_VERSIONS,
-            "capabilities": { "tools": { "listChanged": true } },
-            "_meta": server_meta(host),
-            "instructions": instructions::full(host.instructions().as_deref()),
-            "ttlMs": DISCOVER_TTL_MS,
-            "cacheScope": "public",
-        }),
-    )
+    // Through `modern_envelope` like the other two, rather than spelling
+    // `resultType` and `_meta` out again here. `server/discover` is
+    // modern-only, so there is no era to branch on -- but that is a reason
+    // for the envelope to be unconditional, not a reason to write a third
+    // copy of the two fields the function exists to own.
+    let result = json!({
+        "supportedVersions": SUPPORTED_VERSIONS,
+        "capabilities": { "tools": { "listChanged": true } },
+        "instructions": instructions::full(host.instructions().as_deref()),
+        "ttlMs": DISCOVER_TTL_MS,
+        "cacheScope": "public",
+    });
+    reply(id, modern_envelope(result, host))
 }
 
 fn initialize_result<H: Host>(host: &H, id: &Value, params: &Value) -> Outcome {
@@ -287,12 +302,16 @@ async fn tools_list<H: Host>(host: &H, id: &Value, era: Era) -> Outcome {
 }
 
 async fn tools_call<H: Host>(host: &H, id: &Value, params: &Value, era: Era) -> Outcome {
-    let Some(name) = params.get("name").and_then(Value::as_str) else {
+    let Some(name) = crate::call_target("tools/call", params) else {
         return errors::invalid_params(id, "`name` is required");
     };
-    let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    // Borrowed, never cloned: this is the value carrying a note's body or an
+    // entry's text, and `Host::call` only ever reads it.
+    static NO_ARGUMENTS: OnceLock<Value> = OnceLock::new();
+    let arguments =
+        params.get("arguments").unwrap_or_else(|| NO_ARGUMENTS.get_or_init(|| json!({})));
 
-    let result = match host.call(name, &arguments).await {
+    let result = match host.call(name, arguments).await {
         Ok(value) => call_result(&value),
         // `unknown_tool` is the one `HostError` this function treats as
         // the *request's* fault rather than the tool's -- see the module
