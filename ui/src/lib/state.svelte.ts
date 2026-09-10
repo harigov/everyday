@@ -53,15 +53,19 @@ export type Screen = 'loading' | 'setup' | 'locked' | 'main' | 'error'
  * chrome state that outlives a lock, so it is remembered locally -- coming
  * back to the app you were last in is what makes it feel like one program
  * rather than a handful bolted together.
+ *
+ * The order here is the app bar's, because `nextSection` cycles along it:
+ * the shortcut that moves to the next app has to move to the next app you
+ * can see, not the next one this list was written in.
  */
 export const SECTIONS = [
-  'journal',
+  'overview',
   'notes',
   'todo',
   'calendar',
   'library',
-  'overview',
   'assistant',
+  'journal',
 ] as const
 export type Section = (typeof SECTIONS)[number]
 
@@ -1278,9 +1282,6 @@ class AppState {
   }
 
   /** Float an entry to the top of the list, or let it fall back into date order. */
-  async togglePin(id: EntryId) {
-    await this.#editEntry(id, (entry) => (entry.pinned = !entry.pinned))
-  }
 
   /**
    * Say what a day's writing was for.

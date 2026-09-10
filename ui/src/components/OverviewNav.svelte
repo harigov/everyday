@@ -1,229 +1,105 @@
 <script lang="ts">
-  // The Overview's half of the sidebar: the four panes, then the roles.
+  // The Overview's half of the sidebar: everything the page could show,
+  // filed under what it is about.
   //
-  // The roles are here rather than in Settings for the reason a library
-  // Kind is in the library's sidebar: a thing is defined where its data is
-  // seen, and a role you have to go to Settings for is a role you will not
-  // edit. Everything a role can have done to it is on its right-click menu.
+  // A catalogue rather than a list of what is *on* the page. The page itself
+  // is the list of what is on the page, three inches to the right, and a
+  // second copy of it here would be a thing to keep in step for no reason.
+  // What the sidebar is for is the other direction: finding the card you did
+  // not know existed.
+  //
+  // The roles that used to live here have gone to Settings, under About You.
+  // They were here on the argument that a thing is defined where its data is
+  // seen -- the same argument that keeps a library shelf in the library's
+  // sidebar -- and that argument turned out to be wrong for this one. A role
+  // is not the Overview's data: it is a fact about the person that the todo
+  // app, the calendar, the journal and the shelf all file things under, and
+  // the Overview happened to be the app that drew it first.
 
-  import { focusOnMount } from '../lib/focus'
+  import { GROUPS, WIDGETS, WIDGET_TYPES, type Group, type WidgetType } from '../lib/dashboard'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
-  import { colourItems } from '../lib/menus'
-  import { overview, PANES, PANE_LABELS, type Pane } from '../lib/overview.svelte'
-  import { purpose } from '../lib/purpose.svelte'
-  import type { IconName } from '../lib/icons'
-  import type { RoleInfo } from '../lib/types'
-  import ConfirmDialog from './ConfirmDialog.svelte'
+  import { overview } from '../lib/overview.svelte'
+  import { panels } from '../lib/panels.svelte'
   import Icon from './Icon.svelte'
 
-  let creating = $state(false)
-  let draft = $state('')
-  let renaming = $state<RoleInfo | null>(null)
-  let renameDraft = $state('')
-  let pendingDelete = $state<RoleInfo | null>(null)
+  /** How many of each type are already on the page, so a row can say so. */
+  const counts = $derived.by(() => {
+    const out = new Map<WidgetType, number>()
+    for (const w of overview.widgets) out.set(w.type, (out.get(w.type) ?? 0) + 1)
+    return out
+  })
 
-  const PANE_ICONS: Record<Pane, IconName> = {
-    today: 'sun',
-    week: 'week',
-    goals: 'target',
-    habits: 'refresh',
-  }
-
-  const roles = $derived(purpose.roles)
-  const live = $derived(roles.filter((r) => !r.archived))
-  const archived = $derived(roles.filter((r) => r.archived))
-
-  async function create() {
-    const name = draft.trim()
-    draft = ''
-    creating = false
-    if (name) await purpose.addRole(name)
-  }
-
-  async function commitRename() {
-    const role = renaming
-    const name = renameDraft.trim()
-    renaming = null
-    if (role && name && name !== role.name) {
-      await purpose.saveRole({ ...$state.snapshot(role), name })
-    }
-  }
-
-  /**
-   * What a right-click on a role offers.
-   *
-   * Archiving is above deleting and reads as the ordinary answer, because it
-   * is: a role you have stopped playing keeps a year of attributed hours,
-   * and deleting is refused while any goal still points at it anyway.
-   */
-  function roleMenu(role: RoleInfo): MenuItem[] {
-    return tidyMenu([
-      {
-        label: 'Add a goal here',
-        icon: 'plus',
-        run: () => {
-          overview.setPane('goals')
-          // The composer belongs to the goals pane, which is not an ancestor
-          // of this one. Reaching it by selector is what the todo app's
-          // sidebar already does for its capture line.
-          setTimeout(
-            () => document.querySelector<HTMLInputElement>(`[data-newgoal="${role.id}"]`)?.focus(),
-            0,
-          )
-        },
-      },
-      SEP,
-      {
-        label: 'Rename…',
-        icon: 'pencil',
-        run: () => {
-          renameDraft = role.name
-          renaming = role
-        },
-      },
-      {
-        label: 'Colour',
-        dot: role.color,
-        items: colourItems(role.color, (color) =>
-          purpose.saveRole({ ...$state.snapshot(role), color }),
-        ),
-      },
-      {
-        label: role.archived ? 'Bring it back' : 'Archive',
-        icon: role.archived ? 'refresh' : 'hidden',
-        hint: role.archived ? undefined : 'keeps its history',
-        run: () => purpose.saveRole({ ...$state.snapshot(role), archived: !role.archived }),
-      },
-      SEP,
-      {
-        label: 'Delete role…',
-        icon: 'trash',
-        danger: true,
-        // Said here rather than discovered on the way: a role with goals
-        // under it cannot be deleted, and offering the row as though it
-        // could is a dialog that ends in a refusal.
-        disabled: role.goals > 0,
-        hint: role.goals > 0 ? 'move its goals first' : undefined,
-        run: () => (pendingDelete = role),
-      },
-    ])
-  }
+  const byGroup = $derived(
+    GROUPS.map((group: Group) => ({
+      group,
+      types: WIDGET_TYPES.filter((t) => WIDGETS[t].group === group),
+    })).filter((g) => g.types.length > 0),
+  )
 
   function navMenu(): MenuItem[] {
     return tidyMenu([
-      { label: 'New role', icon: 'plus', run: () => (creating = true) },
+      {
+        label: overview.editing ? 'Stop arranging' : 'Arrange this page',
+        icon: 'grip',
+        run: () => (overview.editing = !overview.editing),
+      },
       SEP,
-      ...PANES.map((p) => ({
-        label: PANE_LABELS[p],
-        icon: PANE_ICONS[p],
-        checked: overview.pane === p,
-        run: () => overview.setPane(p),
-      })),
+      {
+        label: 'Roles and goals…',
+        icon: 'compass',
+        hint: 'in Settings',
+        run: () => panels.openSettings('profile'),
+      },
+      SEP,
+      {
+        label: 'Put the page back as it was',
+        icon: 'refresh',
+        danger: true,
+        run: () => overview.restoreDefaults(),
+      },
     ])
   }
 </script>
 
 <nav class="scroll nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
-  {#each PANES as pane (pane)}
-    <button class="row" class:sel={overview.pane === pane} onclick={() => overview.setPane(pane)}>
-      <span class="icon"><Icon name={PANE_ICONS[pane]} /></span>
-      <span class="text">{PANE_LABELS[pane]}</span>
-    </button>
-  {/each}
+  <p class="lead">
+    Your page, made of these. Add what you would actually look at; take off what you would not.
+  </p>
 
-  <div class="head">
-    <span class="eyebrow">Roles</span>
-    <button class="plus" title="New role" aria-label="New role" onclick={() => (creating = true)}>
-      <Icon name="plus" size={15} />
-    </button>
-  </div>
-
-  {#each live as role (role.id)}
-    {#if renaming?.id === role.id}
-      <input
-        class="new"
-        bind:value={renameDraft}
-        use:focusOnMount
-        onblur={commitRename}
-        onkeydown={(e) => {
-          if (e.key === 'Enter') void commitRename()
-          if (e.key === 'Escape') renaming = null
-        }}
-      />
-    {:else}
+  {#each byGroup as section (section.group)}
+    <div class="head"><span class="eyebrow">{section.group}</span></div>
+    {#each section.types as type (type)}
+      {@const spec = WIDGETS[type]}
+      {@const on = counts.get(type) ?? 0}
       <button
         class="row"
-        style="--dot: {role.color}"
-        onclick={() => overview.setPane('goals')}
-        oncontextmenu={(e) => menu.show(e, roleMenu(role))}
-        title="{role.name} — {role.goals} {role.goals === 1 ? 'goal' : 'goals'}"
+        title={spec.note}
+        onclick={() => overview.add(type)}
+        aria-label="Add {spec.label} to the page"
       >
-        <span class="icon">{role.icon}</span>
-        <span class="text">{role.name}</span>
-        <!-- What is still being pursued, not the total. A role with forty
-             finished goals is not forty things to think about. -->
-        {#if role.open > 0}<span class="count">{role.open}</span>{/if}
-        <span class="dot" aria-hidden="true"></span>
-      </button>
-    {/if}
-  {/each}
-
-  {#if creating}
-    <input
-      class="new"
-      placeholder="Role name"
-      bind:value={draft}
-      use:focusOnMount
-      onblur={create}
-      onkeydown={(e) => {
-        if (e.key === 'Enter') void create()
-        if (e.key === 'Escape') {
-          draft = ''
-          creating = false
-        }
-      }}
-    />
-  {/if}
-
-  {#if live.length === 0 && !creating}
-    <p class="blank">
-      A role is who you are being — <em>Parent</em>, <em>Work</em>, <em>Myself</em>. Add a few and
-      the week below starts adding up.
-    </p>
-  {/if}
-
-  {#if archived.length > 0}
-    <div class="head">
-      <span class="eyebrow">Archived</span>
-    </div>
-    {#each archived as role (role.id)}
-      <button
-        class="row muted"
-        style="--dot: {role.color}"
-        oncontextmenu={(e) => menu.show(e, roleMenu(role))}
-        onclick={() => menu.show(new MouseEvent('contextmenu'), roleMenu(role))}
-      >
-        <span class="icon">{role.icon}</span>
-        <span class="text">{role.name}</span>
+        <span class="icon"><Icon name={spec.icon} size={15} /></span>
+        <span class="text">
+          <span class="name">{spec.label}</span>
+          <span class="note">{spec.note}</span>
+        </span>
+        {#if on > 0}
+          <!-- How many are already up there. A widget can be added twice on
+               purpose -- two heatmaps of two habits is the ordinary case --
+               so this is a count rather than a tick that disables the row. -->
+          <span class="count">{on}</span>
+        {/if}
+        <span class="plus"><Icon name="plus" size={14} /></span>
       </button>
     {/each}
-  {/if}
-</nav>
+  {/each}
 
-{#if pendingDelete}
-  <ConfirmDialog
-    title={'Delete the “' + pendingDelete.name + '” role?'}
-    detail="Nothing that was filed under it is deleted. Time already recorded against it stops being counted under any role. This cannot be undone."
-    confirmLabel="Delete role"
-    onconfirm={() => {
-      const role = pendingDelete
-      pendingDelete = null
-      if (role) void purpose.deleteRole(role.id)
-    }}
-    oncancel={() => (pendingDelete = null)}
-  />
-{/if}
+  <div class="foot">
+    <button class="quietlink" onclick={() => overview.restoreDefaults()}>
+      Put the page back as it was
+    </button>
+  </div>
+</nav>
 
 <style>
   .nav {
@@ -231,37 +107,28 @@
     padding: var(--sp-2) var(--sp-2) var(--sp-4);
   }
 
+  .lead {
+    margin: 0;
+    padding: var(--sp-2);
+    color: var(--fg-faint);
+    font-size: var(--text-sm);
+    line-height: var(--leading-normal);
+  }
+
   .head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     padding: var(--sp-5) var(--sp-2) var(--sp-2);
-  }
-
-  .plus {
-    display: grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    border-radius: var(--radius-sm);
-    color: var(--fg-faint);
-  }
-
-  .plus:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
   }
 
   .row {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: var(--sp-2);
     width: 100%;
-    height: var(--row-h);
-    padding: 0 var(--sp-2);
+    padding: var(--sp-2);
     border-radius: var(--radius-sm);
     color: var(--fg-muted);
-    font-size: var(--text-base);
     text-align: left;
     transition:
       background var(--fast) var(--ease),
@@ -273,65 +140,76 @@
     color: var(--fg);
   }
 
-  .row.sel {
-    background: var(--bg-active);
-    color: var(--fg);
-    font-weight: 550;
-  }
-
-  .row.muted {
-    opacity: 0.55;
-  }
-
   .icon {
     display: grid;
     flex: none;
     place-items: center;
     width: 16px;
-    height: 16px;
-    font-size: var(--text-sm);
-    line-height: 1;
+    height: 18px;
+    color: var(--fg-faint);
   }
 
   .text {
-    flex: 1 1 auto;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .name {
+    font-size: var(--text-base);
+    color: inherit;
+  }
+
+  /* The line that makes this a catalogue rather than a menu: it says what
+     the card answers, which is the only way to choose between fifteen of
+     them without adding each one to find out. */
+  .note {
+    color: var(--fg-faint);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
   }
 
   .count {
     flex: none;
-    color: var(--fg-faint);
+    margin-top: 2px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--bg-active);
+    color: var(--fg-muted);
     font-size: var(--text-xs);
+    font-weight: 650;
     font-variant-numeric: tabular-nums;
   }
 
-  .dot {
+  .plus {
+    display: grid;
     flex: none;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--dot);
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    color: var(--fg-faint);
+    opacity: 0;
+    transition: opacity var(--fast) var(--ease);
+  }
+  .row:hover .plus,
+  .row:focus-visible .plus {
+    opacity: 1;
   }
 
-  .new {
-    width: 100%;
-    height: var(--row-h);
-    padding: 0 var(--sp-2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg-raised);
-    color: var(--fg);
-    font: inherit;
-    font-size: var(--text-base);
+  .foot {
+    margin-top: var(--sp-6);
+    padding: var(--sp-3) var(--sp-2) 0;
+    border-top: 1px solid var(--border);
   }
 
-  .blank {
-    margin: 0;
-    padding: var(--sp-2);
+  .quietlink {
     color: var(--fg-faint);
     font-size: var(--text-sm);
-    line-height: var(--leading);
+  }
+  .quietlink:hover {
+    color: var(--fg);
+    text-decoration: underline;
   }
 </style>

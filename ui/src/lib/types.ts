@@ -372,7 +372,6 @@ export interface Entry {
   updatedAt: string
   tags: string[]
   starred: boolean
-  pinned: boolean
   location?: Location
   attachments: Attachment[]
   /**
@@ -574,7 +573,6 @@ export interface EntrySummary {
   updatedAt: string
   tags: string[]
   starred: boolean
-  pinned: boolean
   wordCount: number
   attachmentCount: number
   cover?: BlobId
@@ -1612,6 +1610,11 @@ export interface ModelConfig {
 export interface AgentSettings {
   /** Off until somebody turns it on, and off in a new vault. */
   enabled: boolean
+  /**
+   * What to call it. Empty means unnamed, and an unnamed assistant is "the
+   * assistant" in the rail's header and in its own system prompt.
+   */
+  name: string
   model: ModelConfig
   /** The person's own standing instructions. */
   instructions: string

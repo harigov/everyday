@@ -6,6 +6,9 @@
   // at once, and filing something into it is not a thing you can do.
 
   import { todo, type Scope } from '../lib/todo.svelte'
+  import { purpose } from '../lib/purpose.svelte'
+  import { panels } from '../lib/panels.svelte'
+  import { app } from '../lib/state.svelte'
   import { DEFAULT_COLORS } from '../lib/colors'
   import { focusOnMount } from '../lib/focus'
   import { menu } from '../lib/menu.svelte'
@@ -32,6 +35,15 @@
       ? todo.scope.kind === 'project' && todo.scope.id === scope.id
       : todo.scope.kind === scope.kind
   }
+
+  // Roles and goals load when the pane opens; the count beside the row has
+  // to be right before anybody has opened it, or the sidebar would read
+  // "Goals" with nothing beside it until it was clicked once.
+  $effect(() => {
+    if (app.supportsOverview) void purpose.load()
+  })
+
+  const openGoals = $derived(purpose.openGoals.length)
 
   async function create() {
     const name = draft.trim()
@@ -135,11 +147,31 @@
     ])
   }
 
+  /** The panel itself, where there is no project under the pointer. */
+  function navMenu(): MenuItem[] {
+    return tidyMenu([
+      { label: 'New project', icon: 'plus', run: () => (creating = true) },
+      app.supportsOverview && {
+        label: 'Goals',
+        icon: 'target',
+        checked: todo.scope.kind === 'goals',
+        run: () => todo.setScope({ kind: 'goals' }),
+      },
+      SEP,
+      app.supportsOverview && {
+        label: 'Roles…',
+        icon: 'compass',
+        hint: 'in About You',
+        run: () => panels.openSettings('profile'),
+      },
+    ])
+  }
+
   const due = $derived(todo.dueTodayCount)
   const overdue = $derived(todo.stats?.overdue ?? 0)
 </script>
 
-<nav class="scroll nav">
+<nav class="scroll nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
   {#each SMART as item (item.label)}
     <button class="row" class:sel={selected(item.scope)} onclick={() => todo.setScope(item.scope)}>
       <span class="icon" class:today={item.icon === 'sun'}><Icon name={item.icon} size={15} /></span
@@ -154,6 +186,33 @@
       {/if}
     </button>
   {/each}
+
+  <!-- Goals sit under the four queries and above the projects, because that
+       is the order of the answers they give: what is on today, what is left
+       this week, and then what any of it is for. They came from the Overview,
+       which was a report on the work rather than the place it is done. -->
+  {#if app.supportsOverview}
+    <div class="head">
+      <span class="eyebrow">Goals</span>
+      <button
+        class="plus"
+        title="Roles, in Settings"
+        aria-label="Set up your roles"
+        onclick={() => panels.openSettings('profile')}
+      >
+        <Icon name="settings" size={14} />
+      </button>
+    </div>
+    <button
+      class="row"
+      class:sel={selected({ kind: 'goals' })}
+      onclick={() => todo.setScope({ kind: 'goals' })}
+    >
+      <span class="icon"><Icon name="target" size={15} /></span>
+      <span class="text">What this is all for</span>
+      {#if openGoals > 0}<span class="count">{openGoals}</span>{/if}
+    </button>
+  {/if}
 
   <div class="head">
     <span class="eyebrow">Projects</span>

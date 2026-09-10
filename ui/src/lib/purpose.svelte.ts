@@ -1,19 +1,31 @@
 // Roles and goals, and the one thing every other app needs from them.
 //
-// The smallest of the stores. Almost nothing in the interface wants
-// to *edit* a role — that happens in one place, the Overview — but a great
-// deal of it wants to turn a `Purpose` into a name and a colour: a task
+// The smallest of the stores. Almost nothing in the interface wants to *edit*
+// a role — that happens in one place, the About You tab of Settings — but a
+// great deal of it wants to turn a `Purpose` into a name and a colour: a task
 // detail panel, a block's context menu, a chip on a card. So the two lists
 // are loaded once after unlock and kept here, and `label` and `color` are
 // the functions everything else calls.
 //
-// Note what this store does *not* do: it does not own the balance report.
-// That is a window-shaped question the Overview asks for itself, and caching
-// it here would mean every app paying to keep last week's numbers warm.
+// It also holds what has *happened* against each goal, which two apps now
+// draw: the Todo app's goals pane, which is where a goal is read and edited,
+// and the Overview's progress widget. That is an all-time count per goal
+// rather than a window over anything, so one copy can serve both — unlike
+// the balance report, which is window-shaped and is asked for by whoever is
+// showing a window.
 
 import { api } from './api'
 import { app, handle } from './state.svelte'
-import type { Goal, GoalId, GoalQuery, Purpose, Role, RoleId, RoleInfo } from './types'
+import type {
+  Goal,
+  GoalActivity,
+  GoalId,
+  GoalQuery,
+  Purpose,
+  Role,
+  RoleId,
+  RoleInfo,
+} from './types'
 
 /** A resolved purpose: what to write, and what colour to write it in. */
 export interface PurposeLabel {
@@ -39,10 +51,24 @@ export const UNATTRIBUTED: PurposeLabel = {
   roleId: null,
 }
 
+/** A goal with what has happened against it, as the goals pane draws it. */
+export interface GoalRow {
+  goal: Goal
+  role: RoleInfo | undefined
+  activity: GoalActivity | null
+}
+
 class PurposeState {
   roles = $state<RoleInfo[]>([])
   goals = $state<Goal[]>([])
+  /** What has happened against each goal. Filled in by `refreshActivity`. */
+  activity = $state<Map<GoalId, GoalActivity>>(new Map())
   loading = $state(false)
+
+  /** The goal whose detail rail is open, in whichever app is showing one. */
+  selected = $state<GoalId | null>(null)
+  /** Which role's section is folded away, by id. Chrome, not vault contents. */
+  collapsed = $state<Set<RoleId>>(new Set())
 
   /** Which load is the current one, so a slow one cannot land after a lock. */
   #generation = 0
@@ -70,8 +96,52 @@ class PurposeState {
     this.#generation += 1
     this.roles = []
     this.goals = []
+    this.activity = new Map()
+    this.selected = null
     this.loading = false
     this.#loaded = false
+  }
+
+  /** Goals grouped under their roles, in sidebar order, freshest first. */
+  get byRole(): { role: RoleInfo; goals: GoalRow[] }[] {
+    return this.roles
+      .filter((r) => !r.archived)
+      .map((role) => ({
+        role,
+        goals: this.goals
+          .filter((g) => g.roleId === role.id)
+          .map((goal) => ({ goal, role, activity: this.activity.get(goal.id) ?? null }))
+          .sort(byLastTouched),
+      }))
+  }
+
+  toggleRole(id: RoleId) {
+    const next = new Set(this.collapsed)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    this.collapsed = next
+  }
+
+  /**
+   * Ask what has happened against every goal.
+   *
+   * One call per goal, and deliberately not one call for all of them: each is
+   * a handful of counts over clear index columns, there are a dozen goals
+   * rather than a thousand, and a combined endpoint would be a second SQL
+   * shape to keep in step with the first for no measurable gain.
+   */
+  async refreshActivity(): Promise<void> {
+    if (!this.enabled) return
+    const mine = this.#generation
+    const answers = await Promise.all(
+      this.goals.map(async (g) => [g.id, await api.goalActivity(g.id).catch(() => null)] as const),
+    )
+    // A lock, or a reload, that happened while these were in the air. Those
+    // counts are decrypted vault contents and must not land behind it.
+    if (mine !== this.#generation) return
+    const next = new Map<GoalId, GoalActivity>()
+    for (const [id, a] of answers) if (a) next.set(id, a)
+    this.activity = next
   }
 
   /**
@@ -209,6 +279,7 @@ class PurposeState {
     try {
       await api.saveGoal($state.snapshot(goal))
       await this.load(true)
+      await this.refreshActivity()
     } catch (e) {
       await handle(e)
     }
@@ -222,6 +293,7 @@ class PurposeState {
       const goal = await api.newGoal(roleId, trimmed)
       await api.saveGoal(goal)
       await this.load(true)
+      await this.refreshActivity()
       return this.goal(goal.id) ?? null
     } catch (e) {
       await handle(e)
@@ -232,7 +304,9 @@ class PurposeState {
   async deleteGoal(id: GoalId): Promise<void> {
     try {
       await api.deleteGoal(id)
+      if (this.selected === id) this.selected = null
       await this.load(true)
+      await this.refreshActivity()
     } catch (e) {
       await handle(e)
     }
@@ -263,6 +337,14 @@ class PurposeState {
 }
 
 export const purpose = new PurposeState()
+
+/** Newest activity first; a goal nothing has touched sorts last. */
+function byLastTouched(a: GoalRow, b: GoalRow): number {
+  const at = a.activity?.lastTouched ?? ''
+  const bt = b.activity?.lastTouched ?? ''
+  if (at !== bt) return bt.localeCompare(at)
+  return a.goal.sortOrder - b.goal.sortOrder || a.goal.title.localeCompare(b.goal.title)
+}
 
 /** Two purposes are the same when they name the same thing. */
 export function samePurpose(a: Purpose | null | undefined, b: Purpose | null | undefined): boolean {

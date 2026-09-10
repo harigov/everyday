@@ -49,14 +49,20 @@ the right side of the trade.
 
 ## Seven apps, one vault
 
-A bar down the left edge switches between **Journal**, **Notes**, **Todo**,
-**Calendar**, **Library**, **Overview** and **Assistant** (`Ctrl/Cmd J`
+A bar down the left edge switches between **Overview**, **Notes**, **Todo**,
+**Calendar**, **Library**, **Assistant** and **Journal** (`Ctrl/Cmd J`
 cycles); right-clicking one of them offers what that app can start from a
 standing stop — the same actions the tray offers, from the same registration.
 They share a vault, a password and a lock; they share nothing else — except
 that two of them are views over what the others already store. The calendar
 draws the journal's and the todo app's records on one grid, and the Overview
 says what all four amounted to. That is the whole point of both.
+
+The order is the order of a day rather than the order they were built in. The
+Overview is first because it is the page you arrive at and it is now made of
+whatever cards its owner put on it; the journal is last because it is the one
+app you go to on purpose, with something already in mind to write. The four in
+between are the ones you dip into all day.
 
 The bar sits outside the sidebar because it is not any one app's navigation:
 everything to the right of it changes completely when one is pressed, and it
@@ -67,15 +73,16 @@ of filters over the list below it. **Settings** and **Lock** are at the foot
 of the bar, under a rule, for the same reason: they belong to the vault
 rather than to whichever app is open.
 
-Settings is a dialog with tabs — General, You, Assistant, Data, Vault — rather than a
+Settings is a dialog with tabs — General, About You, Assistant, Data, Vault — rather than a
 popover hanging out of the side of the bar. It outgrew the popover twice:
 once when it acquired an instructions box somebody is expected to write a
 paragraph into, and again when that box had to become a *second* dialog
 raised out of the first, so the application had two settings surfaces and one
 of them had to close before the other could open.
 
-Settings has a **You** tab as well, which is where the assistant learns whose
-vault this is (see [Who it works for](#who-it-works-for)), and a **Data** tab,
+Settings has an **About You** tab as well, which is where the assistant learns
+whose vault this is (see [Who it works for](#who-it-works-for)) and where the
+**roles** are defined, and a **Data** tab,
 which is where the vault is written out as files anything can read and read
 back again — see [leaving with your writing](#leaving-with-your-writing).
 
@@ -286,6 +293,15 @@ A person *reads* a book, *watches* a series and *plays* a game, and an
 application that insists on "in progress" for all three reads like a form.
 The filter bar, the cards and the detail panel all speak the open shelf's
 language.
+
+A shelf can also be **hidden** rather than deleted, the way an unticked
+calendar is hidden rather than unsubscribed from — and hidden shelves are
+listed, faintly, at the foot of the sidebar with a count and one click to
+bring them back. That last part is the whole feature. A hidden shelf still
+holds its items, they still appear under *Everything*, they still count in the
+tally at the bottom of the panel and they still come back in search; a shelf
+that could go missing with no way to find it again would be the worst kind of
+missing, which is the kind where the data is plainly still there.
 
 What is deliberately *not* per-kind is the status itself: `wishlist`,
 `active`, `paused`, `done`, `abandoned`, closed, the same five everywhere.
@@ -680,15 +696,55 @@ task under a filed project appears in that project's section.
 
 ### The Overview
 
-The fifth app. It owns the roles and the goals and spends the rest of its time
-asking the other four domains what happened. Four panes, one question each:
+The fifth app, and the one that owns no records at all. It spends its whole
+life asking the other four domains what happened, on behalf of whatever cards
+its owner has put on the page.
+
+It was four fixed panes — Today, This week, Goals, Habits — and each of them
+was somebody's guess at what mattered. The guesses were not bad; they were one
+guess for everybody. The person keeping a medication log and the person
+keeping a reading list were shown the same four screens, and neither could put
+the one number they open the application for at the top of it. So the panes
+are **widgets** now and the page is a grid you fill yourself: a catalogue down
+the sidebar filed under what each card is about, a width per card, drag to
+reorder, and the same actions on every card's right-click menu so none of it
+is mouse-only.
 
 ```
-  Today    what is on, what is due, what has been recorded, today's habits
-  Week     where the hours went, by role, plan beside record
-  Goals    what you said you wanted, quietest first
-  Habits   what is holding, and what has stopped
+  Today             on now · due today · recorded today · today's habits
+  Your time         where the week went · share of your week · gone quiet
+  Goals             goals under way · goals, counted
+  Habits            streaks · a habit day by day · a number over time
+  Tasks             this week in tasks · tasks, counted
+  Everything else   on the shelves · what you have written · recent notes
 ```
+
+Two rules keep this from becoming a wall of numbers nobody reads. The first
+is editorial and was inherited from the four panes: **nothing is on the
+catalogue that does not change what somebody does next**, and where a card can
+be acted on it is — the habit chips log a reading, the goal meters open the
+goal in the todo app, the timer stops. The second is mechanical: every widget
+declares what it needs from the vault, the needs of whatever is actually on
+the page are unioned, and nothing else is fetched. A page of three stat tiles
+costs three counts; add a heatmap and it costs four months of readings, and
+only then.
+
+Two of the four panes did not become widgets, and both left for a better
+address rather than being dropped. **Goals** are edited in the todo app,
+beside the tasks that make them happen — they had been three panes away from
+the work, so filing something under one meant remembering its name in another
+app. **Roles** are defined in Settings, under About You, with the rest of what
+the vault knows about its owner: a role is not the Overview's data, it is a
+standing fact about the person that four different apps file things under, and
+the Overview was only the app that happened to draw it first.
+
+The layout itself is in `localStorage`, beside the other things this interface
+remembers about how it is being looked at — which app was open, covers or
+list, whether the month is showing above the entry list. The cost is worth
+saying plainly: a page arranged on the laptop is not the page you get on the
+machine under the desk. Making it follow you means a record in the vault — a
+table, a migration, two commands, a conformance test — which is a change to
+the storage layer rather than to this app, and nobody has asked for it yet.
 
 The week is drawn as **bars from a common baseline, one row per role** —
 not a stacked column per day. That is not taste. The question is "how much of
@@ -716,8 +772,8 @@ because its absence is the finding.
 Which leads to the one thing this app can say that no other can: *a role with
 an open goal and nothing recorded against it for a fortnight.* Working that out
 means reading the journal, the todo app, the calendar and the shelf, and no
-single app sees all four. It is said once at the top of the week, plainly, and
-never as a notification.
+single app sees all four. It is a card of its own — *Gone quiet* — said
+plainly, and never as a notification.
 
 ### What is refused, and what is not
 
@@ -896,15 +952,29 @@ The assistant knew the date and nothing else — not the hour, which decides
 half of what anybody asks an assistant, and not one thing about the person it
 was working for.
 
-**Settings → You** is a name, a birthday, a gender, roughly where you live,
-and a paragraph in your own words. It is read into every conversation and
+**Settings → About You** is a name, a birthday, a gender, roughly where you
+live, and a paragraph in your own words. It is read into every conversation and
 every run. The age is worked out here rather than left to the model, which is
 usually right and is occasionally a year out for no reason worth finding out.
+The same tab is where the **roles** are defined, for the same reason: both are
+standing facts about the person rather than one app's records.
 
 Nothing writes it. Facts that *change* — a move, a new job — are what the
 assistant's memory is for, and it writes those itself, capped and dated. This
 is for the handful that do not, and it is typed once. There is deliberately no
 tool for it.
+
+### What to call it
+
+The assistant has a **name** if you give it one, in Settings → Assistant, and
+it is the first line of its own system prompt rather than a label on a header.
+That is what makes it answer to the name instead of treating the word as a
+person mentioned in the journal. Left empty it is "the assistant" everywhere,
+in the rail's header and in the prompt alike — the application does not pick
+one on anybody's behalf, because a default name would be this software
+introducing itself under a name its owner did not choose, in the one place
+that is most theirs. The field is one line and forty characters: anything
+longer is an instruction, and instructions have their own box below it.
 
 The time zone is yours rather than the machine's, and that is not a detail: a
 vault served from a box under a desk has whatever zone that box was installed
@@ -1220,7 +1290,7 @@ app says so, loudly, at creation time.
 
 The SQL backend keeps a few structural columns in the clear so date-range
 queries and pagination stay index scans: `journal_id`, `local_date`,
-timestamps, and the starred/pinned flags. Titles, bodies, tags, locations,
+timestamps, and the starred flag. Titles, bodies, tags, locations,
 file names and media are all sealed. Someone with the database learns *that*
 you wrote on 14 July and never what you wrote — and on the Postgres backend
 "someone with the database" includes whoever runs the server, which is the
@@ -1759,7 +1829,7 @@ with what the platform or the webview has already taken.
 
 Bare letters belong to whatever is on screen, so the same key can mean
 different things in two apps without either being ambiguous. In the journal:
-`J`/`K` for the entry below and above, `S` to star it, `P` to pin it. In the
+`J`/`K` for the entry below and above, `S` to star it. In the
 todo app: `X` for finished work, `B` for the board. In the calendar: `D`,
 `W`, `M` for the three views, `T` for today, `←`/`→` to page, `Delete` to
 remove the selected block. In the library: `V` for covers or a list, `S` to
@@ -2006,13 +2076,13 @@ the job. The interface's own mock backend (`make ui`) ships two sample
 calendars, one of them deliberately in a failed state, so both paths through
 the "add a calendar" sheet can be seen without a server.
 
-Tracking now charts as well as storing: the Overview draws a streak, a hit
-rate and four months a square a day, off `tracker_days` — one `GROUP BY` over
-a clear index that returns a year of any tracker as 365 rows without
-decrypting anything.
+Tracking charts as well as stores: the Overview offers a streak, a hit rate,
+four months a square a day and a tracker plotted day by day, all off
+`tracker_days` — one `GROUP BY` over a clear index that returns a year of any
+tracker as 365 rows without decrypting anything.
 
-The one thing the Overview does not have is the inline `#swim 60min` in the
-body of an entry. The popover and the plus chip are the paths that ship;
+The one thing the tracking side does not have is the inline `#swim 60min` in
+the body of an entry. The popover and the plus chip are the paths that ship;
 parsing it out of prose needs a suggestion plugin in the editor, which is a
 dependency and a third-party notice, and the popover was always the primary
 way in.

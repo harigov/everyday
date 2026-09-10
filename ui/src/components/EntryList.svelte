@@ -38,7 +38,7 @@
   const groups = $derived.by(() => {
     const out: { label: string; rows: EntrySummary[] }[] = []
     for (const row of app.entries) {
-      const label = row.pinned ? 'Pinned' : groupLabel(row.localDate)
+      const label = groupLabel(row.localDate)
       const last = out[out.length - 1]
       if (last && last.label === label) last.rows.push(row)
       else out.push({ label, rows: [row] })
@@ -82,11 +82,6 @@
         icon: 'star',
         run: () => app.toggleStar(row.id),
       },
-      {
-        label: row.pinned ? 'Unpin' : 'Pin to the top',
-        icon: 'pin',
-        run: () => app.togglePin(row.id),
-      },
       SEP,
       {
         label: 'File under',
@@ -108,8 +103,8 @@
    * The same, for a search result.
    *
    * A hit is not a row: it carries a score and a snippet rather than the
-   * flags, so the two actions that need to know whether an entry is starred
-   * or pinned are not offered here rather than being offered wrongly.
+   * flags, so the one action that needs to know whether an entry is starred
+   * is not offered here rather than being offered wrongly.
    */
   function hitMenu(hit: { id: EntryId; title: string; journalId: JournalId }): MenuItem[] {
     return tidyMenu([
@@ -280,9 +275,6 @@
 
             <div class="body">
               <div class="title">
-                {#if row.pinned}<span class="pin" title="Pinned"
-                    ><Icon name="pin" size={12} weight={1.7} /></span
-                  >{/if}
                 <span class="titletext">{row.title || 'Untitled entry'}</span>
                 {#if row.starred}<span class="star" title="Starred"
                     ><Icon name="star" size={12} filled /></span
@@ -500,11 +492,6 @@
     color: #e0a92b;
     display: flex;
   }
-  .pin {
-    color: var(--fg-faint);
-    display: flex;
-  }
-
   .excerpt {
     margin-top: 2px;
     font-size: var(--text-sm);

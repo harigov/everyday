@@ -229,7 +229,6 @@ fn front_matter(entry: &Entry, journal: &str) -> FrontMatter {
         .always("journalId", entry.journal_id.to_string())
         .list("tags", &entry.tags)
         .flag("starred", entry.starred)
-        .flag("pinned", entry.pinned)
         .set("timezone", &entry.tz)
         .set("purpose", doc::purpose_text(entry.purpose.as_ref()))
         .set("created", doc::stamp(entry.created_at))
@@ -293,7 +292,10 @@ fn read_entry(
     entry.local_date = date;
     entry.tags = fields.list("tags");
     entry.starred = fields.flag("starred");
-    entry.pinned = fields.flag("pinned");
+    // An export written before entries lost their pin may still carry
+    // `pinned:`. It is read past rather than acted on: an unknown front
+    // matter field has never been an import failure, and the record it
+    // would set no longer exists.
     entry.purpose = doc::parse_purpose(&fields.text("purpose"));
     if let Some(tz) = fields.get("timezone") {
         entry.tz = tz.to_string();

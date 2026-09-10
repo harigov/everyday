@@ -23,6 +23,7 @@ import { library } from './library.svelte'
 import { assistant } from './assistant.svelte'
 import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
+import { purpose } from './purpose.svelte'
 import { panels } from './panels.svelte'
 import { app } from './state.svelte'
 import { todo } from './todo.svelte'
@@ -60,6 +61,10 @@ export const RELOAD = {
   library: () => library.refresh(),
   tracking: () => tracking.refresh(),
   overview: () => overview.refresh(),
+  // Roles and goals, which three surfaces now draw: the todo app's goals
+  // pane, every purpose picker, and whatever the Overview has on it. One
+  // reload for all of them, because there is one copy -- see `purpose`.
+  purpose: () => purpose.load(true),
   // Settings that moved: the auto-lock, the assistant's configuration. What
   // draws them re-reads on open, so the useful thing is the status word.
   status: () => app.refreshStatus(),
@@ -116,12 +121,12 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   log: 'library',
   tracker: 'tracking',
   reading: 'tracking',
-  // The Overview's own records, and the reports drawn from them. A role or a
-  // goal moving changes every chart, which is why they reload the app rather
-  // than a list within it -- and why they collapse to one reload when a batch
-  // carries both.
-  role: 'overview',
-  goal: 'overview',
+  // Roles and goals. They used to reload the Overview, because that is where
+  // they were edited; they are read in three places now and stored in one, so
+  // the reload is of the store rather than of an app. The Overview redraws
+  // anyway when it is the app on screen -- see `targetsFor`.
+  role: 'purpose',
+  goal: 'purpose',
   // The assistant's standing work, and the log of what it did. The routines
   // pane redraws for either, and the count on the app bar is read from the
   // same reload.
@@ -147,6 +152,11 @@ export function targetsFor(kinds: ChangeKind[], overviewShowing = false): Reload
   // See `PURPOSE_BEARING`: these do not name the Overview and still change what
   // it says, but only matter while somebody is looking at it.
   if (overviewShowing && kinds.some((kind) => PURPOSE_BEARING.has(kind))) {
+    targets.add('overview')
+  }
+  // A role or a goal moving changes every chart the Overview draws, and the
+  // store reload above only refreshes the lists behind them.
+  if (overviewShowing && kinds.some((kind) => kind === 'role' || kind === 'goal')) {
     targets.add('overview')
   }
   return [...targets]

@@ -20,6 +20,9 @@
   import { app } from '../lib/state.svelte'
   import { todo } from '../lib/todo.svelte'
   import { assistant, PANE_LABELS } from '../lib/assistant.svelte'
+  import { overview } from '../lib/overview.svelte'
+  import { purpose } from '../lib/purpose.svelte'
+  import { specOf } from '../lib/dashboard'
   import { library } from '../lib/library.svelte'
   import { notes } from '../lib/notes.svelte'
   import EmptyState from './EmptyState.svelte'
@@ -157,6 +160,12 @@
   const context = $derived.by(() => {
     switch (app.section) {
       case 'todo':
+        if (todo.showingGoals) {
+          const goal = purpose.selected ? purpose.goal(purpose.selected) : undefined
+          return goal
+            ? `the todo app's goals, the goal "${goal.title}"`
+            : "the todo app's goals, grouped by role"
+        }
         return todo.project ? `the todo app, project "${todo.project.name}"` : 'the todo app'
       case 'calendar':
         return 'the calendar'
@@ -165,7 +174,13 @@
       case 'notes':
         return notes.open ? `the notes app, the note "${notes.title}"` : 'the notes app'
       case 'overview':
-        return 'the overview, where the week adds up by role'
+        // Named rather than described: it is a page of whatever cards its
+        // owner put on it now, so "where the week adds up by role" would be
+        // a claim about somebody else's page.
+        return `their overview page, showing ${overview.widgets
+          .map((w) => specOf(w.type).label.toLowerCase())
+          .slice(0, 6)
+          .join(', ')}`
       case 'assistant':
         return `your own routines and what they did, on the "${PANE_LABELS[assistant.pane]}" page`
       default: {
@@ -242,7 +257,7 @@
      preference being rewritten: see `width` and `applied`. -->
 <svelte:window onresize={() => (viewport = window.innerWidth)} />
 
-<aside class="panel" class:dragging style="--panel-w: {applied}px" aria-label="Assistant">
+<aside class="panel" class:dragging style="--panel-w: {applied}px" aria-label={agent.displayName}>
   <!-- The rail's own left edge, as a control. `separator` with an
        orientation and a value is what a resizer is called in ARIA, and it
        takes the arrow keys for the same reason every other control here
@@ -273,7 +288,7 @@
     >
       <Icon name="layers" size={16} />
     </button>
-    <span class="title">Assistant</span>
+    <span class="title">{agent.displayName}</span>
     <button
       class="ghost"
       onclick={() => void agent.startThread()}
@@ -316,7 +331,7 @@
          what is missing and where to fix it, rather than presenting a box
          that fails on the first message. -->
     <div class="unset">
-      <EmptyState lead="The assistant is not set up yet.">
+      <EmptyState lead="{agent.displayName} is not set up yet.">
         {#snippet icon()}<Icon name="sparkle" size={28} weight={1.4} />{/snippet}
         {#snippet note()}
           Choose a model and add a key in Settings. A model running on this machine — Ollama or LM

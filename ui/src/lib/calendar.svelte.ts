@@ -1032,6 +1032,19 @@ class CalendarState {
    * nobody is watching is exactly the sort of thing that turns up in a
    * battery report.
    */
+  /**
+   * Keep the elapsed readout moving, without loading a window.
+   *
+   * The Overview can draw the running timer on a card, and can be the first
+   * thing on screen after a launch -- before the calendar view has mounted
+   * and called `start`. The clock is otherwise only started there, so the
+   * figure would sit frozen at whatever the wall clock said when this module
+   * was imported, which reads as a timer that has quietly stopped.
+   */
+  watchClock() {
+    this.#startClock()
+  }
+
   #startClock() {
     if (this.#clock) clearInterval(this.#clock)
     const period = this.timer ? 1_000 : 30_000

@@ -1,5 +1,16 @@
 <script lang="ts">
-  // Who the vault belongs to.
+  // Who the vault belongs to: the About You tab.
+  //
+  // Two halves, here together because they answer one question. Above, six
+  // fields the assistant reads. Below, the roles -- the parts of a life this
+  // vault files things under, which used to be defined in the Overview's
+  // sidebar and are a standing fact about the person rather than one app's
+  // data. See `RolesPanel` for why they moved.
+  //
+  // The halves save differently, and that is deliberate rather than untidy.
+  // The fields are a form with an explicit Save, because a half-typed
+  // birthday must never be written; a role is a record, and renaming one is a
+  // write in the same way renaming a project is.
   //
   // Six fields, and the reason they exist is one sentence at the top: the
   // assistant was being asked to be a secretary while knowing nothing about
@@ -13,6 +24,7 @@
 
   import { api } from '../lib/api'
   import { app } from '../lib/state.svelte'
+  import RolesPanel from './RolesPanel.svelte'
   import type { Profile } from '../lib/types'
 
   let draft = $state<Profile | null>(null)
@@ -138,6 +150,13 @@
       {saving ? 'Saving…' : 'Save'}
     </button>
   </footer>
+
+  <!-- Below the Save, and not inside the form: a role writes as it is
+       edited, and a Save button above a list that has already saved itself
+       would be a button that appears to be for the list. -->
+  {#if app.supportsOverview}
+    <RolesPanel />
+  {/if}
 {/if}
 
 <style>

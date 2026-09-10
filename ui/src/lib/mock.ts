@@ -794,7 +794,6 @@ const entries: Entry[] = [
     updatedAt: iso(0),
     tags: ['winter', 'walking'],
     starred: true,
-    pinned: false,
     attachments: [
       {
         blob: 'c'.repeat(64),
@@ -837,7 +836,6 @@ const entries: Entry[] = [
     updatedAt: iso(1),
     tags: ['rest'],
     starred: false,
-    pinned: false,
     attachments: [],
   },
   {
@@ -871,7 +869,6 @@ const entries: Entry[] = [
     updatedAt: iso(7),
     tags: ['portugal', 'travel'],
     starred: true,
-    pinned: true,
     location: {
       latitude: 38.7223,
       longitude: -9.1393,
@@ -921,7 +918,6 @@ const entries: Entry[] = [
     updatedAt: iso(9),
     tags: ['portugal', 'trains'],
     starred: false,
-    pinned: false,
     attachments: [
       {
         blob: 'b'.repeat(64),
@@ -958,7 +954,6 @@ const entries: Entry[] = [
     updatedAt: iso(21),
     tags: ['books'],
     starred: false,
-    pinned: false,
     attachments: [],
   },
 ]
@@ -1810,6 +1805,7 @@ let nextId = 100
 
 let agentSettings: AgentSettings = {
   enabled: true,
+  name: '',
   model: {
     provider: 'openAi',
     model: 'gpt-5.1-mini',
@@ -1860,7 +1856,6 @@ function summarize(e: Entry): EntrySummary {
     updatedAt: e.updatedAt,
     tags: e.tags,
     starred: e.starred,
-    pinned: e.pinned,
     wordCount: text.split(/\s+/).filter(Boolean).length,
     attachmentCount: e.attachments.length,
     cover: e.attachments.find((a) => a.kind === 'image')?.blob,
@@ -2325,7 +2320,6 @@ export const mockInvoke = async <T>(
         )
       }
       rows.sort((a, b) => {
-        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
         if (q.sort === 'dateAsc') return a.localDate.localeCompare(b.localDate)
         if (q.sort === 'titleAsc') return a.title.localeCompare(b.title)
         if (q.sort === 'updatedDesc') return b.updatedAt.localeCompare(a.updatedAt)
@@ -2355,7 +2349,6 @@ export const mockInvoke = async <T>(
         updatedAt: now.toISOString(),
         tags: [],
         starred: false,
-        pinned: false,
         attachments: [],
       } satisfies Entry as T
     }

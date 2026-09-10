@@ -36,6 +36,20 @@
   }
 
   const stats = $derived(library.stats)
+  /**
+   * Shelves somebody has hidden.
+   *
+   * Listed, faintly, at the foot of the panel rather than left out. A `Kind`
+   * has always carried a `visible` flag -- "unticking hides the shelf without
+   * deleting it, exactly as unticking a calendar hides it without
+   * unsubscribing" -- but nothing in the interface ever drew a tick to untick
+   * or a row to find it again. The consequence, if a shelf ever went hidden
+   * by any route at all, was the worst kind of missing: the items on it still
+   * appear in Everything, still count in the tally at the bottom of this
+   * panel, and still turn up in search, while the shelf itself is nowhere and
+   * there is no way back. A hidden thing has to be findable.
+   */
+  const hidden = $derived(library.kinds.filter((k) => !k.visible))
   const counts = $derived(new Map(stats?.byKind.map((c) => [c.kindId, c]) ?? []))
   /**
    * Everything still ahead of you, across every shelf.
@@ -83,6 +97,13 @@
         dot: kind.color,
         items: colourItems(kind.color, (color) => library.saveShelf({ ...shelfOnly(kind), color })),
       },
+      {
+        label: 'Show in this list',
+        icon: kind.visible ? 'tick' : 'hidden',
+        checked: kind.visible,
+        hint: kind.visible ? undefined : `${kind.items} still on it`,
+        run: () => library.saveShelf({ ...shelfOnly(kind), visible: !kind.visible }),
+      },
       SEP,
       {
         label: `Delete the ${kind.name.toLowerCase()} shelf…`,
@@ -127,6 +148,20 @@
           library.favouritesOnly = true
           void library.selectShelf(null)
         },
+      },
+      SEP,
+      // Every shelf the vault has, ticked or not, so a hidden one can be
+      // brought back from the panel it is missing from as well as from the
+      // list of hidden ones at its foot.
+      library.kinds.length > 0 && {
+        label: 'Show these shelves',
+        icon: 'layers',
+        items: library.kinds.map((kind) => ({
+          label: kind.name,
+          dot: kind.color,
+          checked: kind.visible,
+          run: () => library.saveShelf({ ...shelfOnly(kind), visible: !kind.visible }),
+        })),
       },
     ])
   }
@@ -208,6 +243,26 @@
     />
   {/if}
 
+  {#if hidden.length > 0}
+    <div class="head">
+      <span class="eyebrow">Hidden</span>
+    </div>
+    {#each hidden as kind (kind.id)}
+      <button
+        class="row muted"
+        style="--dot: {kind.color}"
+        title="{kind.name} — hidden, {kind.items} {kind.items === 1 ? 'item' : 'items'} still on it"
+        onclick={() => library.saveShelf({ ...shelfOnly(kind), visible: true })}
+        oncontextmenu={(e) => menu.show(e, shelfMenu(kind))}
+      >
+        <span class="icon">{kind.icon}</span>
+        <span class="text">{kind.name}</span>
+        {#if kind.items > 0}<span class="count">{kind.items}</span>{/if}
+        <span class="reveal"><Icon name="hidden" size={13} /></span>
+      </button>
+    {/each}
+  {/if}
+
   {#if stats && (stats.finishedThisYear > 0 || stats.active > 0)}
     <!-- The one number worth a permanent place. "Eleven this year" is what
          makes somebody open a reading list again in November. -->
@@ -259,6 +314,20 @@
   .plus:hover {
     background: var(--bg-hover);
     color: var(--fg);
+  }
+
+  /* A hidden shelf is still a shelf: legible, one click from coming back,
+     and never mistaken for a live one. */
+  .row.muted {
+    opacity: 0.55;
+  }
+
+  .reveal {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 14px;
+    color: var(--fg-faint);
   }
 
   .row {

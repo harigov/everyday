@@ -12,6 +12,7 @@
 
 import { api } from './api'
 import { Autosave } from './autosave'
+import { purpose } from './purpose.svelte'
 import { app, handle } from './state.svelte'
 import { addDays, todayIso } from './time'
 import { parseQuickAdd } from './quickadd'
@@ -49,6 +50,17 @@ export type Scope =
   | { kind: 'inbox' }
   | { kind: 'all' }
   | { kind: 'project'; id: ProjectId }
+  /**
+   * Goals, grouped under the roles they belong to.
+   *
+   * The odd one out: it selects no tasks at all, and the pane it opens is
+   * not a task list. It is here rather than in its own app because a goal is
+   * the thing tasks are *for* -- it lived in the Overview, three panes away
+   * from the work that makes it happen, and moving something under a goal
+   * meant remembering the goal's name in another app. `refresh` skips the
+   * task query for this scope entirely; see `query`.
+   */
+  | { kind: 'goals' }
 
 export type View = 'list' | 'board'
 export type GroupBy = 'none' | 'status' | 'due' | 'priority' | 'purpose'
@@ -225,7 +237,7 @@ class TodoState {
     try {
       const [projects, tasks, stats, tags] = await Promise.all([
         api.projects(),
-        api.tasks(this.query()),
+        this.showingGoals ? Promise.resolve([]) : api.tasks(this.query()),
         api.taskStats(),
         api.taskTags(),
       ])
@@ -279,6 +291,11 @@ class TodoState {
         return { ...base, project: { scope: 'project', id: this.scope.id } }
       case 'all':
         return base
+      case 'goals':
+        // Nothing. The goals pane draws no task list, and asking for two
+        // thousand tasks to throw them away would be a query per switch to
+        // a pane that never reads the answer.
+        return { ...base, limit: 0 }
     }
   }
 
@@ -291,7 +308,20 @@ class TodoState {
     // lists are date queries, and dragging a card between columns in one
     // would silently change a status the list was not filtered on.
     if (!this.boardable && this.view === 'board') this.view = 'list'
+    // The goals pane reads roles, goals and what has happened against each.
+    // Loaded on the way in rather than by the component, so that arriving
+    // from a widget with a goal already selected does not draw an empty
+    // rail for a frame.
+    if (scope.kind === 'goals') {
+      await purpose.load()
+      await purpose.refreshActivity()
+    }
     await this.refresh()
+  }
+
+  /** Is the pane a list of tasks at all? */
+  get showingGoals(): boolean {
+    return this.scope.kind === 'goals'
   }
 
   /** Can this scope be shown as a board? */

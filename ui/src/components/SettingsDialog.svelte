@@ -75,7 +75,10 @@
 
   const TABS: { id: SettingsTab; label: string; icon: IconName }[] = [
     { id: 'general', label: 'General', icon: 'settings' },
-    { id: 'profile', label: 'You', icon: 'star' },
+    // "About You" rather than "You": the tab now holds the roles as well as
+    // the six fields, and "You" beside a list of the parts of a life read as
+    // a label for one of them.
+    { id: 'profile', label: 'About You', icon: 'star' },
     { id: 'assistant', label: 'Assistant', icon: 'sparkle' },
     { id: 'data', label: 'Data', icon: 'upload' },
     { id: 'vault', label: 'Vault', icon: 'lock' },
