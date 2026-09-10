@@ -108,6 +108,17 @@ async fn list_routines(
     .await
 }
 
+/// Mint a routine without saving it.
+///
+/// The same shape as `new_entry` and `new_note`, and for the same reason: the
+/// id and the timestamps are the core's to allocate, never the interface's. A
+/// webview that minted its own would need `crypto.randomUUID`, which wants a
+/// secure context the packaged shell does not always have -- and would mint
+/// v4 where everything else in this vault is v7.
+async fn new_routine(_svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Routine> {
+    Ok(Routine::new("", "", Trigger::Schedule { at: time(7, 0, 0, 0), days: Vec::new() }))
+}
+
 async fn save_routine(svc: Arc<Service>, _ctx: Ctx, args: SaveRoutine) -> CommandResult<Routine> {
     let vault = svc.require()?;
     blocking(move || {
@@ -135,9 +146,7 @@ async fn run_routine(svc: Arc<Service>, _ctx: Ctx, args: RoutineRef) -> CommandR
         // Not twice. A second queued run of the same routine would be a second
         // model call for the same question, paid for twice.
         let waiting = vault.runs(&RunQuery::for_routine(routine.id))?;
-        if let Some(already) =
-            waiting.into_iter().find(|r| !r.outcome.is_finished() && r.slot.is_none())
-        {
+        if let Some(already) = waiting.into_iter().find(|r| !r.outcome.is_finished()) {
             return Ok(already);
         }
         let run = RoutineRun::new(&routine, None);
@@ -253,6 +262,11 @@ pub static COMMANDS: &[crate::command::Command] = &[
         name: "list_routines", scope: Agent, effect: Read,
         args: Nothing, returns: "RoutineInfo[]", signature: &[],
         run: list_routines,
+    },
+    command! {
+        name: "new_routine", scope: Agent, effect: Read,
+        args: Nothing, returns: "Routine", signature: &[],
+        run: new_routine,
     },
     command! {
         name: "save_routine", scope: Agent, effect: Write,

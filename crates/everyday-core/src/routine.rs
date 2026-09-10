@@ -131,8 +131,13 @@ impl Weekday {
 /// [`crate::Purpose`] is one: a clock time with weekdays and a lead time
 /// before a meeting have nothing in common but the word "when", and a routine
 /// has exactly one of them.
+// Both lines matter and they do different things: `rename_all` names the
+// variants, `rename_all_fields` names the fields inside them. Without the
+// second, `lead_minutes` went out in snake_case while every other record on
+// the wire is camelCase -- so a routine that runs before a meeting could not
+// be saved from the interface at all.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Trigger {
     /// A time of day, on the given days. An empty list means every day.
     Schedule {
@@ -371,9 +376,17 @@ impl Routine {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Outcome {
-    /// Started and has not finished. A row in this state whose process died
-    /// is swept on the next start; see the scheduler.
+    /// Asked for, and not started yet.
+    ///
+    /// Its own state rather than a corner of `Running`, because the two look
+    /// identical in the vault and want opposite things from the scheduler: a
+    /// queued run is work to pick up, and a running one whose process is gone
+    /// is a row to close. Guessing between them from a timestamp would be a
+    /// guess that eventually eats somebody's "run now".
     #[default]
+    Queued,
+    /// Started and has not finished. A row in this state that no live process
+    /// claims is one a dead process left; see the scheduler's sweep.
     Running,
     Done,
     /// The model refused, the endpoint was unreachable, the turn timed out.
@@ -384,11 +397,12 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    pub const ALL: [Outcome; 4] =
-        [Outcome::Running, Outcome::Done, Outcome::Failed, Outcome::Skipped];
+    pub const ALL: [Outcome; 5] =
+        [Outcome::Queued, Outcome::Running, Outcome::Done, Outcome::Failed, Outcome::Skipped];
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Outcome::Queued => "queued",
             Outcome::Running => "running",
             Outcome::Done => "done",
             Outcome::Failed => "failed",
@@ -402,7 +416,7 @@ impl Outcome {
 
     /// Whether this run is over, one way or another.
     pub fn is_finished(self) -> bool {
-        !matches!(self, Outcome::Running)
+        !matches!(self, Outcome::Queued | Outcome::Running)
     }
 }
 
@@ -453,7 +467,7 @@ impl RoutineRun {
             slot,
             started_at: Timestamp::now(),
             finished_at: None,
-            outcome: Outcome::Running,
+            outcome: Outcome::Queued,
             reason: String::new(),
             subject: None,
             conversation_id: None,
@@ -479,6 +493,16 @@ impl RoutineRun {
             seen: true,
             ..Self::new(routine, slot)
         }
+    }
+
+    /// Mark this run as under way, now.
+    ///
+    /// `started_at` is re-stamped because a queued run may have waited: the
+    /// log should say when the work happened rather than when it was asked
+    /// for.
+    pub fn begin(&mut self) {
+        self.outcome = Outcome::Running;
+        self.started_at = Timestamp::now();
     }
 
     pub fn finish(&mut self, outcome: Outcome, summary: impl Into<String>) {

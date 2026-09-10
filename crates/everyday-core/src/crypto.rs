@@ -55,6 +55,38 @@ impl SecretKey {
     }
 }
 
+/// A key on its way to or from somewhere that is not this process.
+///
+/// There is one such place -- the operating system's keychain, when a vault
+/// has been told to open itself -- and getting a key there means it exists as
+/// text for a moment. A plain `String` would leave that text in the heap after
+/// the vault was locked, which is precisely what [`SecretKey`]'s zeroization
+/// exists to prevent; a crash dump or a swap file would then hold the key long
+/// after the lock screen came up.
+///
+/// So the hex is wiped on drop too. This is not perfect -- the keychain crate
+/// takes a `&str` and does what it likes with it — but it closes the copies
+/// this crate is responsible for.
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct KeyText(String);
+
+impl KeyText {
+    pub fn new(text: String) -> Self {
+        Self(text)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for KeyText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never let a key reach a log line.
+        f.write_str("KeyText(<redacted>)")
+    }
+}
+
 impl std::fmt::Debug for SecretKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Never let a key reach a log line.

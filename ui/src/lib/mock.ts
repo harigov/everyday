@@ -2198,6 +2198,19 @@ export const mockInvoke = async <T>(
         nextDue: r.enabled && r.trigger.type === 'schedule' ? nextSlot(r.trigger) : undefined,
       })) satisfies RoutineInfo[] as T
 
+    case 'new_routine':
+      requireUnlocked()
+      return {
+        id: `ro-${nextId++}`,
+        name: '',
+        instructions: '',
+        trigger: { type: 'schedule', at: '07:00', days: [] },
+        graceMinutes: 60,
+        enabled: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      } satisfies Routine as T
+
     case 'save_routine': {
       requireUnlocked()
       const next = { ...(args.routine as Routine), updatedAt: new Date().toISOString() }
@@ -3385,6 +3398,17 @@ export const mockInvoke = async <T>(
     case 'list_memories':
       requireUnlocked()
       return memories as T
+
+    case 'new_memory':
+      requireUnlocked()
+      return {
+        id: `m-${nextId++}`,
+        text: '',
+        sourceId: null,
+        pinned: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      } satisfies Memory as T
 
     case 'save_memory': {
       requireUnlocked()

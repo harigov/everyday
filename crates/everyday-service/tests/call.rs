@@ -386,6 +386,29 @@ async fn a_person_defers_the_key_timeout_and_the_assistant_does_not() {
 }
 
 #[tokio::test]
+async fn the_poll_that_checks_the_key_timeout_does_not_reset_it() {
+    // The window asks this every five seconds to find out whether the vault
+    // has been idle long enough to give up its key. A poll that deferred the
+    // timeout on its way to reading it would reset the clock it was about to
+    // check, and the timeout would never fire while any window was open.
+    let (svc, _dir) = service();
+    let vault = svc.get().unwrap();
+    call(&svc, "set_forget_key", json!({ "seconds": 1 })).await;
+    vault.touch();
+
+    for _ in 0..4 {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        // Twice a second, as a window does.
+        let locked = call(&svc, "poll_auto_lock", json!({})).await;
+        if locked == serde_json::Value::Bool(true) {
+            assert!(!vault.is_unlocked(), "it said it locked, so it must have");
+            return;
+        }
+    }
+    panic!("polling for the timeout kept the timeout from ever firing");
+}
+
+#[tokio::test]
 async fn the_assistant_stamps_its_writes_with_its_own_name() {
     let (svc, _dir) = service();
     let events = Arc::new(Collector::default());
@@ -402,4 +425,77 @@ async fn the_assistant_stamps_its_writes_with_its_own_name() {
         Some("assistant"),
         "not `local`: a window drops its own origin, and would drop this with it"
     );
+}
+
+#[tokio::test]
+async fn searching_is_narrowed_by_what_the_caller_may_read() {
+    // One command over two domains, so the scope check is in the body rather
+    // than on the entry. Left at `Journals` it meant a device paired to read
+    // notes could not search them, and one paired to read journals could read
+    // note bodies -- the exact thing `Scope::Notes` was added to prevent.
+    let (svc, _dir) = service();
+    let journal =
+        call(&svc, "list_journals", json!({})).await[0]["id"].as_str().unwrap().to_string();
+    let entry = call(&svc, "new_entry", json!({ "journalId": journal })).await;
+    let mut entry = entry;
+    entry["title"] = json!("Sailing to the island");
+    call(&svc, "save_entry", json!({ "entry": entry })).await;
+
+    let note = call(&svc, "new_note", json!({})).await;
+    let mut note = note;
+    note["title"] = json!("Sailing rig notes");
+    call(&svc, "save_note", json!({ "note": note })).await;
+
+    let query = json!({ "query": "sailing", "limit": 20 });
+    let kinds = |v: &serde_json::Value| -> Vec<String> {
+        v.as_array().unwrap().iter().map(|h| h["type"].as_str().unwrap().to_string()).collect()
+    };
+
+    // Everything, for a caller that holds everything.
+    let all = call(&svc, "search", query.clone()).await;
+    assert_eq!(kinds(&all).len(), 2, "one index over both");
+
+    // Journals only: narrowed rather than refused, so it still gets its own.
+    let only_journals = Ctx {
+        caller: Caller::Device("phone".into()),
+        scopes: vec![Scope::Journals],
+        ..Ctx::local()
+    };
+    let hits = svc.call(only_journals, "search", query.clone()).await.expect("entries");
+    assert_eq!(kinds(&hits), vec!["entry"], "and no note bodies");
+
+    // Notes only: the browser-extension case, which used to be refused.
+    let only_notes =
+        Ctx { caller: Caller::Device("clip".into()), scopes: vec![Scope::Notes], ..Ctx::local() };
+    let hits = svc.call(only_notes, "search", query.clone()).await.expect("notes");
+    assert_eq!(kinds(&hits), vec!["note"]);
+
+    // Asking for the kind it may not read is refused rather than narrowed.
+    let only_notes =
+        Ctx { caller: Caller::Device("clip".into()), scopes: vec![Scope::Notes], ..Ctx::local() };
+    let err = svc
+        .call(only_notes, "search", json!({ "query": "sailing", "kind": "entry", "limit": 20 }))
+        .await
+        .expect_err("asking for entries without the scope");
+    assert_eq!(err.code, "forbidden");
+}
+
+#[tokio::test]
+async fn a_hit_says_which_kind_it_is_in_the_spelling_a_client_reads() {
+    // `rename_all` renames an enum's *variants*; the fields inside them need
+    // `rename_all_fields`. Without it this went out as `journal_id` against an
+    // interface reading `journalId`, and the journal's search list drew rows
+    // with no colour and no date.
+    let (svc, _dir) = service();
+    let journal =
+        call(&svc, "list_journals", json!({})).await[0]["id"].as_str().unwrap().to_string();
+    let mut entry = call(&svc, "new_entry", json!({ "journalId": journal })).await;
+    entry["title"] = json!("Herons");
+    call(&svc, "save_entry", json!({ "entry": entry })).await;
+
+    let hits = call(&svc, "search", json!({ "query": "herons", "limit": 5 })).await;
+    let hit = &hits[0];
+    assert_eq!(hit["type"], "entry");
+    assert!(hit["journalId"].is_string(), "camelCase on the wire: got {hit}");
+    assert!(hit["localDate"].is_string(), "got {hit}");
 }

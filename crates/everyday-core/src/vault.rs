@@ -120,6 +120,28 @@ pub struct VaultHeader {
     /// See [`VaultHeader::forget_key_seconds`] for the other one.
     #[serde(default)]
     pub auto_lock_seconds: u64,
+    /// Set once the old single lock timeout has been carried into
+    /// [`VaultHeader::forget_key_seconds`], so that somebody who afterwards
+    /// chooses "never" is not overruled the next time the vault is opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migrated_lock: Option<bool>,
+    /// A known plaintext sealed under the *data* key, so that a key offered
+    /// without a password can be checked before it is trusted.
+    ///
+    /// It exists because of one specific way to lose everything. Nothing else
+    /// in this file can tell a wrong data key from a right one: the wrapped
+    /// key checks a *password*, and a key that arrives already unwrapped --
+    /// from the keychain, when a vault opens itself -- is checked only by
+    /// failing to decrypt some record. A vault with no records yet decrypts
+    /// nothing, so a stale key would open it, every write of that session
+    /// would be sealed under a key the header does not hold, and the right
+    /// password would afterwards open a vault it could not read a line of.
+    ///
+    /// Absent on vaults written before this existed, and on unencrypted ones.
+    /// [`Vault::unlock`] writes it the first time such a vault is opened with
+    /// a password, so it appears without anybody being asked for anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_check: Option<String>,
     /// Seconds of inactivity before the *key* is dropped. 0 disables, and
     /// that is the default.
     ///
@@ -267,6 +289,10 @@ impl Vault {
                         salt: Some(to_hex(&salt)),
                         wrapped_key: Some(to_hex(&wrapped)),
                         backend_settings: None,
+                        // Made by a build that has both timers, so there is
+                        // nothing to carry across.
+                        migrated_lock: Some(true),
+                        key_check: Some(seal_key_check(&dek)?),
                         created_at: Timestamp::now(),
                         auto_lock_seconds: cfg.auto_lock_seconds,
                         forget_key_seconds: cfg.forget_key_seconds,
@@ -284,6 +310,9 @@ impl Vault {
                     salt: None,
                     wrapped_key: None,
                     backend_settings: None,
+                    migrated_lock: Some(true),
+                    // Nothing to check: an unencrypted vault has no key.
+                    key_check: None,
                     created_at: Timestamp::now(),
                     auto_lock_seconds: cfg.auto_lock_seconds,
                     forget_key_seconds: cfg.forget_key_seconds,
@@ -363,12 +392,31 @@ impl Vault {
     }
 
     fn open_inner(root: &Path, registry: Arc<BackendRegistry>, activate: bool) -> Result<Self> {
-        let header = read_header(root)?;
+        let mut header = read_header(root)?;
         if header.format > FORMAT_VERSION {
             return Err(Error::UnsupportedVaultVersion {
                 found: header.format,
                 supported: FORMAT_VERSION,
             });
+        }
+        // A vault written before the lock was split into two.
+        //
+        // `auto_lock_seconds` used to drop the key; it now hides a screen, and
+        // the timer that drops the key is `forget_key_seconds`. Somebody who
+        // had set fifteen minutes had set fifteen minutes for *the key*, and
+        // an upgrade that silently turned that into "never" would have made
+        // their vault less careful than they left it. So the old value is
+        // carried across, once, on the first open by a build that knows about
+        // both. Zero is honoured as zero -- "never" was already sayable.
+        if header.forget_key_seconds == 0
+            && header.auto_lock_seconds > 0
+            && header.migrated_lock.is_none()
+        {
+            header.forget_key_seconds = header.auto_lock_seconds;
+            header.migrated_lock = Some(true);
+            // Best effort: a read-only open cannot write it, and will try
+            // again next time. Nothing here depends on it having landed.
+            let _ = write_header(root, &header);
         }
         // Claim the vault for writing if nobody else has it. Failing to get
         // it is not an error: the vault opens read-only, so `everyday list`
@@ -413,6 +461,19 @@ impl Vault {
             return Ok(());
         }
         let dek = self.data_key(password)?;
+        // Give a vault written before `key_check` existed one, now that we
+        // are holding the key it describes. Best effort: a read-only session
+        // simply carries on, and the only thing it costs is that this vault
+        // cannot be told to open itself until somebody unlocks it writably.
+        if let Some(key) = &dek
+            && self.header_read().key_check.is_none()
+            && self.writable().is_ok()
+            && let Ok(check) = seal_key_check(key)
+        {
+            let mut header = self.header_write();
+            header.key_check = Some(check);
+            let _ = write_header(&self.root, &header);
+        }
         self.activate(dek)
     }
 
@@ -444,9 +505,9 @@ impl Vault {
     /// computer, rather than as safe as its password. Nothing else in this
     /// application ever asks for this, and nothing should: the key is not a
     /// value to pass around, it is the thing the whole envelope protects.
-    pub fn export_data_key(&self, password: Option<&str>) -> Result<String> {
+    pub fn export_data_key(&self, password: Option<&str>) -> Result<crate::crypto::KeyText> {
         match self.data_key(password)? {
-            Some(key) => Ok(to_hex(key.expose())),
+            Some(key) => Ok(crate::crypto::KeyText::new(to_hex(key.expose()))),
             // A vault with no password has no key to keep, and opens by
             // itself already. Saying so is better than handing back an empty
             // string that would look like a key.
@@ -465,11 +526,31 @@ impl Vault {
         if self.is_unlocked() {
             return Ok(());
         }
-        let bytes = from_hex(hex)?;
-        let bytes: [u8; crate::crypto::KEY_LEN] = bytes
-            .try_into()
-            .map_err(|_| Error::Invalid("that is not a key for this vault".into()))?;
-        self.activate(Some(SecretKey::from_bytes(bytes)))
+        // Decoded into a buffer that is wiped whatever happens next, including
+        // the failure paths: a value of the wrong length is still somebody's
+        // key with a typo on the end, and `SecretKey`'s own zeroization does
+        // not reach the `Vec` it was copied out of.
+        let mut decoded = from_hex(hex)?;
+        let taken = <[u8; crate::crypto::KEY_LEN]>::try_from(decoded.as_slice());
+        zeroize::Zeroize::zeroize(&mut decoded);
+        let bytes = taken.map_err(|_| Error::Invalid("that is not a key for this vault".into()))?;
+        let key = SecretKey::from_bytes(bytes);
+
+        // Checked *before* anything is opened, and refused when there is
+        // nothing to check against. See `VaultHeader::key_check`: a wrong key
+        // on an empty vault would otherwise open it and seal everything
+        // written afterwards under a key the header does not hold.
+        let check = self.header_read().key_check.clone().ok_or_else(|| {
+            Error::Invalid(
+                "this vault has nothing to check a key against; unlock it with its password \
+                 once and it will"
+                    .into(),
+            )
+        })?;
+        if !key_check_passes(&key, &check) {
+            return Err(Error::BadPassword);
+        }
+        self.activate(Some(key))
     }
 
     /// Unwrap the data key with `password`, without opening anything.
@@ -583,6 +664,13 @@ impl Vault {
                 next.kdf = Some(kdf);
                 next.salt = Some(to_hex(&salt));
                 next.wrapped_key = Some(to_hex(&wrap_key(&kek, &dek)?));
+                // The data key survives a password change on an encrypted
+                // vault, so the existing check value stays true. Going from
+                // *unencrypted* to encrypted mints a fresh key above, and
+                // that one needs a check value of its own.
+                if !header.is_encrypted() || next.key_check.is_none() {
+                    next.key_check = Some(seal_key_check(&dek)?);
+                }
             }
             _ => {
                 // Removing the password would leave the on-disk records
@@ -660,6 +748,9 @@ impl Vault {
         self.writable()?;
         let mut header = self.header_write();
         header.forget_key_seconds = seconds;
+        // Whatever was chosen here is a choice, including zero. Marked so the
+        // migration in `open_inner` does not overrule it on the next open.
+        header.migrated_lock = Some(true);
         write_header(&self.root, &header)
     }
 
@@ -2373,6 +2464,32 @@ fn open_settings(cipher: &dyn Cipher, sealed: Option<&str>) -> Result<BackendSet
     Ok(serde_json::from_slice(&plain)?)
 }
 
+/// What a key-check value seals, and the label it is sealed under.
+///
+/// Constant and public knowledge, which is the point: an attacker already
+/// knows the plaintext, and the thing being tested is whether a candidate key
+/// produces a tag that matches. That is the same question the wrapped key
+/// answers about a password, asked about a key instead.
+const KEY_CHECK_PLAINTEXT: &[u8] = b"everyday.key-check.v1";
+
+fn key_check_aad() -> Vec<u8> {
+    b"everyday.key-check.v1".to_vec()
+}
+
+fn seal_key_check(dek: &SecretKey) -> Result<String> {
+    Ok(to_hex(&AeadCipher::new(dek).seal(&key_check_aad(), KEY_CHECK_PLAINTEXT)?))
+}
+
+/// Does this key open the check value in the header?
+///
+/// Anything unreadable -- bad hex, a tag that does not verify, a plaintext
+/// that is not the constant -- is a no. There is no case here where a
+/// malformed header should be taken as a pass.
+fn key_check_passes(dek: &SecretKey, sealed_hex: &str) -> bool {
+    let Ok(sealed) = from_hex(sealed_hex) else { return false };
+    AeadCipher::new(dek).open(&key_check_aad(), &sealed).is_ok_and(|p| p == KEY_CHECK_PLAINTEXT)
+}
+
 fn to_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -2966,6 +3083,34 @@ mod tests {
     }
 
     #[test]
+    fn a_vault_from_before_the_split_keeps_the_timeout_it_was_left_with() {
+        // `auto_lock_seconds` used to drop the key. It now hides a screen, and
+        // an upgrade that silently turned fifteen minutes into "never" would
+        // have made somebody's vault less careful than they left it.
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        {
+            let v = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+            let mut header = v.header();
+            header.auto_lock_seconds = 900;
+            header.forget_key_seconds = 0;
+            header.migrated_lock = None;
+            write_header(dir.path(), &header).unwrap();
+        }
+
+        let v = Vault::open(dir.path(), reg.clone()).unwrap();
+        assert_eq!(v.header().forget_key_seconds, 900, "carried across on the first open");
+        assert_eq!(v.header().auto_lock_seconds, 900, "and the screen keeps its own");
+
+        // And "never", chosen afterwards, is not overruled the next time.
+        v.unlock(Some("pw")).unwrap();
+        v.set_forget_key(0).unwrap();
+        drop(v);
+        let v = Vault::open(dir.path(), reg).unwrap();
+        assert_eq!(v.header().forget_key_seconds, 0, "a choice is a choice, including zero");
+    }
+
+    #[test]
     fn forgetting_the_key_is_off_by_default() {
         let dir = tempfile::tempdir().unwrap();
         let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
@@ -3446,8 +3591,75 @@ mod tests {
         // What a restart looks like: a fresh handle, no password anywhere.
         let v = Vault::open(dir.path(), reg).unwrap();
         assert!(!v.is_unlocked(), "a reopened vault starts shut");
-        v.unlock_with_key(&key).expect("the key from the keychain opens it");
+        v.unlock_with_key(key.as_str()).expect("the key from the keychain opens it");
         assert_eq!(v.journals().unwrap()[0].description, "written before the restart");
+    }
+
+    #[test]
+    fn a_key_that_is_not_the_key_is_refused_even_on_an_empty_vault() {
+        // The way this could lose everything. A vault with nothing in it
+        // decrypts nothing on open, so before there was a check value any
+        // thirty-two bytes would "unlock" it -- and every record written
+        // afterwards would be sealed under a key the header does not hold.
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+        v.lock();
+        assert!(v.journals().is_err(), "the vault is shut, and it has no records in it either way");
+
+        let stale = "cd".repeat(32);
+        assert_eq!(
+            v.unlock_with_key(&stale).unwrap_err().code(),
+            "bad_password",
+            "a key that is not this vault's must be refused before anything opens"
+        );
+        assert!(!v.is_unlocked(), "and it must leave the vault shut");
+
+        // The real key still works, and the vault still reads afterwards.
+        let key = {
+            let real = Vault::open(dir.path(), reg.clone()).unwrap();
+            real.unlock(Some("pw")).unwrap();
+            real.export_data_key(Some("pw")).unwrap()
+        };
+        v.unlock_with_key(key.as_str()).expect("its own key opens it");
+        v.save_journal(&Journal::new("Written after")).unwrap();
+        v.lock();
+        v.unlock(Some("pw")).unwrap();
+        assert_eq!(
+            v.journals().unwrap()[0].name,
+            "Written after",
+            "the password must still read what the key wrote"
+        );
+    }
+
+    #[test]
+    fn a_vault_written_before_key_checks_gains_one_when_it_is_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        let key = {
+            let v = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+            v.export_data_key(Some("pw")).unwrap()
+        };
+
+        // Rewind to the world before the check value existed.
+        {
+            let v = Vault::open(dir.path(), reg.clone()).unwrap();
+            let mut header = v.header();
+            header.key_check = None;
+            write_header(dir.path(), &header).unwrap();
+        }
+
+        // Until it has one, a key alone is refused rather than trusted.
+        let v = Vault::open(dir.path(), reg.clone()).unwrap();
+        assert!(v.header().key_check.is_none());
+        let err = v.unlock_with_key(key.as_str()).unwrap_err();
+        assert!(err.to_string().contains("nothing to check"), "got {err}");
+
+        // Opening it with the password writes one, and then it works.
+        v.unlock(Some("pw")).unwrap();
+        assert!(v.header().key_check.is_some(), "it upgrades itself, quietly");
+        v.lock();
+        v.unlock_with_key(key.as_str()).expect("now the key is checkable");
     }
 
     #[test]

@@ -21,6 +21,7 @@
   import CalendarView from './components/CalendarView.svelte'
   import LibraryView from './components/LibraryView.svelte'
   import { assistant } from './lib/assistant.svelte'
+  import { notes } from './lib/notes.svelte'
   import AssistantView from './components/AssistantView.svelte'
   import NotesView from './components/NotesView.svelte'
   import OverviewView from './components/OverviewView.svelte'
@@ -141,7 +142,13 @@
    */
   onSaveAndClose(async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
-      await Promise.allSettled([app.flush(), todo.flush(), calendar.flush(), library.flush()])
+      await Promise.allSettled([
+        app.flush(),
+        notes.flush(),
+        todo.flush(),
+        calendar.flush(),
+        library.flush(),
+      ])
       if (!app.saveFailing) break
     }
     await api.readyToClose().catch(() => {})
@@ -152,6 +159,7 @@
   // of defence behind the handshake above rather than the mechanism.
   function onBeforeUnload() {
     void app.flush()
+    void notes.flush()
     void todo.flush()
     void calendar.flush()
     void library.flush()

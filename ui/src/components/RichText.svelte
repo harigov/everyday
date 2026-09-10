@@ -27,7 +27,6 @@
   import { Media } from '../lib/media-node'
   import { app } from '../lib/state.svelte'
   import { api } from '../lib/api'
-  import Toolbar from './Toolbar.svelte'
   import type { Attachment, MediaKind, RichDoc } from '../lib/types'
 
   interface Props {
@@ -64,6 +63,16 @@
     onwords?: (words: number) => void
     /** The file currently being written to the vault, for a status bar. */
     onstoring?: (filename: string | null) => void
+    /**
+     * The live editor, or `null` when there is none.
+     *
+     * Handed back so the caller can put the toolbar where it belongs. It is
+     * *not* rendered here: the toolbar is a fixed bar at the top of the pane,
+     * above the scroll, and a copy inside this component would be inside the
+     * page column -- scrolling out of view on a long entry and sitting under
+     * the date and the title on a short one.
+     */
+    oneditor?: (editor: Editor | null) => void
   }
 
   let {
@@ -76,6 +85,7 @@
     onattach,
     onwords,
     onstoring,
+    oneditor,
   }: Props = $props()
 
   let host = $state<HTMLDivElement>()
@@ -244,6 +254,7 @@
     if (!el) return
     const ed = build(el)
     editor = ed
+    oneditor?.(ed)
     loadedId = null
     bindBody(() => ed.getJSON() as RichDoc)
     return () => {
@@ -254,7 +265,10 @@
       syncBody()
       bindBody(null)
       ed.destroy()
-      if (editor === ed) editor = null
+      if (editor === ed) {
+        editor = null
+        oneditor?.(null)
+      }
     }
   })
 
@@ -292,8 +306,6 @@
     syncBody()
   })
 </script>
-
-<Toolbar {editor} />
 
 <div class="prose" bind:this={host}></div>
 

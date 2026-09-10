@@ -74,8 +74,13 @@ struct Doc {
 /// that only make sense for one of them hang off the variant that has them
 /// rather than being optional on a struct -- the shape [`crate::Purpose`] and
 /// [`crate::BlockSubject`] already use.
+// `rename_all` on an enum renames the *variants*; the fields inside them need
+// `rename_all_fields`. Without the second line this went out as `journal_id`
+// and `local_date` while every other record on the wire is camelCase -- and
+// the interface, which reads `journalId`, drew nothing. Both are here so the
+// next person reading it can see that it was a decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Found {
     Entry { id: EntryId, journal_id: JournalId, local_date: Date },
     Note { id: NoteId },

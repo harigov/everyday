@@ -79,6 +79,11 @@ pub async fn run(service: Arc<Service>, mut stop: tokio::sync::watch::Receiver<b
         if *stop.borrow() {
             break;
         }
+        // Deliberately *not* inside the `select!`. A tick that was cancelled
+        // half way through would drop the future carrying a live model turn,
+        // which is the one thing this loop must never do: the run's row would
+        // be left saying `Running` with nothing to finish it. Stopping is
+        // therefore checked between ticks, and whoever asked for it waits.
         tick(&service).await;
     }
     tracing::info!("the assistant's scheduler has stopped");
@@ -155,36 +160,61 @@ pub async fn tick(service: &Arc<Service>) {
         if !routine.enabled || routine.trigger.is_clock() {
             continue;
         }
+        // Read once for the routine rather than once per subject: the guard
+        // is the same set for all of them, and a routine with a hundred
+        // subjects in its window would otherwise read its whole log a
+        // hundred times.
+        let mut done = already_about(&vault, &routine);
         for subject in subjects_for(&vault, &routine, &now) {
             // Once per meeting, however many ticks it is in the window for.
             // The subject is the whole of that guard, which is why it is the
             // record's id rather than its title: two meetings called "Weekly"
             // are two meetings.
-            if already_about(&vault, &routine, &subject.key) {
+            if !done.insert(subject.key.clone()) {
                 continue;
             }
             about(service, &vault, &routine, subject).await;
         }
     }
 
-    // And whatever somebody asked for by hand. Queued as a `Running` row with
-    // no slot rather than executed in the command, so that "run now" is
-    // answered immediately and the work still happens one at a time.
-    let queued = vault
+    // A row still `Running` that no live process claims is one a *previous*
+    // process left behind: the app was quit mid-run, the machine slept, the
+    // vault was switched. It cannot be resumed -- the turn it belonged to is
+    // gone -- and it must not sit on the app bar looking like one that is
+    // about to finish. So it is closed as failed, saying so.
+    //
+    // The claim is the whole test, and it is reliable in the direction that
+    // matters: a run this process is carrying out is inside `resume`, which
+    // has not returned, so `tick` cannot be here looking at it.
+    for run in vault
         .runs(&RunQuery { outcomes: vec![Outcome::Running], ..Default::default() })
-        .unwrap_or_default();
-    for run in queued {
-        // A row left `Running` by a process that died is not work to do. It is
-        // swept, because a run that cannot finish should not sit on the app bar
-        // looking like one that is about to.
+        .unwrap_or_default()
+    {
+        if service.claims_run(&run.id.to_string()) {
+            continue;
+        }
+        let mut abandoned = run.clone();
+        abandoned.fail("it was still running when the application stopped");
+        let _ = vault.save_run(&abandoned);
+        if let (Some(slot), Ok(routine)) = (run.slot, vault.routine(run.routine_id)) {
+            stamp(&vault, &routine, slot);
+        }
+        service.events().changed(run_change());
+    }
+
+    // And whatever somebody asked for by hand. Queued rather than executed in
+    // the command, so that "run now" is answered immediately and the work
+    // still happens one at a time.
+    for run in vault
+        .runs(&RunQuery { outcomes: vec![Outcome::Queued], ..Default::default() })
+        .unwrap_or_default()
+    {
         let Ok(routine) = vault.routine(run.routine_id) else {
+            // Its routine was deleted between the asking and now. The cascade
+            // normally takes the runs with it; this one is a straggler.
             let _ = vault.delete_run(run.id);
             continue;
         };
-        if run.slot.is_some() {
-            // Ours, mid-flight or abandoned. Left alone: `execute` owns it.
-            continue;
-        }
         resume(service, &vault, &routine, run).await;
     }
 }
@@ -304,17 +334,22 @@ fn describe_task(task: &everyday_core::Task) -> String {
     out
 }
 
-/// Has this routine already been about this thing?
+/// Everything this routine has already been about.
 ///
 /// The run log is the record, so a meeting the laptop was awake for at nine
-/// and again at nine-oh-one is prepared for once. Bounded to the routine's
-/// own recent runs rather than scanning the whole log.
-fn already_about(vault: &Arc<Vault>, routine: &Routine, key: &str) -> bool {
+/// and again at nine-oh-one is prepared for once. Read whole rather than
+/// capped: a capped read is worse than no guard at all, because once a
+/// routine has more subjects in its window than the cap, the oldest fall out
+/// of the log's newest-first window and are run again every single minute --
+/// one paid model call each, for ever. The log is bounded by what a routine
+/// has actually done, which is what `collect_garbage` is for.
+fn already_about(vault: &Arc<Vault>, routine: &Routine) -> std::collections::HashSet<String> {
     vault
-        .runs(&RunQuery { routine_id: Some(routine.id), limit: Some(100), ..Default::default() })
+        .runs(&RunQuery { routine_id: Some(routine.id), ..Default::default() })
         .unwrap_or_default()
-        .iter()
-        .any(|r| r.subject.as_deref() == Some(key))
+        .into_iter()
+        .filter_map(|r| r.subject)
+        .collect()
 }
 
 /// Run a routine about one thing it found.
@@ -365,6 +400,11 @@ async fn resume(
     routine: &Routine,
     mut run: RoutineRun,
 ) {
+    // Claimed for as long as this call is on the stack, so the sweep above can
+    // tell a run this process is carrying out from one a dead process left.
+    let _claim = service.claim_run(run.id.to_string());
+    run.begin();
+    let _ = vault.save_run(&run);
     // The credential check is first and is a *skip*, not a failure: an
     // assistant that is switched off has not failed at anything, and the
     // reason is the useful part.
@@ -460,7 +500,7 @@ fn announce(service: &Arc<Service>, routine: &Routine, run: &RoutineRun) {
             }
         }
         // A skip is not news. It is a row somebody will see when they look.
-        Outcome::Skipped | Outcome::Running => {}
+        Outcome::Skipped | Outcome::Queued | Outcome::Running => {}
     }
 }
 
@@ -473,10 +513,17 @@ fn skip(vault: &Arc<Vault>, routine: &Routine, slot: Option<jiff::Timestamp>, re
 ///
 /// Stamped for a skip as well as a run, or the same missed moment is reported
 /// again on every tick for the rest of the day.
+///
+/// Re-read rather than written back from the copy the run started with. A run
+/// may take a quarter of an hour, and in that time somebody can switch the
+/// routine off, rewrite its instructions or delete it -- and `put_routine` is
+/// an upsert, so writing back the old copy would undo the edit or resurrect
+/// the routine with an empty log. What this is allowed to change is one field.
 fn stamp(vault: &Arc<Vault>, routine: &Routine, slot: jiff::Timestamp) {
-    let mut next = routine.clone();
-    next.last_run_at = Some(slot);
-    let _ = vault.save_routine(&next);
+    // Gone while it ran. Nothing to stamp, and nothing to bring back.
+    let Ok(mut current) = vault.routine(routine.id) else { return };
+    current.last_run_at = Some(slot);
+    let _ = vault.save_routine(&current);
 }
 
 fn run_change() -> Change {

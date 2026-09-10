@@ -403,7 +403,7 @@ async fn run_now_is_queued_and_carried_out_by_the_next_tick() {
         )
         .await
         .expect("run_routine");
-    assert_eq!(queued["outcome"], "running", "the command queues rather than runs");
+    assert_eq!(queued["outcome"], "queued", "the command queues rather than runs");
 
     // And pressing it twice does not pay for two model calls.
     svc.call(
@@ -614,4 +614,80 @@ async fn the_web_tool_is_absent_until_somebody_turns_it_on() {
 
     let vault = svc.get().unwrap();
     assert!(!vault.agent_settings().unwrap().web, "and the switch is off in a new vault");
+}
+
+#[tokio::test]
+async fn a_run_left_behind_by_a_dead_process_is_closed_rather_than_left_spinning() {
+    // Quitting mid-run, or a machine going to sleep, leaves a row saying
+    // `Running` that nothing will ever finish. Until it was swept it sat on
+    // the app bar as an unseen run that was perpetually about to arrive.
+    let model = fake_model(says("should never be said")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let routine = Routine::new("Brief", "Say what is due.", Trigger::Manual);
+    vault.save_routine(&routine).unwrap();
+
+    // What a previous process left: started, never finished, not claimed by
+    // anybody now alive.
+    let mut orphan = everyday_core::RoutineRun::new(&routine, Some(jiff::Timestamp::now()));
+    orphan.begin();
+    vault.save_run(&orphan).unwrap();
+
+    everyday_service::scheduler::tick(&svc).await;
+
+    let swept = vault.run(orphan.id).unwrap();
+    assert_eq!(swept.outcome, Outcome::Failed, "it cannot be resumed, so it is closed");
+    assert!(swept.reason.contains("application stopped"), "got {:?}", swept.reason);
+
+    // And its moment is stamped, or the next tick reports it missed as well.
+    assert_eq!(vault.routine(routine.id).unwrap().last_run_at, orphan.slot);
+}
+
+#[tokio::test]
+async fn a_routine_switched_off_while_it_ran_stays_off() {
+    // `stamp` used to write back the copy the run started with, so an edit
+    // made during a run -- which may take a quarter of an hour -- was
+    // silently reverted the moment the run finished.
+    let model = fake_model(says("Done.")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let routine = due_now(&svc, "Say what is due.");
+
+    // Edited between the snapshot and the stamp. Doing it for real would need
+    // a hook inside the turn; writing it here is the same race with the same
+    // result, because `stamp` runs after `run_turn` returns either way.
+    let mut off = vault.routine(routine.id).unwrap();
+    off.enabled = false;
+    off.instructions = "Changed my mind.".into();
+    vault.save_routine(&off).unwrap();
+
+    everyday_service::scheduler::tick(&svc).await;
+
+    let after = vault.routine(routine.id).unwrap();
+    assert!(!after.enabled, "an edit made while it ran must not be undone by the stamp");
+    assert_eq!(after.instructions, "Changed my mind.");
+}
+
+#[tokio::test]
+async fn a_routine_deleted_while_it_ran_stays_deleted() {
+    let model = fake_model(says("Done.")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let routine = Routine::new("On demand", "Do the thing.", Trigger::Manual);
+    vault.save_routine(&routine).unwrap();
+
+    // A run claimed by this process, whose routine goes away underneath it.
+    let mut run = everyday_core::RoutineRun::new(&routine, Some(jiff::Timestamp::now()));
+    run.begin();
+    vault.save_run(&run).unwrap();
+    let claim = svc.claim_run(run.id.to_string());
+    vault.delete_routine(routine.id).unwrap();
+
+    everyday_service::scheduler::tick(&svc).await;
+    drop(claim);
+
+    assert!(
+        vault.routine(routine.id).is_err(),
+        "the stamp must not resurrect a routine that was deleted while it ran"
+    );
 }

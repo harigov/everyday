@@ -192,9 +192,11 @@ export interface Commands {
   newJournal: { args: { name: string }; result: Journal }
   newKind: { args: { name: string; singular: string }; result: Kind }
   newLog: { args: { itemId: ItemId; event: LogEvent }; result: LogEntry }
+  newMemory: { args: Record<string, never>; result: Memory }
   newNote: { args: Record<string, never>; result: Note }
   newProject: { args: { name: string }; result: Project }
   newRole: { args: { name: string }; result: Role }
+  newRoutine: { args: Record<string, never>; result: Routine }
   newTask: {
     args: { projectId?: ProjectId | null; parentId?: TaskId | null; status?: TaskStatus | null }
     result: Task
@@ -341,9 +343,11 @@ export const COMMAND_NAMES = {
   newJournal: 'new_journal',
   newKind: 'new_kind',
   newLog: 'new_log',
+  newMemory: 'new_memory',
   newNote: 'new_note',
   newProject: 'new_project',
   newRole: 'new_role',
+  newRoutine: 'new_routine',
   newTask: 'new_task',
   newTracker: 'new_tracker',
   noteTags: 'note_tags',
@@ -485,9 +489,11 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'new_journal',
   'new_kind',
   'new_log',
+  'new_memory',
   'new_note',
   'new_project',
   'new_role',
+  'new_routine',
   'new_task',
   'new_tracker',
   'note_tags',

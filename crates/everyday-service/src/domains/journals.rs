@@ -1,8 +1,8 @@
 //! Journals, entries, search and tags.
 
 use crate::command;
-use crate::ctx::Ctx;
-use crate::error::CommandResult;
+use crate::ctx::{Ctx, Scope};
+use crate::error::{CommandError, CommandResult};
 use crate::service::{Service, blocking};
 use everyday_core::model::{local_date_in, system_tz};
 use everyday_core::search::{SearchHit, SearchScope};
@@ -154,17 +154,43 @@ async fn delete_entry(svc: Arc<Service>, _ctx: Ctx, args: EntryRef) -> CommandRe
     blocking(move || Ok(vault.delete_entry(args.id)?)).await
 }
 
-async fn search(svc: Arc<Service>, _ctx: Ctx, args: Search) -> CommandResult<Vec<SearchHit>> {
+/// Search entries and notes.
+///
+/// The scope check is here rather than on the command entry, because this one
+/// command answers over two domains and the entry can only name one. A caller
+/// holding `Journals` gets entries; a caller holding `Notes` gets notes; a
+/// caller holding both, or `All`, gets whichever it asked for. Leaving it at
+/// `Journals` would have meant a device paired for notes could not search
+/// them, and a device paired for journals could read note bodies -- the exact
+/// thing `Scope::Notes` was added to prevent.
+async fn search(svc: Arc<Service>, ctx: Ctx, args: Search) -> CommandResult<Vec<SearchHit>> {
     let vault = svc.require()?;
+    let entries = ctx.holds(Scope::Journals);
+    let notes = ctx.holds(Scope::Notes);
+
     // Naming a journal narrows to entries as well: a note is in no journal,
     // so returning some anyway would answer a different question.
-    let scope = match (args.kind.as_deref(), args.journal_id) {
+    let asked = match (args.kind.as_deref(), args.journal_id) {
         (Some("note"), _) => SearchScope::Notes,
         (_, Some(id)) => SearchScope::Entries(Some(id)),
         (Some("entry"), None) => SearchScope::Entries(None),
         _ => SearchScope::Everything,
     };
+    let scope = match asked {
+        SearchScope::Notes if !notes => return Err(refused(Scope::Notes)),
+        SearchScope::Entries(_) if !entries => return Err(refused(Scope::Journals)),
+        // Asked for both and holds one: narrowed rather than refused. A
+        // client that can read notes and not entries should get its notes.
+        SearchScope::Everything if !entries && !notes => return Err(refused(Scope::Journals)),
+        SearchScope::Everything if !notes => SearchScope::Entries(None),
+        SearchScope::Everything if !entries => SearchScope::Notes,
+        other => other,
+    };
     blocking(move || Ok(vault.search(&args.query, scope, args.limit.min(200))?)).await
+}
+
+fn refused(scope: Scope) -> CommandError {
+    CommandError::new("forbidden", format!("this needs the {} scope", scope.as_str()))
 }
 
 async fn list_tags(svc: Arc<Service>, _ctx: Ctx, _a: Nothing) -> CommandResult<Vec<String>> {
@@ -238,7 +264,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
         run: delete_entry,
     },
     command! {
-        name: "search", scope: Journals, effect: Read,
+        name: "search", scope: Journals, or_scope: Notes, effect: Read,
         args: Search, returns: "SearchHit[]",
         signature: &[
             ("query", "string", true),

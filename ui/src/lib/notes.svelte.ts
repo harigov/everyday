@@ -61,18 +61,32 @@ class Notes {
   #saver = new Autosave<NoteId>(async () => {
     const note = this.open
     if (!note) return
+    // The version this write is *sending*, captured before the await. Read
+    // back afterwards it would be whatever the editor had reached by then: a
+    // keystroke landing during the round trip stamps a new `updatedAt` on the
+    // same live object, `#base` would take that value, and the next save would
+    // send a version the vault has never held -- a conflict banner over an
+    // edit nobody else touched. This is what `#writeStamp` guards in the
+    // journal, for the same reason.
+    const sending = note.updatedAt
     try {
       await api.saveNote(note, this.#base)
-      this.#base = note.updatedAt
+      this.#base = sending
       await this.refresh()
     } catch (e) {
       if (isConflict(e)) {
         // The same policy the journal has: say so and stop writing. Silently
-        // winning would throw away whatever the other writer did.
+        // winning would throw away whatever the other writer did, and a retry
+        // would only be refused again.
         this.conflict = true
         return
       }
+      // Reported *and* rethrown. `Autosave` clears its dirty set before
+      // awaiting and only puts the ids back if this rejects, so swallowing a
+      // transient failure here would report "saved" for a write that did not
+      // land and never try again. See `autosave.ts`.
       await handle(e)
+      throw e
     }
   }, SAVE_MS)
 

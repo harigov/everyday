@@ -7,6 +7,8 @@
   import { app } from '../lib/state.svelte'
   import { longDate, plural, relativeTime } from '../lib/format'
   import RichText from './RichText.svelte'
+  import Toolbar from './Toolbar.svelte'
+  import type { Editor as TipTapEditor } from '@tiptap/core'
   import EntryMeta from './EntryMeta.svelte'
   import TrackerStrip from './TrackerStrip.svelte'
   import Logo from './Logo.svelte'
@@ -15,6 +17,7 @@
   import ConfirmDialog from './ConfirmDialog.svelte'
   import type { Attachment, RichDoc } from '../lib/types'
 
+  let editor = $state<TipTapEditor | null>(null)
   let words = $state(0)
   let dropping = $state(false)
   /** The file being written to the vault, if any. See `RichText`. */
@@ -71,6 +74,8 @@
     role="region"
     aria-label="Entry editor"
   >
+    <Toolbar {editor} />
+
     <div class="scroll canvas">
       <div class="page">
         <header class="head">
@@ -95,6 +100,7 @@
         </header>
 
         <RichText
+          oneditor={(ed: TipTapEditor | null) => (editor = ed)}
           docId={entry.id}
           doc={() => app.entry?.body}
           placeholder="What happened today?"

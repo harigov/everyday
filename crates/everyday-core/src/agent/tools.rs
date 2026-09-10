@@ -3032,11 +3032,21 @@ fn run_update_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if let Some(instructions) = args.opt_str("instructions") {
         routine.instructions = instructions.to_string();
     }
-    // The time and the days move together when either is named, because a
-    // schedule is one value: changing the days of a routine that runs before
-    // a meeting has to become a schedule, not a half-edited trigger.
+    // A schedule is one value, so naming either half means reading both --
+    // but *omitting* one must leave it alone. Moving a 07:00 weekday brief to
+    // 08:00 with `at` alone used to reset it to every day, because
+    // `schedule_from` reads an absent `days` as "no days named, so all of
+    // them". Only a `days` the caller actually sent replaces the days.
     if args.get("at").is_some() {
-        routine.trigger = schedule_from(args, "update_routine")?;
+        let named = schedule_from(args, "update_routine")?;
+        routine.trigger = match (named, &routine.trigger) {
+            (Trigger::Schedule { at, days }, Trigger::Schedule { days: was, .. })
+                if args.get("days").is_none() =>
+            {
+                Trigger::Schedule { at, days: if days.is_empty() { was.clone() } else { days } }
+            }
+            (next, _) => next,
+        };
     } else if args.get("days").is_some() {
         if let Trigger::Schedule { at, .. } = routine.trigger {
             let mut days = Vec::new();
@@ -3095,7 +3105,7 @@ fn run_run_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     // Queued, not run. Runs happen one at a time, and a tool that blocked on a
     // second model call would be a turn waiting on a turn.
     let queued = ctx.vault.runs(&RunQuery::for_routine(id))?;
-    let run = match queued.into_iter().find(|r| !r.outcome.is_finished() && r.slot.is_none()) {
+    let run = match queued.into_iter().find(|r| !r.outcome.is_finished()) {
         Some(already) => already,
         None => {
             let run = RoutineRun::new(&routine, None);

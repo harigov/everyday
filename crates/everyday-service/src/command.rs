@@ -51,6 +51,15 @@ pub type Handler = fn(Arc<Service>, Ctx, Value) -> BoxFuture<'static, CommandRes
 pub struct Command {
     pub name: &'static str,
     pub scope: Scope,
+    /// A second scope that will do instead.
+    ///
+    /// One command has one, and it is the reason this field exists rather
+    /// than being a general facility: `search` answers over entries *and*
+    /// notes, which are separate scopes on purpose, and a single required
+    /// scope would mean either a notes client cannot search its notes or a
+    /// journals client can read note bodies. The body narrows the search to
+    /// whichever the caller actually holds.
+    pub or_scope: Option<Scope>,
     pub effect: Effect,
     /// What a listener should reload after this succeeds, and what it did.
     /// `None` for a read, and for a write whose effect is invisible to any
@@ -85,10 +94,28 @@ pub struct Signature {
     pub returns: &'static str,
 }
 
+/// Commands that are not somebody using the vault.
+///
+/// Every other command is taken as a person being present, which is what
+/// defers the idle timeout on the key. These are the ones a client sends on a
+/// timer or on the way in, with nobody necessarily at the keyboard:
+///
+/// * `poll_auto_lock` *is* the idle check. It must not reset what it reads.
+/// * `status` is polled by the connection banner and read on every reconnect.
+/// * `list_commands` is introspection, asked once by a generator or a client
+///   working out what it is talking to.
+///
+/// `touch` is deliberately absent: it is the command whose entire job is to
+/// say somebody is here, and the interface sends it on real interaction.
+const IDLE: &[&str] = &["poll_auto_lock", "status", "list_commands"];
+
 impl Command {
     /// Run this command, having checked that the caller may.
     pub async fn invoke(&self, svc: Arc<Service>, ctx: Ctx, args: Value) -> CommandResult<Value> {
-        ctx.require(self.scope)?;
+        match self.or_scope {
+            Some(other) if ctx.holds(other) => {}
+            _ => ctx.require(self.scope)?,
+        }
         let origin = ctx.caller.origin().map(str::to_string);
         // A person using the vault is what defers the moment its key is
         // dropped. The assistant is not a person: its scheduler reads and
@@ -96,7 +123,15 @@ impl Command {
         // it would otherwise never let go of the key whatever the timeout
         // said. This is why `Vault::read` and `Vault::write` no longer do it
         // themselves -- they cannot see who is asking, and this can.
+        //
+        // Nor is a *poll* a person, which is the subtler half. The window
+        // asks `poll_auto_lock` every five seconds precisely to find out
+        // whether the vault has been idle long enough to give up its key --
+        // and a poll that deferred the timeout on its way to reading it would
+        // reset the clock it was about to check, so the timeout would never
+        // fire while any window was open at all. See `IDLE` for the rest.
         if !matches!(ctx.caller, Caller::Assistant(_))
+            && !IDLE.contains(&self.name)
             && let Some(vault) = svc.get()
         {
             vault.touch();
@@ -139,6 +174,7 @@ macro_rules! command {
     (
         name: $name:literal,
         scope: $scope:ident,
+        $(or_scope: $or_scope:ident,)?
         effect: $effect:ident,
         $(change: $kind:ident / $op:ident,)?
         $(sensitive: $sensitive:literal,)?
@@ -163,6 +199,7 @@ macro_rules! command {
         $crate::command::Command {
             name: $name,
             scope: $crate::ctx::Scope::$scope,
+            or_scope: $crate::command::or_scope!($($or_scope)?),
             effect: ::everyday_core::agent::tools::Effect::$effect,
             change: $crate::command::change!($($kind / $op)?),
             sensitive: $crate::command::flag!($($sensitive)?),
@@ -174,6 +211,17 @@ macro_rules! command {
 }
 
 /// `Some((kind, op))` when the entry named one, `None` when it did not.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! or_scope {
+    () => {
+        None
+    };
+    ($scope:ident) => {
+        Some($crate::ctx::Scope::$scope)
+    };
+}
+
 #[macro_export]
 #[doc(hidden)]
 macro_rules! change {
@@ -196,7 +244,7 @@ macro_rules! flag {
     };
 }
 
-pub use crate::{change, flag};
+pub use crate::{change, flag, or_scope};
 
 /// Every command, in the order the domains are listed.
 ///

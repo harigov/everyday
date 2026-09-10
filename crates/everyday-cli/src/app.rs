@@ -251,7 +251,9 @@ pub fn run(cli: Cli) -> Result<()> {
         // longer fits, leaves the vault locked -- which is where it would
         // have been anyway, and the first client to connect can still open it.
         if *keychain && !vault.is_unlocked() {
-            match everyday_vault::autounlock::recall(&path).map(|k| vault.unlock_with_key(&k)) {
+            match everyday_vault::autounlock::recall(&path)
+                .map(|k| vault.unlock_with_key(k.as_str()))
+            {
                 Some(Ok(())) => println!("Opened with the key from this machine's keychain."),
                 Some(Err(e)) => eprintln!("warning: the key in the keychain did not fit ({e})"),
                 None => {
@@ -963,11 +965,25 @@ fn serve(
         tokio::signal::ctrl_c().await.ok();
         println!();
         println!("Stopping.");
-        // The scheduler first, and waited on: a routine mid-run holds the
-        // vault's writer, and flushing underneath it would be a checkpoint
-        // taken halfway through somebody's morning brief.
+        // The scheduler first, and genuinely waited on. A routine mid-run is
+        // spending money and holding the vault's writer, and locking
+        // underneath it would fail its next tool call and strand its row
+        // saying `Running`. The loop checks the flag between ticks, so this
+        // returns as soon as the current tick does and immediately if none is
+        // in flight.
+        //
+        // Not capped. A run has its own fifteen-minute timeout, which bounds
+        // this, and a second Ctrl-C is how somebody says they meant it.
         let _ = stop_scheduler.send(true);
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), scheduling).await;
+        if !scheduling.is_finished() {
+            println!("Waiting for the assistant to finish what it was doing…");
+        }
+        tokio::select! {
+            _ = scheduling => {}
+            _ = tokio::signal::ctrl_c() => {
+                println!("Stopping anyway. A run in flight will not be written down.");
+            }
+        }
         running.stop();
         // Give the vault its checkpoint before the process goes.
         if let Some(v) = service.get() {

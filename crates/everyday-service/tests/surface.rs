@@ -27,6 +27,7 @@ fn current() -> String {
             serde_json::json!({
                 "name": c.name,
                 "scope": c.scope.as_str(),
+                "orScope": c.or_scope.map(everyday_service::ctx::Scope::as_str),
                 "effect": match c.effect {
                     everyday_core::agent::tools::Effect::Read => "read",
                     everyday_core::agent::tools::Effect::Write => "write",

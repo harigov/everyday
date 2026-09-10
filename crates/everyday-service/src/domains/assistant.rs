@@ -187,6 +187,16 @@ async fn list_memories(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult
 
 /// Write a memory by hand, which also pins it: a fact somebody typed is not one
 /// the assistant's own housekeeping may drop.
+/// Mint a memory without saving it.
+///
+/// The id is the core's to allocate; see `new_routine` for the whole
+/// argument. `pinned` is set, because the one caller is somebody typing a
+/// fact by hand and a fact somebody typed is not one the assistant's own
+/// housekeeping should evict to make room. They can clear it again.
+async fn new_memory(_svc: Arc<Service>, _c: Ctx, _args: Nothing) -> CommandResult<Memory> {
+    Ok(Memory { pinned: true, ..Memory::new(String::new()) })
+}
+
 /// Write a memory.
 ///
 /// This used to force `pinned: true`, on the argument that a fact somebody
@@ -286,6 +296,11 @@ pub static COMMANDS: &[crate::command::Command] = &[
         name: "list_memories", scope: Agent, effect: Read,
         args: Nothing, returns: "Memory[]", signature: &[],
         run: list_memories,
+    },
+    command! {
+        name: "new_memory", scope: Agent, effect: Read,
+        args: Nothing, returns: "Memory", signature: &[],
+        run: new_memory,
     },
     command! {
         name: "save_memory", scope: Agent, effect: Write,

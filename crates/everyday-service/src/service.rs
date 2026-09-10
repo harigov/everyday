@@ -66,6 +66,14 @@ pub struct Service {
     /// Routines whose failure has already been reported this session. See
     /// [`Service::routine_failed`].
     reported_routines: RwLock<HashSet<String>>,
+    /// Runs this process is carrying out, by id.
+    ///
+    /// A row in the vault reading `Running` says one of two things and cannot
+    /// tell them apart on its own: a run happening now, or one a process that
+    /// died left behind. This says which, because it exists only in memory --
+    /// a run this process is not carrying out is not in here, whatever the
+    /// row says.
+    claimed_runs: RwLock<HashSet<String>>,
     /// The routine running right now, by name, if one is.
     ///
     /// Here rather than derived from a `Running` row, because a row is also
@@ -90,6 +98,7 @@ impl Service {
             idempotency: Idempotency::default(),
             reported_feeds: RwLock::new(HashSet::new()),
             reported_routines: RwLock::new(HashSet::new()),
+            claimed_runs: RwLock::new(HashSet::new()),
             running_routine: RwLock::new(None),
         }
     }
@@ -137,6 +146,7 @@ impl Service {
     pub fn close(&self) {
         self.reported_feeds.write().unwrap().clear();
         self.reported_routines.write().unwrap().clear();
+        self.claimed_runs.write().unwrap().clear();
         self.running_routine.write().unwrap().take();
         let previous = self.vault.write().unwrap().take();
         if let Some(vault) = &previous {
@@ -216,6 +226,21 @@ impl Service {
     /// Note that a routine ran, so its next failure is news.
     pub fn routine_recovered(&self, id: String) {
         self.reported_routines.write().unwrap().remove(&id);
+    }
+
+    /// Take this run for the life of the returned guard.
+    ///
+    /// Released on drop, including on a panic or an early return, which is
+    /// what makes "this process is carrying it out" a fact rather than a flag
+    /// somebody has to remember to clear.
+    pub fn claim_run(self: &Arc<Self>, id: String) -> RunClaim {
+        self.claimed_runs.write().unwrap().insert(id.clone());
+        RunClaim { service: self.clone(), id }
+    }
+
+    /// Is this process carrying out that run?
+    pub fn claims_run(&self, id: &str) -> bool {
+        self.claimed_runs.read().unwrap().contains(id)
     }
 
     /// Say which routine is running, or `None` when none is.
@@ -384,4 +409,21 @@ where
     tokio::task::spawn_blocking(f)
         .await
         .map_err(|e| CommandError::new("panic", format!("background task failed: {e}")))?
+}
+
+/// A run this process has taken, released when it is dropped.
+///
+/// See [`Service::claim_run`]. The whole value of it is the `Drop`: a claim
+/// that had to be released by hand would be a claim somebody eventually
+/// forgets to release on the error path, and the symptom would be a run stuck
+/// on the app bar until the application was restarted.
+pub struct RunClaim {
+    service: Arc<Service>,
+    id: String,
+}
+
+impl Drop for RunClaim {
+    fn drop(&mut self) {
+        self.service.claimed_runs.write().unwrap().remove(&self.id);
+    }
 }

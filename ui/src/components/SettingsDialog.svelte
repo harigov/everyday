@@ -340,11 +340,18 @@
 
           <section>
             <span class="eyebrow">Opening this vault</span>
+            <!-- The box is driven by `opensItself` and nothing else, and the
+                 handler puts it straight back: turning it on only opens the
+                 password step, so a cancelled or refused attempt must not
+                 leave a switch that says the key is kept when it is not. -->
             <label class="toggle">
               <input
                 type="checkbox"
                 checked={opensItself}
-                onchange={(e) => void setOpensItself(e.currentTarget.checked)}
+                onchange={(e) => {
+                  e.currentTarget.checked = opensItself
+                  void setOpensItself(!opensItself)
+                }}
               />
               <span>
                 <b>Open without a password when the app starts</b>

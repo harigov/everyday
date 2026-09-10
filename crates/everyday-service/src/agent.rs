@@ -85,7 +85,13 @@ pub type Sink = std::sync::Arc<dyn Fn(AgentEvent) + Send + Sync>;
 /// reply that takes twenty seconds and arrives all at once reads as a hang.
 /// The variants are what the panel has to draw differently, and no more.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+// See `everyday_core::search::Found` for the trap this second line avoids:
+// `rename_all` renames the variants and leaves the fields alone. This one has
+// been going out as `message_id` and `call_id` since the rail was written,
+// against an interface that reads `messageId` and `callId` -- which happened
+// to be harmless only because the fields it got wrong are ids the panel
+// compares to each other rather than to anything stored.
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AgentEvent {
     /// The assistant's message id, sent first so every delta that follows has
     /// something to be appended to.

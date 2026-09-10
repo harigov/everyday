@@ -83,16 +83,25 @@ pub async fn set_opens_itself(
     let Some(path) = state.service().last_path() else {
         return Err(CommandError::new("no_vault", "no vault is open"));
     };
+    // Off the async runtime, all of it. The keychain is a blocking call on
+    // every platform and on Linux it is a D-Bus round trip that can sit there
+    // for the length of an unlock prompt -- and a Tauri worker held for that
+    // long is a window that has stopped answering.
     if !on {
-        everyday_vault::autounlock::forget(&path)?;
-        return Ok(false);
+        let at = path.clone();
+        return blocking(move || {
+            everyday_vault::autounlock::forget(&at)?;
+            Ok(false)
+        })
+        .await;
     }
     let vault = state.service().require()?;
-    let key =
-        blocking(move || vault.export_data_key(password.as_deref()).map_err(CommandError::from))
-            .await?;
-    everyday_vault::autounlock::remember(&path, &key)?;
-    Ok(true)
+    blocking(move || {
+        let key = vault.export_data_key(password.as_deref())?;
+        everyday_vault::autounlock::remember(&path, &key)?;
+        Ok(true)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -141,10 +150,22 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
                 // reached, or a key that no longer fits because the password
                 // was changed elsewhere, is a lock screen -- which is what
                 // would have happened anyway.
-                if !vault.is_unlocked()
-                    && let Some(key) = everyday_vault::autounlock::recall(&path)
-                    && let Err(e) = vault.unlock_with_key(&key)
-                {
+                //
+                // Off the runtime, because this is the startup path and the
+                // keychain can block: a window that has drawn nothing yet
+                // must not be waiting on D-Bus.
+                let at = path.clone();
+                let unlocked = blocking(move || {
+                    let Some(key) = everyday_vault::autounlock::recall(&at) else {
+                        return Ok(());
+                    };
+                    if !vault.is_unlocked() {
+                        vault.unlock_with_key(key.as_str())?;
+                    }
+                    Ok(())
+                })
+                .await;
+                if let Err(e) = unlocked {
                     tracing::warn!(error = %e, "the key in the keychain did not open the vault");
                 }
             }
@@ -172,7 +193,10 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
 
     Ok(Bootstrap {
         vault_exists: everyday_vault::exists(&path),
-        opens_itself: everyday_vault::autounlock::enabled(&path),
+        opens_itself: {
+            let at = path.clone();
+            blocking(move || Ok(everyday_vault::autounlock::enabled(&at))).await?
+        },
         default_path: path,
         backends,
         status: service.get().map(|v| v.status()),

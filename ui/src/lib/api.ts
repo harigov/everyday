@@ -469,6 +469,8 @@ export const api = {
 
   /** The assistant's standing work, with when each next runs. */
   routines: () => invoke<RoutineInfo[]>('list_routines'),
+  /** A blank routine with an id. The core allocates it; see `newEntry`. */
+  newRoutine: () => invoke<Routine>('new_routine'),
   saveRoutine: (routine: Routine) => invoke<Routine>('save_routine', { routine }),
   deleteRoutine: (id: RoutineId) => invoke<void>('delete_routine', { id }),
   /**
@@ -837,6 +839,8 @@ export const api = {
 
   /** Saving by hand also pins: a fact somebody typed is not one the
    *  assistant's own housekeeping may drop. Returns what it evicted. */
+  /** A blank memory with an id, pinned. The core allocates it. */
+  newMemory: () => invoke<Memory>('new_memory'),
   saveMemory: (memory: Memory) => invoke<Memory[]>('save_memory', { memory }),
   deleteMemory: (id: MemoryId) => invoke<void>('delete_memory', { id }),
 }

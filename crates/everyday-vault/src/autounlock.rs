@@ -30,6 +30,7 @@
 //! want it: the desktop app's switch, and `everyday serve --keychain` on a
 //! machine under a desk that reboots overnight.
 
+use everyday_core::crypto::KeyText;
 use everyday_core::{Error, Result};
 use std::path::Path;
 
@@ -41,8 +42,16 @@ const SERVICE: &str = "app.everyday.journal";
 ///
 /// The path, prefixed, so that two vaults on one machine do not collide and so
 /// that an entry says what it is when somebody opens Keychain Access to look.
+///
+/// Canonicalised first, because the two callers reach the same vault by
+/// different names: the desktop app holds an absolute path, and
+/// `everyday --vault ./Journal` holds whatever was typed. Without this the
+/// key stored by one is invisible to the other, and the failure is silent --
+/// a machine that boots, finds no key, stays locked, and does not run the
+/// seven o'clock brief the whole feature exists for.
 fn account(vault: &Path) -> String {
-    format!("vault-key:{}", vault.display())
+    let path = vault.canonicalize().unwrap_or_else(|_| vault.to_path_buf());
+    format!("vault-key:{}", path.display())
 }
 
 /// Is this vault set to open itself on this machine?
@@ -55,17 +64,20 @@ pub fn enabled(vault: &Path) -> bool {
 /// The key, if it is there. `None` covers every failure, deliberately: a
 /// keychain that cannot be reached at startup is a lock screen, not an error
 /// dialog over a window nobody has read yet.
-pub fn recall(vault: &Path) -> Option<String> {
-    keyring::Entry::new(SERVICE, &account(vault))
-        .ok()?
-        .get_password()
-        .ok()
-        .filter(|k| !k.is_empty())
+///
+/// Wrapped in [`KeyText`] rather than handed back as a `String`, so the copy
+/// this crate is responsible for is wiped when the caller drops it.
+pub fn recall(vault: &Path) -> Option<KeyText> {
+    let text = keyring::Entry::new(SERVICE, &account(vault)).ok()?.get_password().ok()?;
+    if text.is_empty() {
+        return None;
+    }
+    Some(KeyText::new(text))
 }
 
-pub fn remember(vault: &Path, key: &str) -> Result<()> {
+pub fn remember(vault: &Path, key: &KeyText) -> Result<()> {
     let entry = keyring::Entry::new(SERVICE, &account(vault)).map_err(unavailable)?;
-    entry.set_password(key).map_err(unavailable)
+    entry.set_password(key.as_str()).map_err(unavailable)
 }
 
 /// Take it out again. Not an error if it was never there.

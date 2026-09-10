@@ -442,8 +442,26 @@
     width: 110px;
   }
 
-  .stored,
-  .stored span,
+  .stored {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-3);
+    padding: var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg);
+    font-size: var(--text-sm);
+    min-width: 0;
+  }
+  .stored span {
+    display: flex;
+    flex: 1;
+    align-items: baseline;
+    gap: var(--sp-2);
+    min-width: 0;
+    line-height: var(--leading-normal);
+    color: var(--fg-muted);
+  }
   .link {
     flex: none;
     color: var(--accent);

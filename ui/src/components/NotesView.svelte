@@ -13,12 +13,15 @@
   import { focusOnMount } from '../lib/focus'
   import { plural, relativeTime } from '../lib/format'
   import RichText from './RichText.svelte'
+  import Toolbar from './Toolbar.svelte'
+  import type { Editor as TipTapEditor } from '@tiptap/core'
   import PurposeField from './PurposeField.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import type { Attachment, Purpose, RichDoc } from '../lib/types'
 
+  let editor = $state<TipTapEditor | null>(null)
   let words = $state(0)
   let dropping = $state(false)
   let storing = $state<string | null>(null)
@@ -121,6 +124,8 @@
       </div>
     {/if}
 
+    <Toolbar {editor} />
+
     <div class="scroll canvas">
       <div class="page">
         <header class="head">
@@ -177,6 +182,7 @@
         </header>
 
         <RichText
+          oneditor={(ed: TipTapEditor | null) => (editor = ed)}
           docId={note.id}
           doc={() => notes.open?.body}
           placeholder="Write…"

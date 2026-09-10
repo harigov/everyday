@@ -72,6 +72,11 @@ class Assistant {
     } finally {
       this.loading = false
     }
+    // *After* the load, and unconditional. Reading is what clears the count,
+    // and the Runs pane is the one this app opens on -- so arriving here by
+    // pressing Assistant never goes through `setPane` and would otherwise
+    // leave a badge that no amount of reading could clear.
+    if (this.pane === 'runs') await this.markSeen()
   }
 
   async refresh() {
@@ -130,21 +135,29 @@ class Assistant {
 
   // ── routines ──────────────────────────────────────────────────────────
 
-  /** Start a new routine from a template, or from nothing. */
+  /**
+   * Start a new routine from a template, or from nothing.
+   *
+   * The blank comes from the service, because the id and the timestamps are
+   * the core's to allocate. `crypto.randomUUID` would want a secure context
+   * the packaged webview does not always have, and would mint a v4 where
+   * everything else in the vault is v7.
+   */
   async draft(template?: Template) {
-    const now = new Date().toISOString()
-    this.editing = {
-      id: '',
-      name: template?.name ?? '',
-      instructions: template?.instructions ?? '',
-      trigger: template?.trigger ?? { type: 'schedule', at: '07:00', days: [] },
-      graceMinutes: 60,
-      enabled: true,
-      createdAt: now,
-      updatedAt: now,
-      when: '',
+    if (!app.supportsRoutines) return
+    try {
+      const blank = await api.newRoutine()
+      this.editing = {
+        ...blank,
+        name: template?.name ?? blank.name,
+        instructions: template?.instructions ?? blank.instructions,
+        trigger: template?.trigger ?? blank.trigger,
+        when: '',
+      }
+      this.pane = 'routines'
+    } catch (e) {
+      await handle(e)
     }
-    this.pane = 'routines'
   }
 
   edit(routine: RoutineInfo) {
@@ -160,10 +173,10 @@ class Assistant {
     const draft = this.editing
     if (!draft) return
     try {
-      // An id the interface minted would be an id the core did not. A blank
-      // one means "new", and the service allocates it.
+      // `when` and `nextDue` are derived, so they are dropped rather than
+      // sent back: the service works them out from the trigger.
       const { when: _when, nextDue: _next, ...routine } = $state.snapshot(draft)
-      await api.saveRoutine(routine.id ? routine : { ...routine, id: crypto.randomUUID() })
+      await api.saveRoutine(routine)
       this.editing = null
       await this.refresh()
     } catch (e) {
@@ -219,18 +232,10 @@ class Assistant {
   async remember(text: string) {
     const trimmed = text.trim()
     if (!trimmed) return
-    const now = new Date().toISOString()
     try {
-      this.memories = await api.saveMemory({
-        id: crypto.randomUUID(),
-        text: trimmed,
-        // Typed here, so it came from nowhere in particular rather than from a
-        // conversation.
-        sourceId: null,
-        pinned: true,
-        createdAt: now,
-        updatedAt: now,
-      })
+      // Minted by the service, as every other record here is.
+      const blank = await api.newMemory()
+      this.memories = await api.saveMemory({ ...blank, text: trimmed })
     } catch (e) {
       await handle(e)
     }
