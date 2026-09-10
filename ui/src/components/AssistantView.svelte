@@ -59,6 +59,11 @@
     if (editing && editing.trigger.type === 'schedule') editing.trigger = { ...editing.trigger, at }
   }
 
+  function setLead(minutes: number) {
+    if (!editing || editing.trigger.type !== 'beforeEvent') return
+    editing.trigger = { ...editing.trigger, leadMinutes: Math.max(5, Math.round(minutes)) }
+  }
+
   function toggleDay(day: Weekday) {
     if (!editing || editing.trigger.type !== 'schedule') return
     const days = editing.trigger.days.includes(day)
@@ -254,6 +259,26 @@
               <span class="hint">
                 No day chosen means every day. If it misses its moment by more than
                 {editing.graceMinutes} minutes it is recorded as skipped rather than run late.
+              </span>
+            </div>
+          {:else if editing.trigger.type === 'beforeEvent'}
+            <div class="field-row">
+              <span class="eyebrow">When</span>
+              <div class="when">
+                <input
+                  class="field lead"
+                  type="number"
+                  min="5"
+                  max="1440"
+                  step="5"
+                  value={editing.trigger.leadMinutes}
+                  oninput={(e) => setLead(Number(e.currentTarget.value))}
+                />
+                <span class="hint">minutes before a meeting starts</span>
+              </div>
+              <span class="hint">
+                Once per meeting, checked every minute. A meeting the machine was asleep for is
+                missed rather than prepared for afterwards.
               </span>
             </div>
           {:else}
@@ -585,6 +610,10 @@
 
   .time {
     width: 8rem;
+  }
+
+  .lead {
+    width: 5rem;
   }
 
   .days {

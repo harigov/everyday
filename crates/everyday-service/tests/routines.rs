@@ -10,6 +10,7 @@
 //! that always says the same thing. No key, no network, no bill.
 
 use everyday_core::routine::{Outcome, Routine, Trigger, Weekday};
+use everyday_core::store::calendars::CalendarStore;
 use everyday_core::store::routines::RunQuery;
 use everyday_service::Service;
 use everyday_service::events::{Change, EventSink, Notification};
@@ -520,4 +521,124 @@ async fn a_scheduled_run_may_not_make_more_routines() {
 
     let vault = svc.get().unwrap();
     assert_eq!(vault.routines().unwrap().len(), 1, "only the one that was already there");
+}
+
+// ── the triggers that are questions rather than moments ─────────────────
+
+/// A calendar with one event on it, starting `minutes` from now.
+fn a_meeting(svc: &Arc<Service>, minutes: i64, title: &str) -> everyday_core::Event {
+    let vault = svc.get().unwrap();
+    let calendar = everyday_core::Calendar::subscribed("Work", "https://example.com/f.ics");
+    vault.save_calendar(&calendar).unwrap();
+
+    let start = jiff::Timestamp::now() + jiff::SignedDuration::from_mins(minutes);
+    let zone = jiff::tz::TimeZone::UTC;
+    let event = everyday_core::Event {
+        id: everyday_core::EventId::new(),
+        calendar_id: calendar.id,
+        uid: format!("{title}@test"),
+        title: title.into(),
+        description: String::new(),
+        location: "The blue room".into(),
+        start,
+        end: start + jiff::SignedDuration::from_mins(30),
+        local_date: start.to_zoned(zone.clone()).date(),
+        end_date: start.to_zoned(zone).date(),
+        tz: "UTC".into(),
+        all_day: false,
+        status: everyday_core::EventStatus::Confirmed,
+        organizer: "Priya Raman".into(),
+        attendees: vec!["Sam Weatherby".into()],
+        url: String::new(),
+        busy: true,
+        updated_at: jiff::Timestamp::now(),
+    };
+    // Through the store rather than a vault method: writing events wholesale
+    // is what a feed sync does, and there is no public path to it that does
+    // not also want a `.ics` to parse.
+    vault
+        .with_store(|store| {
+            store.calendars().unwrap().replace_events(calendar.id, std::slice::from_ref(&event))
+        })
+        .unwrap();
+    event
+}
+
+#[tokio::test]
+async fn a_meeting_inside_the_window_is_prepared_for_once() {
+    let model = fake_model(says("Priya called it; you last spoke in March.")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    if !vault.supports_calendars() {
+        return;
+    }
+    let meeting = a_meeting(&svc, 30, "Quarterly review");
+
+    let mut routine = Routine::new(
+        "Meeting prep",
+        "Say who is coming and what we last said.",
+        Trigger::BeforeEvent { lead_minutes: 60, role_id: None },
+    );
+    routine.created_at = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(1);
+    vault.save_routine(&routine).unwrap();
+
+    everyday_service::scheduler::tick(&svc).await;
+
+    let runs = vault.runs(&RunQuery::default()).unwrap();
+    assert_eq!(runs.len(), 1, "one meeting, one run");
+    assert_eq!(runs[0].outcome, Outcome::Done);
+    assert_eq!(
+        runs[0].subject.as_deref(),
+        Some(meeting.id.to_string().as_str()),
+        "the run says which meeting it was about, which is what stops a second one"
+    );
+    assert_eq!(runs[0].routine_name, "Meeting prep \u{2014} Quarterly review");
+
+    // A minute later the same meeting is still in the window, and must not be
+    // prepared for again.
+    everyday_service::scheduler::tick(&svc).await;
+    assert_eq!(vault.runs(&RunQuery::default()).unwrap().len(), 1, "once per meeting");
+}
+
+#[tokio::test]
+async fn a_meeting_outside_the_window_is_left_alone() {
+    let model = fake_model(says("should never be said")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    if !vault.supports_calendars() {
+        return;
+    }
+    // Six hours out, with an hour's lead. Not yet.
+    a_meeting(&svc, 6 * 60, "Later today");
+
+    let mut routine = Routine::new(
+        "Meeting prep",
+        "Say who is coming.",
+        Trigger::BeforeEvent { lead_minutes: 60, role_id: None },
+    );
+    routine.created_at = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(1);
+    vault.save_routine(&routine).unwrap();
+
+    everyday_service::scheduler::tick(&svc).await;
+    assert!(vault.runs(&RunQuery::default()).unwrap().is_empty(), "an hour before means an hour");
+}
+
+#[tokio::test]
+async fn the_web_tool_is_absent_until_somebody_turns_it_on() {
+    // Not a scheduler test: a check that the one tool which leaves the machine
+    // is not offered by default. Driven through `list_tools`, which is what
+    // the palette and the CLI read -- and which deliberately does *not* list
+    // it, because it is the service's rather than the core catalogue's.
+    let model = fake_model(says("nothing")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let listed = svc
+        .call(everyday_service::ctx::Ctx::local(), "list_tools", serde_json::json!({}))
+        .await
+        .expect("list_tools");
+    let names: Vec<&str> =
+        listed.as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
+    assert!(!names.contains(&"web_search"), "the core catalogue holds no tool that opens a socket");
+
+    let vault = svc.get().unwrap();
+    assert!(!vault.agent_settings().unwrap().web, "and the switch is off in a new vault");
 }

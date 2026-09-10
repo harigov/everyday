@@ -2056,6 +2056,7 @@ fn sample_event(cal: CalendarId, uid: &str, from: Date, to: Date) -> Event {
         all_day: false,
         status: EventStatus::Confirmed,
         organizer: String::new(),
+        attendees: Vec::new(),
         url: String::new(),
         busy: true,
         updated_at: Timestamp::now(),

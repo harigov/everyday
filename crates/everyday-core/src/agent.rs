@@ -279,6 +279,16 @@ pub struct AgentSettings {
     /// in a conversation, has to mean seven where the *person* is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
+    /// Whether the assistant may search the web.
+    ///
+    /// Off until somebody says otherwise, and its own switch rather than a
+    /// corner of `enabled`. It is the one tool that sends the words of a
+    /// question -- and, preparing for a meeting, the names of the people in
+    /// it -- to a computer somebody else runs. Everything else the assistant
+    /// does happens between this machine and the model endpoint the person
+    /// chose.
+    #[serde(default)]
+    pub web: bool,
     /// Whether a key is stored. Never the key itself.
     #[serde(default)]
     pub has_key: bool,
@@ -294,6 +304,7 @@ impl Default for AgentSettings {
             max_steps: DEFAULT_MAX_STEPS,
             remember: true,
             timezone: None,
+            web: false,
             has_key: false,
         }
     }

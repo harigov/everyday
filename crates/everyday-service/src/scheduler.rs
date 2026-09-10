@@ -39,8 +39,11 @@ use crate::agent::{AgentEvent, Turn};
 use crate::ctx::{Caller, Ctx, Scope};
 use crate::events::{Change, Kind, Notification, Op};
 use crate::service::Service;
-use everyday_core::routine::{Due, Outcome, Routine, RoutineRun};
+use everyday_core::routine::{Due, Outcome, Routine, RoutineRun, Trigger};
+use everyday_core::store::calendars::EventQuery;
 use everyday_core::store::routines::RunQuery;
+use everyday_core::store::tasks::TaskQuery;
+use everyday_core::task::TaskStatus;
 use everyday_core::{Conversation, RoutineRunId, Vault};
 use std::sync::Arc;
 use std::time::Duration;
@@ -142,6 +145,28 @@ pub async fn tick(service: &Arc<Service>) {
         }
     }
 
+    // The triggers that are questions rather than moments. Evaluated as a
+    // query on each tick rather than subscribed to, because the events they
+    // are about arrive from somebody else's server on a refresh timer -- there
+    // is no moment to compute in advance, and a subscription would have
+    // nothing to fire it. Polling on the minute is also what makes a missed
+    // window an honest nothing rather than a callback that never came.
+    for routine in vault.routines().unwrap_or_default() {
+        if !routine.enabled || routine.trigger.is_clock() {
+            continue;
+        }
+        for subject in subjects_for(&vault, &routine, &now) {
+            // Once per meeting, however many ticks it is in the window for.
+            // The subject is the whole of that guard, which is why it is the
+            // record's id rather than its title: two meetings called "Weekly"
+            // are two meetings.
+            if already_about(&vault, &routine, &subject.key) {
+                continue;
+            }
+            about(service, &vault, &routine, subject).await;
+        }
+    }
+
     // And whatever somebody asked for by hand. Queued as a `Running` row with
     // no slot rather than executed in the command, so that "run now" is
     // answered immediately and the work still happens one at a time.
@@ -162,6 +187,157 @@ pub async fn tick(service: &Arc<Service>) {
         }
         resume(service, &vault, &routine, run).await;
     }
+}
+
+/// Something a query trigger found: what it is, and how to say so.
+struct Subject {
+    /// The record's id. What a second run for the same thing is refused by.
+    key: String,
+    /// A line naming it, for the run log and the notification.
+    label: String,
+    /// Everything the model is told about it, appended to the instructions.
+    detail: String,
+}
+
+/// What a query trigger has found, right now.
+///
+/// Bounded by the trigger's own window: an event an hour away is not found
+/// two hours out, so a routine set to run an hour before a meeting runs an
+/// hour before it and not at breakfast.
+fn subjects_for(vault: &Arc<Vault>, routine: &Routine, now: &jiff::Zoned) -> Vec<Subject> {
+    match &routine.trigger {
+        Trigger::BeforeEvent { lead_minutes, role_id } => {
+            let lead = i64::from(*lead_minutes) * 60;
+            let window_end = now.timestamp().as_second() + lead;
+            // Two days of events, filtered by the instant. The query is by
+            // day, and a lead of a day and a half would otherwise miss its
+            // own window at the end of the range.
+            let Ok(events) = vault.events(&EventQuery {
+                from: Some(now.date()),
+                to: now.date().checked_add(jiff::Span::new().days(2)).ok(),
+                visible_only: true,
+                ..Default::default()
+            }) else {
+                return Vec::new();
+            };
+            // A role narrows by *calendar*, because that is where a role is
+            // filed: a work feed is work, and its events do not each carry
+            // their own answer.
+            let allowed: Option<std::collections::HashSet<_>> = role_id.map(|role| {
+                vault
+                    .calendars()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|c| c.role_id == Some(role))
+                    .map(|c| c.id)
+                    .collect()
+            });
+            events
+                .into_iter()
+                .filter(|e| {
+                    let starts = e.start.as_second();
+                    starts > now.timestamp().as_second() && starts <= window_end
+                })
+                .filter(|e| e.status != everyday_core::EventStatus::Cancelled && e.busy)
+                .filter(|e| allowed.as_ref().is_none_or(|ids| ids.contains(&e.calendar_id)))
+                .map(|e| Subject {
+                    key: e.id.to_string(),
+                    label: e.title.clone(),
+                    detail: describe_event(&e),
+                })
+                .collect()
+        }
+        Trigger::TaskDue { lead_days } => {
+            // Dated tasks only, falling due between today and the lead. A
+            // task with no deadline never falls due, so it never triggers
+            // this -- which is the whole difference between a deadline and a
+            // wish.
+            let Ok(tasks) = vault.tasks(&TaskQuery {
+                due_from: Some(now.date()),
+                due_to: now.date().checked_add(jiff::Span::new().days(i64::from(*lead_days))).ok(),
+                statuses: TaskStatus::ALL.iter().copied().filter(|s| s.is_open()).collect(),
+                ..Default::default()
+            }) else {
+                return Vec::new();
+            };
+            tasks
+                .into_iter()
+                .map(|t| Subject {
+                    key: t.id.to_string(),
+                    label: t.title.clone(),
+                    detail: describe_task(&t),
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// What the model is told about a meeting, beside the routine's instructions.
+fn describe_event(event: &everyday_core::Event) -> String {
+    let mut out = format!("The meeting is \"{}\", starting {}", event.title, event.start);
+    if !event.location.trim().is_empty() {
+        out.push_str(&format!(", at {}", event.location.trim()));
+    }
+    out.push('.');
+    if !event.organizer.trim().is_empty() {
+        out.push_str(&format!(" It was called by {}.", event.organizer.trim()));
+    }
+    if !event.attendees.is_empty() {
+        out.push_str(&format!(" Also invited: {}.", event.attendees.join(", ")));
+    }
+    if !event.description.trim().is_empty() {
+        out.push_str(&format!("\n\nThe invitation says:\n{}", event.description.trim()));
+    }
+    out
+}
+
+fn describe_task(task: &everyday_core::Task) -> String {
+    let mut out = format!("The task is \"{}\"", task.title);
+    if let Some(due) = task.due_date {
+        out.push_str(&format!(", due {due}"));
+    }
+    out.push('.');
+    if !task.notes.trim().is_empty() {
+        out.push_str(&format!(" It says: {}", task.notes.trim()));
+    }
+    out
+}
+
+/// Has this routine already been about this thing?
+///
+/// The run log is the record, so a meeting the laptop was awake for at nine
+/// and again at nine-oh-one is prepared for once. Bounded to the routine's
+/// own recent runs rather than scanning the whole log.
+fn already_about(vault: &Arc<Vault>, routine: &Routine, key: &str) -> bool {
+    vault
+        .runs(&RunQuery { routine_id: Some(routine.id), limit: Some(100), ..Default::default() })
+        .unwrap_or_default()
+        .iter()
+        .any(|r| r.subject.as_deref() == Some(key))
+}
+
+/// Run a routine about one thing it found.
+async fn about(service: &Arc<Service>, vault: &Arc<Vault>, routine: &Routine, subject: Subject) {
+    let mut about = routine.clone();
+    // The subject goes *after* the instructions, so the routine's own words
+    // are what the model reads first and this is the detail they apply to.
+    about.instructions = format!("{}\n\n{}", routine.instructions.trim(), subject.detail);
+    // Named for what it is about, so a log of five meeting preparations reads
+    // as five meetings rather than five identical rows.
+    about.name = format!("{} \u{2014} {}", routine.name, subject.label);
+
+    let mut run = RoutineRun::new(&about, None);
+    // The run belongs to the *routine*, whatever the run is called: its log
+    // has to find it.
+    run.routine_id = routine.id;
+    // Written before the turn, so a second tick during a long run sees it and
+    // does not start the same preparation again.
+    run.subject = Some(subject.key);
+    if vault.save_run(&run).is_err() {
+        return;
+    }
+    resume(service, vault, &about, run).await;
 }
 
 /// Everything about one run, from the row to the notification.

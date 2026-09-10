@@ -381,6 +381,7 @@ fn an_event(calendar_id: everyday_core::CalendarId, title: &str, location: &str)
         all_day: false,
         status: everyday_core::EventStatus::Confirmed,
         organizer: String::new(),
+        attendees: Vec::new(),
         url: String::new(),
         busy: true,
         updated_at: jiff::Timestamp::now(),

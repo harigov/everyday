@@ -1580,6 +1580,14 @@ export interface AgentSettings {
    * the person is.
    */
   timezone?: string | null
+  /**
+   * Whether the assistant may search the web.
+   *
+   * Off until somebody says otherwise. It is the one thing it does that leaves
+   * this computer for somewhere the person did not choose: everything else
+   * happens between here and the model endpoint they configured.
+   */
+  web: boolean
   /** Whether a key is stored. Never the key. */
   hasKey: boolean
 }

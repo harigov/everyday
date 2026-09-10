@@ -239,6 +239,17 @@
           <small>Short notes it keeps between conversations. Listed below.</small>
         </span>
       </label>
+      <label class="toggle">
+        <input type="checkbox" bind:checked={draft.web} />
+        <span>
+          <b>Let it search the web</b>
+          <small>
+            The one thing it does that leaves this computer for somewhere you did not choose. Your
+            question — and, preparing for a meeting, the names of the people in it — go to a search
+            engine. Everything else stays between here and the model endpoint above.
+          </small>
+        </span>
+      </label>
       <label class="setting narrow">
         <span>Steps per request</span>
         <input type="number" min="1" max="100" bind:value={draft.maxSteps} />

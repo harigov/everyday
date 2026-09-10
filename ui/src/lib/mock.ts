@@ -1821,6 +1821,7 @@ let agentSettings: AgentSettings = {
   confirmDestructive: true,
   maxSteps: 24,
   remember: true,
+  web: false,
   hasKey: true,
 }
 let agentKey = 'sk-mock'
