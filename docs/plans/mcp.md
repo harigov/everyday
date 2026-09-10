@@ -140,9 +140,20 @@ claim here worth re-checking rather than inheriting.
 `tools::available`, and already refuses a destructive tool without
 `confirmDestructive`. Going through `Service::call(ctx, "run_tool", …)`
 (`service.rs:293`) rather than reaching past it into `tools::dispatch` buys
-three things for free: the change event fan-out, so a task an external
-agent creates appears in the open window immediately; idempotency, so a
-retried write is not a second write; and the scope check on the `Ctx`.
+two things for free: the change event fan-out, so a task an external agent
+creates appears in the open window immediately, and the scope check on the
+`Ctx`.
+
+This paragraph originally claimed a third, idempotency, and that was wrong
+-- recorded here rather than quietly edited out, because it is the sort of
+claim a reader would otherwise rely on. `Service::call` records a write only
+when the `Ctx` carries a `request_id`, and one built from a bearer token
+does not. MCP has no key to supply: a JSON-RPC id is unique only within a
+connection, the modern era has no connection to speak of, and the
+specification's own retry mechanism requires the id to change between an
+attempt and its retry. So a retried `tools/call` that creates a task creates
+two, exactly as `everyday do` would, and `everyday_server::mcp`'s module doc
+says so where somebody will meet it.
 
 ### Destructive tools are absent, not refused
 

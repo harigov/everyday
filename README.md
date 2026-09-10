@@ -1156,11 +1156,16 @@ journal, say — when you issue it.
 
 ### Local, and meant to stay that way
 
-The server binds to `127.0.0.1` unless you pick an address, checks the
-`Origin` header on every request, and refuses `GET` and `DELETE`. That is not
-paperwork: a plain HTTP server on a loopback port is otherwise reachable by
-any web page you have open, through DNS rebinding, and this route has no
-pinned certificate in front of it the way the sharing port does.
+The server binds to `127.0.0.1` unless you pick an address, and checks the
+`Origin` header on every request: one that is present and is not a local
+address is refused outright. That is not paperwork. A plain HTTP server on a
+loopback port is otherwise reachable by any web page you have open, through
+DNS rebinding, and this route has no pinned certificate in front of it the
+way the sharing port does. An *absent* `Origin` is allowed, because that is
+what every client which is not a browser sends.
+
+`GET` is the notification stream an older client opens to hear that the vault
+has unlocked — newer ones ask for it by name instead. `DELETE` is refused.
 
 Serving it across a network works — the address picker offers what this
 machine has, best first — but put it on a WireGuard or Tailscale address

@@ -15,12 +15,28 @@
 //! `everyday_service::domains::meta::run_tool` already filters against what
 //! this vault can actually offer and already refuses a destructive tool
 //! without confirmation. Reaching past it into `tools::dispatch` would skip
-//! three things `docs/plans/mcp.md` calls out by name: the change-event
+//! two things `docs/plans/mcp.md` calls out by name: the change-event
 //! fan-out, so a task an external agent creates appears in an open window
-//! immediately; idempotency, so a retried write is not a second write; and
-//! the scope check on the caller's [`Ctx`]. [`VaultHost`] is built precisely
-//! so that every call from this route is a [`Service::call`] and nothing
-//! else.
+//! immediately, and the scope check on the caller's [`Ctx`]. [`VaultHost`]
+//! is built precisely so that every call from this route is a
+//! [`Service::call`] and nothing else.
+//!
+//! # What a retry is not
+//!
+//! The plan claimed a third thing -- idempotency -- and it is not true here,
+//! so it is written down rather than left to be discovered. A [`Ctx`] built
+//! from a bearer token carries no `request_id`, and
+//! [`Service::call`](Service::call) only records a write when it has one. A
+//! `tools/call` that creates a task and is retried therefore creates two.
+//!
+//! That is not an oversight to fix later; MCP gives us nothing to key on. A
+//! JSON-RPC id is unique only within a connection, the modern era has no
+//! connection to speak of -- every request is self-contained -- and the
+//! specification's own retry mechanism requires the id to *change* between an
+//! attempt and its retry. There is no stable key in the protocol, and
+//! inventing one from the arguments would make two deliberate identical calls
+//! into one. A model that wants to know whether its write landed should read
+//! it back, which is what the catalogue's listing tools are for.
 //!
 //! # Destructive tools are absent, not refused
 //!
