@@ -377,13 +377,6 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     when: () => anywhere() && inApp('journal')() && !!app.selectedEntry,
     run: () => void app.toggleStar(app.selectedEntry!),
   },
-  {
-    keys: 'p',
-    label: 'Pin this entry to the top',
-    group: 'Journal',
-    when: () => anywhere() && inApp('journal')() && !!app.selectedEntry,
-    run: () => void app.togglePin(app.selectedEntry!),
-  },
 
   // ── Todo ────────────────────────────────────────────────────────────
   {
@@ -556,71 +549,64 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     run: () => (calendar.timer ? calendar.stopTimer() : calendar.startTimer({ type: 'adhoc' })),
   },
   {
-    id: 'overview:today',
-    label: 'How today is going',
+    id: 'overview:page',
+    // The Overview used to offer four rows here, one per pane. There are no
+    // panes: it is one page of whatever somebody put on it, so it is one row.
+    label: 'How things are going',
     group: 'Overview',
-    keywords: ['now', 'day', 'progress'],
+    keywords: ['now', 'day', 'week', 'balance', 'dashboard', 'chart', 'progress'],
     icon: 'compass',
     tray: true,
     when: () => app.screen === 'main' && app.supportsOverview,
-    run: async () => {
-      if (await app.goTo('overview')) overview.setPane('today')
-    },
-  },
-  {
-    id: 'overview:week',
-    label: 'Where the week went',
-    group: 'Overview',
-    keywords: ['balance', 'report', 'time', 'chart'],
-    icon: 'compass',
-    tray: true,
-    when: () => app.screen === 'main' && app.supportsOverview,
-    run: async () => {
-      if (await app.goTo('overview')) overview.setPane('week')
-    },
+    run: () => void app.goTo('overview'),
   },
   {
     id: 'overview:log',
     label: 'Record a reading',
     group: 'Overview',
     keywords: ['tracker', 'habit', 'dose', 'tick'],
-    icon: 'compass',
+    icon: 'plus',
     tray: true,
     when: () => app.screen === 'main' && app.supportsOverview,
     run: async () => {
-      // Straight to the pane that has the field, and the field opens itself.
-      // A quick action from the menu bar has no component to reach for, which
-      // is the same problem `focusCapture` solves for the todo app's line.
-      if (await app.goTo('overview')) {
-        overview.setPane('today')
-        overview.wantsLog = true
-      }
+      // Straight to the page, and the field opens itself. A quick action from
+      // the menu bar has no component to reach for, which is the same problem
+      // `focusCapture` solves for the todo app's line.
+      if (await app.goTo('overview')) overview.wantsLog = true
     },
   },
   {
-    id: 'overview:goals',
+    id: 'overview:arrange',
+    label: 'Arrange the Overview',
+    group: 'Overview',
+    keywords: ['widget', 'dashboard', 'layout', 'customise', 'customize'],
+    icon: 'grip',
+    when: () => app.screen === 'main' && app.supportsOverview,
+    run: async () => {
+      if (await app.goTo('overview')) overview.editing = true
+    },
+  },
+  {
+    id: 'todo:goals',
     label: 'Goals',
-    group: 'Overview',
-    keywords: ['goal', 'aim', 'intention', 'purpose'],
-    icon: 'compass',
+    group: 'Todo',
+    keywords: ['goal', 'aim', 'intention', 'purpose', 'role'],
+    icon: 'target',
     tray: true,
-    when: () => app.screen === 'main' && app.supportsOverview,
+    when: () => app.screen === 'main' && app.supportsOverview && app.supportsTasks,
     run: async () => {
-      if (await app.goTo('overview')) overview.setPane('goals')
+      if (await app.goTo('todo')) await todo.setScope({ kind: 'goals' })
     },
   },
   {
-    // The Overview's capture action, reached by `C` there. Palette-only: the
-    // tray already offers the pane, and one more row for the thing that pane
-    // opens with would be two ways to say the same thing.
+    // Palette-only: the tray already offers the pane, and one more row for
+    // the thing that pane opens with would be two ways to say the same thing.
     label: 'Add a goal',
-    group: 'Overview',
+    group: 'Todo',
     keywords: ['new goal', 'aim'],
     icon: 'plus',
-    when: () => app.screen === 'main' && app.supportsOverview,
-    run: async () => {
-      if (await app.goTo('overview')) newGoal()
-    },
+    when: () => app.screen === 'main' && app.supportsOverview && app.supportsTasks,
+    run: () => void newGoal(),
   },
   {
     id: 'library:add',
@@ -737,15 +723,6 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     run: () => panels.openSettings('profile'),
   },
   {
-    label: 'Habits',
-    group: 'Overview',
-    keywords: ['streak', 'tracker', 'heatmap'],
-    when: () => app.screen === 'main' && app.supportsOverview,
-    run: async () => {
-      if (await app.goTo('overview')) overview.setPane('habits')
-    },
-  },
-  {
     label: 'Refresh subscribed calendars',
     group: 'Calendar',
     keywords: ['sync', 'feed', 'ics'],
@@ -790,22 +767,31 @@ export const ACTIONS: (Binding & { group: Group })[] = [
 function create() {
   if (app.section === 'assistant') void assistant.draft()
   else if (app.section === 'notes') void notes.create()
-  else if (app.section === 'todo') todo.focusCapture()
-  else if (app.section === 'calendar') void calendar.bookNow()
+  // The goals pane has no task line to put a cursor in, and the next thing
+  // somebody wants there is a goal.
+  else if (app.section === 'todo') {
+    if (todo.showingGoals) focusNewGoal()
+    else todo.focusCapture()
+  } else if (app.section === 'calendar') void calendar.bookNow()
   else if (app.section === 'library') library.focusCapture()
-  else if (app.section === 'overview') newGoal()
+  else if (app.section === 'overview') overview.wantsLog = true
   else void app.newEntry()
 }
 
 /**
- * "The next thing" in the Overview is a goal.
+ * "The next thing" in the todo app's goals pane is a goal.
  *
- * The composer belongs to the goals pane and there is one per role, so this
- * goes to that pane and puts the caret in the first of them. Reaching it by
- * selector is what this file already does for the search field.
+ * The composer belongs to that pane and there is one per role, so this goes
+ * there and puts the caret in the first of them. Reaching it by selector is
+ * what this file already does for the search field.
  */
-function newGoal() {
-  overview.setPane('goals')
+async function newGoal() {
+  if (!(await app.goTo('todo'))) return
+  await todo.setScope({ kind: 'goals' })
+  focusNewGoal()
+}
+
+function focusNewGoal() {
   setTimeout(() => document.querySelector<HTMLInputElement>('[data-newgoal]')?.focus(), 0)
 }
 

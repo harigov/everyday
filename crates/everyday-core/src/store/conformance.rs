@@ -1080,7 +1080,6 @@ fn entry_round_trips_every_field(store: &dyn JournalStore) {
     e.local_date = date(2024, 7, 14);
     e.tags = vec!["walking".into(), "summer".into()];
     e.starred = true;
-    e.pinned = true;
     e.location = Some(Location {
         latitude: 52.52,
         longitude: 13.405,
@@ -1110,7 +1109,6 @@ fn entry_round_trips_every_field(store: &dyn JournalStore) {
     assert_eq!(got.tz, e.tz, "time zone must survive; it is how local dates are recomputed");
     assert_eq!(got.tags, e.tags);
     assert_eq!(got.starred, e.starred);
-    assert_eq!(got.pinned, e.pinned);
     assert_eq!(got.location, e.location);
     assert_eq!(got.attachments, e.attachments);
     assert_eq!(got.created_at, e.created_at);

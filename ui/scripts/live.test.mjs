@@ -102,8 +102,10 @@ assert.deepEqual(targetsFor(['task', 'project']), ['todo'])
 assert.deepEqual(targetsFor(['item', 'log']), ['library'])
 assert.deepEqual(targetsFor(['block', 'calendar', 'event']), ['calendar'])
 assert.deepEqual(targetsFor(['tracker', 'reading']), ['tracking'])
-// The fifth app's two records, which both mean "redraw every chart".
-assert.deepEqual(targetsFor(['role', 'goal']), ['overview'])
+// The two purpose records. They are stored once and read in three places --
+// the todo app's goals pane, every purpose picker, the Overview -- so one
+// batch carrying both is one reload of the store that holds them.
+assert.deepEqual(targetsFor(['role', 'goal']), ['purpose'])
 
 // Distinct stores stay distinct.
 assert.deepEqual(new Set(targetsFor(['task', 'item'])), new Set(['todo', 'library']))
@@ -130,8 +132,15 @@ assert.deepEqual(
 // And a kind that cannot carry one does not drag the Overview along.
 assert.deepEqual(targetsFor(['memory'], true), [])
 assert.deepEqual(targetsFor(['journal'], true), ['journals'])
-// Its own records still reload it either way.
-assert.deepEqual(targetsFor(['goal'], false), ['overview'])
+// A goal reloads the store that holds it whether or not the Overview is up,
+// because the todo app draws the same list -- and reloads the Overview's own
+// numbers as well when it is the thing on screen.
+assert.deepEqual(targetsFor(['goal'], false), ['purpose'])
+assert.deepEqual(
+  new Set(targetsFor(['goal'], true)),
+  new Set(['purpose', 'overview']),
+  'a goal moving changes every chart drawn from it',
+)
 // One reload, not two, when a batch has both kinds in it.
 assert.deepEqual(
   targetsFor(['goal', 'task'], true).filter((t) => t === 'overview'),

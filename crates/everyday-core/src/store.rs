@@ -353,23 +353,25 @@ impl EntryQuery {
     }
 }
 
-/// Order `rows` in place. Pinned entries always float to the top, matching
-/// what Day One does and what people expect from a "pin" affordance.
+/// Order `rows` in place, by the chosen sort and nothing else.
+///
+/// Entries used to be able to float to the top of the list, as a note still
+/// can. That was the wrong affordance here and it has been taken out: a
+/// journal is a record of days in the order they happened, and a page that
+/// sat above the last fortnight because it was pinned in March broke the one
+/// thing the list is for. A note has no date to be out of order with, which
+/// is why it kept its pin.
 pub fn sort_summaries(rows: &mut [EntrySummary], sort: SortOrder) {
-    rows.sort_by(|a, b| {
-        b.pinned.cmp(&a.pinned).then_with(|| match sort {
-            // Ties on the journal date are broken by creation time so that
-            // several entries written on one day keep a stable order.
-            SortOrder::DateDesc => {
-                b.local_date.cmp(&a.local_date).then(b.created_at.cmp(&a.created_at))
-            }
-            SortOrder::DateAsc => {
-                a.local_date.cmp(&b.local_date).then(a.created_at.cmp(&b.created_at))
-            }
-            SortOrder::UpdatedDesc => b.updated_at.cmp(&a.updated_at),
-            SortOrder::CreatedDesc => b.created_at.cmp(&a.created_at),
-            SortOrder::TitleAsc => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
-        })
+    rows.sort_by(|a, b| match sort {
+        // Ties on the journal date are broken by creation time so that
+        // several entries written on one day keep a stable order.
+        SortOrder::DateDesc => {
+            b.local_date.cmp(&a.local_date).then(b.created_at.cmp(&a.created_at))
+        }
+        SortOrder::DateAsc => a.local_date.cmp(&b.local_date).then(a.created_at.cmp(&b.created_at)),
+        SortOrder::UpdatedDesc => b.updated_at.cmp(&a.updated_at),
+        SortOrder::CreatedDesc => b.created_at.cmp(&a.created_at),
+        SortOrder::TitleAsc => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
     });
 }
 
@@ -848,11 +850,10 @@ mod tests {
     }
 
     #[test]
-    fn sorting_floats_pinned_entries_to_the_top() {
+    fn sorting_is_chronological_and_nothing_may_jump_the_queue() {
         let mut rows = vec![summary(3, "c"), summary(1, "a"), summary(2, "b")];
-        rows[1].pinned = true; // the oldest entry is pinned
         sort_summaries(&mut rows, SortOrder::DateDesc);
-        assert_eq!(rows.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(), ["a", "c", "b"]);
+        assert_eq!(rows.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(), ["c", "b", "a"]);
     }
 
     #[test]

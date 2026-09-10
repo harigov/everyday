@@ -8,10 +8,10 @@
   // here is the fields and the Save, and none of the chrome.
   //
   // The order of the fields is the order the decisions actually get made:
-  // whether to use it at all, then what model, then the credential that model
-  // needs, then how it should behave. The key is deliberately not first —
-  // pasting a key before choosing an endpoint is how people end up sending
-  // an OpenAI key to somebody else's gateway.
+  // whether to use it at all, what to call it, then what model, then the
+  // credential that model needs, then how it should behave. The key is
+  // deliberately not first — pasting a key before choosing an endpoint is how
+  // people end up sending an OpenAI key to somebody else's gateway.
 
   import { onDestroy } from 'svelte'
   import { isLoopback } from '../lib/agent'
@@ -157,6 +157,23 @@
         </small>
       </span>
     </label>
+
+    <section>
+      <span class="eyebrow">Name</span>
+      <label class="setting">
+        <span>What to call it</span>
+        <input
+          bind:value={draft.name}
+          placeholder="The assistant"
+          maxlength="40"
+          spellcheck="false"
+        />
+      </label>
+      <p class="hint">
+        Used in its own instructions, so it answers to the name, and in the header of the rail.
+        Leave it empty and it is simply “the assistant” — nothing here picks one for you.
+      </p>
+    </section>
 
     <section>
       <span class="eyebrow">Model</span>

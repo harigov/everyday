@@ -29,12 +29,9 @@
 
   interface Props {
     rows: RoleTotals[]
-    /** Called when a row is chosen, for the detail beneath. */
-    onpick?: (roleId: string | null) => void
-    picked?: string | null
   }
 
-  const { rows, onpick, picked = null }: Props = $props()
+  const { rows }: Props = $props()
 
   // One scale for every row, including the planned rail and the meetings, or
   // the bars would not be comparable with each other — which is the only
@@ -50,11 +47,17 @@
   {#each rows as row (row.roleId ?? 'none')}
     {@const total = row.actualMinutes + row.eventMinutes}
     {@const quiet = total === 0 && row.plannedMinutes === 0}
-    <button
+    <!-- A row rather than a button. It used to be one, with a `picked` prop
+         behind it that opened a per-goal breakdown underneath -- and the
+         breakdown now lives in the todo app, beside the goals themselves. It
+         also carried a bug worth recording: the selected row was decided by
+         `picked === row.roleId`, and the unattributed row's id *is* `null`,
+         which is also what "nothing is picked" was spelt as. So the one row
+         nobody had chosen was always drawn as chosen. Two meanings, one
+         value; the fix was to stop having the state at all. -->
+    <div
       class="row"
-      class:on={picked === row.roleId}
       class:quiet
-      onclick={() => onpick?.(row.roleId)}
       title={[
         row.name,
         `${formatMinutes(row.actualMinutes)} recorded`,
@@ -92,7 +95,7 @@
            sixty, and the axis this chart does not have would otherwise be
            the only place to read a number. -->
       <span class="value">{total > 0 ? formatMinutes(total) : '—'}</span>
-    </button>
+    </div>
   {/each}
 </div>
 
@@ -112,14 +115,6 @@
     padding: var(--sp-1) var(--sp-2);
     border-radius: var(--radius-sm);
     text-align: left;
-  }
-
-  .row:hover {
-    background: var(--bg-hover);
-  }
-
-  .row.on {
-    background: var(--bg-active);
   }
 
   /* A role with nothing recorded is still drawn — its absence is the
@@ -167,14 +162,23 @@
     height: 18px;
   }
 
+  /* `inset: 0`, and the `0 auto 0 0` it used to be is why no bar was ever
+     drawn. With `right: auto` this box has no width of its own: it is
+     shrink-to-fit around its contents, and its contents are sized as a
+     *percentage of it*. CSS calls that cycle and resolves the percentage to
+     `auto`, which for these is zero -- so every fill was a zero-width block
+     of colour and the chart was six labels and six numbers with nothing
+     between them. Stretched to the track, the percentages have something
+     real to be a percentage of. */
   .fills {
     position: absolute;
     display: flex;
     /* The 2px surface gap that separates touching marks. No stroke: a
        border would add ink that is not data. */
     gap: 2px;
-    inset: 0 auto 0 0;
+    inset: 0;
     align-items: center;
+    justify-content: flex-start;
     height: 100%;
   }
 

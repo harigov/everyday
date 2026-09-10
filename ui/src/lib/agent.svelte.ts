@@ -52,6 +52,20 @@ class AgentState {
     this.error = null
   }
 
+  /**
+   * What to call it on screen.
+   *
+   * The settings are loaded when the rail opens, so this reads "Assistant"
+   * for the frame before they land and then the name. That is the right way
+   * round: a header that is briefly generic is better than one that is
+   * briefly blank, and the app bar's tab says "Assistant" either way -- that
+   * label is also the key its quick actions are filed under, so it is not
+   * free to change.
+   */
+  get displayName(): string {
+    return this.settings?.name.trim() || 'Assistant'
+  }
+
   /** Does this vault's backend carry the assistant's domain at all? */
   get supported(): boolean {
     return app.status?.capabilities?.agent === true

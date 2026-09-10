@@ -227,8 +227,6 @@ pub struct Entry {
     pub purpose: Option<Purpose>,
     #[serde(default)]
     pub starred: bool,
-    #[serde(default)]
-    pub pinned: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<Location>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -258,7 +256,6 @@ impl Entry {
             updated_at: now,
             tags: Vec::new(),
             starred: false,
-            pinned: false,
             location: None,
             weather: None,
             attachments: Vec::new(),
@@ -329,7 +326,6 @@ impl Entry {
             updated_at: self.updated_at,
             tags: self.tags.clone(),
             starred: self.starred,
-            pinned: self.pinned,
             word_count: plain.split_whitespace().count() as u32,
             attachment_count: self.attachments.len() as u32,
             cover: self.attachments.iter().find(|a| a.kind == MediaKind::Image).map(|a| a.blob),
@@ -366,7 +362,6 @@ pub struct EntrySummary {
     pub updated_at: Timestamp,
     pub tags: Vec<String>,
     pub starred: bool,
-    pub pinned: bool,
     pub word_count: u32,
     pub attachment_count: u32,
     /// First image in the entry, used as a thumbnail in the list.

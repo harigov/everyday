@@ -41,17 +41,21 @@
 
   // Each tab is hidden on a backend that cannot carry it, so a vault never
   // offers an app that cannot work.
+  //
+  // The order is the order of a day rather than the order these were built
+  // in. The Overview is first because it is the page you arrive at -- a
+  // dashboard of your own widgets, which is only useful if it is the thing
+  // in front of you -- and the journal is last because it is the one app you
+  // go to on purpose, with something already in mind to write. In between
+  // are the four you dip into all day.
   const APPS: AppEntry[] = [
-    { id: 'journal', label: 'Journal', icon: 'quote' },
+    { id: 'overview', label: 'Overview', icon: 'compass' },
     { id: 'notes', label: 'Notes', icon: 'pencil' },
     { id: 'todo', label: 'Todo', icon: 'check' },
     { id: 'calendar', label: 'Calendar', icon: 'calendar' },
     { id: 'library', label: 'Library', icon: 'book' },
-    // Last but for the assistant, and deliberately: it is a view over what
-    // the apps above store, so the bar reads top to bottom as the things you
-    // do and then the thing they add up to.
-    { id: 'overview', label: 'Overview', icon: 'compass' },
     { id: 'assistant', label: 'Assistant', icon: 'sparkle' },
+    { id: 'journal', label: 'Journal', icon: 'quote' },
   ]
   const shown = $derived(APPS.filter((a) => app.canShow(a.id)))
 

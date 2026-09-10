@@ -9,6 +9,7 @@
   import { formatMinutes } from '../lib/format'
   import Icon from './Icon.svelte'
   import ProgressPie from './ProgressPie.svelte'
+  import GoalsPane from './GoalsPane.svelte'
   import QuickAdd from './QuickAdd.svelte'
   import TaskList from './TaskList.svelte'
   import TaskBoard from './TaskBoard.svelte'
@@ -25,6 +26,7 @@
     upcoming: 'Upcoming',
     inbox: 'Inbox',
     all: 'All tasks',
+    goals: 'Goals',
   }
 
   const heading = $derived(
@@ -84,148 +86,157 @@
   })
 </script>
 
-<main class="todo">
-  <div class="pane">
-    <header class="top">
-      <h1 class="heading">
-        {#if todo.project}<span class="mark">{todo.project.icon}</span>{/if}
-        {#if counted > 0}
-          <ProgressPie
-            {done}
-            total={counted}
-            size={15}
-            color={todo.accent}
-            title="{done} of {counted} done"
-          />
-        {/if}
-        {heading}
-      </h1>
+<!-- Goals are not tasks, so what they get is not a task list: no capture line
+     for a task, no status chips, no board, and a detail rail of their own. It
+     replaces the whole of this app's pane rather than being a branch inside
+     it, because `.pane` is a *column* -- a rail rendered in there would sit
+     under the list rather than beside it. -->
+{#if todo.showingGoals}
+  <main class="todo"><GoalsPane /></main>
+{:else}
+  <main class="todo">
+    <div class="pane">
+      <header class="top">
+        <h1 class="heading">
+          {#if todo.project}<span class="mark">{todo.project.icon}</span>{/if}
+          {#if counted > 0}
+            <ProgressPie
+              {done}
+              total={counted}
+              size={15}
+              color={todo.accent}
+              title="{done} of {counted} done"
+            />
+          {/if}
+          {heading}
+        </h1>
 
-      <div class="search">
-        <Icon name="search" size={14} />
-        <input
-          data-search
-          type="search"
-          placeholder="Filter tasks"
-          value={todo.filter}
-          oninput={(e) => todo.setFilter(e.currentTarget.value)}
-          onkeydown={(e) => {
-            if (e.key === 'Escape') todo.setFilter('')
-          }}
+        <div class="search">
+          <Icon name="search" size={14} />
+          <input
+            data-search
+            type="search"
+            placeholder="Filter tasks"
+            value={todo.filter}
+            oninput={(e) => todo.setFilter(e.currentTarget.value)}
+            onkeydown={(e) => {
+              if (e.key === 'Escape') todo.setFilter('')
+            }}
+          />
+        </div>
+
+        <div class="tools">
+          {#if todo.boardable}
+            <div class="views" role="group" aria-label="View">
+              <button
+                class="view"
+                class:on={todo.view === 'list'}
+                title="List"
+                aria-label="List view"
+                aria-pressed={todo.view === 'list'}
+                onclick={() => todo.setView('list')}
+              >
+                <Icon name="list" size={15} />
+              </button>
+              <button
+                class="view"
+                class:on={todo.view === 'board'}
+                title="Board"
+                aria-label="Board view"
+                aria-pressed={todo.view === 'board'}
+                onclick={() => todo.setView('board')}
+              >
+                <Icon name="board" size={15} />
+              </button>
+            </div>
+          {/if}
+
+          {#if todo.view === 'list'}
+            <label class="group">
+              <span class="vh">Group by</span>
+              <select
+                class="select"
+                value={todo.groupBy}
+                onchange={(e) => (todo.groupBy = e.currentTarget.value as GroupBy)}
+              >
+                {#each GROUPS as g (g.id)}<option value={g.id}>Group: {g.label}</option>{/each}
+              </select>
+            </label>
+          {/if}
+        </div>
+      </header>
+
+      <div class="bar">
+        <QuickAdd
+          bind:this={capture}
+          placeholder={todo.project ? `Add to ${todo.project.name}` : 'Add a task'}
         />
       </div>
 
-      <div class="tools">
-        {#if todo.boardable}
-          <div class="views" role="group" aria-label="View">
-            <button
-              class="view"
-              class:on={todo.view === 'list'}
-              title="List"
-              aria-label="List view"
-              aria-pressed={todo.view === 'list'}
-              onclick={() => todo.setView('list')}
-            >
-              <Icon name="list" size={15} />
-            </button>
-            <button
-              class="view"
-              class:on={todo.view === 'board'}
-              title="Board"
-              aria-label="Board view"
-              aria-pressed={todo.view === 'board'}
-              onclick={() => todo.setView('board')}
-            >
-              <Icon name="board" size={15} />
-            </button>
-          </div>
-        {/if}
-
-        {#if todo.view === 'list'}
-          <label class="group">
-            <span class="vh">Group by</span>
-            <select
-              class="select"
-              value={todo.groupBy}
-              onchange={(e) => (todo.groupBy = e.currentTarget.value as GroupBy)}
-            >
-              {#each GROUPS as g (g.id)}<option value={g.id}>Group: {g.label}</option>{/each}
-            </select>
-          </label>
-        {/if}
-      </div>
-    </header>
-
-    <div class="bar">
-      <QuickAdd
-        bind:this={capture}
-        placeholder={todo.project ? `Add to ${todo.project.name}` : 'Add a task'}
-      />
-    </div>
-
-    <!-- The chips are centred on the pane and the two dropdowns are pushed to
+      <!-- The chips are centred on the pane and the two dropdowns are pushed to
          its edges, so the row reads the same as the library's. See `.toolbar`
          in `app.css` for why the ends are separate elements. -->
-    <div class="toolbar" style="--tint: {todo.accent}">
-      <div class="toolbar-end">
-        <select
-          class="select"
-          aria-label="Priority"
-          value={todo.priorityFilter ?? ''}
-          onchange={(e) =>
-            (todo.priorityFilter = (e.currentTarget.value || null) as Priority | null)}
-        >
-          <option value="">Any priority</option>
-          {#each todo.usedPriorities as p (p)}
-            <option value={p}>{p[0]!.toUpperCase() + p.slice(1)}</option>
-          {/each}
-        </select>
-        {#if tags.length > 0}
+      <div class="toolbar" style="--tint: {todo.accent}">
+        <div class="toolbar-end">
           <select
             class="select"
-            aria-label="Tag"
-            value={todo.tagFilter ?? ''}
-            onchange={(e) => (todo.tagFilter = e.currentTarget.value || null)}
+            aria-label="Priority"
+            value={todo.priorityFilter ?? ''}
+            onchange={(e) =>
+              (todo.priorityFilter = (e.currentTarget.value || null) as Priority | null)}
           >
-            <option value="">Any tag</option>
-            {#each tags as tag (tag)}<option value={tag}>{tag}</option>{/each}
+            <option value="">Any priority</option>
+            {#each todo.usedPriorities as p (p)}
+              <option value={p}>{p[0]!.toUpperCase() + p.slice(1)}</option>
+            {/each}
           </select>
-        {/if}
+          {#if tags.length > 0}
+            <select
+              class="select"
+              aria-label="Tag"
+              value={todo.tagFilter ?? ''}
+              onchange={(e) => (todo.tagFilter = e.currentTarget.value || null)}
+            >
+              <option value="">Any tag</option>
+              {#each tags as tag (tag)}<option value={tag}>{tag}</option>{/each}
+            </select>
+          {/if}
+        </div>
+
+        <div class="filters" role="tablist" aria-label="Status">
+          {#each TASK_FILTERS as filter (filter)}
+            {@const n = todo.countFor(filter)}
+            <button
+              class="filter"
+              class:on={todo.statusFilter === filter}
+              role="tab"
+              aria-selected={todo.statusFilter === filter}
+              onclick={() => todo.setStatusFilter(filter)}
+            >
+              {FILTER_LABELS[filter]}
+              {#if n > 0}<span class="n">{n}</span>{/if}
+            </button>
+          {/each}
+        </div>
+
+        <div class="toolbar-end right">
+          {#if todo.narrowed}
+            <button class="clear" onclick={() => todo.clearFilters()}>Clear</button>
+          {/if}
+          <span class="summary">{summary}</span>
+        </div>
       </div>
 
-      <div class="filters" role="tablist" aria-label="Status">
-        {#each TASK_FILTERS as filter (filter)}
-          {@const n = todo.countFor(filter)}
-          <button
-            class="filter"
-            class:on={todo.statusFilter === filter}
-            role="tab"
-            aria-selected={todo.statusFilter === filter}
-            onclick={() => todo.setStatusFilter(filter)}
-          >
-            {FILTER_LABELS[filter]}
-            {#if n > 0}<span class="n">{n}</span>{/if}
-          </button>
-        {/each}
-      </div>
-
-      <div class="toolbar-end right">
-        {#if todo.narrowed}
-          <button class="clear" onclick={() => todo.clearFilters()}>Clear</button>
-        {/if}
-        <span class="summary">{summary}</span>
-      </div>
+      {#if todo.view === 'board' && todo.boardable}
+        <TaskBoard />
+      {:else}
+        <TaskList />
+      {/if}
     </div>
 
-    {#if todo.view === 'board' && todo.boardable}
-      <TaskBoard />
-    {:else}
-      <TaskList />
-    {/if}
-  </div>
-
-  <TaskDetail />
-</main>
+    <TaskDetail />
+  </main>
+{/if}
 
 <style>
   .todo {

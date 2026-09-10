@@ -161,7 +161,11 @@ impl JournalStore for SqlStore {
         }
 
         if !needs_memory_pass {
-            sql.push_str(" ORDER BY pinned DESC, ");
+            // The chosen sort and nothing before it. The entry list used to
+            // put `pinned DESC` first, and no longer does -- see
+            // `everyday_core::store::sort_summaries`, which is the in-memory
+            // pass this has to agree with exactly.
+            sql.push_str(" ORDER BY ");
             sql.push_str(match query.sort {
                 SortOrder::DateDesc => "local_date DESC, created_us DESC",
                 SortOrder::DateAsc => "local_date ASC, created_us ASC",
@@ -198,11 +202,11 @@ impl JournalStore for SqlStore {
         let mut tx = conn.begin()?;
         tx.execute(
             "INSERT INTO entries
-                (id, journal_id, local_date, created_us, updated_us, starred, pinned, data, summary)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                (id, journal_id, local_date, created_us, updated_us, starred, data, summary)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT (id) DO UPDATE SET
                 journal_id = ?2, local_date = ?3, created_us = ?4, updated_us = ?5,
-                starred = ?6, pinned = ?7, data = ?8, summary = ?9",
+                starred = ?6, data = ?7, summary = ?8",
             &vals![
                 e.id.to_string(),
                 e.journal_id.to_string(),
@@ -210,7 +214,6 @@ impl JournalStore for SqlStore {
                 to_us(e.created_at),
                 to_us(e.updated_at),
                 e.starred,
-                e.pinned,
                 data,
                 summary,
             ],
@@ -241,8 +244,8 @@ impl JournalStore for SqlStore {
             Some(want) => tx.execute(
                 "UPDATE entries SET
                     journal_id = ?2, local_date = ?3, created_us = ?4, updated_us = ?5,
-                    starred = ?6, pinned = ?7, data = ?8, summary = ?9
-                 WHERE id = ?1 AND updated_us = ?10",
+                    starred = ?6, data = ?7, summary = ?8
+                 WHERE id = ?1 AND updated_us = ?9",
                 &vals![
                     e.id.to_string(),
                     e.journal_id.to_string(),
@@ -250,7 +253,6 @@ impl JournalStore for SqlStore {
                     to_us(e.created_at),
                     to_us(e.updated_at),
                     e.starred,
-                    e.pinned,
                     data,
                     summary,
                     to_us(want),
@@ -262,8 +264,8 @@ impl JournalStore for SqlStore {
             None => tx.execute(
                 "INSERT INTO entries
                     (id, journal_id, local_date, created_us, updated_us,
-                     starred, pinned, data, summary)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                     starred, data, summary)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT (id) DO NOTHING",
                 &vals![
                     e.id.to_string(),
@@ -272,7 +274,6 @@ impl JournalStore for SqlStore {
                     to_us(e.created_at),
                     to_us(e.updated_at),
                     e.starred,
-                    e.pinned,
                     data,
                     summary,
                 ],

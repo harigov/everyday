@@ -29,6 +29,15 @@
 > Everything else — including the refusal to cascade a role delete, the
 > nullable journal pointer on a reading, the cadence, and the assistant's
 > per-reading query — is as written below.
+>
+> **Since superseded, in the interface only.** The records, the side table and
+> every query below are unchanged; where they are *drawn* is not. The four
+> fixed panes became a page of widgets somebody arranges themselves, the goals
+> pane moved to the todo app — beside the tasks that make a goal happen rather
+> than three panes away from them — and the roles moved to Settings under
+> About You, because a role is a standing fact about the person that four apps
+> file things under rather than this app's data. See the Overview section of
+> the README for what is there now.
 
 A plan for a fifth app and the two records underneath it. Written 9 September
 2026 against the tree at `371783e`. Decisions in the first section were made

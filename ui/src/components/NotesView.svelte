@@ -219,9 +219,16 @@
 {/if}
 
 <style>
+  /* `flex: 1` and `min-width: 0`, because this component *is* the pane.
+     The journal wraps its editor in a `<main class="main">` that carries
+     both; this one is dropped straight into the window's flex row, so
+     without them it took its width from its own content -- about half a
+     wide window, with the rest of the row left empty to the right of it. */
   .editor {
     position: relative;
     display: flex;
+    flex: 1;
+    min-width: 0;
     flex-direction: column;
     height: 100%;
     background: var(--bg-raised);
@@ -314,8 +321,12 @@
     pointer-events: none;
   }
 
+  /* The same, for the pane with no note open: an empty state centred in
+     half the window reads as a layout that has gone wrong. */
   .empty {
     display: flex;
+    flex: 1;
+    min-width: 0;
     height: 100%;
     background: var(--bg-raised);
   }

@@ -136,6 +136,13 @@ fn v1(d: Dialect) -> Vec<String> {
                  created_us  {int} NOT NULL,
                  updated_us  {int} NOT NULL,
                  starred     {boolean} NOT NULL DEFAULT {f},
+                 -- Vestigial. An entry could once be pinned to the top of
+                 -- the list; that affordance was wrong for a record of days
+                 -- and has been removed, so nothing writes or reads this
+                 -- column any more. It stays because a step never edits an
+                 -- earlier one: dropping it here would give a new vault a
+                 -- different shape from every vault already in existence,
+                 -- which is the one thing this file promises does not happen.
                  pinned      {boolean} NOT NULL DEFAULT {f},
                  data        {blob} NOT NULL,
                  summary     {blob} NOT NULL
