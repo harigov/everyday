@@ -296,6 +296,17 @@ export type WidgetType = keyof typeof WIDGETS
 
 export const WIDGET_TYPES = Object.keys(WIDGETS) as WidgetType[]
 
+/**
+ * A catalogue entry, widened to the interface it satisfies.
+ *
+ * Always this rather than `WIDGETS[type]` directly, and the reason is worth
+ * knowing: `WIDGETS` is `as const satisfies`, so every entry keeps its
+ * *literal* type. An entry with no `windows` key has no such property to
+ * read, and one whose `needs` is `['today']` has an array that cannot be
+ * asked whether it includes `'trackerDays'` -- the argument narrows to
+ * `never`. Both are compile errors at the point of use rather than anything
+ * to do with the data, and both go away by reading through the interface.
+ */
 export function specOf(type: WidgetType): WidgetSpec {
   return WIDGETS[type]
 }
@@ -345,12 +356,7 @@ export function defaultLayout(): Widget[] {
 
 /** One widget of a type, at the size the catalogue says it arrives at. */
 export function widget(type: WidgetType, subject: string | null = null, id?: string): Widget {
-  // Annotated rather than inferred. `WIDGETS` is `as const satisfies`, so
-  // each entry keeps its *literal* type -- and an entry with no `windows` key
-  // has no such property to read at all, which makes the optional field on
-  // `WidgetSpec` unreachable through the index. Widening here is what lets
-  // one branch serve every type.
-  const spec: WidgetSpec = WIDGETS[type]
+  const spec = specOf(type)
   return {
     id: id ?? `${type}:1`,
     type,
@@ -429,13 +435,30 @@ export function setDays(list: Widget[], id: string, days: number): Widget[] {
 /** Everything the page needs fetched, once each. */
 export function needsOf(list: Widget[]): Set<Need> {
   const out = new Set<Need>()
-  for (const w of list) for (const need of WIDGETS[w.type].needs) out.add(need)
+  for (const w of list) for (const need of specOf(w.type).needs) out.add(need)
   return out
 }
 
-/** The longest tracker window any widget on the page asks for, in days. */
+/**
+ * The longest window any *tracker* widget on the page asks for, in days.
+ *
+ * Restricted to the widgets that actually read `trackerDays`, and that is the
+ * whole point of the function rather than a refinement of it. Every window is
+ * a number of days, but they are not all windows over the same thing: "What
+ * you have written" counts entries and arrives set to a year, and taking the
+ * plain maximum meant putting it beside a heatmap widened the *readings*
+ * query from four months to twelve. The cost was three things at once -- a
+ * year of rows fetched instead of a third of one, a heatmap captioned "four
+ * months" drawing fifty-three columns, and every streak's hit rate computed
+ * over a year -- none of which anybody asked for by adding a card about
+ * their journal.
+ */
 export function trackerWindow(list: Widget[], floor = 120): number {
-  return list.reduce((most, w) => Math.max(most, w.days ?? 0), floor)
+  return list.reduce(
+    (most, w) =>
+      specOf(w.type).needs.includes('trackerDays') ? Math.max(most, w.days ?? 0) : most,
+    floor,
+  )
 }
 
 // ── Storage ──────────────────────────────────────────────────────────────
@@ -469,7 +492,7 @@ export function parseLayout(raw: string | null): Widget[] | null {
     if (typeof row !== 'object' || row === null) continue
     const { type, size, subject, days, id } = row as Record<string, unknown>
     if (!isWidgetType(type)) continue
-    const spec: WidgetSpec = WIDGETS[type]
+    const spec = specOf(type)
     // Ids are trusted from storage, so a hand-edited file can repeat one --
     // and two cards sharing a key is a Svelte error rather than a wonky
     // layout. Minted here against what has already been read, so the first

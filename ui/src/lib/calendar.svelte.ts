@@ -1026,13 +1026,6 @@ class CalendarState {
   }
 
   /**
-   * One second while something is being timed, half a minute otherwise.
-   *
-   * A per-second re-render of the whole grid for the sake of a "now" line
-   * nobody is watching is exactly the sort of thing that turns up in a
-   * battery report.
-   */
-  /**
    * Keep the elapsed readout moving, without loading a window.
    *
    * The Overview can draw the running timer on a card, and can be the first
@@ -1045,6 +1038,13 @@ class CalendarState {
     this.#startClock()
   }
 
+  /**
+   * One second while something is being timed, half a minute otherwise.
+   *
+   * A per-second re-render of the whole grid for the sake of a "now" line
+   * nobody is watching is exactly the sort of thing that turns up in a
+   * battery report.
+   */
   #startClock() {
     if (this.#clock) clearInterval(this.#clock)
     const period = this.timer ? 1_000 : 30_000

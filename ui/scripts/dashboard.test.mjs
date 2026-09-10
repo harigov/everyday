@@ -184,8 +184,8 @@ ok(
   needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 10,
 )
 
-// The readings window is the longest any card asks for, never shorter than
-// the floor a heatmap needs.
+// The readings window is the longest any *tracker* card asks for, never
+// shorter than the floor a heatmap needs.
 {
   const page = setDays(addWidget([], 'trackerChart'), 'trackerChart:1', 14)
   check('a short chart does not shrink the heatmap window', trackerWindow(page, 120), 120)
@@ -193,6 +193,25 @@ ok(
     '...and a longer one widens it',
     trackerWindow(setDays(page, 'trackerChart:1', 365), 120),
     365,
+  )
+
+  // The regression: "What you have written" is a window over *entries* and
+  // arrives set to a year. Counting it here widened the readings query from
+  // four months to twelve, drew a heatmap captioned "four months" with a
+  // year in it, and computed every streak's hit rate over that year --
+  // because somebody added a card about their journal.
+  check(
+    'a window over something else does not widen the readings query',
+    trackerWindow(addWidget(page, 'writing'), 120),
+    120,
+  )
+  ok(
+    'every widget with a window is either a tracker widget or is not counted',
+    WIDGET_TYPES.filter((t) => WIDGETS[t].windows).some(
+      (t) => !WIDGETS[t].needs.includes('trackerDays'),
+    ),
+    // If this ever stops being true the check above is testing nothing, and
+    // whoever removed the last non-tracker window should delete it.
   )
 }
 

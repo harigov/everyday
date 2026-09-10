@@ -85,7 +85,13 @@
     {#each shown as slice (slice.id)}
       <li>
         <span class="swatch" style="background: {slice.color}"></span>
-        {#if slice.icon}<span class="glyph">{slice.icon}</span>{/if}
+        <!-- Drawn even when there is no glyph, because the row is a grid and
+             a missing child does not leave its track empty -- it moves every
+             child after it one column left. The unattributed row never has an
+             icon and neither does the folded tail, so those two rows had
+             their percentage and their amount out of line with every other
+             row in the key. -->
+        <span class="glyph">{slice.icon ?? ''}</span>
         <span class="name">{slice.name}</span>
         <span class="pct">{share(slice.value)}%</span>
         <span class="amount">{slice.label}</span>

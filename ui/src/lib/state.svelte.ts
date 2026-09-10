@@ -1281,8 +1281,6 @@ class AppState {
     await this.#editEntry(id, (entry) => (entry.starred = !entry.starred))
   }
 
-  /** Float an entry to the top of the list, or let it fall back into date order. */
-
   /**
    * Say what a day's writing was for.
    *

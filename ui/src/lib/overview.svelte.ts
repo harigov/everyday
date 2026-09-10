@@ -269,10 +269,6 @@ class OverviewState {
   async start() {
     if (!this.enabled) return
     this.editing = false
-    // A card drawing the running timer needs the wall clock ticking, and
-    // this app can be the first one on screen after a launch -- before the
-    // calendar view has mounted and started it for itself.
-    if (this.needs.has('today')) calendar.watchClock()
     await this.refresh()
   }
 
@@ -296,35 +292,71 @@ class OverviewState {
    *
    * One `Promise.all` over the needs rather than a chain, because these are
    * independent reads of one open vault and running them in series would
-   * make a six-widget page six round trips deep. Each failure is swallowed
-   * into its own empty answer for the same reason the goal counts are: one
-   * shelf count that could not be read should leave a blank card, not take
-   * the whole page down with it. A lock is the exception, and `handle` is
-   * what tells the difference.
+   * make a six-widget page six round trips deep.
+   *
+   * Every read is asked for through `ask`, which is what makes a failure
+   * local: one shelf count that could not be read leaves a blank card rather
+   * than taking the whole page down with it, and the other seven still land.
+   * The first failure is kept and handed to `handle` *after* the assignments,
+   * so a lock still locks -- and the `reset` that follows from it clears the
+   * partial results this call just wrote, which is the order that has to hold.
    */
   async refresh() {
     if (!this.enabled) return
     const mine = ++this.#generation
     const needs = this.needs
     this.loading = true
+    /** The first read that failed, if any. Reported once, at the end. */
+    let failure: unknown = null
+
+    /**
+     * One read, or its empty answer.
+     *
+     * `want` decides whether the round trip happens at all -- a page with no
+     * shelf card never asks for shelf counts -- and the `catch` is what keeps
+     * one failed read from being eight.
+     */
+    const ask = <T>(want: boolean, read: () => Promise<T>, blank: T): Promise<T> =>
+      want
+        ? read().catch((e: unknown) => {
+            if (failure === null) failure = e
+            return blank
+          })
+        : Promise.resolve(blank)
+
+    // A card drawing the running timer needs the wall clock ticking, and this
+    // app can be the first one on screen after a launch -- before the calendar
+    // view has mounted and started it for itself. Here rather than in `start`
+    // because `start` runs once per mount and a widget can be *added* to the
+    // page at any point after it; the elapsed figure on a freshly added "On
+    // now" card would otherwise sit frozen, which is the exact failure
+    // `watchClock` exists to prevent.
+    if (needs.has('today')) calendar.watchClock()
+
     try {
       const today = todayIso()
       const [report, days, taskStats, weekTasks, libraryStats, entries, notes, blocks] =
         await Promise.all([
-          needs.has('balance') ? api.balance(this.weekStart, this.weekEnd) : null,
-          needs.has('trackerDays')
-            ? api.trackerDays({ from: this.habitFrom, to: today })
-            : Promise.resolve([]),
-          needs.has('taskStats') ? api.taskStats() : null,
-          needs.has('weekTasks')
-            ? api.tasks({ dueFrom: this.weekStart, dueTo: this.weekEnd, limit: 500 })
-            : Promise.resolve([]),
-          needs.has('library') ? api.libraryStats() : null,
-          needs.has('entries')
-            ? api.entries({ from: this.entriesFrom, to: today, limit: 400 })
-            : Promise.resolve([]),
-          needs.has('notes') ? api.notes({ limit: 6 }) : Promise.resolve([]),
-          needs.has('today') ? api.blocks({ from: today, to: today }) : Promise.resolve([]),
+          ask(needs.has('balance'), () => api.balance(this.weekStart, this.weekEnd), null),
+          ask(
+            needs.has('trackerDays'),
+            () => api.trackerDays({ from: this.habitFrom, to: today }),
+            [],
+          ),
+          ask(needs.has('taskStats'), () => api.taskStats(), null),
+          ask(
+            needs.has('weekTasks'),
+            () => api.tasks({ dueFrom: this.weekStart, dueTo: this.weekEnd, limit: 500 }),
+            [],
+          ),
+          ask(needs.has('library'), () => api.libraryStats(), null),
+          ask(
+            needs.has('entries'),
+            () => api.entries({ from: this.entriesFrom, to: today, limit: 400 }),
+            [],
+          ),
+          ask(needs.has('notes'), () => api.notes({ limit: 6 }), []),
+          ask(needs.has('today'), () => api.blocks({ from: today, to: today }), []),
         ])
       if (mine !== this.#generation) return
 
@@ -352,6 +384,11 @@ class OverviewState {
       if (needs.has('purpose')) await purpose.load(true)
       if (needs.has('trackerDays')) await tracking.load()
       if (needs.has('goalActivity')) await purpose.refreshActivity()
+
+      // Last, and after everything above has landed. `handle` locks the
+      // window when the failure was a locked vault, and the `reset` that
+      // follows clears the partial page this call just drew.
+      if (failure !== null) await handle(failure)
     } catch (e) {
       await handle(e)
     } finally {

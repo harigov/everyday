@@ -143,13 +143,22 @@
       buckets.set(at, 0)
       at = addDays(at, 7)
     }
+    // Counted from the buckets, not from `overview.entries`. The store
+    // fetches the *longest* window any writing card asks for, so two cards
+    // set to thirty days and a year read the same array -- and the shorter
+    // one would have reported the longer one's totals under the words
+    // "in this window", contradicting the chart drawn directly beneath it.
+    let entries = 0
     let words = 0
     for (const entry of overview.entries) {
       const bucket = startOfWeek(entry.localDate, weekStart)
-      if (buckets.has(bucket)) buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1)
+      if (!buckets.has(bucket)) continue
+      buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1)
+      entries += 1
       words += entry.wordCount
     }
     return {
+      entries,
       words,
       points: [...buckets].map(([date, value]) => ({
         date,
@@ -376,7 +385,7 @@
   <!-- ── What you have written ─────────────────────────────────────── -->
 {:else if widget.type === 'writing'}
   <StatTile
-    value={plural(overview.entries.length, 'entry', 'entries')}
+    value={plural(writing.entries, 'entry', 'entries')}
     note="{writing.words.toLocaleString()} words in this window"
   />
   <ColumnChart points={writing.points} height={64} />

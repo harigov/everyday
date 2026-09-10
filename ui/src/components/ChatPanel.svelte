@@ -173,14 +173,17 @@
         return library.kind ? `the library, shelf "${library.kind.name}"` : 'the library'
       case 'notes':
         return notes.open ? `the notes app, the note "${notes.title}"` : 'the notes app'
-      case 'overview':
+      case 'overview': {
         // Named rather than described: it is a page of whatever cards its
         // owner put on it now, so "where the week adds up by role" would be
-        // a claim about somebody else's page.
-        return `their overview page, showing ${overview.widgets
-          .map((w) => specOf(w.type).label.toLowerCase())
-          .slice(0, 6)
-          .join(', ')}`
+        // a claim about somebody else's page. An empty page is one somebody
+        // is allowed to have, and saying "showing" followed by nothing at all
+        // would be the assistant told a sentence that stops mid-word.
+        const cards = overview.widgets.map((w) => specOf(w.type).label.toLowerCase()).slice(0, 6)
+        return cards.length > 0
+          ? `their overview page, showing ${cards.join(', ')}`
+          : 'their overview page, which they have not put anything on yet'
+      }
       case 'assistant':
         return `your own routines and what they did, on the "${PANE_LABELS[assistant.pane]}" page`
       default: {
