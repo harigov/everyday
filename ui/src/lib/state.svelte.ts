@@ -19,13 +19,18 @@ import type {
   Journal,
   JournalId,
   Purpose,
-  SearchHit,
+  EntryHit,
   VaultStatus,
 } from './types'
 import { VaultError } from './types'
 
-/** How often the backend is asked whether the idle timeout has elapsed. */
+/**
+ * How often the machine holding the vault is asked whether it has given up
+ * its key for idleness. Local windows only; a remote client is told instead.
+ */
 const AUTOLOCK_POLL_MS = 5_000
+/** How often this window checks its own keyboard against the screen timeout. */
+const IDLE_POLL_MS = 5_000
 /** Floor between "the user is still here" pings to the backend. */
 const TOUCH_MS = 15_000
 /** Floor between list refreshes triggered by an autosave. */
@@ -49,7 +54,15 @@ export type Screen = 'loading' | 'setup' | 'locked' | 'main' | 'error'
  * back to the app you were last in is what makes it feel like one program
  * rather than four bolted together.
  */
-export const SECTIONS = ['journal', 'todo', 'calendar', 'library', 'overview'] as const
+export const SECTIONS = [
+  'journal',
+  'notes',
+  'todo',
+  'calendar',
+  'library',
+  'overview',
+  'assistant',
+] as const
 export type Section = (typeof SECTIONS)[number]
 
 /**
@@ -135,6 +148,19 @@ class AppState {
    * `live.svelte.ts`.
    */
   unlocking = $state(false)
+  /**
+   * True when the lock screen is this window's own, over a vault that is
+   * still open.
+   *
+   * It decides which question the lock screen asks on the way back: prove who
+   * you are, or open the vault. See `unlock`.
+   */
+  screenOnly = $state(false)
+  /**
+   * Whether this machine holds the key, so the vault opens without a password
+   * when the process starts. Off unless somebody turned it on.
+   */
+  opensItself = $state(false)
   /** Servers this copy has paired with, for the picker. */
   remotes = $state<Connection[]>([])
 
@@ -146,7 +172,7 @@ class AppState {
   entry = $state<Entry | null>(null)
 
   query = $state('')
-  results = $state<SearchHit[]>([])
+  results = $state<EntryHit[]>([])
   searching = $state(false)
 
   showStarredOnly = $state(false)
@@ -204,6 +230,9 @@ class AppState {
   #writeStamp: { updatedAt: string; requestId: string } | null = null
   #searchTimer: ReturnType<typeof setTimeout> | null = null
   #lockTimer: ReturnType<typeof setInterval> | null = null
+  #screenTimer: ReturnType<typeof setInterval> | null = null
+  /** When this window last saw a person. Drives the screen timeout. */
+  #idleSince = Date.now()
   #lastTouch = 0
   #locking = false
   #lastListRefresh = 0
@@ -255,6 +284,7 @@ class AppState {
       this.status = boot.status
       this.remote = boot.remote
       this.remotes = boot.remotes
+      this.opensItself = boot.opensItself
       this.error = null
       if (!boot.vaultExists && !boot.remote) this.screen = 'setup'
       else if (boot.status?.unlocked) await this.enterMain()
@@ -351,15 +381,8 @@ class AppState {
    * that is already locked and, worse, would do it over the wire.
    */
   async lockedElsewhere() {
-    this.#baseVersion = null
-    this.conflict = false
-    for (const reset of this.#resetHooks) reset()
-    this.entry = null
-    this.entries = []
-    this.journals = []
-    this.results = []
-    this.query = ''
-    this.selectedEntry = null
+    this.#teardown()
+    this.screenOnly = false
     this.screen = 'locked'
   }
 
@@ -422,8 +445,41 @@ class AppState {
     return this.status?.capabilities?.goals === true && this.supportsTrackers
   }
 
+  /**
+   * Does this vault hold notes?
+   *
+   * Independent of everything else: nothing in the notes app reads a task or
+   * an entry, so it is offered on any backend that carries the domain.
+   */
+  get supportsNotes(): boolean {
+    return this.status?.capabilities?.notes === true
+  }
+
+  /**
+   * Does this vault hold the assistant's standing work?
+   *
+   * Separate from `supportsAssistant`: a backend could hold conversations and
+   * not routines, and the rail would still work. The Assistant app is offered
+   * on the first; its routines pane is drawn on the second.
+   */
+  get supportsRoutines(): boolean {
+    return this.status?.capabilities?.routines === true
+  }
+
+  /**
+   * Does this vault hold the assistant's own records at all?
+   *
+   * The same flag the rail reads. The Assistant app needs nothing more: even
+   * without routines it has a memory list and a thread history.
+   */
+  get supportsAssistant(): boolean {
+    return this.status?.capabilities?.agent === true
+  }
+
   /** Is this section available on the vault that is open? */
   canShow(section: Section): boolean {
+    if (section === 'assistant') return this.supportsAssistant
+    if (section === 'notes') return this.supportsNotes
     if (section === 'todo') return this.supportsTasks
     if (section === 'calendar') return this.supportsCalendar
     if (section === 'library') return this.supportsLibrary
@@ -504,6 +560,18 @@ class AppState {
     }
   }
 
+  /**
+   * Come back in.
+   *
+   * Two different questions wearing one screen. If the vault behind this
+   * window is still open -- because only *this* window's screen went dark,
+   * and the machine holding the vault carried on serving it to the phone in
+   * the other room and to the assistant's own scheduler -- then all that is
+   * needed is proof of the person, and `verify_password` gives it without
+   * opening or closing anything. If the vault is genuinely locked, this is an
+   * unlock. Both cost the same Argon2 derivation and both count against the
+   * same lockout, so neither is the cheap way in.
+   */
   async unlock(password: string) {
     this.error = null
     // Held across the whole thing, including `enterMain`. The backend raises a
@@ -511,13 +579,40 @@ class AppState {
     // by starting a second load of the same lists beside this one.
     this.unlocking = true
     try {
-      this.status = await api.unlock(password)
+      if (this.screenOnly) {
+        await api.verifyPassword(password)
+        this.status = await api.status()
+      } else {
+        this.status = await api.unlock(password)
+      }
+      this.screenOnly = false
       await this.enterMain()
     } catch (e) {
       this.error = errorMessage(e)
       throw e
     } finally {
       this.unlocking = false
+    }
+  }
+
+  /**
+   * Hide what this window is showing, and leave the vault open.
+   *
+   * What `Ctrl/Cmd L` and the idle timer do. The teardown is the same one
+   * `#lock` does -- decrypted content must not sit behind a lock screen -- but
+   * no `lock` is sent, because the vault is not this window's to close. Other
+   * windows keep working and the assistant keeps its appointments.
+   */
+  async lockScreen() {
+    if (this.#locking || this.screen !== 'main') return
+    this.#locking = true
+    try {
+      await this.flush()
+      this.#teardown()
+      this.screenOnly = true
+      this.screen = 'locked'
+    } finally {
+      this.#locking = false
     }
   }
 
@@ -537,9 +632,21 @@ class AppState {
     // Write before dropping the entry, or a lock taken within the autosave
     // window throws away whatever was typed in it.
     await this.flush()
-    // Drop decrypted content from the interface at the same moment the core
-    // drops it from memory; a locked app must not leave the last entry
-    // sitting behind the lock screen.
+    this.#teardown()
+    this.status = await api.lock()
+    this.screenOnly = false
+    this.screen = 'locked'
+  }
+
+  /**
+   * Drop decrypted content from the interface.
+   *
+   * Shared by all three ways out of the main screen -- this window locking its
+   * screen, this window locking the vault, and the vault being locked
+   * somewhere else -- because forgetting one of the lists would be a leak
+   * behind a lock screen, and three copies of the sweep is three chances to.
+   */
+  #teardown() {
     this.stopTimers()
     // A retry scheduled by a failed save has nothing left to write once the
     // entry below is dropped, and would fire against a locked vault.
@@ -555,8 +662,6 @@ class AppState {
     this.results = []
     this.query = ''
     this.selectedEntry = null
-    this.status = await api.lock()
-    this.screen = 'locked'
   }
 
   private async enterMain() {
@@ -566,14 +671,34 @@ class AppState {
     if (!this.canShow(this.section)) this.section = 'journal'
     await this.refreshJournals()
     await this.refreshEntries()
-    this.startAutoLockPolling()
+    this.startLockTimers()
   }
 
-  private startAutoLockPolling() {
+  /**
+   * The two clocks that can send this window back to the lock screen.
+   *
+   * The screen timer is *local*: idleness at this keyboard is a fact about
+   * this window, so it is measured here and costs no round trip at all. That
+   * is also what makes it right for a remote session, where the old
+   * five-second poll was a request over TLS to ask whether somebody had
+   * touched a keyboard on this side of the wire.
+   *
+   * The key timer belongs to the machine holding the vault, so a window in
+   * that process asks it. A remote client does not: it is told by the
+   * `lockState` event, which it has to act on anyway.
+   */
+  private startLockTimers() {
     this.stopTimers()
+    this.#idleSince = Date.now()
+    this.#screenTimer = setInterval(() => {
+      const seconds = this.status?.autoLockSeconds ?? 0
+      if (seconds <= 0 || this.screen !== 'main') return
+      if (Date.now() - this.#idleSince >= seconds * 1000) void this.lockScreen()
+    }, IDLE_POLL_MS)
+    if (this.remote) return
     this.#lockTimer = setInterval(async () => {
       try {
-        if (await api.pollAutoLock()) await this.lock()
+        if (await api.pollAutoLock()) await this.lockedElsewhere()
       } catch {
         /* a transient failure here must never crash the interface */
       }
@@ -583,12 +708,15 @@ class AppState {
   stopTimers() {
     if (this.#lockTimer) clearInterval(this.#lockTimer)
     this.#lockTimer = null
+    if (this.#screenTimer) clearInterval(this.#screenTimer)
+    this.#screenTimer = null
     if (this.#listTimer) clearTimeout(this.#listTimer)
     this.#listTimer = null
   }
 
-  /** Called from real user interaction to defer the idle auto-lock. */
+  /** Called from real user interaction. Defers both lock clocks. */
   touch() {
+    this.#idleSince = Date.now()
     // The backend needs to know the user is alive, not how fast they type.
     // Unthrottled this was one IPC round trip per keystroke.
     const now = Date.now()
@@ -1145,7 +1273,12 @@ class AppState {
     this.searching = true
     this.#searchTimer = setTimeout(async () => {
       try {
-        this.results = await api.search(q, this.selectedJournal, 50)
+        // Entries only. This box is the journal's, and quietly mixing notes
+        // into a list whose rows carry a journal colour and a date would be
+        // answering a question nobody asked. Narrowed here rather than cast
+        // at the drawing end, so the rows genuinely have the fields they use.
+        const hits = await api.search(q, this.selectedJournal, 50, 'entry')
+        this.results = hits.filter((h): h is EntryHit => h.type === 'entry')
       } catch (e) {
         await handle(e)
       } finally {

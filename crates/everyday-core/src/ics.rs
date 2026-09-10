@@ -54,6 +54,14 @@ use jiff::{SignedDuration, Timestamp};
 /// `UNTIL` is in the year 4000 — not a limit anyone should reach.
 pub const EXPANSION_CAP: usize = 1_500;
 
+/// How many attendees are kept from one event.
+///
+/// A meeting with more people than this in it is a broadcast, and the names
+/// are of no use to anybody preparing for it -- while the text of them all
+/// would go into a prompt and be paid for. Generous enough for every meeting
+/// anybody actually prepares for.
+pub const MAX_ATTENDEES: usize = 25;
+
 /// One `VEVENT`, before recurrence is expanded.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IcsEvent {
@@ -62,6 +70,9 @@ pub struct IcsEvent {
     pub description: String,
     pub location: String,
     pub organizer: String,
+    /// Everybody else invited, as the feed gives them: a name where there is
+    /// one, an address where there is not.
+    pub attendees: Vec<String>,
     pub url: String,
     pub status: EventStatus,
     pub all_day: bool,
@@ -450,6 +461,7 @@ struct Draft {
     description: String,
     location: String,
     organizer: String,
+    attendees: Vec<String>,
     url: String,
     status: Option<EventStatus>,
     transparent: bool,
@@ -481,6 +493,28 @@ impl Draft {
                     .map(|cn| unescape(cn).trim().to_string())
                     .filter(|cn| !cn.is_empty())
                     .unwrap_or_else(|| line.value.trim().trim_start_matches("mailto:").to_string());
+            }
+            // One line per person, so this appends rather than assigns. The
+            // same `CN`-then-address rule `ORGANIZER` follows, for the same
+            // reason: "Priya Raman" is what belongs on a card.
+            //
+            // Duplicates are dropped, because a feed that lists somebody as
+            // both an attendee and a delegate is not saying they are two
+            // people. The cap is there because an all-hands with four hundred
+            // invitees is a payload nobody's brief needs -- and this is text
+            // that goes into a prompt.
+            "ATTENDEE" => {
+                if self.attendees.len() >= MAX_ATTENDEES {
+                    return;
+                }
+                let who = line
+                    .param("CN")
+                    .map(|cn| unescape(cn).trim().to_string())
+                    .filter(|cn| !cn.is_empty())
+                    .unwrap_or_else(|| line.value.trim().trim_start_matches("mailto:").to_string());
+                if !who.is_empty() && !self.attendees.iter().any(|a| a.eq_ignore_ascii_case(&who)) {
+                    self.attendees.push(who);
+                }
             }
             "STATUS" => {
                 self.status = match line.value.trim().to_ascii_uppercase().as_str() {
@@ -534,6 +568,7 @@ impl Draft {
             description: self.description,
             location: self.location,
             organizer: self.organizer,
+            attendees: self.attendees,
             url: self.url,
             status: self.status.unwrap_or_default(),
             all_day,
@@ -996,6 +1031,7 @@ fn materialise(
         all_day: source.all_day,
         status: source.status,
         organizer: source.organizer.clone(),
+        attendees: source.attendees.clone(),
         url: source.url.clone(),
         busy: source.busy && source.status != EventStatus::Cancelled,
         updated_at: Timestamp::now(),
@@ -1444,5 +1480,46 @@ mod tests {
         assert!(parse("this is not a calendar at all").events.is_empty());
         // A truncated download: BEGIN with no END.
         assert!(parse("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a\r\n").events.is_empty());
+    }
+    #[test]
+    fn attendees_are_read_by_name_where_the_feed_gives_one() {
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:m1\r\n\
+             DTSTART:20260914T140000Z\r\nDTEND:20260914T150000Z\r\nSUMMARY:Review\r\n\
+             ORGANIZER;CN=Priya Raman:mailto:priya@example.com\r\n\
+             ATTENDEE;CN=Sam Weatherby;PARTSTAT=ACCEPTED:mailto:sam@example.com\r\n\
+             ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:noname@example.com\r\n\
+             ATTENDEE;CN=Sam Weatherby:mailto:sam.weatherby@example.com\r\n\
+             END:VEVENT\r\nEND:VCALENDAR";
+        let parsed = parse(ics);
+        let event = &parsed.events[0];
+        assert_eq!(event.organizer, "Priya Raman");
+        assert_eq!(
+            event.attendees,
+            vec!["Sam Weatherby".to_string(), "noname@example.com".to_string()],
+            "a name where there is one, an address where there is not, and each person once"
+        );
+    }
+
+    #[test]
+    fn an_event_with_nobody_on_it_has_no_attendees_rather_than_an_empty_name() {
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:m2\r\n\
+             DTSTART:20260914T140000Z\r\nDTEND:20260914T150000Z\r\nSUMMARY:Dentist\r\n\
+             END:VEVENT\r\nEND:VCALENDAR";
+        let parsed = parse(ics);
+        assert!(parsed.events[0].attendees.is_empty());
+    }
+
+    #[test]
+    fn an_all_hands_is_capped_rather_than_carried_into_a_prompt() {
+        let mut ics = String::from(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:m3\r\n\
+             DTSTART:20260914T140000Z\r\nDTEND:20260914T150000Z\r\nSUMMARY:All hands\r\n",
+        );
+        for i in 0..(MAX_ATTENDEES + 20) {
+            ics.push_str(&format!("ATTENDEE;CN=Person {i}:mailto:p{i}@example.com\r\n"));
+        }
+        ics.push_str("END:VEVENT\r\nEND:VCALENDAR");
+        let parsed = parse(&ics);
+        assert_eq!(parsed.events[0].attendees.len(), MAX_ATTENDEES);
     }
 }

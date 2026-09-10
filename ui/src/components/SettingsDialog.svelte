@@ -19,11 +19,12 @@
   import { api } from '../lib/api'
   import { agent } from '../lib/agent.svelte'
   import { humanBytes, plural } from '../lib/format'
-  import { trapFocus } from '../lib/focus'
+  import { focusOnMount, trapFocus } from '../lib/focus'
   import { panels, type SettingsTab } from '../lib/panels.svelte'
   import { app } from '../lib/state.svelte'
   import { tray } from '../lib/tray.svelte'
   import AgentPanel from './AgentPanel.svelte'
+  import ProfilePanel from './ProfilePanel.svelte'
   import SharePanel from './SharePanel.svelte'
   import Icon from './Icon.svelte'
   import type { IconName } from '../lib/icons'
@@ -72,6 +73,7 @@
 
   const TABS: { id: SettingsTab; label: string; icon: IconName }[] = [
     { id: 'general', label: 'General', icon: 'settings' },
+    { id: 'profile', label: 'You', icon: 'star' },
     { id: 'assistant', label: 'Assistant', icon: 'sparkle' },
     { id: 'vault', label: 'Vault', icon: 'lock' },
   ]
@@ -99,6 +101,58 @@
     app.status = await api.status()
   }
 
+  async function setForgetKey(seconds: number) {
+    await api.setForgetKey(seconds)
+    app.status = await api.status()
+  }
+
+  let opensItself = $state(app.opensItself)
+  let askingForKey = $state(false)
+  let keyPassword = $state('')
+
+  /**
+   * Turning it on asks for the password; turning it off does not.
+   *
+   * The asymmetry is the point. This is the one switch whose whole effect is
+   * that the password stops being needed, so switching it *on* should cost the
+   * password once, from somebody who knows it. Switching it off only ever
+   * makes things stricter, and should not be gated behind a thing somebody may
+   * have turned this on precisely because they cannot remember.
+   */
+  async function setOpensItself(on: boolean) {
+    notice = null
+    if (on) {
+      askingForKey = true
+      return
+    }
+    try {
+      opensItself = await api.setOpensItself(false, null)
+      app.opensItself = opensItself
+      notice = 'It will ask for the password again.'
+    } catch (err) {
+      notice = err instanceof Error ? err.message : String(err)
+    }
+  }
+
+  async function confirmOpensItself(e: Event) {
+    e.preventDefault()
+    try {
+      opensItself = await api.setOpensItself(true, keyPassword)
+      app.opensItself = opensItself
+      notice = "The key is in this computer's keychain."
+    } catch (err) {
+      notice = err instanceof Error ? err.message : String(err)
+    } finally {
+      keyPassword = ''
+      askingForKey = false
+    }
+  }
+
+  function cancelOpensItself() {
+    keyPassword = ''
+    askingForKey = false
+  }
+
   // The same strip of the screen has three names. Calling it the wrong one
   // is how a setting becomes unfindable: nobody on macOS goes looking for a
   // "system tray".
@@ -114,6 +168,15 @@
     { label: '5 min', value: 300 },
     { label: '15 min', value: 900 },
     { label: '1 hour', value: 3600 },
+  ]
+
+  // Longer than the screen's, and starting at never, because these are the
+  // hours a vault is asleep rather than the minutes a window is idle.
+  const KEY_CHOICES = [
+    { label: 'Never', value: 0 },
+    { label: '1 hour', value: 3600 },
+    { label: '8 hours', value: 28_800 },
+    { label: '24 hours', value: 86_400 },
   ]
 </script>
 
@@ -153,6 +216,8 @@
     <div class="body scroll">
       {#if tab === 'assistant'}
         <AgentPanel />
+      {:else if tab === 'profile'}
+        <ProfilePanel />
       {:else if tab === 'general'}
         <section>
           <span class="eyebrow">Appearance</span>
@@ -246,7 +311,80 @@
                 </button>
               {/each}
             </div>
-            <p class="hint">How long the vault may sit untouched before it seals itself again.</p>
+            <p class="hint">
+              How long this window may sit untouched before it hides what it is showing and asks for
+              the password again. The vault stays open behind it.
+            </p>
+          </section>
+
+          <section>
+            <span class="eyebrow">Forget the key after</span>
+            <div class="segmented">
+              {#each KEY_CHOICES as c (c.value)}
+                <button
+                  class="seg"
+                  class:on={status.forgetKeySeconds === c.value}
+                  onclick={() => setForgetKey(c.value)}
+                >
+                  {c.label}
+                </button>
+              {/each}
+            </div>
+            <p class="hint">
+              The heavier of the two. This computer holds the key while the vault is open, and
+              serves it to your other windows, to any device you have paired, and to the assistant's
+              own routines. Forgetting it stops all of them until somebody types the password again.
+              Quitting always forgets it.
+            </p>
+          </section>
+
+          <section>
+            <span class="eyebrow">Opening this vault</span>
+            <!-- The box is driven by `opensItself` and nothing else, and the
+                 handler puts it straight back: turning it on only opens the
+                 password step, so a cancelled or refused attempt must not
+                 leave a switch that says the key is kept when it is not. -->
+            <label class="toggle">
+              <input
+                type="checkbox"
+                checked={opensItself}
+                onchange={(e) => {
+                  e.currentTarget.checked = opensItself
+                  void setOpensItself(!opensItself)
+                }}
+              />
+              <span>
+                <b>Open without a password when the app starts</b>
+                <small>
+                  This computer keeps the key in its own keychain. The vault is then as safe as your
+                  login here, rather than as safe as its password — anybody already sitting at this
+                  desk, logged in as you, can read it.
+                </small>
+              </span>
+            </label>
+            <p class="hint">
+              Worth it for one thing: the assistant's routines run where the vault is, and a vault
+              that is shut from the moment this machine boots until somebody types a password is a
+              vault whose morning brief does not happen.
+            </p>
+            {#if askingForKey}
+              <form onsubmit={confirmOpensItself}>
+                <input
+                  class="field"
+                  type="password"
+                  placeholder="Your vault password"
+                  bind:value={keyPassword}
+                  autocomplete="current-password"
+                  use:focusOnMount
+                />
+                <div class="row">
+                  <button class="btn" type="button" onclick={cancelOpensItself}>Cancel</button>
+                  <button class="btn btn-primary" type="submit" disabled={!keyPassword}>
+                    Keep the key
+                  </button>
+                </div>
+              </form>
+            {/if}
           </section>
 
           <section>

@@ -19,7 +19,9 @@
   import { panels } from '../lib/panels.svelte'
   import { app } from '../lib/state.svelte'
   import { todo } from '../lib/todo.svelte'
+  import { assistant, PANE_LABELS } from '../lib/assistant.svelte'
   import { library } from '../lib/library.svelte'
+  import { notes } from '../lib/notes.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import ToolCardView from './ToolCard.svelte'
@@ -160,6 +162,12 @@
         return 'the calendar'
       case 'library':
         return library.kind ? `the library, shelf "${library.kind.name}"` : 'the library'
+      case 'notes':
+        return notes.open ? `the notes app, the note "${notes.title}"` : 'the notes app'
+      case 'overview':
+        return 'the overview, where the week adds up by role'
+      case 'assistant':
+        return `your own routines and what they did, on the "${PANE_LABELS[assistant.pane]}" page`
       default: {
         const entry = app.entry
         if (!entry) return 'the journal'

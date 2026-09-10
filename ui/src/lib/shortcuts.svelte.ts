@@ -33,18 +33,20 @@ import { agent } from './agent.svelte'
 import { calendar } from './calendar.svelte'
 import { SEQUENCE_MS, chordOf, isTyping, match, type Binding } from './keys'
 import { library } from './library.svelte'
+import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
 import { panels } from './panels.svelte'
+import { assistant } from './assistant.svelte'
 import { app, type Section } from './state.svelte'
 import { todo } from './todo.svelte'
 
 /**
  * Put the caret in whatever the open app calls its search.
  *
- * Found by attribute rather than by selector-per-app: three of the four have
- * a search field, they are in three different components, and the alternative
- * is this function knowing all three class names. `data-search` is the
- * contract, and a fourth app gets the shortcut by wearing it.
+ * Found by attribute rather than by selector-per-app: several apps have a
+ * search field, they are in different components, and the alternative is this
+ * function knowing all their class names. `data-search` is the contract, and
+ * a new app gets the shortcut by wearing it.
  */
 function focusSearch() {
   document.querySelector<HTMLInputElement>('[data-search]')?.focus()
@@ -127,6 +129,13 @@ export const ACTIONS: Binding[] = [
     run: () => app.setSection('journal'),
   },
   {
+    keys: 'g n',
+    label: 'Notes',
+    group: 'Go to',
+    when: () => anywhere() && app.canShow('notes'),
+    run: () => app.setSection('notes'),
+  },
+  {
     keys: 'g t',
     label: 'Todo',
     group: 'Go to',
@@ -153,6 +162,13 @@ export const ACTIONS: Binding[] = [
     group: 'Go to',
     when: () => anywhere() && app.canShow('overview'),
     run: () => app.setSection('overview'),
+  },
+  {
+    keys: 'g a',
+    label: 'Assistant',
+    group: 'Go to',
+    when: () => anywhere() && app.canShow('assistant'),
+    run: () => app.setSection('assistant'),
   },
   {
     keys: 'mod+j',
@@ -229,11 +245,11 @@ export const ACTIONS: Binding[] = [
   },
   {
     keys: 'mod+l',
-    label: 'Lock the vault',
+    label: 'Lock the screen',
     group: 'Everywhere',
     whileTyping: true,
     when: () => app.screen === 'main',
-    run: () => void app.lock(),
+    run: () => void app.lockScreen(),
   },
   {
     keys: '?',
@@ -529,8 +545,64 @@ export const ACTIONS: Binding[] = [
     },
   },
   {
+    id: 'assistant:runs',
+    label: 'What the assistant did',
+    group: 'Assistant',
+    keywords: ['runs', 'log', 'routine', 'brief', 'report'],
+    icon: 'inbox',
+    tray: true,
+    when: () => app.screen === 'main' && app.supportsAssistant,
+    run: async () => {
+      if (await app.goTo('assistant')) assistant.setPane('runs')
+    },
+  },
+  {
+    id: 'assistant:new-routine',
+    label: 'New routine',
+    group: 'Assistant',
+    keywords: ['schedule', 'standing', 'every day', 'automate'],
+    icon: 'clock',
+    tray: true,
+    when: () => app.screen === 'main' && app.supportsRoutines,
+    run: async () => {
+      if (await app.goTo('assistant')) await assistant.draft()
+    },
+  },
+  {
+    label: 'What the assistant remembers',
+    group: 'Assistant',
+    keywords: ['memory', 'facts', 'forget'],
+    icon: 'sparkle',
+    when: () => app.screen === 'main' && app.supportsAssistant,
+    run: async () => {
+      if (await app.goTo('assistant')) assistant.setPane('memory')
+    },
+  },
+  {
+    id: 'notes:new',
+    label: 'New note',
+    group: 'Notes',
+    keywords: ['write', 'jot', 'memo', 'draft'],
+    icon: 'pencil',
+    tray: true,
+    when: () => app.screen === 'main' && app.supportsNotes,
+    run: async () => {
+      if (await app.goTo('notes')) await notes.create()
+    },
+  },
+  {
+    label: 'Search notes',
+    group: 'Notes',
+    keywords: ['find', 'note'],
+    icon: 'search',
+    when: () => app.screen === 'main' && app.supportsNotes,
+    run: async () => {
+      if (await app.goTo('notes')) focusSearch()
+    },
+  },
+  {
     id: 'vault:lock',
-    label: 'Lock now',
+    label: 'Lock this screen',
     group: 'Vault',
     keywords: ['sign out', 'seal', 'away'],
     icon: 'lock',
@@ -539,7 +611,22 @@ export const ACTIONS: Binding[] = [
     raise: false,
     // Nothing to lock on a vault with no password on it.
     when: () => app.screen === 'main' && app.status?.encrypted === true,
-    run: () => app.lock(),
+    run: () => void app.lockScreen(),
+  },
+  {
+    id: 'vault:lock-all',
+    label: 'Lock the vault everywhere',
+    group: 'Vault',
+    keywords: ['sign out', 'seal', 'forget', 'key', 'everywhere', 'all'],
+    icon: 'lock',
+    tray: true,
+    raise: false,
+    // The heavier of the two, and worth spelling out where it is offered:
+    // this drops the key. Every other window looking at this vault goes to
+    // its lock screen, and the assistant stops until somebody types the
+    // password again.
+    when: () => app.screen === 'main' && app.status?.encrypted === true,
+    run: () => void app.lock(),
   },
 
   // ── Palette only ────────────────────────────────────────────────────
@@ -555,6 +642,14 @@ export const ACTIONS: Binding[] = [
     icon: 'settings',
     when: () => app.screen === 'main',
     run: () => panels.openSettings(),
+  },
+  {
+    label: 'About you',
+    group: 'Everywhere',
+    keywords: ['profile', 'name', 'birthday', 'me', 'owner'],
+    icon: 'star',
+    when: () => app.screen === 'main',
+    run: () => panels.openSettings('profile'),
   },
   {
     label: 'Habits',
@@ -592,7 +687,9 @@ export const ACTIONS: Binding[] = [
 
 /** What "the next thing" means in the app that is open. */
 function create() {
-  if (app.section === 'todo') todo.focusCapture()
+  if (app.section === 'assistant') void assistant.draft()
+  else if (app.section === 'notes') void notes.create()
+  else if (app.section === 'todo') todo.focusCapture()
   else if (app.section === 'calendar') void calendar.bookNow()
   else if (app.section === 'library') library.focusCapture()
   else if (app.section === 'overview') newGoal()

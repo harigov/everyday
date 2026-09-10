@@ -63,6 +63,23 @@ pub struct Service {
     /// already records the failure itself, and reopening the app is a
     /// reasonable moment to be told again.
     reported_feeds: RwLock<HashSet<CalendarId>>,
+    /// Routines whose failure has already been reported this session. See
+    /// [`Service::routine_failed`].
+    reported_routines: RwLock<HashSet<String>>,
+    /// Runs this process is carrying out, by id.
+    ///
+    /// A row in the vault reading `Running` says one of two things and cannot
+    /// tell them apart on its own: a run happening now, or one a process that
+    /// died left behind. This says which, because it exists only in memory --
+    /// a run this process is not carrying out is not in here, whatever the
+    /// row says.
+    claimed_runs: RwLock<HashSet<String>>,
+    /// The routine running right now, by name, if one is.
+    ///
+    /// Here rather than derived from a `Running` row, because a row is also
+    /// what a run abandoned by a dead process looks like. This is in memory
+    /// and therefore cannot lie about the present.
+    running_routine: RwLock<Option<String>>,
 }
 
 impl Default for Service {
@@ -80,6 +97,9 @@ impl Service {
             pending: Arc::default(),
             idempotency: Idempotency::default(),
             reported_feeds: RwLock::new(HashSet::new()),
+            reported_routines: RwLock::new(HashSet::new()),
+            claimed_runs: RwLock::new(HashSet::new()),
+            running_routine: RwLock::new(None),
         }
     }
 
@@ -125,6 +145,9 @@ impl Service {
     /// rather than failing.
     pub fn close(&self) {
         self.reported_feeds.write().unwrap().clear();
+        self.reported_routines.write().unwrap().clear();
+        self.claimed_runs.write().unwrap().clear();
+        self.running_routine.write().unwrap().take();
         let previous = self.vault.write().unwrap().take();
         if let Some(vault) = &previous {
             // Drop the key and the decrypted index now rather than whenever the
@@ -187,6 +210,49 @@ impl Service {
     /// Note that `id`'s refresh worked, so the next outage is news again.
     pub fn feed_recovered(&self, id: CalendarId) {
         self.reported_feeds.write().unwrap().remove(&id);
+    }
+
+    // ---- routines --------------------------------------------------------
+
+    /// Note that a routine's run failed. True the first time, so a routine
+    /// whose endpoint has been unreachable every morning for a week says so
+    /// once rather than seven times. The same courtesy `feed_failed` extends
+    /// to a calendar that has stopped answering, and the same session scope:
+    /// cleared when the vault closes, so the next outage is news again.
+    pub fn routine_failed(&self, id: String) -> bool {
+        self.reported_routines.write().unwrap().insert(id)
+    }
+
+    /// Note that a routine ran, so its next failure is news.
+    pub fn routine_recovered(&self, id: String) {
+        self.reported_routines.write().unwrap().remove(&id);
+    }
+
+    /// Take this run for the life of the returned guard.
+    ///
+    /// Released on drop, including on a panic or an early return, which is
+    /// what makes "this process is carrying it out" a fact rather than a flag
+    /// somebody has to remember to clear.
+    pub fn claim_run(self: &Arc<Self>, id: String) -> RunClaim {
+        self.claimed_runs.write().unwrap().insert(id.clone());
+        RunClaim { service: self.clone(), id }
+    }
+
+    /// Is this process carrying out that run?
+    pub fn claims_run(&self, id: &str) -> bool {
+        self.claimed_runs.read().unwrap().contains(id)
+    }
+
+    /// Say which routine is running, or `None` when none is.
+    ///
+    /// Read by the tray, so that a process staying resident to keep its
+    /// appointments can say what it is doing rather than merely being there.
+    pub fn set_running_routine(&self, name: Option<String>) {
+        *self.running_routine.write().unwrap() = name;
+    }
+
+    pub fn running_routine(&self) -> Option<String> {
+        self.running_routine.read().unwrap().clone()
     }
 
     // ---- dispatch -------------------------------------------------------
@@ -270,6 +336,9 @@ impl Service {
             prompt: args.prompt,
             context: args.context,
             channel: sink,
+            // Somebody is sitting in front of this one, so a destructive call
+            // stops and asks them.
+            unattended: None,
         })
         .await?;
         self.events().changed(crate::events::Change {
@@ -340,4 +409,21 @@ where
     tokio::task::spawn_blocking(f)
         .await
         .map_err(|e| CommandError::new("panic", format!("background task failed: {e}")))?
+}
+
+/// A run this process has taken, released when it is dropped.
+///
+/// See [`Service::claim_run`]. The whole value of it is the `Drop`: a claim
+/// that had to be released by hand would be a claim somebody eventually
+/// forgets to release on the error path, and the symptom would be a run stuck
+/// on the app bar until the application was restarted.
+pub struct RunClaim {
+    service: Arc<Service>,
+    id: String,
+}
+
+impl Drop for RunClaim {
+    fn drop(&mut self) {
+        self.service.claimed_runs.write().unwrap().remove(&self.id);
+    }
 }

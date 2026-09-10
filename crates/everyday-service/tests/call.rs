@@ -15,14 +15,22 @@ use std::sync::{Arc, Mutex};
 
 /// A vault in a temporary directory, with a service around it.
 fn service() -> (Arc<Service>, tempfile::TempDir) {
+    with_password(None)
+}
+
+/// The same, with a password on it, for the tests about locking. The KDF is
+/// the cheap one: these tests are about which door is being knocked on, not
+/// about how long knocking takes.
+fn with_password(password: Option<&str>) -> (Arc<Service>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let config = everyday_core::VaultConfig {
         name: "Test".into(),
         backend: "sqlite".into(),
         settings: Default::default(),
-        password: None,
-        kdf: Default::default(),
+        password: password.map(str::to_string),
+        kdf: everyday_core::crypto::KdfParams::insecure_fast(),
         auto_lock_seconds: 900,
+        forget_key_seconds: 0,
     };
     let vault = everyday_vault::create(dir.path(), config).unwrap();
     // A vault with no journal is a dead end, and it is whoever creates one --
@@ -310,4 +318,184 @@ async fn a_cancelled_request_does_not_park_its_retry() {
         Ok(_) => {}
         Err(e) => assert_eq!(e.code, "retry", "{e}"),
     }
+}
+
+// ── two locks ───────────────────────────────────────────────────────────
+//
+// A screen and a key are different things, and the commands that end them
+// are different commands. These check the seam rather than the crypto, which
+// the core covers.
+
+#[tokio::test]
+async fn a_password_can_be_checked_without_unlocking_anything() {
+    let (svc, _dir) = with_password(Some("correct horse"));
+    let vault = svc.get().unwrap();
+
+    call(&svc, "verify_password", json!({ "password": "correct horse" })).await;
+    assert!(vault.is_unlocked(), "checking a password must not close an open vault");
+
+    let err = fails(&svc, "verify_password", json!({ "password": "wrong" })).await;
+    assert_eq!(err.code, "bad_password");
+    assert!(vault.is_unlocked(), "a wrong guess must not close it either");
+
+    // And from behind the lock screen the vault stays shut, which is the
+    // whole point: proving who you are is not the same as opening anything.
+    call(&svc, "lock", json!({})).await;
+    call(&svc, "verify_password", json!({ "password": "correct horse" })).await;
+    assert!(!vault.is_unlocked(), "checking a password must not open a locked vault");
+}
+
+#[tokio::test]
+async fn checking_a_password_announces_no_change() {
+    let (svc, _dir) = with_password(Some("correct horse"));
+    let events = Arc::new(Collector::default());
+    svc.set_events(events.clone());
+
+    call(&svc, "verify_password", json!({ "password": "correct horse" })).await;
+    assert!(
+        events.changes.lock().unwrap().is_empty(),
+        "nothing was written, so no client has anything to reload"
+    );
+}
+
+#[tokio::test]
+async fn a_person_defers_the_key_timeout_and_the_assistant_does_not() {
+    let (svc, _dir) = service();
+    let vault = svc.get().unwrap();
+    call(&svc, "set_forget_key", json!({ "seconds": 1 })).await;
+    vault.touch();
+
+    // The assistant reads this vault every minute of every day. If that
+    // counted as somebody being here, a vault with one routine on it would
+    // never let go of its key whatever the timeout said.
+    let robot = Ctx { caller: Caller::Assistant("run".into()), ..Ctx::local() };
+    for _ in 0..3 {
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        svc.call(robot.clone(), "list_journals", json!({})).await.unwrap();
+    }
+    assert!(vault.forget_key_if_idle(), "the assistant is not a person");
+
+    // A window is.
+    call(&svc, "unlock", json!({ "password": "" })).await;
+    call(&svc, "set_forget_key", json!({ "seconds": 1 })).await;
+    for _ in 0..3 {
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        call(&svc, "list_journals", json!({})).await;
+    }
+    assert!(!vault.forget_key_if_idle(), "somebody is plainly still here");
+}
+
+#[tokio::test]
+async fn the_poll_that_checks_the_key_timeout_does_not_reset_it() {
+    // The window asks this every five seconds to find out whether the vault
+    // has been idle long enough to give up its key. A poll that deferred the
+    // timeout on its way to reading it would reset the clock it was about to
+    // check, and the timeout would never fire while any window was open.
+    let (svc, _dir) = service();
+    let vault = svc.get().unwrap();
+    call(&svc, "set_forget_key", json!({ "seconds": 1 })).await;
+    vault.touch();
+
+    for _ in 0..4 {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        // Twice a second, as a window does.
+        let locked = call(&svc, "poll_auto_lock", json!({})).await;
+        if locked == serde_json::Value::Bool(true) {
+            assert!(!vault.is_unlocked(), "it said it locked, so it must have");
+            return;
+        }
+    }
+    panic!("polling for the timeout kept the timeout from ever firing");
+}
+
+#[tokio::test]
+async fn the_assistant_stamps_its_writes_with_its_own_name() {
+    let (svc, _dir) = service();
+    let events = Arc::new(Collector::default());
+    svc.set_events(events.clone());
+
+    let journal = call(&svc, "new_journal", json!({ "name": "Made by the assistant" })).await;
+    let ctx = Ctx { caller: Caller::Assistant("run-1".into()), ..Ctx::local() };
+    svc.call(ctx, "save_journal", json!({ "journal": journal })).await.unwrap();
+
+    let changes = events.changes.lock().unwrap();
+    let change = changes.first().expect("a write announces itself");
+    assert_eq!(
+        change.origin.as_deref(),
+        Some("assistant"),
+        "not `local`: a window drops its own origin, and would drop this with it"
+    );
+}
+
+#[tokio::test]
+async fn searching_is_narrowed_by_what_the_caller_may_read() {
+    // One command over two domains, so the scope check is in the body rather
+    // than on the entry. Left at `Journals` it meant a device paired to read
+    // notes could not search them, and one paired to read journals could read
+    // note bodies -- the exact thing `Scope::Notes` was added to prevent.
+    let (svc, _dir) = service();
+    let journal =
+        call(&svc, "list_journals", json!({})).await[0]["id"].as_str().unwrap().to_string();
+    let entry = call(&svc, "new_entry", json!({ "journalId": journal })).await;
+    let mut entry = entry;
+    entry["title"] = json!("Sailing to the island");
+    call(&svc, "save_entry", json!({ "entry": entry })).await;
+
+    let note = call(&svc, "new_note", json!({})).await;
+    let mut note = note;
+    note["title"] = json!("Sailing rig notes");
+    call(&svc, "save_note", json!({ "note": note })).await;
+
+    let query = json!({ "query": "sailing", "limit": 20 });
+    let kinds = |v: &serde_json::Value| -> Vec<String> {
+        v.as_array().unwrap().iter().map(|h| h["type"].as_str().unwrap().to_string()).collect()
+    };
+
+    // Everything, for a caller that holds everything.
+    let all = call(&svc, "search", query.clone()).await;
+    assert_eq!(kinds(&all).len(), 2, "one index over both");
+
+    // Journals only: narrowed rather than refused, so it still gets its own.
+    let only_journals = Ctx {
+        caller: Caller::Device("phone".into()),
+        scopes: vec![Scope::Journals],
+        ..Ctx::local()
+    };
+    let hits = svc.call(only_journals, "search", query.clone()).await.expect("entries");
+    assert_eq!(kinds(&hits), vec!["entry"], "and no note bodies");
+
+    // Notes only: the browser-extension case, which used to be refused.
+    let only_notes =
+        Ctx { caller: Caller::Device("clip".into()), scopes: vec![Scope::Notes], ..Ctx::local() };
+    let hits = svc.call(only_notes, "search", query.clone()).await.expect("notes");
+    assert_eq!(kinds(&hits), vec!["note"]);
+
+    // Asking for the kind it may not read is refused rather than narrowed.
+    let only_notes =
+        Ctx { caller: Caller::Device("clip".into()), scopes: vec![Scope::Notes], ..Ctx::local() };
+    let err = svc
+        .call(only_notes, "search", json!({ "query": "sailing", "kind": "entry", "limit": 20 }))
+        .await
+        .expect_err("asking for entries without the scope");
+    assert_eq!(err.code, "forbidden");
+}
+
+#[tokio::test]
+async fn a_hit_says_which_kind_it_is_in_the_spelling_a_client_reads() {
+    // `rename_all` renames an enum's *variants*; the fields inside them need
+    // `rename_all_fields`. Without it this went out as `journal_id` against an
+    // interface reading `journalId`, and the journal's search list drew rows
+    // with no colour and no date.
+    let (svc, _dir) = service();
+    let journal =
+        call(&svc, "list_journals", json!({})).await[0]["id"].as_str().unwrap().to_string();
+    let mut entry = call(&svc, "new_entry", json!({ "journalId": journal })).await;
+    entry["title"] = json!("Herons");
+    call(&svc, "save_entry", json!({ "entry": entry })).await;
+
+    let hits = call(&svc, "search", json!({ "query": "herons", "limit": 5 })).await;
+    let hit = &hits[0];
+    assert_eq!(hit["type"], "entry");
+    assert!(hit["journalId"].is_string(), "camelCase on the wire: got {hit}");
+    assert!(hit["localDate"].is_string(), "got {hit}");
 }

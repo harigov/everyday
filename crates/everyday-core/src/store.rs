@@ -32,7 +32,9 @@ use crate::model::{Entry, EntrySummary, Journal};
 use crate::store::agent::AgentStore;
 use crate::store::calendars::CalendarStore;
 use crate::store::library::LibraryStore;
+use crate::store::notes::NoteStore;
 use crate::store::purpose::PurposeStore;
+use crate::store::routines::RoutineStore;
 use crate::store::tasks::TaskStore;
 use crate::store::trackers::TrackerStore;
 use jiff::civil::Date;
@@ -89,6 +91,21 @@ pub struct Capabilities {
     /// goal that cannot be stored is worse than not offering it.
     #[serde(default)]
     pub goals: bool,
+    /// Backend implements [`notes::NoteStore`], so writing that is not
+    /// filed under a day has somewhere to live.
+    ///
+    /// False hides the Notes app, and takes the assistant's note tools with
+    /// it -- which matters more than it sounds, because a note is where a
+    /// routine puts prose it has more than a paragraph of.
+    #[serde(default)]
+    pub notes: bool,
+    /// Backend implements [`routines::RoutineStore`], so the assistant can
+    /// have standing work and a log of what it did.
+    ///
+    /// False hides the Assistant app's routines entirely. The rail still
+    /// works: talking to it needs nothing from here.
+    #[serde(default)]
+    pub routines: bool,
     /// Backend implements [`agent::AgentStore`], so the assistant has
     /// somewhere to keep its settings, its threads and its memory.
     ///
@@ -430,6 +447,23 @@ pub trait JournalStore: Send + Sync {
         None
     }
 
+    /// Storage for notes, if this backend has any.
+    ///
+    /// Same shape and same reasoning as the four above. See
+    /// [`notes`](crate::store::notes) for what a note is and what it is not.
+    fn notes(&self) -> Option<&dyn NoteStore> {
+        None
+    }
+
+    /// Storage for the assistant's standing work, if this backend has any.
+    ///
+    /// Same shape and same reasoning as the five above. See
+    /// [`routines`](crate::store::routines) for the two records it holds and
+    /// the one cascade it does have.
+    fn routines(&self) -> Option<&dyn RoutineStore> {
+        None
+    }
+
     /// Storage for the assistant, if this backend has any.
     ///
     /// Same shape and same reasoning as the four above. See
@@ -437,6 +471,29 @@ pub trait JournalStore: Send + Sync {
     /// trait -- and why none of it is left in the clear.
     fn agent(&self) -> Option<&dyn AgentStore> {
         None
+    }
+
+    // ---- the owner ------------------------------------------------------
+
+    /// Who this vault belongs to.
+    ///
+    /// On the base trait rather than behind an accessor, and never an
+    /// `Option`: every vault has an owner, and a vault that could not say who
+    /// would be one whose assistant had to guess. An unfilled profile is a
+    /// perfectly good answer and is the default -- the same argument
+    /// [`agent::AgentStore::settings`] makes about an assistant that has
+    /// never been configured.
+    ///
+    /// The default here is for backends written before this existed: they
+    /// answer "nothing filled in" and refuse to remember anything, which is
+    /// honest and keeps them compiling.
+    fn profile(&self) -> Result<crate::profile::Profile> {
+        Ok(crate::profile::Profile::default())
+    }
+
+    fn put_profile(&self, profile: &crate::profile::Profile) -> Result<()> {
+        let _ = profile;
+        Err(Error::Unsupported("storing a profile"))
     }
 
     // ---- journals -------------------------------------------------------
@@ -610,6 +667,16 @@ pub trait JournalStore: Send + Sync {
             let all = crate::store::library::ItemQuery::default();
             live.extend(library.list_items(&all)?.iter().filter_map(|i| i.cover));
         }
+        // And a note holds a document, so it holds pictures. Same walk, same
+        // reason: a photograph dropped into a note is a photograph somebody
+        // wants kept, and a sweep that did not know about notes would take it
+        // and leave the note pointing at nothing.
+        if let Some(notes) = self.notes() {
+            for note in notes.all_notes()? {
+                live.extend(note.body.blob_refs());
+                live.extend(note.attachments.iter().map(|a| a.blob));
+            }
+        }
         let mut removed = 0;
         for id in self.list_blobs()? {
             if live.contains(&id) {
@@ -719,7 +786,9 @@ impl BackendRegistry {
 pub mod agent;
 pub mod calendars;
 pub mod library;
+pub mod notes;
 pub mod purpose;
+pub mod routines;
 pub mod tasks;
 pub mod trackers;
 

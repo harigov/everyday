@@ -249,10 +249,17 @@ async fn call(
             .map_err(|e| CommandError::new("invalid", format!("{name}: {e}")))?
     };
 
-    // Unlocking is the one command whose *cost* is the attack. Each attempt
-    // burns 64 MiB of Argon2 by design, so they run one at a time and a device
-    // that keeps guessing is turned away. See `auth`.
-    if name == "unlock" {
+    // Deriving a key is the one thing whose *cost* is the attack. Each
+    // attempt burns 64 MiB of Argon2 by design, so they run one at a time and
+    // a device that keeps guessing is turned away. See `auth`.
+    //
+    // Both commands that do it are here. `verify_password` is what a client
+    // asks when its own screen was locked and the vault behind it never
+    // closed; it opens nothing, but it is the same guess at the same secret
+    // for the same price, so it goes through the same gate and counts against
+    // the same lockout. A screen that was cheaper to guess at than a vault
+    // would simply become the way in.
+    if name == "unlock" || name == "verify_password" {
         if !server.allow_remote_unlock() && transport == Transport::Network {
             return Err(CommandError::new(
                 "forbidden",

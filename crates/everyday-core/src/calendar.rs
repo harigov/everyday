@@ -387,6 +387,14 @@ pub struct Event {
     /// address.
     #[serde(default)]
     pub organizer: String,
+    /// Everybody else invited, as the feed gives them: a name where there is
+    /// one, an address where there is not.
+    ///
+    /// Sealed with the rest of the payload, and it is the field that makes
+    /// preparing for a meeting possible at all -- "who is coming" is the
+    /// question, and until this existed the answer was one name.
+    #[serde(default)]
+    pub attendees: Vec<String>,
     /// A link the feed offered — the meeting room, the fixture page.
     #[serde(default)]
     pub url: String,
@@ -553,6 +561,7 @@ mod tests {
             all_day: true,
             status: EventStatus::Confirmed,
             organizer: String::new(),
+            attendees: Vec::new(),
             url: String::new(),
             busy: false,
             updated_at: Timestamp::now(),

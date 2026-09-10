@@ -11,6 +11,8 @@
   import TodoNav from './TodoNav.svelte'
   import CalendarNav from './CalendarNav.svelte'
   import LibraryNav from './LibraryNav.svelte'
+  import AssistantNav from './AssistantNav.svelte'
+  import NotesNav from './NotesNav.svelte'
   import OverviewNav from './OverviewNav.svelte'
   import type { Journal } from '../lib/types'
 
@@ -97,7 +99,11 @@
     <span class="name">Every Day</span>
   </div>
 
-  {#if app.section === 'todo'}
+  {#if app.section === 'assistant'}
+    <AssistantNav />
+  {:else if app.section === 'notes'}
+    <NotesNav />
+  {:else if app.section === 'todo'}
     <TodoNav />
   {:else if app.section === 'calendar'}
     <CalendarNav />

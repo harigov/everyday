@@ -18,8 +18,9 @@
 //!
 //! [BM25]: https://en.wikipedia.org/wiki/Okapi_BM25
 
-use crate::id::{EntryId, JournalId};
+use crate::id::{EntryId, JournalId, NoteId};
 use crate::model::Entry;
+use crate::note::Note;
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -55,26 +56,88 @@ struct Posting {
 
 #[derive(Debug, Clone)]
 struct Doc {
-    id: EntryId,
-    journal_id: JournalId,
+    found: Found,
     title: String,
     /// Lowercased body text, retained so snippets can be cut from it.
     text: String,
-    local_date: Date,
     len: u32,
     /// Tombstone: removed docs are cleared rather than compacted, so that
     /// the `u32` doc ids in every posting list stay valid.
     live: bool,
 }
 
+/// What a hit points at.
+///
+/// Two kinds of writing live in a vault and both are worth finding from the
+/// same box. An entry is filed under a day in a journal; a note is not filed
+/// under anything, which is the whole difference between them. So the fields
+/// that only make sense for one of them hang off the variant that has them
+/// rather than being optional on a struct -- the shape [`crate::Purpose`] and
+/// [`crate::BlockSubject`] already use.
+// `rename_all` on an enum renames the *variants*; the fields inside them need
+// `rename_all_fields`. Without the second line this went out as `journal_id`
+// and `local_date` while every other record on the wire is camelCase -- and
+// the interface, which reads `journalId`, drew nothing. Both are here so the
+// next person reading it can see that it was a decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum Found {
+    Entry { id: EntryId, journal_id: JournalId, local_date: Date },
+    Note { id: NoteId },
+}
+
+impl Found {
+    /// The key the index dedupes and removes by. Two kinds of id could
+    /// collide as bare UUIDs; prefixed, they cannot.
+    fn key(&self) -> String {
+        match self {
+            Found::Entry { id, .. } => id.to_string(),
+            Found::Note { id } => id.to_string(),
+        }
+    }
+
+    /// The date to break a tie on. Notes have none, so they sort behind
+    /// equally relevant entries rather than being given a date they lack.
+    fn date(&self) -> Option<Date> {
+        match self {
+            Found::Entry { local_date, .. } => Some(*local_date),
+            Found::Note { .. } => None,
+        }
+    }
+}
+
+/// Which records a search should look at.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SearchScope {
+    /// Entries and notes alike. What the palette and a bare query want.
+    #[default]
+    Everything,
+    /// Entries only, and optionally only in one journal.
+    Entries(Option<JournalId>),
+    /// Notes only.
+    Notes,
+}
+
+impl SearchScope {
+    fn admits(self, found: &Found) -> bool {
+        match (self, found) {
+            (SearchScope::Everything, _) => true,
+            (SearchScope::Entries(None), Found::Entry { .. }) => true,
+            (SearchScope::Entries(Some(j)), Found::Entry { journal_id, .. }) => *journal_id == j,
+            (SearchScope::Notes, Found::Note { .. }) => true,
+            _ => false,
+        }
+    }
+}
+
 /// A ranked search result.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchHit {
-    pub id: EntryId,
-    pub journal_id: JournalId,
+    /// What was found, and everything about where it lives.
+    #[serde(flatten)]
+    pub found: Found,
     pub title: String,
-    pub local_date: Date,
     pub score: f32,
     /// A window of body text around the best match.
     pub snippet: String,
@@ -87,7 +150,7 @@ pub struct SearchHit {
 #[derive(Debug, Default)]
 pub struct SearchIndex {
     docs: Vec<Doc>,
-    by_id: HashMap<EntryId, u32>,
+    by_id: HashMap<String, u32>,
     /// A `BTreeMap` rather than a hash map so that prefix queries — which is
     /// every query, while the user is still typing — are a range scan.
     postings: BTreeMap<String, Vec<Posting>>,
@@ -100,10 +163,18 @@ impl SearchIndex {
         Self::default()
     }
 
-    pub fn build(entries: &[Entry]) -> Self {
+    /// Build from everything an unlocked vault has to search.
+    ///
+    /// Both lists, not one and then the other, because the index is rebuilt
+    /// whole on unlock and a caller that forgot the second argument would get
+    /// a vault whose notes were invisible to `/` with nothing to say so.
+    pub fn build(entries: &[Entry], notes: &[Note]) -> Self {
         let mut idx = Self::new();
         for e in entries {
             idx.insert(e);
+        }
+        for n in notes {
+            idx.insert_note(n);
         }
         idx
     }
@@ -118,10 +189,26 @@ impl SearchIndex {
 
     /// Add or replace an entry.
     pub fn insert(&mut self, entry: &Entry) {
-        self.remove(entry.id);
+        self.put(
+            Found::Entry {
+                id: entry.id,
+                journal_id: entry.journal_id,
+                local_date: entry.local_date,
+            },
+            entry.display_title(),
+            entry.searchable_text(),
+        );
+    }
 
-        let title = entry.display_title();
-        let body = entry.searchable_text();
+    /// Add or replace a note.
+    pub fn insert_note(&mut self, note: &Note) {
+        self.put(Found::Note { id: note.id }, note.display_title(), note.searchable_text());
+    }
+
+    /// The body of both, which is the same body: tokenise the title, tokenise
+    /// the text, and file the terms against one document.
+    fn put(&mut self, found: Found, title: String, body: String) {
+        self.forget(&found.key());
 
         let mut tf: HashMap<String, (u32, bool)> = HashMap::new();
         let mut len = 0u32;
@@ -146,16 +233,9 @@ impl SearchIndex {
             });
         }
 
-        self.docs.push(Doc {
-            id: entry.id,
-            journal_id: entry.journal_id,
-            title,
-            text: body,
-            local_date: entry.local_date,
-            len,
-            live: true,
-        });
-        self.by_id.insert(entry.id, doc_id);
+        let key = found.key();
+        self.docs.push(Doc { found, title, text: body, len, live: true });
+        self.by_id.insert(key, doc_id);
         self.live_docs += 1;
         self.total_len += u64::from(len);
         self.compact_if_needed();
@@ -211,10 +291,7 @@ impl SearchIndex {
         self.postings.retain(|_, postings| !postings.is_empty());
 
         for (id, doc_id) in self.by_id.iter_mut() {
-            debug_assert!(
-                remap[*doc_id as usize].is_some(),
-                "{id:?} is live but was remapped away"
-            );
+            debug_assert!(remap[*doc_id as usize].is_some(), "{id} is live but was remapped away");
             *doc_id = remap[*doc_id as usize].unwrap_or(*doc_id);
         }
     }
@@ -226,7 +303,16 @@ impl SearchIndex {
     /// [`SearchIndex::compact`] once there are enough of them to be worth
     /// renumbering for.
     pub fn remove(&mut self, id: EntryId) {
-        let Some(doc_id) = self.by_id.remove(&id) else { return };
+        self.forget(&id.to_string());
+    }
+
+    /// Remove a note.
+    pub fn remove_note(&mut self, id: NoteId) {
+        self.forget(&id.to_string());
+    }
+
+    fn forget(&mut self, key: &str) {
+        let Some(doc_id) = self.by_id.remove(key) else { return };
         let doc = &mut self.docs[doc_id as usize];
         if !doc.live {
             return;
@@ -242,16 +328,11 @@ impl SearchIndex {
     /// Search. The final term is treated as a prefix so results update on
     /// every keystroke; earlier terms must match whole tokens.
     pub fn search(&self, query: &str, limit: usize) -> Vec<SearchHit> {
-        self.search_in(query, None, limit)
+        self.search_in(query, SearchScope::Everything, limit)
     }
 
-    /// As [`SearchIndex::search`], restricted to one journal.
-    pub fn search_in(
-        &self,
-        query: &str,
-        journal: Option<JournalId>,
-        limit: usize,
-    ) -> Vec<SearchHit> {
+    /// As [`SearchIndex::search`], over one kind of record or one journal.
+    pub fn search_in(&self, query: &str, scope: SearchScope, limit: usize) -> Vec<SearchHit> {
         let terms: Vec<String> = tokenize(query).into_iter().map(|t| t.text).collect();
         if terms.is_empty() || self.live_docs == 0 {
             return Vec::new();
@@ -296,9 +377,7 @@ impl SearchIndex {
                     if !doc.live {
                         continue;
                     }
-                    if let Some(j) = journal
-                        && doc.journal_id != j
-                    {
+                    if !scope.admits(&doc.found) {
                         continue;
                     }
                     let tf = p.tf as f32;
@@ -326,9 +405,11 @@ impl SearchIndex {
                 // Equal relevance: prefer the more recent entry, then fall
                 // back to the id so results are deterministic.
                 .then_with(|| {
-                    self.docs[b.0 as usize].local_date.cmp(&self.docs[a.0 as usize].local_date)
+                    self.docs[b.0 as usize].found.date().cmp(&self.docs[a.0 as usize].found.date())
                 })
-                .then_with(|| self.docs[a.0 as usize].id.cmp(&self.docs[b.0 as usize].id))
+                .then_with(|| {
+                    self.docs[a.0 as usize].found.key().cmp(&self.docs[b.0 as usize].found.key())
+                })
         });
         ranked.truncate(limit);
 
@@ -337,15 +418,7 @@ impl SearchIndex {
             .map(|(doc_id, score)| {
                 let doc = &self.docs[doc_id as usize];
                 let (snippet, highlights) = snippet_for(&doc.text, &terms);
-                SearchHit {
-                    id: doc.id,
-                    journal_id: doc.journal_id,
-                    title: doc.title.clone(),
-                    local_date: doc.local_date,
-                    score,
-                    snippet,
-                    highlights,
-                }
+                SearchHit { found: doc.found, title: doc.title.clone(), score, snippet, highlights }
             })
             .collect()
     }
@@ -513,7 +586,15 @@ mod tests {
         let jid = JournalId::new();
         let entries: Vec<Entry> = pairs.iter().map(|(t, b)| entry(jid, t, b)).collect();
         let ids = entries.iter().map(|e| e.id).collect();
-        (SearchIndex::build(&entries), jid, ids)
+        (SearchIndex::build(&entries, &[]), jid, ids)
+    }
+
+    /// The entry id a hit points at, for tests that only index entries.
+    fn hit_id(hit: &SearchHit) -> EntryId {
+        match hit.found {
+            Found::Entry { id, .. } => id,
+            Found::Note { id } => panic!("expected an entry, found note {id}"),
+        }
     }
 
     #[test]
@@ -534,7 +615,7 @@ mod tests {
         let (idx, _, ids) = index_of(&[("Monday", "the heron stood in the shallows")]);
         let hits = idx.search("heron", 10);
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id, ids[0]);
+        assert_eq!(hit_id(&hits[0]), ids[0]);
     }
 
     #[test]
@@ -551,7 +632,7 @@ mod tests {
             index_of(&[("Monday", "heron in the shallows"), ("Tuesday", "heron on the roof")]);
         let hits = idx.search("heron shallows", 10);
         assert_eq!(hits.len(), 1, "both terms must match the same entry");
-        assert_eq!(hits[0].id, ids[0]);
+        assert_eq!(hit_id(&hits[0]), ids[0]);
     }
 
     #[test]
@@ -570,16 +651,16 @@ mod tests {
         ]);
         let hits = idx.search("herons", 10);
         assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].id, ids[1], "the entry titled 'Herons' should rank first");
+        assert_eq!(hit_id(&hits[0]), ids[1], "the entry titled 'Herons' should rank first");
     }
 
     #[test]
     fn search_can_be_scoped_to_one_journal() {
         let a = JournalId::new();
         let b = JournalId::new();
-        let idx = SearchIndex::build(&[entry(a, "one", "heron"), entry(b, "two", "heron")]);
+        let idx = SearchIndex::build(&[entry(a, "one", "heron"), entry(b, "two", "heron")], &[]);
         assert_eq!(idx.search("heron", 10).len(), 2);
-        assert_eq!(idx.search_in("heron", Some(a), 10).len(), 1);
+        assert_eq!(idx.search_in("heron", SearchScope::Entries(Some(a)), 10).len(), 1);
     }
 
     #[test]
@@ -598,7 +679,7 @@ mod tests {
     fn reinserting_an_entry_replaces_the_old_text() {
         let jid = JournalId::new();
         let mut e = entry(jid, "Monday", "heron");
-        let mut idx = SearchIndex::build(std::slice::from_ref(&e));
+        let mut idx = SearchIndex::build(std::slice::from_ref(&e), &[]);
 
         e.body = RichDoc::from_plain_text("kingfisher");
         idx.insert(&e);
@@ -636,10 +717,13 @@ mod tests {
     #[test]
     fn cjk_search_matches_words_not_just_characters() {
         let a = JournalId::new();
-        let idx = SearchIndex::build(&[
-            entry(a, "\u{65e5}\u{8a18}", "\u{4eca}\u{65e5}\u{306f}\u{6674}\u{308c}"),
-            entry(a, "\u{5929}\u{6c17}", "\u{660e}\u{65e5}\u{306f}\u{96e8}"),
-        ]);
+        let idx = SearchIndex::build(
+            &[
+                entry(a, "\u{65e5}\u{8a18}", "\u{4eca}\u{65e5}\u{306f}\u{6674}\u{308c}"),
+                entry(a, "\u{5929}\u{6c17}", "\u{660e}\u{65e5}\u{306f}\u{96e8}"),
+            ],
+            &[],
+        );
         // "今日" (today) should match only the first, not everything with 日.
         let hits = idx.search("\u{4eca}\u{65e5}", 10);
         assert_eq!(hits.len(), 1);
@@ -651,7 +735,7 @@ mod tests {
         let jid = JournalId::new();
         let mut e = entry(jid, "Trip", "nothing much");
         e.tags = vec!["Patagonia".into()];
-        let idx = SearchIndex::build(&[e]);
+        let idx = SearchIndex::build(&[e], &[]);
         assert_eq!(idx.search("patagonia", 10).len(), 1, "tags must be indexed");
     }
 
@@ -668,7 +752,7 @@ mod tests {
         // that added a document and a posting per keystroke-burst forever.
         let jid = JournalId::new();
         let mut e = entry(jid, "Monday", "heron");
-        let mut idx = SearchIndex::build(std::slice::from_ref(&e));
+        let mut idx = SearchIndex::build(std::slice::from_ref(&e), &[]);
         for i in 0..(COMPACT_FLOOR * 8) {
             e.body = RichDoc::from_plain_text(&format!("heron {i}"));
             idx.insert(&e);
@@ -682,7 +766,7 @@ mod tests {
         // And the sweep must not have broken what the index is for.
         let hits = idx.search("heron", 10);
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id, e.id);
+        assert_eq!(hit_id(&hits[0]), e.id);
         assert!(idx.search("kingfisher", 10).is_empty());
     }
 
@@ -697,7 +781,7 @@ mod tests {
         let entries: Vec<Entry> = (0..count)
             .map(|i| entry(jid, &format!("title{i:04}"), &format!("heron body{i:04}")))
             .collect();
-        let mut idx = SearchIndex::build(&entries);
+        let mut idx = SearchIndex::build(&entries, &[]);
         let doomed = |i: usize| i % 2 == 0;
         for (_, e) in entries.iter().enumerate().filter(|(i, _)| doomed(*i)) {
             idx.remove(e.id);
@@ -711,7 +795,7 @@ mod tests {
                 assert!(hits.is_empty(), "{} was deleted", e.title);
             } else {
                 assert_eq!(hits.len(), 1, "{} should still be findable", e.title);
-                assert_eq!(hits[0].id, e.id);
+                assert_eq!(hit_id(&hits[0]), e.id);
                 assert_eq!(hits[0].title, e.title, "titles must survive renumbering");
             }
         }
@@ -732,9 +816,9 @@ mod tests {
             (0..10).map(|i| (format!("t{i}"), "heron".to_string())).collect();
         let refs: Vec<(&str, &str)> = pairs.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
         let (idx, _, _) = index_of(&refs);
-        let first: Vec<EntryId> = idx.search("heron", 10).iter().map(|h| h.id).collect();
+        let first: Vec<EntryId> = idx.search("heron", 10).iter().map(hit_id).collect();
         for _ in 0..5 {
-            let again: Vec<EntryId> = idx.search("heron", 10).iter().map(|h| h.id).collect();
+            let again: Vec<EntryId> = idx.search("heron", 10).iter().map(hit_id).collect();
             assert_eq!(first, again, "equal-scoring results must have a stable order");
         }
     }

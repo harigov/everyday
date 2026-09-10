@@ -51,12 +51,25 @@ pub struct ConversationQuery {
     pub limit: Option<u32>,
     /// Skip this many, for a history pane that pages.
     pub offset: u32,
+    /// Leave out the transcripts of routine runs.
+    ///
+    /// Filtered after the rows are open rather than by a column, because the
+    /// pointer lives inside the payload -- and this list decrypts every row
+    /// for its title regardless. It is what keeps a week of morning briefs out
+    /// of a list of conversations somebody actually had.
+    #[serde(default)]
+    pub chats_only: bool,
 }
 
 impl ConversationQuery {
     /// The `n` most recently used threads. What the history pane opens with.
     pub fn recent(n: u32) -> Self {
-        Self { limit: Some(n), offset: 0 }
+        Self { limit: Some(n), offset: 0, chats_only: false }
+    }
+
+    /// The `n` most recent threads somebody actually typed into.
+    pub fn chats(n: u32) -> Self {
+        Self { limit: Some(n), offset: 0, chats_only: true }
     }
 }
 

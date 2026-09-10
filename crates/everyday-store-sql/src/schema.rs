@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -87,7 +87,7 @@ pub fn migrate(
 
 /// Every migration step, in order. Index 0 is version 1.
 pub fn steps(d: Dialect) -> Vec<Vec<String>> {
-    vec![v1(d), v2(d), v3(d), v4(d), v5(d), v6(d), v7(d)]
+    vec![v1(d), v2(d), v3(d), v4(d), v5(d), v6(d), v7(d), v8(d)]
 }
 
 /// The `blobs` table, for a backend that keeps attachments in the database.
@@ -651,6 +651,91 @@ fn v7(d: Dialect) -> Vec<String> {
         "CREATE INDEX IF NOT EXISTS readings_by_journal ON readings (journal_id, local_date)"
             .into(),
         "CREATE INDEX IF NOT EXISTS readings_by_entry ON readings (entry_id)".into(),
+    ]
+}
+
+/// Version 8 — notes, the profile, and the assistant's routines.
+///
+/// Three additions and one singleton, all `CREATE TABLE IF NOT EXISTS`, so
+/// the step replays like every step since version 4.
+///
+/// `notes` is writing that is not a day: a title, a body, tags, and no
+/// journal and no date, because the day a recipe was typed is not how
+/// anybody finds it again. What it leaves readable is a pin and two
+/// timestamps, which is what orders the list. The *title* is sealed along
+/// with everything else, and that matters more here than it does for an
+/// entry -- a note is named, and its name is the part that would give it
+/// away. The file can say that somebody keeps eleven notes and pinned two.
+///
+/// It carries the same second sealed column `entries` does. A note is a
+/// document with photographs in it, and drawing a list of forty of them must
+/// not mean decrypting forty bodies to read forty titles.
+///
+/// `profile` is one row, pinned by a `CHECK` like `agent_settings` beside
+/// it, and it is the one table in this file with *nothing* in the clear.
+/// There is no index to build over a single row, and what is in it -- a
+/// name, a birthday, where somebody lives, a paragraph about their family --
+/// is the most identifying thing in the vault. It goes in the envelope
+/// whole.
+///
+/// `routines` and `routine_runs` are the assistant's standing work and its
+/// log. Clear on a routine: nothing but its timestamps, because a routine's
+/// trigger and instructions are read one at a time by a scheduler that
+/// already holds the key. Clear on a run: which routine it belongs to, when
+/// it started, and whether anybody has looked at it -- which is what the
+/// unseen count and the run log are ordered by. Sealed: what the routine is
+/// for and every word the assistant said about it. So the file can say that
+/// a routine ran at seven this morning and that nobody has read the result,
+/// and never that the routine is called "Morning brief".
+fn v8(d: Dialect) -> Vec<String> {
+    let (blob, int, boolean, f) = (d.blob(), d.int(), d.boolean(), d.bool_default(false));
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS notes (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 pinned      {boolean} NOT NULL DEFAULT {f},
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL,
+                 summary     {blob} NOT NULL
+             )"
+        ),
+        // The note list: pinned first, then most recently touched. The whole
+        // list is read and sorted in Rust -- ordering by title needs the
+        // title, which is sealed -- so this index exists for the common
+        // case of asking for the newest handful.
+        "CREATE INDEX IF NOT EXISTS notes_by_updated ON notes (pinned, updated_us)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS profile (
+                 id          {int} PRIMARY KEY NOT NULL CHECK (id = 1),
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS routines (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS routine_runs (
+                 id           TEXT    PRIMARY KEY NOT NULL,
+                 routine_id   TEXT    NOT NULL,
+                 started_us   {int} NOT NULL,
+                 seen         {boolean} NOT NULL DEFAULT {f},
+                 data         {blob} NOT NULL
+             )"
+        ),
+        // One routine's log, newest first. No foreign key to `routines`, for
+        // the reason `goals` has none: a reference invites a cascade, and the
+        // cascade a routine wants -- take the runs, and the conversations
+        // behind them -- is more than a database can express on its own.
+        "CREATE INDEX IF NOT EXISTS runs_by_routine ON routine_runs (routine_id, started_us)"
+            .into(),
+        // The count on the app bar, and the list behind it.
+        "CREATE INDEX IF NOT EXISTS runs_unseen ON routine_runs (seen, started_us)".into(),
     ]
 }
 

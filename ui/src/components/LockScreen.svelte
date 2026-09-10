@@ -30,7 +30,13 @@
   <form class="card" class:shake onsubmit={submit}>
     <div class="mark"><Logo size={46} tile /></div>
     <h1>Every Day</h1>
-    <p class="sub">{app.status?.name ?? 'Your journal'} is locked.</p>
+    <p class="sub">
+      {#if app.screenOnly}
+        This screen is locked. {app.status?.name ?? 'Your journal'} is still open.
+      {:else}
+        {app.status?.name ?? 'Your journal'} is locked.
+      {/if}
+    </p>
 
     <!-- svelte-ignore a11y_autofocus -->
     <input
@@ -46,7 +52,11 @@
     {#if app.error}<p class="error">{app.error}</p>{/if}
 
     <button class="btn btn-primary wide" type="submit" disabled={busy || !password}>
-      {busy ? 'Unlocking…' : 'Unlock'}
+      {#if busy}
+        {app.screenOnly ? 'Checking…' : 'Unlocking…'}
+      {:else}
+        {app.screenOnly ? 'Unlock the screen' : 'Unlock'}
+      {/if}
     </button>
 
     {#if isMock}

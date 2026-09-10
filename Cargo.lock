@@ -1705,6 +1705,7 @@ dependencies = [
  "everyday-store-postgres",
  "everyday-store-sqlite",
  "jiff",
+ "keyring",
  "serde_json",
  "tempfile",
 ]

@@ -26,15 +26,21 @@ use crate::agent::{AgentSettings, Conversation, Memory, Message, Role, ToolCall}
 use crate::calendar::{Calendar, Event, EventStatus};
 use crate::id::{
     BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, GoalId, ItemId, JournalId,
-    KindId, LogId, MemoryId, ProjectId, ReadingId, RoleId, TaskId, TrackerId,
+    KindId, LogId, MemoryId, NoteId, ProjectId, ReadingId, RoleId, RoutineId, RoutineRunId, TaskId,
+    TrackerId,
 };
 use crate::library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, Link, LogEntry, LogEvent,
     Progress, Verbs,
 };
 use crate::model::{Attachment, Entry, Journal, Location, MediaKind};
+use crate::note::Note;
+use crate::profile::Profile;
 use crate::purpose::{Goal, GoalStatus, Purpose, Role as LifeRole};
 use crate::richtext::{MEDIA_NODE, RichDoc};
+use crate::routine::{Outcome, Routine, RoutineRun, Trigger};
+use crate::store::notes::{NoteQuery, NoteSort};
+use crate::store::routines::RunQuery;
 use crate::task::{
     BlockKind, BlockSubject, Priority, Project, ProjectStatus, ProjectTaskCount, Task, TaskStatus,
     TimeBlock,
@@ -68,6 +74,7 @@ pub fn run_all(store: &dyn JournalStore) {
     garbage_collection_keeps_referenced_blobs(store);
     stats_reflect_contents(store);
     unicode_survives_a_round_trip(store);
+    the_owner_round_trips_and_starts_empty(store);
 
     // The task domain is optional. A backend that has one must implement all
     // of it, so this is run whenever `tasks()` answers, and skipped -- with a
@@ -114,6 +121,24 @@ pub fn run_all(store: &dyn JournalStore) {
     match store.purpose() {
         Some(_) => run_purpose_suite(store),
         None => eprintln!("backend {name:?} stores no goals; skipping the purpose suite"),
+    }
+
+    // And notes, on the same terms again. Handed the whole journal store
+    // because two of the things worth checking reach outside the domain: a
+    // note's purpose pointer, and whether garbage collection knows that a
+    // photograph dropped into a note is a photograph somebody wants kept.
+    match store.notes() {
+        Some(_) => run_note_suite(store),
+        None => eprintln!("backend {name:?} stores no notes; skipping the note suite"),
+    }
+
+    // And the assistant's standing work. Handed the whole journal store,
+    // because the cascade worth checking reaches out of the domain: deleting a
+    // routine has to take the transcripts of its runs, and those live in the
+    // agent store.
+    match store.routines() {
+        Some(_) => run_routine_suite(store),
+        None => eprintln!("backend {name:?} stores no routines; skipping the routine suite"),
     }
 
     // And the assistant, on the same terms again.
@@ -395,21 +420,28 @@ fn listing_conversations_is_newest_first_and_pages(store: &dyn AgentStore) {
         vec!["thread 4", "thread 3"]
     );
 
-    let second =
-        store.list_conversations(&ConversationQuery { limit: Some(2), offset: 2 }).unwrap();
+    let second = store
+        .list_conversations(&ConversationQuery { limit: Some(2), offset: 2, chats_only: false })
+        .unwrap();
     assert_eq!(
         second.iter().map(|c| c.title.as_str()).collect::<Vec<_>>(),
         vec!["thread 2", "thread 1"]
     );
 
     // An offset with no limit is a real query, not a no-op.
-    let tail = store.list_conversations(&ConversationQuery { limit: None, offset: 3 }).unwrap();
+    let tail = store
+        .list_conversations(&ConversationQuery { limit: None, offset: 3, chats_only: false })
+        .unwrap();
     assert_eq!(tail.len(), 2);
 
     // Past the end is empty rather than a panic.
     assert!(
         store
-            .list_conversations(&ConversationQuery { limit: Some(2), offset: 99 })
+            .list_conversations(&ConversationQuery {
+                limit: Some(2),
+                offset: 99,
+                chats_only: false
+            })
             .unwrap()
             .is_empty()
     );
@@ -2024,6 +2056,7 @@ fn sample_event(cal: CalendarId, uid: &str, from: Date, to: Date) -> Event {
         all_day: false,
         status: EventStatus::Confirmed,
         organizer: String::new(),
+        attendees: Vec::new(),
         url: String::new(),
         busy: true,
         updated_at: Timestamp::now(),
@@ -3125,4 +3158,544 @@ fn unicode_survives_a_tracking_round_trip(store: &dyn JournalStore) {
     assert_eq!(t.get_reading(reading.id).unwrap(), reading);
 
     t.delete_tracker(tracker.id).unwrap();
+}
+
+// ---- notes --------------------------------------------------------------
+
+/// Everything a backend must do with notes.
+pub fn run_note_suite(store: &dyn JournalStore) {
+    eprintln!("--- note conformance suite ---");
+
+    notes_start_empty(store);
+    note_round_trips_every_field(store);
+    note_put_is_idempotent(store);
+    a_conditional_note_put_refuses_a_stale_write(store);
+    missing_note_is_not_found(store);
+    list_notes_filters_and_sorts(store);
+    all_notes_carries_bodies_and_the_list_does_not(store);
+    a_notes_purpose_survives_and_goes_with_it(store);
+    garbage_collection_keeps_pictures_in_notes(store);
+    unicode_survives_a_note_round_trip(store);
+
+    note_cleanup(store);
+    eprintln!("--- note suite passed ---");
+}
+
+fn note_store(store: &dyn JournalStore) -> &dyn super::notes::NoteStore {
+    store.notes().expect("the note suite needs a note store")
+}
+
+fn note_cleanup(store: &dyn JournalStore) {
+    let n = note_store(store);
+    for note in n.list_notes(&NoteQuery::default()).expect("list_notes") {
+        n.delete_note(note.id).expect("delete_note");
+    }
+    assert!(n.list_notes(&NoteQuery::default()).unwrap().is_empty(), "cleanup left notes behind");
+}
+
+fn seeded_note(store: &dyn JournalStore, title: &str, body: &str) -> Note {
+    let note = Note::written(title, body);
+    note_store(store).put_note(&note).expect("put_note");
+    note
+}
+
+fn notes_start_empty(store: &dyn JournalStore) {
+    assert!(
+        note_store(store).list_notes(&NoteQuery::default()).unwrap().is_empty(),
+        "a fresh store must have no notes"
+    );
+}
+
+fn note_round_trips_every_field(store: &dyn JournalStore) {
+    let n = note_store(store);
+    let mut note = Note::written("Sailing", "Reach, run, beat.");
+    note.tags = vec!["boats".into(), "summer".into()];
+    note.pinned = true;
+    n.put_note(&note).expect("put_note");
+
+    let back = n.get_note(note.id).expect("get_note");
+    assert_eq!(back, note, "every field must survive the round trip");
+
+    let listed = n.list_notes(&NoteQuery::default()).expect("list_notes");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].title, "Sailing");
+    assert_eq!(listed[0].tags, vec!["boats".to_string(), "summer".to_string()]);
+    assert!(listed[0].pinned);
+
+    n.delete_note(note.id).expect("delete_note");
+    assert!(n.list_notes(&NoteQuery::default()).unwrap().is_empty());
+}
+
+fn note_put_is_idempotent(store: &dyn JournalStore) {
+    let n = note_store(store);
+    let note = Note::written("Twice", "once");
+    n.put_note(&note).expect("first put");
+    n.put_note(&note).expect("second put");
+    assert_eq!(n.list_notes(&NoteQuery::default()).unwrap().len(), 1, "saving twice leaves one");
+
+    // Deleting something that is not there is not an error, so a client that
+    // retries a delete over a dropped connection is not told it failed.
+    n.delete_note(note.id).expect("delete_note");
+    n.delete_note(note.id).expect("deleting a missing note is a no-op");
+}
+
+fn a_conditional_note_put_refuses_a_stale_write(store: &dyn JournalStore) {
+    let n = note_store(store);
+    let mut note = Note::written("Shared", "first");
+    n.put_note_if(&note, None).expect("creating with no expectation");
+
+    // Creating something that is already there is a conflict, not an
+    // overwrite: two windows both minting the same note is the case.
+    assert_eq!(
+        n.put_note_if(&note, None).unwrap_err().code(),
+        "conflict",
+        "creating over an existing note must be refused"
+    );
+
+    let seen = note.updated_at;
+    note.title = "Shared, edited".into();
+    note.updated_at = Timestamp::now();
+    n.put_note_if(&note, Some(seen)).expect("writing over the version we read");
+
+    // The stale expectation is what a second window holds.
+    let mut stale = note.clone();
+    stale.title = "Someone else's edit".into();
+    assert_eq!(
+        n.put_note_if(&stale, Some(seen)).unwrap_err().code(),
+        "conflict",
+        "a write over a version that has moved on must be refused"
+    );
+
+    // And a note that has been deleted under a caller who thought they were
+    // updating it is a conflict too, not a silent resurrection.
+    n.delete_note(note.id).expect("delete_note");
+    assert_eq!(
+        n.put_note_if(&note, Some(note.updated_at)).unwrap_err().code(),
+        "conflict",
+        "updating a note that has been deleted must be refused"
+    );
+    note_cleanup(store);
+}
+
+fn missing_note_is_not_found(store: &dyn JournalStore) {
+    let err = note_store(store).get_note(NoteId::new()).unwrap_err();
+    assert_eq!(err.code(), "not_found", "a note that is not there is not found");
+}
+
+fn list_notes_filters_and_sorts(store: &dyn JournalStore) {
+    let n = note_store(store);
+    let mut alpha = Note::written("Alpha", "first");
+    alpha.tags = vec!["Boats".into()];
+    let mut zeta = Note::written("Zeta", "second");
+    zeta.tags = vec!["boats".into(), "summer".into()];
+    zeta.pinned = true;
+    n.put_note(&alpha).expect("put alpha");
+    n.put_note(&zeta).expect("put zeta");
+
+    let by_title = n
+        .list_notes(&NoteQuery { sort: NoteSort::TitleAsc, ..Default::default() })
+        .expect("list by title");
+    assert_eq!(
+        by_title.iter().map(|x| x.title.as_str()).collect::<Vec<_>>(),
+        ["Zeta", "Alpha"],
+        "a pin outranks the alphabet"
+    );
+
+    // Case must not decide whether a tag matches: "Boats" and "boats" are
+    // one tag to a person.
+    let tagged = n
+        .list_notes(&NoteQuery { tags: vec!["boats".into()], ..Default::default() })
+        .expect("list by tag");
+    assert_eq!(tagged.len(), 2);
+
+    let both = n
+        .list_notes(&NoteQuery {
+            tags: vec!["boats".into(), "summer".into()],
+            ..Default::default()
+        })
+        .expect("list by two tags");
+    assert_eq!(both.len(), 1, "every listed tag has to be there, not any of them");
+
+    let pinned =
+        n.list_notes(&NoteQuery { pinned: Some(true), ..Default::default() }).expect("list pinned");
+    assert_eq!(pinned.len(), 1);
+
+    let capped = n
+        .list_notes(&NoteQuery { limit: Some(1), ..Default::default() })
+        .expect("list with a limit");
+    assert_eq!(capped.len(), 1);
+
+    note_cleanup(store);
+}
+
+fn all_notes_carries_bodies_and_the_list_does_not(store: &dyn JournalStore) {
+    let n = note_store(store);
+    let note = seeded_note(store, "Recipe", "Two hundred grams of flour.");
+
+    let listed = n.list_notes(&NoteQuery::default()).expect("list_notes");
+    assert_eq!(listed[0].excerpt, "Two hundred grams of flour.");
+
+    let all = n.all_notes().expect("all_notes");
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].body.plain_text().trim(), "Two hundred grams of flour.");
+    assert_eq!(all[0].id, note.id);
+
+    let tags = n.note_tags().expect("note_tags");
+    assert!(tags.is_empty(), "an untagged note contributes no tags");
+
+    note_cleanup(store);
+}
+
+fn a_notes_purpose_survives_and_goes_with_it(store: &dyn JournalStore) {
+    let Some(p) = store.purpose() else {
+        eprintln!("  (no purpose store; skipping the note's purpose)");
+        return;
+    };
+    let role = LifeRole::new("Sailor");
+    p.put_role(&role).expect("put_role");
+
+    let n = note_store(store);
+    let mut note = Note::written("Log", "Wind from the south-west.");
+    note.purpose = Some(Purpose::Role { id: role.id });
+    n.put_note(&note).expect("put_note");
+
+    assert_eq!(
+        n.get_note(note.id).unwrap().purpose,
+        Some(Purpose::Role { id: role.id }),
+        "a note's purpose must survive the round trip"
+    );
+    assert_eq!(
+        n.list_notes(&NoteQuery::default()).unwrap()[0].purpose,
+        Some(Purpose::Role { id: role.id }),
+        "and be on the summary, so a list can say what a note is filed under"
+    );
+
+    // The side table is an index over the payload, and deleting the record
+    // it indexes must take the row with it.
+    n.delete_note(note.id).expect("delete_note");
+    let mut revived = note.clone();
+    revived.purpose = None;
+    n.put_note(&revived).expect("put_note");
+    assert_eq!(
+        n.get_note(note.id).unwrap().purpose,
+        None,
+        "a re-made note must not inherit the deleted one's filing"
+    );
+
+    n.delete_note(note.id).expect("delete_note");
+    p.delete_role(role.id).expect("delete_role");
+}
+
+fn garbage_collection_keeps_pictures_in_notes(store: &dyn JournalStore) {
+    if !store.capabilities().blobs {
+        eprintln!("  (no blobs; skipping the note's pictures)");
+        return;
+    }
+    let blob = store.put_blob(b"a photograph in a note").expect("put_blob");
+    let mut note = Note::new("Illustrated");
+    note.body = RichDoc(json!({
+        "type": "doc",
+        "content": [{"type": MEDIA_NODE, "attrs": {"blob": blob.to_hex(), "kind": "image"}}]
+    }));
+    note_store(store).put_note(&note).expect("put_note");
+
+    store.collect_garbage(std::time::Duration::ZERO).expect("collect_garbage");
+    assert!(
+        store.has_blob(blob).unwrap(),
+        "a picture in a note is referenced, and must survive a sweep"
+    );
+
+    note_store(store).delete_note(note.id).expect("delete_note");
+    store.collect_garbage(std::time::Duration::ZERO).expect("collect_garbage");
+    assert!(!store.has_blob(blob).unwrap(), "and must be swept once nothing points at it");
+}
+
+fn unicode_survives_a_note_round_trip(store: &dyn JournalStore) {
+    let n = note_store(store);
+    let mut note = Note::written("மீன் \u{1f41f}", "நீரில் நீந்துகிறது");
+    note.tags = vec!["தமிழ்".into()];
+    n.put_note(&note).expect("put_note");
+    let back = n.get_note(note.id).expect("get_note");
+    assert_eq!(back.title, "மீன் \u{1f41f}");
+    assert_eq!(back.tags, vec!["தமிழ்".to_string()]);
+    assert_eq!(back.body.plain_text().trim(), "நீரில் நீந்துகிறது");
+    n.delete_note(note.id).expect("delete_note");
+}
+
+/// The one row that says whose vault this is.
+///
+/// Part of the base battery rather than an optional suite, because every
+/// backend must answer it: the default on the trait says "nothing filled in",
+/// which is a real answer, and a backend that cannot store one has to say so
+/// rather than silently forgetting what was typed.
+fn the_owner_round_trips_and_starts_empty(store: &dyn JournalStore) {
+    let blank = store.profile().expect("a fresh store still has an answer");
+    assert!(blank.is_empty(), "nobody has said who they are yet");
+
+    let mine = Profile {
+        first_name: "Hari".into(),
+        last_name: "Govardhanam".into(),
+        born: Some(date(1985, 3, 14)),
+        gender: "male".into(),
+        location: "Seattle".into(),
+        about: "Software, two children, sailing at weekends".into(),
+        updated_at: Some(Timestamp::now()),
+    };
+    match store.put_profile(&mine) {
+        Ok(()) => {}
+        // A backend written before this existed says so rather than pretending.
+        Err(e) if e.code() == "unsupported" => {
+            eprintln!("  (backend stores no profile; skipping the owner)");
+            return;
+        }
+        Err(e) => panic!("put_profile: {e}"),
+    }
+
+    assert_eq!(store.profile().unwrap(), mine, "every field must survive the round trip");
+
+    // Idempotent, and a second write replaces rather than adding a row.
+    store.put_profile(&mine).expect("put_profile again");
+    assert_eq!(store.profile().unwrap(), mine);
+
+    // Emptied by hand is emptied, not reverted to what was there before.
+    store.put_profile(&Profile::default()).expect("clearing the profile");
+    assert!(store.profile().unwrap().is_empty(), "clearing it must actually clear it");
+}
+
+// ---- routines -----------------------------------------------------------
+
+/// Everything a backend must do with the assistant's standing work.
+pub fn run_routine_suite(store: &dyn JournalStore) {
+    eprintln!("--- routine conformance suite ---");
+
+    routines_start_empty(store);
+    routine_round_trips_every_field(store);
+    routine_put_is_idempotent(store);
+    missing_routine_records_are_not_found(store);
+    runs_are_listed_newest_first_and_filtered(store);
+    unseen_runs_are_counted_and_cleared(store);
+    deleting_a_routine_takes_its_runs(store);
+    a_runs_transcript_is_hidden_from_the_chat_list(store);
+    unicode_survives_a_routine_round_trip(store);
+
+    routine_cleanup(store);
+    eprintln!("--- routine suite passed ---");
+}
+
+fn routine_store(store: &dyn JournalStore) -> &dyn super::routines::RoutineStore {
+    store.routines().expect("the routine suite needs a routine store")
+}
+
+fn routine_cleanup(store: &dyn JournalStore) {
+    let r = routine_store(store);
+    for routine in r.list_routines().expect("list_routines") {
+        r.delete_routine(routine.id).expect("delete_routine");
+    }
+    for run in r.list_runs(&RunQuery::default()).expect("list_runs") {
+        r.delete_run(run.id).expect("delete_run");
+    }
+    assert!(r.list_routines().unwrap().is_empty(), "cleanup left routines behind");
+    assert!(r.list_runs(&RunQuery::default()).unwrap().is_empty(), "cleanup left runs behind");
+}
+
+fn seeded_routine(store: &dyn JournalStore, name: &str) -> Routine {
+    let routine = Routine::new(name, "Say what is due today.", Trigger::Manual);
+    routine_store(store).put_routine(&routine).expect("put_routine");
+    routine
+}
+
+fn routines_start_empty(store: &dyn JournalStore) {
+    let r = routine_store(store);
+    assert!(r.list_routines().unwrap().is_empty(), "a fresh store has no routines");
+    assert!(r.list_runs(&RunQuery::default()).unwrap().is_empty(), "and no runs");
+    assert_eq!(r.count_unseen_runs().unwrap(), 0);
+}
+
+fn routine_round_trips_every_field(store: &dyn JournalStore) {
+    let r = routine_store(store);
+    let mut routine = Routine::new(
+        "Morning brief",
+        "Look at what is due and leave me a note.",
+        Trigger::Schedule { at: time(7, 0, 0, 0), days: everyday_weekdays() },
+    );
+    routine.grace_minutes = 90;
+    routine.last_run_at = Some(Timestamp::now());
+    r.put_routine(&routine).expect("put_routine");
+
+    assert_eq!(r.get_routine(routine.id).unwrap(), routine, "every field must survive");
+    assert_eq!(r.list_routines().unwrap().len(), 1);
+
+    let mut run = RoutineRun::new(&routine, Some(Timestamp::now()));
+    run.subject = Some("the 3pm with Priya".into());
+    run.summary = "Three things are due and one is overdue.".into();
+    run.steps = 4;
+    run.finish(Outcome::Done, run.summary.clone());
+    r.put_run(&run).expect("put_run");
+    assert_eq!(r.get_run(run.id).unwrap(), run, "and every field of a run");
+
+    routine_cleanup(store);
+}
+
+fn routine_put_is_idempotent(store: &dyn JournalStore) {
+    let r = routine_store(store);
+    let routine = seeded_routine(store, "Twice");
+    r.put_routine(&routine).expect("second put");
+    assert_eq!(r.list_routines().unwrap().len(), 1, "saving twice leaves one");
+
+    r.delete_routine(routine.id).expect("delete_routine");
+    r.delete_routine(routine.id).expect("deleting a missing routine is a no-op");
+    routine_cleanup(store);
+}
+
+fn missing_routine_records_are_not_found(store: &dyn JournalStore) {
+    let r = routine_store(store);
+    assert_eq!(r.get_routine(RoutineId::new()).unwrap_err().code(), "not_found");
+    assert_eq!(r.get_run(RoutineRunId::new()).unwrap_err().code(), "not_found");
+    r.delete_run(RoutineRunId::new()).expect("deleting a missing run is a no-op");
+}
+
+fn runs_are_listed_newest_first_and_filtered(store: &dyn JournalStore) {
+    let r = routine_store(store);
+    let routine = seeded_routine(store, "Brief");
+    let other = seeded_routine(store, "Review");
+
+    let mut first = RoutineRun::new(&routine, None);
+    first.started_at = Timestamp::from_second(1_700_000_000).unwrap();
+    first.finish(Outcome::Done, "the first");
+    let mut second = RoutineRun::new(&routine, None);
+    second.started_at = Timestamp::from_second(1_700_001_000).unwrap();
+    second.fail("the endpoint refused");
+    let mut elsewhere = RoutineRun::new(&other, None);
+    elsewhere.started_at = Timestamp::from_second(1_700_002_000).unwrap();
+    elsewhere.finish(Outcome::Done, "somebody else's");
+    for run in [&first, &second, &elsewhere] {
+        r.put_run(run).expect("put_run");
+    }
+
+    let all = r.list_runs(&RunQuery::default()).expect("list_runs");
+    assert_eq!(
+        all.iter().map(|x| x.id).collect::<Vec<_>>(),
+        vec![elsewhere.id, second.id, first.id],
+        "newest first"
+    );
+
+    let mine = r.list_runs(&RunQuery::for_routine(routine.id)).expect("one routine's log");
+    assert_eq!(mine.len(), 2, "and only that routine's");
+
+    let failed = r
+        .list_runs(&RunQuery { outcomes: vec![Outcome::Failed], ..Default::default() })
+        .expect("by outcome");
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].reason, "the endpoint refused");
+
+    let capped =
+        r.list_runs(&RunQuery { limit: Some(1), ..Default::default() }).expect("with a limit");
+    assert_eq!(capped.len(), 1);
+    assert_eq!(capped[0].id, elsewhere.id, "a limit keeps the newest, not any one");
+
+    let recent = r
+        .list_runs(&RunQuery {
+            since: Some(Timestamp::from_second(1_700_001_500).unwrap()),
+            ..Default::default()
+        })
+        .expect("since");
+    assert_eq!(recent.len(), 1);
+
+    routine_cleanup(store);
+}
+
+fn unseen_runs_are_counted_and_cleared(store: &dyn JournalStore) {
+    let r = routine_store(store);
+    let routine = seeded_routine(store, "Brief");
+    let mut one = RoutineRun::new(&routine, None);
+    one.finish(Outcome::Done, "first");
+    let mut two = RoutineRun::new(&routine, None);
+    two.finish(Outcome::Done, "second");
+    r.put_run(&one).expect("put_run");
+    r.put_run(&two).expect("put_run");
+    assert_eq!(r.count_unseen_runs().unwrap(), 2);
+
+    r.mark_runs_seen(&[one.id]).expect("mark one");
+    assert_eq!(r.count_unseen_runs().unwrap(), 1);
+    // Both copies of the flag have to move: it is a clear column *and* part of
+    // the sealed payload, and a client reading the record back would otherwise
+    // put the number straight back on the app bar.
+    assert!(r.get_run(one.id).unwrap().seen, "the payload must agree with the column");
+    assert_eq!(r.list_runs(&RunQuery::unseen(10)).unwrap().len(), 1);
+
+    r.mark_runs_seen(&[]).expect("mark all");
+    assert_eq!(r.count_unseen_runs().unwrap(), 0);
+    assert!(r.get_run(two.id).unwrap().seen);
+
+    // A skipped run is born seen: there is nothing to look at, so it must not
+    // put a number on the app bar.
+    let skipped = RoutineRun::skipped(&routine, None, "the vault was locked");
+    r.put_run(&skipped).expect("put_run");
+    assert_eq!(r.count_unseen_runs().unwrap(), 0, "a skipped run asks for no attention");
+
+    routine_cleanup(store);
+}
+
+fn deleting_a_routine_takes_its_runs(store: &dyn JournalStore) {
+    let r = routine_store(store);
+    let routine = seeded_routine(store, "Brief");
+    let other = seeded_routine(store, "Review");
+    let mut mine = RoutineRun::new(&routine, None);
+    mine.finish(Outcome::Done, "mine");
+    let mut theirs = RoutineRun::new(&other, None);
+    theirs.finish(Outcome::Done, "theirs");
+    r.put_run(&mine).expect("put_run");
+    r.put_run(&theirs).expect("put_run");
+
+    r.delete_routine(routine.id).expect("delete_routine");
+    assert_eq!(r.get_run(mine.id).unwrap_err().code(), "not_found", "its runs go with it");
+    assert!(r.get_run(theirs.id).is_ok(), "and nobody else's do");
+
+    routine_cleanup(store);
+}
+
+fn a_runs_transcript_is_hidden_from_the_chat_list(store: &dyn JournalStore) {
+    let Some(agent) = store.agent() else {
+        eprintln!("  (no agent store; skipping the run's transcript)");
+        return;
+    };
+    let chat = Conversation::new();
+    let transcript = Conversation::for_run(RoutineRunId::new(), "Morning brief");
+    agent.put_conversation(&chat).expect("put_conversation");
+    agent.put_conversation(&transcript).expect("put_conversation");
+
+    let everything = agent.list_conversations(&ConversationQuery::default()).expect("all threads");
+    assert_eq!(everything.len(), 2, "both are threads");
+
+    let chats = agent.list_conversations(&ConversationQuery::chats(10)).expect("chats only");
+    assert_eq!(chats.len(), 1, "a week of morning briefs is not a list of conversations");
+    assert_eq!(chats[0].id, chat.id);
+
+    // And the limit is honoured *after* the filter, not before: a `LIMIT 1`
+    // pushed into SQL would have fetched the transcript and answered with
+    // nothing at all.
+    let one = agent.list_conversations(&ConversationQuery::chats(1)).expect("one chat");
+    assert_eq!(one.len(), 1, "asking for one chat must give one chat");
+    assert_eq!(one[0].id, chat.id);
+
+    agent.delete_conversation(chat.id).expect("delete_conversation");
+    agent.delete_conversation(transcript.id).expect("delete_conversation");
+}
+
+fn unicode_survives_a_routine_round_trip(store: &dyn JournalStore) {
+    let r = routine_store(store);
+    let routine =
+        Routine::new("காலை அறிக்கை \u{2600}", "இன்று என்ன செய்ய வேண்டும் என்று சொல்", Trigger::Manual);
+    r.put_routine(&routine).expect("put_routine");
+    let back = r.get_routine(routine.id).expect("get_routine");
+    assert_eq!(back.name, "காலை அறிக்கை \u{2600}");
+    assert_eq!(back.instructions, routine.instructions);
+    r.delete_routine(routine.id).expect("delete_routine");
+}
+
+/// Monday to Friday, spelled out so the suite does not depend on a constant
+/// that could quietly change meaning.
+fn everyday_weekdays() -> Vec<crate::routine::Weekday> {
+    use crate::routine::Weekday as W;
+    vec![W::Mon, W::Tue, W::Wed, W::Thu, W::Fri]
 }

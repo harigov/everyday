@@ -19,11 +19,11 @@ tracing.workspace = true
 # socket, and the calendar and library features are built so that stays true.
 # This crate fetches bytes; the core does everything that happens to them.
 reqwest = { version = "0.13", features = ["gzip"] }
-tokio = { version = "1.53.1", features = ["sync", "rt", "time"] }
+tokio = { version = "1.53.1", features = ["sync", "rt", "time", "macros"] }
 futures = "0.3.34"
 rig-core = "0.42"
 rig-agent = "0.42"
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "test-util"] }

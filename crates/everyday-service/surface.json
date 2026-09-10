@@ -24,6 +24,7 @@
       },
       "effect": "write",
       "name": "add_item",
+      "orScope": null,
       "returns": "AddedItem",
       "scope": "library",
       "sensitive": false,
@@ -34,6 +35,7 @@
       "changes": null,
       "effect": "read",
       "name": "agent_settings",
+      "orScope": null,
       "returns": "AgentSettings",
       "scope": "agent",
       "sensitive": false,
@@ -63,6 +65,7 @@
       },
       "effect": "write",
       "name": "apply_metadata",
+      "orScope": null,
       "returns": "Item",
       "scope": "web",
       "sensitive": false,
@@ -73,6 +76,7 @@
       "changes": null,
       "effect": "read",
       "name": "calendar_providers",
+      "orScope": null,
       "returns": "ProviderInfo[]",
       "scope": "calendars",
       "sensitive": false,
@@ -97,6 +101,7 @@
       },
       "effect": "write",
       "name": "change_password",
+      "orScope": null,
       "returns": "void",
       "scope": "journals",
       "sensitive": false,
@@ -110,6 +115,7 @@
       },
       "effect": "write",
       "name": "clear_agent_key",
+      "orScope": null,
       "returns": "void",
       "scope": "agent",
       "sensitive": false,
@@ -120,6 +126,7 @@
       "changes": null,
       "effect": "destructive",
       "name": "collect_garbage",
+      "orScope": null,
       "returns": "number",
       "scope": "journals",
       "sensitive": false,
@@ -141,6 +148,7 @@
       "changes": null,
       "effect": "write",
       "name": "confirm_tool_call",
+      "orScope": null,
       "returns": "boolean",
       "scope": "agent",
       "sensitive": false,
@@ -157,6 +165,7 @@
       "changes": null,
       "effect": "read",
       "name": "conversation_messages",
+      "orScope": null,
       "returns": "AgentMessage[]",
       "scope": "agent",
       "sensitive": false,
@@ -176,6 +185,7 @@
       },
       "effect": "destructive",
       "name": "delete_block",
+      "orScope": null,
       "returns": "void",
       "scope": "tasks",
       "sensitive": false,
@@ -195,6 +205,7 @@
       },
       "effect": "destructive",
       "name": "delete_calendar",
+      "orScope": null,
       "returns": "void",
       "scope": "calendars",
       "sensitive": false,
@@ -214,6 +225,7 @@
       },
       "effect": "destructive",
       "name": "delete_conversation",
+      "orScope": null,
       "returns": "void",
       "scope": "agent",
       "sensitive": false,
@@ -233,6 +245,7 @@
       },
       "effect": "destructive",
       "name": "delete_entry",
+      "orScope": null,
       "returns": "void",
       "scope": "journals",
       "sensitive": false,
@@ -252,6 +265,7 @@
       },
       "effect": "destructive",
       "name": "delete_goal",
+      "orScope": null,
       "returns": "void",
       "scope": "purpose",
       "sensitive": false,
@@ -271,6 +285,7 @@
       },
       "effect": "destructive",
       "name": "delete_item",
+      "orScope": null,
       "returns": "void",
       "scope": "library",
       "sensitive": false,
@@ -290,6 +305,7 @@
       },
       "effect": "destructive",
       "name": "delete_journal",
+      "orScope": null,
       "returns": "void",
       "scope": "journals",
       "sensitive": false,
@@ -309,6 +325,7 @@
       },
       "effect": "destructive",
       "name": "delete_kind",
+      "orScope": null,
       "returns": "void",
       "scope": "library",
       "sensitive": false,
@@ -328,6 +345,7 @@
       },
       "effect": "destructive",
       "name": "delete_log",
+      "orScope": null,
       "returns": "void",
       "scope": "library",
       "sensitive": false,
@@ -347,8 +365,29 @@
       },
       "effect": "destructive",
       "name": "delete_memory",
+      "orScope": null,
       "returns": "void",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "NoteId"
+        }
+      ],
+      "changes": {
+        "kind": "note",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_note",
+      "orScope": null,
+      "returns": "void",
+      "scope": "notes",
       "sensitive": false,
       "streams": false
     },
@@ -366,6 +405,7 @@
       },
       "effect": "destructive",
       "name": "delete_project",
+      "orScope": null,
       "returns": "void",
       "scope": "tasks",
       "sensitive": false,
@@ -385,6 +425,7 @@
       },
       "effect": "destructive",
       "name": "delete_reading",
+      "orScope": null,
       "returns": "void",
       "scope": "trackers",
       "sensitive": false,
@@ -404,8 +445,49 @@
       },
       "effect": "destructive",
       "name": "delete_role",
+      "orScope": null,
       "returns": "void",
       "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "RoutineId"
+        }
+      ],
+      "changes": {
+        "kind": "routine",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_routine",
+      "orScope": null,
+      "returns": "void",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "RoutineRunId"
+        }
+      ],
+      "changes": {
+        "kind": "routineRun",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_run",
+      "orScope": null,
+      "returns": "void",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -423,6 +505,7 @@
       },
       "effect": "destructive",
       "name": "delete_task",
+      "orScope": null,
       "returns": "void",
       "scope": "tasks",
       "sensitive": false,
@@ -442,6 +525,7 @@
       },
       "effect": "destructive",
       "name": "delete_tracker",
+      "orScope": null,
       "returns": "number",
       "scope": "trackers",
       "sensitive": false,
@@ -458,6 +542,7 @@
       "changes": null,
       "effect": "write",
       "name": "fetch_image",
+      "orScope": null,
       "returns": "string",
       "scope": "web",
       "sensitive": false,
@@ -468,6 +553,7 @@
       "changes": null,
       "effect": "write",
       "name": "flush",
+      "orScope": null,
       "returns": "void",
       "scope": "journals",
       "sensitive": false,
@@ -484,6 +570,7 @@
       "changes": null,
       "effect": "read",
       "name": "get_entry",
+      "orScope": null,
       "returns": "Entry",
       "scope": "journals",
       "sensitive": false,
@@ -500,6 +587,7 @@
       "changes": null,
       "effect": "read",
       "name": "get_event",
+      "orScope": null,
       "returns": "CalendarEvent",
       "scope": "calendars",
       "sensitive": false,
@@ -516,6 +604,7 @@
       "changes": null,
       "effect": "read",
       "name": "get_goal",
+      "orScope": null,
       "returns": "Goal",
       "scope": "purpose",
       "sensitive": false,
@@ -532,8 +621,43 @@
       "changes": null,
       "effect": "read",
       "name": "get_item",
+      "orScope": null,
       "returns": "Item",
       "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "NoteId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_note",
+      "orScope": null,
+      "returns": "Note",
+      "scope": "notes",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "RoutineRunId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_run",
+      "orScope": null,
+      "returns": "RoutineRun",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -548,6 +672,7 @@
       "changes": null,
       "effect": "read",
       "name": "get_task",
+      "orScope": null,
       "returns": "Task",
       "scope": "tasks",
       "sensitive": false,
@@ -564,6 +689,7 @@
       "changes": null,
       "effect": "read",
       "name": "goal_activity",
+      "orScope": null,
       "returns": "GoalActivity",
       "scope": "purpose",
       "sensitive": false,
@@ -598,6 +724,7 @@
       },
       "effect": "write",
       "name": "import_calendar",
+      "orScope": null,
       "returns": "CalendarInfo",
       "scope": "calendars",
       "sensitive": false,
@@ -608,6 +735,7 @@
       "changes": null,
       "effect": "read",
       "name": "library_stats",
+      "orScope": null,
       "returns": "LibraryStats",
       "scope": "library",
       "sensitive": false,
@@ -624,6 +752,7 @@
       "changes": null,
       "effect": "read",
       "name": "list_blocks",
+      "orScope": null,
       "returns": "TimeBlock[]",
       "scope": "tasks",
       "sensitive": false,
@@ -634,6 +763,7 @@
       "changes": null,
       "effect": "read",
       "name": "list_calendars",
+      "orScope": null,
       "returns": "CalendarInfo[]",
       "scope": "calendars",
       "sensitive": false,
@@ -644,6 +774,7 @@
       "changes": null,
       "effect": "read",
       "name": "list_commands",
+      "orScope": null,
       "returns": "Surface",
       "scope": "journals",
       "sensitive": false,
@@ -655,11 +786,17 @@
           "name": "limit",
           "required": false,
           "type": "number | null"
+        },
+        {
+          "name": "includeRuns",
+          "required": false,
+          "type": "boolean"
         }
       ],
       "changes": null,
       "effect": "read",
       "name": "list_conversations",
+      "orScope": null,
       "returns": "ConversationSummary[]",
       "scope": "agent",
       "sensitive": false,
@@ -676,6 +813,7 @@
       "changes": null,
       "effect": "read",
       "name": "list_entries",
+      "orScope": null,
       "returns": "EntrySummary[]",
       "scope": "journals",
       "sensitive": false,
@@ -692,6 +830,7 @@
       "changes": null,
       "effect": "read",
       "name": "list_events",
+      "orScope": null,
       "returns": "CalendarEvent[]",
       "scope": "calendars",
       "sensitive": false,
@@ -708,6 +847,7 @@
       "changes": null,
       "effect": "read",
       "name": "list_goals",
+      "orScope": null,
       "returns": "Goal[]",
       "scope": "purpose",
       "sensitive": false,
@@ -724,6 +864,7 @@
       "changes": null,
       "effect": "read",
       "name": "list_items",
+      "orScope": null,
       "returns": "Item[]",
       "scope": "library",
       "sensitive": false,
@@ -734,6 +875,7 @@
       "changes": null,
       "effect": "read",
       "name": "list_journals",
+      "orScope": null,
       "returns": "Journal[]",
       "scope": "journals",
       "sensitive": false,
@@ -744,6 +886,7 @@
       "changes": null,
       "effect": "read",
       "name": "list_kinds",
+      "orScope": null,
       "returns": "KindInfo[]",
       "scope": "library",
       "sensitive": false,
@@ -760,6 +903,7 @@
       "changes": null,
       "effect": "read",
       "name": "list_logs",
+      "orScope": null,
       "returns": "LogEntry[]",
       "scope": "library",
       "sensitive": false,
@@ -770,8 +914,26 @@
       "changes": null,
       "effect": "read",
       "name": "list_memories",
+      "orScope": null,
       "returns": "Memory[]",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "NoteQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_notes",
+      "orScope": null,
+      "returns": "NoteSummary[]",
+      "scope": "notes",
       "sensitive": false,
       "streams": false
     },
@@ -780,6 +942,7 @@
       "changes": null,
       "effect": "read",
       "name": "list_projects",
+      "orScope": null,
       "returns": "Project[]",
       "scope": "tasks",
       "sensitive": false,
@@ -796,6 +959,7 @@
       "changes": null,
       "effect": "read",
       "name": "list_readings",
+      "orScope": null,
       "returns": "Reading[]",
       "scope": "trackers",
       "sensitive": false,
@@ -806,6 +970,7 @@
       "changes": null,
       "effect": "read",
       "name": "list_roles",
+      "orScope": null,
       "returns": "RoleInfo[]",
       "scope": "purpose",
       "sensitive": false,
@@ -815,7 +980,36 @@
       "args": [],
       "changes": null,
       "effect": "read",
+      "name": "list_routines",
+      "orScope": null,
+      "returns": "RoutineInfo[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "RunQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_runs",
+      "orScope": null,
+      "returns": "RoutineRun[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
       "name": "list_tags",
+      "orScope": null,
       "returns": "string[]",
       "scope": "journals",
       "sensitive": false,
@@ -832,6 +1026,7 @@
       "changes": null,
       "effect": "read",
       "name": "list_tasks",
+      "orScope": null,
       "returns": "Task[]",
       "scope": "tasks",
       "sensitive": false,
@@ -842,6 +1037,7 @@
       "changes": null,
       "effect": "read",
       "name": "list_tools",
+      "orScope": null,
       "returns": "ToolInfo[]",
       "scope": "journals",
       "sensitive": false,
@@ -852,6 +1048,7 @@
       "changes": null,
       "effect": "read",
       "name": "list_trackers",
+      "orScope": null,
       "returns": "Tracker[]",
       "scope": "trackers",
       "sensitive": false,
@@ -862,6 +1059,7 @@
       "changes": null,
       "effect": "write",
       "name": "lock",
+      "orScope": null,
       "returns": "VaultStatus",
       "scope": "journals",
       "sensitive": false,
@@ -906,6 +1104,7 @@
       },
       "effect": "write",
       "name": "log_reading",
+      "orScope": null,
       "returns": "Reading",
       "scope": "trackers",
       "sensitive": false,
@@ -932,8 +1131,29 @@
       "changes": null,
       "effect": "read",
       "name": "lookup_metadata",
+      "orScope": null,
       "returns": "SearchResult[]",
       "scope": "web",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "ids",
+          "required": false,
+          "type": "RoutineRunId[]"
+        }
+      ],
+      "changes": {
+        "kind": "routineRun",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "mark_runs_seen",
+      "orScope": null,
+      "returns": "void",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -956,6 +1176,7 @@
       },
       "effect": "destructive",
       "name": "merge_trackers",
+      "orScope": null,
       "returns": "number",
       "scope": "trackers",
       "sensitive": false,
@@ -987,6 +1208,7 @@
       "changes": null,
       "effect": "read",
       "name": "new_block",
+      "orScope": null,
       "returns": "TimeBlock",
       "scope": "tasks",
       "sensitive": false,
@@ -997,6 +1219,7 @@
       "changes": null,
       "effect": "read",
       "name": "new_conversation",
+      "orScope": null,
       "returns": "Conversation",
       "scope": "agent",
       "sensitive": false,
@@ -1013,6 +1236,7 @@
       "changes": null,
       "effect": "read",
       "name": "new_entry",
+      "orScope": null,
       "returns": "Entry",
       "scope": "journals",
       "sensitive": false,
@@ -1034,6 +1258,7 @@
       "changes": null,
       "effect": "read",
       "name": "new_goal",
+      "orScope": null,
       "returns": "Goal",
       "scope": "purpose",
       "sensitive": false,
@@ -1050,6 +1275,7 @@
       "changes": null,
       "effect": "read",
       "name": "new_journal",
+      "orScope": null,
       "returns": "Journal",
       "scope": "journals",
       "sensitive": false,
@@ -1071,6 +1297,7 @@
       "changes": null,
       "effect": "read",
       "name": "new_kind",
+      "orScope": null,
       "returns": "Kind",
       "scope": "library",
       "sensitive": false,
@@ -1092,8 +1319,31 @@
       "changes": null,
       "effect": "read",
       "name": "new_log",
+      "orScope": null,
       "returns": "LogEntry",
       "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "new_memory",
+      "orScope": null,
+      "returns": "Memory",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "new_note",
+      "orScope": null,
+      "returns": "Note",
+      "scope": "notes",
       "sensitive": false,
       "streams": false
     },
@@ -1108,6 +1358,7 @@
       "changes": null,
       "effect": "read",
       "name": "new_project",
+      "orScope": null,
       "returns": "Project",
       "scope": "tasks",
       "sensitive": false,
@@ -1124,8 +1375,20 @@
       "changes": null,
       "effect": "read",
       "name": "new_role",
+      "orScope": null,
       "returns": "Role",
       "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "new_routine",
+      "orScope": null,
+      "returns": "Routine",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -1150,6 +1413,7 @@
       "changes": null,
       "effect": "read",
       "name": "new_task",
+      "orScope": null,
       "returns": "Task",
       "scope": "tasks",
       "sensitive": false,
@@ -1171,6 +1435,7 @@
       "changes": null,
       "effect": "read",
       "name": "new_tracker",
+      "orScope": null,
       "returns": "Tracker",
       "scope": "trackers",
       "sensitive": false,
@@ -1179,10 +1444,64 @@
     {
       "args": [],
       "changes": null,
+      "effect": "read",
+      "name": "note_tags",
+      "orScope": null,
+      "returns": "string[]",
+      "scope": "notes",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
       "effect": "write",
       "name": "poll_auto_lock",
+      "orScope": null,
       "returns": "boolean",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "profile",
+      "orScope": null,
+      "returns": "Profile",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "routine_templates",
+      "orScope": null,
+      "returns": "Template[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "RoutineId"
+        }
+      ],
+      "changes": {
+        "kind": "routineRun",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "run_routine",
+      "orScope": null,
+      "returns": "RoutineRun",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -1207,6 +1526,7 @@
       "changes": null,
       "effect": "write",
       "name": "run_tool",
+      "orScope": null,
       "returns": "unknown",
       "scope": "all",
       "sensitive": false,
@@ -1226,6 +1546,7 @@
       },
       "effect": "write",
       "name": "save_agent_settings",
+      "orScope": null,
       "returns": "AgentSettings",
       "scope": "agent",
       "sensitive": false,
@@ -1245,6 +1566,7 @@
       },
       "effect": "write",
       "name": "save_block",
+      "orScope": null,
       "returns": "void",
       "scope": "tasks",
       "sensitive": false,
@@ -1264,6 +1586,7 @@
       },
       "effect": "write",
       "name": "save_calendar",
+      "orScope": null,
       "returns": "void",
       "scope": "calendars",
       "sensitive": false,
@@ -1288,6 +1611,7 @@
       },
       "effect": "write",
       "name": "save_entry",
+      "orScope": null,
       "returns": "void",
       "scope": "journals",
       "sensitive": false,
@@ -1307,6 +1631,7 @@
       },
       "effect": "write",
       "name": "save_entry_force",
+      "orScope": null,
       "returns": "void",
       "scope": "journals",
       "sensitive": false,
@@ -1326,6 +1651,7 @@
       },
       "effect": "write",
       "name": "save_goal",
+      "orScope": null,
       "returns": "void",
       "scope": "purpose",
       "sensitive": false,
@@ -1345,6 +1671,7 @@
       },
       "effect": "write",
       "name": "save_goals",
+      "orScope": null,
       "returns": "void",
       "scope": "purpose",
       "sensitive": false,
@@ -1364,6 +1691,7 @@
       },
       "effect": "write",
       "name": "save_item",
+      "orScope": null,
       "returns": "void",
       "scope": "library",
       "sensitive": false,
@@ -1383,6 +1711,7 @@
       },
       "effect": "write",
       "name": "save_items",
+      "orScope": null,
       "returns": "void",
       "scope": "library",
       "sensitive": false,
@@ -1402,6 +1731,7 @@
       },
       "effect": "write",
       "name": "save_journal",
+      "orScope": null,
       "returns": "void",
       "scope": "journals",
       "sensitive": false,
@@ -1421,6 +1751,7 @@
       },
       "effect": "write",
       "name": "save_kind",
+      "orScope": null,
       "returns": "void",
       "scope": "library",
       "sensitive": false,
@@ -1440,6 +1771,7 @@
       },
       "effect": "write",
       "name": "save_log",
+      "orScope": null,
       "returns": "void",
       "scope": "library",
       "sensitive": false,
@@ -1459,8 +1791,74 @@
       },
       "effect": "write",
       "name": "save_memory",
+      "orScope": null,
       "returns": "Memory[]",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "note",
+          "required": true,
+          "type": "Note"
+        },
+        {
+          "name": "expect",
+          "required": false,
+          "type": "string | null"
+        }
+      ],
+      "changes": {
+        "kind": "note",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_note",
+      "orScope": null,
+      "returns": "void",
+      "scope": "notes",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "note",
+          "required": true,
+          "type": "Note"
+        }
+      ],
+      "changes": {
+        "kind": "note",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_note_force",
+      "orScope": null,
+      "returns": "void",
+      "scope": "notes",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "profile",
+          "required": true,
+          "type": "Profile"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_profile",
+      "orScope": null,
+      "returns": "Profile",
+      "scope": "journals",
       "sensitive": false,
       "streams": false
     },
@@ -1478,6 +1876,7 @@
       },
       "effect": "write",
       "name": "save_project",
+      "orScope": null,
       "returns": "void",
       "scope": "tasks",
       "sensitive": false,
@@ -1497,6 +1896,7 @@
       },
       "effect": "write",
       "name": "save_reading",
+      "orScope": null,
       "returns": "void",
       "scope": "trackers",
       "sensitive": false,
@@ -1516,8 +1916,29 @@
       },
       "effect": "write",
       "name": "save_role",
+      "orScope": null,
       "returns": "void",
       "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "routine",
+          "required": true,
+          "type": "Routine"
+        }
+      ],
+      "changes": {
+        "kind": "routine",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_routine",
+      "orScope": null,
+      "returns": "Routine",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -1535,6 +1956,7 @@
       },
       "effect": "write",
       "name": "save_task",
+      "orScope": null,
       "returns": "void",
       "scope": "tasks",
       "sensitive": false,
@@ -1554,6 +1976,7 @@
       },
       "effect": "write",
       "name": "save_tasks",
+      "orScope": null,
       "returns": "void",
       "scope": "tasks",
       "sensitive": false,
@@ -1573,6 +1996,7 @@
       },
       "effect": "write",
       "name": "save_tracker",
+      "orScope": null,
       "returns": "void",
       "scope": "trackers",
       "sensitive": false,
@@ -1591,6 +2015,11 @@
           "type": "JournalId | null"
         },
         {
+          "name": "kind",
+          "required": false,
+          "type": "SearchKind | null"
+        },
+        {
           "name": "limit",
           "required": true,
           "type": "number"
@@ -1599,6 +2028,7 @@
       "changes": null,
       "effect": "read",
       "name": "search",
+      "orScope": "notes",
       "returns": "SearchHit[]",
       "scope": "journals",
       "sensitive": false,
@@ -1609,6 +2039,7 @@
       "changes": null,
       "effect": "read",
       "name": "search_sources",
+      "orScope": null,
       "returns": "SourceInfo[]",
       "scope": "web",
       "sensitive": false,
@@ -1622,6 +2053,7 @@
       },
       "effect": "write",
       "name": "seed_roles",
+      "orScope": null,
       "returns": "number",
       "scope": "purpose",
       "sensitive": false,
@@ -1651,6 +2083,7 @@
       },
       "effect": "write",
       "name": "send_message",
+      "orScope": null,
       "returns": "void",
       "scope": "agent",
       "sensitive": false,
@@ -1670,6 +2103,7 @@
       },
       "effect": "write",
       "name": "set_agent_key",
+      "orScope": null,
       "returns": "void",
       "scope": "agent",
       "sensitive": false,
@@ -1689,6 +2123,27 @@
       },
       "effect": "write",
       "name": "set_auto_lock",
+      "orScope": null,
+      "returns": "void",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "seconds",
+          "required": true,
+          "type": "number"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_forget_key",
+      "orScope": null,
       "returns": "void",
       "scope": "journals",
       "sensitive": false,
@@ -1723,6 +2178,7 @@
       },
       "effect": "write",
       "name": "set_item_progress",
+      "orScope": null,
       "returns": "Item",
       "scope": "library",
       "sensitive": false,
@@ -1752,6 +2208,7 @@
       },
       "effect": "write",
       "name": "set_item_status",
+      "orScope": null,
       "returns": "Item",
       "scope": "library",
       "sensitive": false,
@@ -1762,6 +2219,7 @@
       "changes": null,
       "effect": "read",
       "name": "status",
+      "orScope": null,
       "returns": "VaultStatus",
       "scope": "journals",
       "sensitive": false,
@@ -1791,6 +2249,7 @@
       },
       "effect": "write",
       "name": "subscribe_calendar",
+      "orScope": null,
       "returns": "CalendarInfo",
       "scope": "calendars",
       "sensitive": false,
@@ -1810,6 +2269,7 @@
       },
       "effect": "write",
       "name": "sync_calendar",
+      "orScope": null,
       "returns": "SyncReport",
       "scope": "calendars",
       "sensitive": false,
@@ -1829,6 +2289,7 @@
       },
       "effect": "write",
       "name": "sync_due_calendars",
+      "orScope": null,
       "returns": "SyncReport[]",
       "scope": "calendars",
       "sensitive": false,
@@ -1839,6 +2300,7 @@
       "changes": null,
       "effect": "read",
       "name": "task_stats",
+      "orScope": null,
       "returns": "TaskStats",
       "scope": "tasks",
       "sensitive": false,
@@ -1849,6 +2311,7 @@
       "changes": null,
       "effect": "read",
       "name": "task_tags",
+      "orScope": null,
       "returns": "TagCount[]",
       "scope": "tasks",
       "sensitive": false,
@@ -1870,6 +2333,7 @@
       "changes": null,
       "effect": "read",
       "name": "time_by_purpose",
+      "orScope": null,
       "returns": "BalanceReport",
       "scope": "purpose",
       "sensitive": false,
@@ -1880,6 +2344,7 @@
       "changes": null,
       "effect": "write",
       "name": "touch",
+      "orScope": null,
       "returns": "void",
       "scope": "journals",
       "sensitive": false,
@@ -1896,6 +2361,7 @@
       "changes": null,
       "effect": "read",
       "name": "tracker_days",
+      "orScope": null,
       "returns": "TrackerDay[]",
       "scope": "trackers",
       "sensitive": false,
@@ -1912,6 +2378,7 @@
       "changes": null,
       "effect": "write",
       "name": "unlock",
+      "orScope": null,
       "returns": "VaultStatus",
       "scope": "journals",
       "sensitive": false,
@@ -1921,8 +2388,37 @@
       "args": [],
       "changes": null,
       "effect": "read",
+      "name": "unseen_runs",
+      "orScope": null,
+      "returns": "number",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
       "name": "vault_stats",
+      "orScope": null,
       "returns": "StoreStats",
+      "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "password",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "verify_password",
+      "orScope": null,
+      "returns": "void",
       "scope": "journals",
       "sensitive": false,
       "streams": false
@@ -1938,6 +2434,7 @@
       "changes": null,
       "effect": "read",
       "name": "web_search",
+      "orScope": null,
       "returns": "SearchResult[]",
       "scope": "web",
       "sensitive": false,

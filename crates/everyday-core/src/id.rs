@@ -76,6 +76,12 @@ macro_rules! typed_id {
 
 typed_id!(JournalId, "journal");
 typed_id!(EntryId, "entry");
+// Writing that is not a day. See `crate::note`.
+typed_id!(NoteId, "note");
+
+// The assistant's standing work, and its log. See `crate::routine`.
+typed_id!(RoutineId, "routine");
+typed_id!(RoutineRunId, "run");
 
 // The task domain. Separate newtypes for the same reason as above: a
 // `TaskId` and a `ProjectId` are both UUIDs and are never interchangeable,

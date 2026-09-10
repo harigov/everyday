@@ -4,6 +4,9 @@
 
 export type JournalId = string
 export type EntryId = string
+export type NoteId = string
+export type RoutineId = string
+export type RoutineRunId = string
 export type BlobId = string
 export type ProjectId = string
 export type TaskId = string
@@ -363,6 +366,187 @@ export interface Entry {
   purpose?: Purpose | null
 }
 
+/**
+ * A note: writing that is not a day.
+ *
+ * An entry without a journal or a date. It has a title because notes are
+ * looked for by name, and no date because the day a recipe was typed is not
+ * how anybody finds it again. Everything else it shares with an entry, which
+ * is why the same editor draws it.
+ */
+export interface Note {
+  id: NoteId
+  title: string
+  body: RichDoc
+  tags: string[]
+  /** Kept at the top of the list. There is no starring as well. */
+  pinned: boolean
+  purpose?: Purpose | null
+  attachments: Attachment[]
+  createdAt: string
+  updatedAt: string
+}
+
+/** The condensed form the note list renders; never carries a full body. */
+export interface NoteSummary {
+  id: NoteId
+  title: string
+  excerpt: string
+  tags: string[]
+  pinned: boolean
+  purpose?: Purpose | null
+  wordCount: number
+  attachmentCount: number
+  cover?: BlobId
+  createdAt: string
+  updatedAt: string
+}
+
+/**
+ * Who the vault belongs to.
+ *
+ * The handful of things that do not change. Facts that do -- a move, a new
+ * job -- are what the assistant's memory is for, and it writes those itself.
+ * Nothing writes this: it is typed here, by hand, once. Read into every
+ * prompt, which is why the field beneath it says so.
+ */
+export interface Profile {
+  firstName: string
+  lastName: string
+  /** `YYYY-MM-DD`. The age in the prompt is computed from it. */
+  born?: string | null
+  /** Free text, not a closed set. Nothing branches on the value. */
+  gender: string
+  /** Roughly where they live. A city is the useful grain. */
+  location: string
+  /** Anything else worth knowing, in their own words. */
+  about: string
+  updatedAt?: string | null
+}
+
+/** A day of the week, in the spelling the wire uses. */
+export type Weekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun'
+
+/**
+ * What sets a routine going.
+ *
+ * A tagged union rather than a bag of optional fields, because a clock time
+ * with weekdays and a lead time before a meeting have nothing in common but
+ * the word "when", and a routine has exactly one of them.
+ */
+export type Trigger =
+  /** A time of day, on the given days. An empty list means every day. */
+  | { type: 'schedule'; at: string; days: Weekday[] }
+  /** Before a calendar event starts. Answered by a query on each tick. */
+  | { type: 'beforeEvent'; leadMinutes: number; roleId?: RoleId | null }
+  /** Before a task falls due. Also a query. */
+  | { type: 'taskDue'; leadDays: number }
+  /** Never on its own. Run now, and nothing else. */
+  | { type: 'manual' }
+
+/**
+ * Standing work: what the assistant does without being asked.
+ *
+ * A trigger, an instruction in the person's own words, and a switch. The
+ * instructions are the prompt: nothing else about the conversation that set it
+ * up survives.
+ */
+export interface Routine {
+  id: RoutineId
+  name: string
+  instructions: string
+  trigger: Trigger
+  /**
+   * Minutes past its moment that it will still run.
+   *
+   * A morning brief missed by six hours is not a morning brief; a weekly
+   * review missed by a day still is. Past this the run is recorded as skipped
+   * with a reason, rather than running late or saying nothing.
+   */
+  graceMinutes: number
+  enabled: boolean
+  lastRunAt?: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+/** How a run ended. */
+export type Outcome = 'running' | 'done' | 'failed' | 'skipped'
+
+/** One run of a routine. */
+export interface RoutineRun {
+  id: RoutineRunId
+  routineId: RoutineId
+  /** What the routine was called when it ran, so a log row survives a rename. */
+  routineName: string
+  /** The scheduled moment this run is for. Absent when somebody asked by hand. */
+  slot?: string | null
+  startedAt: string
+  finishedAt?: string | null
+  outcome: Outcome
+  /** Why it failed or was skipped. Empty when it simply worked. */
+  reason: string
+  /** What it was about: the meeting, the task. Only query triggers set one. */
+  subject?: string | null
+  /** The transcript, openable in the rail. Absent if it never reached the model. */
+  conversationId?: ConversationId | null
+  /** The model's last message: what it has to say for itself. */
+  summary: string
+  /** Whether anybody has looked at it. The count on the app bar. */
+  seen: boolean
+  steps: number
+}
+
+export interface RunQuery {
+  routineId?: RoutineId | null
+  outcomes?: Outcome[]
+  unseen?: boolean | null
+  since?: string | null
+  limit?: number | null
+}
+
+/**
+ * A routine, with the two things a list has to say that the record does not.
+ *
+ * `when` and `nextDue` are derived in the core rather than here, so the
+ * interface and the assistant cannot spell "Weekdays at 07:00" two different
+ * ways.
+ */
+export interface RoutineInfo extends Routine {
+  /** The trigger in words. */
+  when: string
+  /** When it next runs, or absent for a trigger that is not a clock. */
+  nextDue?: string
+}
+
+/**
+ * A routine somebody could start from, filled in.
+ *
+ * Offered, never imposed: a template is only an editor with words already in
+ * it. They come from the service because the assistant offers them too — asked
+ * to set up a morning brief, it should propose what the plus button does.
+ */
+export interface Template {
+  name: string
+  instructions: string
+  trigger: Trigger
+  /** Why somebody would want this one. Drawn under the name. */
+  note: string
+  /** False for a template whose trigger needs something this vault has not got. */
+  available: boolean
+}
+
+/** How a note list is ordered. Fewer choices than an entry list has. */
+export type NoteSort = 'updatedDesc' | 'createdDesc' | 'titleAsc'
+
+export interface NoteQuery {
+  tags?: string[]
+  pinned?: boolean | null
+  sort?: NoteSort
+  offset?: number
+  limit?: number | null
+}
+
 /** The condensed form the list view renders; never carries a full body. */
 export interface EntrySummary {
   id: EntryId
@@ -399,16 +583,32 @@ export interface EntryQuery {
   limit?: number | null
 }
 
-export interface SearchHit {
-  id: EntryId
-  journalId: JournalId
+/** Which records a search should look at. */
+export type SearchKind = 'entry' | 'note'
+
+/**
+ * A ranked search result.
+ *
+ * One index covers entries and notes both, so a half-remembered phrase is
+ * found wherever it was written down. The fields that only make sense for one
+ * of them hang off the variant that has them: an entry is filed under a day in
+ * a journal, and a note is filed under nothing, which is the whole difference
+ * between the two records.
+ */
+export type SearchHit = {
   title: string
-  localDate: string
   score: number
   snippet: string
-  /** Byte ranges within `snippet` that matched. */
   highlights: [number, number][]
-}
+} & (
+  | { type: 'entry'; id: EntryId; journalId: JournalId; localDate: string }
+  | { type: 'note'; id: NoteId }
+)
+
+/** A hit that is known to be an entry. What the journal's own search box gets. */
+export type EntryHit = Extract<SearchHit, { type: 'entry' }>
+/** A hit that is known to be a note. */
+export type NoteHit = Extract<SearchHit, { type: 'note' }>
 
 export interface StoreStats {
   journals: number
@@ -464,6 +664,20 @@ export interface Capabilities {
    * conversation vanishes when the window closes.
    */
   agent: boolean
+  /**
+   * Backend implements the note store, so writing that is not filed under a
+   * day has somewhere to live. False hides the Notes app, and takes the
+   * assistant's note tools with it.
+   */
+  notes: boolean
+  /**
+   * Backend implements the routine store, so the assistant can have standing
+   * work and a log of what it did.
+   *
+   * False hides the routines. The rail still works: talking to it needs
+   * nothing from there.
+   */
+  routines: boolean
 }
 
 export interface VaultStatus {
@@ -471,7 +685,15 @@ export interface VaultStatus {
   backend: string
   unlocked: boolean
   encrypted: boolean
+  /** Seconds of idleness before a client hides what it is showing. */
   autoLockSeconds: number
+  /**
+   * Seconds of idleness before the machine holding the vault drops its key.
+   * 0 is never, which is the default: that machine serves this vault to other
+   * windows and to the assistant, and none of them should lose it because one
+   * keyboard went quiet.
+   */
+  forgetKeySeconds: number
   path: string
   /**
    * False when another process holds this vault's write lock — a second copy
@@ -522,6 +744,11 @@ export interface Bootstrap {
   remotes: Connection[]
   /** The one this window is looking at, if it is looking at one. */
   remote: Connection | null
+  /**
+   * Whether this machine holds the key, so the vault opens without a password
+   * when the process starts. Off unless somebody turned it on.
+   */
+  opensItself: boolean
 }
 
 /**
@@ -894,6 +1121,9 @@ export interface ChangeEvent {
 export type ChangeKind =
   | 'journal'
   | 'entry'
+  | 'note'
+  | 'routine'
+  | 'routineRun'
   | 'project'
   | 'task'
   | 'block'
@@ -1346,6 +1576,23 @@ export interface AgentSettings {
   maxSteps: number
   /** Whether the assistant may write memories. */
   remember: boolean
+  /**
+   * The person's own IANA time zone. `null` means this machine's.
+   *
+   * Here rather than read from the host because the host may not be where the
+   * person is: a vault served from a machine under a desk has that machine's
+   * clock, and a routine set for seven in the morning has to mean seven where
+   * the person is.
+   */
+  timezone?: string | null
+  /**
+   * Whether the assistant may search the web.
+   *
+   * Off until somebody says otherwise. It is the one thing it does that leaves
+   * this computer for somewhere the person did not choose: everything else
+   * happens between here and the model endpoint they configured.
+   */
+  web: boolean
   /** Whether a key is stored. Never the key. */
   hasKey: boolean
 }

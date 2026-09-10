@@ -61,6 +61,47 @@ pub struct Bootstrap {
     pub remotes: Vec<Connection>,
     /// The connection this window is on, if it is on one.
     pub remote: Option<Connection>,
+    /// Whether this machine holds the key to the local vault, so that it
+    /// opens without a password when the process starts. Off unless somebody
+    /// turned it on; see `autounlock`.
+    pub opens_itself: bool,
+}
+
+/// Turn "open this vault without a password" on or off, for this machine.
+///
+/// The password is asked for on the way *on* rather than taken from the open
+/// vault, because this is the one switch whose whole effect is that the
+/// password stops being needed -- so pressing it should cost the password
+/// once, from somebody who knows it, rather than being available to anybody
+/// who wandered past an unlocked screen.
+#[tauri::command]
+pub async fn set_opens_itself(
+    state: State<'_, AppState>,
+    on: bool,
+    password: Option<String>,
+) -> CommandResult<bool> {
+    let Some(path) = state.service().last_path() else {
+        return Err(CommandError::new("no_vault", "no vault is open"));
+    };
+    // Off the async runtime, all of it. The keychain is a blocking call on
+    // every platform and on Linux it is a D-Bus round trip that can sit there
+    // for the length of an unlock prompt -- and a Tauri worker held for that
+    // long is a window that has stopped answering.
+    if !on {
+        let at = path.clone();
+        return blocking(move || {
+            everyday_vault::autounlock::forget(&at)?;
+            Ok(false)
+        })
+        .await;
+    }
+    let vault = state.service().require()?;
+    blocking(move || {
+        let key = vault.export_data_key(password.as_deref())?;
+        everyday_vault::autounlock::remember(&path, &key)?;
+        Ok(true)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -78,6 +119,9 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
             protocol: everyday_service::PROTOCOL,
             remotes: remotes::list(),
             remote: session.connection(),
+            // The key to a vault on another computer is that computer's
+            // business, and this switch is about the one held here.
+            opens_itself: false,
         });
     }
 
@@ -100,7 +144,30 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
         };
         match opened {
             Ok(vault) => {
-                service.set(vault);
+                let vault = service.set(vault);
+                // If this machine has been told to, open it without asking.
+                // Best effort in every direction: a keychain that cannot be
+                // reached, or a key that no longer fits because the password
+                // was changed elsewhere, is a lock screen -- which is what
+                // would have happened anyway.
+                //
+                // Off the runtime, because this is the startup path and the
+                // keychain can block: a window that has drawn nothing yet
+                // must not be waiting on D-Bus.
+                let at = path.clone();
+                let unlocked = blocking(move || {
+                    let Some(key) = everyday_vault::autounlock::recall(&at) else {
+                        return Ok(());
+                    };
+                    if !vault.is_unlocked() {
+                        vault.unlock_with_key(key.as_str())?;
+                    }
+                    Ok(())
+                })
+                .await;
+                if let Err(e) = unlocked {
+                    tracing::warn!(error = %e, "the key in the keychain did not open the vault");
+                }
             }
             // A vault we cannot open is not fatal: the interface should still
             // start and be able to say why.
@@ -126,6 +193,10 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
 
     Ok(Bootstrap {
         vault_exists: everyday_vault::exists(&path),
+        opens_itself: {
+            let at = path.clone();
+            blocking(move || Ok(everyday_vault::autounlock::enabled(&at))).await?
+        },
         default_path: path,
         backends,
         status: service.get().map(|v| v.status()),
@@ -161,6 +232,10 @@ pub async fn create_vault(
         password,
         kdf: Default::default(),
         auto_lock_seconds: 15 * 60,
+        // Never, by default. The machine holding a vault serves it -- to its
+        // own window, to a phone, to the assistant -- and a key that went
+        // away because one keyboard was idle would take all of that with it.
+        forget_key_seconds: 0,
     };
     let service = state.service();
     state.disconnect();

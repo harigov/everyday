@@ -16,6 +16,9 @@
   import { onDestroy } from 'svelte'
   import { isLoopback } from '../lib/agent'
   import { agent } from '../lib/agent.svelte'
+  import { app } from '../lib/state.svelte'
+  import { assistant } from '../lib/assistant.svelte'
+  import { panels } from '../lib/panels.svelte'
   import type { AgentSettings } from '../lib/types'
   import Icon from './Icon.svelte'
 
@@ -55,6 +58,22 @@
   $effect(() => {
     if (!draft && agent.settings) draft = structuredClone($state.snapshot(agent.settings))
   })
+
+  const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+
+  /**
+   * Every zone the platform knows, with this machine's first if it is not
+   * already in the list.
+   *
+   * `supportedValuesOf` is in every engine this application runs in; the
+   * fallback is a short list rather than an empty picker, because a select
+   * with one option in it reads as broken.
+   */
+  const ZONES: string[] = (() => {
+    const of = (Intl as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf
+    const all = of ? of('timeZone') : ['UTC', localZone]
+    return [...new Set([localZone, ...all])].sort()
+  })()
 
   /** Common endpoints, so the two local ones are not a thing to look up. */
   const PRESETS = [
@@ -220,6 +239,17 @@
           <small>Short notes it keeps between conversations. Listed below.</small>
         </span>
       </label>
+      <label class="toggle">
+        <input type="checkbox" bind:checked={draft.web} />
+        <span>
+          <b>Let it search the web</b>
+          <small>
+            The one thing it does that leaves this computer for somewhere you did not choose. Your
+            question — and, preparing for a meeting, the names of the people in it — go to a search
+            engine. Everything else stays between here and the model endpoint above.
+          </small>
+        </span>
+      </label>
       <label class="setting narrow">
         <span>Steps per request</span>
         <input type="number" min="1" max="100" bind:value={draft.maxSteps} />
@@ -229,15 +259,47 @@
       </p>
     </section>
 
+    <section>
+      <span class="eyebrow">Your time zone</span>
+      <select
+        class="field"
+        value={draft.timezone ?? ''}
+        onchange={(e) => (draft!.timezone = e.currentTarget.value || null)}
+      >
+        <option value="">This computer's ({localZone})</option>
+        {#each ZONES as zone (zone)}
+          <option value={zone}>{zone}</option>
+        {/each}
+      </select>
+      <p class="hint">
+        Where <em>you</em> are, which is not always where the vault is. A vault served from a machine
+        under a desk has that machine's clock, and “seven in the morning” has to mean seven where you
+        are.
+      </p>
+    </section>
+
+    <!-- The list used to be here, and this is what is left of it: a pointer.
+         It grew past what a settings tab should hold the moment a fact could
+         be edited, pinned and traced back to the conversation that taught it,
+         and a list you can only delete from is not a list you can correct. It
+         lives in the Assistant app now, beside the routines that read it. -->
     {#if agent.memories.length > 0}
       <section>
         <span class="eyebrow">What it remembers</span>
-        {#each agent.memories as memory (memory.id)}
-          <div class="memory">
-            <span>{memory.text}</span>
-            <button class="link" onclick={() => void agent.forget(memory.id)}>Forget</button>
-          </div>
-        {/each}
+        <p class="hint">
+          {agent.memories.length}
+          {agent.memories.length === 1 ? 'thing' : 'things'}, read at the start of every
+          conversation.
+          <button
+            class="link"
+            onclick={() => {
+              panels.closeSettings()
+              void app.goTo('assistant').then(() => assistant.setPane('memory'))
+            }}
+          >
+            See them
+          </button>
+        </p>
       </section>
     {/if}
   </div>
@@ -380,8 +442,7 @@
     width: 110px;
   }
 
-  .stored,
-  .memory {
+  .stored {
     display: flex;
     align-items: flex-start;
     gap: var(--sp-3);
@@ -392,8 +453,7 @@
     font-size: var(--text-sm);
     min-width: 0;
   }
-  .stored span,
-  .memory span {
+  .stored span {
     display: flex;
     flex: 1;
     align-items: baseline;
@@ -401,12 +461,6 @@
     min-width: 0;
     line-height: var(--leading-normal);
     color: var(--fg-muted);
-    /* A remembered note is a sentence somebody's model wrote, and it can be
-       one very long word. It wraps rather than widening the panel. */
-    overflow-wrap: anywhere;
-  }
-  .memory + .memory {
-    margin-top: calc(var(--sp-2) * -1 + var(--sp-2));
   }
   .link {
     flex: none;

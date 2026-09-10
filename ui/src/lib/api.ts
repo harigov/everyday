@@ -61,6 +61,19 @@ import type {
   RoleId,
   RoleInfo,
   SearchHit,
+  SearchKind,
+  Profile,
+  Routine,
+  RoutineId,
+  RoutineInfo,
+  RoutineRun,
+  RoutineRunId,
+  RunQuery,
+  Template,
+  Note,
+  NoteId,
+  NoteQuery,
+  NoteSummary,
   SearchRequest,
   HotkeyStatus,
   SearchResult,
@@ -370,14 +383,36 @@ export const api = {
   hotkeyStatus: () => invoke<HotkeyStatus>('hotkey_status'),
   setHotkey: (on: boolean) => invoke<HotkeyStatus>('set_hotkey', { on }),
   unlock: (password: string) => invoke<VaultStatus>('unlock', { password }),
+  /**
+   * Check a password without opening or closing anything.
+   *
+   * What a window asks when its own screen was locked and the vault behind it
+   * never was. Costs the same Argon2 derivation an unlock costs and counts
+   * against the same lockout, deliberately.
+   */
+  verifyPassword: (password: string) => invoke<void>('verify_password', { password }),
   lock: () => invoke<VaultStatus>('lock'),
   status: () => invoke<VaultStatus>('status'),
   changePassword: (current: string, next: string) =>
     invoke<void>('change_password', { current, next }),
+  /** How long before a client hides what it is showing. */
   setAutoLock: (seconds: number) => invoke<void>('set_auto_lock', { seconds }),
-  /** Defers the idle auto-lock; called on real user interaction. */
+  /** How long before the machine holding the vault drops its key. 0 is never. */
+  setForgetKey: (seconds: number) => invoke<void>('set_forget_key', { seconds }),
+  /**
+   * Keep this vault's key in this machine's keychain, or take it out again.
+   *
+   * The password is asked for on the way *on*, and only then: this is the one
+   * switch whose whole effect is that the password stops being needed, so
+   * pressing it should cost the password once from somebody who knows it,
+   * rather than being available to anybody who wandered past an unlocked
+   * screen. Answers with what the setting now is.
+   */
+  setOpensItself: (on: boolean, password: string | null) =>
+    invoke<boolean>('set_opens_itself', { on, password }),
+  /** Defers the moment the key is dropped; called on real user interaction. */
   touch: () => invoke<void>('touch'),
-  /** Returns true if the vault locked itself. Polled on a timer. */
+  /** Returns true if the vault has just dropped its key. Polled on a timer. */
   pollAutoLock: () => invoke<boolean>('poll_auto_lock'),
 
   journals: () => invoke<Journal[]>('list_journals'),
@@ -408,8 +443,67 @@ export const api = {
   saveEntryForce: (entry: Entry) => invoke<void>('save_entry_force', { entry }),
   deleteEntry: (id: EntryId) => invoke<void>('delete_entry', { id }),
 
-  search: (query: string, journalId: JournalId | null, limit: number) =>
-    invoke<SearchHit[]>('search', { query, journalId, limit }),
+  /**
+   * Search entries and notes.
+   *
+   * `kind` narrows to one of them; naming a journal narrows to entries
+   * whatever `kind` says, because a note is in no journal. Both absent means
+   * both kinds, which is what the palette wants.
+   */
+  search: (
+    query: string,
+    journalId: JournalId | null,
+    limit: number,
+    kind: SearchKind | null = null,
+  ) => invoke<SearchHit[]>('search', { query, journalId, kind, limit }),
+
+  /**
+   * Who the vault belongs to.
+   *
+   * Read into every prompt the assistant sends. Written only from Settings:
+   * there is no tool for it, deliberately, because a fact that changes is a
+   * memory and this is for the ones that do not.
+   */
+  profile: () => invoke<Profile>('profile'),
+  saveProfile: (profile: Profile) => invoke<Profile>('save_profile', { profile }),
+
+  /** The assistant's standing work, with when each next runs. */
+  routines: () => invoke<RoutineInfo[]>('list_routines'),
+  /** A blank routine with an id. The core allocates it; see `newEntry`. */
+  newRoutine: () => invoke<Routine>('new_routine'),
+  saveRoutine: (routine: Routine) => invoke<Routine>('save_routine', { routine }),
+  deleteRoutine: (id: RoutineId) => invoke<void>('delete_routine', { id }),
+  /**
+   * Ask for a routine to run now.
+   *
+   * Queued rather than run: the scheduler carries it out on its next tick, so
+   * that runs stay serial however many times the button is pressed. Pressing it
+   * twice returns the same queued run rather than paying for two model calls.
+   */
+  runRoutine: (id: RoutineId) => invoke<RoutineRun>('run_routine', { id }),
+  runs: (query: RunQuery = {}) => invoke<RoutineRun[]>('list_runs', { query }),
+  run: (id: RoutineRunId) => invoke<RoutineRun>('get_run', { id }),
+  deleteRun: (id: RoutineRunId) => invoke<void>('delete_run', { id }),
+  /** Mark runs as looked at. An empty list means all of them. */
+  markRunsSeen: (ids: RoutineRunId[] = []) => invoke<void>('mark_runs_seen', { ids }),
+  /** How many runs nobody has looked at. The number on the app bar. */
+  unseenRuns: () => invoke<number>('unseen_runs'),
+  routineTemplates: () => invoke<Template[]>('routine_templates'),
+
+  notes: (query: NoteQuery = {}) => invoke<NoteSummary[]>('list_notes', { query }),
+  note: (id: NoteId) => invoke<Note>('get_note', { id }),
+  newNote: () => invoke<Note>('new_note'),
+  /**
+   * Save a note, refusing to overwrite an edit made since `expect` was read.
+   *
+   * The same contract `saveEntry` has, for the same reason: a note is typed
+   * into and autosaved, so two windows on one vault find each other.
+   */
+  saveNote: (note: Note, expect: string | null) =>
+    invoke<void>('save_note', { note, expect }, newRequestId()),
+  saveNoteForce: (note: Note) => invoke<void>('save_note_force', { note }),
+  deleteNote: (id: NoteId) => invoke<void>('delete_note', { id }),
+  noteTags: () => invoke<string[]>('note_tags'),
 
   /**
    * Import a file the user dropped or picked; returns its content address.
@@ -745,6 +839,8 @@ export const api = {
 
   /** Saving by hand also pins: a fact somebody typed is not one the
    *  assistant's own housekeeping may drop. Returns what it evicted. */
+  /** A blank memory with an id, pinned. The core allocates it. */
+  newMemory: () => invoke<Memory>('new_memory'),
   saveMemory: (memory: Memory) => invoke<Memory[]>('save_memory', { memory }),
   deleteMemory: (id: MemoryId) => invoke<void>('delete_memory', { id }),
 }

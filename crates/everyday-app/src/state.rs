@@ -59,6 +59,28 @@ impl AppState {
         self.service.clone()
     }
 
+    /// Should closing the window leave the process running?
+    ///
+    /// True when there is work here that does not need a window: a routine the
+    /// assistant is expected to run on a schedule, or a vault being served to
+    /// another machine. Both would stop dead if the process went, and neither
+    /// is something a person closing a window is asking to stop.
+    ///
+    /// False in the ordinary case, which is the one nearly everybody is in:
+    /// closing the window of an application that is only an application should
+    /// quit it, and a process lingering invisibly in a tray nobody asked for is
+    /// how a laptop ends up with four of them.
+    pub fn stays_resident(&self) -> bool {
+        if self.sharing.is_running() {
+            return true;
+        }
+        let Some(vault) = self.service.get() else { return false };
+        if !vault.is_unlocked() || !vault.supports_routines() {
+            return false;
+        }
+        vault.routines().is_ok_and(|rs| rs.iter().any(|r| r.enabled))
+    }
+
     /// Where events go. Set once, when Tauri has an app handle to emit through.
     pub fn set_sink(&self, sink: Arc<dyn EventSink>) {
         *self.sink.write().unwrap() = Some(sink.clone());

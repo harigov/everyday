@@ -37,16 +37,22 @@ use crate::error::{Error, Result};
 use crate::fsutil;
 use crate::id::{
     BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, GoalId, ItemId, JournalId,
-    KindId, LogId, MemoryId, MessageId, ProjectId, ReadingId, RoleId, TaskId, TrackerId,
+    KindId, LogId, MemoryId, MessageId, NoteId, ProjectId, ReadingId, RoleId, RoutineId,
+    RoutineRunId, TaskId, TrackerId,
 };
 use crate::library::{Item, ItemStatus, Kind, KindCount, LibraryStats, LogEntry, default_kinds};
 use crate::model::{Entry, EntrySummary, Journal};
+use crate::note::{Note, NoteSummary};
+use crate::profile::Profile;
 use crate::purpose::{Goal, GoalActivity, PurposeMinutes, Role, RoleEventMinutes, suggested_roles};
-use crate::search::{SearchHit, SearchIndex};
+use crate::routine::{Routine, RoutineRun, Trigger};
+use crate::search::{SearchHit, SearchIndex, SearchScope};
 use crate::store::agent::{AgentStore, ConversationQuery};
 use crate::store::calendars::{CalendarStore, EventQuery};
 use crate::store::library::{ItemQuery, LibraryStore, LogQuery};
+use crate::store::notes::{NoteQuery, NoteStore};
 use crate::store::purpose::{GoalQuery, PurposeStore, PurposeWindow};
+use crate::store::routines::{RoutineStore, RunQuery};
 use crate::store::tasks::{BlockQuery, TaskQuery, TaskStore};
 use crate::store::trackers::{ReadingQuery, TrackerDay, TrackerStore};
 use crate::store::{
@@ -106,9 +112,46 @@ pub struct VaultHeader {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend_settings: Option<String>,
     pub created_at: Timestamp,
-    /// Seconds of inactivity before the vault locks itself. 0 disables.
+    /// Seconds of inactivity before a *client* hides what it is showing and
+    /// asks for the password again. 0 disables.
+    ///
+    /// This is a screen timeout, not a key timeout: it is enforced by each
+    /// client on its own clock, and the vault it is looking at stays open.
+    /// See [`VaultHeader::forget_key_seconds`] for the other one.
     #[serde(default)]
     pub auto_lock_seconds: u64,
+    /// Set once the old single lock timeout has been carried into
+    /// [`VaultHeader::forget_key_seconds`], so that somebody who afterwards
+    /// chooses "never" is not overruled the next time the vault is opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migrated_lock: Option<bool>,
+    /// A known plaintext sealed under the *data* key, so that a key offered
+    /// without a password can be checked before it is trusted.
+    ///
+    /// It exists because of one specific way to lose everything. Nothing else
+    /// in this file can tell a wrong data key from a right one: the wrapped
+    /// key checks a *password*, and a key that arrives already unwrapped --
+    /// from the keychain, when a vault opens itself -- is checked only by
+    /// failing to decrypt some record. A vault with no records yet decrypts
+    /// nothing, so a stale key would open it, every write of that session
+    /// would be sealed under a key the header does not hold, and the right
+    /// password would afterwards open a vault it could not read a line of.
+    ///
+    /// Absent on vaults written before this existed, and on unencrypted ones.
+    /// [`Vault::unlock`] writes it the first time such a vault is opened with
+    /// a password, so it appears without anybody being asked for anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_check: Option<String>,
+    /// Seconds of inactivity before the *key* is dropped. 0 disables, and
+    /// that is the default.
+    ///
+    /// The distinction matters because of what a vault is now. A machine
+    /// holding one serves it -- to its own window, to a phone, and to the
+    /// assistant's own scheduler -- so the key has to outlive any one
+    /// window's screen going dark. What ends it is quitting, locking the
+    /// vault deliberately, or this.
+    #[serde(default)]
+    pub forget_key_seconds: u64,
 }
 
 impl VaultHeader {
@@ -129,6 +172,10 @@ pub struct VaultConfig {
     pub password: Option<String>,
     pub kdf: KdfParams,
     pub auto_lock_seconds: u64,
+    #[allow(clippy::doc_markdown)]
+    /// See [`VaultHeader::forget_key_seconds`]. 0, meaning never, is right
+    /// for a vault that is going to be served.
+    pub forget_key_seconds: u64,
 }
 
 impl Default for VaultConfig {
@@ -140,6 +187,7 @@ impl Default for VaultConfig {
             password: None,
             kdf: KdfParams::default(),
             auto_lock_seconds: 15 * 60,
+            forget_key_seconds: 0,
         }
     }
 }
@@ -153,6 +201,8 @@ pub struct VaultStatus {
     pub unlocked: bool,
     pub encrypted: bool,
     pub auto_lock_seconds: u64,
+    #[serde(default)]
+    pub forget_key_seconds: u64,
     pub path: PathBuf,
     /// False when another process holds the vault's write lock, so this copy
     /// reads but cannot save. The interface uses it to say so plainly rather
@@ -239,8 +289,13 @@ impl Vault {
                         salt: Some(to_hex(&salt)),
                         wrapped_key: Some(to_hex(&wrapped)),
                         backend_settings: None,
+                        // Made by a build that has both timers, so there is
+                        // nothing to carry across.
+                        migrated_lock: Some(true),
+                        key_check: Some(seal_key_check(&dek)?),
                         created_at: Timestamp::now(),
                         auto_lock_seconds: cfg.auto_lock_seconds,
+                        forget_key_seconds: cfg.forget_key_seconds,
                     },
                     Some(dek),
                 )
@@ -255,8 +310,12 @@ impl Vault {
                     salt: None,
                     wrapped_key: None,
                     backend_settings: None,
+                    migrated_lock: Some(true),
+                    // Nothing to check: an unencrypted vault has no key.
+                    key_check: None,
                     created_at: Timestamp::now(),
                     auto_lock_seconds: cfg.auto_lock_seconds,
+                    forget_key_seconds: cfg.forget_key_seconds,
                 },
                 None,
             ),
@@ -333,12 +392,31 @@ impl Vault {
     }
 
     fn open_inner(root: &Path, registry: Arc<BackendRegistry>, activate: bool) -> Result<Self> {
-        let header = read_header(root)?;
+        let mut header = read_header(root)?;
         if header.format > FORMAT_VERSION {
             return Err(Error::UnsupportedVaultVersion {
                 found: header.format,
                 supported: FORMAT_VERSION,
             });
+        }
+        // A vault written before the lock was split into two.
+        //
+        // `auto_lock_seconds` used to drop the key; it now hides a screen, and
+        // the timer that drops the key is `forget_key_seconds`. Somebody who
+        // had set fifteen minutes had set fifteen minutes for *the key*, and
+        // an upgrade that silently turned that into "never" would have made
+        // their vault less careful than they left it. So the old value is
+        // carried across, once, on the first open by a build that knows about
+        // both. Zero is honoured as zero -- "never" was already sayable.
+        if header.forget_key_seconds == 0
+            && header.auto_lock_seconds > 0
+            && header.migrated_lock.is_none()
+        {
+            header.forget_key_seconds = header.auto_lock_seconds;
+            header.migrated_lock = Some(true);
+            // Best effort: a read-only open cannot write it, and will try
+            // again next time. Nothing here depends on it having landed.
+            let _ = write_header(root, &header);
         }
         // Claim the vault for writing if nobody else has it. Failing to get
         // it is not an error: the vault opens read-only, so `everyday list`
@@ -383,7 +461,96 @@ impl Vault {
             return Ok(());
         }
         let dek = self.data_key(password)?;
+        // Give a vault written before `key_check` existed one, now that we
+        // are holding the key it describes. Best effort: a read-only session
+        // simply carries on, and the only thing it costs is that this vault
+        // cannot be told to open itself until somebody unlocks it writably.
+        if let Some(key) = &dek
+            && self.header_read().key_check.is_none()
+            && self.writable().is_ok()
+            && let Ok(check) = seal_key_check(key)
+        {
+            let mut header = self.header_write();
+            header.key_check = Some(check);
+            let _ = write_header(&self.root, &header);
+        }
         self.activate(dek)
+    }
+
+    /// Check a password without opening or closing anything.
+    ///
+    /// This is what a *screen* lock asks. A client that has hidden what it
+    /// was showing needs to know the person is who they were, and the vault
+    /// behind it has stayed open the whole time -- for the other windows
+    /// looking at it, and for the assistant. So this derives the key,
+    /// compares the AEAD tag on the wrapped one, and throws the result away.
+    ///
+    /// It costs a full Argon2 derivation, which is the point: a screen
+    /// unlock is exactly as expensive to guess at as a vault unlock, and the
+    /// server puts both behind the same rate limit.
+    pub fn verify_password(&self, password: Option<&str>) -> Result<()> {
+        self.data_key(password).map(|_| ())
+    }
+
+    /// The vault's data key, hex-encoded, for a caller that means to keep it.
+    ///
+    /// Deliberately awkward to reach for, and named to say what it is. There
+    /// is exactly one caller: the switch that lets a vault open itself when
+    /// the machine starts, which puts this in the operating system's own
+    /// keychain so that a routine set for seven in the morning happens on a
+    /// laptop that rebooted overnight.
+    ///
+    /// That is a real trade and the interface states it where the switch is:
+    /// a vault whose key is in the keychain is as safe as the login on that
+    /// computer, rather than as safe as its password. Nothing else in this
+    /// application ever asks for this, and nothing should: the key is not a
+    /// value to pass around, it is the thing the whole envelope protects.
+    pub fn export_data_key(&self, password: Option<&str>) -> Result<crate::crypto::KeyText> {
+        match self.data_key(password)? {
+            Some(key) => Ok(crate::crypto::KeyText::new(to_hex(key.expose()))),
+            // A vault with no password has no key to keep, and opens by
+            // itself already. Saying so is better than handing back an empty
+            // string that would look like a key.
+            None => Err(Error::Invalid(
+                "this vault is not encrypted, so it already opens without a password".into(),
+            )),
+        }
+    }
+
+    /// Open the vault with a key rather than a password.
+    ///
+    /// The other half of [`Vault::export_data_key`]. A wrong key fails the
+    /// same way a wrong password does -- the AEAD tag on the first record it
+    /// reads -- so there is nothing here that a bad value can get past.
+    pub fn unlock_with_key(&self, hex: &str) -> Result<()> {
+        if self.is_unlocked() {
+            return Ok(());
+        }
+        // Decoded into a buffer that is wiped whatever happens next, including
+        // the failure paths: a value of the wrong length is still somebody's
+        // key with a typo on the end, and `SecretKey`'s own zeroization does
+        // not reach the `Vec` it was copied out of.
+        let mut decoded = from_hex(hex)?;
+        let taken = <[u8; crate::crypto::KEY_LEN]>::try_from(decoded.as_slice());
+        zeroize::Zeroize::zeroize(&mut decoded);
+        let bytes = taken.map_err(|_| Error::Invalid("that is not a key for this vault".into()))?;
+        let key = SecretKey::from_bytes(bytes);
+
+        // Checked *before* anything is opened, and refused when there is
+        // nothing to check against. See `VaultHeader::key_check`: a wrong key
+        // on an empty vault would otherwise open it and seal everything
+        // written afterwards under a key the header does not hold.
+        let check = self.header_read().key_check.clone().ok_or_else(|| {
+            Error::Invalid(
+                "this vault has nothing to check a key against; unlock it with its password \
+                 once and it will"
+                    .into(),
+            )
+        })?;
+        if !key_check_passes(&key, &check) {
+            return Err(Error::BadPassword);
+        }
+        self.activate(Some(key))
     }
 
     /// Unwrap the data key with `password`, without opening anything.
@@ -448,7 +615,11 @@ impl Vault {
             Err(e) => tracing::warn!(error = %e, "could not run the integrity check"),
         }
 
-        let index = SearchIndex::build(&store.all_entries()?);
+        let notes = match store.notes() {
+            Some(n) => n.all_notes()?,
+            None => Vec::new(),
+        };
+        let index = SearchIndex::build(&store.all_entries()?, &notes);
 
         *self.state_write() = Some(Unlocked { store, index, cipher });
         self.touch();
@@ -493,6 +664,13 @@ impl Vault {
                 next.kdf = Some(kdf);
                 next.salt = Some(to_hex(&salt));
                 next.wrapped_key = Some(to_hex(&wrap_key(&kek, &dek)?));
+                // The data key survives a password change on an encrypted
+                // vault, so the existing check value stays true. Going from
+                // *unencrypted* to encrypted mints a fresh key above, and
+                // that one needs a check value of its own.
+                if !header.is_encrypted() || next.key_check.is_none() {
+                    next.key_check = Some(seal_key_check(&dek)?);
+                }
             }
             _ => {
                 // Removing the password would leave the on-disk records
@@ -564,16 +742,36 @@ impl Vault {
         write_header(&self.root, &header)
     }
 
-    /// Record user activity, deferring the idle auto-lock.
+    /// Set how long an idle vault keeps its key. 0 means until the process
+    /// ends or somebody locks it.
+    pub fn set_forget_key(&self, seconds: u64) -> Result<()> {
+        self.writable()?;
+        let mut header = self.header_write();
+        header.forget_key_seconds = seconds;
+        // Whatever was chosen here is a choice, including zero. Marked so the
+        // migration in `open_inner` does not overrule it on the next open.
+        header.migrated_lock = Some(true);
+        write_header(&self.root, &header)
+    }
+
+    /// Record activity, deferring [`Vault::forget_key_if_idle`].
+    ///
+    /// Deliberately *not* called from [`Vault::read`] and [`Vault::write`],
+    /// which is where it used to live. The assistant's scheduler reads and
+    /// writes this vault every minute of every day; if that counted as
+    /// activity, a vault with one routine on it would never let go of its
+    /// key no matter what the timeout said. The service calls this after a
+    /// command from a person -- a window, a phone, a script -- and not after
+    /// one from the assistant.
     pub fn touch(&self) {
         let ms = self.epoch.elapsed().as_millis() as u64;
         self.last_activity_ms.store(ms, Ordering::Relaxed);
     }
 
-    /// Seconds until the idle auto-lock fires, or `None` if it is disabled
-    /// or the vault is already locked.
-    pub fn seconds_until_auto_lock(&self) -> Option<u64> {
-        let timeout = self.header_read().auto_lock_seconds;
+    /// Seconds until the key is dropped for idleness, or `None` if that is
+    /// disabled or the vault is already locked.
+    pub fn seconds_until_forget_key(&self) -> Option<u64> {
+        let timeout = self.header_read().forget_key_seconds;
         if timeout == 0 || !self.is_unlocked() {
             return None;
         }
@@ -582,10 +780,12 @@ impl Vault {
         Some(timeout.saturating_sub(idle_ms / 1000))
     }
 
-    /// Lock the vault if it has been idle past its timeout. The application
-    /// calls this on a timer. Returns whether it locked.
-    pub fn auto_lock_if_idle(&self) -> bool {
-        if self.seconds_until_auto_lock() == Some(0) {
+    /// Lock the vault if nobody has used it for `forget_key_seconds`.
+    /// Polled by a window and by the assistant's scheduler, so a machine
+    /// serving a vault with no window attached still honours it. Returns
+    /// whether it locked.
+    pub fn forget_key_if_idle(&self) -> bool {
+        if self.seconds_until_forget_key() == Some(0) {
             self.lock();
             return true;
         }
@@ -611,6 +811,7 @@ impl Vault {
             unlocked: guard.is_some(),
             encrypted: header.cipher != SUITE_NONE,
             auto_lock_seconds: header.auto_lock_seconds,
+            forget_key_seconds: header.forget_key_seconds,
             path: self.root.clone(),
             writable: self.write_lock.is_some(),
             stats: guard.as_ref().and_then(|u| u.store.stats().ok()),
@@ -691,7 +892,6 @@ impl Vault {
         let unlocked = guard.as_ref().ok_or(Error::Locked)?;
         let out = f(unlocked);
         drop(guard);
-        self.touch();
         out
     }
 
@@ -700,7 +900,6 @@ impl Vault {
         let unlocked = guard.as_mut().ok_or(Error::Locked)?;
         let out = f(unlocked);
         drop(guard);
-        self.touch();
         out
     }
 
@@ -1821,13 +2020,209 @@ impl Vault {
         self.with_agent(|a| a.delete_memory(id))
     }
 
-    pub fn search(
-        &self,
-        query: &str,
-        journal: Option<JournalId>,
-        limit: usize,
-    ) -> Result<Vec<SearchHit>> {
-        self.read(|u| Ok(u.index.search_in(query, journal, limit)))
+    // ---- the assistant's standing work ----------------------------------
+
+    /// Does this vault's backend hold routines at all?
+    pub fn supports_routines(&self) -> bool {
+        self.read(|u| Ok(u.store.routines().is_some())).unwrap_or(false)
+    }
+
+    fn with_routines<T>(&self, f: impl FnOnce(&dyn RoutineStore) -> Result<T>) -> Result<T> {
+        self.read(|u| {
+            let routines = u.store.routines().ok_or(Error::Unsupported(
+                "routines (this vault's backend stores journals only)",
+            ))?;
+            f(routines)
+        })
+    }
+
+    pub fn routines(&self) -> Result<Vec<Routine>> {
+        self.with_routines(|r| r.list_routines())
+    }
+
+    pub fn routine(&self, id: RoutineId) -> Result<Routine> {
+        self.with_routines(|r| r.get_routine(id))
+    }
+
+    /// Save a routine.
+    ///
+    /// Validates the record, and then the one thing the schema deliberately
+    /// cannot: a `BeforeEvent` trigger naming a role that does not exist would
+    /// be a routine that silently never fires. There is no foreign key to
+    /// `roles`, for the reason `goals` has none, so it is checked here.
+    pub fn save_routine(&self, routine: &Routine) -> Result<()> {
+        self.writable()?;
+        routine.validate()?;
+        if let Trigger::BeforeEvent { role_id: Some(role), .. } = &routine.trigger {
+            self.role(*role)?;
+        }
+        self.with_routines(|r| r.put_routine(routine))
+    }
+
+    /// Delete a routine, its runs, and the transcripts behind them.
+    ///
+    /// The transcripts are the part a database cannot express: they live in
+    /// the agent store, so the cascade is here. What is *not* touched is
+    /// anything the routine ever made -- a task written by a routine that has
+    /// since been deleted is still a task somebody has to do.
+    pub fn delete_routine(&self, id: RoutineId) -> Result<()> {
+        self.writable()?;
+        let runs = self.with_routines(|r| r.list_runs(&RunQuery::for_routine(id)))?;
+        for run in &runs {
+            if let Some(conversation) = run.conversation_id {
+                // Best effort: a transcript already gone is not a reason to
+                // refuse to delete the routine.
+                let _ = self.delete_conversation(conversation);
+            }
+        }
+        self.with_routines(|r| r.delete_routine(id))
+    }
+
+    pub fn runs(&self, query: &RunQuery) -> Result<Vec<RoutineRun>> {
+        self.with_routines(|r| r.list_runs(query))
+    }
+
+    pub fn run(&self, id: RoutineRunId) -> Result<RoutineRun> {
+        self.with_routines(|r| r.get_run(id))
+    }
+
+    pub fn save_run(&self, run: &RoutineRun) -> Result<()> {
+        self.writable()?;
+        self.with_routines(|r| r.put_run(run))
+    }
+
+    pub fn delete_run(&self, id: RoutineRunId) -> Result<()> {
+        self.writable()?;
+        let run = self.run(id)?;
+        if let Some(conversation) = run.conversation_id {
+            let _ = self.delete_conversation(conversation);
+        }
+        self.with_routines(|r| r.delete_run(id))
+    }
+
+    /// How many runs nobody has looked at. The number on the app bar.
+    pub fn unseen_runs(&self) -> Result<u64> {
+        self.with_routines(|r| r.count_unseen_runs())
+    }
+
+    /// Mark runs as looked at. An empty list means all of them.
+    pub fn mark_runs_seen(&self, ids: &[RoutineRunId]) -> Result<()> {
+        self.writable()?;
+        self.with_routines(|r| r.mark_runs_seen(ids))
+    }
+
+    // ---- the owner ------------------------------------------------------
+
+    /// Who this vault belongs to. Never fails for want of a profile: an
+    /// unfilled one is the answer.
+    pub fn profile(&self) -> Result<Profile> {
+        self.read(|u| u.store.profile())
+    }
+
+    /// Write the profile.
+    ///
+    /// There is deliberately no tool for this. Facts that change are what
+    /// [`Memory`] is for; this is the handful that do not, and they are typed
+    /// in Settings once. See [`crate::profile`].
+    pub fn save_profile(&self, profile: &Profile) -> Result<()> {
+        self.writable()?;
+        profile.validate()?;
+        let mut stamped = profile.clone();
+        stamped.updated_at = Some(Timestamp::now());
+        self.write(|u| u.store.put_profile(&stamped))
+    }
+
+    // ---- notes ----------------------------------------------------------
+
+    /// Does this vault's backend hold notes at all?
+    pub fn supports_notes(&self) -> bool {
+        self.read(|u| Ok(u.store.notes().is_some())).unwrap_or(false)
+    }
+
+    fn with_notes<T>(&self, f: impl FnOnce(&dyn NoteStore) -> Result<T>) -> Result<T> {
+        self.read(|u| {
+            let notes = u
+                .store
+                .notes()
+                .ok_or(Error::Unsupported("notes (this vault's backend stores journals only)"))?;
+            f(notes)
+        })
+    }
+
+    pub fn notes(&self, query: &NoteQuery) -> Result<Vec<NoteSummary>> {
+        self.with_notes(|n| n.list_notes(query))
+    }
+
+    pub fn note(&self, id: NoteId) -> Result<Note> {
+        self.with_notes(|n| n.get_note(id))
+    }
+
+    /// Save a note, refusing to overwrite somebody else's edit.
+    ///
+    /// `expect` is the `updated_at` the caller last read, exactly as for
+    /// [`Vault::save_entry`], and for the same reason: a note is a document
+    /// that is typed into and autosaved, so two windows on one vault will
+    /// find each other sooner or later.
+    pub fn save_note(&self, note: &Note, expect: Option<Timestamp>) -> Result<()> {
+        self.writable()?;
+        note.validate()?;
+        note.body.validate()?;
+        self.write(|u| {
+            let notes = u
+                .store
+                .notes()
+                .ok_or(Error::Unsupported("notes (this vault's backend stores journals only)"))?;
+            notes.put_note_if(note, expect)?;
+            u.index.insert_note(note);
+            Ok(())
+        })
+    }
+
+    /// Save a note whatever is already stored. The deliberate "keep mine".
+    pub fn overwrite_note(&self, note: &Note) -> Result<()> {
+        self.writable()?;
+        note.validate()?;
+        note.body.validate()?;
+        self.write(|u| {
+            let notes = u
+                .store
+                .notes()
+                .ok_or(Error::Unsupported("notes (this vault's backend stores journals only)"))?;
+            notes.put_note(note)?;
+            u.index.insert_note(note);
+            Ok(())
+        })
+    }
+
+    pub fn delete_note(&self, id: NoteId) -> Result<()> {
+        self.writable()?;
+        self.write(|u| {
+            let notes = u
+                .store
+                .notes()
+                .ok_or(Error::Unsupported("notes (this vault's backend stores journals only)"))?;
+            notes.delete_note(id)?;
+            u.index.remove_note(id);
+            Ok(())
+        })
+    }
+
+    pub fn note_tags(&self) -> Result<Vec<(String, u64)>> {
+        self.with_notes(|n| n.note_tags())
+    }
+
+    /// Every note, bodies included. For export.
+    pub fn all_notes(&self) -> Result<Vec<Note>> {
+        self.with_notes(|n| n.all_notes())
+    }
+
+    /// Search everything this vault can be searched for.
+    ///
+    /// One index over entries and notes both, so a half-remembered phrase is
+    /// found wherever it was written down. [`SearchScope`] narrows it when
+    /// the asking is from inside one app.
+    pub fn search(&self, query: &str, scope: SearchScope, limit: usize) -> Result<Vec<SearchHit>> {
+        self.read(|u| Ok(u.index.search_in(query, scope, limit)))
     }
 
     pub fn suggest_terms(&self, prefix: &str, limit: usize) -> Result<Vec<String>> {
@@ -1907,7 +2302,11 @@ impl Vault {
     /// Rebuild the search index from storage. Useful after a bulk import.
     pub fn reindex(&self) -> Result<usize> {
         self.write(|u| {
-            u.index = SearchIndex::build(&u.store.all_entries()?);
+            let notes = match u.store.notes() {
+                Some(n) => n.all_notes()?,
+                None => Vec::new(),
+            };
+            u.index = SearchIndex::build(&u.store.all_entries()?, &notes);
             Ok(u.index.len())
         })
     }
@@ -2065,6 +2464,32 @@ fn open_settings(cipher: &dyn Cipher, sealed: Option<&str>) -> Result<BackendSet
     Ok(serde_json::from_slice(&plain)?)
 }
 
+/// What a key-check value seals, and the label it is sealed under.
+///
+/// Constant and public knowledge, which is the point: an attacker already
+/// knows the plaintext, and the thing being tested is whether a candidate key
+/// produces a tag that matches. That is the same question the wrapped key
+/// answers about a password, asked about a key instead.
+const KEY_CHECK_PLAINTEXT: &[u8] = b"everyday.key-check.v1";
+
+fn key_check_aad() -> Vec<u8> {
+    b"everyday.key-check.v1".to_vec()
+}
+
+fn seal_key_check(dek: &SecretKey) -> Result<String> {
+    Ok(to_hex(&AeadCipher::new(dek).seal(&key_check_aad(), KEY_CHECK_PLAINTEXT)?))
+}
+
+/// Does this key open the check value in the header?
+///
+/// Anything unreadable -- bad hex, a tag that does not verify, a plaintext
+/// that is not the constant -- is a no. There is no case here where a
+/// malformed header should be taken as a pass.
+fn key_check_passes(dek: &SecretKey, sealed_hex: &str) -> bool {
+    let Ok(sealed) = from_hex(sealed_hex) else { return false };
+    AeadCipher::new(dek).open(&key_check_aad(), &sealed).is_ok_and(|p| p == KEY_CHECK_PLAINTEXT)
+}
+
 fn to_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -2121,6 +2546,8 @@ mod tests {
         }
         fn capabilities(&self) -> Capabilities {
             Capabilities {
+                notes: false,
+                routines: false,
                 blobs: true,
                 transactional: false,
                 human_readable: false,
@@ -2347,6 +2774,7 @@ mod tests {
             password: password.map(str::to_string),
             kdf: KdfParams::insecure_fast(),
             auto_lock_seconds: 0,
+            forget_key_seconds: 0,
         }
     }
 
@@ -2393,6 +2821,7 @@ mod tests {
             today: jiff::civil::Date::constant(2026, 9, 8),
             tz: "UTC",
             conversation: None,
+            unattended: false,
         };
         let err = tools::dispatch(&ctx, "create_task", &serde_json::json!({ "title": "x" }))
             .expect_err("a tool the backend cannot serve must be refused");
@@ -2483,7 +2912,7 @@ mod tests {
         v.unlock(Some("correct horse")).unwrap();
         assert!(v.is_unlocked());
         assert_eq!(v.journals().unwrap().len(), 1);
-        assert_eq!(v.search("secret", None, 10).unwrap().len(), 1);
+        assert_eq!(v.search("secret", SearchScope::Everything, 10).unwrap().len(), 1);
     }
 
     #[test]
@@ -2496,7 +2925,7 @@ mod tests {
         assert!(!v.is_unlocked());
         assert_eq!(v.journals().unwrap_err().code(), "locked");
         assert_eq!(v.stats().unwrap_err().code(), "locked");
-        assert_eq!(v.search("x", None, 5).unwrap_err().code(), "locked");
+        assert_eq!(v.search("x", SearchScope::Everything, 5).unwrap_err().code(), "locked");
         assert_eq!(v.put_blob(b"x").unwrap_err().code(), "locked");
 
         // Status is still answerable while locked — the UI needs it.
@@ -2591,7 +3020,7 @@ mod tests {
         let mut e = Entry::new(j.id, "UTC");
         e.body = crate::RichDoc::from_plain_text("kingfisher on the wire");
         v.save_entry(&e, None).unwrap();
-        assert_eq!(v.search("kingfisher", None, 10).unwrap().len(), 1);
+        assert_eq!(v.search("kingfisher", SearchScope::Everything, 10).unwrap().len(), 1);
 
         // An edit, so it carries the version it is replacing. `None` here
         // would be the caller claiming the entry is new, and is a conflict.
@@ -2599,11 +3028,17 @@ mod tests {
         e.body = crate::RichDoc::from_plain_text("heron on the wire");
         e.updated_at = Timestamp::now();
         v.save_entry(&e, Some(loaded)).unwrap();
-        assert!(v.search("kingfisher", None, 10).unwrap().is_empty(), "edit must reindex");
-        assert_eq!(v.search("heron", None, 10).unwrap().len(), 1);
+        assert!(
+            v.search("kingfisher", SearchScope::Everything, 10).unwrap().is_empty(),
+            "edit must reindex"
+        );
+        assert_eq!(v.search("heron", SearchScope::Everything, 10).unwrap().len(), 1);
 
         v.delete_entry(e.id).unwrap();
-        assert!(v.search("heron", None, 10).unwrap().is_empty(), "delete must deindex");
+        assert!(
+            v.search("heron", SearchScope::Everything, 10).unwrap().is_empty(),
+            "delete must deindex"
+        );
     }
 
     #[test]
@@ -2617,7 +3052,7 @@ mod tests {
         v.save_entry(&e, None).unwrap();
 
         v.delete_journal(j.id).unwrap();
-        assert!(v.search("kingfisher", None, 10).unwrap().is_empty());
+        assert!(v.search("kingfisher", SearchScope::Everything, 10).unwrap().is_empty());
         assert!(v.entries(&EntryQuery::default()).unwrap().is_empty());
     }
 
@@ -2648,38 +3083,96 @@ mod tests {
     }
 
     #[test]
-    fn auto_lock_is_off_when_the_timeout_is_zero() {
+    fn a_vault_from_before_the_split_keeps_the_timeout_it_was_left_with() {
+        // `auto_lock_seconds` used to drop the key. It now hides a screen, and
+        // an upgrade that silently turned fifteen minutes into "never" would
+        // have made somebody's vault less careful than they left it.
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        {
+            let v = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+            let mut header = v.header();
+            header.auto_lock_seconds = 900;
+            header.forget_key_seconds = 0;
+            header.migrated_lock = None;
+            write_header(dir.path(), &header).unwrap();
+        }
+
+        let v = Vault::open(dir.path(), reg.clone()).unwrap();
+        assert_eq!(v.header().forget_key_seconds, 900, "carried across on the first open");
+        assert_eq!(v.header().auto_lock_seconds, 900, "and the screen keeps its own");
+
+        // And "never", chosen afterwards, is not overruled the next time.
+        v.unlock(Some("pw")).unwrap();
+        v.set_forget_key(0).unwrap();
+        drop(v);
+        let v = Vault::open(dir.path(), reg).unwrap();
+        assert_eq!(v.header().forget_key_seconds, 0, "a choice is a choice, including zero");
+    }
+
+    #[test]
+    fn forgetting_the_key_is_off_by_default() {
         let dir = tempfile::tempdir().unwrap();
         let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
-        assert_eq!(v.seconds_until_auto_lock(), None);
-        assert!(!v.auto_lock_if_idle());
+        assert_eq!(v.header().forget_key_seconds, 0, "a new vault keeps its key");
+        assert_eq!(v.seconds_until_forget_key(), None);
+        assert!(!v.forget_key_if_idle());
         assert!(v.is_unlocked());
     }
 
     #[test]
-    fn auto_lock_fires_once_the_idle_timeout_elapses() {
+    fn the_key_goes_once_the_idle_timeout_elapses() {
         let dir = tempfile::tempdir().unwrap();
         let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
-        v.set_auto_lock(1).unwrap();
-        assert!(!v.auto_lock_if_idle(), "should not lock while still fresh");
+        v.set_forget_key(1).unwrap();
+        v.touch();
+        assert!(!v.forget_key_if_idle(), "should not lock while still fresh");
 
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        assert!(v.auto_lock_if_idle(), "should lock after the timeout");
+        assert!(v.forget_key_if_idle(), "should lock after the timeout");
         assert!(!v.is_unlocked());
-        // Once locked there is nothing left to auto-lock.
-        assert_eq!(v.seconds_until_auto_lock(), None);
+        // Once locked there is no key left to forget.
+        assert_eq!(v.seconds_until_forget_key(), None);
     }
 
     #[test]
-    fn activity_defers_the_auto_lock() {
+    fn a_person_defers_the_forgetting_and_a_read_does_not() {
         let dir = tempfile::tempdir().unwrap();
         let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
-        v.set_auto_lock(2).unwrap();
+        v.set_forget_key(2).unwrap();
+        v.touch();
         for _ in 0..3 {
             std::thread::sleep(std::time::Duration::from_millis(700));
-            v.journals().unwrap(); // each call touches the activity clock
-            assert!(!v.auto_lock_if_idle(), "activity should keep the vault open");
+            v.touch(); // what the service does after a command from a person
+            assert!(!v.forget_key_if_idle(), "activity should keep the vault open");
         }
+
+        // Reading is not activity. The assistant's scheduler reads this vault
+        // every minute; if that counted, the timeout would never fire.
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        v.journals().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        v.journals().unwrap();
+        assert!(v.forget_key_if_idle(), "a read must not defer the timeout");
+    }
+
+    #[test]
+    fn the_right_password_verifies_and_the_wrong_one_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+        v.verify_password(Some("pw")).expect("the right password");
+        assert_eq!(
+            v.verify_password(Some("nope")).unwrap_err().code(),
+            "bad_password",
+            "the wrong one is refused"
+        );
+        assert!(v.is_unlocked(), "verifying must not close a vault that was open");
+
+        // And it works from the other side: a locked vault can be asked
+        // whether a password is right without being opened by the asking.
+        v.lock();
+        v.verify_password(Some("pw")).expect("the right password");
+        assert!(!v.is_unlocked(), "verifying must not open a vault that was locked");
     }
 
     #[test]
@@ -2929,8 +3422,11 @@ mod tests {
         // search index straight.
         v.overwrite_entry(&e).unwrap();
         assert_eq!(v.entry(e.id).unwrap().body.plain_text(), "my later paragraph");
-        assert_eq!(v.search("paragraph", None, 10).unwrap().len(), 1);
-        assert!(v.search("they", None, 10).unwrap().is_empty(), "the index must follow the write");
+        assert_eq!(v.search("paragraph", SearchScope::Everything, 10).unwrap().len(), 1);
+        assert!(
+            v.search("they", SearchScope::Everything, 10).unwrap().is_empty(),
+            "the index must follow the write"
+        );
     }
 
     // The backup *round trip* is exercised against SQLite, in that crate:
@@ -3079,5 +3575,121 @@ mod tests {
         assert_eq!(from_hex(&to_hex(&bytes)).unwrap(), bytes);
         assert!(from_hex("abc").is_err(), "odd length");
         assert!(from_hex("zz").is_err(), "non-hex digits");
+    }
+    #[test]
+    fn a_key_kept_in_a_keychain_opens_the_vault_it_came_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        let key = {
+            let v = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+            let mut j = Journal::new("Kept");
+            j.description = "written before the restart".into();
+            v.save_journal(&j).unwrap();
+            v.export_data_key(Some("pw")).unwrap()
+        };
+
+        // What a restart looks like: a fresh handle, no password anywhere.
+        let v = Vault::open(dir.path(), reg).unwrap();
+        assert!(!v.is_unlocked(), "a reopened vault starts shut");
+        v.unlock_with_key(key.as_str()).expect("the key from the keychain opens it");
+        assert_eq!(v.journals().unwrap()[0].description, "written before the restart");
+    }
+
+    #[test]
+    fn a_key_that_is_not_the_key_is_refused_even_on_an_empty_vault() {
+        // The way this could lose everything. A vault with nothing in it
+        // decrypts nothing on open, so before there was a check value any
+        // thirty-two bytes would "unlock" it -- and every record written
+        // afterwards would be sealed under a key the header does not hold.
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+        v.lock();
+        assert!(v.journals().is_err(), "the vault is shut, and it has no records in it either way");
+
+        let stale = "cd".repeat(32);
+        assert_eq!(
+            v.unlock_with_key(&stale).unwrap_err().code(),
+            "bad_password",
+            "a key that is not this vault's must be refused before anything opens"
+        );
+        assert!(!v.is_unlocked(), "and it must leave the vault shut");
+
+        // The real key still works, and the vault still reads afterwards.
+        let key = {
+            let real = Vault::open(dir.path(), reg.clone()).unwrap();
+            real.unlock(Some("pw")).unwrap();
+            real.export_data_key(Some("pw")).unwrap()
+        };
+        v.unlock_with_key(key.as_str()).expect("its own key opens it");
+        v.save_journal(&Journal::new("Written after")).unwrap();
+        v.lock();
+        v.unlock(Some("pw")).unwrap();
+        assert_eq!(
+            v.journals().unwrap()[0].name,
+            "Written after",
+            "the password must still read what the key wrote"
+        );
+    }
+
+    #[test]
+    fn a_vault_written_before_key_checks_gains_one_when_it_is_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        let key = {
+            let v = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+            v.export_data_key(Some("pw")).unwrap()
+        };
+
+        // Rewind to the world before the check value existed.
+        {
+            let v = Vault::open(dir.path(), reg.clone()).unwrap();
+            let mut header = v.header();
+            header.key_check = None;
+            write_header(dir.path(), &header).unwrap();
+        }
+
+        // Until it has one, a key alone is refused rather than trusted.
+        let v = Vault::open(dir.path(), reg.clone()).unwrap();
+        assert!(v.header().key_check.is_none());
+        let err = v.unlock_with_key(key.as_str()).unwrap_err();
+        assert!(err.to_string().contains("nothing to check"), "got {err}");
+
+        // Opening it with the password writes one, and then it works.
+        v.unlock(Some("pw")).unwrap();
+        assert!(v.header().key_check.is_some(), "it upgrades itself, quietly");
+        v.lock();
+        v.unlock_with_key(key.as_str()).expect("now the key is checkable");
+    }
+
+    #[test]
+    fn a_key_that_is_not_the_key_does_not_open_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+        // Something sealed, so there is a tag to fail against.
+        v.save_journal(&Journal::new("Sealed")).unwrap();
+        v.lock();
+
+        assert!(v.unlock_with_key("not hex").is_err(), "gibberish is refused");
+        assert!(v.unlock_with_key(&"aa".repeat(16)).is_err(), "so is a key of the wrong length");
+
+        // The right length and the wrong bytes opens the store -- there is
+        // nothing in the header to check a key against, deliberately -- and
+        // fails on the first record it reads. That is the same tag that
+        // catches a wrong password, and it is the only check there is.
+        let wrong = "bb".repeat(32);
+        let opened = v.unlock_with_key(&wrong);
+        assert!(
+            opened.is_err() || v.journals().is_err(),
+            "a key that is not this vault's cannot read this vault"
+        );
+    }
+
+    #[test]
+    fn an_unencrypted_vault_has_no_key_to_keep() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(dir.path(), cfg(None), registry()).unwrap();
+        let err = v.export_data_key(None).unwrap_err();
+        assert!(err.to_string().contains("already opens"), "got {err}");
     }
 }

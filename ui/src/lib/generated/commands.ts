@@ -48,6 +48,11 @@ import type {
   LogQuery,
   Memory,
   MemoryId,
+  Note,
+  NoteId,
+  NoteQuery,
+  NoteSummary,
+  Profile,
   Project,
   ProjectId,
   ProviderInfo,
@@ -57,7 +62,14 @@ import type {
   Role,
   RoleId,
   RoleInfo,
+  Routine,
+  RoutineId,
+  RoutineInfo,
+  RoutineRun,
+  RoutineRunId,
+  RunQuery,
   SearchHit,
+  SearchKind,
   SearchRequest,
   SearchResult,
   SourceInfo,
@@ -70,6 +82,7 @@ import type {
   TaskQuery,
   TaskStats,
   TaskStatus,
+  Template,
   TimeBlock,
   ToolInfo,
   Tracker,
@@ -103,9 +116,12 @@ export interface Commands {
   deleteKind: { args: { id: KindId }; result: void }
   deleteLog: { args: { id: LogId }; result: void }
   deleteMemory: { args: { id: MemoryId }; result: void }
+  deleteNote: { args: { id: NoteId }; result: void }
   deleteProject: { args: { id: ProjectId }; result: void }
   deleteReading: { args: { id: ReadingId }; result: void }
   deleteRole: { args: { id: RoleId }; result: void }
+  deleteRoutine: { args: { id: RoutineId }; result: void }
+  deleteRun: { args: { id: RoutineRunId }; result: void }
   deleteTask: { args: { id: TaskId }; result: void }
   deleteTracker: { args: { id: TrackerId }; result: number }
   fetchImage: { args: { url: string }; result: string }
@@ -114,6 +130,8 @@ export interface Commands {
   getEvent: { args: { id: EventId }; result: CalendarEvent }
   getGoal: { args: { id: GoalId }; result: Goal }
   getItem: { args: { id: ItemId }; result: Item }
+  getNote: { args: { id: NoteId }; result: Note }
+  getRun: { args: { id: RoutineRunId }; result: RoutineRun }
   getTask: { args: { id: TaskId }; result: Task }
   goalActivity: { args: { id: GoalId }; result: GoalActivity }
   importCalendar: {
@@ -124,7 +142,10 @@ export interface Commands {
   listBlocks: { args: { query: BlockQuery }; result: TimeBlock[] }
   listCalendars: { args: Record<string, never>; result: CalendarInfo[] }
   listCommands: { args: Record<string, never>; result: Surface }
-  listConversations: { args: { limit?: number | null }; result: ConversationSummary[] }
+  listConversations: {
+    args: { limit?: number | null; includeRuns?: boolean }
+    result: ConversationSummary[]
+  }
   listEntries: { args: { query: EntryQuery }; result: EntrySummary[] }
   listEvents: { args: { query: EventQuery }; result: CalendarEvent[] }
   listGoals: { args: { query: GoalQuery }; result: Goal[] }
@@ -133,9 +154,12 @@ export interface Commands {
   listKinds: { args: Record<string, never>; result: KindInfo[] }
   listLogs: { args: { query: LogQuery }; result: LogEntry[] }
   listMemories: { args: Record<string, never>; result: Memory[] }
+  listNotes: { args: { query: NoteQuery }; result: NoteSummary[] }
   listProjects: { args: Record<string, never>; result: Project[] }
   listReadings: { args: { query: ReadingQuery }; result: Reading[] }
   listRoles: { args: Record<string, never>; result: RoleInfo[] }
+  listRoutines: { args: Record<string, never>; result: RoutineInfo[] }
+  listRuns: { args: { query: RunQuery }; result: RoutineRun[] }
   listTags: { args: Record<string, never>; result: string[] }
   listTasks: { args: { query: TaskQuery }; result: Task[] }
   listTools: { args: Record<string, never>; result: ToolInfo[] }
@@ -156,6 +180,7 @@ export interface Commands {
     args: { kindId: KindId; query: string; limit?: number | null }
     result: SearchResult[]
   }
+  markRunsSeen: { args: { ids?: RoutineRunId[] }; result: void }
   mergeTrackers: { args: { from: TrackerId; into: TrackerId }; result: number }
   newBlock: {
     args: { subject: BlockSubject; start: string; minutes: number; kind?: BlockKind | null }
@@ -167,14 +192,21 @@ export interface Commands {
   newJournal: { args: { name: string }; result: Journal }
   newKind: { args: { name: string; singular: string }; result: Kind }
   newLog: { args: { itemId: ItemId; event: LogEvent }; result: LogEntry }
+  newMemory: { args: Record<string, never>; result: Memory }
+  newNote: { args: Record<string, never>; result: Note }
   newProject: { args: { name: string }; result: Project }
   newRole: { args: { name: string }; result: Role }
+  newRoutine: { args: Record<string, never>; result: Routine }
   newTask: {
     args: { projectId?: ProjectId | null; parentId?: TaskId | null; status?: TaskStatus | null }
     result: Task
   }
   newTracker: { args: { name: string; kind: TrackerKind }; result: Tracker }
+  noteTags: { args: Record<string, never>; result: string[] }
   pollAutoLock: { args: Record<string, never>; result: boolean }
+  profile: { args: Record<string, never>; result: Profile }
+  routineTemplates: { args: Record<string, never>; result: Template[] }
+  runRoutine: { args: { id: RoutineId }; result: RoutineRun }
   runTool: {
     args: { name: string; arguments?: unknown; confirmDestructive?: boolean }
     result: unknown
@@ -192,14 +224,18 @@ export interface Commands {
   saveKind: { args: { kind: Kind }; result: void }
   saveLog: { args: { log: LogEntry }; result: void }
   saveMemory: { args: { memory: Memory }; result: Memory[] }
+  saveNote: { args: { note: Note; expect?: string | null }; result: void }
+  saveNoteForce: { args: { note: Note }; result: void }
+  saveProfile: { args: { profile: Profile }; result: Profile }
   saveProject: { args: { project: Project }; result: void }
   saveReading: { args: { reading: Reading }; result: void }
   saveRole: { args: { role: Role }; result: void }
+  saveRoutine: { args: { routine: Routine }; result: Routine }
   saveTask: { args: { task: Task }; result: void }
   saveTasks: { args: { tasks: Task[] }; result: void }
   saveTracker: { args: { tracker: Tracker }; result: void }
   search: {
-    args: { query: string; journalId?: JournalId | null; limit: number }
+    args: { query: string; journalId?: JournalId | null; kind?: SearchKind | null; limit: number }
     result: SearchHit[]
   }
   searchSources: { args: Record<string, never>; result: SourceInfo[] }
@@ -210,6 +246,7 @@ export interface Commands {
   }
   setAgentKey: { args: { key: string }; result: void }
   setAutoLock: { args: { seconds: number }; result: void }
+  setForgetKey: { args: { seconds: number }; result: void }
   setItemProgress: {
     args: { id: ItemId; position: number; total?: number | null; log: boolean }
     result: Item
@@ -225,7 +262,9 @@ export interface Commands {
   touch: { args: Record<string, never>; result: void }
   trackerDays: { args: { query: ReadingQuery }; result: TrackerDay[] }
   unlock: { args: { password: string }; result: VaultStatus }
+  unseenRuns: { args: Record<string, never>; result: number }
   vaultStats: { args: Record<string, never>; result: StoreStats }
+  verifyPassword: { args: { password: string }; result: void }
   webSearch: { args: { request: SearchRequest }; result: SearchResult[] }
 }
 
@@ -250,9 +289,12 @@ export const COMMAND_NAMES = {
   deleteKind: 'delete_kind',
   deleteLog: 'delete_log',
   deleteMemory: 'delete_memory',
+  deleteNote: 'delete_note',
   deleteProject: 'delete_project',
   deleteReading: 'delete_reading',
   deleteRole: 'delete_role',
+  deleteRoutine: 'delete_routine',
+  deleteRun: 'delete_run',
   deleteTask: 'delete_task',
   deleteTracker: 'delete_tracker',
   fetchImage: 'fetch_image',
@@ -261,6 +303,8 @@ export const COMMAND_NAMES = {
   getEvent: 'get_event',
   getGoal: 'get_goal',
   getItem: 'get_item',
+  getNote: 'get_note',
+  getRun: 'get_run',
   getTask: 'get_task',
   goalActivity: 'goal_activity',
   importCalendar: 'import_calendar',
@@ -277,9 +321,12 @@ export const COMMAND_NAMES = {
   listKinds: 'list_kinds',
   listLogs: 'list_logs',
   listMemories: 'list_memories',
+  listNotes: 'list_notes',
   listProjects: 'list_projects',
   listReadings: 'list_readings',
   listRoles: 'list_roles',
+  listRoutines: 'list_routines',
+  listRuns: 'list_runs',
   listTags: 'list_tags',
   listTasks: 'list_tasks',
   listTools: 'list_tools',
@@ -287,6 +334,7 @@ export const COMMAND_NAMES = {
   lock: 'lock',
   logReading: 'log_reading',
   lookupMetadata: 'lookup_metadata',
+  markRunsSeen: 'mark_runs_seen',
   mergeTrackers: 'merge_trackers',
   newBlock: 'new_block',
   newConversation: 'new_conversation',
@@ -295,11 +343,18 @@ export const COMMAND_NAMES = {
   newJournal: 'new_journal',
   newKind: 'new_kind',
   newLog: 'new_log',
+  newMemory: 'new_memory',
+  newNote: 'new_note',
   newProject: 'new_project',
   newRole: 'new_role',
+  newRoutine: 'new_routine',
   newTask: 'new_task',
   newTracker: 'new_tracker',
+  noteTags: 'note_tags',
   pollAutoLock: 'poll_auto_lock',
+  profile: 'profile',
+  routineTemplates: 'routine_templates',
+  runRoutine: 'run_routine',
   runTool: 'run_tool',
   saveAgentSettings: 'save_agent_settings',
   saveBlock: 'save_block',
@@ -314,9 +369,13 @@ export const COMMAND_NAMES = {
   saveKind: 'save_kind',
   saveLog: 'save_log',
   saveMemory: 'save_memory',
+  saveNote: 'save_note',
+  saveNoteForce: 'save_note_force',
+  saveProfile: 'save_profile',
   saveProject: 'save_project',
   saveReading: 'save_reading',
   saveRole: 'save_role',
+  saveRoutine: 'save_routine',
   saveTask: 'save_task',
   saveTasks: 'save_tasks',
   saveTracker: 'save_tracker',
@@ -326,6 +385,7 @@ export const COMMAND_NAMES = {
   sendMessage: 'send_message',
   setAgentKey: 'set_agent_key',
   setAutoLock: 'set_auto_lock',
+  setForgetKey: 'set_forget_key',
   setItemProgress: 'set_item_progress',
   setItemStatus: 'set_item_status',
   status: 'status',
@@ -338,7 +398,9 @@ export const COMMAND_NAMES = {
   touch: 'touch',
   trackerDays: 'tracker_days',
   unlock: 'unlock',
+  unseenRuns: 'unseen_runs',
   vaultStats: 'vault_stats',
+  verifyPassword: 'verify_password',
   webSearch: 'web_search',
 } as const
 
@@ -373,9 +435,12 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_kind',
   'delete_log',
   'delete_memory',
+  'delete_note',
   'delete_project',
   'delete_reading',
   'delete_role',
+  'delete_routine',
+  'delete_run',
   'delete_task',
   'delete_tracker',
   'fetch_image',
@@ -384,6 +449,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'get_event',
   'get_goal',
   'get_item',
+  'get_note',
+  'get_run',
   'get_task',
   'goal_activity',
   'import_calendar',
@@ -400,9 +467,12 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_kinds',
   'list_logs',
   'list_memories',
+  'list_notes',
   'list_projects',
   'list_readings',
   'list_roles',
+  'list_routines',
+  'list_runs',
   'list_tags',
   'list_tasks',
   'list_tools',
@@ -410,6 +480,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'lock',
   'log_reading',
   'lookup_metadata',
+  'mark_runs_seen',
   'merge_trackers',
   'new_block',
   'new_conversation',
@@ -418,11 +489,18 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'new_journal',
   'new_kind',
   'new_log',
+  'new_memory',
+  'new_note',
   'new_project',
   'new_role',
+  'new_routine',
   'new_task',
   'new_tracker',
+  'note_tags',
   'poll_auto_lock',
+  'profile',
+  'routine_templates',
+  'run_routine',
   'run_tool',
   'save_agent_settings',
   'save_block',
@@ -437,9 +515,13 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_kind',
   'save_log',
   'save_memory',
+  'save_note',
+  'save_note_force',
+  'save_profile',
   'save_project',
   'save_reading',
   'save_role',
+  'save_routine',
   'save_task',
   'save_tasks',
   'save_tracker',
@@ -448,6 +530,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'seed_roles',
   'set_agent_key',
   'set_auto_lock',
+  'set_forget_key',
   'set_item_progress',
   'set_item_status',
   'status',
@@ -460,7 +543,9 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'touch',
   'tracker_days',
   'unlock',
+  'unseen_runs',
   'vault_stats',
+  'verify_password',
   'web_search',
 ])
 
@@ -488,9 +573,12 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_kind',
   'delete_log',
   'delete_memory',
+  'delete_note',
   'delete_project',
   'delete_reading',
   'delete_role',
+  'delete_routine',
+  'delete_run',
   'delete_task',
   'delete_tracker',
   'fetch_image',
@@ -498,8 +586,10 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'import_calendar',
   'lock',
   'log_reading',
+  'mark_runs_seen',
   'merge_trackers',
   'poll_auto_lock',
+  'run_routine',
   'run_tool',
   'save_agent_settings',
   'save_block',
@@ -514,9 +604,13 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_kind',
   'save_log',
   'save_memory',
+  'save_note',
+  'save_note_force',
+  'save_profile',
   'save_project',
   'save_reading',
   'save_role',
+  'save_routine',
   'save_task',
   'save_tasks',
   'save_tracker',
@@ -524,6 +618,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'send_message',
   'set_agent_key',
   'set_auto_lock',
+  'set_forget_key',
   'set_item_progress',
   'set_item_status',
   'subscribe_calendar',
@@ -531,6 +626,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'sync_due_calendars',
   'touch',
   'unlock',
+  'verify_password',
 ])
 
 /** What a listener should reload after a command succeeds. */
@@ -549,14 +645,19 @@ export const CHANGE_KINDS: Readonly<Record<string, string>> = {
   delete_kind: 'shelf',
   delete_log: 'log',
   delete_memory: 'memory',
+  delete_note: 'note',
   delete_project: 'project',
   delete_reading: 'reading',
   delete_role: 'role',
+  delete_routine: 'routine',
+  delete_run: 'routineRun',
   delete_task: 'task',
   delete_tracker: 'tracker',
   import_calendar: 'calendar',
   log_reading: 'reading',
+  mark_runs_seen: 'routineRun',
   merge_trackers: 'tracker',
+  run_routine: 'routineRun',
   save_agent_settings: 'settings',
   save_block: 'block',
   save_calendar: 'calendar',
@@ -570,9 +671,13 @@ export const CHANGE_KINDS: Readonly<Record<string, string>> = {
   save_kind: 'shelf',
   save_log: 'log',
   save_memory: 'memory',
+  save_note: 'note',
+  save_note_force: 'note',
+  save_profile: 'settings',
   save_project: 'project',
   save_reading: 'reading',
   save_role: 'role',
+  save_routine: 'routine',
   save_task: 'task',
   save_tasks: 'task',
   save_tracker: 'tracker',
@@ -580,6 +685,7 @@ export const CHANGE_KINDS: Readonly<Record<string, string>> = {
   send_message: 'conversation',
   set_agent_key: 'settings',
   set_auto_lock: 'settings',
+  set_forget_key: 'settings',
   set_item_progress: 'item',
   set_item_status: 'item',
   subscribe_calendar: 'calendar',

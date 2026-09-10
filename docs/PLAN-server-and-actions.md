@@ -450,9 +450,15 @@ deliberately left for the app that needs it:
   that schema exists; see the table above.
 - **Step-up authentication.** `Ctx::proved_at` and `Command::sensitive` are on
   the wire and nothing consults them. The check is one function, switched on
-  with the first sensitive command.
+  with the first sensitive command. It matters slightly more than it did:
+  `set_agent_key` and `save_agent_settings` can be overwritten by any paired
+  device, which means pointing the assistant at somebody else's endpoint.
 - **The browser-extension host.** The local socket it talks to is built and
-  tested. The native-messaging host process is not.
+  tested. The native-messaging host process is not — and neither, still, is
+  the desktop app's own end of that socket: `serve_socket` is called by
+  `everyday serve` and by nothing else, so a local process cannot reach a
+  vault held by the window. The assistant's routines did not need it (the
+  scheduler runs inside the same service), so it is still open.
 - **A resumable upload.** `POST /v1/blob` takes one body. The blob format is
   already chunked at 256 KiB, so a chunked form fits it naturally; a large
   video over a phone connection is what will ask for it.

@@ -344,7 +344,7 @@ impl Entry {
 
 /// Truncate to at most `max` chars, appending an ellipsis, without ever
 /// splitting a UTF-8 code point.
-fn truncate_on_char_boundary(s: &str, max: usize) -> String {
+pub(crate) fn truncate_on_char_boundary(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }

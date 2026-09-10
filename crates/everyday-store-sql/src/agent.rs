@@ -108,15 +108,31 @@ impl AgentStore for SqlStore {
     fn list_conversations(&self, query: &ConversationQuery) -> Result<Vec<Conversation>> {
         let mut sql =
             "SELECT id, data FROM conversations ORDER BY updated_us DESC, id DESC".to_string();
-        // Only when one is asked for. Neither database honours an `OFFSET`
-        // without a `LIMIT`, and they spell "no limit" differently -- see
-        // `Dialect::limit_offset`.
-        if query.limit.is_some() || query.offset > 0 {
+        // The limit cannot be pushed down when routine transcripts have to be
+        // dropped, because the pointer that says a thread is one lives inside
+        // the sealed payload: a `LIMIT 20` in SQL would fetch twenty rows and
+        // then throw some away, answering with fewer than were asked for. So
+        // when `chats_only` is set the ordering is pushed down and the cut is
+        // made after the rows are open.
+        //
+        // Otherwise only when one is asked for. Neither database honours an
+        // `OFFSET` without a `LIMIT`, and they spell "no limit" differently --
+        // see `Dialect::limit_offset`.
+        if !query.chats_only && (query.limit.is_some() || query.offset > 0) {
             sql.push_str(&self.dialect().limit_offset(query.limit, query.offset));
         }
 
         let rows = self.read().records(&sql, &[])?;
-        self.collect(rows, conversation_aad)
+        let mut all: Vec<Conversation> = self.collect(rows, conversation_aad)?;
+        if query.chats_only {
+            all.retain(|c| c.run_id.is_none());
+            let start = (query.offset as usize).min(all.len());
+            all.drain(..start);
+            if let Some(limit) = query.limit {
+                all.truncate(limit as usize);
+            }
+        }
+        Ok(all)
     }
 
     fn get_conversation(&self, id: ConversationId) -> Result<Conversation> {

@@ -1,11 +1,13 @@
 # Every Day
 
-A private journal, a todo app, a calendar, a library and a place where they
-all add up, for macOS, Linux and Windows. Rich text with photos and video, projects and tasks on a list or a
-board, your week with the plan and the record side by side, a shelf for
-everything you mean to read and watch and cook, storage on this computer or
-on a Postgres server you choose, and encryption you actually hold the key
-to.
+A private journal, a notebook, a todo app, a calendar, a library, a place
+where they all add up, and an assistant that works while you are not looking —
+for macOS, Linux and Windows. Rich text with photos and video, projects and
+tasks on a list or a board, your week with the plan and the record side by
+side, a shelf for everything you mean to read and watch and cook, standing
+work the assistant does on a schedule and leaves for you to read, storage on
+this computer or on a Postgres server you choose, and encryption you actually
+hold the key to.
 
 <!-- Screenshots live in docs/ once you have run the app. -->
 
@@ -44,16 +46,16 @@ widgets". In exchange you get native *text*, a mature editor, and one
 codebase. For a journal — an app that is essentially a text canvas — that is
 the right side of the trade.
 
-## Five apps, one vault
+## Seven apps, one vault
 
-A bar down the left edge switches between **Journal**, **Todo**,
-**Calendar**, **Library** and **Overview** (`Ctrl/Cmd J` cycles);
-right-clicking one of them offers what that app can start from a standing
-stop — the same actions the tray offers, from the same registration. They
-share a vault, a password and a lock; they share nothing else — except that
-two of them are views over what the others already store. The calendar draws
-the journal's and the todo app's records on one grid, and the Overview says
-what all four amounted to. That is the whole point of both.
+A bar down the left edge switches between **Journal**, **Notes**, **Todo**,
+**Calendar**, **Library**, **Overview** and **Assistant** (`Ctrl/Cmd J`
+cycles); right-clicking one of them offers what that app can start from a
+standing stop — the same actions the tray offers, from the same registration.
+They share a vault, a password and a lock; they share nothing else — except
+that two of them are views over what the others already store. The calendar
+draws the journal's and the todo app's records on one grid, and the Overview
+says what all four amounted to. That is the whole point of both.
 
 The bar sits outside the sidebar because it is not any one app's navigation:
 everything to the right of it changes completely when one is pressed, and it
@@ -71,12 +73,21 @@ paragraph into, and again when that box had to become a *second* dialog
 raised out of the first, so the application had two settings surfaces and one
 of them had to close before the other could open.
 
-The assistant is deliberately *not* on the bar. It is a round button in the
-bottom right-hand corner of whatever app is open, because that is what it
-acts on: the task you can see, the entry you are writing. It opens a rail
-beside that app rather than replacing it, and the rail can be dragged wider —
-a table or a fenced block of configuration in a 340px column is a column of
-wrapped fragments.
+Settings has a **You** tab as well, which is where the assistant learns whose
+vault this is. See [Who it works for](#who-it-works-for).
+
+Talking to the assistant is deliberately *not* on the bar. It is a round
+button in the bottom right-hand corner of whatever app is open, because that
+is what it acts on: the task you can see, the entry you are writing. It opens
+a rail beside that app rather than replacing it, and the rail can be dragged
+wider — a table or a fenced block of configuration in a 340px column is a
+column of wrapped fragments.
+
+The **Assistant** app is a different thing from that rail and is on the bar
+for a different reason: it is not about what you are looking at. It is where
+its standing work is set up and where what it did while you were elsewhere
+waits to be read. See [An assistant that keeps its own
+appointments](#an-assistant-that-keeps-its-own-appointments).
 
 The todo app has projects, tasks and subtasks — a subtask is just a task with
 a parent, so the two levels the interface offers are a UI decision rather
@@ -207,6 +218,37 @@ on the other — testable offline. The webview's own permissions are unchanged
 and remain none: its content security policy allows no outbound connection,
 so neither a feed's contents nor a search result can cause a request of
 their own.
+
+## Notes
+
+A journal entry is filed under a date, in a journal, and that is most of what
+it is for: the question it answers is what happened on the fourteenth. A
+recipe, a reading list, the notes from a call and the draft of a difficult
+message answer nothing of the kind, and until there was a Notes app there was
+nowhere for any of them.
+
+A note is an entry without a journal and without a date. It has a title,
+because a note is looked for by name; it has no date, because the day a recipe
+was typed is not how anybody finds it again. Everything else it shares with an
+entry: the same rich text, the same tags, the same optional purpose, the same
+photographs dropped onto the page.
+
+Sharing the *editor* is the part that mattered. `RichText` is one component —
+the toolbar, the ProseMirror document, the media pipeline, and both of the
+effects carrying the scar tissue about carets — and the journal and the notes
+app each wrap it with their own page around it. An entry's page has a date, a
+tracker strip and its own Delete; a note's has a tag row and nothing else. A
+second editor would have been a second place to fix the caret bugs.
+
+Search covers both, from one index. Ask for a half-remembered phrase and it is
+found wherever you wrote it down, and each hit says which kind of thing it is.
+Naming a journal narrows to entries, because a note is in no journal and
+returning one anyway would be answering a different question.
+
+It is also where the assistant puts prose. A routine that reads your week and
+has three paragraphs to say has nowhere good to put them otherwise: an entry
+would file a report under a day as though somebody had lived it, and three
+hundred and sixty-five of those are not a journal.
 
 ## The library
 
@@ -732,9 +774,11 @@ crates/
                             written once, run on every dialect below
   everyday-store-sqlite/    SQLite driver (default)
   everyday-store-postgres/  Postgres driver, including Supabase
-  everyday-vault/           wires core to backends; platform paths; media serving
+  everyday-vault/           wires core to backends; platform paths; media
+                            serving; the keychain, when a vault opens itself
   everyday-service/         the command surface: everything a client can ask a
-                            vault to do, with no window in sight
+                            vault to do, with no window in sight — and the one
+                            loop that runs the assistant's routines
   everyday-server/          serving a vault to other machines, and the client
                             that talks to one
   everyday-cli/             `everyday` — scripted capture, export, inspection,
@@ -754,6 +798,133 @@ the desktop shell registers nine commands rather than ninety. That is what
 lets the same command bodies back this window, a server answering three
 machines, and a mobile shell later — and it is why the interface's own client
 is *generated* from that table rather than written beside it.
+
+## An assistant that keeps its own appointments
+
+A **routine** is a time, an instruction in your own words, and a switch.
+"Every weekday at seven, look at what is due and what is on the calendar and
+leave me a note with the three things that matter." Set one up in the
+Assistant app, or by saying so in the rail — it can make its own.
+
+Every periodic thing in this application used to be polled by a *window*: the
+calendar refreshes on a five-minute timer in the interface, and the argument
+for that is a good one, that a window nobody is looking at should not be the
+reason a laptop wakes its radio. It cannot be right for this. Seven in the
+morning has to mean seven whether or not anybody opened anything, so the thing
+that decides a routine is due lives where the vault lives — one loop in the
+service, ticking once a minute, on the runtime the process already has.
+
+Runs are serial. Two model calls at once would double the bill and race each
+other for the vault's single writer, and nothing about a morning brief is
+urgent enough to want either. Pressing **Run now** three times queues one run,
+not three.
+
+### Missing one is something it says out loud
+
+A morning brief at half past two in the afternoon is not a morning brief. A
+weekly review a day late still is. So a routine carries a *grace*, and past it
+the moment becomes a **skipped** run with the reason written into it — "its
+07:00 was 6 hours ago, past the 60 minutes it allows".
+
+That is the answer to the question somebody actually asks the next morning,
+which is *why did I not get my brief*. A log line on a machine under a desk is
+not an answer. A laptop shut for a week shows one honest row per morning
+rather than seven briefs at once, or nothing at all.
+
+The clock arithmetic is a pure function of a trigger, an instant and a zone,
+with the instant passed in, and there is a table of cases beside it: a weekday
+schedule sleeping through a weekend, the hour that happens twice when the
+clocks go back, the hour that does not exist when they go forward. And the
+floor is the routine's own creation time, so a routine set up at nine does not
+report that it missed this morning's seven o'clock — a moment that existed
+before the routine did is not one it missed.
+
+### With nobody watching
+
+A scheduled run is offered exactly the tools the rail is offered. That is
+deliberate: everything the assistant can make already lives in this
+application, and a routine that could read a shelf but not add to it would be
+a secretary who could only take notes.
+
+Two things do change, and both are about there being nobody there. A
+destructive call is *declined on the spot* rather than parked on a
+confirmation nobody will ever see — in the same words your own "Don't"
+produces, so the model can say in its report that it needs doing and leave it
+to you. And the run is told plainly that no question can be answered, so a
+model that would otherwise stop and ask picks the sensible reading, acts, and
+writes down what it was unsure about.
+
+### What it did, rather than what it may do
+
+There is no queue of drafts to approve. Every run keeps its whole transcript —
+every tool call, in order, with what came back — and one click from its
+summary opens it in the rail.
+
+That is the honest version of the same promise. A review queue asks you to
+check everything in advance, including the nine times out of ten it was right;
+an audit trail costs you nothing when it was right and tells you exactly what
+happened when it was not. If the trust turns out to be misplaced, a leash on
+what a run may call is a field on the routine and a filter in one function,
+and nothing built here has to be undone for it.
+
+### How you find out
+
+A number on the app bar, and nothing else. Work done at seven in the morning
+is a queue rather than an interruption. *Reading* clears it: opening the pane
+marks what is on screen as seen, because a button you had to press would leave
+a number nobody could get rid of by doing the thing the number was asking for.
+
+One notification per run reaches the operating system, and its title names the
+routine and never what it found — "Morning brief is ready". This is the one
+notice in the application that will routinely be drawn over a lock screen. A
+routine whose endpoint has been unreachable every morning for a week says so
+once, the same courtesy a calendar that has stopped answering gets.
+
+Closing the window does not always quit any more. A vault with a routine on it
+hides to the tray instead, and the tray says what the assistant is doing.
+Hiding rather than quitting also keeps the webview, which is what keeps the
+path by which a notification raised at seven reaches the notification centre
+at all: the rule about not putting a banner over a focused window lives in the
+interface, and a destroyed webview cannot apply it.
+
+### Who it works for
+
+The assistant knew the date and nothing else — not the hour, which decides
+half of what anybody asks an assistant, and not one thing about the person it
+was working for.
+
+**Settings → You** is a name, a birthday, a gender, roughly where you live,
+and a paragraph in your own words. It is read into every conversation and
+every run. The age is worked out here rather than left to the model, which is
+usually right and is occasionally a year out for no reason worth finding out.
+
+Nothing writes it. Facts that *change* — a move, a new job — are what the
+assistant's memory is for, and it writes those itself, capped and dated. This
+is for the handful that do not, and it is typed once. There is deliberately no
+tool for it.
+
+The time zone is yours rather than the machine's, and that is not a detail: a
+vault served from a box under a desk has whatever zone that box was installed
+with, and a routine set for seven has to mean seven where *you* are.
+
+### Looking things up
+
+`web_search` is the only tool the assistant has that is not in the core's
+catalogue, and the only one that leaves this computer for somewhere you did
+not choose. It is off until you turn it on, and the sentence beside the switch
+says what it costs: your question — and, preparing for a meeting, the names of
+the people in it — go to a search engine. Everything else the assistant does
+happens between this machine and the model endpoint you configured.
+
+It lives in the service rather than the core for the reason the calendar and
+the library features are both built on: `everyday-core` has no async runtime,
+no TLS stack and no way to open a socket, and that stays true.
+
+The second risk is not squeamishness either. A search result is text written
+by a stranger arriving in a context window that can call tools, which is the
+same shape as a fetched page or an imported calendar — and the answer is the
+one already in place: no secret domain is ever offered to a model, a scheduled
+run cannot delete anything, and the transcript says what was done.
 
 ## One vault, many windows
 
@@ -874,8 +1045,45 @@ Every command that changes something says what it touched. A window ignores
 its own — compared by origin on the server side, so a save never reloads the
 list it was made in — and reloads for anybody else's, coalesced, because a
 calendar sync writes a thousand events and drawing the grid a thousand times
-is not a plan. A vault that locks itself on the machine holding it locks for
-everybody looking at it.
+is not a plan.
+
+### Two locks, because a screen is not a key
+
+There used to be one. `lock` dropped the data key, closed the store and threw
+every client looking at that vault back to a password prompt — which is far
+too big a hammer for a keyboard that has been idle a quarter of an hour, once
+the machine holding the vault is serving it to a phone in the other room and
+running the assistant's routines.
+
+So there are two.
+
+| | Screen lock | Vault lock |
+|---|---|---|
+| What it does | This window hides what it is showing | The key is dropped; every client goes back to a password |
+| Who it is for | Each client, itself | Everybody |
+| How | `Ctrl/Cmd L`, the Lock button, the idle timeout | "Lock the vault everywhere", quitting, or the *forget the key* timer |
+| Coming back | Prove who you are | Open the vault |
+| The assistant | keeps working | stops until somebody types the password |
+
+Coming back asks one of two questions, and the lock screen is the same screen
+either way. `verify_password` derives the key, compares the tag on the wrapped
+one and throws the result away: proof of the person, opening nothing. It costs
+the same Argon2 derivation an unlock costs, deliberately, and the server puts
+it behind the same rate limit and the same lockout — a screen that was cheaper
+to guess at than a vault would simply become the way in.
+
+**Forget the key after** is the heavier of the two and starts at *never*,
+because the machine holding a vault is serving it. Quitting always forgets it.
+And a vault can be told to open itself when the process starts, which puts the
+key in this computer's own keychain: as safe as your login here rather than as
+safe as your password, said plainly where the switch is, and off unless you
+turn it on. It exists for one reason — a laptop that rebooted at three has a
+seven o'clock brief to deliver.
+
+The other half of the split is who counts as a person. `Vault::read` and
+`Vault::write` no longer defer the timeout themselves, because they cannot see
+who is asking and the assistant reads this vault every minute of every day. The
+service defers it instead, for every caller except the assistant's own.
 
 ## Encryption
 
@@ -935,6 +1143,40 @@ vault. What stays sealed is the part that identifies anything: the tracker's
 *name*, its unit and its cadence, all inside its own record's payload. The
 file says that tracker `7f3a…` was `500` at 08:12 on the 14th, and never that
 `7f3a…` is a drug.
+
+Notes go further and leave almost nothing: a pin and two timestamps, which is
+what orders the list. The *title* is sealed with everything else, and that
+matters more here than it does for an entry — a note is named, and its name is
+the part that would give it away. So the file says that somebody keeps eleven
+notes and pinned two of them.
+
+The assistant's own tables are the same shape. In the clear: that a routine
+exists, and that a run started at seven this morning and nobody has read it —
+which is what the count on the app bar and the log under each routine are
+ordered by. Sealed: what the routine is for, and every word the assistant said
+about it.
+
+The **profile** is the one table in the whole schema with *nothing* in the
+clear. There is no index to build over a single row, and what is in it — a
+name, a birthday, where somebody lives, a paragraph about their family — is
+the most identifying thing in the vault. It goes in the envelope whole.
+
+Notes go further and leave almost nothing: a pin and two timestamps, which is
+what orders the list. The *title* is sealed with everything else, and that
+matters more here than it does for an entry — a note is named, and its name is
+the part that would give it away. So the file says that somebody keeps eleven
+notes and pinned two of them.
+
+The assistant's own tables are the same shape. In the clear: that a routine
+exists, and that a run started at seven this morning and nobody has read it —
+which is what the count on the app bar and the log under each routine are
+ordered by. Sealed: what the routine is for, and every word the assistant said
+about it.
+
+The **profile** is the one table in the whole schema with *nothing* in the
+clear. There is no index to build over a single row, and what is in it — a
+name, a birthday, where somebody lives, a paragraph about their family — is
+the most identifying thing in the vault. It goes in the envelope whole.
 
 Roles and goals make the same trade one step up. In the clear: which role a
 goal is under, its status, its horizon, the ordering — and, in the `purposes`
@@ -1252,17 +1494,17 @@ with what the platform or the webview has already taken.
 
 | | |
 |---|---|
-| `G` then `J` / `T` / `C` / `L` / `O` | journal, todo, calendar, library, overview |
-| `C` | start the next thing — an entry, the task capture line, an hour set aside, the "add to shelf" field, a goal |
+| `G` then `J` / `N` / `T` / `C` / `L` / `O` / `A` | journal, notes, todo, calendar, library, overview, assistant |
+| `C` | start the next thing — an entry, a note, the task capture line, an hour set aside, the "add to shelf" field, a goal, a routine |
 | `/` | search this app |
-| `A` | the assistant |
+| `A` | the assistant's rail |
 | `?` | this list |
 | `Ctrl/Cmd J` | cycle through the apps |
 | `Ctrl/Cmd N` | the same as `C` |
 | `Ctrl/Cmd F` | the same as `/` |
 | `Ctrl/Cmd ,` | settings |
 | `Ctrl/Cmd K` | the command palette — everything, by name |
-| `Ctrl/Cmd L` | lock now |
+| `Ctrl/Cmd L` | lock this screen |
 | `Ctrl/Cmd S` | flush pending edits (it autosaves anyway) |
 
 Bare letters belong to whatever is on screen, so the same key can mean
@@ -1472,16 +1714,26 @@ instead.
 ## Status
 
 The core, the SQL backend and both its drivers, the vault lifecycle, search,
-the media pipeline, the todo app, the calendar, the library, tracking, roles
-and goals, and the CLI are implemented and tested — 480 tests, plus the shared
-backend conformance suite (run against SQLite always and against a real
-Postgres server on demand, and covering all seven domains) and thirteen
-dependency-free interface suites: the quick-add grammar, the quick-track
-grammar, the calendar's grid arithmetic, conflict handling, notifications, the
-library, the tracking arithmetic, the streak and balance arithmetic, the menu
-geometry, the assistant's two loops, the Markdown reader, and the keyboard.
-The desktop shell and interface are complete and the interface builds and
-typechecks clean.
+the media pipeline, notes, the todo app, the calendar, the library, tracking,
+roles and goals, the assistant's routines, and the CLI are implemented and
+tested — 633 tests, plus the shared backend conformance suite (run against
+SQLite always and against a real Postgres server on demand, and covering all
+nine domains) and sixteen dependency-free interface suites: the quick-add
+grammar, the quick-track grammar, the calendar's grid arithmetic, conflict
+handling, notifications, the library, the tracking arithmetic, the streak and
+balance arithmetic, the menu geometry, the assistant's two loops, the
+Assistant app, the live-refresh router, the action table, the Markdown reader,
+and the keyboard. The desktop shell and interface are complete and the
+interface builds and typechecks clean.
+
+The scheduler is driven end to end by a scripted model on loopback — the base
+URL is a setting so that a local model works, and a scripted one is a local
+model that always says the same thing. Fourteen tests cover a due routine
+running, a note it wrote, a delete it was refused, a locked vault, a missed
+moment, a wedged provider, a meeting inside its window and one outside it, and
+the routine it set up when it was asked to. What is *not* covered offline is
+the same thing that is not covered for calendars: a real provider answering.
+Point it at one to finish the job.
 
 The Postgres backend is a *shared vault*, not a sync service: the write lock
 still means one writer at a time, and two people typing into the same vault at
@@ -1491,8 +1743,10 @@ the CLI; it has not been run against a live Supabase project here, and the
 Supabase-specific parts are the connection string and the pooler warning.
 
 The CLI covers journals only. It is a capture-and-export tool for the journal
-and has not been taught about tasks, calendars, the library, tracking, or
-roles and goals.
+and has not been taught about notes, tasks, calendars, the library, tracking,
+roles and goals, or routines — though `everyday do` runs any of the
+assistant's tools, and `everyday serve --keychain` opens a vault on a machine
+that rebooted.
 
 Calendar subscriptions are the one part not exercised against a real server
 here, for the obvious reason: the iCalendar reader, the recurrence expansion
@@ -1513,9 +1767,16 @@ parsing it out of prose needs a suggestion plugin in the editor, which is a
 dependency and a third-party notice, and the popover was always the primary
 way in.
 
-Not yet built: mobile shells, a map view, task
-recurrence, writing back to a subscribed calendar (see above for why not), and
-importers for Day One's export format.
+A routine's writes are audited rather than approved: there is no queue of
+drafts and no leash on what a scheduled run may call, beyond the refusal to
+delete. Both are deliberate for now and both are additive — a leash is a field
+on the routine and a filter in one function, and a review state is a side
+table like `purposes` — so the first person to want either can have it without
+undoing any of this.
+
+Not yet built: mobile shells, a map view, task recurrence, writing back to a
+subscribed calendar (see above for why not), and importers for Day One's
+export format.
 
 ## The icon on Linux
 

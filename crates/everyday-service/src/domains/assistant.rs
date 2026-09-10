@@ -45,6 +45,14 @@ pub struct SetKey {
 pub struct Conversations {
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Include the transcripts of routine runs.
+    ///
+    /// Off by default, which is what the rail's history list wants: a week of
+    /// morning briefs is not a list of conversations somebody had. The
+    /// Assistant app asks for a run's transcript by its run rather than by
+    /// finding it in here.
+    #[serde(default)]
+    pub include_runs: bool,
 }
 
 #[derive(Deserialize)]
@@ -124,7 +132,8 @@ async fn list_conversations(
 ) -> CommandResult<Vec<ConversationSummary>> {
     let vault = svc.require()?;
     blocking(move || {
-        let query = ConversationQuery { limit: args.limit, offset: 0 };
+        let query =
+            ConversationQuery { limit: args.limit, offset: 0, chats_only: !args.include_runs };
         vault
             .conversations(&query)?
             .into_iter()
@@ -178,9 +187,27 @@ async fn list_memories(svc: Arc<Service>, _c: Ctx, _a: Nothing) -> CommandResult
 
 /// Write a memory by hand, which also pins it: a fact somebody typed is not one
 /// the assistant's own housekeeping may drop.
+/// Mint a memory without saving it.
+///
+/// The id is the core's to allocate; see `new_routine` for the whole
+/// argument. `pinned` is set, because the one caller is somebody typing a
+/// fact by hand and a fact somebody typed is not one the assistant's own
+/// housekeeping should evict to make room. They can clear it again.
+async fn new_memory(_svc: Arc<Service>, _c: Ctx, _args: Nothing) -> CommandResult<Memory> {
+    Ok(Memory { pinned: true, ..Memory::new(String::new()) })
+}
+
+/// Write a memory.
+///
+/// This used to force `pinned: true`, on the argument that a fact somebody
+/// typed is not one the assistant's own housekeeping may drop. The argument
+/// still holds and has moved to where it belongs: the Memory pane sets the
+/// flag when it adds one, and can clear it again. Forcing it here meant a
+/// person could not unpin a fact they had pinned by accident, and meant the
+/// pane's own switch did nothing.
 async fn save_memory(svc: Arc<Service>, _c: Ctx, args: SaveMemory) -> CommandResult<Vec<Memory>> {
     let vault = svc.require()?;
-    blocking(move || Ok(vault.save_memory(&Memory { pinned: true, ..args.memory })?)).await
+    blocking(move || Ok(vault.save_memory(&args.memory)?)).await
 }
 
 async fn delete_memory(svc: Arc<Service>, _c: Ctx, args: MemoryRef) -> CommandResult<()> {
@@ -226,7 +253,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "list_conversations", scope: Agent, effect: Read,
         args: Conversations, returns: "ConversationSummary[]",
-        signature: &[("limit", "number | null", false)],
+        signature: &[("limit", "number | null", false), ("includeRuns", "boolean", false)],
         run: list_conversations,
     },
     command! {
@@ -269,6 +296,11 @@ pub static COMMANDS: &[crate::command::Command] = &[
         name: "list_memories", scope: Agent, effect: Read,
         args: Nothing, returns: "Memory[]", signature: &[],
         run: list_memories,
+    },
+    command! {
+        name: "new_memory", scope: Agent, effect: Read,
+        args: Nothing, returns: "Memory", signature: &[],
+        run: new_memory,
     },
     command! {
         name: "save_memory", scope: Agent, effect: Write,

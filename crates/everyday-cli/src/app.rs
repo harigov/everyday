@@ -2,6 +2,7 @@
 
 use everyday_core::crypto::KdfParams;
 use everyday_core::model::{Attachment, MediaKind};
+use everyday_core::search::{Found, SearchScope};
 use everyday_core::store::SortOrder;
 use everyday_core::{
     Entry, EntryQuery, Error, Journal, JournalId, Result, RichDoc, Vault, VaultConfig,
@@ -84,6 +85,14 @@ pub enum Command {
         /// certificate. Clients then pin nothing and must reach it over https.
         #[arg(long)]
         no_tls: bool,
+        /// Open the vault with the key this machine has in its keychain,
+        /// rather than waiting for a client to type a password.
+        ///
+        /// Only works where the desktop app has been told to keep one --
+        /// Settings, Vault, "open this vault without a password". A headless
+        /// machine with no keychain says so and carries on locked.
+        #[arg(long)]
+        keychain: bool,
     },
     /// Run one of the assistant's tools, with no model in the loop.
     ///
@@ -229,12 +238,28 @@ pub fn run(cli: Cli) -> Result<()> {
     // deliberately: an unattended server that had to be given a password would
     // be a server keeping one in an environment file. The first client to
     // connect unlocks it instead.
-    if let Command::Serve { listen, port, pair, no_remote_unlock, no_tls } = &cli.command {
+    if let Command::Serve { listen, port, pair, no_remote_unlock, no_tls, keychain } = &cli.command
+    {
         let vault = everyday_vault::open(&path)?;
         if let Some(password) = cli.password.as_deref()
             && !vault.is_unlocked()
         {
             vault.unlock(Some(password))?;
+        }
+        // A machine under a desk that reboots overnight. Best effort and
+        // never fatal: a headless box with no keychain, or a key that no
+        // longer fits, leaves the vault locked -- which is where it would
+        // have been anyway, and the first client to connect can still open it.
+        if *keychain && !vault.is_unlocked() {
+            match everyday_vault::autounlock::recall(&path)
+                .map(|k| vault.unlock_with_key(k.as_str()))
+            {
+                Some(Ok(())) => println!("Opened with the key from this machine's keychain."),
+                Some(Err(e)) => eprintln!("warning: the key in the keychain did not fit ({e})"),
+                None => {
+                    eprintln!("warning: this machine has no key for that vault in its keychain")
+                }
+            }
         }
         return serve(vault, &path, listen, *port, *pair, *no_remote_unlock, *no_tls);
     }
@@ -345,6 +370,10 @@ fn init(
             password,
             kdf: KdfParams::default(),
             auto_lock_seconds: 15 * 60,
+            // Never, by default. The machine holding a vault serves it -- to its
+            // own window, to a phone, to the assistant -- and a key that went
+            // away because one keyboard was idle would take all of that with it.
+            forget_key_seconds: 0,
         },
     )?;
 
@@ -559,13 +588,17 @@ fn show(vault: &Vault, id: &str, json: bool) -> Result<()> {
 }
 
 fn search(vault: &Vault, query: &str, limit: usize) -> Result<()> {
-    let hits = vault.search(query, None, limit)?;
+    // Entries only. This command is part of a tool that covers journals and
+    // nothing else, and quietly returning notes from it would be a surprise
+    // in a script somebody wrote against last year's output.
+    let hits = vault.search(query, SearchScope::Entries(None), limit)?;
     if hits.is_empty() {
         eprintln!("no matches for {query:?}");
         return Ok(());
     }
     for h in hits {
-        println!("{}  {}  [{}]", h.local_date, truncate(&h.title, 48), h.id.short());
+        let Found::Entry { id, local_date, .. } = h.found else { continue };
+        println!("{}  {}  [{}]", local_date, truncate(&h.title, 48), id.short());
         if !h.snippet.is_empty() {
             println!("    {}", h.snippet.replace('\n', " "));
         }
@@ -874,6 +907,13 @@ fn serve(
             .await
             .map_err(command_error)?;
 
+        // The assistant's routines, on this runtime rather than one of their
+        // own. This is the shape the feature was built for: a machine under a
+        // desk, no window anywhere, and a seven o'clock brief that happens
+        // anyway. It does nothing until the first client unlocks the vault.
+        let (stop_scheduler, listen) = tokio::sync::watch::channel(false);
+        let scheduling = tokio::spawn(everyday_service::scheduler::run(service.clone(), listen));
+
         // The local socket as well, always. It is how `everyday new` writes
         // through a running server instead of coming up read-only beside it,
         // and how a browser-extension host will reach a vault that is not
@@ -925,6 +965,25 @@ fn serve(
         tokio::signal::ctrl_c().await.ok();
         println!();
         println!("Stopping.");
+        // The scheduler first, and genuinely waited on. A routine mid-run is
+        // spending money and holding the vault's writer, and locking
+        // underneath it would fail its next tool call and strand its row
+        // saying `Running`. The loop checks the flag between ticks, so this
+        // returns as soon as the current tick does and immediately if none is
+        // in flight.
+        //
+        // Not capped. A run has its own fifteen-minute timeout, which bounds
+        // this, and a second Ctrl-C is how somebody says they meant it.
+        let _ = stop_scheduler.send(true);
+        if !scheduling.is_finished() {
+            println!("Waiting for the assistant to finish what it was doing…");
+        }
+        tokio::select! {
+            _ = scheduling => {}
+            _ = tokio::signal::ctrl_c() => {
+                println!("Stopping anyway. A run in flight will not be written down.");
+            }
+        }
         running.stop();
         // Give the vault its checkpoint before the process goes.
         if let Some(v) = service.get() {
@@ -1013,6 +1072,9 @@ fn run_tool(
         today: everyday_core::model::today_local(),
         tz: &tz,
         conversation: None,
+        // Somebody typed `everyday do`. Not unattended in the sense that
+        // matters: a person is reading the output.
+        unattended: false,
     };
     let value = tools::dispatch(&ctx, &name, &arguments)?;
     println!("{}", serde_json::to_string_pretty(&value)?);

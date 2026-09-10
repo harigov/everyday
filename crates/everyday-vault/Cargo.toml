@@ -8,6 +8,10 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+# The one place a key may be kept between runs, and only when somebody has
+# said so: see `autounlock`. One API over the macOS keychain, the Windows
+# credential manager and the XDG secret service.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 everyday-core.workspace = true
 everyday-store-sqlite.workspace = true
 everyday-store-postgres.workspace = true

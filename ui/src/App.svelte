@@ -20,6 +20,10 @@
   import TodoView from './components/TodoView.svelte'
   import CalendarView from './components/CalendarView.svelte'
   import LibraryView from './components/LibraryView.svelte'
+  import { assistant } from './lib/assistant.svelte'
+  import { notes } from './lib/notes.svelte'
+  import AssistantView from './components/AssistantView.svelte'
+  import NotesView from './components/NotesView.svelte'
   import OverviewView from './components/OverviewView.svelte'
   import LockScreen from './components/LockScreen.svelte'
   import Setup from './components/Setup.svelte'
@@ -85,6 +89,10 @@
     // records — the one migration that cannot be a SQL step, since the old
     // definitions are inside a sealed journal payload no migration can read.
     void tracking.load()
+    // Only the number, not the three lists behind it. The app bar draws it in
+    // every app, so it must not cost a query per app; the Assistant app loads
+    // the rest when it is opened.
+    void assistant.refreshCount()
   })
 
   // Each app tints the window with the accent of whatever it has selected:
@@ -94,7 +102,10 @@
   const accent = $derived(
     app.section === 'todo'
       ? todo.accent
-      : app.section === 'calendar' || app.section === 'overview'
+      : app.section === 'calendar' ||
+          app.section === 'overview' ||
+          app.section === 'notes' ||
+          app.section === 'assistant'
         ? 'var(--accent)'
         : app.section === 'library'
           ? library.accent
@@ -131,7 +142,13 @@
    */
   onSaveAndClose(async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
-      await Promise.allSettled([app.flush(), todo.flush(), calendar.flush(), library.flush()])
+      await Promise.allSettled([
+        app.flush(),
+        notes.flush(),
+        todo.flush(),
+        calendar.flush(),
+        library.flush(),
+      ])
       if (!app.saveFailing) break
     }
     await api.readyToClose().catch(() => {})
@@ -142,6 +159,7 @@
   // of defence behind the handshake above rather than the mechanism.
   function onBeforeUnload() {
     void app.flush()
+    void notes.flush()
     void todo.flush()
     void calendar.flush()
     void library.flush()
@@ -176,7 +194,11 @@
       <div class="panes">
         <AppBar />
         <Sidebar />
-        {#if app.section === 'todo'}
+        {#if app.section === 'assistant'}
+          <AssistantView />
+        {:else if app.section === 'notes'}
+          <NotesView />
+        {:else if app.section === 'todo'}
           <TodoView />
         {:else if app.section === 'calendar'}
           <CalendarView />

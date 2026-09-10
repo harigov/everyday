@@ -44,6 +44,7 @@ impl Harness {
                 password: password.map(str::to_string),
                 kdf: Default::default(),
                 auto_lock_seconds: 900,
+                forget_key_seconds: 0,
             },
         )
         .unwrap();
@@ -462,6 +463,7 @@ async fn a_vault_that_refuses_remote_unlocking_says_so() {
             password: Some("a password nobody will guess".into()),
             kdf: Default::default(),
             auto_lock_seconds: 900,
+            forget_key_seconds: 0,
         },
     )
     .unwrap();
@@ -692,6 +694,7 @@ async fn the_certificate_is_the_identity_rather_than_the_address() {
             password: None,
             kdf: Default::default(),
             auto_lock_seconds: 900,
+            forget_key_seconds: 0,
         },
     )
     .unwrap();

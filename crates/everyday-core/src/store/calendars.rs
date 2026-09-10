@@ -166,6 +166,7 @@ mod tests {
             all_day: false,
             status: EventStatus::Confirmed,
             organizer: String::new(),
+            attendees: Vec::new(),
             url: String::new(),
             busy: true,
             updated_at: Timestamp::now(),

@@ -66,7 +66,16 @@ export type TrayEntry =
  * each app read when it registered its own actions; there is one table now,
  * so the order is where a row sits in it.
  */
-export const TRAY_GROUPS = ['Journal', 'Todo', 'Calendar', 'Library', 'Overview', 'Vault'] as const
+export const TRAY_GROUPS = [
+  'Journal',
+  'Notes',
+  'Todo',
+  'Calendar',
+  'Library',
+  'Overview',
+  'Assistant',
+  'Vault',
+] as const
 
 const SHOW_KEY = 'everyday.tray'
 

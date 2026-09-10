@@ -49,6 +49,11 @@ pub enum Scope {
     /// Everything. What a paired desktop client is issued today.
     All,
     Journals,
+    /// Notes. Its own scope rather than a corner of `Journals`, because the
+    /// two records answer different questions and a client may well want one
+    /// without the other -- a browser extension that clips a page into a note
+    /// has no business reading anybody's diary.
+    Notes,
     Tasks,
     Calendars,
     Library,
@@ -76,6 +81,7 @@ impl Scope {
         match self {
             Scope::All => "all",
             Scope::Journals => "journals",
+            Scope::Notes => "notes",
             Scope::Tasks => "tasks",
             Scope::Calendars => "calendars",
             Scope::Library => "library",
@@ -92,6 +98,7 @@ impl Scope {
     pub const ALL: &'static [Scope] = &[
         Scope::All,
         Scope::Journals,
+        Scope::Notes,
         Scope::Tasks,
         Scope::Calendars,
         Scope::Library,
@@ -117,6 +124,18 @@ pub enum Caller {
     Socket,
     /// A paired device, by the id it was given at pairing time.
     Device(String),
+    /// The assistant, running a routine nobody asked for just now, named by
+    /// the run it is doing.
+    ///
+    /// A caller of its own rather than [`Caller::Local`], for two reasons
+    /// that both bite immediately. A window drops change events carrying its
+    /// own origin, so that saving an entry does not reload the list it was
+    /// saved in -- and a routine stamped `local` would therefore write a task
+    /// that the window in the same process refused to draw. And the moment a
+    /// vault gives up its key is measured from the last time a *person* used
+    /// it, which is a question only something that knows who is asking can
+    /// answer.
+    Assistant(String),
 }
 
 impl Caller {
@@ -127,6 +146,15 @@ impl Caller {
             Caller::Local => Some("local"),
             Caller::Socket => Some("socket"),
             Caller::Device(id) => Some(id.as_str()),
+            Caller::Assistant(_) => Some("assistant"),
+        }
+    }
+
+    /// The run this call belongs to, if it is the assistant's.
+    pub fn run(&self) -> Option<&str> {
+        match self {
+            Caller::Assistant(run) => Some(run.as_str()),
+            _ => None,
         }
     }
 }
