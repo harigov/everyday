@@ -9,7 +9,7 @@ use everyday_core::{
     Entry, EntryQuery, Error, Journal, JournalId, Result, RichDoc, Vault, VaultConfig,
 };
 use jiff::civil::Date;
-use std::io::{IsTerminal, Read, Write};
+use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -92,6 +92,35 @@ pub enum Command {
         /// machine with no keychain says so and carries on locked.
         #[arg(long)]
         keychain: bool,
+    },
+    /// Let another program's model use this vault, over stdio.
+    ///
+    /// A pipe, not a second server: every line read from stdin is posted to
+    /// the MCP listener a running Every Day already serves on a loopback
+    /// port, and every reply comes back as a line on stdout. This command
+    /// opens no vault of its own -- the second process to open one gets it
+    /// read-only, which would mean every tool that writes failing forever,
+    /// silently, from inside whatever agent called it. It reads the port and
+    /// the token out of `mcp.json` instead, the same file the settings panel
+    /// writes, and forwards to whichever process already holds the vault
+    /// open.
+    ///
+    /// The listener this talks to is a separate switch, off by default --
+    /// Settings, Vault, "Let an AI agent use this vault". With it off there
+    /// is nothing on the other end of this pipe, which is reported as a
+    /// JSON-RPC error on stdout rather than by this process dying with no
+    /// explanation the calling agent can show anybody.
+    Mcp {
+        /// Talk to a listener on this port instead of the one `mcp.json`
+        /// names. Useful when this user's configuration directory is not
+        /// the default one, or when pointing this at a listener started by
+        /// hand for testing.
+        #[arg(long)]
+        port: Option<u16>,
+        /// Authenticate with this token instead of the one `mcp.json`
+        /// names, for the same reasons as `--port`.
+        #[arg(long)]
+        token: Option<String>,
     },
     /// Run one of the assistant's tools, with no model in the loop.
     ///
@@ -256,6 +285,16 @@ pub fn run(cli: Cli) -> Result<()> {
         return init(&path, backend, settings, name, *no_encryption, cli.password.as_deref());
     }
 
+    // `mcp` is the other command dispatched before a vault is even looked
+    // for, and for a stronger reason than `init`'s: it must never open one.
+    // See its own doc, and `docs/plans/mcp.md`'s "Streamable HTTP is the
+    // transport; stdio is a pipe to it" -- the second process to open a
+    // vault gets it read-only, which is the one failure mode this command
+    // exists to make impossible rather than to handle.
+    if let Command::Mcp { port, token } = &cli.command {
+        return mcp(*port, token.clone());
+    }
+
     if !everyday_vault::exists(&path) {
         return Err(Error::NoVault(path));
     }
@@ -343,6 +382,7 @@ pub fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Serve { .. } => unreachable!("handled above"),
+        Command::Mcp { .. } => unreachable!("handled above"),
         Command::Do { name, arguments, list, confirm_destructive } => {
             run_tool(vault, name, &arguments, list, confirm_destructive)
         }
@@ -1198,6 +1238,166 @@ fn terminal_qr(url: &str) -> String {
     out
 }
 
+// ---- the stdio pipe to a running vault's MCP listener ------------------
+
+/// Pipe JSON-RPC between this process's stdin/stdout and the MCP listener
+/// a running copy of Every Day already serves.
+///
+/// This is the whole of `everyday mcp`: it opens no vault, and it does not
+/// link against `everyday-mcp` -- the protocol crate that actually knows
+/// what a JSON-RPC message means. Every line read here is forwarded
+/// byte-for-byte as an HTTP body and every reply is written back
+/// byte-for-byte; the "translation" is entirely HTTP framing, done once,
+/// in `everyday-server::mcp`, for every client rather than reimplemented
+/// per transport. See `docs/plans/mcp.md`'s "Streamable HTTP is the
+/// transport; stdio is a pipe to it" for why that is the design and not a
+/// shortcut.
+///
+/// # Nothing but protocol goes to stdout, ever
+///
+/// A client speaking stdio reads every line on this process's stdout as a
+/// JSON-RPC message. Every other subcommand in this file prints freely --
+/// a status line, a table, a friendly warning -- and every one of those
+/// habits is wrong here: a single stray `println!` corrupts the session in
+/// a way the client cannot recover from, because there is no way to tell
+/// "that line was a message" from "that line was a banner". So every
+/// human-readable word this function has to say, success or failure, goes
+/// to `stderr`, and the only thing this function ever writes to `stdout`
+/// is a reply this process read verbatim from the HTTP response body. Do
+/// not add a startup banner, a progress message, or a debug `dbg!` that
+/// writes to stdout -- however harmless it looks, it breaks every message
+/// that follows it.
+fn mcp(port: Option<u16>, token: Option<String>) -> Result<()> {
+    let config = everyday_server::mcp::Config::load(&everyday_vault::config_dir());
+    let (url, token) = mcp_endpoint(&config, port, token);
+    eprintln!("Forwarding stdio to {url}. Press Ctrl-D to stop.");
+
+    let client = reqwest::blocking::Client::new();
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    mcp_pipe(&client, &url, &token, stdin.lock(), stdout.lock())
+}
+
+/// Work out which listener to talk to and which token to present, from
+/// `mcp.json` and the two overriding flags.
+///
+/// A free function rather than inlined into [`mcp`], so config/flag
+/// precedence -- flags win, `mcp.json` is the fallback, an unissued token
+/// becomes an empty one rather than a panic -- is a fact this file can
+/// test without opening a socket.
+fn mcp_endpoint(
+    config: &everyday_server::mcp::Config,
+    port: Option<u16>,
+    token: Option<String>,
+) -> (String, String) {
+    let mut listen = config.listen;
+    if let Some(port) = port {
+        listen.set_port(port);
+    }
+    // No token issued yet is not this function's problem to solve --
+    // `mcp_pipe` sends whatever it is given, the listener answers `401`
+    // exactly as it would to anybody else's bad credential, and that
+    // answer flows back to the client as an ordinary reply rather than
+    // this command inventing a second way to say "not configured".
+    let token = token.or_else(|| config.token.clone()).unwrap_or_default();
+    (format!("http://{listen}/mcp"), token)
+}
+
+/// The JSON-RPC error code this pipe answers with when the endpoint could
+/// not be reached at all.
+///
+/// Not one of `everyday-mcp`'s own codes -- this process does not link
+/// against that crate, and those codes are private to it besides (see
+/// `everyday-mcp/src/errors.rs`).
+///
+/// Deliberately outside JSON-RPC's reserved range rather than inside it,
+/// which is the opposite of the obvious choice and is what the current
+/// specification asks for. MCP partitions the implementation-defined block:
+/// `-32000` to `-32019` is *legacy*, and "new implementations SHOULD NOT use
+/// codes from this sub-range at all"; `-32020` to `-32099` is reserved to
+/// the specification itself, and emitting an undefined code from it is
+/// forbidden outright. What is left for a code like this one is the space
+/// outside `-32768` to `-32000`, which is where the specification says to
+/// put it. See `docs/plans/mcp-protocol-notes.md`.
+///
+/// It is also not a failure of the protocol but of the pipe underneath it:
+/// nothing answered at the other end. No MCP code describes that, because
+/// on every other transport it is not a thing that can happen.
+const ENDPOINT_UNREACHABLE: i64 = -31000;
+
+/// Build the JSON-RPC error this pipe answers with when a request could
+/// not be completed -- the listener not running being the ordinary case,
+/// since the switch it depends on is off by default. See [`mcp`]'s doc:
+/// a client whose server exits silently reports nothing useful to the
+/// person behind it, so this is written to `stdout` as a reply rather
+/// than to `stderr` as a warning nobody watching the client will see.
+///
+/// `id` echoes the request's own, or `Null` when the line that was sent
+/// could not even be parsed enough to find one -- the same convention
+/// `everyday-mcp` uses for a request it cannot correlate.
+fn mcp_transport_error(id: &serde_json::Value, detail: &str) -> String {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": ENDPOINT_UNREACHABLE,
+            "message": format!(
+                "could not reach this vault's MCP listener ({detail}). Turn it \
+                 on in Settings, under Vault, \"Let an AI agent use this \
+                 vault\"."
+            ),
+        },
+    });
+    body.to_string()
+}
+
+/// Read JSON-RPC lines from `input`, post each to `url`, and write the
+/// reply to `output` -- the pipe itself, factored out from [`mcp`] so a
+/// test can drive it against an in-process listener instead of a real
+/// stdin and a real process's stdout.
+///
+/// One failed request is not a reason to stop answering the next one: an
+/// agent that gets a transport error back from one call is expected to
+/// try again, or to tell the person what happened, and either needs this
+/// loop still running. Only the end of `input` -- stdin closing -- ends
+/// it.
+fn mcp_pipe(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    token: &str,
+    input: impl BufRead,
+    mut output: impl Write,
+) -> Result<()> {
+    for line in input.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let id = serde_json::from_str::<serde_json::Value>(&line)
+            .ok()
+            .and_then(|v| v.get("id").cloned())
+            .unwrap_or(serde_json::Value::Null);
+
+        let reply = client
+            .post(url)
+            .bearer_auth(token)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::ACCEPT, "application/json, text/event-stream")
+            .body(line)
+            .send()
+            .and_then(|response| response.text());
+
+        let body = match reply {
+            Ok(text) => text,
+            Err(e) => mcp_transport_error(&id, &e.to_string()),
+        };
+
+        writeln!(output, "{body}")?;
+        output.flush()?;
+    }
+    Ok(())
+}
+
 /// Run one of the assistant's tools.
 fn run_tool(
     vault: Vault,
@@ -1284,5 +1484,168 @@ mod tests {
         // rather than on the user's first run.
         use clap::CommandFactory;
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn mcp_flags_win_over_mcp_json_and_mcp_json_wins_over_nothing_at_all() {
+        let default_config = everyday_server::mcp::Config::default();
+        let (url, token) = mcp_endpoint(&default_config, None, None);
+        assert_eq!(url, format!("http://{}/mcp", default_config.listen));
+        // Never issued: an empty token, not a panic. See `mcp_endpoint`'s
+        // doc for why that is left for the listener to refuse rather than
+        // handled specially here.
+        assert_eq!(token, "");
+
+        let configured = everyday_server::mcp::Config {
+            listen: "127.0.0.1:9999".parse().unwrap(),
+            token: Some("from-mcp-json".to_string()),
+            ..everyday_server::mcp::Config::default()
+        };
+        let (url, token) = mcp_endpoint(&configured, None, None);
+        assert_eq!(url, "http://127.0.0.1:9999/mcp");
+        assert_eq!(token, "from-mcp-json");
+
+        // Flags override both the port and the token `mcp.json` names.
+        let (url, token) = mcp_endpoint(&configured, Some(8000), Some("from-a-flag".to_string()));
+        assert_eq!(url, "http://127.0.0.1:8000/mcp");
+        assert_eq!(token, "from-a-flag");
+    }
+
+    #[test]
+    fn a_transport_failure_answers_as_a_wellformed_json_dash_rpc_error_carrying_the_request_id() {
+        let client = reqwest::blocking::Client::new();
+        // Port 0 is never a real listener to connect to: binding picks a
+        // fresh port, but nothing has bound *this* address, so the
+        // connection itself fails before any HTTP exchange happens -- the
+        // "endpoint is not answering" case this function exists for.
+        let url = "http://127.0.0.1:0/mcp";
+        let input = b"{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/list\"}\n";
+        let mut output = Vec::new();
+
+        mcp_pipe(&client, url, "irrelevant", &input[..], &mut output).unwrap();
+
+        let text = String::from_utf8(output).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 1, "{text}");
+        let reply: serde_json::Value = serde_json::from_str(lines[0]).expect(&text);
+        assert_eq!(reply["jsonrpc"], "2.0");
+        assert_eq!(reply["id"], 42);
+        assert_eq!(reply["error"]["code"], ENDPOINT_UNREACHABLE);
+        assert!(reply["error"]["message"].as_str().unwrap().contains("Let an AI agent"), "{text}");
+    }
+
+    #[test]
+    fn a_line_with_no_id_answers_with_a_null_id_not_a_missing_one() {
+        let client = reqwest::blocking::Client::new();
+        let url = "http://127.0.0.1:0/mcp";
+        // Not even valid JSON -- the pipe must still answer something a
+        // client can parse, rather than propagating a parse error of its
+        // own out of this loop.
+        let input = b"not json at all\n";
+        let mut output = Vec::new();
+
+        mcp_pipe(&client, url, "irrelevant", &input[..], &mut output).unwrap();
+
+        let text = String::from_utf8(output).unwrap();
+        let reply: serde_json::Value = serde_json::from_str(text.trim()).expect(&text);
+        assert_eq!(reply["id"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn a_transport_failure_does_not_end_the_pipe() {
+        let client = reqwest::blocking::Client::new();
+        let url = "http://127.0.0.1:0/mcp";
+        let input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n\
+                       {\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n";
+        let mut output = Vec::new();
+
+        mcp_pipe(&client, url, "irrelevant", &input[..], &mut output).unwrap();
+
+        let text = String::from_utf8(output).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        for (line, want_id) in lines.iter().zip([1, 2]) {
+            let reply: serde_json::Value = serde_json::from_str(line).expect(&text);
+            assert_eq!(reply["id"], want_id);
+        }
+    }
+
+    /// The test that proves the feature: a real `tools/list` call, sent as
+    /// a line on stdin, comes back on stdout as the same catalogue
+    /// `everyday-server`'s own tests get over the wire directly -- with no
+    /// vault open in this process at all.
+    #[test]
+    fn a_real_tools_list_call_round_trips_through_the_pipe() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        let vault = everyday_vault::create(
+            vault_dir.path(),
+            VaultConfig {
+                name: "Test".into(),
+                backend: "sqlite".into(),
+                settings: Default::default(),
+                password: None,
+                kdf: Default::default(),
+                auto_lock_seconds: 900,
+                forget_key_seconds: 0,
+            },
+        )
+        .unwrap();
+        vault.save_journal(&Journal::new("Journal")).unwrap();
+
+        let service = std::sync::Arc::new(everyday_service::Service::new());
+        service.set(vault);
+
+        let config_dir = tempfile::tempdir().unwrap();
+        let registry = std::sync::Arc::new(
+            everyday_server::auth::Registry::open(config_dir.path().join("devices.json")).unwrap(),
+        );
+        let token = everyday_server::mcp::issue_token(
+            &registry,
+            config_dir.path(),
+            vec![everyday_service::Scope::All],
+        )
+        .unwrap();
+
+        // The listener runs on a runtime of its own, on a thread of its
+        // own, deliberately: `mcp_pipe` uses a *blocking* client, which
+        // panics if it is ever called from inside a Tokio runtime's own
+        // worker thread. Keeping the server's runtime on a separate OS
+        // thread is what lets this test call the exact function `mcp`
+        // calls, rather than a `.await`-flavoured stand-in for it.
+        let (address_tx, address_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let config = everyday_server::mcp::Config {
+                    listen: "127.0.0.1:0".parse().unwrap(),
+                    enabled: true,
+                    allow_destructive: false,
+                    token: None,
+                    device_id: None,
+                };
+                let running =
+                    everyday_server::mcp::start(service, registry, &config).await.unwrap();
+                address_tx.send(running.address).unwrap();
+                // The test's assertions run on the main thread; this one
+                // just has to keep the listener alive until the process
+                // exits at the end of the test binary.
+                std::future::pending::<()>().await;
+            });
+        });
+        let address = address_rx.recv().unwrap();
+
+        let client = reqwest::blocking::Client::new();
+        let url = format!("http://{address}/mcp");
+        let request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}\n";
+        let mut output = Vec::new();
+        mcp_pipe(&client, &url, &token, request.as_bytes(), &mut output).unwrap();
+
+        let text = String::from_utf8(output).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 1, "{text}");
+        let reply: serde_json::Value = serde_json::from_str(lines[0]).expect(&text);
+        assert_eq!(reply["id"], 1);
+        let tools = reply["result"]["tools"].as_array().expect(&text);
+        assert!(!tools.is_empty(), "{text}");
     }
 }

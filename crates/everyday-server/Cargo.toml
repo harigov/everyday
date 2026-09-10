@@ -9,6 +9,7 @@ authors.workspace = true
 
 [dependencies]
 everyday-core.workspace = true
+everyday-mcp.workspace = true
 everyday-service.workspace = true
 everyday-vault.workspace = true
 serde.workspace = true

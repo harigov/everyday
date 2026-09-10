@@ -1255,6 +1255,27 @@ export interface Invitation {
   qrSvg: string
 }
 
+// ── Letting an MCP client use this vault ────────────────────────────────
+
+/** What the MCP pane draws. */
+export interface McpStatus {
+  running: boolean
+  /** Where it is actually answering. */
+  address: string | null
+  /** Addresses beyond this machine that can reach it, best first. Loopback
+   * is not in this list -- the panel offers it as its own default option,
+   * the same way it is the address picker's default rather than a member
+   * of it. */
+  addresses: string[]
+  port: number
+  allowDestructive: boolean
+  /** Whether a token has ever been issued. It is shown in plaintext exactly
+   * once, at the moment it is minted, and never again -- this only says
+   * whether that moment happened. */
+  hasToken: boolean
+  deviceId: string | null
+}
+
 /**
  * The OS-wide key that raises the palette.
  *

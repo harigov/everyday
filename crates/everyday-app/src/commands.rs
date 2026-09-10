@@ -183,12 +183,29 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
         && service.get().is_some()
         && !state.sharing().status().sharing
         && let Some(sink) = state.sink()
-        && let Err(e) = state.sharing().start(service.clone(), sink, config).await
     {
-        // Not fatal, and not a dialog. A port already taken, or a network
-        // that is not up yet, should not stop somebody reading their journal;
-        // the sharing pane says what happened when they go looking.
-        tracing::warn!(error = %e, "could not resume sharing this vault");
+        let other = state.mcp().sink().into_iter().collect();
+        if let Err(e) = state.sharing().start(service.clone(), sink, other, config).await {
+            // Not fatal, and not a dialog. A port already taken, or a network
+            // that is not up yet, should not stop somebody reading their
+            // journal; the sharing pane says what happened when they go
+            // looking.
+            tracing::warn!(error = %e, "could not resume sharing this vault");
+        }
+    }
+
+    // Same for MCP: a machine that was serving it when it shut down is
+    // serving it again once a vault is open.
+    let mcp_config = crate::mcp::Mcp::config();
+    if mcp_config.enabled
+        && service.get().is_some()
+        && !state.mcp().status().running
+        && let Some(sink) = state.sink()
+    {
+        let other = state.sharing().sink().into_iter().collect();
+        if let Err(e) = state.mcp().start(service.clone(), sink, other, mcp_config).await {
+            tracing::warn!(error = %e, "could not resume serving MCP");
+        }
     }
 
     Ok(Bootstrap {
@@ -529,7 +546,8 @@ pub async fn share_start(
     };
     config.listen = std::net::SocketAddr::new(ip, port);
 
-    state.sharing().start(state.service(), sink, config).await
+    let other = state.mcp().sink().into_iter().collect();
+    state.sharing().start(state.service(), sink, other, config).await
 }
 
 /// Stop answering, and remember not to start next time.
@@ -537,7 +555,8 @@ pub async fn share_start(
 pub async fn share_stop(state: State<'_, AppState>) -> CommandResult<crate::sharing::ShareStatus> {
     let sink =
         state.sink().ok_or_else(|| CommandError::new("internal", "the window is not ready yet"))?;
-    state.sharing().stop_and_remember(sink, &state.service())
+    let other = state.mcp().sink().into_iter().collect();
+    state.sharing().stop_and_remember(sink, other, &state.service())
 }
 
 /// Offer to pair, for the next five minutes.
@@ -563,6 +582,87 @@ pub async fn revoke_device(
     id: String,
 ) -> CommandResult<crate::sharing::ShareStatus> {
     state.sharing().revoke(&id)
+}
+
+// ---- letting an MCP client use this vault --------------------------------
+
+/// What the MCP pane draws.
+#[tauri::command]
+pub async fn mcp_status(state: State<'_, AppState>) -> CommandResult<crate::mcp::McpStatus> {
+    Ok(state.mcp().status())
+}
+
+/// Start answering `POST /mcp`.
+#[tauri::command]
+pub async fn mcp_start(
+    state: State<'_, AppState>,
+    port: Option<u16>,
+    address: Option<String>,
+) -> CommandResult<crate::mcp::McpStatus> {
+    // Serving a vault this window does not hold would be forwarding, which is
+    // a thing nobody has asked for -- same guard as `share_start`.
+    if state.is_remote() {
+        return Err(CommandError::new(
+            "unsupported",
+            "this window is looking at a vault on another computer; serve it from there",
+        ));
+    }
+    let sink =
+        state.sink().ok_or_else(|| CommandError::new("internal", "the window is not ready yet"))?;
+
+    let mut config = crate::mcp::Mcp::config();
+    let port = port.unwrap_or_else(|| config.listen.port());
+    let ip: std::net::IpAddr = match address.as_deref() {
+        // Loopback by default, unlike sharing's "every interface": an MCP
+        // server is for an agent on this desk, and the network case is what
+        // the address picker is for. See `everyday_server::mcp`'s module doc.
+        None | Some("") => std::net::IpAddr::from([127, 0, 0, 1]),
+        Some(other) => other
+            .parse()
+            .map_err(|_| CommandError::new("invalid", format!("{other} is not an address")))?,
+    };
+    config.listen = std::net::SocketAddr::new(ip, port);
+
+    let other = state.sharing().sink().into_iter().collect();
+    state.mcp().start(state.service(), sink, other, config).await
+}
+
+/// Stop answering, and remember not to start next time.
+#[tauri::command]
+pub async fn mcp_stop(state: State<'_, AppState>) -> CommandResult<crate::mcp::McpStatus> {
+    let sink =
+        state.sink().ok_or_else(|| CommandError::new("internal", "the window is not ready yet"))?;
+    let other = state.sharing().sink().into_iter().collect();
+    state.mcp().stop_and_remember(sink, other, &state.service())
+}
+
+/// Change whether a destructive tool is offered at all. Off by default; see
+/// `docs/plans/mcp.md`'s "Destructive tools are absent, not refused".
+#[tauri::command]
+pub async fn mcp_set_destructive(
+    state: State<'_, AppState>,
+    allow: bool,
+) -> CommandResult<crate::mcp::McpStatus> {
+    let sink =
+        state.sink().ok_or_else(|| CommandError::new("internal", "the window is not ready yet"))?;
+    let other = state.sharing().sink().into_iter().collect();
+    state.mcp().set_destructive(state.service(), sink, other, allow).await
+}
+
+/// Mint a token for an MCP client, and hand it back once.
+///
+/// The interface shows it exactly once, with a copy button and a warning
+/// that it will not be shown again -- this call is the only moment it exists
+/// in plaintext outside `mcp.json`. `scopes` defaults to
+/// [`everyday_service::Scope::All`], which is what a paired desktop is
+/// issued today and what `run_tool` requires regardless; narrowing it is
+/// phase 6 of `docs/plans/mcp.md`, not this one.
+#[tauri::command]
+pub async fn mcp_issue_token(
+    state: State<'_, AppState>,
+    scopes: Option<Vec<everyday_service::Scope>>,
+) -> CommandResult<String> {
+    state.mcp().issue_token(scopes.unwrap_or_else(|| vec![everyday_service::Scope::All]))
 }
 
 // ---- the OS-wide hotkey -------------------------------------------------

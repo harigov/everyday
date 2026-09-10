@@ -14,6 +14,15 @@
 //! was being kept by two sets of threads that know nothing about each other. The
 //! same service is also what makes a write from a phone appear in this window:
 //! there is one vault handle and one event sink, fanned out to both.
+//!
+//! # Composing with MCP
+//!
+//! [`crate::mcp::Mcp`] is a second, independent switch over the same
+//! service, and it wants a say in the same fan-out. Rather than either
+//! module reaching into the other's state, `start` and `stop_and_remember`
+//! below take an `other` list of whatever the other switch is currently
+//! contributing, supplied by the caller in `commands.rs`, and fold it in
+//! through [`crate::fanout::compose`].
 
 use everyday_server::{Broadcaster, Config, Running};
 use everyday_service::error::{CommandError, CommandResult};
@@ -86,12 +95,13 @@ impl Sharing {
         Ok(self.status())
     }
 
-    /// Start answering, and point the service's events at both the window and
-    /// every connected device.
+    /// Start answering, and point the service's events at the window, every
+    /// connected device, and whatever else (MCP) is already listening.
     pub async fn start(
         &self,
         service: Arc<everyday_service::Service>,
         window_sink: Arc<dyn EventSink>,
+        other: Vec<Arc<dyn EventSink>>,
         mut config: Config,
     ) -> CommandResult<ShareStatus> {
         // Awaited, not merely signalled: what follows binds an address, and
@@ -104,9 +114,12 @@ impl Sharing {
         let registry = parts.registry.clone();
         let broadcaster = parts.broadcaster.clone();
 
-        // The window still needs its events, and so does every paired device.
-        // Neither can be told to look at the other's.
-        service.set_events(everyday_server::fanout(window_sink, broadcaster.clone()));
+        // The window still needs its events, so does every paired device,
+        // and so does MCP if it is on. None of the three can be told to
+        // look at either of the others'.
+        let mut sinks: Vec<Arc<dyn EventSink>> = vec![broadcaster.clone()];
+        sinks.extend(other);
+        service.set_events(crate::fanout::compose(window_sink, sinks));
 
         let name = service.get().map(|v| v.status().name).unwrap_or_else(|| "Every Day".into());
         let running = everyday_server::start(service, parts, &config, name).await?;
@@ -142,12 +155,15 @@ impl Sharing {
     pub fn stop_and_remember(
         &self,
         window_sink: Arc<dyn EventSink>,
+        other: Vec<Arc<dyn EventSink>>,
         service: &everyday_service::Service,
     ) -> CommandResult<ShareStatus> {
         self.stop();
-        // Back to talking only to the window. Without this the fan-out would
-        // keep a broadcaster alive that nothing is listening to.
-        service.set_events(window_sink);
+        // Back to the window and whatever else (MCP) is still listening.
+        // Without this the fan-out would keep a broadcaster alive that
+        // nothing is reading from, or -- the bug this exists to avoid --
+        // would drop MCP's stream on the floor because sharing stopped.
+        service.set_events(crate::fanout::compose(window_sink, other));
         let dir = Self::dir();
         let mut config = Config::load(&dir);
         config.enabled = false;
@@ -199,6 +215,19 @@ impl Sharing {
     /// Is a server actually listening right now?
     pub fn is_running(&self) -> bool {
         self.running.lock().unwrap().is_some()
+    }
+
+    /// This switch's own contribution to the event fan-out, if it is on.
+    ///
+    /// `None` when off -- not when `parts` merely still holds the last
+    /// session's broadcaster, which it does even while stopped (see
+    /// `parts`'s own doc), because nothing should be told to fan events out
+    /// to a broadcaster nobody is running a server against any more.
+    pub fn sink(&self) -> Option<Arc<dyn EventSink>> {
+        if !self.is_running() {
+            return None;
+        }
+        self.parts.lock().unwrap().as_ref().map(|p| p.broadcaster.clone() as Arc<dyn EventSink>)
     }
 
     pub fn status(&self) -> ShareStatus {
@@ -257,7 +286,12 @@ fn advertised_host(running: &Running) -> String {
 /// reachable from outside the building, it is already encrypted, and it does
 /// not change when somebody joins a different wifi -- which is three reasons why
 /// it is the address somebody sharing a vault actually wants.
-fn advertisable_addresses() -> Vec<String> {
+///
+/// `pub(crate)` rather than private: [`crate::mcp::Mcp`] offers the same
+/// picker for the same reason, over a listener that defaults to loopback
+/// instead of every interface, and there is no second way to rank a
+/// Tailscale address above an ordinary LAN one worth writing twice.
+pub(crate) fn advertisable_addresses() -> Vec<String> {
     let mut addresses = everyday_server::tls::interface_addresses();
     addresses.sort_by_key(|ip| match ip {
         std::net::IpAddr::V4(v4) => {

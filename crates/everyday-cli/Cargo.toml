@@ -27,6 +27,12 @@ mime_guess = "2"
 # would be a cost paid by the common case for the sake of the rare one.
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal"] }
 qrcode = { version = "0.14", default-features = false }
+# `mcp`'s blocking client, for the same reason `serve` gets a runtime of its
+# own rather than `main` becoming async: this is otherwise a synchronous
+# binary. The version is pinned to match `everyday-server`'s -- that crate is
+# already a dependency of this one, so this is the one `reqwest` already in
+# the tree rather than a second copy with its own feature set.
+reqwest = { version = "0.13", features = ["blocking"] }
 
 [dev-dependencies]
 tempfile = "3"

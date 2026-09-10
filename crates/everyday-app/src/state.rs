@@ -11,6 +11,7 @@ use everyday_service::events::EventSink;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
+use crate::mcp::Mcp;
 use crate::remote::Session;
 use crate::sharing::Sharing;
 
@@ -31,6 +32,8 @@ pub struct AppState {
     sink: RwLock<Option<Arc<dyn EventSink>>>,
     /// Serving this window's vault to other machines, when that is on.
     sharing: Arc<Sharing>,
+    /// Serving this vault's tools to an MCP client, when that is on.
+    mcp: Arc<Mcp>,
 }
 
 impl Default for AppState {
@@ -48,11 +51,16 @@ impl AppState {
             closing: AtomicBool::new(false),
             sink: RwLock::new(None),
             sharing: Arc::default(),
+            mcp: Arc::default(),
         }
     }
 
     pub fn sharing(&self) -> Arc<Sharing> {
         self.sharing.clone()
+    }
+
+    pub fn mcp(&self) -> Arc<Mcp> {
+        self.mcp.clone()
     }
 
     pub fn service(&self) -> Arc<Service> {
@@ -62,9 +70,10 @@ impl AppState {
     /// Should closing the window leave the process running?
     ///
     /// True when there is work here that does not need a window: a routine the
-    /// assistant is expected to run on a schedule, or a vault being served to
-    /// another machine. Both would stop dead if the process went, and neither
-    /// is something a person closing a window is asking to stop.
+    /// assistant is expected to run on a schedule, a vault being served to
+    /// another machine, or a vault being served to an MCP client. All three
+    /// would stop dead if the process went, and none of them is something a
+    /// person closing a window is asking to stop.
     ///
     /// False in the ordinary case, which is the one nearly everybody is in:
     /// closing the window of an application that is only an application should
@@ -76,7 +85,7 @@ impl AppState {
     /// see the close handler in `lib.rs`. A process with work to do and no tray
     /// icon and no hotkey is not resident, it is stranded.
     pub fn stays_resident(&self) -> bool {
-        if self.sharing.is_running() {
+        if self.sharing.is_running() || self.mcp.is_running() {
             return true;
         }
         let Some(vault) = self.service.get() else { return false };

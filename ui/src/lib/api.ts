@@ -58,6 +58,7 @@ import type {
   LogEvent,
   LogId,
   LogQuery,
+  McpStatus,
   Memory,
   MemoryId,
   Note,
@@ -379,6 +380,26 @@ export const api = {
   cancelPairing: () => invoke<ShareStatus>('cancel_pairing'),
   /** Take a computer's access away. It has to pair again to get it back. */
   revokeDevice: (id: string) => invoke<ShareStatus>('revoke_device', { id }),
+
+  // ── Letting an MCP client use this vault ────────────────────────────
+  //
+  // Claude Code, Claude Desktop or anything else that speaks the Model
+  // Context Protocol, reading this vault's tools over `POST /mcp`. Off by
+  // default and loopback by default; see `McpPanel.svelte`. Revoking an
+  // issued token is `revokeDevice` above -- it is a row in the same list a
+  // paired computer is.
+
+  mcpStatus: () => invoke<McpStatus>('mcp_status'),
+  mcpStart: (opts: { address?: string | null; port?: number | null }) =>
+    invoke<McpStatus>('mcp_start', opts),
+  mcpStop: () => invoke<McpStatus>('mcp_stop'),
+  /** Whether a destructive tool -- one that deletes something -- is offered
+   * at all. Off by default; see `docs/plans/mcp.md`'s "Destructive tools
+   * are absent, not refused". */
+  mcpSetDestructive: (allow: boolean) => invoke<McpStatus>('mcp_set_destructive', { allow }),
+  /** Mint a token and hand it back once. There is no second call that shows
+   * it again -- copy it now, or issue a new one. */
+  mcpIssueToken: () => invoke<string>('mcp_issue_token'),
 
   // ── The OS-wide hotkey ─────────────────────────────────────────────
 
