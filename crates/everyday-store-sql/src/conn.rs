@@ -241,6 +241,89 @@ pub trait SqlExt: Sql {
 
 impl<T: Sql + ?Sized> SqlExt for T {}
 
+/// A `WHERE` clause, built one condition at a time.
+///
+/// Every domain module in this crate used to grow its filters the same way:
+/// `args.push(value); sql.push_str(&format!(" AND col = ?{}", args.len()))`,
+/// repeated for every field a query could filter on, and the `IN (...)` list
+/// hand-rolled a different way in each of the three places it appeared. That
+/// was thirty-odd copies of the same four lines, and the placeholder
+/// numbering was the one thing every copy had to get right by hand. This
+/// says it once: each method appends one condition, keeping its own
+/// argument in step with the `?N` it just wrote, and [`finish`](Where::finish)
+/// hands back the pair a query is run with.
+///
+/// A fresh builder already matches everything (`1=1`), so a query with no
+/// filters at all still produces syntactically valid SQL — the same trick
+/// every domain module used before this replaced it.
+pub struct Where {
+    sql: String,
+    args: Vec<Value>,
+}
+
+impl Default for Where {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Where {
+    pub fn new() -> Self {
+        Self { sql: String::from("1=1"), args: Vec::new() }
+    }
+
+    fn push(mut self, clause: &str, value: Value) -> Self {
+        self.args.push(value);
+        self.sql.push_str(&format!(" AND {clause} ?{}", self.args.len()));
+        self
+    }
+
+    pub fn eq(self, column: &str, value: impl ToValue) -> Self {
+        let value = value.to_value();
+        self.push(&format!("{column} ="), value)
+    }
+
+    pub fn gte(self, column: &str, value: impl ToValue) -> Self {
+        let value = value.to_value();
+        self.push(&format!("{column} >="), value)
+    }
+
+    pub fn lte(self, column: &str, value: impl ToValue) -> Self {
+        let value = value.to_value();
+        self.push(&format!("{column} <="), value)
+    }
+
+    pub fn is_null(mut self, column: &str) -> Self {
+        self.sql.push_str(&format!(" AND {column} IS NULL"));
+        self
+    }
+
+    pub fn not_null(mut self, column: &str) -> Self {
+        self.sql.push_str(&format!(" AND {column} IS NOT NULL"));
+        self
+    }
+
+    /// `AND column IN (?a, ?b, ...)`, numbered from wherever this builder
+    /// has reached. A no-op on an empty list rather than the invalid `IN ()`
+    /// — the same guard every call site used to write for itself before
+    /// reaching for the `IN` clause at all.
+    pub fn in_list(mut self, column: &str, values: impl IntoIterator<Item = impl ToValue>) -> Self {
+        let start = self.args.len() + 1;
+        self.args.extend(values.into_iter().map(|v| v.to_value()));
+        if self.args.len() < start {
+            return self;
+        }
+        let holes = crate::placeholders(start, self.args.len() + 1 - start);
+        self.sql.push_str(&format!(" AND {column} IN ({holes})"));
+        self
+    }
+
+    /// The clause and its arguments, in the order a query needs them.
+    pub fn finish(self) -> (String, Vec<Value>) {
+        (self.sql, self.args)
+    }
+}
+
 /// A connection this store owns for the life of the vault session.
 pub trait Connection: Sql + Send {
     /// Begin a transaction. Dropping it without [`Transaction::commit`]
@@ -301,5 +384,51 @@ mod tests {
         assert_eq!(row.opt_text(0).unwrap(), None);
         // A number is not text, and saying so beats returning "9".
         assert!(row.text(1).is_err());
+    }
+
+    #[test]
+    fn an_empty_where_matches_everything() {
+        let (sql, args) = Where::new().finish();
+        assert_eq!(sql, "1=1");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn conditions_chain_and_number_their_own_placeholders() {
+        let (sql, args) = Where::new()
+            .eq("kind_id", "b7f3")
+            .gte("local_date", "2026-01-01")
+            .lte("local_date", "2026-12-31")
+            .is_null("parent_id")
+            .not_null("due_date")
+            .finish();
+        assert_eq!(
+            sql,
+            "1=1 AND kind_id = ?1 AND local_date >= ?2 AND local_date <= ?3 \
+             AND parent_id IS NULL AND due_date IS NOT NULL"
+        );
+        assert_eq!(
+            args,
+            vec![
+                Value::Text("b7f3".into()),
+                Value::Text("2026-01-01".into()),
+                Value::Text("2026-12-31".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn an_in_list_numbers_from_wherever_the_builder_has_reached() {
+        let (sql, args) =
+            Where::new().eq("journal_id", "j1").in_list("status", ["open", "blocked"]).finish();
+        assert_eq!(sql, "1=1 AND journal_id = ?1 AND status IN (?2,?3)");
+        assert_eq!(args.len(), 3);
+    }
+
+    #[test]
+    fn an_empty_in_list_is_not_written_as_invalid_sql() {
+        let (sql, args) = Where::new().in_list("status", Vec::<&str>::new()).finish();
+        assert_eq!(sql, "1=1");
+        assert!(args.is_empty());
     }
 }

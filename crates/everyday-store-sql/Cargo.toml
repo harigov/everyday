@@ -7,6 +7,13 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+# Exposes `SqlStore::with_read`, the escape hatch a driver's own tests use
+# to run SQL this crate does not own. Drivers enable this in their
+# dev-dependencies, the same way `everyday-core`'s own `testing` feature
+# exposes `store::conformance`.
+testing = []
+
 [dependencies]
 everyday-core.workspace = true
 serde.workspace = true

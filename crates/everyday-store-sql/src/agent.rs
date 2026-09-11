@@ -16,6 +16,16 @@
 //! convention here, so a bug that tried to write a second configuration
 //! fails at the database instead of leaving two and reading whichever came
 //! back first.
+//!
+//! # Three tables that keep their own `INSERT`
+//!
+//! [`Conversation`], [`Message`] and [`Memory`] all implement [`Record`], but
+//! only so that [`SqlStore::get`] and [`SqlStore::delete_by_id`] can be used
+//! for the sites that fit that shape. None of the three can use
+//! [`SqlStore::upsert`]: a conversation's write leaves `created_us` alone on
+//! conflict, and a message's and a memory's leave every clear column alone
+//! and touch only `data` -- both narrower than the generic helper, which
+//! always rewrites every column [`Record::columns`] names.
 
 use everyday_core::agent::{AgentSettings, Conversation, Memory, Message};
 use everyday_core::error::{Error, Result};
@@ -25,8 +35,69 @@ use everyday_core::store::agent::{
     settings_aad,
 };
 
-use crate::conn::SqlExt;
+use crate::conn::{SqlExt, ToValue, Value};
+use crate::record::Record;
 use crate::{SqlStore, to_us, vals};
+
+impl Record for Conversation {
+    const TABLE: &'static str = "conversations";
+    const KIND: &'static str = "conversation";
+    type Id = ConversationId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        conversation_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("created_us", to_us(self.created_at).to_value()),
+            ("updated_us", to_us(self.updated_at).to_value()),
+        ]
+    }
+}
+
+impl Record for Message {
+    const TABLE: &'static str = "messages";
+    const KIND: &'static str = "message";
+    type Id = MessageId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        message_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("conversation_id", self.conversation_id.to_string().to_value()),
+            ("created_us", to_us(self.created_at).to_value()),
+        ]
+    }
+}
+
+impl Record for Memory {
+    const TABLE: &'static str = "memories";
+    const KIND: &'static str = "memory";
+    type Id = MemoryId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        memory_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![("created_us", to_us(self.created_at).to_value())]
+    }
+}
 
 impl AgentStore for SqlStore {
     // ---- settings -------------------------------------------------------
@@ -113,44 +184,35 @@ impl AgentStore for SqlStore {
     // ---- conversations --------------------------------------------------
 
     fn list_conversations(&self, query: &ConversationQuery) -> Result<Vec<Conversation>> {
-        let mut sql =
-            "SELECT id, data FROM conversations ORDER BY updated_us DESC, id DESC".to_string();
-        // The limit cannot be pushed down when routine transcripts have to be
-        // dropped, because the pointer that says a thread is one lives inside
-        // the sealed payload: a `LIMIT 20` in SQL would fetch twenty rows and
-        // then throw some away, answering with fewer than were asked for. So
-        // when `chats_only` is set the ordering is pushed down and the cut is
-        // made after the rows are open.
-        //
-        // Otherwise only when one is asked for. Neither database honours an
-        // `OFFSET` without a `LIMIT`, and they spell "no limit" differently --
-        // see `Dialect::limit_offset`.
-        if !query.chats_only && (query.limit.is_some() || query.offset > 0) {
-            sql.push_str(&self.dialect().limit_offset(query.limit, query.offset));
+        let mut sql = String::from("SELECT id, data FROM conversations");
+        // `chats_only` cannot be pushed into SQL: the pointer that says a
+        // thread is a routine's transcript lives inside the sealed payload.
+        // So when it is set, only the ordering is pushed down and
+        // `ConversationQuery::apply` finishes the filtering, offset and limit
+        // once the rows are open -- the same fallback every other query in
+        // this crate uses for what an index cannot answer. Otherwise both
+        // are pushed down: neither database honours an `OFFSET` without a
+        // `LIMIT`, and they spell "no limit" differently -- see
+        // `Dialect::limit_offset`.
+        if query.chats_only {
+            sql.push_str(" ORDER BY updated_us DESC, id DESC");
+        } else {
+            self.page(&mut sql, "updated_us DESC, id DESC", query.limit, query.offset);
         }
 
         let rows = self.read().records(&sql, &[])?;
-        let mut all: Vec<Conversation> = self.collect(rows, conversation_aad)?;
-        if query.chats_only {
-            all.retain(|c| c.run_id.is_none());
-            let start = (query.offset as usize).min(all.len());
-            all.drain(..start);
-            if let Some(limit) = query.limit {
-                all.truncate(limit as usize);
-            }
-        }
-        Ok(all)
+        let all: Vec<Conversation> = self.collect(rows, conversation_aad)?;
+        Ok(if query.chats_only { query.apply(all) } else { all })
     }
 
     fn get_conversation(&self, id: ConversationId) -> Result<Conversation> {
-        let sealed = self
-            .read()
-            .sealed("SELECT data FROM conversations WHERE id = ?1", &vals![id.to_string()])?
-            .ok_or_else(|| Error::not_found("conversation", id))?;
-        self.unseal(&conversation_aad(id), &sealed)
+        self.get(id)
     }
 
     fn put_conversation(&self, c: &Conversation) -> Result<()> {
+        // Does not use `SqlStore::upsert`: this leaves `created_us` alone on
+        // conflict, which the generic helper cannot express -- it always
+        // rewrites every column `Record::columns` names. See the module docs.
         let data = self.seal(&conversation_aad(c.id), c)?;
         self.write().execute(
             "INSERT INTO conversations (id, created_us, updated_us, data)
@@ -193,6 +255,9 @@ impl AgentStore for SqlStore {
     }
 
     fn put_message(&self, m: &Message) -> Result<()> {
+        // Does not use `SqlStore::upsert`: only `data` moves on conflict,
+        // which is narrower than the generic helper can express. See the
+        // module docs.
         let data = self.seal(&message_aad(m.id), m)?;
         self.write().execute(
             "INSERT INTO messages (id, conversation_id, created_us, data)
@@ -204,7 +269,7 @@ impl AgentStore for SqlStore {
     }
 
     fn delete_message(&self, id: MessageId) -> Result<()> {
-        self.write().execute("DELETE FROM messages WHERE id = ?1", &vals![id.to_string()])?;
+        self.delete_by_id::<Message>(id)?;
         Ok(())
     }
 
@@ -227,6 +292,8 @@ impl AgentStore for SqlStore {
 
     fn put_memory(&self, m: &Memory) -> Result<()> {
         m.validate()?;
+        // Does not use `SqlStore::upsert`, for the same reason `put_message`
+        // does not: only `data` moves on conflict.
         let data = self.seal(&memory_aad(m.id), m)?;
         self.write().execute(
             "INSERT INTO memories (id, created_us, data) VALUES (?1, ?2, ?3)
@@ -237,7 +304,7 @@ impl AgentStore for SqlStore {
     }
 
     fn delete_memory(&self, id: MemoryId) -> Result<()> {
-        self.write().execute("DELETE FROM memories WHERE id = ?1", &vals![id.to_string()])?;
+        self.delete_by_id::<Memory>(id)?;
         Ok(())
     }
 }

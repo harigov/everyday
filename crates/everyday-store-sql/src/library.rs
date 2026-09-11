@@ -23,16 +23,101 @@
 //! what keeps two backends from disagreeing about what a shelf looks like.
 //! The set being sorted is one shelf, which is hundreds of rows.
 
-use everyday_core::error::{Error, Result};
+use everyday_core::error::Result;
 use everyday_core::id::{ItemId, KindId, LogId};
 use everyday_core::library::{Item, ItemStatus, Kind, LogEntry};
+use everyday_core::purpose::Purpose;
 use everyday_core::store::library::{
     ItemQuery, LibraryStore, LogQuery, item_aad, kind_aad, log_aad,
 };
 
-use crate::conn::{SqlExt, Value};
-use crate::purpose::{RecordKind, forget_purposes, set_purpose};
+use crate::conn::{SqlExt, ToValue, Value, Where};
+use crate::purpose::{RecordKind, forget_purposes};
+use crate::record::Record;
 use crate::{SqlStore, date_str, to_us, vals};
+
+impl Record for Kind {
+    const TABLE: &'static str = "kinds";
+    const KIND: &'static str = "kind";
+    type Id = KindId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        kind_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("sort_order", self.sort_order.to_value()),
+            ("visible", self.visible.to_value()),
+            ("created_us", to_us(self.created_at).to_value()),
+            ("updated_us", to_us(self.updated_at).to_value()),
+        ]
+    }
+}
+
+impl Record for Item {
+    const TABLE: &'static str = "items";
+    const KIND: &'static str = "item";
+    type Id = ItemId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        item_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("kind_id", self.kind_id.to_string().to_value()),
+            ("status", self.status.as_str().to_value()),
+            ("rating", self.rating.map(i64::from).to_value()),
+            ("favourite", self.favourite.to_value()),
+            ("year", self.year.map(i64::from).to_value()),
+            ("started_on", date_str(self.started_on).to_value()),
+            ("finished_on", date_str(self.finished_on).to_value()),
+            ("sort_order", self.sort_order.to_value()),
+            ("created_us", to_us(self.created_at).to_value()),
+            ("updated_us", to_us(self.updated_at).to_value()),
+        ]
+    }
+
+    fn purpose_kind() -> Option<RecordKind> {
+        Some(RecordKind::Item)
+    }
+
+    fn purpose(&self) -> Option<&Purpose> {
+        self.purpose.as_ref()
+    }
+}
+
+impl Record for LogEntry {
+    const TABLE: &'static str = "logs";
+    const KIND: &'static str = "log";
+    type Id = LogId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        log_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("item_id", self.item_id.to_string().to_value()),
+            ("event", self.event.as_str().to_value()),
+            ("local_date", self.date.to_string().to_value()),
+            ("created_us", to_us(self.created_at).to_value()),
+        ]
+    }
+}
 
 impl LibraryStore for SqlStore {
     // ---- kinds ----------------------------------------------------------
@@ -45,33 +130,14 @@ impl LibraryStore for SqlStore {
     }
 
     fn get_kind(&self, id: KindId) -> Result<Kind> {
-        let sealed = self
-            .read()
-            .sealed("SELECT data FROM kinds WHERE id = ?1", &vals![id.to_string()])?
-            .ok_or_else(|| Error::not_found("kind", id))?;
-        self.unseal(&kind_aad(id), &sealed)
+        self.get(id)
     }
 
     fn put_kind(&self, kind: &Kind) -> Result<()> {
         // Note what is *not* in the clear columns: the name, the icon, the
         // field labels. A vault whose database said "Books" and "Films"
         // would be telling somebody what sort of person keeps it.
-        let data = self.seal(&kind_aad(kind.id), kind)?;
-        self.write().execute(
-            "INSERT INTO kinds (id, sort_order, visible, created_us, updated_us, data)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT (id) DO UPDATE SET
-                sort_order = ?2, visible = ?3, created_us = ?4, updated_us = ?5, data = ?6",
-            &vals![
-                kind.id.to_string(),
-                kind.sort_order,
-                kind.visible,
-                to_us(kind.created_at),
-                to_us(kind.updated_at),
-                data,
-            ],
-        )?;
-        Ok(())
+        self.upsert(kind)
     }
 
     fn delete_kind(&self, id: KindId) -> Result<()> {
@@ -102,63 +168,40 @@ impl LibraryStore for SqlStore {
     // ---- items ----------------------------------------------------------
 
     fn list_items(&self, query: &ItemQuery) -> Result<Vec<Item>> {
-        let mut sql = String::from("SELECT id, data FROM items WHERE 1=1");
-        let mut args: Vec<Value> = Vec::new();
-
+        let mut w = Where::new();
         if let Some(kind) = query.kind_id {
-            args.push(Value::Text(kind.to_string()));
-            sql.push_str(&format!(" AND kind_id = ?{}", args.len()));
+            w = w.eq("kind_id", kind.to_string());
         }
         if !query.statuses.is_empty() {
-            let holes: Vec<String> = query
-                .statuses
-                .iter()
-                .map(|s| {
-                    args.push(Value::Text(s.as_str().to_string()));
-                    format!("?{}", args.len())
-                })
-                .collect();
-            sql.push_str(&format!(" AND status IN ({})", holes.join(",")));
+            w = w.in_list("status", query.statuses.iter().map(|s| s.as_str()));
         }
         if let Some(favourite) = query.favourite {
-            args.push(Value::Bool(favourite));
-            sql.push_str(&format!(" AND favourite = ?{}", args.len()));
+            w = w.eq("favourite", favourite);
         }
         if let Some(floor) = query.rating_at_least {
             // `rating IS NOT NULL` is the whole point: an unrated item is
             // not a zero-rated one, and SQL would drop it here anyway --
             // being explicit keeps this agreeing with `ItemQuery::matches`
             // where somebody can read both at once.
-            args.push(Value::Int(i64::from(floor)));
-            sql.push_str(&format!(" AND rating IS NOT NULL AND rating >= ?{}", args.len()));
+            w = w.not_null("rating").gte("rating", i64::from(floor));
         }
         if let Some(from) = query.finished_from {
-            args.push(Value::Text(from.to_string()));
-            sql.push_str(&format!(
-                " AND finished_on IS NOT NULL AND finished_on >= ?{}",
-                args.len()
-            ));
+            w = w.not_null("finished_on").gte("finished_on", from.to_string());
         }
         if let Some(to) = query.finished_to {
-            args.push(Value::Text(to.to_string()));
-            sql.push_str(&format!(
-                " AND finished_on IS NOT NULL AND finished_on <= ?{}",
-                args.len()
-            ));
+            w = w.not_null("finished_on").lte("finished_on", to.to_string());
         }
 
         // See the module docs for why the ordering is not pushed down.
+        let (where_sql, args) = w.finish();
+        let sql = format!("SELECT id, data FROM items WHERE {where_sql}");
         let rows = self.read().records(&sql, &args)?;
         let items: Vec<Item> = self.collect(rows, item_aad)?;
         Ok(query.apply(items))
     }
 
     fn get_item(&self, id: ItemId) -> Result<Item> {
-        let sealed = self
-            .read()
-            .sealed("SELECT data FROM items WHERE id = ?1", &vals![id.to_string()])?
-            .ok_or_else(|| Error::not_found("item", id))?;
-        self.unseal(&item_aad(id), &sealed)
+        self.get(id)
     }
 
     fn put_item(&self, item: &Item) -> Result<()> {
@@ -166,49 +209,7 @@ impl LibraryStore for SqlStore {
     }
 
     fn put_items(&self, items: &[Item]) -> Result<()> {
-        if items.is_empty() {
-            return Ok(());
-        }
-        // Sealed before the lock is taken: encryption is the expensive part
-        // and there is no reason to hold the connection through it.
-        let sealed: Vec<(&Item, Vec<u8>)> =
-            items.iter().map(|i| Ok((i, self.seal(&item_aad(i.id), i)?))).collect::<Result<_>>()?;
-
-        let mut conn = self.write();
-        let mut tx = conn.begin()?;
-        for (item, data) in &sealed {
-            tx.execute(
-                "INSERT INTO items
-                    (id, kind_id, status, rating, favourite, year, started_on,
-                     finished_on, sort_order, created_us, updated_us, data)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-                 ON CONFLICT (id) DO UPDATE SET
-                    kind_id = ?2, status = ?3, rating = ?4, favourite = ?5, year = ?6,
-                    started_on = ?7, finished_on = ?8, sort_order = ?9, created_us = ?10,
-                    updated_us = ?11, data = ?12",
-                &vals![
-                    item.id.to_string(),
-                    item.kind_id.to_string(),
-                    item.status.as_str(),
-                    item.rating.map(i64::from),
-                    item.favourite,
-                    item.year.map(i64::from),
-                    date_str(item.started_on),
-                    date_str(item.finished_on),
-                    item.sort_order,
-                    to_us(item.created_at),
-                    to_us(item.updated_at),
-                    data,
-                ],
-            )?;
-            set_purpose(
-                tx.as_mut(),
-                RecordKind::Item,
-                &item.id.to_string(),
-                item.purpose.as_ref(),
-            )?;
-        }
-        tx.commit()
+        self.upsert_many(items)
     }
 
     fn delete_item(&self, id: ItemId) -> Result<()> {
@@ -245,76 +246,43 @@ impl LibraryStore for SqlStore {
     // ---- the log --------------------------------------------------------
 
     fn list_logs(&self, query: &LogQuery) -> Result<Vec<LogEntry>> {
-        let mut sql = String::from("SELECT id, data FROM logs WHERE 1=1");
-        let mut args: Vec<Value> = Vec::new();
-
+        let mut w = Where::new();
         if let Some(item) = query.item_id {
-            args.push(Value::Text(item.to_string()));
-            sql.push_str(&format!(" AND item_id = ?{}", args.len()));
+            w = w.eq("item_id", item.to_string());
         }
         if let Some(from) = query.from {
-            args.push(Value::Text(from.to_string()));
-            sql.push_str(&format!(" AND local_date >= ?{}", args.len()));
+            w = w.gte("local_date", from.to_string());
         }
         if let Some(to) = query.to {
-            args.push(Value::Text(to.to_string()));
-            sql.push_str(&format!(" AND local_date <= ?{}", args.len()));
+            w = w.lte("local_date", to.to_string());
         }
         if !query.events.is_empty() {
-            let holes: Vec<String> = query
-                .events
-                .iter()
-                .map(|e| {
-                    args.push(Value::Text(e.as_str().to_string()));
-                    format!("?{}", args.len())
-                })
-                .collect();
-            sql.push_str(&format!(" AND event IN ({})", holes.join(",")));
+            w = w.in_list("event", query.events.iter().map(|e| e.as_str()));
         }
+        let (where_sql, args) = w.finish();
+        let mut sql = format!("SELECT id, data FROM logs WHERE {where_sql}");
         // Newest first, which is how a history reads. `created_us` breaks
         // ties within a day so two rows written on one afternoon keep the
         // order they were written in.
-        sql.push_str(" ORDER BY local_date DESC, created_us DESC");
-        if let Some(limit) = query.limit {
-            sql.push_str(&format!(" LIMIT {limit}"));
-        }
+        self.page(&mut sql, "local_date DESC, created_us DESC", query.limit, 0);
 
         let rows = self.read().records(&sql, &args)?;
         self.collect(rows, log_aad)
     }
 
     fn get_log(&self, id: LogId) -> Result<LogEntry> {
-        let sealed = self
-            .read()
-            .sealed("SELECT data FROM logs WHERE id = ?1", &vals![id.to_string()])?
-            .ok_or_else(|| Error::not_found("log", id))?;
-        self.unseal(&log_aad(id), &sealed)
+        self.get(id)
     }
 
     fn put_log(&self, log: &LogEntry) -> Result<()> {
         // The note is sealed; the date and the event are not, because they
         // are what the year-in-review query scans. The database therefore
         // says that something was finished on 2 April and never what.
-        let data = self.seal(&log_aad(log.id), log)?;
-        self.write().execute(
-            "INSERT INTO logs (id, item_id, event, local_date, created_us, data)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT (id) DO UPDATE SET
-                item_id = ?2, event = ?3, local_date = ?4, created_us = ?5, data = ?6",
-            &vals![
-                log.id.to_string(),
-                log.item_id.to_string(),
-                log.event.as_str(),
-                log.date.to_string(),
-                to_us(log.created_at),
-                data,
-            ],
-        )?;
-        Ok(())
+        self.upsert(log)
     }
 
     fn delete_log(&self, id: LogId) -> Result<()> {
-        self.write().execute("DELETE FROM logs WHERE id = ?1", &vals![id.to_string()])?;
+        self.delete_by_id::<LogEntry>(id)?;
         Ok(())
     }
 }

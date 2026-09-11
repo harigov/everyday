@@ -12,15 +12,75 @@
 
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{JournalId, ReadingId, TrackerId};
+use everyday_core::purpose::Purpose;
 use everyday_core::store::trackers::{
     ReadingQuery, TrackerDay, TrackerStore, reading_aad, tracker_aad,
 };
 use everyday_core::tracker::{Reading, Tracker};
 use jiff::civil::Date;
 
-use crate::conn::{Sql, SqlExt, Value};
-use crate::purpose::{RecordKind, forget_purposes, set_purpose};
+use crate::conn::{Sql, SqlExt, ToValue, Value, Where};
+use crate::purpose::{RecordKind, forget_purposes};
+use crate::record::Record;
 use crate::{SqlStore, from_us, id_str, to_us, vals};
+
+impl Record for Tracker {
+    const TABLE: &'static str = "trackers";
+    const KIND: &'static str = "tracker";
+    type Id = TrackerId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        tracker_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("archived", self.archived.to_value()),
+            ("sort_order", self.sort_order.to_value()),
+            ("created_us", to_us(self.created_at).to_value()),
+            ("updated_us", to_us(self.updated_at).to_value()),
+        ]
+    }
+
+    fn purpose_kind() -> Option<RecordKind> {
+        Some(RecordKind::Tracker)
+    }
+
+    fn purpose(&self) -> Option<&Purpose> {
+        self.purpose.as_ref()
+    }
+}
+
+impl Record for Reading {
+    const TABLE: &'static str = "readings";
+    const KIND: &'static str = "reading";
+    type Id = ReadingId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        reading_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("journal_id", id_str(self.journal_id).to_value()),
+            ("tracker_id", self.tracker_id.to_string().to_value()),
+            ("entry_id", id_str(self.entry_id).to_value()),
+            ("local_date", self.local_date.to_string().to_value()),
+            ("at_us", self.at.map(to_us).to_value()),
+            ("value", self.value.to_value()),
+            ("created_us", to_us(self.created_at).to_value()),
+            ("updated_us", to_us(self.updated_at).to_value()),
+        ]
+    }
+}
 
 impl TrackerStore for SqlStore {
     // ---- definitions ----------------------------------------------------
@@ -33,36 +93,11 @@ impl TrackerStore for SqlStore {
     }
 
     fn get_tracker(&self, id: TrackerId) -> Result<Tracker> {
-        let sealed = self
-            .read()
-            .sealed("SELECT data FROM trackers WHERE id = ?1", &vals![id.to_string()])?
-            .ok_or_else(|| Error::not_found("tracker", id))?;
-        self.unseal(&tracker_aad(id), &sealed)
+        self.get(id)
     }
 
     fn put_tracker(&self, t: &Tracker) -> Result<()> {
-        // The name, the unit, the icon and the cadence are all inside
-        // `data`. A database whose trackers table said "sertraline" would
-        // undo the whole point of sealing the readings.
-        let data = self.seal(&tracker_aad(t.id), t)?;
-        let mut conn = self.write();
-        let mut tx = conn.begin()?;
-        tx.execute(
-            "INSERT INTO trackers (id, archived, sort_order, created_us, updated_us, data)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT (id) DO UPDATE SET
-                archived = ?2, sort_order = ?3, created_us = ?4, updated_us = ?5, data = ?6",
-            &vals![
-                t.id.to_string(),
-                t.archived,
-                t.sort_order,
-                to_us(t.created_at),
-                to_us(t.updated_at),
-                data,
-            ],
-        )?;
-        set_purpose(tx.as_mut(), RecordKind::Tracker, &t.id.to_string(), t.purpose.as_ref())?;
-        tx.commit()
+        self.upsert(t)
     }
 
     fn delete_tracker(&self, id: TrackerId) -> Result<u64> {
@@ -82,44 +117,22 @@ impl TrackerStore for SqlStore {
     }
 
     fn merge_trackers(&self, from: TrackerId, into: TrackerId) -> Result<u64> {
-        // A read-modify-reseal per reading, for the reason
-        // `detach_readings_from` does one: `tracker_id` exists twice, as the
-        // clear column the index is built on and inside the sealed payload,
-        // and updating only the column would leave the record disagreeing
-        // with itself. The sealed copy is the one a restore would believe.
+        // A read-modify-reseal per reading, via `rewrite_each`, for the
+        // reason its own docs give: `tracker_id` exists twice, as the clear
+        // column the index is built on and inside the sealed payload, and
+        // updating only the column would leave the record disagreeing with
+        // itself. The sealed copy is the one a restore would believe.
         //
         // Affordable because of what it operates on: the history of one
         // tracker somebody is tidying up, once.
-        //
-        // All of it on the write connection, and inside one transaction. This
-        // is a read-modify-write, and taking the `SELECT` on a pooled reader
-        // would leave a window in which somebody else's `put_reading` lands
-        // between the read and the reseal -- and the reseal then writes the
-        // payload this call decrypted, silently reverting their edit. See
-        // `SqlStore::write`.
         let mut conn = self.write();
         let mut tx = conn.begin()?;
-        let rows = tx.records(
+        let moved = self.rewrite_each::<Reading>(
+            tx.as_mut(),
             "SELECT id, data FROM readings WHERE tracker_id = ?1",
             &vals![from.to_string()],
+            |r| r.tracker_id = into,
         )?;
-        let readings: Vec<Reading> = self.collect(rows, reading_aad)?;
-        let resealed: Vec<(ReadingId, Vec<u8>)> = readings
-            .into_iter()
-            .map(|mut r| {
-                r.tracker_id = into;
-                let data = self.seal(&reading_aad(r.id), &r)?;
-                Ok((r.id, data))
-            })
-            .collect::<Result<_>>()?;
-
-        let moved = resealed.len() as u64;
-        for (id, data) in resealed {
-            tx.execute(
-                "UPDATE readings SET tracker_id = ?2, data = ?3 WHERE id = ?1",
-                &vals![id.to_string(), into.to_string(), data],
-            )?;
-        }
         tx.execute("DELETE FROM trackers WHERE id = ?1", &vals![from.to_string()])?;
         forget_purposes(tx.as_mut(), RecordKind::Tracker, &[from.to_string()])?;
         tx.commit()?;
@@ -137,51 +150,22 @@ impl TrackerStore for SqlStore {
         // sorts NULL before any value on an ASC column, Postgres after -- and
         // a reading with no minute landing at the wrong end of a day would be
         // a plausible-looking wrong answer rather than an error.
-        sql.push_str(" ORDER BY local_date ASC, at_us ASC NULLS FIRST, id ASC");
-        if let Some(limit) = query.limit {
-            sql.push_str(&format!(" LIMIT {limit}"));
-        }
+        self.page(&mut sql, "local_date ASC, at_us ASC NULLS FIRST, id ASC", query.limit, 0);
 
         let rows = self.read().records(&sql, &args)?;
         self.collect(rows, reading_aad)
     }
 
     fn get_reading(&self, id: ReadingId) -> Result<Reading> {
-        let sealed = self
-            .read()
-            .sealed("SELECT data FROM readings WHERE id = ?1", &vals![id.to_string()])?
-            .ok_or_else(|| Error::not_found("reading", id))?;
-        self.unseal(&reading_aad(id), &sealed)
+        self.get(id)
     }
 
     fn put_reading(&self, r: &Reading) -> Result<()> {
-        let data = self.seal(&reading_aad(r.id), r)?;
-        self.write().execute(
-            "INSERT INTO readings
-                (id, journal_id, tracker_id, entry_id, local_date, at_us, value,
-                 created_us, updated_us, data)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             ON CONFLICT (id) DO UPDATE SET
-                journal_id = ?2, tracker_id = ?3, entry_id = ?4, local_date = ?5,
-                at_us = ?6, value = ?7, created_us = ?8, updated_us = ?9, data = ?10",
-            &vals![
-                r.id.to_string(),
-                id_str(r.journal_id),
-                r.tracker_id.to_string(),
-                id_str(r.entry_id),
-                r.local_date.to_string(),
-                r.at.map(to_us),
-                r.value,
-                to_us(r.created_at),
-                to_us(r.updated_at),
-                data,
-            ],
-        )?;
-        Ok(())
+        self.upsert(r)
     }
 
     fn delete_reading(&self, id: ReadingId) -> Result<()> {
-        self.write().execute("DELETE FROM readings WHERE id = ?1", &vals![id.to_string()])?;
+        self.delete_by_id::<Reading>(id)?;
         Ok(())
     }
 
@@ -196,35 +180,16 @@ impl TrackerStore for SqlStore {
         // column and inside the sealed payload, and a row where the two
         // disagree is a row a restore would read differently.
         //
-        // And on the write connection throughout, in one transaction, for the
-        // reason spelled out on `merge_trackers`: a read on a pooled reader
-        // and a write on the writer is a race that silently reverts somebody
-        // else's edit.
+        // `delete_journal` calls `detach_readings_in_tx` directly, inside
+        // its own transaction, so an entry's readings and the journal it
+        // names disappear together; this trait method is the standalone
+        // path -- the one `Vault::delete_journal` reaches for when there is
+        // no larger transaction to share -- and opens one of its own.
         let mut conn = self.write();
         let mut tx = conn.begin()?;
-        let rows = tx.records(
-            "SELECT id, data FROM readings WHERE journal_id = ?1",
-            &vals![journal.to_string()],
-        )?;
-        let readings: Vec<Reading> = self.collect(rows, reading_aad)?;
-        let resealed: Vec<(ReadingId, Vec<u8>)> = readings
-            .into_iter()
-            .map(|mut r| {
-                r.journal_id = None;
-                let data = self.seal(&reading_aad(r.id), &r)?;
-                Ok((r.id, data))
-            })
-            .collect::<Result<_>>()?;
-
-        let changed = resealed.len() as u64;
-        for (id, data) in resealed {
-            tx.execute(
-                "UPDATE readings SET journal_id = NULL, data = ?2 WHERE id = ?1",
-                &vals![id.to_string(), data],
-            )?;
-        }
+        let n = self.detach_readings_in_tx(tx.as_mut(), journal)?;
         tx.commit()?;
-        Ok(changed)
+        Ok(n)
     }
 
     /// The aggregate, done where the data is.
@@ -269,41 +234,50 @@ impl TrackerStore for SqlStore {
     }
 }
 
+impl SqlStore {
+    /// The actual detach, inside whatever transaction the caller is
+    /// running. [`TrackerStore::detach_readings_in`] wraps this in a
+    /// transaction of its own for a caller with no transaction already open;
+    /// `delete_journal` passes its own instead, so the journal's row and its
+    /// readings' pointers go in one commit rather than two.
+    pub(crate) fn detach_readings_in_tx(
+        &self,
+        tx: &mut dyn Sql,
+        journal: JournalId,
+    ) -> Result<u64> {
+        self.rewrite_each::<Reading>(
+            tx,
+            "SELECT id, data FROM readings WHERE journal_id = ?1",
+            &vals![journal.to_string()],
+            |r| r.journal_id = None,
+        )
+    }
+}
+
 /// The filters both queries share, as SQL and its arguments.
 ///
 /// Written once because `list_readings` and `tracker_days` must agree about
 /// what "this window" means: a chart whose totals covered a different set of
 /// rows than the list beneath it would be a bug nobody could see.
 fn where_clause(query: &ReadingQuery) -> (String, Vec<Value>) {
-    let mut sql = String::from("1=1");
-    let mut args: Vec<Value> = Vec::new();
-
+    let mut w = Where::new();
     if let Some(j) = query.journal_id {
-        args.push(Value::Text(j.to_string()));
-        sql.push_str(&format!(" AND journal_id = ?{}", args.len()));
+        w = w.eq("journal_id", j.to_string());
     }
     if let Some(e) = query.entry_id {
-        args.push(Value::Text(e.to_string()));
-        sql.push_str(&format!(" AND entry_id = ?{}", args.len()));
+        w = w.eq("entry_id", e.to_string());
     }
     if let Some(from) = query.from {
-        args.push(Value::Text(from.to_string()));
-        sql.push_str(&format!(" AND local_date >= ?{}", args.len()));
+        w = w.gte("local_date", from.to_string());
     }
     if let Some(to) = query.to {
-        args.push(Value::Text(to.to_string()));
-        sql.push_str(&format!(" AND local_date <= ?{}", args.len()));
+        w = w.lte("local_date", to.to_string());
     }
     if query.timed_only {
-        sql.push_str(" AND at_us IS NOT NULL");
+        w = w.not_null("at_us");
     }
     if !query.tracker_ids.is_empty() {
-        let mut holes = Vec::new();
-        for id in &query.tracker_ids {
-            args.push(Value::Text(id.to_string()));
-            holes.push(format!("?{}", args.len()));
-        }
-        sql.push_str(&format!(" AND tracker_id IN ({})", holes.join(",")));
+        w = w.in_list("tracker_id", query.tracker_ids.iter().map(|id| id.to_string()));
     }
-    (sql, args)
+    w.finish()
 }
