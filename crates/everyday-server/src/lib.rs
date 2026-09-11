@@ -259,6 +259,7 @@ pub async fn start(
             }
             let std_listener =
                 listener.into_std().map_err(|e| CommandError::new("io", e.to_string()))?;
+            let done = stopped.clone();
             tokio::spawn(async move {
                 if let Err(e) = axum_server::from_tcp_rustls(std_listener, acceptor)
                     .handle(handle)
@@ -267,6 +268,14 @@ pub async fn start(
                 {
                     tracing::warn!(error = %e, "the server stopped");
                 }
+                // Without this, nothing on the TLS branch ever sent on
+                // `stopped`, so every `stop_and_wait` against a TLS listener
+                // ran its shutdown to completion and then blocked for the
+                // full five-second timeout anyway, waiting for a signal that
+                // was never coming. `Sharing::start` calls `stop_and_wait`
+                // before it (re)binds, so that five seconds landed on every
+                // share toggle in the desktop app.
+                let _ = done.send(true);
             });
         }
         None => {
