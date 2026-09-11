@@ -144,24 +144,20 @@ async fn list_calendars(
 }
 
 async fn save_calendar(svc: Arc<Service>, _ctx: Ctx, args: SaveCalendar) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_calendar(&args.calendar)?)).await
+    svc.on_vault(move |vault| vault.save_calendar(&args.calendar)).await
 }
 
 /// Unsubscribe: the calendar and every event that came from it.
 async fn delete_calendar(svc: Arc<Service>, _ctx: Ctx, args: CalendarRef) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_calendar(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_calendar(args.id)).await
 }
 
 async fn list_events(svc: Arc<Service>, _ctx: Ctx, args: Events) -> CommandResult<Vec<Event>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.events(&args.query)?)).await
+    svc.on_vault(move |vault| vault.events(&args.query)).await
 }
 
 async fn get_event(svc: Arc<Service>, _ctx: Ctx, args: EventRef) -> CommandResult<Event> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.event(args.id)?)).await
+    svc.on_vault(move |vault| vault.event(args.id)).await
 }
 
 /// Fetch one calendar's feed and replace its events with what came back.

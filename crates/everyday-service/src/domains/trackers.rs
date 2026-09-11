@@ -120,15 +120,13 @@ async fn list_trackers(
 }
 
 async fn save_tracker(svc: Arc<Service>, _ctx: Ctx, args: SaveTracker) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_tracker(&args.tracker)?)).await
+    svc.on_vault(move |vault| vault.save_tracker(&args.tracker)).await
 }
 
 /// Fold one tracker into another, keeping both histories, and answer how many
 /// readings moved.
 async fn merge_trackers(svc: Arc<Service>, _ctx: Ctx, args: MergeTrackers) -> CommandResult<u64> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.merge_trackers(args.from, args.into)?)).await
+    svc.on_vault(move |vault| vault.merge_trackers(args.from, args.into)).await
 }
 
 async fn list_readings(
@@ -136,8 +134,7 @@ async fn list_readings(
     _ctx: Ctx,
     args: Readings,
 ) -> CommandResult<Vec<Reading>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.readings(&args.query)?)).await
+    svc.on_vault(move |vault| vault.readings(&args.query)).await
 }
 
 /// One row per tracker per day: the aggregate every chart is built from.
@@ -146,8 +143,7 @@ async fn tracker_days(
     _ctx: Ctx,
     args: Readings,
 ) -> CommandResult<Vec<TrackerDay>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.tracker_days(&args.query)?)).await
+    svc.on_vault(move |vault| vault.tracker_days(&args.query)).await
 }
 
 /// Record one value, and decide what "when" means.
@@ -191,21 +187,18 @@ async fn log_reading(svc: Arc<Service>, _ctx: Ctx, args: LogReading) -> CommandR
 
 /// Update a reading that already exists: a corrected dose, a note, a time.
 async fn save_reading(svc: Arc<Service>, _ctx: Ctx, args: SaveReading) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_reading(&args.reading)?)).await
+    svc.on_vault(move |vault| vault.save_reading(&args.reading)).await
 }
 
 async fn delete_reading(svc: Arc<Service>, _ctx: Ctx, args: ReadingRef) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_reading(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_reading(args.id)).await
 }
 
 /// Delete a tracker along with every reading it ever made, returning how many
 /// went. Archiving is the non-destructive half and is a `save_tracker` with the
 /// flag set.
 async fn delete_tracker(svc: Arc<Service>, _ctx: Ctx, args: TrackerRef) -> CommandResult<u64> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_tracker(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_tracker(args.id)).await
 }
 
 pub static COMMANDS: &[crate::command::Command] = &[

@@ -312,7 +312,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
         // client needs a new protocol on the day it does.
         sensitive: true,
         args: Choose, returns: "ExportHandle",
-        signature: &[("parts", "string[]", true), ("media", "boolean", true)],
+        signature: &[("parts", "string[]", false), ("media", "boolean", false)],
         run: start_export,
     },
     command! {
@@ -331,7 +331,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "start_import", scope: All, effect: Read,
         args: Incoming, returns: "ImportUpload",
-        signature: &[("name", "string", true), ("bytes", "number", true)],
+        signature: &[("name", "string", false), ("bytes", "number", true)],
         run: start_import,
     },
     command! {

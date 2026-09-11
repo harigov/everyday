@@ -78,8 +78,7 @@ fn rows(settings: &AgentSettings) -> Vec<JobRow> {
 
 /// Every quick job and whether it is on, for the Assistant tab in settings.
 async fn quick_jobs(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<JobRow>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(rows(&vault.agent_settings()?))).await
+    svc.on_vault(move |vault| Ok(rows(&vault.agent_settings()?))).await
 }
 
 #[derive(Deserialize)]

@@ -10,7 +10,7 @@ use super::Nothing;
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::CommandResult;
-use crate::service::{Service, blocking};
+use crate::service::Service;
 use everyday_core::NoteId;
 use everyday_core::note::{Note, NoteSummary};
 use everyday_core::store::notes::NoteQuery;
@@ -47,13 +47,11 @@ pub struct ForceNote {
 }
 
 async fn list_notes(svc: Arc<Service>, _ctx: Ctx, args: Notes) -> CommandResult<Vec<NoteSummary>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.notes(&args.query)?)).await
+    svc.on_vault(move |vault| vault.notes(&args.query)).await
 }
 
 async fn get_note(svc: Arc<Service>, _ctx: Ctx, args: NoteRef) -> CommandResult<Note> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.note(args.id)?)).await
+    svc.on_vault(move |vault| vault.note(args.id)).await
 }
 
 /// Mint a note without saving it.
@@ -66,30 +64,27 @@ async fn new_note(_svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResul
 }
 
 async fn save_note(svc: Arc<Service>, _ctx: Ctx, args: SaveNote) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_note(&args.note, args.expect)?)).await
+    svc.on_vault(move |vault| vault.save_note(&args.note, args.expect)).await
 }
 
 async fn save_note_force(svc: Arc<Service>, _ctx: Ctx, args: ForceNote) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.overwrite_note(&args.note)?)).await
+    svc.on_vault(move |vault| vault.overwrite_note(&args.note)).await
 }
 
 async fn delete_note(svc: Arc<Service>, _ctx: Ctx, args: NoteRef) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_note(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_note(args.id)).await
 }
 
 async fn note_tags(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<String>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.note_tags()?.into_iter().map(|(tag, _)| tag).collect())).await
+    svc.on_vault(move |vault| Ok(vault.note_tags()?.into_iter().map(|(tag, _)| tag).collect()))
+        .await
 }
 
 pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "list_notes", scope: Notes, effect: Read,
         args: Notes, returns: "NoteSummary[]",
-        signature: &[("query", "NoteQuery", true)],
+        signature: &[("query", "NoteQuery", false)],
         run: list_notes,
     },
     command! {

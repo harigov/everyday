@@ -208,6 +208,25 @@ impl Service {
         Ok(vault)
     }
 
+    /// `require`, then `blocking`, for the command body that is only ever
+    /// those two steps around one call to the vault.
+    ///
+    /// The shape this replaces was written out by hand well over a hundred
+    /// times: `let vault = svc.require()?;` followed by a `blocking` call
+    /// whose closure does nothing but call one method and let `?` turn its
+    /// error into a [`CommandError`]. Naming the pair turns that into one
+    /// line, and leaves alone the bodies that are not that shape -- a check
+    /// before the vault call, or two calls to it -- because those still have
+    /// something of their own to say about the order the two steps happen in.
+    pub async fn on_vault<T, F>(&self, f: F) -> CommandResult<T>
+    where
+        F: FnOnce(&Vault) -> everyday_core::Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let vault = self.require()?;
+        blocking(move || Ok(f(&vault)?)).await
+    }
+
     /// The vault to open on startup: the one this session already touched, or
     /// the one the previous session left behind.
     pub fn last_path(&self) -> Option<PathBuf> {

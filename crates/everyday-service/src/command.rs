@@ -75,6 +75,19 @@ pub struct Command {
     /// What this takes and gives back, for the generated client and for the
     /// snapshot that makes a wire change visible in review.
     pub signature: Signature,
+    /// Deserialise a raw args object against the real struct, discarding the
+    /// result.
+    ///
+    /// `signature` above is written by hand beside the struct it describes --
+    /// see the module doc on why -- and the two are free to disagree about
+    /// which arguments are required: a field can grow `#[serde(default)]`
+    /// without anyone remembering to loosen the `true` beside it here. This
+    /// is what lets `tests/surface.rs` notice, by asking the struct itself
+    /// rather than a second hand-written description of it. `run` cannot
+    /// answer the same question without a live `Service`, a `Ctx` and an
+    /// async runtime to poll it -- none of which two pieces of Rust agreeing
+    /// with each other should need.
+    pub check_args: fn(Value) -> Result<(), String>,
     pub run: Handler,
 }
 
@@ -92,6 +105,95 @@ pub struct Signature {
     /// The TypeScript type of the result. `"void"` for a command that
     /// answers with nothing.
     pub returns: &'static str,
+}
+
+/// [`Effect`], spelled the way every snapshot on the wire already agrees to
+/// spell it.
+///
+/// `Effect` lives in `everyday_core` beside the tools it classifies, and
+/// nothing there needs a string form of it -- only the handful of places that
+/// put a command or a tool on the wire do. This used to be written out three
+/// times by hand, once each in `domains::meta`, `tests/surface.rs` and
+/// `tests/mcp.rs`, which is exactly the shape of drift a fourth `Effect`
+/// variant would have hit: three edits that have to land together, made by
+/// whoever remembered all three existed.
+pub fn effect_name(effect: Effect) -> &'static str {
+    match effect {
+        Effect::Read => "read",
+        Effect::Write => "write",
+        Effect::Destructive => "destructive",
+    }
+}
+
+/// One command, as a client generator or an introspecting caller sees it.
+///
+/// Built by [`describe`] and used for two things that used to build this
+/// shape independently: `list_commands`, which answers with it at runtime,
+/// and the snapshot in `tests/surface.rs`, which is the wire every generated
+/// client is built from. The two had quietly grown different shapes --
+/// `changes` a bare kind name in one and `{kind, op}` in the other, `orScope`
+/// present in only one of them -- because nothing made changing one change
+/// the other.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandInfo {
+    pub name: &'static str,
+    pub scope: &'static str,
+    pub or_scope: Option<&'static str>,
+    pub effect: &'static str,
+    pub sensitive: bool,
+    pub streams: bool,
+    pub changes: Option<ChangeInfo>,
+    pub args: Vec<ArgInfo>,
+    pub returns: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArgInfo {
+    pub name: &'static str,
+    #[serde(rename = "type")]
+    pub ty: &'static str,
+    pub required: bool,
+}
+
+/// What a listener should reload after a write, and what it did.
+///
+/// Serialised through [`Kind`] and [`Op`]'s own `Serialize` rather than
+/// matched out by hand into a string: they already know how to spell
+/// themselves on the wire, which is what let the twenty-arm match this
+/// replaced go quietly out of step the day a twentieth [`Kind`] arrived.
+#[derive(Debug, Serialize)]
+pub struct ChangeInfo {
+    pub kind: Kind,
+    pub op: Op,
+}
+
+/// Everything [`list_commands`](crate::domains::meta) and
+/// `tests/surface.rs`'s snapshot say about one command, computed once.
+///
+/// A command only knows itself as `scope`, `effect`, a `(Kind, Op)` pair and
+/// so on -- the shapes those types want in Rust, not the strings and objects
+/// a client reads off the wire. This is the one place that turns one into the
+/// other, so the two readers of it cannot disagree about what a command looks
+/// like without disagreeing with this function instead.
+pub fn describe(command: &Command) -> CommandInfo {
+    CommandInfo {
+        name: command.name,
+        scope: command.scope.as_str(),
+        or_scope: command.or_scope.map(Scope::as_str),
+        effect: effect_name(command.effect),
+        sensitive: command.sensitive,
+        streams: command.streams,
+        changes: command.change.map(|(kind, op)| ChangeInfo { kind, op }),
+        args: command
+            .signature
+            .args
+            .iter()
+            .map(|(name, ty, required)| ArgInfo { name, ty, required: *required })
+            .collect(),
+        returns: command.signature.returns,
+    }
 }
 
 /// Commands that are not somebody using the vault.
@@ -203,6 +305,9 @@ macro_rules! command {
                 $crate::command::encode(out)
             })
         }
+        fn check_args(raw: ::serde_json::Value) -> ::std::result::Result<(), ::std::string::String> {
+            ::serde_json::from_value::<$args>(raw).map(|_| ()).map_err(|e| e.to_string())
+        }
         $crate::command::Command {
             name: $name,
             scope: $crate::ctx::Scope::$scope,
@@ -212,6 +317,7 @@ macro_rules! command {
             sensitive: $crate::command::flag!($($sensitive)?),
             streams: $crate::command::flag!($($streams)?),
             signature: $crate::command::Signature { args: $sig, returns: $returns },
+            check_args,
             run,
         }
     }};

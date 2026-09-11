@@ -86,8 +86,7 @@ async fn list_journals(
     _ctx: Ctx,
     _args: Nothing,
 ) -> CommandResult<Vec<Journal>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.journals()?)).await
+    svc.on_vault(move |vault| vault.journals()).await
 }
 
 /// Mint a journal, without saving it.
@@ -102,13 +101,11 @@ async fn new_journal(svc: Arc<Service>, _ctx: Ctx, args: Named) -> CommandResult
 }
 
 async fn save_journal(svc: Arc<Service>, _ctx: Ctx, args: SaveJournal) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_journal(&args.journal)?)).await
+    svc.on_vault(move |vault| vault.save_journal(&args.journal)).await
 }
 
 async fn delete_journal(svc: Arc<Service>, _ctx: Ctx, args: JournalRef) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_journal(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_journal(args.id)).await
 }
 
 async fn list_entries(
@@ -116,13 +113,11 @@ async fn list_entries(
     _ctx: Ctx,
     args: Entries,
 ) -> CommandResult<Vec<EntrySummary>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.entries(&args.query)?)).await
+    svc.on_vault(move |vault| vault.entries(&args.query)).await
 }
 
 async fn get_entry(svc: Arc<Service>, _ctx: Ctx, args: EntryRef) -> CommandResult<Entry> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.entry(args.id)?)).await
+    svc.on_vault(move |vault| vault.entry(args.id)).await
 }
 
 /// A blank entry, filed under today in the machine's own time zone.
@@ -144,18 +139,15 @@ async fn new_entry(svc: Arc<Service>, _ctx: Ctx, args: NewEntry) -> CommandResul
 /// reason [`crate::idempotency`] exists: without it, the retry is refused as a
 /// conflict against its own earlier write.
 async fn save_entry(svc: Arc<Service>, _ctx: Ctx, args: SaveEntry) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_entry(&args.entry, args.expect)?)).await
+    svc.on_vault(move |vault| vault.save_entry(&args.entry, args.expect)).await
 }
 
 async fn save_entry_force(svc: Arc<Service>, _ctx: Ctx, args: ForceEntry) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.overwrite_entry(&args.entry)?)).await
+    svc.on_vault(move |vault| vault.overwrite_entry(&args.entry)).await
 }
 
 async fn delete_entry(svc: Arc<Service>, _ctx: Ctx, args: EntryRef) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_entry(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_entry(args.id)).await
 }
 
 /// Search entries and notes.
@@ -198,8 +190,8 @@ fn refused(scope: Scope) -> CommandError {
 }
 
 async fn list_tags(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<String>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.entry_tags()?.into_iter().map(|(tag, _)| tag).collect())).await
+    svc.on_vault(move |vault| Ok(vault.entry_tags()?.into_iter().map(|(tag, _)| tag).collect()))
+        .await
 }
 
 pub static COMMANDS: &[crate::command::Command] = &[

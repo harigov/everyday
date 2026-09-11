@@ -323,7 +323,7 @@ async fn the_catalogue_describes_itself() {
     let save_entry = commands.iter().find(|c| c["name"] == "save_entry").unwrap();
     assert_eq!(save_entry["scope"], "journals");
     assert_eq!(save_entry["effect"], "write");
-    assert_eq!(save_entry["changes"], "entry");
+    assert_eq!(save_entry["changes"], json!({ "kind": "entry", "op": "updated" }));
     assert_eq!(save_entry["args"][0]["name"], "entry");
 }
 
