@@ -71,8 +71,8 @@ pub(crate) fn call_target<'a>(method: &str, params: &'a Value) -> Option<&'a str
 }
 
 pub use errors::{
-    header_mismatch, invalid_params, invalid_request, method_not_found,
-    unsupported_protocol_version,
+    header_mismatch, invalid_params, invalid_request, method_not_found, request_refused,
+    transport_error, unsupported_protocol_version,
 };
 pub use handle::{handle, tools_list_changed};
 pub use headers::{ExpectedHeaders, decode_header_value, expected_headers};
