@@ -54,10 +54,18 @@
     { id: 'todo', label: 'Todo', icon: 'check' },
     { id: 'calendar', label: 'Calendar', icon: 'calendar' },
     { id: 'library', label: 'Library', icon: 'book' },
-    { id: 'assistant', label: 'Assistant', icon: 'sparkle' },
     { id: 'journal', label: 'Journal', icon: 'quote' },
   ]
   const shown = $derived(APPS.filter((a) => app.canShow(a.id)))
+
+  /**
+   * The assistant, which is an app and is not one of the list.
+   *
+   * Every app above keeps its own records; this one works on all of theirs.
+   * Filed among them it read as a sixth place to keep things, so it sits
+   * apart at the foot of the bar, above the vault's own controls.
+   */
+  const ASSISTANT: AppEntry = { id: 'assistant', label: 'Assistant', icon: 'sparkle' }
 
   /**
    * A tray entry as a menu row.
@@ -119,15 +127,7 @@
           onclick={() => app.setSection(a.id)}
           oncontextmenu={(e) => menu.show(e, appMenu(a))}
         >
-          <span class="glyph">
-            <Icon name={a.icon} size={21} weight={1.7} />
-            <!-- How anybody finds out the assistant did something while they
-                 were away. A number rather than a stream of banners: work
-                 done overnight is a queue, not an interruption. -->
-            {#if a.id === 'assistant' && assistant.unseen > 0}
-              <span class="badge">{assistant.unseen > 9 ? '9+' : assistant.unseen}</span>
-            {/if}
-          </span>
+          <span class="glyph"><Icon name={a.icon} size={21} weight={1.7} /></span>
           <span class="barlabel">{a.label}</span>
         </button>
       {/each}
@@ -138,11 +138,33 @@
        nav, because neither belongs to whichever app is open: they are the
        vault's, and so is the bar.
 
-       The assistant used to be here too. It is a floating button in the
-       corner of the pane now -- see `App.svelte` -- because it is not one of
-       the vault's controls either: it works *on* whatever app is open, and
-       the corner of that app is where it belongs. -->
+       The assistant's app heads the foot, ruled off from the apps above it
+       for the reason given on `ASSISTANT`. The round button in the corner of
+       the pane -- see `App.svelte` -- is the other way in, and a different
+       thing: that one opens a chat about what is on screen, this one is the
+       assistant's own page of conversations, memory and routines. -->
   <div class="foot">
+    {#if app.canShow(ASSISTANT.id)}
+      {@const on = app.section === ASSISTANT.id}
+      <button
+        class="barbtn"
+        class:on
+        aria-current={on ? 'page' : undefined}
+        onclick={() => app.setSection(ASSISTANT.id)}
+        oncontextmenu={(e) => menu.show(e, appMenu(ASSISTANT))}
+      >
+        <span class="glyph">
+          <Icon name={ASSISTANT.icon} size={19} weight={1.7} />
+          <!-- How anybody finds out the assistant did something while they
+               were away. A number rather than a stream of banners: work
+               done overnight is a queue, not an interruption. -->
+          {#if assistant.unseen > 0}
+            <span class="badge">{assistant.unseen > 9 ? '9+' : assistant.unseen}</span>
+          {/if}
+        </span>
+        <span class="barlabel">{ASSISTANT.label}</span>
+      </button>
+    {/if}
     <button
       class="barbtn"
       class:on={panels.settings !== null}

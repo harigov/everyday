@@ -163,6 +163,24 @@ check('ids on the default page are distinct', new Set(ids(start)).size, start.le
     ids(reorderWidget(page, 'onNow:1', 'onNow:1')),
     ids(page),
   )
+
+  // A new card goes where it was put, by the same "in front of" rule a drop
+  // follows -- and a place that has since gone means the end, not nowhere.
+  check(
+    'a new card lands in front of the one chosen',
+    ids(addWidget(page, 'onNow', null, 'onNow:1')),
+    ['dueToday:1', 'onNow:2', 'onNow:1', 'shelves:1'],
+  )
+  check(
+    '...in front of the first, too',
+    ids(addWidget(page, 'taskTally', null, 'dueToday:1'))[0],
+    'taskTally:1',
+  )
+  check(
+    'a place that has gone means the end',
+    ids(addWidget(page, 'taskTally', null, 'nope:9')).at(-1),
+    'taskTally:1',
+  )
 }
 
 // ── what the page costs ────────────────────────────────────────────────

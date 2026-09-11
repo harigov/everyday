@@ -170,6 +170,9 @@
   .card {
     display: flex;
     flex-direction: column;
+    /* Fills its grid slot, so every card in a row is as tall as the tallest
+       one in it -- see `.slot` in `OverviewView`. */
+    flex: 1;
     min-width: 0;
     padding: var(--sp-4);
     border: 1px solid var(--border);

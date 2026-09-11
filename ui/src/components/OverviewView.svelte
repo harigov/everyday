@@ -20,7 +20,7 @@
   // two-column card in a 320px pane is not a card, it is a sliver.
 
   import { dismissable } from '../lib/dismiss'
-  import { specOf, SPAN } from '../lib/dashboard'
+  import { specOf, SPAN, type WidgetType } from '../lib/dashboard'
   import { friendlyDate } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
@@ -28,6 +28,7 @@
   import { panels } from '../lib/panels.svelte'
   import { purpose } from '../lib/purpose.svelte'
   import { todayIso } from '../lib/time'
+  import AddWidgetDialog from './AddWidgetDialog.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import LogReading from './LogReading.svelte'
@@ -43,6 +44,30 @@
   /** The card being dragged, and the one the pointer is over. */
   let dragging = $state<string | null>(null)
   let over = $state<string | null>(null)
+  /** The catalogue dialog is open. */
+  let adding = $state(false)
+  /**
+   * A widget picked from the catalogue that has not been put anywhere yet.
+   *
+   * Picking and placing are two steps on purpose. A new card appended to the
+   * bottom of a long page lands where nobody is looking, and then has to be
+   * dragged up past everything else -- so the page asks where it goes, and
+   * every card on it becomes a place to put it in front of.
+   */
+  let placing = $state<WidgetType | null>(null)
+
+  function pick(type: WidgetType) {
+    adding = false
+    // An empty page has only one place, so there is nothing to ask.
+    if (overview.widgets.length === 0) overview.add(type)
+    else placing = type
+  }
+
+  /** Put the picked widget in front of `before`, or at the end. */
+  function place(before: string | null) {
+    if (placing) overview.add(placing, null, before)
+    placing = null
+  }
 
   // A tray action can ask for the reading field before this view exists to
   // give it.
@@ -66,6 +91,7 @@
   /** The page itself, where there is no card under the pointer. */
   function pageMenu(): MenuItem[] {
     return tidyMenu([
+      { label: 'Add a card…', icon: 'plus', run: () => (adding = true) },
       {
         label: overview.editing ? 'Stop arranging' : 'Arrange this page',
         icon: 'grip',
@@ -110,6 +136,16 @@
     over = null
   }
 </script>
+
+<svelte:window
+  onkeydown={(e: KeyboardEvent) => {
+    if (e.key === 'Escape' && placing && !adding) placing = null
+  }}
+/>
+
+{#if adding}
+  <AddWidgetDialog onpick={pick} onclose={() => (adding = false)} />
+{/if}
 
 <div class="overview">
   <header class="bar">
@@ -158,6 +194,10 @@
         </div>
       {/if}
 
+      <button class="btn" aria-haspopup="dialog" onclick={() => (adding = true)}>
+        <Icon name="plus" size={14} /> Add
+      </button>
+
       <button
         class="btn"
         class:on={overview.editing}
@@ -169,6 +209,16 @@
       </button>
     </div>
   </header>
+
+  {#if placing}
+    <div class="placing" role="status">
+      <span>
+        Choose where <b>{specOf(placing).label}</b> goes: click a card to put it in front of it, or the
+        space at the end.
+      </span>
+      <button class="btn" onclick={() => (placing = null)}>Cancel</button>
+    </div>
+  {/if}
 
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
@@ -183,11 +233,12 @@
       <EmptyState lead="This page is empty, which is a thing you are allowed to do.">
         {#snippet icon()}<Icon name="compass" size={28} />{/snippet}
         {#snippet note()}
-          Everything the Overview can show is in the panel on the left, filed under what it is
-          about. Add the two or three you would actually look at.
+          Everything the Overview can show is behind <b>Add</b>, filed under what it is about. Add
+          the two or three you would actually look at.
         {/snippet}
         {#snippet action()}
-          <button class="btn btn-primary" onclick={() => overview.restoreDefaults()}>
+          <button class="btn btn-primary" onclick={() => (adding = true)}>Add a card</button>
+          <button class="btn" onclick={() => overview.restoreDefaults()}>
             Start me off with a few
           </button>
         {/snippet}
@@ -222,8 +273,30 @@
             >
               <OverviewWidget widget={w} />
             </WidgetCard>
+            {#if placing}
+              <!-- Over the card rather than between cards: a gap in a grid
+                   is a sliver nobody can hit, and a card is a target. -->
+              <button
+                class="target"
+                aria-label="Put {specOf(placing).label} in front of {specOf(w.type).label}"
+                onclick={() => place(w.id)}
+              >
+                <span><Icon name="plus" size={14} /> Put it here</span>
+              </button>
+            {/if}
           </div>
         {/each}
+        {#if placing}
+          <!-- The end of the page, drawn at the width the card will arrive
+               at, so this is also a preview of what it will take up. -->
+          <button
+            class="slot ghost"
+            style="--span: {SPAN[specOf(placing).size]}"
+            onclick={() => place(null)}
+          >
+            <Icon name="plus" size={14} /> At the end
+          </button>
+        {/if}
       </div>
 
       {#if purpose.roles.length === 0 && overview.needs.has('purpose')}
@@ -304,12 +377,74 @@
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: var(--sp-3);
-    align-items: start;
   }
 
+  /* Stretched, which is the grid's default, so every slot in a row is the
+     height of the tallest -- and a flex column, so the card inside grows to
+     fill it. A row of cards with ragged bottoms reads as a page half-loaded. */
   .slot {
+    position: relative;
+    display: flex;
+    flex-direction: column;
     grid-column: span var(--span);
     min-width: 0;
+  }
+
+  .placing {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    flex: none;
+    padding: var(--sp-2) var(--sp-4);
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in oklab, var(--accent) 8%, var(--bg));
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+  }
+  .placing span {
+    flex: 1;
+  }
+
+  .target {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    border: 2px dashed var(--accent);
+    border-radius: var(--radius-lg);
+    background: color-mix(in oklab, var(--bg-raised) 55%, transparent);
+    color: var(--accent);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    opacity: 0.55;
+    transition: opacity var(--fast) var(--ease);
+  }
+  .target span {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+  }
+  .target:hover,
+  .target:focus-visible {
+    opacity: 1;
+  }
+
+  .ghost {
+    align-items: center;
+    justify-content: center;
+    flex-direction: row;
+    gap: var(--sp-1);
+    min-height: 120px;
+    border: 2px dashed var(--border-strong);
+    border-radius: var(--radius-lg);
+    color: var(--fg-subtle);
+    font-size: var(--text-sm);
+    font-weight: 600;
+  }
+  .ghost:hover,
+  .ghost:focus-visible {
+    border-color: var(--accent);
+    color: var(--accent);
   }
 
   /* A narrow window is a single column of cards rather than six slivers.

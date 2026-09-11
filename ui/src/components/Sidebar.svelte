@@ -13,7 +13,6 @@
   import LibraryNav from './LibraryNav.svelte'
   import AssistantNav from './AssistantNav.svelte'
   import NotesNav from './NotesNav.svelte'
-  import OverviewNav from './OverviewNav.svelte'
   import type { Journal } from '../lib/types'
 
   // The apps themselves are `AppBar`, outside this: they are not one app's
@@ -109,8 +108,6 @@
     <CalendarNav />
   {:else if app.section === 'library'}
     <LibraryNav />
-  {:else if app.section === 'overview'}
-    <OverviewNav />
   {:else}
     <nav class="scroll nav">
       <button

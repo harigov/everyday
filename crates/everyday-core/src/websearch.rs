@@ -401,7 +401,10 @@ pub struct SearchResult {
     pub rating_count: Option<u32>,
     /// Kind-specific values, already keyed to match the field keys the
     /// seeded kinds use — `author`, `pages`, `director`, `cuisine`.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    ///
+    /// Written even when empty: the interface walks it with
+    /// `Object.entries`, which throws on a missing key. See `Item::external`.
+    #[serde(default)]
     pub facts: BTreeMap<String, String>,
     /// Which source said so, by [`Source::slug`].
     #[serde(default)]

@@ -566,7 +566,14 @@ pub struct Item {
     /// Yours, `0..=100`. See [`stars`] for the conversion the interface uses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rating: Option<u8>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Always written, even when empty -- as are `facts` and `links`.
+    ///
+    /// The interface reads these three as a list or a map without asking
+    /// whether they are there, and they are empty on exactly the items a
+    /// lookup found nothing for. Leaving them out of the JSON when empty
+    /// made every such card throw while drawing, so a film nothing online
+    /// had heard of was on the shelf and nowhere on the screen.
+    #[serde(default)]
     pub external: Vec<ExternalRating>,
     /// The cover, downloaded into the vault's blob store. See the module
     /// docs for why it is not a URL the webview loads.
@@ -601,9 +608,9 @@ pub struct Item {
     /// A `BTreeMap` rather than a `HashMap` so the serialised form is stable:
     /// two saves of an unchanged item produce identical bytes, which is what
     /// keeps a conflict check honest and a backup diff readable.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default)]
     pub facts: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub links: Vec<Link>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
@@ -1089,6 +1096,23 @@ mod tests {
 
         let round: Item = serde_json::from_slice(&serde_json::to_vec(&item).unwrap()).unwrap();
         assert_eq!(round, item);
+    }
+
+    #[test]
+    fn an_item_nothing_was_found_for_still_sends_every_list() {
+        // The interface reads these without checking they are there. An item
+        // typed in by hand -- or one the lookup came back empty for -- is
+        // exactly the one where they are empty, and leaving them out of the
+        // JSON is what made such a card throw instead of drawing.
+        let item = Item::new(KindId::new(), "A film nobody has heard of");
+        let json = serde_json::to_value(&item).unwrap();
+        assert_eq!(json["external"], serde_json::json!([]));
+        assert_eq!(json["links"], serde_json::json!([]));
+        assert_eq!(json["facts"], serde_json::json!({}));
+        assert_eq!(json["tags"], serde_json::json!([]));
+
+        let result = crate::websearch::SearchResult::default();
+        assert_eq!(serde_json::to_value(&result).unwrap()["facts"], serde_json::json!({}));
     }
 
     #[test]

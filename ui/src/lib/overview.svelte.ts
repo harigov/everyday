@@ -205,8 +205,9 @@ class OverviewState {
   // deliberately: the rules are tested next door, and a second opinion about
   // what "move up" means would be a second implementation of it.
 
-  add(type: WidgetType, subject: string | null = null) {
-    this.widgets = addWidget(this.widgets, type, subject)
+  /** Put a widget on the page, in front of `before` or at the end. */
+  add(type: WidgetType, subject: string | null = null, before: string | null = null) {
+    this.widgets = addWidget(this.widgets, type, subject, before)
     this.save()
     // A card that needs something nothing else on the page did is why this
     // is not a pure state change: without it the new widget draws its empty

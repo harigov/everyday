@@ -349,8 +349,8 @@ export interface Widget {
  * Deliberately short, and every card on it answers something about *today*.
  * A first run that opened on twelve charts would be a page nobody reads and
  * nobody edits, because the cost of removing eleven things is higher than the
- * cost of ignoring the tab. Adding is the easy direction; the sidebar exists
- * to make it a click.
+ * cost of ignoring the tab. Adding is the easy direction; the Overview's Add
+ * button exists to make it two clicks.
  */
 export function defaultLayout(): Widget[] {
   return [
@@ -391,8 +391,22 @@ export function nextId(list: Widget[], type: WidgetType): string {
   }
 }
 
-export function addWidget(list: Widget[], type: WidgetType, subject: string | null = null) {
-  return [...list, widget(type, subject, nextId(list, type))]
+/**
+ * Put a new widget on the page: in front of `before`, or at the end when that
+ * is null or no longer on the page.
+ *
+ * The same "in front of" rule a drop uses (`reorderWidget`), so choosing a
+ * place for a new card and dragging an old one there land it identically.
+ */
+export function addWidget(
+  list: Widget[],
+  type: WidgetType,
+  subject: string | null = null,
+  before: string | null = null,
+): Widget[] {
+  const card = widget(type, subject, nextId(list, type))
+  const at = before === null ? -1 : list.findIndex((w) => w.id === before)
+  return at < 0 ? [...list, card] : [...list.slice(0, at), card, ...list.slice(at)]
 }
 
 export function removeWidget(list: Widget[], id: string): Widget[] {

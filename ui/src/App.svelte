@@ -213,7 +213,13 @@
       <Notices />
       <div class="panes">
         <AppBar />
-        <Sidebar />
+        <!-- The Overview has no sidebar. Its half used to be the widget
+             catalogue, a column spent on every visit on a list somebody
+             reads when rearranging; that is the Add button's dialog now, and
+             the page gets the width. -->
+        {#if app.section !== 'overview'}
+          <Sidebar />
+        {/if}
         {#if app.section === 'assistant'}
           <AssistantView />
         {:else if app.section === 'notes'}
