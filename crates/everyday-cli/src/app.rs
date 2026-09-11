@@ -1192,7 +1192,8 @@ fn serve(vault: Vault, vault_path: &std::path::Path, options: ServeOptions<'_>) 
             // Both sinks, so `lock_state` reaches every paired device *and*
             // every open MCP stream -- which is what tells a client that
             // connected to a locked vault to ask for the catalogue again.
-            service.set_events(everyday_server::fanout(running.sink.clone(), broadcaster.clone()));
+            service
+                .set_events(everyday_server::fanout(running.server.clone(), broadcaster.clone()));
             println!("MCP endpoint: http://{}/mcp", running.address);
         }
 

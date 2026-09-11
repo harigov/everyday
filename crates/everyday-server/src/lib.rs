@@ -47,6 +47,7 @@ pub mod routes;
 pub mod sse;
 pub mod tls;
 
+use axum_server::tls_rustls::RustlsConfig;
 use everyday_service::error::{CommandError, CommandResult};
 use everyday_service::{EventSink, Service};
 use std::net::SocketAddr;
@@ -119,9 +120,21 @@ impl Config {
     }
 }
 
-/// A running server, and the handle that stops it.
-pub struct Running {
-    pub server: Arc<Server>,
+/// A running listener, and the handle that stops it.
+///
+/// Generic over `server` because two quite different things start a listener
+/// this way. Sharing hands back an [`Arc<Server>`](Server) -- the pairing
+/// registry, the fingerprint, the switch for remote unlock -- because a
+/// caller such as the settings panel needs to keep reaching those after
+/// `start` returns. [`mcp::start`] hands back an `Arc<dyn EventSink>`,
+/// because all its caller ever does with what it started is fold it into a
+/// fan-out. Before this type existed, `everyday_server::Running` and
+/// `everyday_server::mcp::Running` were two copies of the same handful of
+/// fields and the same `stop`/`stop_and_wait`/`Drop`, kept in step by hand;
+/// one `Running<S>` here, instantiated once for each shape, is the version
+/// that cannot drift.
+pub struct Running<S = Arc<Server>> {
+    pub server: S,
     /// Where it actually bound, which is not what was asked for when port 0 was.
     pub address: SocketAddr,
     shutdown: tokio::sync::watch::Sender<bool>,
@@ -130,7 +143,7 @@ pub struct Running {
     stopped: tokio::sync::watch::Sender<bool>,
 }
 
-impl Running {
+impl<S> Running<S> {
     /// Stop answering. Connections in flight are allowed to finish.
     ///
     /// Returns as soon as the request is *made*. To rebind the same address,
@@ -153,13 +166,15 @@ impl Running {
         )
         .await;
     }
+}
 
+impl Running<Arc<Server>> {
     pub fn fingerprint(&self) -> &str {
         &self.server.fingerprint
     }
 }
 
-impl Drop for Running {
+impl<S> Drop for Running<S> {
     fn drop(&mut self) {
         self.stop();
     }
@@ -223,7 +238,7 @@ pub async fn start(
     parts: Parts,
     config: &Config,
     vault_name: String,
-) -> CommandResult<Running> {
+) -> CommandResult<Running<Arc<Server>>> {
     let Parts { registry, broadcaster, identity } = parts;
     let fingerprint = identity.as_ref().map(|i| i.fingerprint.clone()).unwrap_or_default();
 
@@ -239,16 +254,48 @@ pub async fn start(
     let listener = tokio::net::TcpListener::bind(config.listen).await.map_err(|e| {
         CommandError::new("io", format!("could not listen on {}: {e}", config.listen))
     })?;
-    let address = listener.local_addr().map_err(|e| CommandError::new("io", e.to_string()))?;
+    let router = routes::router(server.clone(), Transport::Network);
+    let tls = identity
+        .as_ref()
+        .map(|identity| tls_config(identity).map(|cfg| RustlsConfig::from_config(Arc::new(cfg))))
+        .transpose()?;
 
+    let running = spawn_server(listener, router, tls, server)?;
+    tracing::info!(address = %running.address, "serving the vault");
+    Ok(running)
+}
+
+/// Serve `router` on `listener`, behind `tls` if given, on the runtime this
+/// process is already using -- see [`start`]'s own doc for why a second
+/// runtime here is not an option.
+///
+/// The one place a TLS listener or a plain one is actually spawned: [`start`]
+/// (TCP, optionally TLS, for another copy of this application) and
+/// [`mcp::start`] (TCP, always plain, for somebody else's MCP client) both
+/// call this rather than each keeping its own `axum_server`/`axum::serve`
+/// branch. That used to be two copies of this match, and the TLS arm of one
+/// of them forgot to signal `stopped` on its way out -- the fix belongs here
+/// now, made once instead of twice.
+///
+/// Takes `server` -- whatever its caller will want back once the listener
+/// exists -- and hands it straight to the `Running` this builds, rather than
+/// building a `Running<()>` first and attaching it after: `Running`
+/// implements `Drop`, and a second step would mean either moving a field out
+/// of a `Drop` type or constructing an intermediate value whose own `Drop`
+/// would fire the shutdown this function just spawned before its caller ever
+/// saw it.
+fn spawn_server<S>(
+    listener: tokio::net::TcpListener,
+    router: axum::Router,
+    tls: Option<RustlsConfig>,
+    server: S,
+) -> CommandResult<Running<S>> {
+    let address = listener.local_addr().map_err(|e| CommandError::new("io", e.to_string()))?;
     let (shutdown, mut rx) = tokio::sync::watch::channel(false);
     let (stopped, _) = tokio::sync::watch::channel(false);
-    let router = routes::router(server.clone(), Transport::Network);
 
-    match identity {
-        Some(identity) => {
-            let tls = tls_config(&identity)?;
-            let acceptor = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls));
+    match tls {
+        Some(acceptor) => {
             let handle = axum_server::Handle::new();
             {
                 let handle = handle.clone();
@@ -295,7 +342,6 @@ pub async fn start(
         }
     }
 
-    tracing::info!(%address, "serving the vault");
     Ok(Running { server, address, shutdown, stopped })
 }
 
