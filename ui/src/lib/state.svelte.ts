@@ -7,7 +7,7 @@
 import { tick } from 'svelte'
 import { api, isMock, newRequestId } from './api'
 import { AUTOSAVE_MS } from './autosave'
-import { errorMessage, handle, isConflict, isLocked, quietly } from './errors'
+import { errorMessage, handle, isConflict, isLocked, quietly, setPolicy } from './errors'
 import { notify } from './notify.svelte'
 import { pref } from './prefs'
 import { debounce } from './store/debounce'
@@ -1353,3 +1353,8 @@ class AppState {
 }
 
 export const app = new AppState()
+
+// `errors.ts` states the policy; this is the line that gives it the session to
+// apply it to. Here rather than in that file so it depends on nothing, which
+// is what lets `autosave.ts` be tested without a window. See its header.
+setPolicy({ lock: () => app.lock(), report: (message) => (app.error = message) })

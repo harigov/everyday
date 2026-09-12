@@ -18,19 +18,40 @@
 // `state.svelte.ts` re-exports everything here, so nothing that already
 // imports `isLocked` or `handle` from it has to change.
 //
-// `app` is reached through a dynamic `import()` inside `handle` and
-// `quietly` rather than a static one at the top, and that is not decoration.
-// `autosave.ts` is loaded by every test in this suite in isolation -- no
-// window, no vault, nothing but `types.ts` beside it -- specifically so a
-// keystroke-timer bug does not need a browser to catch. A static import of
-// `state.svelte.ts` here would drag `api.ts` in behind it, which touches
-// `window` at module scope, and autosave's own test would crash before its
-// first assertion for a codepath it never runs. A dynamic import costs
-// nothing once the app is actually running -- `state.svelte.ts` is loaded
-// long before anything fails -- and costs nothing in the tests either,
-// because `isLocked`, `isConflict` and `errorMessage` never touch `app` and
-// so never trigger it.
+// This file does not import `state.svelte.ts`, in either direction: the two
+// things `handle` needs from the session -- send us to the lock screen, put
+// this message over the window -- are handed to it by `setPolicy`, which
+// `state.svelte.ts` calls beside the line that constructs `app`. The reason
+// is `autosave.ts`, which every test in this suite loads in isolation with
+// no window, no vault and nothing but `types.ts` beside it, specifically so
+// that a keystroke-timer bug does not need a browser to catch. Importing
+// the session here would drag `api.ts` in behind it, which touches `window`
+// at module scope, and that test would crash before its first assertion for
+// a codepath it never runs. Registration keeps the policy in one place
+// without making the file that states it depend on the file that applies
+// it, and `isLocked`, `isConflict` and `errorMessage` stay usable by anyone
+// with no session at all.
 import { VaultError } from './types'
+
+/**
+ * The two things this policy needs from the open session.
+ *
+ * Registered rather than imported; see the note at the top of this file.
+ * Until `state.svelte.ts` is loaded there is no session to send anybody to,
+ * and both handlers below simply do nothing -- which is the right answer for
+ * a test that loaded one store and never opened a vault.
+ */
+export type ErrorPolicy = {
+  lock: () => Promise<void>
+  report: (message: string) => void
+}
+
+let session: ErrorPolicy | null = null
+
+/** Tell this file how to reach the open session. Called once, from `state.svelte.ts`. */
+export function setPolicy(policy: ErrorPolicy): void {
+  session = policy
+}
 
 /**
  * Was this the vault locking under us rather than a fault?
@@ -75,12 +96,11 @@ export function errorMessage(e: unknown): string {
  * for the writes that update the screen before the disk.
  */
 export async function handle(e: unknown, revert?: () => Promise<unknown>): Promise<void> {
-  const { app } = await import('./state.svelte')
   if (isLocked(e)) {
-    await app.lock()
+    await session?.lock()
     return
   }
-  app.error = errorMessage(e)
+  session?.report(errorMessage(e))
   if (revert) await revert()
 }
 
@@ -98,6 +118,5 @@ export async function handle(e: unknown, revert?: () => Promise<unknown>): Promi
  */
 export async function quietly(e: unknown): Promise<void> {
   if (!isLocked(e)) return
-  const { app } = await import('./state.svelte')
-  await app.lock()
+  await session?.lock()
 }

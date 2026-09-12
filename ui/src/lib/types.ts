@@ -1164,7 +1164,10 @@ export interface CommandInfo {
   streams: boolean
   args: { name: string; type: string; required: boolean }[]
   returns: string
-  changes: ChangeKind | null
+  /** A second scope that will do instead, for the one command that answers over two. */
+  orScope: string | null
+  /** What a listener should reload after this succeeds, and what it did. */
+  changes: { kind: ChangeKind; op: 'created' | 'updated' | 'deleted' } | null
 }
 
 /**
