@@ -15,4 +15,5 @@ jiff.workspace = true
 
 [dev-dependencies]
 everyday-core = { workspace = true, features = ["testing"] }
+everyday-store-sql = { workspace = true, features = ["testing"] }
 tempfile = "3"

@@ -7,7 +7,12 @@
 //!
 //! **Two sealed columns.** `data` is the whole note; `summary` is the row a
 //! list draws. A note holds a document and its photographs, and forty rows in
-//! a sidebar must not cost forty decrypted bodies to show forty titles.
+//! a sidebar must not cost forty decrypted bodies to show forty titles. This
+//! is also why [`Note`] implements [`Record`] but is never written through
+//! [`SqlStore::upsert`]: sealing `summary` needs the store's cipher, which is
+//! not something a method on the record alone can reach, so `put_note` keeps
+//! its own `INSERT`. The [`Record`] impl exists only so `get_note` can use
+//! [`SqlStore::get`].
 //!
 //! **The ordering happens in Rust.** `NoteQuery::apply` sorts and paginates
 //! after the rows are open, because one of the three orders is by title and a
@@ -18,11 +23,43 @@
 use everyday_core::error::{Error, Result};
 use everyday_core::id::NoteId;
 use everyday_core::note::{Note, NoteSummary};
+use everyday_core::purpose::Purpose;
 use everyday_core::store::notes::{NoteQuery, NoteStore, note_aad};
 
-use crate::conn::SqlExt;
+use crate::conn::{SqlExt, ToValue, Value};
 use crate::purpose::{RecordKind, forget_purposes, set_purpose};
+use crate::record::Record;
 use crate::{SqlStore, to_us, vals};
+
+impl Record for Note {
+    const TABLE: &'static str = "notes";
+    const KIND: &'static str = "note";
+    type Id = NoteId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        note_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("pinned", self.pinned.to_value()),
+            ("created_us", to_us(self.created_at).to_value()),
+            ("updated_us", to_us(self.updated_at).to_value()),
+        ]
+    }
+
+    fn purpose_kind() -> Option<RecordKind> {
+        Some(RecordKind::Note)
+    }
+
+    fn purpose(&self) -> Option<&Purpose> {
+        self.purpose.as_ref()
+    }
+}
 
 impl SqlStore {
     fn seal_note(&self, n: &Note) -> Result<(Vec<u8>, Vec<u8>)> {
@@ -50,11 +87,7 @@ impl NoteStore for SqlStore {
     }
 
     fn get_note(&self, id: NoteId) -> Result<Note> {
-        let sealed = self
-            .read()
-            .sealed("SELECT data FROM notes WHERE id = ?1", &vals![id.to_string()])?
-            .ok_or_else(|| Error::not_found("note", id))?;
-        self.unseal(&note_aad(id), &sealed)
+        self.get(id)
     }
 
     fn put_note(&self, note: &Note) -> Result<()> {

@@ -62,6 +62,13 @@ impl EventQuery {
         Self { from: Some(from), to: Some(to), ..Default::default() }
     }
 
+    /// Does this event pass the filter? `visible_only` is deliberately not
+    /// checked here -- an event does not know whether its own calendar is
+    /// visible, only the store does, the same way [`BlockQuery::project_id`]
+    /// documents a block only being able to see its own subject and leaving
+    /// project inheritance to the store that can see the task tree.
+    ///
+    /// [`BlockQuery::project_id`]: super::tasks::BlockQuery::project_id
     pub fn matches(&self, e: &Event) -> bool {
         if !e.covers(self.from, self.to) {
             return false;

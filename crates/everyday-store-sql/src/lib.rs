@@ -82,7 +82,10 @@
 //! ```text
 //!   lib.rs         the store itself, and the sealing helpers every
 //!                  domain shares
-//!   conn.rs        the two-method database a driver has to supply
+//!   conn.rs        the two-method database a driver has to supply, and
+//!                  the `WHERE`-clause builder every filter is made of
+//!   record.rs      the id/columns/sealed-payload shape every table has,
+//!                  and the get/upsert/delete it buys a table that names it
 //!   dialect.rs     the five places SQLite and Postgres disagree
 //!   schema.rs      the tables, and the migrations that reach them
 //!   blobs.rs       attachments, in a table, for a store with no local disk
@@ -98,7 +101,7 @@
 //! same one `everyday_core::store` makes between the trait and its five
 //! optional siblings.
 
-pub mod blobs;
+pub(crate) mod blobs;
 pub mod conn;
 pub mod dialect;
 pub mod schema;
@@ -111,18 +114,18 @@ mod notes;
 mod pool;
 mod profile;
 mod purpose;
+mod record;
 mod routines;
 mod tasks;
 mod trackers;
 
-use conn::{Connection, Sql, SqlExt, Value};
+use conn::{Connection, Sql, Value};
 use dialect::Dialect;
 use everyday_core::blobstore::FileBlobStore;
 use everyday_core::crypto::Cipher;
 use everyday_core::error::{Error, Result};
-use everyday_core::id::{EntryId, ReadingId, TaskId};
+use everyday_core::id::{EntryId, TaskId};
 use everyday_core::model::{Entry, EntrySummary};
-use everyday_core::store::trackers::reading_aad;
 use everyday_core::store::{Capabilities, StoreContext, entry_aad};
 use pool::{Pool, ReadGuard};
 use std::path::{Path, PathBuf};
@@ -261,10 +264,6 @@ impl SqlStore {
         })
     }
 
-    pub fn dialect(&self) -> Dialect {
-        self.dialect
-    }
-
     /// What every driver of this crate can do.
     ///
     /// Every domain, on both databases. The optional accessors on
@@ -310,8 +309,12 @@ impl SqlStore {
     /// The escape hatch, and deliberately a narrow one: a *domain* query
     /// belongs in a module here, written once and run on both databases,
     /// rather than at the far end of this. What it is for is a driver's own
-    /// tests and anything diagnostic.
-    #[doc(hidden)]
+    /// tests and anything diagnostic -- which is also why it only exists
+    /// under the `testing` feature (or inside this crate's own tests): the
+    /// one caller of it today is `everyday-store-sqlite`'s test suite, and a
+    /// method that skips every domain module to run arbitrary SQL has no
+    /// business being reachable from the running app.
+    #[cfg(any(test, feature = "testing"))]
     pub fn with_read<R>(&self, f: impl FnOnce(&mut dyn Sql) -> Result<R>) -> Result<R> {
         f(&mut self.read())
     }
@@ -422,52 +425,44 @@ impl SqlStore {
         Ok(())
     }
 
-    /// Clear the entry pointer on any reading that names `entry`.
+    /// Clear the entry pointer on any reading that names `entry`, inside
+    /// `tx`.
     ///
     /// Both copies of it: the clear column the index is built on, and the
     /// one inside the sealed payload. Updating only the column would leave
     /// the record disagreeing with itself, and the sealed copy is the one
-    /// that would be believed after a restore.
+    /// that would be believed after a restore. See
+    /// [`rewrite_each`](SqlStore::rewrite_each) for why this is a
+    /// read-modify-reseal on the writer rather than a plain `UPDATE`.
     ///
-    /// A read-modify-reseal per row, which is affordable precisely because
-    /// of what it operates on: the handful of things ticked while writing
-    /// one entry, on the rare occasion that entry is deleted.
-    ///
-    /// # All of it on the writer, in one transaction
-    ///
-    /// This is the one place in the crate that reads a row, changes it and
-    /// writes it back, and it is therefore the one place the read pool can
-    /// hurt. Taking the `SELECT` on a reader and the `UPDATE` on the writer
-    /// leaves a window in which somebody else's `put_reading` lands between
-    /// them -- and the reseal then writes the payload this call decrypted,
-    /// silently reverting their write. The clear column would be right and the
-    /// sealed copy wrong, which is the worse half: the sealed copy is the one
-    /// believed after a restore.
-    ///
-    /// So the whole sequence takes the write connection, and takes it once.
-    /// The transaction is what makes the set of rows consistent with itself:
-    /// without it a failure part way through would leave some readings
-    /// detached and some not.
-    pub(crate) fn detach_readings_from(&self, entry: EntryId) -> Result<()> {
-        let mut conn = self.write();
-        let mut tx = conn.begin()?;
-        let rows = tx.records(
+    /// Takes the transaction rather than opening its own so that
+    /// `delete_entry` -- the only caller -- can detach the readings and
+    /// remove the entry's own row in one commit. The two used to be separate
+    /// transactions, which left a crash between them able to delete the
+    /// entry without ever detaching its readings, or the reverse.
+    pub(crate) fn detach_readings_from(&self, tx: &mut dyn Sql, entry: EntryId) -> Result<u64> {
+        self.rewrite_each::<everyday_core::tracker::Reading>(
+            tx,
             "SELECT id, data FROM readings WHERE entry_id = ?1",
             &vals![entry.to_string()],
-        )?;
+            |reading| reading.entry_id = None,
+        )
+    }
 
-        for (id, sealed) in rows {
-            let id = ReadingId::parse(&id).map_err(|e| Error::Invalid(e.to_string()))?;
-            let aad = reading_aad(id);
-            let mut reading: everyday_core::tracker::Reading = self.unseal(&aad, &sealed)?;
-            reading.entry_id = None;
-            let data = self.seal(&aad, &reading)?;
-            tx.execute(
-                "UPDATE readings SET entry_id = NULL, data = ?2 WHERE id = ?1",
-                &vals![id.to_string(), data],
-            )?;
-        }
-        tx.commit()
+    /// `ORDER BY <order_by>`, followed by this dialect's `LIMIT`/`OFFSET`.
+    ///
+    /// One call so that a list method's ordering and its pagination cannot
+    /// drift apart the way they had: three call sites wrote `format!("
+    /// LIMIT {limit}")` by hand and dropped the `OFFSET` clause
+    /// [`Dialect::limit_offset`] already knew how to spell, while others
+    /// called it directly. Always emitted, even when there is no limit and
+    /// no offset -- `LIMIT -1 OFFSET 0` and `LIMIT ALL OFFSET 0` are both
+    /// no-ops, and one shape for the clause is simpler than a conditional
+    /// one that has to agree with itself across every list method.
+    pub(crate) fn page(&self, sql: &mut String, order_by: &str, limit: Option<u32>, offset: u32) {
+        sql.push_str(" ORDER BY ");
+        sql.push_str(order_by);
+        sql.push_str(&self.dialect.limit_offset(limit, offset));
     }
 }
 

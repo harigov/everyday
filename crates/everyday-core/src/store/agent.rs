@@ -71,6 +71,29 @@ impl ConversationQuery {
     pub fn chats(n: u32) -> Self {
         Self { limit: Some(n), offset: 0, chats_only: true }
     }
+
+    /// Does this conversation pass the filter? The only one there is:
+    /// `chats_only` keeps the threads somebody actually typed into, which is
+    /// exactly the ones with no routine run behind them.
+    pub fn matches(&self, c: &Conversation) -> bool {
+        !self.chats_only || c.run_id.is_none()
+    }
+
+    /// Filter, sort newest-first and page. The fallback for a backend that
+    /// cannot push `chats_only` into its own query -- which is every
+    /// backend, since the pointer lives inside the sealed payload -- so a
+    /// history pane sees the same list regardless of how much filtering a
+    /// store did before handing rows here.
+    pub fn apply(&self, mut rows: Vec<Conversation>) -> Vec<Conversation> {
+        rows.retain(|c| self.matches(c));
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| b.id.cmp(&a.id)));
+        let start = (self.offset as usize).min(rows.len());
+        rows.drain(..start);
+        if let Some(limit) = self.limit {
+            rows.truncate(limit as usize);
+        }
+        rows
+    }
 }
 
 /// Storage for the assistant domain.
@@ -216,4 +239,41 @@ pub fn settings_aad() -> Vec<u8> {
 
 pub fn secret_aad() -> Vec<u8> {
     b"everyday.agent-secret.v1".to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::id::RoutineRunId;
+
+    #[test]
+    fn chats_only_keeps_threads_with_no_run_behind_them() {
+        let chat = Conversation::new();
+        let brief = Conversation::for_run(RoutineRunId::new(), "Morning brief");
+        let q = ConversationQuery::chats(10);
+        assert!(q.matches(&chat));
+        assert!(!q.matches(&brief));
+        assert!(ConversationQuery::recent(10).matches(&brief), "unfiltered keeps everything");
+    }
+
+    #[test]
+    fn apply_filters_sorts_and_pages_together() {
+        // The three used to be split across a store-sql call site that
+        // pushed the ordering into SQL and then filtered, offset and capped
+        // by hand -- exactly the arithmetic this now does once, so every
+        // backend agrees with it rather than reimplementing it.
+        let mut old = Conversation::new();
+        old.updated_at = jiff::Timestamp::from_second(1_000).unwrap();
+        let mut new = Conversation::new();
+        new.updated_at = jiff::Timestamp::from_second(2_000).unwrap();
+        let brief = Conversation::for_run(RoutineRunId::new(), "Brief");
+
+        let out = ConversationQuery::chats(10).apply(vec![old.clone(), brief, new.clone()]);
+        assert_eq!(out.iter().map(|c| c.id).collect::<Vec<_>>(), vec![new.id, old.id]);
+
+        let paged = ConversationQuery { limit: Some(1), offset: 1, chats_only: false }
+            .apply(vec![old.clone(), new.clone()]);
+        assert_eq!(paged.len(), 1);
+        assert_eq!(paged[0].id, old.id, "newest is first, so an offset of one skips it");
+    }
 }
