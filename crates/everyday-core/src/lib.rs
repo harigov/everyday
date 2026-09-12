@@ -94,6 +94,8 @@ pub mod routine;
 pub mod search;
 pub mod store;
 pub mod task;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod tracker;
 pub mod vault;
 pub mod websearch;
