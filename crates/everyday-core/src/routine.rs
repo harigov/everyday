@@ -410,10 +410,6 @@ impl Outcome {
         }
     }
 
-    pub fn parse(s: &str) -> Option<Outcome> {
-        Outcome::ALL.iter().copied().find(|o| o.as_str() == s)
-    }
-
     /// Whether this run is over, one way or another.
     pub fn is_finished(self) -> bool {
         !matches!(self, Outcome::Queued | Outcome::Running)
