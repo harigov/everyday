@@ -24,7 +24,7 @@
 // importer want a `Task`, not a line of shorthand.
 
 import type { Priority, TaskStatus } from './types'
-import { todayIso } from './time'
+import { isoDate, todayIso } from './time'
 
 /** What one quick-add line means. */
 export interface QuickAdd {
@@ -88,15 +88,11 @@ function pad(n: number): string {
   return String(n).padStart(2, '0')
 }
 
-function isoOf(d: Date): string {
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
-
 function addDays(iso: string, days: number): string {
   const [y, m, d] = iso.split('-').map(Number)
   // Constructing from parts and letting Date normalise the overflow is what
   // makes month ends and leap days correct without a calendar table.
-  return isoOf(new Date(y ?? 1970, (m ?? 1) - 1, (d ?? 1) + days))
+  return isoDate(new Date(y ?? 1970, (m ?? 1) - 1, (d ?? 1) + days))
 }
 
 /**

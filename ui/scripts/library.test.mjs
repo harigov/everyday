@@ -24,7 +24,7 @@
 // exactly as the application compiles it.
 
 import assert from 'node:assert/strict'
-import { createServer } from 'vite'
+import { load, stubBrowser } from './harness.mjs'
 
 // `websearch.ts` imports `api.ts`, which decides at module scope whether it
 // is talking to Tauri or to the mock -- by looking in `window` -- and then
@@ -34,23 +34,13 @@ import { createServer } from 'vite'
 // Nothing below touches `api` or the mock. `LiveSearch` is handed its
 // searcher, which is exactly why it takes one rather than reaching for the
 // singleton: the class can be exercised without a backend of any kind.
-globalThis.window ??= globalThis
-globalThis.location ??= new URL('http://localhost/')
+stubBrowser({ window: globalThis, location: new URL('http://localhost/') })
 
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  // `watch: null` because a test loads a module once and exits. Vite's
-  // watcher is on by default even in middleware mode, and a watcher is a
-  // per-user resource: a suite that starts one server per file exhausts the
-  // supply (`EMFILE`) on any machine that already has a dev server running.
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
-})
-
-const { MAX_STARS, fromStars, ratingLabel, ratingTitle, shownScore, starFill, stars } =
-  await server.ssrLoadModule('/src/lib/rating.ts')
+const {
+  modules: [rating, websearch, types],
+  close,
+} = await load(['/src/lib/rating.ts', '/src/lib/websearch.ts', '/src/lib/types.ts'])
+const { MAX_STARS, fromStars, ratingLabel, ratingTitle, shownScore, starFill, stars } = rating
 
 // ── ratings ───────────────────────────────────────────────────────────
 
@@ -117,8 +107,8 @@ assert.equal(shownScore(84, 0), 0)
 
 // ── the search race guard ─────────────────────────────────────────────
 
-const { LiveSearch, SEARCH_DEBOUNCE_MS } = await server.ssrLoadModule('/src/lib/websearch.ts')
-const { VaultError } = await server.ssrLoadModule('/src/lib/types.ts')
+const { LiveSearch, SEARCH_DEBOUNCE_MS } = websearch
+const { VaultError } = types
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const outcome = (query, results) => ({ query, results, error: null })
@@ -269,8 +259,7 @@ function slowSearch(delays) {
 // disagreement shows up as a shelf whose badge says three and whose grid
 // shows four.
 
-const { ITEM_STATUSES, LOG_EVENTS, isAhead, isCompletion } =
-  await server.ssrLoadModule('/src/lib/types.ts')
+const { ITEM_STATUSES, LOG_EVENTS, isAhead, isCompletion } = types
 
 assert.deepEqual(ITEM_STATUSES.filter(isAhead), ['wishlist', 'active', 'paused'])
 assert.ok(!isAhead('done'), 'a finished thing is not still ahead of you')
@@ -282,5 +271,5 @@ assert.deepEqual(LOG_EVENTS.filter(isCompletion), ['finished', 'revisited'])
 assert.ok(!isCompletion('started'), 'starting something is not finishing it')
 assert.ok(!isCompletion('progress'))
 
-await server.close()
+await close()
 console.log('library: all checks passed')

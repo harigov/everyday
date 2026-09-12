@@ -15,8 +15,8 @@
   //   4. anything at all, as a note to yourself
 
   import { calendar } from '../lib/calendar.svelte'
-  import { formatMinutes } from '../lib/format'
-  import { locale, minutesOfDay, todayIso } from '../lib/time'
+  import { formatMinutes, timeOfDay } from '../lib/format'
+  import { minutesOfDay, todayIso } from '../lib/time'
   import Icon from './Icon.svelte'
   import type { BlockSubject } from '../lib/types'
 
@@ -72,10 +72,7 @@
   const startedAt = $derived.by(() => {
     const timer = running
     if (!timer) return ''
-    return new Intl.DateTimeFormat(locale(), {
-      hour: 'numeric',
-      minute: '2-digit',
-    }).format(new Date(timer.since))
+    return timeOfDay(new Date(timer.since))
   })
 
   const loggedToday = $derived(calendar.totalsOn(todayIso()).logged)

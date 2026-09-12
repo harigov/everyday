@@ -14,22 +14,10 @@
 // exactly as the application compiles it.
 
 import assert from 'node:assert/strict'
-import { createServer } from 'vite'
+import { load } from './harness.mjs'
 
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  // `watch: null` because a test loads a module once and exits. Vite's
-  // watcher is on by default even in middleware mode, and a watcher is a
-  // per-user resource: a suite that starts one server per file exhausts the
-  // supply (`EMFILE`) on any machine that already has a dev server running.
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
-})
-
-const { MENU_MARGIN, SEP, placeMenu, placeSubmenu, tidyMenu } =
-  await server.ssrLoadModule('/src/lib/menu.ts')
+const { module: menuLib, close } = await load('/src/lib/menu.ts')
+const { MENU_MARGIN, SEP, placeMenu, placeSubmenu, tidyMenu } = menuLib
 
 const SCREEN = { width: 1000, height: 800 }
 const SIZE = { width: 200, height: 300 }
@@ -112,5 +100,5 @@ assert.deepEqual(
   [{ kind: 'heading', label: 'Record' }, open],
 )
 
-await server.close()
+await close()
 console.log('menu: all checks passed')

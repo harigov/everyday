@@ -13,7 +13,7 @@
   // `list_parts`, which every app answers for itself; adding a sixth app puts
   // a row here without this file being opened.
 
-  import { humanBytes, plural } from '../lib/format'
+  import { dateFormat, humanBytes, plural } from '../lib/format'
   import { hasShell, transfer } from '../lib/transfer.svelte'
   import { app } from '../lib/state.svelte'
   import Icon from './Icon.svelte'
@@ -144,7 +144,7 @@
         <p class="hint">
           Exported from <b>{incoming.manifest.vault}</b>
           {#if incoming.manifest.exportedAt}
-            on {new Date(incoming.manifest.exportedAt).toLocaleDateString()}
+            on {dateFormat({}).format(new Date(incoming.manifest.exportedAt))}
           {/if}.
         </p>
       {/if}

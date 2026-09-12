@@ -18,18 +18,10 @@
 // rather than a comment.
 
 import assert from 'node:assert/strict'
-import { createServer } from 'vite'
+import { load } from './harness.mjs'
 
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
-})
-
-const { NOTHING_TAKEN, exhausted, remaining, roundOf, take } =
-  await server.ssrLoadModule('/src/lib/suggestions.ts')
+const { module: suggestions, close } = await load('/src/lib/suggestions.ts')
+const { NOTHING_TAKEN, exhausted, remaining, roundOf, take } = suggestions
 
 const chip = (key) => ({ key, label: `#${key}` })
 
@@ -143,5 +135,5 @@ const chip = (key) => ({ key, label: `#${key}` })
   assert.deepEqual([...second.keys].sort(), ['a', 'b'])
 }
 
-await server.close()
+await close()
 console.log('suggestions: all checks passed')

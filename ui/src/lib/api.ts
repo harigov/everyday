@@ -6,44 +6,29 @@
 // native dependencies. That is what makes the design workable on its own.
 
 import type {
-  AddedItem,
   AgentEvent,
-  AgentMessage,
   AgentSettings,
-  ArchiveManifest,
-  BalanceReport,
   BlockId,
   BlockKind,
   BlockQuery,
   BlockSubject,
   Bootstrap,
   Calendar,
-  CalendarEvent,
   CalendarId,
-  CalendarInfo,
   ChangeEvent,
   Connected,
   Connection,
-  Conversation,
   ConversationId,
-  ConversationSummary,
   Entry,
   EntryId,
   EntryQuery,
-  EntrySummary,
   EventId,
   EventQuery,
-  ExportChunk,
-  ExportHandle,
   Goal,
-  GoalActivity,
   GoalId,
   GoalQuery,
   HotkeyStatus,
   ImportMode,
-  ImportProgress,
-  ImportResult,
-  ImportUpload,
   Item,
   ItemId,
   ItemQuery,
@@ -52,8 +37,6 @@ import type {
   JournalId,
   Kind,
   KindId,
-  KindInfo,
-  LibraryStats,
   LogEntry,
   LogEvent,
   LogId,
@@ -64,60 +47,38 @@ import type {
   Note,
   NoteId,
   NoteQuery,
-  NoteSummary,
-  PartInfo,
   PickedFile,
   Profile,
   Project,
   ProjectId,
-  ProviderInfo,
   Reading,
   ReadingId,
   ReadingQuery,
   Role,
   RoleId,
-  RoleInfo,
   Routine,
   RoutineId,
-  RoutineInfo,
-  RoutineRun,
   RoutineRunId,
   RunQuery,
-  SearchHit,
   SearchKind,
   SearchRequest,
   SearchResult,
   ShareStatus,
   ShellNotification,
-  SourceInfo,
-  SyncReport,
-  TagCount,
   Task,
   TaskId,
   TaskQuery,
-  TaskStats,
   TaskStatus,
-  Template,
   TimeBlock,
   Tracker,
-  TrackerDay,
   TrackerId,
   TrackerKind,
   TrayMenuItem,
   VaultStatus,
-  QuickBackfillPick,
-  QuickEventDraft,
-  QuickFields,
-  QuickJobRow,
-  QuickKindDraft,
-  QuickLabels,
-  QuickMapping,
-  QuickReading,
-  QuickTaskDraft,
-  QuickTrackerDraft,
 } from './types'
 import { VaultError } from './types'
-import { SERVICE_COMMANDS } from './generated/commands'
+import { COMMAND_NAMES, SERVICE_COMMANDS } from './generated/commands'
+import type { Commands } from './generated/commands'
 
 // Decided at BUILD time, not run time.
 //
@@ -319,6 +280,34 @@ export function newRequestId(): string {
 
 export const isMock = MOCK
 
+/**
+ * Call a command from the generated surface, typed against it.
+ *
+ * `gen-api.mjs` exists so that renaming an argument in Rust is a type error
+ * here rather than a call that silently sends `undefined`, but every method
+ * below used to write its own `invoke<T>('snake_name', {...})` by hand --
+ * which meant the generated `Commands` interface had no reader at all, and a
+ * rename that changed a field name or a return type compiled anyway, on both
+ * sides, until somebody noticed the field come back as `undefined` at run
+ * time. `K` is the camelCase key `Commands` and `COMMAND_NAMES` share, so a
+ * method reads as `call('saveEntry', ...)` and the wire spelling is resolved
+ * for it rather than repeated by hand at every call site.
+ *
+ * `requestId` is passed straight through to `invoke`, which is the same
+ * "nobody attaches one unless they have reasoned about it" contract
+ * `newRequestId` documents -- this does not consult `WRITE_COMMANDS` to
+ * decide whether to mint or forward one, because today only `saveEntry` and
+ * `saveNote` ever pass one at all, and every other write below is content to
+ * retry as a fresh call if it is retried.
+ */
+function call<K extends keyof Commands>(
+  name: K,
+  args: Commands[K]['args'],
+  requestId?: string,
+): Promise<Commands[K]['result']> {
+  return invoke<Commands[K]['result']>(COMMAND_NAMES[name], args, requestId)
+}
+
 export const api = {
   bootstrap: () => invoke<Bootstrap>('bootstrap'),
 
@@ -429,7 +418,7 @@ export const api = {
    */
   hotkeyStatus: () => invoke<HotkeyStatus>('hotkey_status'),
   setHotkey: (on: boolean) => invoke<HotkeyStatus>('set_hotkey', { on }),
-  unlock: (password: string) => invoke<VaultStatus>('unlock', { password }),
+  unlock: (password: string) => call('unlock', { password }),
   /**
    * Check a password without opening or closing anything.
    *
@@ -437,15 +426,14 @@ export const api = {
    * never was. Costs the same Argon2 derivation an unlock costs and counts
    * against the same lockout, deliberately.
    */
-  verifyPassword: (password: string) => invoke<void>('verify_password', { password }),
-  lock: () => invoke<VaultStatus>('lock'),
-  status: () => invoke<VaultStatus>('status'),
-  changePassword: (current: string, next: string) =>
-    invoke<void>('change_password', { current, next }),
+  verifyPassword: (password: string) => call('verifyPassword', { password }),
+  lock: () => call('lock', {}),
+  status: () => call('status', {}),
+  changePassword: (current: string, next: string) => call('changePassword', { current, next }),
   /** How long before a client hides what it is showing. */
-  setAutoLock: (seconds: number) => invoke<void>('set_auto_lock', { seconds }),
+  setAutoLock: (seconds: number) => call('setAutoLock', { seconds }),
   /** How long before the machine holding the vault drops its key. 0 is never. */
-  setForgetKey: (seconds: number) => invoke<void>('set_forget_key', { seconds }),
+  setForgetKey: (seconds: number) => call('setForgetKey', { seconds }),
   /**
    * Keep this vault's key in this machine's keychain, or take it out again.
    *
@@ -458,18 +446,18 @@ export const api = {
   setOpensItself: (on: boolean, password: string | null) =>
     invoke<boolean>('set_opens_itself', { on, password }),
   /** Defers the moment the key is dropped; called on real user interaction. */
-  touch: () => invoke<void>('touch'),
+  touch: () => call('touch', {}),
   /** Returns true if the vault has just dropped its key. Polled on a timer. */
-  pollAutoLock: () => invoke<boolean>('poll_auto_lock'),
+  pollAutoLock: () => call('pollAutoLock', {}),
 
-  journals: () => invoke<Journal[]>('list_journals'),
-  newJournal: (name: string) => invoke<Journal>('new_journal', { name }),
-  saveJournal: (journal: Journal) => invoke<void>('save_journal', { journal }),
-  deleteJournal: (id: JournalId) => invoke<void>('delete_journal', { id }),
+  journals: () => call('listJournals', {}),
+  newJournal: (name: string) => call('newJournal', { name }),
+  saveJournal: (journal: Journal) => call('saveJournal', { journal }),
+  deleteJournal: (id: JournalId) => call('deleteJournal', { id }),
 
-  entries: (query: EntryQuery) => invoke<EntrySummary[]>('list_entries', { query }),
-  entry: (id: EntryId) => invoke<Entry>('get_entry', { id }),
-  newEntry: (journalId: JournalId) => invoke<Entry>('new_entry', { journalId }),
+  entries: (query: EntryQuery) => call('listEntries', { query }),
+  entry: (id: EntryId) => call('getEntry', { id }),
+  newEntry: (journalId: JournalId) => call('newEntry', { journalId }),
   /**
    * Save an entry, refusing to overwrite a change made since it was loaded.
    *
@@ -483,11 +471,11 @@ export const api = {
    * `newRequestId`.
    */
   saveEntry: (entry: Entry, expect: string | null, requestId?: string) =>
-    invoke<void>('save_entry', { entry, expect }, requestId),
+    call('saveEntry', { entry, expect }, requestId),
 
   /** Save regardless of what is stored. The "keep mine" on a conflict. */
-  saveEntryForce: (entry: Entry) => invoke<void>('save_entry_force', { entry }),
-  deleteEntry: (id: EntryId) => invoke<void>('delete_entry', { id }),
+  saveEntryForce: (entry: Entry) => call('saveEntryForce', { entry }),
+  deleteEntry: (id: EntryId) => call('deleteEntry', { id }),
 
   /**
    * Search entries and notes.
@@ -501,7 +489,7 @@ export const api = {
     journalId: JournalId | null,
     limit: number,
     kind: SearchKind | null = null,
-  ) => invoke<SearchHit[]>('search', { query, journalId, kind, limit }),
+  ) => call('search', { query, journalId, kind, limit }),
 
   /**
    * Who the vault belongs to.
@@ -510,15 +498,15 @@ export const api = {
    * there is no tool for it, deliberately, because a fact that changes is a
    * memory and this is for the ones that do not.
    */
-  profile: () => invoke<Profile>('profile'),
-  saveProfile: (profile: Profile) => invoke<Profile>('save_profile', { profile }),
+  profile: () => call('profile', {}),
+  saveProfile: (profile: Profile) => call('saveProfile', { profile }),
 
   /** The assistant's standing work, with when each next runs. */
-  routines: () => invoke<RoutineInfo[]>('list_routines'),
+  routines: () => call('listRoutines', {}),
   /** A blank routine with an id. The core allocates it; see `newEntry`. */
-  newRoutine: () => invoke<Routine>('new_routine'),
-  saveRoutine: (routine: Routine) => invoke<Routine>('save_routine', { routine }),
-  deleteRoutine: (id: RoutineId) => invoke<void>('delete_routine', { id }),
+  newRoutine: () => call('newRoutine', {}),
+  saveRoutine: (routine: Routine) => call('saveRoutine', { routine }),
+  deleteRoutine: (id: RoutineId) => call('deleteRoutine', { id }),
   /**
    * Ask for a routine to run now.
    *
@@ -526,19 +514,19 @@ export const api = {
    * that runs stay serial however many times the button is pressed. Pressing it
    * twice returns the same queued run rather than paying for two model calls.
    */
-  runRoutine: (id: RoutineId) => invoke<RoutineRun>('run_routine', { id }),
-  runs: (query: RunQuery = {}) => invoke<RoutineRun[]>('list_runs', { query }),
-  run: (id: RoutineRunId) => invoke<RoutineRun>('get_run', { id }),
-  deleteRun: (id: RoutineRunId) => invoke<void>('delete_run', { id }),
+  runRoutine: (id: RoutineId) => call('runRoutine', { id }),
+  runs: (query: RunQuery = {}) => call('listRuns', { query }),
+  run: (id: RoutineRunId) => call('getRun', { id }),
+  deleteRun: (id: RoutineRunId) => call('deleteRun', { id }),
   /** Mark runs as looked at. An empty list means all of them. */
-  markRunsSeen: (ids: RoutineRunId[] = []) => invoke<void>('mark_runs_seen', { ids }),
+  markRunsSeen: (ids: RoutineRunId[] = []) => call('markRunsSeen', { ids }),
   /** How many runs nobody has looked at. The number on the app bar. */
-  unseenRuns: () => invoke<number>('unseen_runs'),
-  routineTemplates: () => invoke<Template[]>('routine_templates'),
+  unseenRuns: () => call('unseenRuns', {}),
+  routineTemplates: () => call('routineTemplates', {}),
 
-  notes: (query: NoteQuery = {}) => invoke<NoteSummary[]>('list_notes', { query }),
-  note: (id: NoteId) => invoke<Note>('get_note', { id }),
-  newNote: () => invoke<Note>('new_note'),
+  notes: (query: NoteQuery = {}) => call('listNotes', { query }),
+  note: (id: NoteId) => call('getNote', { id }),
+  newNote: () => call('newNote', {}),
   /**
    * Save a note, refusing to overwrite an edit made since `expect` was read.
    *
@@ -550,10 +538,10 @@ export const api = {
    * cannot be recognised by.
    */
   saveNote: (note: Note, expect: string | null, requestId?: string) =>
-    invoke<void>('save_note', { note, expect }, requestId),
-  saveNoteForce: (note: Note) => invoke<void>('save_note_force', { note }),
-  deleteNote: (id: NoteId) => invoke<void>('delete_note', { id }),
-  noteTags: () => invoke<string[]>('note_tags'),
+    call('saveNote', { note, expect }, requestId),
+  saveNoteForce: (note: Note) => call('saveNoteForce', { note }),
+  deleteNote: (id: NoteId) => call('deleteNote', { id }),
+  noteTags: () => call('noteTags', {}),
 
   /**
    * Import a file the user dropped or picked; returns its content address.
@@ -581,7 +569,7 @@ export const api = {
   hideTray: () => invoke<void>('hide_tray'),
 
   /** All tags in use, most frequent first. */
-  tags: () => invoke<string[]>('list_tags'),
+  tags: () => call('listTags', {}),
 
   // ── The task domain ────────────────────────────────────────────────
   //
@@ -589,40 +577,40 @@ export const api = {
   // vault stores journals and nothing else, and the interface hides the
   // todo app rather than letting these fail at click time.
 
-  projects: () => invoke<Project[]>('list_projects'),
-  newProject: (name: string) => invoke<Project>('new_project', { name }),
-  saveProject: (project: Project) => invoke<void>('save_project', { project }),
+  projects: () => call('listProjects', {}),
+  newProject: (name: string) => call('newProject', { name }),
+  saveProject: (project: Project) => call('saveProject', { project }),
   /** Deletes the project, its tasks and their time blocks. */
-  deleteProject: (id: ProjectId) => invoke<void>('delete_project', { id }),
+  deleteProject: (id: ProjectId) => call('deleteProject', { id }),
 
-  tasks: (query: TaskQuery) => invoke<Task[]>('list_tasks', { query }),
-  task: (id: TaskId) => invoke<Task>('get_task', { id }),
+  tasks: (query: TaskQuery) => call('listTasks', { query }),
+  task: (id: TaskId) => call('getTask', { id }),
   /** Mints an unsaved task; fill it in and pass it to `saveTask`. */
   newTask: (opts: {
     projectId: ProjectId | null
     parentId: TaskId | null
     status: TaskStatus | null
-  }) => invoke<Task>('new_task', opts),
-  saveTask: (task: Task) => invoke<void>('save_task', { task }),
+  }) => call('newTask', opts),
+  saveTask: (task: Task) => call('saveTask', { task }),
   /** One write for many tasks: what a board reorder is. */
-  saveTasks: (tasks: Task[]) => invoke<void>('save_tasks', { tasks }),
+  saveTasks: (tasks: Task[]) => call('saveTasks', { tasks }),
   /** Deletes the task, its subtasks and their time blocks. */
-  deleteTask: (id: TaskId) => invoke<void>('delete_task', { id }),
+  deleteTask: (id: TaskId) => call('deleteTask', { id }),
 
-  blocks: (query: BlockQuery) => invoke<TimeBlock[]>('list_blocks', { query }),
+  blocks: (query: BlockQuery) => call('listBlocks', { query }),
   /** Mints an unsaved block, with the machine's own time zone resolved. */
   newBlock: (opts: {
     subject: BlockSubject
     start: string
     minutes: number
     kind: BlockKind | null
-  }) => invoke<TimeBlock>('new_block', opts),
-  saveBlock: (block: TimeBlock) => invoke<void>('save_block', { block }),
-  deleteBlock: (id: BlockId) => invoke<void>('delete_block', { id }),
+  }) => call('newBlock', opts),
+  saveBlock: (block: TimeBlock) => call('saveBlock', { block }),
+  deleteBlock: (id: BlockId) => call('deleteBlock', { id }),
 
   /** Every tag in the task domain with its usage count, most used first. */
-  taskTags: () => invoke<TagCount[]>('task_tags'),
-  taskStats: () => invoke<TaskStats>('task_stats'),
+  taskTags: () => call('taskTags', {}),
+  taskStats: () => call('taskStats', {}),
 
   // ── The calendar domain ────────────────────────────────────────────
   //
@@ -630,10 +618,10 @@ export const api = {
   // block and goes through the task commands above -- there is deliberately
   // no second way to store an appointment.
 
-  calendars: () => invoke<CalendarInfo[]>('list_calendars'),
-  saveCalendar: (calendar: Calendar) => invoke<void>('save_calendar', { calendar }),
+  calendars: () => call('listCalendars', {}),
+  saveCalendar: (calendar: Calendar) => call('saveCalendar', { calendar }),
   /** Unsubscribe: the calendar and every event that came from it. */
-  deleteCalendar: (id: CalendarId) => invoke<void>('delete_calendar', { id }),
+  deleteCalendar: (id: CalendarId) => call('deleteCalendar', { id }),
 
   /**
    * Subscribe to a feed and fetch it once.
@@ -643,22 +631,22 @@ export const api = {
    * outcome is that nothing was added.
    */
   subscribeCalendar: (opts: { name: string; url: string; color: string }) =>
-    invoke<CalendarInfo>('subscribe_calendar', opts),
+    call('subscribeCalendar', opts),
 
   /** Add a calendar from a `.ics` file the browser read for us. */
   importCalendar: (opts: { name: string; label: string; color: string; ics: string }) =>
-    invoke<CalendarInfo>('import_calendar', opts),
+    call('importCalendar', opts),
 
   /** Refetch one feed and replace its events with what comes back. */
-  syncCalendar: (id: CalendarId) => invoke<SyncReport>('sync_calendar', { id }),
+  syncCalendar: (id: CalendarId) => call('syncCalendar', { id }),
   /** Refetch every feed whose interval has elapsed. `force` ignores it. */
-  syncDueCalendars: (force: boolean) => invoke<SyncReport[]>('sync_due_calendars', { force }),
+  syncDueCalendars: (force: boolean) => call('syncDueCalendars', { force }),
 
-  events: (query: EventQuery) => invoke<CalendarEvent[]>('list_events', { query }),
-  event: (id: EventId) => invoke<CalendarEvent>('get_event', { id }),
+  events: (query: EventQuery) => call('listEvents', { query }),
+  event: (id: EventId) => call('getEvent', { id }),
 
   /** The providers the add sheet offers, with where to find each address. */
-  calendarProviders: () => invoke<ProviderInfo[]>('calendar_providers'),
+  calendarProviders: () => call('calendarProviders', {}),
 
   // ── The library domain ─────────────────────────────────────────────
   //
@@ -672,15 +660,15 @@ export const api = {
    * the library store calls this before anything else — see `list_kinds` in
    * the Rust shell for why the seeding hangs off a read.
    */
-  kinds: () => invoke<KindInfo[]>('list_kinds'),
+  kinds: () => call('listKinds', {}),
   /** Mints an unsaved shelf, with a slug derived from the name. */
-  newKind: (name: string, singular: string) => invoke<Kind>('new_kind', { name, singular }),
-  saveKind: (kind: Kind) => invoke<void>('save_kind', { kind }),
+  newKind: (name: string, singular: string) => call('newKind', { name, singular }),
+  saveKind: (kind: Kind) => call('saveKind', { kind }),
   /** Deletes the shelf, everything on it, and those items' log rows. */
-  deleteKind: (id: KindId) => invoke<void>('delete_kind', { id }),
+  deleteKind: (id: KindId) => call('deleteKind', { id }),
 
-  items: (query: ItemQuery) => invoke<Item[]>('list_items', { query }),
-  item: (id: ItemId) => invoke<Item>('get_item', { id }),
+  items: (query: ItemQuery) => call('listItems', { query }),
+  item: (id: ItemId) => call('getItem', { id }),
 
   /**
    * Add something to a shelf, and optionally go and find out what it is.
@@ -692,12 +680,12 @@ export const api = {
    * silently implying it tried.
    */
   addItem: (kindId: KindId, title: string, lookup: boolean) =>
-    invoke<AddedItem>('add_item', { kindId, title, lookup }),
-  saveItem: (item: Item) => invoke<void>('save_item', { item }),
+    call('addItem', { kindId, title, lookup }),
+  saveItem: (item: Item) => call('saveItem', { item }),
   /** One write for many items: what a re-ordered shelf is. */
-  saveItems: (items: Item[]) => invoke<void>('save_items', { items }),
+  saveItems: (items: Item[]) => call('saveItems', { items }),
   /** Deletes the item and its whole log. */
-  deleteItem: (id: ItemId) => invoke<void>('delete_item', { id }),
+  deleteItem: (id: ItemId) => call('deleteItem', { id }),
 
   /**
    * Move an item to a status, dating it and logging it in one act.
@@ -707,18 +695,18 @@ export const api = {
    * log gains the row that makes "what did I read this year" answerable.
    */
   setItemStatus: (id: ItemId, status: ItemStatus, log: boolean) =>
-    invoke<Item>('set_item_status', { id, status, log }),
+    call('setItemStatus', { id, status, log }),
   /** Record where you have got to. Starts the item if it was only wished for. */
   setItemProgress: (id: ItemId, position: number, total: number | null, log: boolean) =>
-    invoke<Item>('set_item_progress', { id, position, total, log }),
+    call('setItemProgress', { id, position, total, log }),
 
-  logs: (query: LogQuery) => invoke<LogEntry[]>('list_logs', { query }),
+  logs: (query: LogQuery) => call('listLogs', { query }),
   /** Mints an unsaved log row dated today on the machine's own calendar. */
-  newLog: (itemId: ItemId, event: LogEvent) => invoke<LogEntry>('new_log', { itemId, event }),
-  saveLog: (log: LogEntry) => invoke<void>('save_log', { log }),
-  deleteLog: (id: LogId) => invoke<void>('delete_log', { id }),
+  newLog: (itemId: ItemId, event: LogEvent) => call('newLog', { itemId, event }),
+  saveLog: (log: LogEntry) => call('saveLog', { log }),
+  deleteLog: (id: LogId) => call('deleteLog', { id }),
 
-  libraryStats: () => invoke<LibraryStats>('library_stats'),
+  libraryStats: () => call('libraryStats', {}),
 
   // ── Web search ─────────────────────────────────────────────────────
   //
@@ -727,15 +715,15 @@ export const api = {
   // calling them directly.
 
   /** Search the web. The general entry point; anything may call it. */
-  webSearch: (request: SearchRequest) => invoke<SearchResult[]>('web_search', { request }),
+  webSearch: (request: SearchRequest) => call('webSearch', { request }),
   /** The sources a search can be run against, for the picker. */
-  searchSources: () => invoke<SourceInfo[]>('search_sources'),
+  searchSources: () => call('searchSources', {}),
   /** Look a title up using whatever source a shelf prefers. */
   lookupMetadata: (kindId: KindId, query: string, limit?: number) =>
-    invoke<SearchResult[]>('lookup_metadata', { kindId, query, limit: limit ?? null }),
+    call('lookupMetadata', { kindId, query, limit: limit ?? null }),
   /** Apply a chosen result to an item, downloading its cover on the way. */
   applyMetadata: (id: ItemId, result: SearchResult, overwrite: boolean) =>
-    invoke<Item>('apply_metadata', { id, result, overwrite }),
+    call('applyMetadata', { id, result, overwrite }),
   /**
    * Download a picture into the vault and return its blob id.
    *
@@ -743,7 +731,7 @@ export const api = {
    * security policy allows images from `'self'` and `everyday:` and nowhere
    * else, so a cover has to come home before it can be drawn.
    */
-  fetchImage: (url: string) => invoke<string>('fetch_image', { url }),
+  fetchImage: (url: string) => call('fetchImage', { url }),
 
   // ── Roles and goals ────────────────────────────────────────────────
   //
@@ -751,17 +739,17 @@ export const api = {
   // are small; the interesting call is `balance`, which is the whole reason
   // the purpose pointer exists.
 
-  roles: () => invoke<RoleInfo[]>('list_roles'),
+  roles: () => call('listRoles', {}),
 
   /** Mints an unsaved role; fill it in and pass it to `saveRole`. */
-  newRole: (name: string) => invoke<Role>('new_role', { name }),
-  saveRole: (role: Role) => invoke<void>('save_role', { role }),
+  newRole: (name: string) => call('newRole', { name }),
+  saveRole: (role: Role) => call('saveRole', { role }),
 
   /**
    * Delete a role. Refused, with a message naming the count, while goals
    * still point at it — unlike a project, which takes its tasks with it.
    */
-  deleteRole: (id: RoleId) => invoke<void>('delete_role', { id }),
+  deleteRole: (id: RoleId) => call('deleteRole', { id }),
 
   /**
    * Offer a starting set of roles, and answer 0 if there are any already.
@@ -770,23 +758,23 @@ export const api = {
    * life is made of is a claim, and writing one unasked would be this
    * application telling somebody who they are.
    */
-  seedRoles: () => invoke<number>('seed_roles'),
+  seedRoles: () => call('seedRoles', {}),
 
-  goals: (query: GoalQuery = {}) => invoke<Goal[]>('list_goals', { query }),
-  goal: (id: GoalId) => invoke<Goal>('get_goal', { id }),
-  newGoal: (roleId: RoleId, title: string) => invoke<Goal>('new_goal', { roleId, title }),
-  saveGoal: (goal: Goal) => invoke<void>('save_goal', { goal }),
-  saveGoals: (goals: Goal[]) => invoke<void>('save_goals', { goals }),
-  deleteGoal: (id: GoalId) => invoke<void>('delete_goal', { id }),
+  goals: (query: GoalQuery = {}) => call('listGoals', { query }),
+  goal: (id: GoalId) => call('getGoal', { id }),
+  newGoal: (roleId: RoleId, title: string) => call('newGoal', { roleId, title }),
+  saveGoal: (goal: Goal) => call('saveGoal', { goal }),
+  saveGoals: (goals: Goal[]) => call('saveGoals', { goals }),
+  deleteGoal: (id: GoalId) => call('deleteGoal', { id }),
 
   /**
    * Minutes per purpose over a window, and the meetings somebody else
    * booked, in one call — the Overview draws them together, and two round
    * trips would let one arrive without the other.
    */
-  balance: (from: string, to: string) => invoke<BalanceReport>('time_by_purpose', { from, to }),
+  balance: (from: string, to: string) => call('timeByPurpose', { from, to }),
 
-  goalActivity: (id: GoalId) => invoke<GoalActivity>('goal_activity', { id }),
+  goalActivity: (id: GoalId) => call('goalActivity', { id }),
 
   // ── The tracking domain ────────────────────────────────────────────
   //
@@ -795,7 +783,7 @@ export const api = {
   // chip is a list of ids on each journal.
 
   /** Mints an unsaved tracker; fill it in and pass it to `saveTracker`. */
-  newTracker: (name: string, kind: TrackerKind) => invoke<Tracker>('new_tracker', { name, kind }),
+  newTracker: (name: string, kind: TrackerKind) => call('newTracker', { name, kind }),
 
   /**
    * Every tracker in the vault.
@@ -803,20 +791,19 @@ export const api = {
    * Also where a vault written before trackers became records has its old
    * definitions moved out of its journals — once, on the first call.
    */
-  trackers: () => invoke<Tracker[]>('list_trackers'),
-  saveTracker: (tracker: Tracker) => invoke<void>('save_tracker', { tracker }),
+  trackers: () => call('listTrackers', {}),
+  saveTracker: (tracker: Tracker) => call('saveTracker', { tracker }),
 
   /**
    * Fold one tracker into another, keeping both histories, and answer how
    * many readings moved. The tidy-up for a name typed two ways.
    */
-  mergeTrackers: (from: TrackerId, into: TrackerId) =>
-    invoke<number>('merge_trackers', { from, into }),
+  mergeTrackers: (from: TrackerId, into: TrackerId) => call('mergeTrackers', { from, into }),
 
-  readings: (query: ReadingQuery) => invoke<Reading[]>('list_readings', { query }),
+  readings: (query: ReadingQuery) => call('listReadings', { query }),
 
   /** One row per tracker per day: the aggregate a chart is built from. */
-  trackerDays: (query: ReadingQuery) => invoke<TrackerDay[]>('tracker_days', { query }),
+  trackerDays: (query: ReadingQuery) => call('trackerDays', { query }),
 
   /**
    * Record one value, and let the backend decide what "when" means.
@@ -835,18 +822,18 @@ export const api = {
     /** Where it was ticked. Both absent for a reading logged from anywhere else. */
     journalId?: JournalId | null
     entryId?: EntryId | null
-  }) => invoke<Reading>('log_reading', opts),
+  }) => call('logReading', opts),
 
   /** Update a reading that exists: a corrected dose, a note, a time. */
-  saveReading: (reading: Reading) => invoke<void>('save_reading', { reading }),
-  deleteReading: (id: ReadingId) => invoke<void>('delete_reading', { id }),
+  saveReading: (reading: Reading) => call('saveReading', { reading }),
+  deleteReading: (id: ReadingId) => call('deleteReading', { id }),
 
   /**
    * Delete a tracker *and* every reading it ever made, returning how many
    * went. Archiving — a flag on the definition — is the non-destructive
    * half of this pair, and the usual answer.
    */
-  deleteTracker: (id: TrackerId) => invoke<number>('delete_tracker', { id }),
+  deleteTracker: (id: TrackerId) => call('deleteTracker', { id }),
 
   // ── The assistant ──────────────────────────────────────────────────
   //
@@ -857,25 +844,23 @@ export const api = {
   // exchange: `sendMessage` (exported separately, because it streams) and
   // the confirmation that answers it.
 
-  agentSettings: () => invoke<AgentSettings>('agent_settings'),
+  agentSettings: () => call('agentSettings', {}),
 
   /** Returns what was actually stored: `hasKey` is derived, not echoed. */
-  saveAgentSettings: (settings: AgentSettings) =>
-    invoke<AgentSettings>('save_agent_settings', { settings }),
+  saveAgentSettings: (settings: AgentSettings) => call('saveAgentSettings', { settings }),
 
   /** Store the API key. There is deliberately no call that reads one back. */
-  setAgentKey: (key: string) => invoke<void>('set_agent_key', { key }),
-  clearAgentKey: () => invoke<void>('clear_agent_key'),
+  setAgentKey: (key: string) => call('setAgentKey', { key }),
+  clearAgentKey: () => call('clearAgentKey', {}),
 
-  conversations: (limit?: number) => invoke<ConversationSummary[]>('list_conversations', { limit }),
+  conversations: (limit?: number) => call('listConversations', { limit }),
 
   /** Mints an unsaved thread; the first message is what saves it. */
-  newConversation: () => invoke<Conversation>('new_conversation'),
+  newConversation: () => call('newConversation', {}),
 
-  conversationMessages: (id: ConversationId) =>
-    invoke<AgentMessage[]>('conversation_messages', { id }),
+  conversationMessages: (id: ConversationId) => call('conversationMessages', { id }),
 
-  deleteConversation: (id: ConversationId) => invoke<void>('delete_conversation', { id }),
+  deleteConversation: (id: ConversationId) => call('deleteConversation', { id }),
 
   /**
    * Answer a confirmation the assistant is waiting on. False means nothing
@@ -883,19 +868,19 @@ export const api = {
    * click -- which the panel treats as a dismissal rather than an error.
    */
   confirmToolCall: (callId: string, approved: boolean) =>
-    invoke<boolean>('confirm_tool_call', { callId, approved }),
+    call('confirmToolCall', { callId, approved }),
 
-  memories: () => invoke<Memory[]>('list_memories'),
+  memories: () => call('listMemories', {}),
 
   /** A blank memory with an id, pinned. The core allocates it. */
-  newMemory: () => invoke<Memory>('new_memory'),
+  newMemory: () => call('newMemory', {}),
 
   /**
    * Saving by hand also pins: a fact somebody typed is not one the
    * assistant's own housekeeping may drop. Returns what it evicted.
    */
-  saveMemory: (memory: Memory) => invoke<Memory[]>('save_memory', { memory }),
-  deleteMemory: (id: MemoryId) => invoke<void>('delete_memory', { id }),
+  saveMemory: (memory: Memory) => call('saveMemory', { memory }),
+  deleteMemory: (id: MemoryId) => call('deleteMemory', { id }),
 
   // ── The quick model ────────────────────────────────────────────────
   //
@@ -908,58 +893,48 @@ export const api = {
   // which owns the switch check, the cancellation and the rule that a failure
   // here is silence rather than an error.
 
-  quickJobs: () => invoke<QuickJobRow[]>('quick_jobs'),
-  setQuickJob: (args: { name: string; on: boolean }) =>
-    invoke<QuickJobRow[]>('set_quick_job', args),
+  quickJobs: () => call('quickJobs', {}),
+  setQuickJob: (args: { name: string; on: boolean }) => call('setQuickJob', args),
 
   /** The shelf's own declared fields, out of what a search found. */
-  quickItemFields: (itemId: ItemId) => invoke<QuickFields>('quick_item_fields', { itemId }),
+  quickItemFields: (itemId: ItemId) => call('quickItemFields', { itemId }),
 
   /** Which result is the thing, or null when none of them is. */
   quickPickResult: (args: { kindId: KindId; query: string; results: SearchResult[] }) =>
-    invoke<number | null>('quick_pick_result', args),
+    call('quickPickResult', args),
 
   /** A whole shelf, drafted from its name. */
-  quickKindDraft: (name: string) => invoke<QuickKindDraft>('quick_kind_draft', { name }),
+  quickKindDraft: (name: string) => call('quickKindDraft', { name }),
 
   quickImportColumns: (args: { kindId: KindId; columns: string[]; sample?: string[] }) =>
-    invoke<QuickMapping>('quick_import_columns', args),
+    call('quickImportColumns', args),
 
-  quickTaskLabels: (title: string) => invoke<QuickLabels>('quick_task_labels', { title }),
-  quickTaskFromLine: (line: string) =>
-    invoke<QuickTaskDraft | null>('quick_task_from_line', { line }),
-  quickSubtasks: (taskId: TaskId) => invoke<QuickTaskDraft[]>('quick_subtasks', { taskId }),
-  quickEstimate: (taskId: TaskId) => invoke<number | null>('quick_estimate', { taskId }),
+  quickTaskLabels: (title: string) => call('quickTaskLabels', { title }),
+  quickTaskFromLine: (line: string) => call('quickTaskFromLine', { line }),
+  quickSubtasks: (taskId: TaskId) => call('quickSubtasks', { taskId }),
+  quickEstimate: (taskId: TaskId) => call('quickEstimate', { taskId }),
 
-  quickEventFromLine: (line: string) =>
-    invoke<QuickEventDraft | null>('quick_event_from_line', { line }),
+  quickEventFromLine: (line: string) => call('quickEventFromLine', { line }),
   /** Display only: the feed's own record is never rewritten. */
-  quickEventTitle: (title: string) => invoke<string>('quick_event_title', { title }),
+  quickEventTitle: (title: string) => call('quickEventTitle', { title }),
 
-  quickEntryReadings: (entryId: EntryId) =>
-    invoke<QuickReading[]>('quick_entry_readings', { entryId }),
-  quickEntryTitle: (entryId: EntryId) => invoke<string>('quick_entry_title', { entryId }),
-  quickEntryLabels: (entryId: EntryId) => invoke<QuickLabels>('quick_entry_labels', { entryId }),
+  quickEntryReadings: (entryId: EntryId) => call('quickEntryReadings', { entryId }),
+  quickEntryTitle: (entryId: EntryId) => call('quickEntryTitle', { entryId }),
+  quickEntryLabels: (entryId: EntryId) => call('quickEntryLabels', { entryId }),
 
-  quickNoteTitle: (noteId: NoteId) => invoke<string>('quick_note_title', { noteId }),
-  quickNoteTasks: (noteId: NoteId) => invoke<QuickTaskDraft[]>('quick_note_tasks', { noteId }),
-  quickNoteLabels: (noteId: NoteId) => invoke<QuickLabels>('quick_note_labels', { noteId }),
+  quickNoteTitle: (noteId: NoteId) => call('quickNoteTitle', { noteId }),
+  quickNoteTasks: (noteId: NoteId) => call('quickNoteTasks', { noteId }),
+  quickNoteLabels: (noteId: NoteId) => call('quickNoteLabels', { noteId }),
 
-  quickReadingFromLine: (line: string) =>
-    invoke<QuickReading | null>('quick_reading_from_line', { line }),
-  quickTrackerDraft: (args: { name: string; line?: string }) =>
-    invoke<QuickTrackerDraft | null>('quick_tracker_draft', args),
+  quickReadingFromLine: (line: string) => call('quickReadingFromLine', { line }),
+  quickTrackerDraft: (args: { name: string; line?: string }) => call('quickTrackerDraft', args),
 
-  quickGoalWording: (args: { title: string; roleId: RoleId }) =>
-    invoke<string>('quick_goal_wording', args),
-  quickGoalBackfill: (goalId: GoalId) =>
-    invoke<QuickBackfillPick[]>('quick_goal_backfill', { goalId }),
+  quickGoalWording: (args: { title: string; roleId: RoleId }) => call('quickGoalWording', args),
+  quickGoalBackfill: (goalId: GoalId) => call('quickGoalBackfill', { goalId }),
 
-  quickWeekNote: (args: { thisWeek: string; lastWeek?: string }) =>
-    invoke<string>('quick_week_note', args),
+  quickWeekNote: (args: { thisWeek: string; lastWeek?: string }) => call('quickWeekNote', args),
 
-  quickFrontMatter: (args: { ours: string[]; theirs: string[] }) =>
-    invoke<QuickMapping>('quick_front_matter', args),
+  quickFrontMatter: (args: { ours: string[]; theirs: string[] }) => call('quickFrontMatter', args),
 
   // ── Taking your data out, and putting it back ────────────────────────
   //
@@ -969,25 +944,22 @@ export const api = {
   // the interface should be calling these by hand.
 
   /** What this vault can hand over, and how much of it there is. */
-  exportableParts: () => invoke<PartInfo[]>('list_parts'),
+  exportableParts: () => call('listParts', {}),
 
   /** Build the archive. The bytes stay on the vault's machine until read. */
-  startExport: (parts: string[], media: boolean) =>
-    invoke<ExportHandle>('start_export', { parts, media }),
-  readExport: (handle: string, offset: number) =>
-    invoke<ExportChunk>('read_export', { handle, offset }),
+  startExport: (parts: string[], media: boolean) => call('startExport', { parts, media }),
+  readExport: (handle: string, offset: number) => call('readExport', { handle, offset }),
   /** For a download that was abandoned; a finished one drops itself. */
-  endExport: (handle: string) => invoke<void>('end_export', { handle }),
+  endExport: (handle: string) => call('endExport', { handle }),
 
-  startImport: (name: string, bytes: number) =>
-    invoke<ImportUpload>('start_import', { name, bytes }),
+  startImport: (name: string, bytes: number) => call('startImport', { name, bytes }),
   writeImport: (handle: string, offset: number, data: string) =>
-    invoke<ImportProgress>('write_import', { handle, offset, data }),
+    call('writeImport', { handle, offset, data }),
   /** What is in it, changing nothing. The dry run the dialog shows. */
-  readImport: (handle: string) => invoke<ArchiveManifest>('read_import', { handle }),
+  readImport: (handle: string) => call('readImport', { handle }),
   runImport: (handle: string, parts: string[], mode: ImportMode) =>
-    invoke<ImportResult>('run_import', { handle, parts, mode }),
-  endImport: (handle: string) => invoke<void>('end_import', { handle }),
+    call('runImport', { handle, parts, mode }),
+  endImport: (handle: string) => call('endImport', { handle }),
 
   /**
    * Ask the shell to save an already-built export where the user picks.

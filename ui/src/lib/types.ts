@@ -16,6 +16,11 @@
 //                in the array still compiles and the picker it feeds silently
 //                loses a row.
 
+// `ChangeKind` alone comes from the generated client rather than being
+// declared below with everything else -- see the re-export beside
+// `ChangeEvent` for why.
+import type { ChangeKind } from './generated/commands'
+
 // ── Ids, every domain's at once ──────────────────────────────────────────
 export type JournalId = string
 export type EntryId = string
@@ -229,15 +234,6 @@ export type Period = (typeof PERIODS)[number]
 export interface Cadence {
   times: number
   per: Period
-}
-
-/** How a cadence reads in a sentence. */
-export function describeCadence(c: Cadence): string {
-  if (c.times === 1) {
-    if (c.per === 'day') return 'every day'
-    return c.per === 'week' ? 'once a week' : 'once a month'
-  }
-  return `${c.times}\u00d7 a ${c.per}`
 }
 
 /**
@@ -1136,28 +1132,15 @@ export interface ChangeEvent {
  *
  * Coarser than a table on purpose: a listener uses this to decide which list to
  * reload, and the lists here are per app rather than per table.
+ *
+ * Re-exported rather than declared here: the generated client derives it from
+ * `CHANGE_KINDS`, the same map `gen-api.mjs` builds from the Rust command
+ * table, so a kind no command actually emits cannot linger in this union and
+ * one a command gained cannot be missing from it. `live.svelte.ts` and
+ * everything else go on importing it from here unchanged; only this file
+ * needed to learn where it actually comes from.
  */
-export type ChangeKind =
-  | 'journal'
-  | 'entry'
-  | 'note'
-  | 'routine'
-  | 'routineRun'
-  | 'project'
-  | 'task'
-  | 'block'
-  | 'calendar'
-  | 'event'
-  | 'shelf'
-  | 'item'
-  | 'log'
-  | 'tracker'
-  | 'reading'
-  | 'role'
-  | 'goal'
-  | 'conversation'
-  | 'memory'
-  | 'settings'
+export type { ChangeKind } from './generated/commands'
 
 // ── The command surface, describing itself ─────────────────────────────
 //

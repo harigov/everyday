@@ -12,18 +12,10 @@
   import ConfirmDialog from './ConfirmDialog.svelte'
   import { PRIORITIES, TASK_STATUSES } from '../lib/types'
   import type { BlockKind, Priority, Purpose, QuickTaskDraft, TaskStatus } from '../lib/types'
+  import { STATUS_LABELS, PRIORITY_LABELS } from '../lib/labels'
   import { api } from '../lib/api'
   import { ask, quick, slot } from '../lib/quick.svelte'
   import Suggestions from './Suggestions.svelte'
-
-  const STATUS_LABELS: Record<TaskStatus, string> = {
-    backlog: 'Backlog',
-    todo: 'To do',
-    doing: 'Doing',
-    blocked: 'Blocked',
-    done: 'Done',
-    cancelled: 'Cancelled',
-  }
 
   const task = $derived(todo.detail)
   const project = $derived(todo.projectOf(task?.projectId))
@@ -150,7 +142,7 @@
           onchange={(e) => todo.patch(task.id, { priority: e.currentTarget.value as Priority })}
         >
           {#each PRIORITIES as p (p)}
-            <option value={p}>{p === 'none' ? 'None' : p[0]!.toUpperCase() + p.slice(1)}</option>
+            <option value={p}>{PRIORITY_LABELS[p]}</option>
           {/each}
         </select>
 

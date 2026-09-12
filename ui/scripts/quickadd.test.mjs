@@ -10,35 +10,16 @@
 // `npm run check`. The TypeScript is loaded through Vite so it is compiled
 // exactly as the application compiles it.
 
-import { createServer } from 'vite'
+import { load, makeCheck } from './harness.mjs'
 
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  // `watch: null` because a test loads a module once and exits. Vite's
-  // watcher is on by default even in middleware mode, and a watcher is a
-  // per-user resource: a suite that starts one server per file exhausts the
-  // supply (`EMFILE`) on any machine that already has a dev server running.
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
-})
-
-const { parseQuickAdd, parseDueDate, parseTime, parseEstimate } =
-  await server.ssrLoadModule('/src/lib/quickadd.ts')
+const { module: quickadd, close } = await load('/src/lib/quickadd.ts')
+const { parseQuickAdd, parseDueDate, parseTime, parseEstimate } = quickadd
 
 // A fixed Sunday, so "next Wednesday" is a fact rather than a coin toss.
 const TODAY = '2026-09-06'
 const line = (s) => parseQuickAdd(s, TODAY)
 
-let failed = 0
-function check(what, got, want) {
-  if (JSON.stringify(got) === JSON.stringify(want)) return
-  failed += 1
-  console.error(
-    `FAIL  ${what}\n        got  ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`,
-  )
-}
+const { check, finish } = makeCheck()
 
 // ── A whole line ─────────────────────────────────────────────────────────
 
@@ -123,10 +104,5 @@ check(
 )
 check('an unparseable estimate is refused', parseEstimate('soon'), null)
 
-await server.close()
-
-if (failed > 0) {
-  console.error(`\n${failed} quick-add ${failed === 1 ? 'check' : 'checks'} failed`)
-  process.exit(1)
-}
-console.log('quick-add: all checks passed')
+await close()
+finish('quick-add')

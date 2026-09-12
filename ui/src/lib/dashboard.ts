@@ -45,10 +45,8 @@ import type { IconName } from './icons'
 export const WIDGET_SIZES = ['small', 'medium', 'large'] as const
 export type WidgetSize = (typeof WIDGET_SIZES)[number]
 
-/** Columns each size spans, out of `COLUMNS`. */
+/** Columns each size spans, out of the six-column grid. */
 export const SPAN: Record<WidgetSize, number> = { small: 2, medium: 3, large: 6 }
-
-export const COLUMNS = 6
 
 export const SIZE_LABELS: Record<WidgetSize, string> = {
   small: 'Narrow',
@@ -320,7 +318,9 @@ export function specOf(type: WidgetType): WidgetSpec {
   return WIDGETS[type]
 }
 
-export function isWidgetType(value: unknown): value is WidgetType {
+// Not exported: nothing outside this module needs to ask what a widget type
+// is, only `parseLayout` below, which is guarding a page read back from disk.
+function isWidgetType(value: unknown): value is WidgetType {
   return typeof value === 'string' && value in WIDGETS
 }
 

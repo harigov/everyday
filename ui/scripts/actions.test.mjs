@@ -13,8 +13,7 @@
 // exercised: nothing here calls `run`.
 
 import assert from 'node:assert/strict'
-import { createServer } from 'vite'
-import { svelte } from '@sveltejs/vite-plugin-svelte'
+import { load, stubBrowser } from './harness.mjs'
 
 // The table's `when` and `run` closures reach into the four stores, so loading
 // it loads them -- and they were written for a browser. Enough of one is
@@ -23,57 +22,41 @@ import { svelte } from '@sveltejs/vite-plugin-svelte'
 // alternative was to keep the table in a module with no stores in it, which
 // would mean the closures could not reach the state they gate on, which is the
 // entire point of `when`.
-globalThis.window ??= {}
-globalThis.localStorage ??= {
-  getItem: () => null,
-  setItem: () => {},
-  removeItem: () => {},
-}
-globalThis.matchMedia ??= () => ({
-  matches: false,
-  addEventListener: () => {},
-  removeEventListener: () => {},
-})
+//
 // Counted and answerable, not merely stubbed: the checks at the foot of this
 // file are about *how often* the table asks the document whether a dialog is
 // open, and about it believing the answer afterwards.
 let dialogQueries = 0
 let dialogIsOpen = false
-globalThis.document ??= {
-  querySelector: (selector) => {
-    if (selector === '[aria-modal="true"]') {
-      dialogQueries += 1
-      return dialogIsOpen ? { tagName: 'DIV' } : null
-    }
-    return null
+stubBrowser({
+  window: true,
+  localStorage: true,
+  matchMedia: true,
+  document: {
+    querySelector: (selector) => {
+      if (selector === '[aria-modal="true"]') {
+        dialogQueries += 1
+        return dialogIsOpen ? { tagName: 'DIV' } : null
+      }
+      return null
+    },
+    documentElement: { style: { setProperty: () => {} }, classList: { toggle: () => {} } },
+    addEventListener: () => {},
   },
-  documentElement: { style: { setProperty: () => {} }, classList: { toggle: () => {} } },
-  addEventListener: () => {},
-}
-globalThis.navigator ??= { userAgent: 'node' }
-globalThis.location ??= { search: '', href: 'http://localhost/' }
-globalThis.URL.createObjectURL ??= () => 'blob:stub'
-
-// The Svelte plugin, named here rather than read from `vite.config.ts`.
-//
-// A `.svelte.ts` module needs the plugin -- that is what turns `$state` into
-// something that exists -- so unlike the tests beside this one, which load
-// plain TypeScript, this cannot use an empty config. It does not use the
-// *project* config either: loading a config file makes Vite watch it, and
-// `watch: null` does not cover that. Watches are a per-user resource, and a
-// suite that opens one server per file exhausts them (`EMFILE`) on a machine
-// with a dev server already running.
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  plugins: [svelte()],
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
+  navigator: true,
+  location: true,
+  createObjectURL: () => 'blob:stub',
 })
 
-const { ACTIONS, GROUPS, shortcuts } = await server.ssrLoadModule('/src/lib/shortcuts.svelte.ts')
-const { app } = await server.ssrLoadModule('/src/lib/state.svelte.ts')
+// The Svelte plugin is what a `.svelte.ts` module needs -- it is what turns
+// `$state` into something that exists -- unlike the tests beside this one,
+// which load plain TypeScript and do not ask `load` for it.
+const {
+  modules: [shortcutsModule, stateModule],
+  close,
+} = await load(['/src/lib/shortcuts.svelte.ts', '/src/lib/state.svelte.ts'], { svelte: true })
+const { ACTIONS, GROUPS, shortcuts } = shortcutsModule
+const { app } = stateModule
 
 // ── Every row is drawable ─────────────────────────────────────────────
 
@@ -282,5 +265,5 @@ assert.equal(
   `${asksAboutDialogs.label} stayed inapplicable after the dialog closed`,
 )
 
-await server.close()
+await close()
 console.log('actions: all checks passed')

@@ -760,7 +760,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
 ])
 
 /** What a listener should reload after a command succeeds. */
-export const CHANGE_KINDS: Readonly<Record<string, string>> = {
+export const CHANGE_KINDS = {
   add_item: 'item',
   apply_metadata: 'item',
   change_password: 'settings',
@@ -822,4 +822,16 @@ export const CHANGE_KINDS: Readonly<Record<string, string>> = {
   subscribe_calendar: 'calendar',
   sync_calendar: 'event',
   sync_due_calendars: 'event',
-}
+} as const
+
+/**
+ * What a change touched, for `live.svelte.ts` and everything else that
+ * routes on it.
+ *
+ * Derived from `CHANGE_KINDS` above rather than listed a second time by hand
+ * -- the hand-written union in `types.ts` used to be the one place this could
+ * fall out of step with the Rust, since nothing checked that every kind a
+ * command could emit was still spelled out there. `types.ts` re-exports this
+ * so nothing that already imports `ChangeKind` from there has to change.
+ */
+export type ChangeKind = (typeof CHANGE_KINDS)[keyof typeof CHANGE_KINDS]

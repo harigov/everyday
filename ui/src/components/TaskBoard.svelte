@@ -20,15 +20,7 @@
   import ConfirmDialog from './ConfirmDialog.svelte'
   import QuickAdd from './QuickAdd.svelte'
   import type { Task, TaskStatus } from '../lib/types'
-
-  const LABELS: Record<TaskStatus, string> = {
-    backlog: 'Backlog',
-    todo: 'To do',
-    doing: 'Doing',
-    blocked: 'Blocked',
-    done: 'Done',
-    cancelled: 'Cancelled',
-  }
+  import { STATUS_LABELS as LABELS } from '../lib/labels'
 
   let dragging = $state<Task | null>(null)
   /** Where the card would land: the column and the slot within it. */
