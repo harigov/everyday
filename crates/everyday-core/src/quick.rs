@@ -110,6 +110,11 @@ impl QuickApp {
 }
 
 /// One thing the quick model is asked to do.
+///
+/// `Copy`, along with every field, so that [`JOBS`] can be built as an array
+/// of the named statics below rather than of references to them -- the
+/// public shape callers already iterate over, unchanged.
+#[derive(Clone, Copy)]
 pub struct QuickJob {
     /// The stable id [`QuickPolicy`] stores. Never renamed: a rename is a
     /// switch somebody set silently reverting to its default.
@@ -187,14 +192,6 @@ impl QuickContext {
 /// Find a job by name.
 pub fn job(name: &str) -> Option<&'static QuickJob> {
     JOBS.iter().find(|j| j.name == name)
-}
-
-/// Every job, grouped by app for the settings pane.
-pub fn jobs_by_app() -> Vec<(QuickApp, Vec<&'static QuickJob>)> {
-    let mut apps: Vec<QuickApp> = JOBS.iter().map(|j| j.app).collect();
-    apps.sort();
-    apps.dedup();
-    apps.into_iter().map(|app| (app, JOBS.iter().filter(|j| j.app == app).collect())).collect()
 }
 
 // ── The policy ───────────────────────────────────────────────────────────
@@ -990,290 +987,350 @@ fn is_clock(text: &str) -> bool {
 }
 
 // ── The jobs ─────────────────────────────────────────────────────────────
+//
+// One named static per job rather than one array literal, so a job's name is
+// typed once -- here -- and every builder below refers to the static rather
+// than looking its own name up in [`JOBS`] on every call. [`JOBS`] itself,
+// at the foot of this section, is the catalogue the settings pane and
+// [`job`] read; the order it lists them in is the order this section
+// declares them in.
 
-/// Every job the quick model has, in the order the settings pane lists them.
-///
-/// The blurbs are written for somebody deciding whether to allow one, which
-/// is why each names *what leaves the machine* rather than what is gained.
-pub static JOBS: &[QuickJob] = &[
-    // -- library ----------------------------------------------------------
-    QuickJob {
-        name: "library.fields",
-        label: "Fill in a shelf's fields",
-        blurb: "Sends the title you looked up and the search results it found.",
-        app: QuickApp::Library,
-        default_on: true,
-        system: "You read search results about one thing and pull out what a \
+// -- library ----------------------------------------------------------
+
+pub static LIBRARY_FIELDS: QuickJob = QuickJob {
+    name: "library.fields",
+    label: "Fill in a shelf's fields",
+    blurb: "Sends the title you looked up and the search results it found.",
+    app: QuickApp::Library,
+    default_on: true,
+    system: "You read search results about one thing and pull out what a \
             catalogue would record about it. The thing is what the results are \
             *about* — not the web page, not the shop selling it. Use only the \
             field keys you are given.",
-        schema: fields_schema,
-    },
-    QuickJob {
-        name: "library.pick",
-        label: "Choose the right search result",
-        blurb: "Sends what you typed and the titles of the results found.",
-        app: QuickApp::Library,
-        default_on: true,
-        system: "You choose which numbered search result is the thing somebody \
+    schema: fields_schema,
+};
+
+pub static LIBRARY_PICK: QuickJob = QuickJob {
+    name: "library.pick",
+    label: "Choose the right search result",
+    blurb: "Sends what you typed and the titles of the results found.",
+    app: QuickApp::Library,
+    default_on: true,
+    system: "You choose which numbered search result is the thing somebody \
             meant, given what they typed and which shelf they are adding it to. \
             Answer null unless one of them plainly is it. A near-miss filled \
             into a shelf is worse than an empty shelf entry, because nobody \
             re-checks a field that looks filled in.",
-        schema: pick_schema,
-    },
-    QuickJob {
-        name: "library.kind",
-        label: "Draft a new shelf",
-        blurb: "Sends the shelf name you typed, and nothing else.",
-        app: QuickApp::Library,
-        default_on: true,
-        system: "You design a shelf for a personal library. Given its name, \
+    schema: pick_schema,
+};
+
+pub static LIBRARY_KIND: QuickJob = QuickJob {
+    name: "library.kind",
+    label: "Draft a new shelf",
+    blurb: "Sends the shelf name you typed, and nothing else.",
+    app: QuickApp::Library,
+    default_on: true,
+    system: "You design a shelf for a personal library. Given its name, \
             propose an icon, a colour, the words this shelf uses instead of \
             'in progress', and at most six extra fields worth recording. \
             The verbs matter: a person reads a book, watches a series, plays a \
             game and visits a place, and 'in progress' for all four reads like \
             a form. Propose fields somebody would actually fill in, not every \
             field that could exist.",
-        schema: kind_schema,
-    },
-    QuickJob {
-        name: "library.import_map",
-        label: "Map an imported list's columns",
-        blurb: "Sends the column names of the file you are importing, and one example row.",
-        app: QuickApp::Library,
-        default_on: true,
-        system: "You map the columns of somebody's exported list onto the \
+    schema: kind_schema,
+};
+
+pub static LIBRARY_IMPORT_MAP: QuickJob = QuickJob {
+    name: "library.import_map",
+    label: "Map an imported list's columns",
+    blurb: "Sends the column names of the file you are importing, and one example row.",
+    app: QuickApp::Library,
+    default_on: true,
+    system: "You map the columns of somebody's exported list onto the \
             fields of a shelf. Leave one of ours out entirely rather than \
             mapping it to a column that only nearly matches — this mapping is \
             applied to every row of their history.",
-        schema: mapping_schema,
-    },
-    // -- todo -------------------------------------------------------------
-    QuickJob {
-        name: "todo.purpose",
-        label: "Suggest a role or goal",
-        blurb: "Sends the task's title and the names of your roles and goals.",
-        app: QuickApp::Todo,
-        default_on: true,
-        system: "You say which of somebody's roles or goals a task serves, and \
+    schema: mapping_schema,
+};
+
+// -- todo -------------------------------------------------------------
+
+pub static TODO_PURPOSE: QuickJob = QuickJob {
+    name: "todo.purpose",
+    label: "Suggest a role or goal",
+    blurb: "Sends the task's title and the names of your roles and goals.",
+    app: QuickApp::Todo,
+    default_on: true,
+    system: "You say which of somebody's roles or goals a task serves, and \
             propose tags for it. Answer null for the purpose unless one \
             plainly fits — most of what anybody does serves no stated goal, and \
             a wrong purpose quietly corrupts the report that counts them.",
-        schema: labels_schema,
-    },
-    QuickJob {
-        name: "todo.parse",
-        label: "Read a task written as a sentence",
-        blurb: "Sends the line you typed into the capture box.",
-        app: QuickApp::Todo,
-        default_on: true,
-        system: "You turn one sentence into one task. The person writes in \
+    schema: labels_schema,
+};
+
+pub static TODO_PARSE: QuickJob = QuickJob {
+    name: "todo.parse",
+    label: "Read a task written as a sentence",
+    blurb: "Sends the line you typed into the capture box.",
+    app: QuickApp::Todo,
+    default_on: true,
+    system: "You turn one sentence into one task. The person writes in \
             their own words; pull out when it is due, how long it will take and \
             how urgent it is, and leave the rest in the title. Never invent a \
             date the sentence does not imply.",
-        schema: task_schema,
-    },
-    QuickJob {
-        name: "todo.subtasks",
-        label: "Break a task into steps",
-        blurb: "Sends the task's title and description.",
-        app: QuickApp::Todo,
-        default_on: true,
-        system: "You break one task into the steps it is actually made of. \
+    schema: task_schema,
+};
+
+pub static TODO_SUBTASKS: QuickJob = QuickJob {
+    name: "todo.subtasks",
+    label: "Break a task into steps",
+    blurb: "Sends the task's title and description.",
+    app: QuickApp::Todo,
+    default_on: true,
+    system: "You break one task into the steps it is actually made of. \
             Each step is a thing somebody does in one sitting. Do not restate \
             the task as its own first step, and do not pad the list to look \
             thorough — three real steps beat eight invented ones.",
-        schema: tasks_schema,
-    },
-    QuickJob {
-        name: "todo.estimate",
-        label: "Suggest how long a task will take",
-        blurb: "Sends the task's title and how long similar past tasks took.",
-        app: QuickApp::Todo,
-        default_on: true,
-        system: "You estimate how long a task will take, in minutes of \
+    schema: tasks_schema,
+};
+
+pub static TODO_ESTIMATE: QuickJob = QuickJob {
+    name: "todo.estimate",
+    label: "Suggest how long a task will take",
+    blurb: "Sends the task's title and how long similar past tasks took.",
+    app: QuickApp::Todo,
+    default_on: true,
+    system: "You estimate how long a task will take, in minutes of \
             focused work. You are given what this person's similar tasks \
             actually took — trust that over your own sense of the work. Answer \
             null when there is nothing to go on.",
-        schema: estimate_schema,
-    },
-    // -- calendar ---------------------------------------------------------
-    QuickJob {
-        name: "calendar.parse",
-        label: "Read an appointment written as a sentence",
-        blurb: "Sends the line you typed into the capture box.",
-        app: QuickApp::Calendar,
-        default_on: true,
-        system: "You turn one sentence into one appointment. Give an end time \
+    schema: estimate_schema,
+};
+
+// -- calendar ---------------------------------------------------------
+
+pub static CALENDAR_PARSE: QuickJob = QuickJob {
+    name: "calendar.parse",
+    label: "Read an appointment written as a sentence",
+    blurb: "Sends the line you typed into the capture box.",
+    app: QuickApp::Calendar,
+    default_on: true,
+    system: "You turn one sentence into one appointment. Give an end time \
             only when a duration or an end was stated. Never invent a date the \
             sentence does not imply.",
-        schema: event_schema,
-    },
-    QuickJob {
-        name: "calendar.title",
-        label: "Tidy a subscribed event's title",
-        blurb: "Sends the titles of events from calendars you subscribe to.",
-        app: QuickApp::Calendar,
-        default_on: false,
-        system: "You rewrite a calendar event's title as the thing it is, \
+    schema: event_schema,
+};
+
+pub static CALENDAR_TITLE: QuickJob = QuickJob {
+    name: "calendar.title",
+    label: "Tidy a subscribed event's title",
+    blurb: "Sends the titles of events from calendars you subscribe to.",
+    app: QuickApp::Calendar,
+    default_on: false,
+    system: "You rewrite a calendar event's title as the thing it is, \
             stripping forwarding prefixes, reply markers, conferencing \
             boilerplate and bracketed tags. Keep the people and the subject. \
             Answer with an empty string if it is already clean — an unchanged \
             title is the common case and the right one.",
-        schema: text_schema,
-    },
-    // -- journal ----------------------------------------------------------
-    QuickJob {
-        name: "journal.readings",
-        label: "Find numbers worth tracking in an entry",
-        blurb: "Sends the text of the journal entry you just wrote.",
-        app: QuickApp::Journal,
-        default_on: false,
-        system: "You find the numbers a day's writing states — a dose taken, \
+    schema: text_schema,
+};
+
+// -- journal ----------------------------------------------------------
+
+pub static JOURNAL_READINGS: QuickJob = QuickJob {
+    name: "journal.readings",
+    label: "Find numbers worth tracking in an entry",
+    blurb: "Sends the text of the journal entry you just wrote.",
+    app: QuickApp::Journal,
+    default_on: false,
+    system: "You find the numbers a day's writing states — a dose taken, \
             hours slept, a distance, a severity out of ten — and match each to \
             one of the trackers already set up, by number. Only propose a new \
             tracker for something the person plainly records on purpose. An \
             empty list is the right answer for most writing, and a number \
             invented from a mood is worse than no number at all.",
-        schema: readings_schema,
-    },
-    QuickJob {
-        name: "journal.title",
-        label: "Suggest a title for an entry",
-        blurb: "Sends the text of the journal entry you just wrote.",
-        app: QuickApp::Journal,
-        default_on: false,
-        system: "You title a day's writing in at most eight words, in the \
+    schema: readings_schema,
+};
+
+pub static JOURNAL_TITLE: QuickJob = QuickJob {
+    name: "journal.title",
+    label: "Suggest a title for an entry",
+    blurb: "Sends the text of the journal entry you just wrote.",
+    app: QuickApp::Journal,
+    default_on: false,
+    system: "You title a day's writing in at most eight words, in the \
             writer's own register. Not a summary and not a headline: the phrase \
             they would use to find this day again.",
-        schema: text_schema,
-    },
-    QuickJob {
-        name: "journal.labels",
-        label: "Suggest tags for an entry",
-        blurb: "Sends the text of the journal entry you just wrote.",
-        app: QuickApp::Journal,
-        default_on: false,
-        system: "You propose tags for a day's writing, and say which role or \
+    schema: text_schema,
+};
+
+pub static JOURNAL_LABELS: QuickJob = QuickJob {
+    name: "journal.labels",
+    label: "Suggest tags for an entry",
+    blurb: "Sends the text of the journal entry you just wrote.",
+    app: QuickApp::Journal,
+    default_on: false,
+    system: "You propose tags for a day's writing, and say which role or \
             goal the day served. Prefer tags already in use over new ones. \
             Answer null for the purpose unless one plainly fits.",
-        schema: labels_schema,
-    },
-    // -- notes ------------------------------------------------------------
-    QuickJob {
-        name: "notes.title",
-        label: "Suggest a title for a note",
-        blurb: "Sends the text of the note.",
-        app: QuickApp::Notes,
-        default_on: true,
-        system: "You title a note in at most eight words: the name somebody \
+    schema: labels_schema,
+};
+
+// -- notes ------------------------------------------------------------
+
+pub static NOTES_TITLE: QuickJob = QuickJob {
+    name: "notes.title",
+    label: "Suggest a title for a note",
+    blurb: "Sends the text of the note.",
+    app: QuickApp::Notes,
+    default_on: true,
+    system: "You title a note in at most eight words: the name somebody \
             would look for it under, not a summary of it.",
-        schema: text_schema,
-    },
-    QuickJob {
-        name: "notes.tasks",
-        label: "Find the tasks in a note",
-        blurb: "Sends the text of the note.",
-        app: QuickApp::Notes,
-        default_on: true,
-        system: "You find the things somebody has to *do* in a page of notes \
+    schema: text_schema,
+};
+
+pub static NOTES_TASKS: QuickJob = QuickJob {
+    name: "notes.tasks",
+    label: "Find the tasks in a note",
+    blurb: "Sends the text of the note.",
+    app: QuickApp::Notes,
+    default_on: true,
+    system: "You find the things somebody has to *do* in a page of notes \
             — commitments, actions, follow-ups — and write each as one task. \
             Ignore decisions, background and anything assigned to somebody \
             else. An empty list is a fine answer.",
-        schema: tasks_schema,
-    },
-    QuickJob {
-        name: "notes.labels",
-        label: "Suggest tags for a note",
-        blurb: "Sends the text of the note.",
-        app: QuickApp::Notes,
-        default_on: true,
-        system: "You propose tags for a note, and say which role or goal it \
+    schema: tasks_schema,
+};
+
+pub static NOTES_LABELS: QuickJob = QuickJob {
+    name: "notes.labels",
+    label: "Suggest tags for a note",
+    blurb: "Sends the text of the note.",
+    app: QuickApp::Notes,
+    default_on: true,
+    system: "You propose tags for a note, and say which role or goal it \
             serves. Prefer tags already in use. Answer null for the purpose \
             unless one plainly fits.",
-        schema: labels_schema,
-    },
-    // -- trackers ---------------------------------------------------------
-    QuickJob {
-        name: "tracker.parse",
-        label: "Read a reading written as a sentence",
-        blurb: "Sends the line you typed, and the names of your trackers.",
-        app: QuickApp::Tracking,
-        default_on: true,
-        system: "You turn one sentence into one recorded number, matched to \
+    schema: labels_schema,
+};
+
+// -- trackers ---------------------------------------------------------
+
+pub static TRACKER_PARSE: QuickJob = QuickJob {
+    name: "tracker.parse",
+    label: "Read a reading written as a sentence",
+    blurb: "Sends the line you typed, and the names of your trackers.",
+    app: QuickApp::Tracking,
+    default_on: true,
+    system: "You turn one sentence into one recorded number, matched to \
             an existing tracker by its number where there is one. Convert to \
             the tracker's own unit when you can see what it is. If the \
             sentence names no number at all, the value is 1 — 'went for a \
             swim' is a thing done, not a quantity.",
-        schema: reading_schema,
-    },
-    QuickJob {
-        name: "tracker.draft",
-        label: "Propose a new tracker's settings",
-        blurb: "Sends the tracker name and the line you first recorded against it.",
-        app: QuickApp::Tracking,
-        default_on: true,
-        system: "You propose how a new tracker should be set up, from its \
+    schema: reading_schema,
+};
+
+pub static TRACKER_DRAFT: QuickJob = QuickJob {
+    name: "tracker.draft",
+    label: "Propose a new tracker's settings",
+    blurb: "Sends the tracker name and the line you first recorded against it.",
+    app: QuickApp::Tracking,
+    default_on: true,
+    system: "You propose how a new tracker should be set up, from its \
             name and the first thing recorded against it. A dose is \
             medication taken on purpose; anything else measured in a unit is \
             an amount. Say 'dose' only when it is plainly a medicine — a \
             wrong guess here is invisible until a chart is drawn a month \
             later.",
-        schema: tracker_schema,
-    },
-    // -- roles and goals --------------------------------------------------
-    QuickJob {
-        name: "purpose.goal",
-        label: "Sharpen a goal's wording",
-        blurb: "Sends the goal you typed and the role it sits under.",
-        app: QuickApp::Purpose,
-        default_on: true,
-        system: "You rewrite a goal as an outcome somebody could tell they had \
+    schema: tracker_schema,
+};
+
+// -- roles and goals --------------------------------------------------
+
+pub static PURPOSE_GOAL: QuickJob = QuickJob {
+    name: "purpose.goal",
+    label: "Sharpen a goal's wording",
+    blurb: "Sends the goal you typed and the role it sits under.",
+    app: QuickApp::Purpose,
+    default_on: true,
+    system: "You rewrite a goal as an outcome somebody could tell they had \
             reached, keeping their words and their scale. 'Get fitter' becomes \
             'Run 10k without stopping'. Do not add a deadline they did not \
             give, and answer with an empty string if it is already an outcome.",
-        schema: text_schema,
-    },
-    QuickJob {
-        name: "purpose.backfill",
-        label: "Match existing records to a new goal",
-        blurb: "Sends the goal's name and the titles of records that have no purpose yet.",
-        app: QuickApp::Purpose,
-        default_on: true,
-        system: "You say which of somebody's existing records serve a goal \
+    schema: text_schema,
+};
+
+pub static PURPOSE_BACKFILL: QuickJob = QuickJob {
+    name: "purpose.backfill",
+    label: "Match existing records to a new goal",
+    blurb: "Sends the goal's name and the titles of records that have no purpose yet.",
+    app: QuickApp::Purpose,
+    default_on: true,
+    system: "You say which of somebody's existing records serve a goal \
             they have just written down. Be strict: a goal that starts life \
             claiming half the vault is worse than one that starts empty.",
-        schema: labels_schema,
-    },
-    // -- overview ---------------------------------------------------------
-    QuickJob {
-        name: "overview.week",
-        label: "Write the week in a sentence or two",
-        blurb: "Sends this week's totals: hours by role, tasks done, entries written.",
-        app: QuickApp::Overview,
-        default_on: false,
-        system: "You write two sentences about somebody's week from its \
+    schema: labels_schema,
+};
+
+// -- overview ---------------------------------------------------------
+
+pub static OVERVIEW_WEEK: QuickJob = QuickJob {
+    name: "overview.week",
+    label: "Write the week in a sentence or two",
+    blurb: "Sends this week's totals: hours by role, tasks done, entries written.",
+    app: QuickApp::Overview,
+    default_on: false,
+    system: "You write two sentences about somebody's week from its \
             totals, naming the one thing that changed most against the week \
             before. When the week before is empty or missing, describe this \
             week alone and do not mention a comparison -- there is nothing to \
             compare with, and inventing one is the failure this job is most \
             prone to. State what the numbers say and stop. No encouragement, \
             no advice, and no conclusions the numbers do not support.",
-        schema: text_schema,
-    },
-    // -- data -------------------------------------------------------------
-    QuickJob {
-        name: "data.import_map",
-        label: "Map an imported folder's front matter",
-        blurb: "Sends the front-matter keys found in the files you are importing.",
-        app: QuickApp::Data,
-        default_on: true,
-        system: "You map the front-matter keys of somebody's exported notes \
+    schema: text_schema,
+};
+
+// -- data -------------------------------------------------------------
+
+pub static DATA_IMPORT_MAP: QuickJob = QuickJob {
+    name: "data.import_map",
+    label: "Map an imported folder's front matter",
+    blurb: "Sends the front-matter keys found in the files you are importing.",
+    app: QuickApp::Data,
+    default_on: true,
+    system: "You map the front-matter keys of somebody's exported notes \
             onto our fields. Leave ours out rather than mapping it to a key \
             that only nearly matches — this runs over every file they have.",
-        schema: mapping_schema,
-    },
+    schema: mapping_schema,
+};
+
+/// Every job the quick model has, in the order the settings pane lists them.
+///
+/// The blurbs are written for somebody deciding whether to allow one, which
+/// is why each names *what leaves the machine* rather than what is gained.
+pub static JOBS: &[QuickJob] = &[
+    LIBRARY_FIELDS,
+    LIBRARY_PICK,
+    LIBRARY_KIND,
+    LIBRARY_IMPORT_MAP,
+    TODO_PURPOSE,
+    TODO_PARSE,
+    TODO_SUBTASKS,
+    TODO_ESTIMATE,
+    CALENDAR_PARSE,
+    CALENDAR_TITLE,
+    JOURNAL_READINGS,
+    JOURNAL_TITLE,
+    JOURNAL_LABELS,
+    NOTES_TITLE,
+    NOTES_TASKS,
+    NOTES_LABELS,
+    TRACKER_PARSE,
+    TRACKER_DRAFT,
+    PURPOSE_GOAL,
+    PURPOSE_BACKFILL,
+    OVERVIEW_WEEK,
+    DATA_IMPORT_MAP,
 ];
 
 // ── Building each job's prompt ───────────────────────────────────────────
@@ -1333,7 +1390,7 @@ pub fn library_fields(
         if fields.is_empty() { "  (none)" } else { &fields },
         found,
     );
-    Prompt::new(job_or_panic("library.fields"), ctx, user)
+    Prompt::new(&LIBRARY_FIELDS, ctx, user)
 }
 
 /// L2 — which of these is the thing.
@@ -1351,12 +1408,12 @@ pub fn library_pick(
         "They typed: {query}\nOn the shelf: {} (one of them is a {})\n\nResults:\n{list}",
         kind.name, kind.singular,
     );
-    Prompt::new(job_or_panic("library.pick"), ctx, user)
+    Prompt::new(&LIBRARY_PICK, ctx, user)
 }
 
 /// L3 — design a shelf from its name.
 pub fn library_kind(ctx: &QuickContext, name: &str) -> Prompt {
-    Prompt::new(job_or_panic("library.kind"), ctx, format!("Shelf name: {name}"))
+    Prompt::new(&LIBRARY_KIND, ctx, format!("Shelf name: {name}"))
 }
 
 /// L5 — map an exported list's columns onto a shelf's fields.
@@ -1376,7 +1433,7 @@ pub fn library_import_map(
         columns.join(", "),
         sample.join(" | "),
     );
-    Prompt::new(job_or_panic("library.import_map"), ctx, user)
+    Prompt::new(&LIBRARY_IMPORT_MAP, ctx, user)
 }
 
 /// A role-and-goal list, numbered, as every purpose job offers it.
@@ -1407,7 +1464,7 @@ pub fn todo_purpose(
         purpose_list(roles, goals),
         tag_list(known_tags),
     );
-    Prompt::new(job_or_panic("todo.purpose"), ctx, user)
+    Prompt::new(&TODO_PURPOSE, ctx, user)
 }
 
 fn tag_list(tags: &[String]) -> String {
@@ -1421,7 +1478,7 @@ fn tag_list(tags: &[String]) -> String {
 /// only ever asked about the residue — see `quick.ts`, which will not call it
 /// for a line that parsed.
 pub fn todo_parse(ctx: &QuickContext, line: &str) -> Prompt {
-    Prompt::new(job_or_panic("todo.parse"), ctx, format!("The line: {line}"))
+    Prompt::new(&TODO_PARSE, ctx, format!("The line: {line}"))
 }
 
 /// T3 — the steps a task is made of.
@@ -1430,7 +1487,7 @@ pub fn todo_subtasks(ctx: &QuickContext, title: &str, description: &str) -> Prom
         "" => format!("Task: {title}"),
         body => format!("Task: {title}\n\nIts description:\n{}", excerpt(body)),
     };
-    Prompt::new(job_or_panic("todo.subtasks"), ctx, user)
+    Prompt::new(&TODO_SUBTASKS, ctx, user)
 }
 
 /// T4 — how long, grounded in what this person's own work actually took.
@@ -1445,7 +1502,7 @@ pub fn todo_estimate(ctx: &QuickContext, title: &str, comparable: &[(String, u32
             .join("\n")
     };
     Prompt::new(
-        job_or_panic("todo.estimate"),
+        &TODO_ESTIMATE,
         ctx,
         format!("Task: {title}\n\nWhat their similar tasks actually took:\n{past}"),
     )
@@ -1453,7 +1510,7 @@ pub fn todo_estimate(ctx: &QuickContext, title: &str, comparable: &[(String, u32
 
 /// C1 — an appointment from a sentence.
 pub fn calendar_parse(ctx: &QuickContext, line: &str) -> Prompt {
-    Prompt::new(job_or_panic("calendar.parse"), ctx, format!("The line: {line}"))
+    Prompt::new(&CALENDAR_PARSE, ctx, format!("The line: {line}"))
 }
 
 /// C2 — a readable title for a subscribed event.
@@ -1461,7 +1518,7 @@ pub fn calendar_parse(ctx: &QuickContext, line: &str) -> Prompt {
 /// Display only. The feed's record is never rewritten: it will be re-fetched
 /// and it is not ours.
 pub fn calendar_title(ctx: &QuickContext, raw: &str) -> Prompt {
-    Prompt::new(job_or_panic("calendar.title"), ctx, format!("The title: {raw}"))
+    Prompt::new(&CALENDAR_TITLE, ctx, format!("The title: {raw}"))
 }
 
 /// J1 — the numbers a day's writing states.
@@ -1472,12 +1529,12 @@ pub fn journal_readings(ctx: &QuickContext, text: &str, trackers: &[Tracker]) ->
     }));
     let list = if trackers.is_empty() { "(none set up yet)".to_string() } else { list };
     let user = format!("Their trackers:\n{list}\n\nWhat they wrote:\n{}", excerpt(text));
-    Prompt::new(job_or_panic("journal.readings"), ctx, user)
+    Prompt::new(&JOURNAL_READINGS, ctx, user)
 }
 
 /// J2 — a title for a day.
 pub fn journal_title(ctx: &QuickContext, text: &str) -> Prompt {
-    Prompt::new(job_or_panic("journal.title"), ctx, format!("The writing:\n{}", excerpt(text)))
+    Prompt::new(&JOURNAL_TITLE, ctx, format!("The writing:\n{}", excerpt(text)))
 }
 
 /// J3 — tags and a purpose for a day.
@@ -1494,18 +1551,18 @@ pub fn journal_labels(
         tag_list(known_tags),
         excerpt(text),
     );
-    Prompt::new(job_or_panic("journal.labels"), ctx, user)
+    Prompt::new(&JOURNAL_LABELS, ctx, user)
 }
 
 /// N1 — a title for a note.
 pub fn notes_title(ctx: &QuickContext, text: &str) -> Prompt {
-    Prompt::new(job_or_panic("notes.title"), ctx, format!("The note:\n{}", excerpt(text)))
+    Prompt::new(&NOTES_TITLE, ctx, format!("The note:\n{}", excerpt(text)))
 }
 
 /// N2 — the tasks buried in a page of notes.
 pub fn notes_tasks(ctx: &QuickContext, title: &str, text: &str) -> Prompt {
     let user = format!("Note: {title}\n\n{}", excerpt(text));
-    Prompt::new(job_or_panic("notes.tasks"), ctx, user)
+    Prompt::new(&NOTES_TASKS, ctx, user)
 }
 
 /// N3 — tags and a purpose for a note.
@@ -1522,7 +1579,7 @@ pub fn notes_labels(
         tag_list(known_tags),
         excerpt(text),
     );
-    Prompt::new(job_or_panic("notes.labels"), ctx, user)
+    Prompt::new(&NOTES_LABELS, ctx, user)
 }
 
 /// K1 — a reading from a sentence.
@@ -1532,25 +1589,17 @@ pub fn tracker_parse(ctx: &QuickContext, line: &str, trackers: &[Tracker]) -> Pr
         format!("{} ({}{})", t.name, t.kind.as_str(), unit)
     }));
     let list = if trackers.is_empty() { "(none set up yet)".to_string() } else { list };
-    Prompt::new(
-        job_or_panic("tracker.parse"),
-        ctx,
-        format!("Their trackers:\n{list}\n\nThe line: {line}"),
-    )
+    Prompt::new(&TRACKER_PARSE, ctx, format!("Their trackers:\n{list}\n\nThe line: {line}"))
 }
 
 /// K2 — how a tracker made by the act of recording should be set up.
 pub fn tracker_draft(ctx: &QuickContext, name: &str, line: &str) -> Prompt {
-    Prompt::new(
-        job_or_panic("tracker.draft"),
-        ctx,
-        format!("Tracker name: {name}\nWhat they recorded: {line}"),
-    )
+    Prompt::new(&TRACKER_DRAFT, ctx, format!("Tracker name: {name}\nWhat they recorded: {line}"))
 }
 
 /// P1 — a goal phrased as an outcome.
 pub fn purpose_goal(ctx: &QuickContext, goal: &str, role: &str) -> Prompt {
-    Prompt::new(job_or_panic("purpose.goal"), ctx, format!("Role: {role}\nGoal as written: {goal}"))
+    Prompt::new(&PURPOSE_GOAL, ctx, format!("Role: {role}\nGoal as written: {goal}"))
 }
 
 /// P2 — which existing records serve a goal that has just been written.
@@ -1565,7 +1614,7 @@ pub fn purpose_backfill(ctx: &QuickContext, goal: &str, candidates: &[String]) -
          strings in `tags`. An empty list is a fine answer.",
         numbered(candidates.iter().cloned()),
     );
-    Prompt::new(job_or_panic("purpose.backfill"), ctx, user)
+    Prompt::new(&PURPOSE_BACKFILL, ctx, user)
 }
 
 /// Read [`purpose_backfill`]'s answer as indices into the candidate list.
@@ -1593,7 +1642,7 @@ pub fn overview_week(ctx: &QuickContext, this_week: &str, last_week: &str) -> Pr
         text => text.to_string(),
     };
     Prompt::new(
-        job_or_panic("overview.week"),
+        &OVERVIEW_WEEK,
         ctx,
         format!("This week:\n{this_week}\n\nThe week before:\n{before}"),
     )
@@ -1602,20 +1651,10 @@ pub fn overview_week(ctx: &QuickContext, this_week: &str, last_week: &str) -> Pr
 /// X1 — map somebody else's front matter onto ours.
 pub fn data_import_map(ctx: &QuickContext, ours: &[String], theirs: &[String]) -> Prompt {
     Prompt::new(
-        job_or_panic("data.import_map"),
+        &DATA_IMPORT_MAP,
         ctx,
         format!("Our fields: {}\nTheir keys: {}", ours.join(", "), theirs.join(", ")),
     )
-}
-
-/// Look up a job this file names itself.
-///
-/// Panics, and should: every caller is a function above passing a literal
-/// that is in [`JOBS`] three hundred lines up, so a failure here is a typo
-/// caught by the first test that runs — and `all_named_jobs_exist` below runs
-/// it for every one of them.
-fn job_or_panic(name: &'static str) -> &'static QuickJob {
-    job(name).unwrap_or_else(|| panic!("{name} is not in JOBS"))
 }
 
 #[cfg(test)]
@@ -1627,7 +1666,11 @@ mod tests {
     }
 
     #[test]
-    fn every_job_name_is_unique_and_every_builder_names_a_real_one() {
+    fn every_job_name_is_unique_and_the_catalogue_is_well_formed() {
+        // Whether a builder names a real job is no longer this test's job:
+        // each one now closes over its own static rather than looking a
+        // name up in `JOBS`, so a typo is a compile error, not a panic this
+        // test has to go looking for.
         let mut seen = BTreeSet::new();
         for job in JOBS {
             assert!(seen.insert(job.name), "{} is in JOBS twice", job.name);
@@ -1639,31 +1682,6 @@ mod tests {
             let schema = job.schema();
             assert_eq!(schema["type"], "object", "{}'s schema must have an object root", job.name);
         }
-        // Panics if any builder names a job that is not in the catalogue.
-        let kind = Kind::new("books", "Books", "book");
-        let item = Item::new(kind.id, "Dune");
-        library_fields(&ctx(), &kind, &item, &[]);
-        library_pick(&ctx(), &kind, "dune", &[]);
-        library_kind(&ctx(), "Wines");
-        library_import_map(&ctx(), &kind, &[], &[]);
-        todo_purpose(&ctx(), "x", &[], &[], &[]);
-        todo_parse(&ctx(), "x");
-        todo_subtasks(&ctx(), "x", "");
-        todo_estimate(&ctx(), "x", &[]);
-        calendar_parse(&ctx(), "x");
-        calendar_title(&ctx(), "x");
-        journal_readings(&ctx(), "x", &[]);
-        journal_title(&ctx(), "x");
-        journal_labels(&ctx(), "x", &[], &[], &[]);
-        notes_title(&ctx(), "x");
-        notes_tasks(&ctx(), "t", "x");
-        notes_labels(&ctx(), "x", &[], &[], &[]);
-        tracker_parse(&ctx(), "x", &[]);
-        tracker_draft(&ctx(), "n", "x");
-        purpose_goal(&ctx(), "x", "r");
-        purpose_backfill(&ctx(), "g", &[]);
-        overview_week(&ctx(), "a", "b");
-        data_import_map(&ctx(), &[], &[]);
     }
 
     #[test]
