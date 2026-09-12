@@ -284,7 +284,7 @@ impl<T> Landing<T> {
 /// already, so it never pays for a `Type::new(..)` about to be thrown away.
 pub fn land<T>(existing: Option<T>, fresh: impl FnOnce() -> T, mode: Mode) -> Landing<T> {
     match existing {
-        Some(t) if mode == Mode::Skip => Landing::Skipped,
+        Some(_) if mode == Mode::Skip => Landing::Skipped,
         Some(t) => Landing::Existing(t),
         None => Landing::Fresh(fresh()),
     }
