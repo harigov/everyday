@@ -15,6 +15,7 @@
 
 use std::path::PathBuf;
 
+#[allow(dead_code)]
 mod support;
 
 fn snapshot_path() -> PathBuf {

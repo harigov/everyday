@@ -24,6 +24,7 @@ use everyday_core::agent::tools::{self, Sensitivity};
 use everyday_service::command::effect_name;
 use everyday_service::domains::meta::{scope_of, title_of};
 
+#[allow(dead_code)]
 mod support;
 
 fn snapshot_path() -> PathBuf {
