@@ -24,13 +24,14 @@
 //! same `add_item` the library's capture line calls, and inherits the same
 //! rules about what a lookup may overwrite.
 //!
-//! Three things are not JSON in and JSON out, and each has its own entry point:
-//! attachments ([`Service::put_blob`], [`Service::blob_range`]), because a
-//! hundred megabytes of video should not be an array of numbers; and a turn of
-//! the assistant ([`Service::send_message`]), because it answers with a stream.
-//!
-//! A fourth is JSON and is chunked for the same reason as the first: an
-//! export of a whole vault. See [`domains::transfer`] and [`transfers`].
+//! Not everything is JSON in and JSON out, and each exception has its own
+//! entry point rather than a special case inside `call`: attachments
+//! ([`Service::put_blob`], [`Service::blob_range`]), because a hundred
+//! megabytes of video should not be an array of numbers; a turn of the
+//! assistant ([`Service::send_message`]), because it answers with a stream
+//! rather than one value; and an export of a whole vault, which is JSON but
+//! chunked for the same reason an attachment is not one either -- see
+//! [`domains::transfer`] and [`transfers`].
 //!
 //! # What is deliberately absent
 //!
