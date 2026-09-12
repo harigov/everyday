@@ -9,9 +9,6 @@ authors.workspace = true
 
 [dependencies]
 everyday-core.workspace = true
-# Only for `media::sniff_mime`, which is how an imported picture learns what
-# it is. Every crate that depends on this one already depends on that one.
-everyday-vault.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 jiff.workspace = true
@@ -25,4 +22,8 @@ flate2 = "1"
 crc32fast = "1"
 
 [dev-dependencies]
+# The roundtrip test opens a real vault to export from and import into, which
+# needs a backend -- unlike the rest of this crate, which only ever sniffs a
+# blob's type and has not needed one since that moved to `everyday-core`.
+everyday-vault.workspace = true
 tempfile = "3"

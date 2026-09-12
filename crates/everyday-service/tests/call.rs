@@ -13,33 +13,17 @@ use everyday_service::{Service, error::CommandError};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 
+#[allow(dead_code)]
+mod support;
+
 /// A vault in a temporary directory, with a service around it.
 fn service() -> (Arc<Service>, tempfile::TempDir) {
     with_password(None)
 }
 
-/// The same, with a password on it, for the tests about locking. The KDF is
-/// the cheap one: these tests are about which door is being knocked on, not
-/// about how long knocking takes.
+/// The same, with a password on it, for the tests about locking.
 fn with_password(password: Option<&str>) -> (Arc<Service>, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
-    let config = everyday_core::VaultConfig {
-        name: "Test".into(),
-        backend: "sqlite".into(),
-        settings: Default::default(),
-        password: password.map(str::to_string),
-        kdf: everyday_core::crypto::KdfParams::insecure_fast(),
-        auto_lock_seconds: 900,
-        forget_key_seconds: 0,
-    };
-    let vault = everyday_vault::create(dir.path(), config).unwrap();
-    // A vault with no journal is a dead end, and it is whoever creates one --
-    // the shell, the `serve` command -- that gives it its first. See
-    // `create_vault` in the shell.
-    vault.save_journal(&everyday_core::Journal::new("Journal")).unwrap();
-    let svc = Arc::new(Service::new());
-    svc.set(vault);
-    (svc, dir)
+    support::vault::service(password)
 }
 
 #[derive(Default)]
@@ -323,7 +307,7 @@ async fn the_catalogue_describes_itself() {
     let save_entry = commands.iter().find(|c| c["name"] == "save_entry").unwrap();
     assert_eq!(save_entry["scope"], "journals");
     assert_eq!(save_entry["effect"], "write");
-    assert_eq!(save_entry["changes"], "entry");
+    assert_eq!(save_entry["changes"], json!({ "kind": "entry", "op": "updated" }));
     assert_eq!(save_entry["args"][0]["name"], "entry");
 }
 

@@ -16,31 +16,12 @@
 // `npm run check`. The TypeScript is loaded through Vite so it is compiled
 // exactly as the application compiles it.
 
-import { createServer } from 'vite'
+import { load, makeCheck } from './harness.mjs'
 
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  // `watch: null` because a test loads a module once and exits. Vite's
-  // watcher is on by default even in middleware mode, and a watcher is a
-  // per-user resource: a suite that starts one server per file exhausts the
-  // supply (`EMFILE`) on any machine that already has a dev server running.
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
-})
+const { module: time, close } = await load('/src/lib/time.ts')
+const { addDays, addMonths, daysFrom, monthGrid, packLanes, snap, startOfWeek } = time
 
-const { addDays, addMonths, daysFrom, monthGrid, packLanes, snap, startOfWeek } =
-  await server.ssrLoadModule('/src/lib/time.ts')
-
-let failed = 0
-function check(what, got, want) {
-  if (JSON.stringify(got) === JSON.stringify(want)) return
-  failed += 1
-  console.error(
-    `FAIL  ${what}\n        got  ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`,
-  )
-}
+const { check, finish } = makeCheck()
 
 // ── Days and weeks ───────────────────────────────────────────────────────
 
@@ -196,10 +177,5 @@ check(
 
 check('nothing to pack is not an error', packLanes([]), [])
 
-await server.close()
-
-if (failed > 0) {
-  console.error(`\n${failed} calendar ${failed === 1 ? 'check' : 'checks'} failed`)
-  process.exit(1)
-}
-console.log('calendar: all checks passed')
+await close()
+finish('calendar')

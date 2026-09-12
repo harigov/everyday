@@ -23,6 +23,7 @@
 // chosen. See `crates/everyday-app/src/tray.rs`.
 
 import { api, isMock, onTrayAction } from './api'
+import { onOffPref } from './prefs'
 import { ACTIONS, GROUPS, type Group } from './shortcuts.svelte'
 import type { Binding } from './keys'
 import type { TrayMenuItem } from './types'
@@ -57,7 +58,7 @@ export interface TrayAction {
 export type TrayEntry =
   TrayAction | { separator: true } | { label: string; enabled?: boolean; items: TrayEntry[] }
 
-const SHOW_KEY = 'everyday.tray'
+const showPref = onOffPref('everyday.tray')
 
 /**
  * The tray rows an app offers right now, as tray entries.
@@ -122,7 +123,7 @@ class TrayRegistry {
   constructor() {
     // Read before `start`, because the switch in Settings is drawn from it
     // and the lock screen is drawn before the tray is ever pushed.
-    this.enabled = localStorage.getItem(SHOW_KEY) !== 'off'
+    this.enabled = showPref.get()
   }
 
   /**
@@ -178,7 +179,7 @@ class TrayRegistry {
 
   setEnabled(on: boolean) {
     this.enabled = on
-    localStorage.setItem(SHOW_KEY, on ? 'on' : 'off')
+    showPref.set(on)
   }
 
   /**

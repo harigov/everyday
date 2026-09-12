@@ -24,18 +24,9 @@
 // `npm run check`, with the TypeScript loaded through Vite so it compiles
 // exactly as the application compiles it.
 
-import { createServer } from 'vite'
+import { load, makeCheck } from './harness.mjs'
 
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  // `watch: null` because a test loads a module once and exits. See
-  // `overview.test.mjs` for what a watcher per test file costs.
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
-})
-
+const { module: dashboard, close } = await load('/src/lib/dashboard.ts')
 const {
   addWidget,
   defaultLayout,
@@ -52,22 +43,9 @@ const {
   WIDGETS,
   WIDGET_SIZES,
   WIDGET_TYPES,
-} = await server.ssrLoadModule('/src/lib/dashboard.ts')
+} = dashboard
 
-let failed = 0
-function check(what, got, want) {
-  const a = JSON.stringify(got)
-  const b = JSON.stringify(want)
-  if (a === b) return
-  failed++
-  console.error(`✗ ${what}\n  got  ${a}\n  want ${b}`)
-}
-
-function ok(what, condition) {
-  if (condition) return
-  failed++
-  console.error(`✗ ${what}`)
-}
+const { check, ok, finish } = makeCheck()
 
 const ids = (list) => list.map((w) => w.id)
 
@@ -316,9 +294,5 @@ check('an empty list means nobody has arranged one', parseLayout('[]'), null)
   check('a page survives a round trip', parseLayout(JSON.stringify(page)), page)
 }
 
-await server.close()
-if (failed > 0) {
-  console.error(`\n${failed} check${failed === 1 ? '' : 's'} failed`)
-  process.exit(1)
-}
-console.log('dashboard: ok')
+await close()
+finish('dashboard')

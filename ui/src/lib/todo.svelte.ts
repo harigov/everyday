@@ -13,7 +13,11 @@
 import { api } from './api'
 import { Autosave } from './autosave'
 import { purpose } from './purpose.svelte'
+import { pref } from './prefs'
 import { app, handle } from './state.svelte'
+import { debounce } from './store/debounce'
+import { FocusRequest } from './store/focus-request'
+import { latest } from './store/latest'
 import { addDays, todayIso } from './time'
 import { parseQuickAdd } from './quickadd'
 import type {
@@ -29,7 +33,7 @@ import type {
   TaskStatus,
   TimeBlock,
 } from './types'
-import { PRIORITIES, TASK_STATUSES, isOpen } from './types'
+import { PRIORITIES, TASK_STATUSES, isOpen, priorityRank } from './types'
 
 /** How far ahead "Upcoming" looks. */
 const UPCOMING_DAYS = 14
@@ -64,6 +68,12 @@ export type Scope =
 
 export type View = 'list' | 'board'
 export type GroupBy = 'none' | 'status' | 'due' | 'priority' | 'purpose'
+
+const viewPref = pref<View | null>(
+  'everyday.todo.view',
+  (raw) => (raw === 'list' || raw === 'board' ? raw : null),
+  null,
+)
 
 /**
  * The status filter, as the filter bar offers it.
@@ -146,9 +156,9 @@ class TodoState {
   #saves = new Autosave<TaskId>((ids) => this.#writeTasks(ids))
   #started = false
   /** Which load is the current one. See `refresh`. */
-  #generation = 0
+  #generation = latest()
   /** Pending keystroke-debounce for the filter box. See `setFilter`. */
-  #filterTimer: ReturnType<typeof setTimeout> | null = null
+  #filterDebounce = debounce(() => void this.refresh(), FILTER_MS)
 
   /**
    * How to put the cursor in the capture line, registered by the view.
@@ -159,16 +169,7 @@ class TodoState {
    * reference to that component and should not have to be handed one down
    * through the view tree.
    */
-  #capture: (() => void) | null = null
-  /**
-   * A focus asked for before the view was there to take it.
-   *
-   * This is the ordinary case for the tray: the request arrives while the
-   * journal is on screen, and the todo view mounts a frame later. Without
-   * this the first "add a task" from the menu bar would switch apps and
-   * leave the cursor nowhere.
-   */
-  #captureWanted = false
+  #capture = new FocusRequest()
 
   constructor() {
     // A lock must leave nothing decrypted behind in here either.
@@ -179,27 +180,21 @@ class TodoState {
 
   /** Register (or with `null`, retire) the capture line's focus. */
   bindCapture(fn: (() => void) | null) {
-    this.#capture = fn
-    if (fn && this.#captureWanted) {
-      this.#captureWanted = false
-      fn()
-    }
+    this.#capture.bind(fn)
   }
 
   /** Put the cursor in the capture line, now or as soon as there is one. */
   focusCapture() {
-    if (this.#capture) this.#capture()
-    else this.#captureWanted = true
+    this.#capture.request()
   }
 
   reset() {
     this.#saves.cancel()
-    if (this.#filterTimer) clearTimeout(this.#filterTimer)
-    this.#filterTimer = null
+    this.#filterDebounce.cancel()
+    this.#capture.forget()
     // Nothing loaded after a lock may land: the vault is shut and the rows
     // it would put on screen are the ones this reset exists to drop.
-    this.#generation++
-    this.#captureWanted = false
+    this.#generation.next()
     this.projects = []
     this.tasks = []
     this.detailBlocks = []
@@ -216,8 +211,8 @@ class TodoState {
   async start() {
     if (this.#started) return
     this.#started = true
-    const view = localStorage.getItem('everyday.todo.view')
-    if (view === 'list' || view === 'board') this.view = view
+    const view = viewPref.get()
+    if (view) this.view = view
     await this.refresh()
   }
 
@@ -232,7 +227,7 @@ class TodoState {
    */
   async refresh() {
     if (!app.supportsTasks) return
-    const generation = ++this.#generation
+    const generation = this.#generation.next()
     this.loading = true
     try {
       const [projects, tasks, stats, tags] = await Promise.all([
@@ -241,7 +236,7 @@ class TodoState {
         api.taskStats(),
         api.taskTags(),
       ])
-      if (generation !== this.#generation) return
+      if (!this.#generation.isCurrent(generation)) return
       this.projects = projects
       this.tasks = tasks
       this.stats = stats
@@ -254,7 +249,7 @@ class TodoState {
     } catch (e) {
       await handle(e)
     } finally {
-      if (generation === this.#generation) this.loading = false
+      if (this.#generation.isCurrent(generation)) this.loading = false
     }
   }
 
@@ -331,7 +326,7 @@ class TodoState {
 
   setView(view: View) {
     this.view = view
-    localStorage.setItem('everyday.todo.view', view)
+    viewPref.set(view)
     void this.refresh()
   }
 
@@ -346,11 +341,7 @@ class TodoState {
    */
   setFilter(text: string) {
     this.filter = text
-    if (this.#filterTimer) clearTimeout(this.#filterTimer)
-    this.#filterTimer = setTimeout(() => {
-      this.#filterTimer = null
-      void this.refresh()
-    }, FILTER_MS)
+    this.#filterDebounce.call()
   }
 
   // ── the task tree ────────────────────────────────────────────────────
@@ -407,7 +398,7 @@ class TodoState {
   get usedPriorities(): Priority[] {
     return PRIORITIES.filter((p) => p !== 'none' && this.tasks.some((t) => t.priority === p))
       .slice()
-      .sort((a, b) => this.rank(b) - this.rank(a))
+      .sort((a, b) => priorityRank(b) - priorityRank(a))
   }
 
   /** Top-level tasks in scope, each with its loaded subtasks nested. */
@@ -881,11 +872,6 @@ class TodoState {
   /** Is this task past its deadline? */
   overdue(task: Task): boolean {
     return isOpen(task.status) && !!task.dueDate && task.dueDate < todayIso()
-  }
-
-  /** Priority as a sortable number, for views that order by it. */
-  rank(p: Priority): number {
-    return ['none', 'low', 'medium', 'high', 'urgent'].indexOf(p)
   }
 }
 

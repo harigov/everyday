@@ -22,22 +22,13 @@
 // exactly as the application compiles it.
 
 import assert from 'node:assert/strict'
-import { createServer } from 'vite'
+import { load } from './harness.mjs'
 
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  // `watch: null` because a test loads a module once and exits. Vite's
-  // watcher is on by default even in middleware mode, and a watcher is a
-  // per-user resource: a suite that starts one server per file exhausts the
-  // supply (`EMFILE`) on any machine that already has a dev server running.
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
-})
-
-const { applyEvent, emptyTurn, isLoopback, replay, settle } =
-  await server.ssrLoadModule('/src/lib/agent.ts')
+const {
+  modules: [agent, svelteInternal],
+  close,
+} = await load(['/src/lib/agent.ts', 'svelte/internal/client'])
+const { applyEvent, emptyTurn, isLoopback, replay, settle } = agent
 
 // ── folding a stream into a turn ──────────────────────────────────────
 
@@ -188,7 +179,7 @@ const { applyEvent, emptyTurn, isLoopback, replay, settle } =
 // `proxy` is Svelte's own, from the copy this interface builds against, so
 // this checks the real behaviour rather than a model of it.
 {
-  const { proxy } = await server.ssrLoadModule('svelte/internal/client')
+  const { proxy } = svelteInternal
 
   const turns = proxy([])
   turns.push(emptyTurn('assistant', 'local-1'))
@@ -358,5 +349,5 @@ for (const url of [
 assert.ok(!isLoopback(null), 'no override means the provider default, which is remote')
 assert.ok(!isLoopback(''), 'and an empty one is not an override at all')
 
-await server.close()
+await close()
 console.log('agent: all checks passed')

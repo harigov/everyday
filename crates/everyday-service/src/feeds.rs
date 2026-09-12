@@ -32,7 +32,7 @@
 //! The last three are [`crate::http`]'s job, shared with the only other
 //! feature that opens a socket.
 
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
 
 /// Largest feed accepted.
@@ -59,7 +59,7 @@ pub async fn fetch(url: &str) -> CommandResult<String> {
 
     let status = response.status();
     if !status.is_success() {
-        return Err(CommandError::new("network", explain_status(status)));
+        return Err(CommandError::new(codes::NETWORK, explain_status(status)));
     }
 
     // Read in chunks rather than `.text()`, which would allocate whatever the
@@ -109,7 +109,7 @@ fn describe(e: reqwest::Error) -> CommandError {
         // interface and in logs, and the URL is a credential.
         format!("the calendar could not be fetched: {}", http::strip_url(&e.to_string()))
     };
-    CommandError::new("network", message)
+    CommandError::new(codes::NETWORK, message)
 }
 
 /// The days a sync materialises recurring events into.

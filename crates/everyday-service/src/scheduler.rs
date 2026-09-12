@@ -37,7 +37,7 @@
 
 use crate::agent::{AgentEvent, Turn};
 use crate::events::{Change, Kind, Notification, Op};
-use crate::service::Service;
+use crate::service::{Service, blocking};
 use everyday_core::routine::{Due, Outcome, Routine, RoutineRun, Trigger};
 use everyday_core::store::calendars::EventQuery;
 use everyday_core::store::routines::RunQuery;
@@ -109,8 +109,18 @@ pub async fn tick(service: &Arc<Service>) {
         return;
     }
 
-    let Ok(routines) = vault.routines() else { return };
-    let settings = vault.agent_settings().unwrap_or_default();
+    // The two reads share one trip to the blocking pool: if the first fails
+    // there is nothing due to compute anyway, and the order -- routines
+    // first, then the settings that say what "now" is -- matches what the
+    // two separate calls this replaced did.
+    let Ok((routines, settings)) = blocking({
+        let vault = vault.clone();
+        move || Ok((vault.routines()?, vault.agent_settings().unwrap_or_default()))
+    })
+    .await
+    else {
+        return;
+    };
     let now = settings.now();
 
     // Oldest first, so a morning where two routines are both due runs them in
@@ -127,19 +137,28 @@ pub async fn tick(service: &Arc<Service>) {
         match verdict {
             Due::Missed { slot } => {
                 let late = pretty_minutes(now.timestamp().as_second() - slot.as_second());
-                skip(
-                    &vault,
-                    &routine,
-                    Some(slot),
-                    format!(
-                        "its {} was {late} ago, past the {} minutes it allows",
-                        clock_of(slot, &now),
-                        routine.grace_minutes
-                    ),
+                let reason = format!(
+                    "its {} was {late} ago, past the {} minutes it allows",
+                    clock_of(slot, &now),
+                    routine.grace_minutes
                 );
-                // Stamped even though nothing ran, or the same slot is
-                // reported missed on every tick for the rest of the day.
-                stamp(&vault, &routine, slot);
+                // Grouped into one trip to the blocking pool: recording the
+                // skip and stamping the slot are the same fact about the
+                // same routine, and nothing between them needs the async
+                // runtime.
+                let _ = blocking({
+                    let vault = vault.clone();
+                    let routine = routine.clone();
+                    move || {
+                        skip(&vault, &routine, Some(slot), reason);
+                        // Stamped even though nothing ran, or the same slot
+                        // is reported missed on every tick for the rest of
+                        // the day.
+                        stamp(&vault, &routine, slot);
+                        Ok(())
+                    }
+                })
+                .await;
                 service.events().changed(run_change());
             }
             Due::Now { slot } => {
@@ -155,7 +174,13 @@ pub async fn tick(service: &Arc<Service>) {
     // is no moment to compute in advance, and a subscription would have
     // nothing to fire it. Polling on the minute is also what makes a missed
     // window an honest nothing rather than a callback that never came.
-    for routine in vault.routines().unwrap_or_default() {
+    let routines_for_triggers = blocking({
+        let vault = vault.clone();
+        move || Ok(vault.routines().unwrap_or_default())
+    })
+    .await
+    .unwrap_or_default();
+    for routine in routines_for_triggers {
         if !routine.enabled || routine.trigger.is_clock() {
             continue;
         }
@@ -163,8 +188,22 @@ pub async fn tick(service: &Arc<Service>) {
         // is the same set for all of them, and a routine with a hundred
         // subjects in its window would otherwise read its whole log a
         // hundred times.
-        let mut done = already_about(&vault, &routine);
-        for subject in subjects_for(&vault, &routine, &now) {
+        let mut done = blocking({
+            let vault = vault.clone();
+            let routine = routine.clone();
+            move || Ok(already_about(&vault, &routine))
+        })
+        .await
+        .unwrap_or_default();
+        let subjects = blocking({
+            let vault = vault.clone();
+            let routine = routine.clone();
+            let now = now.clone();
+            move || Ok(subjects_for(&vault, &routine, &now))
+        })
+        .await
+        .unwrap_or_default();
+        for subject in subjects {
             // Once per meeting, however many ticks it is in the window for.
             // The subject is the whole of that guard, which is why it is the
             // record's id rather than its title: two meetings called "Weekly"
@@ -185,35 +224,77 @@ pub async fn tick(service: &Arc<Service>) {
     // The claim is the whole test, and it is reliable in the direction that
     // matters: a run this process is carrying out is inside `resume`, which
     // has not returned, so `tick` cannot be here looking at it.
-    for run in vault
-        .runs(&RunQuery { outcomes: vec![Outcome::Running], ..Default::default() })
-        .unwrap_or_default()
-    {
-        if service.claims_run(&run.id.to_string()) {
-            continue;
+    //
+    // The whole sweep is one trip to the blocking pool rather than one per
+    // row: nothing in it ever awaited anything even when it ran inline on
+    // this async fn, so grouping it changes when the events after it fire
+    // relative to each other and not what any of them say -- `run_change`
+    // carries no per-run identity for that to matter to.
+    let abandoned = blocking({
+        let vault = vault.clone();
+        let service = service.clone();
+        move || {
+            let mut count = 0;
+            for run in vault
+                .runs(&RunQuery { outcomes: vec![Outcome::Running], ..Default::default() })
+                .unwrap_or_default()
+            {
+                if service.claims_run(&run.id.to_string()) {
+                    continue;
+                }
+                let mut abandoned = run.clone();
+                abandoned.fail("it was still running when the application stopped");
+                let _ = vault.save_run(&abandoned);
+                if let (Some(slot), Ok(routine)) = (run.slot, vault.routine(run.routine_id)) {
+                    stamp(&vault, &routine, slot);
+                }
+                count += 1;
+            }
+            Ok(count)
         }
-        let mut abandoned = run.clone();
-        abandoned.fail("it was still running when the application stopped");
-        let _ = vault.save_run(&abandoned);
-        if let (Some(slot), Ok(routine)) = (run.slot, vault.routine(run.routine_id)) {
-            stamp(&vault, &routine, slot);
-        }
+    })
+    .await
+    .unwrap_or(0);
+    for _ in 0..abandoned {
         service.events().changed(run_change());
     }
 
     // And whatever somebody asked for by hand. Queued rather than executed in
     // the command, so that "run now" is answered immediately and the work
     // still happens one at a time.
-    for run in vault
-        .runs(&RunQuery { outcomes: vec![Outcome::Queued], ..Default::default() })
-        .unwrap_or_default()
-    {
-        let Ok(routine) = vault.routine(run.routine_id) else {
-            // Its routine was deleted between the asking and now. The cascade
-            // normally takes the runs with it; this one is a straggler.
-            let _ = vault.delete_run(run.id);
-            continue;
-        };
+    let queued = blocking({
+        let vault = vault.clone();
+        move || {
+            Ok(vault
+                .runs(&RunQuery { outcomes: vec![Outcome::Queued], ..Default::default() })
+                .unwrap_or_default())
+        }
+    })
+    .await
+    .unwrap_or_default();
+    for run in queued {
+        let routine_id = run.routine_id;
+        let run_id = run.id;
+        // The lookup and, on failure, the delete are the same trip: both are
+        // about deciding whether this straggler still has a routine to run.
+        let routine = blocking({
+            let vault = vault.clone();
+            move || {
+                Ok(match vault.routine(routine_id) {
+                    Ok(routine) => Some(routine),
+                    // Its routine was deleted between the asking and now.
+                    // The cascade normally takes the runs with it; this one
+                    // is a straggler.
+                    Err(_) => {
+                        let _ = vault.delete_run(run_id);
+                        None
+                    }
+                })
+            }
+        })
+        .await
+        .unwrap_or(None);
+        let Some(routine) = routine else { continue };
         resume(service, &vault, &routine, run).await;
     }
 }
@@ -361,16 +442,24 @@ async fn about(service: &Arc<Service>, vault: &Arc<Vault>, routine: &Routine, su
     // as five meetings rather than five identical rows.
     about.name = format!("{} \u{2014} {}", routine.name, subject.label);
 
-    let mut run = RoutineRun::new(&about, None);
-    // The run belongs to the *routine*, whatever the run is called: its log
-    // has to find it.
-    run.routine_id = routine.id;
-    // Written before the turn, so a second tick during a long run sees it and
-    // does not start the same preparation again.
-    run.subject = Some(subject.key);
-    if vault.save_run(&run).is_err() {
-        return;
-    }
+    let routine_id = routine.id;
+    let saved = blocking({
+        let vault = vault.clone();
+        let about = about.clone();
+        move || {
+            let mut run = RoutineRun::new(&about, None);
+            // The run belongs to the *routine*, whatever the run is called:
+            // its log has to find it.
+            run.routine_id = routine_id;
+            // Written before the turn, so a second tick during a long run
+            // sees it and does not start the same preparation again.
+            run.subject = Some(subject.key);
+            vault.save_run(&run)?;
+            Ok(run)
+        }
+    })
+    .await;
+    let Ok(run) = saved else { return };
     resume(service, vault, &about, run).await;
 }
 
@@ -381,10 +470,17 @@ async fn execute(
     routine: &Routine,
     slot: Option<jiff::Timestamp>,
 ) {
-    let run = RoutineRun::new(routine, slot);
-    if vault.save_run(&run).is_err() {
-        return;
-    }
+    let saved = blocking({
+        let vault = vault.clone();
+        let routine = routine.clone();
+        move || {
+            let run = RoutineRun::new(&routine, slot);
+            vault.save_run(&run)?;
+            Ok(run)
+        }
+    })
+    .await;
+    let Ok(run) = saved else { return };
     resume(service, vault, routine, run).await;
 }
 
@@ -403,18 +499,26 @@ async fn resume(
     // tell a run this process is carrying out from one a dead process left.
     let _claim = service.claim_run(run.id.to_string());
     run.begin();
-    let _ = vault.save_run(&run);
+    save_run(vault, &run).await;
     // The credential check is first and is a *skip*, not a failure: an
     // assistant that is switched off has not failed at anything, and the
-    // reason is the useful part.
-    if let Err(e) = vault.agent_credentials() {
+    // reason is the useful part. Read as `core::Result<Result<_, String>>`
+    // rather than converted through `?` -- the message a person sees is
+    // `everyday_core::Error`'s own text, and running this through
+    // `CommandError` first would prefix it with a code nobody asked to read.
+    let unusable = blocking({
+        let vault = vault.clone();
+        move || Ok(vault.agent_credentials().map(|_| ()).map_err(|e| e.to_string()))
+    })
+    .await;
+    if let Some(reason) = unusable.unwrap_or_else(|e| Err(e.to_string())).err() {
         run.outcome = Outcome::Skipped;
-        run.reason = e.to_string();
+        run.reason = reason;
         run.finished_at = Some(jiff::Timestamp::now());
         run.seen = true;
-        let _ = vault.save_run(&run);
+        save_run(vault, &run).await;
         if let Some(slot) = run.slot {
-            stamp(vault, routine, slot);
+            stamp_async(vault, routine, slot).await;
         }
         service.events().changed(run_change());
         return;
@@ -423,9 +527,15 @@ async fn resume(
     // The transcript. Named after the routine so the rail's thread list reads,
     // and carrying the run so `chats_only` keeps it out of that list.
     let conversation = Conversation::for_run(run.id, routine.name.clone());
-    if vault.save_conversation(&conversation).is_ok() {
+    let saved_conversation = blocking({
+        let vault = vault.clone();
+        let conversation = conversation.clone();
+        move || Ok(vault.save_conversation(&conversation)?)
+    })
+    .await;
+    if saved_conversation.is_ok() {
         run.conversation_id = Some(conversation.id);
-        let _ = vault.save_run(&run);
+        save_run(vault, &run).await;
     }
 
     tracing::info!(routine = %routine.name, "running a routine");
@@ -460,9 +570,9 @@ async fn resume(
     }
 
     service.set_running_routine(None);
-    let _ = vault.save_run(&run);
+    save_run(vault, &run).await;
     if let Some(slot) = run.slot {
-        stamp(vault, routine, slot);
+        stamp_async(vault, routine, slot).await;
     }
     announce(service, routine, &run);
     // What the run *wrote*, and then the run itself. Only the second of these
@@ -551,6 +661,35 @@ fn stamp(vault: &Arc<Vault>, routine: &Routine, slot: jiff::Timestamp) {
     let Ok(mut current) = vault.routine(routine.id) else { return };
     current.last_run_at = Some(slot);
     let _ = vault.save_routine(&current);
+}
+
+/// Run [`stamp`] off the async runtime.
+///
+/// The Missed arm and the abandoned-run sweep call `stamp` directly, because
+/// each is already inside a `blocking` closure doing everything it needs in
+/// one trip; `resume` is not -- it calls this between two `.await`s of its
+/// own -- so it gets a version that takes the hop itself.
+async fn stamp_async(vault: &Arc<Vault>, routine: &Routine, slot: jiff::Timestamp) {
+    let vault = vault.clone();
+    let routine = routine.clone();
+    let _ = blocking(move || {
+        stamp(&vault, &routine, slot);
+        Ok(())
+    })
+    .await;
+}
+
+/// Save a run's row off the async runtime.
+///
+/// `resume` saves the row at every one of its transitions -- begun, skipped,
+/// connected to its transcript, finished -- and every one of those points is
+/// separated from the next by something that awaits, most of all the model
+/// turn itself, so the four saves cannot be grouped into one trip to the
+/// blocking pool the way the sweeps above group theirs.
+async fn save_run(vault: &Arc<Vault>, run: &RoutineRun) {
+    let vault = vault.clone();
+    let run = run.clone();
+    let _ = blocking(move || Ok(vault.save_run(&run)?)).await;
 }
 
 fn run_change() -> Change {

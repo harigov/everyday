@@ -845,3 +845,25 @@ async fn the_purpose_scope_can_be_withheld_on_its_own() {
     // ...and the scope it does hold still works.
     assert!(h.call(token, "list_kinds", json!({})).await.status().is_success());
 }
+
+/// `stop_and_wait` must return as soon as the listener is actually closed,
+/// not sit out its five-second timeout.
+///
+/// The bug this guards against: the TLS branch of `start` spawned a serving
+/// task that never signalled `stopped` on its way out, so a caller waiting
+/// on `stop_and_wait` against a TLS listener always paid the full timeout,
+/// whether or not the socket had already been released. `Harness::start`
+/// runs with TLS on -- the default in every other test in this file -- so
+/// this is the same listener the rest of the suite exercises, not a special
+/// case built to dodge the bug.
+#[tokio::test]
+async fn stop_and_wait_returns_promptly_for_a_tls_listener() {
+    let h = Harness::start().await;
+    let began = std::time::Instant::now();
+    h.running.stop_and_wait().await;
+    assert!(
+        began.elapsed() < std::time::Duration::from_secs(1),
+        "stop_and_wait took {:?}, which means it hit its five-second timeout",
+        began.elapsed()
+    );
+}

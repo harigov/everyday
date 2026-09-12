@@ -134,6 +134,9 @@ pub enum FieldType {
 }
 
 impl FieldType {
+    pub const ALL: [FieldType; 5] =
+        [FieldType::Text, FieldType::Multiline, FieldType::Number, FieldType::Date, FieldType::Url];
+
     pub fn as_str(self) -> &'static str {
         match self {
             FieldType::Text => "text",
@@ -142,6 +145,10 @@ impl FieldType {
             FieldType::Date => "date",
             FieldType::Url => "url",
         }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|f| f.as_str() == s)
     }
 }
 
@@ -475,6 +482,10 @@ impl ItemStatus {
             ItemStatus::Abandoned => "abandoned",
         }
     }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|status| status.as_str() == s)
+    }
 }
 
 /// Somebody else's score, as a source gave it.
@@ -787,6 +798,10 @@ impl LogEvent {
             LogEvent::Note => "note",
             LogEvent::Stopped => "stopped",
         }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|event| event.as_str() == s)
     }
 }
 

@@ -15,31 +15,13 @@
 // `npm run check`, loading the TypeScript through Vite so it is compiled
 // exactly as the application compiles it.
 
-import { createServer } from 'vite'
+import { load, makeCheck } from './harness.mjs'
 
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  // `watch: null` because a test loads a module once and exits. Vite's
-  // watcher is on by default even in middleware mode, and a watcher is a
-  // per-user resource: a suite that starts one server per file exhausts the
-  // supply (`EMFILE`) on any machine that already has a dev server running.
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
-})
-
+const { module: trackerLib, close } = await load('/src/lib/tracker.ts')
 const { dayValue, durationMinutes, formatDay, formatNumber, formatValue, shownTrackers } =
-  await server.ssrLoadModule('/src/lib/tracker.ts')
+  trackerLib
 
-let failed = 0
-function check(what, got, want) {
-  if (JSON.stringify(got) === JSON.stringify(want)) return
-  failed += 1
-  console.error(
-    `FAIL  ${what}\n        got  ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`,
-  )
-}
+const { check, finish } = makeCheck()
 
 /** A tracker with the defaults every field needs, overridden as asked. */
 function tracker(rest = {}) {
@@ -163,10 +145,5 @@ check(
   ['a', 'b'],
 )
 
-await server.close()
-
-if (failed) {
-  console.error(`\ntracking: ${failed} check(s) failed`)
-  process.exit(1)
-}
-console.log('tracking: all checks passed')
+await close()
+finish('tracking')

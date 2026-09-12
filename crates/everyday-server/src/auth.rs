@@ -39,7 +39,8 @@ use rand::TryRngCore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How long a pairing code is good for.
@@ -173,6 +174,11 @@ pub struct Registry {
     /// Held for the duration of an unlock, so two never run at once. See the
     /// module docs: each one is 64 MiB of deliberate work.
     unlock_gate: tokio::sync::Mutex<()>,
+    /// Set while a background write of the `lastSeen` stamp is already on
+    /// its way, so a burst of requests crossing `PERSIST_LAST_SEEN_EVERY`
+    /// in the same moment schedules one write rather than one each -- see
+    /// [`Registry::persist_last_seen_in_background`].
+    last_seen_write_pending: AtomicBool,
 }
 
 /// May a token actually be granted this scope?
@@ -190,6 +196,21 @@ pub struct Registry {
 /// but `Any` was refused, and neither spelling knew about the other.
 fn grantable(scope: Scope) -> bool {
     !matches!(scope, Scope::Admin | Scope::Any)
+}
+
+/// Puts an `AtomicBool` back to `false` however its scope ends.
+///
+/// One user: the deferred `lastSeen` write, where the flag says "a write is
+/// already coming, do not schedule another". Anything that leaves that flag
+/// stuck `true` -- a panic, an early return added later -- stops every
+/// subsequent write silently, and the symptom is a device list whose
+/// timestamps quietly stop moving rather than an error anybody sees.
+struct ClearOnDrop<'a>(&'a AtomicBool);
+
+impl Drop for ClearOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 impl Registry {
@@ -226,6 +247,7 @@ impl Registry {
             pair_attempts: Mutex::new(Attempts::default()),
             unlock_attempts: Mutex::new(HashMap::new()),
             unlock_gate: tokio::sync::Mutex::new(()),
+            last_seen_write_pending: AtomicBool::new(false),
         })
     }
 
@@ -400,36 +422,107 @@ impl Registry {
     /// Every token is hashed and compared, not looked up by prefix: a lookup
     /// that narrowed by prefix would leak how much of a guess was right through
     /// how long the answer took.
-    pub fn authenticate(&self, token: &str) -> CommandResult<Ctx> {
+    ///
+    /// # Why the write is not here
+    ///
+    /// This runs on every paired client's every request, and the file it
+    /// occasionally has to update is one field of one row -- see
+    /// [`PERSIST_LAST_SEEN_EVERY`]. The lock is released before anything
+    /// that touches disk, and the actual write -- a temp file, an fsync of
+    /// it, an fsync of the directory -- happens afterwards, off this
+    /// caller's own future; see [`Registry::persist_last_seen_in_background`]
+    /// for how that stays as correct as writing inline was.
+    pub fn authenticate(self: &Arc<Self>, token: &str) -> CommandResult<Ctx> {
         let hashed = hash(token);
         let now = jiff::Timestamp::now();
-        let mut devices = lock(&self.devices);
-        let Some(device) = devices.iter_mut().find(|d| constant_time_eq(&d.token_hash, &hashed))
-        else {
-            return Err(CommandError::new("unauthorized", "this device is not paired"));
-        };
-        if device.expired(now) {
-            return Err(CommandError::new(
-                "unauthorized",
-                "this device has not been used for a month and must pair again",
-            ));
-        }
-        let worth_writing =
-            now.as_second() - device.last_seen.as_second() >= PERSIST_LAST_SEEN_EVERY;
-        device.last_seen = now;
-        let ctx = Ctx {
-            caller: Caller::Device(device.id.clone()),
-            scopes: device.scopes.clone(),
-            proved_at: None,
-            request_id: None,
+        let (ctx, worth_writing) = {
+            let mut devices = lock(&self.devices);
+            let Some(device) =
+                devices.iter_mut().find(|d| constant_time_eq(&d.token_hash, &hashed))
+            else {
+                return Err(CommandError::new("unauthorized", "this device is not paired"));
+            };
+            if device.expired(now) {
+                return Err(CommandError::new(
+                    "unauthorized",
+                    "this device has not been used for a month and must pair again",
+                ));
+            }
+            let worth_writing =
+                now.as_second() - device.last_seen.as_second() >= PERSIST_LAST_SEEN_EVERY;
+            device.last_seen = now;
+            let ctx = Ctx {
+                caller: Caller::Device(device.id.clone()),
+                scopes: device.scopes.clone(),
+                proved_at: None,
+                request_id: None,
+            };
+            (ctx, worth_writing)
+            // `devices` drops here, at the end of the block -- released
+            // before `persist_last_seen_in_background` below, which is the
+            // whole point.
         };
         // Best-effort, and rarely at all: see `PERSIST_LAST_SEEN_EVERY`. A
         // `lastSeen` that could not be written is not worth refusing a request
         // that is otherwise perfectly good.
-        if worth_writing && let Err(e) = self.save_locked(&devices) {
-            tracing::debug!(error = %e, "could not record a device's last use");
+        if worth_writing {
+            self.persist_last_seen_in_background();
         }
         Ok(ctx)
+    }
+
+    /// Write the device list down off the caller's own future, for the one
+    /// caller that does not need to see the write land before it returns.
+    ///
+    /// Reads `self.devices` fresh at the moment it actually writes, rather
+    /// than closing over the snapshot [`Registry::authenticate`] saw --
+    /// that is what keeps a write scheduled here safe to land after
+    /// [`Registry::revoke`] or [`Registry::issue`] have run in between.
+    /// Every other writer in this file still holds `self.devices`'s lock
+    /// for the whole of its own write, and this does too, just on a
+    /// blocking-pool thread instead of the request's: by the time it
+    /// re-acquires the lock and clones the list, whatever `revoke` did has
+    /// already happened or has not started, exactly as if this had been
+    /// one more synchronous caller arriving a little late. What it can
+    /// never do is write a snapshot older than the last one actually
+    /// written, because it does not carry one -- it looks.
+    ///
+    /// `last_seen_write_pending` collapses a burst of these -- an MCP
+    /// client and three paired phones crossing the five-minute mark within
+    /// the same second -- into one write that picks up all of their stamps
+    /// at once, cleared only once that write has actually finished so nothing
+    /// scheduled while it was running is silently dropped.
+    ///
+    /// Falls back to writing inline when there is no Tokio runtime to hand
+    /// the work to -- every `#[test]` in this file calls `authenticate`
+    /// this way, and inline is what they have always exercised.
+    fn persist_last_seen_in_background(self: &Arc<Self>) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            let devices = lock(&self.devices);
+            if let Err(e) = self.save_locked(&devices) {
+                tracing::debug!(error = %e, "could not record a device's last use");
+            }
+            return;
+        };
+        if self.last_seen_write_pending.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let registry = self.clone();
+        handle.spawn_blocking(move || {
+            let devices = lock(&registry.devices);
+            // Declared after the lock, and therefore dropped before it: the
+            // flag has to fall while this thread still holds `devices`. Clear
+            // it a moment later, once the lock is back, and a stamp taken in
+            // between is lost twice over -- too late for the write that has
+            // already read the list, and too early to schedule one of its
+            // own, because it still sees a write pending. A guard rather than
+            // a line at the end so that a panic in `save_locked` cannot latch
+            // the flag `true` and stop every later write for good.
+            let _clear = ClearOnDrop(&registry.last_seen_write_pending);
+            if let Err(e) = registry.save_locked(&devices) {
+                tracing::debug!(error = %e, "could not record a device's last use");
+            }
+        });
     }
 
     pub fn revoke(&self, id: &str) -> CommandResult<bool> {
@@ -530,9 +623,9 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn registry() -> (Registry, tempfile::TempDir) {
+    fn registry() -> (Arc<Registry>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let registry = Registry::open(dir.path().join("devices.json")).unwrap();
+        let registry = Arc::new(Registry::open(dir.path().join("devices.json")).unwrap());
         (registry, dir)
     }
 
@@ -664,7 +757,7 @@ mod tests {
             jiff::Timestamp::now() - std::time::Duration::from_secs(40 * 24 * 60 * 60);
         std::fs::write(&path, serde_json::to_string(&file).unwrap()).unwrap();
 
-        let registry = Registry::open(&path).unwrap();
+        let registry = Arc::new(Registry::open(&path).unwrap());
         assert_eq!(registry.authenticate(&token).unwrap_err().code, "unauthorized");
     }
 
@@ -710,7 +803,7 @@ mod tests {
 
         // In memory, and -- the part that was broken -- on disk.
         assert_eq!(registry.authenticate(&tokens[3].0).unwrap_err().code, "unauthorized");
-        let reopened = Registry::open(&path).unwrap();
+        let reopened = Arc::new(Registry::open(&path).unwrap());
         assert_eq!(
             reopened.authenticate(&tokens[3].0).unwrap_err().code,
             "unauthorized",
@@ -752,6 +845,45 @@ mod tests {
             let code = random_code();
             assert_eq!(code.len(), CODE_LENGTH);
             assert!(!code.contains(['0', 'O', '1', 'I', 'L']), "{code}");
+        }
+    }
+
+    /// The last-seen stamp still reaches disk once there is a runtime to
+    /// defer the write to -- `authenticate`'s only visible difference from
+    /// before this existed is *when* the write happens, never whether it
+    /// does. Every other test in this file runs outside a Tokio runtime and
+    /// so only exercises the synchronous fallback in
+    /// `persist_last_seen_in_background`; this one is the reason that
+    /// function has a second branch at all.
+    #[tokio::test]
+    async fn the_last_seen_stamp_still_reaches_disk_once_a_runtime_is_available() {
+        let (registry, dir) = registry();
+        let path = dir.path().join("devices.json");
+        let code = registry.new_pairing_code();
+        let (token, id) = registry.pair(&code, "Laptop", vec![Scope::All]).unwrap();
+
+        // Backdate the in-memory stamp so this authenticate is the one due
+        // to persist a fresh one, rather than waiting five real minutes for
+        // that to become true on its own.
+        let stale = jiff::Timestamp::now()
+            - std::time::Duration::from_secs(PERSIST_LAST_SEEN_EVERY as u64 + 1);
+        registry.devices.lock().unwrap()[0].last_seen = stale;
+
+        registry.authenticate(&token).unwrap();
+
+        // The write is off this call's own future now, so it is not
+        // necessarily on disk the instant `authenticate` returns -- that is
+        // the change this test exists to prove landed correctly rather than
+        // simply not at all.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let on_disk: DeviceFile =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            if on_disk.devices.iter().any(|d| d.id == id && d.last_seen > stale) {
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "the background write never landed");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
 }

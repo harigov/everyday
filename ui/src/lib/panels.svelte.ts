@@ -10,9 +10,15 @@
 // the vault, or has to be cleared when it locks -- a dialog is closed by the
 // lock screen appearing over it.
 
-/** The tabs the settings dialog offers, in the order it offers them. */
-export const SETTINGS_TABS = ['general', 'profile', 'assistant', 'data', 'vault'] as const
-export type SettingsTab = (typeof SETTINGS_TABS)[number]
+/**
+ * The settings dialog's tabs.
+ *
+ * Just the type: nothing outside this file ever needed the list itself, only
+ * the tab a caller is allowed to ask `openSettings` for, and keeping the
+ * array around for that alone was dead weight the moment it stopped being
+ * iterated anywhere.
+ */
+export type SettingsTab = 'general' | 'profile' | 'assistant' | 'data' | 'vault'
 
 class Panels {
   /** Which settings tab is showing, or `null` when the dialog is closed. */

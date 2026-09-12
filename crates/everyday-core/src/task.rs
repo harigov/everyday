@@ -93,6 +93,10 @@ impl TaskStatus {
             TaskStatus::Cancelled => "cancelled",
         }
     }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|status| status.as_str() == s)
+    }
 }
 
 /// How a project is going.
@@ -109,6 +113,13 @@ pub enum ProjectStatus {
 }
 
 impl ProjectStatus {
+    pub const ALL: [ProjectStatus; 4] = [
+        ProjectStatus::Active,
+        ProjectStatus::Paused,
+        ProjectStatus::Done,
+        ProjectStatus::Archived,
+    ];
+
     pub fn is_open(self) -> bool {
         matches!(self, ProjectStatus::Active | ProjectStatus::Paused)
     }
@@ -120,6 +131,10 @@ impl ProjectStatus {
             ProjectStatus::Done => "done",
             ProjectStatus::Archived => "archived",
         }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|status| status.as_str() == s)
     }
 }
 
@@ -163,6 +178,10 @@ impl Priority {
             Priority::High => "high",
             Priority::Urgent => "urgent",
         }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|priority| priority.as_str() == s)
     }
 }
 
@@ -441,11 +460,17 @@ pub enum BlockKind {
 }
 
 impl BlockKind {
+    pub const ALL: [BlockKind; 2] = [BlockKind::Planned, BlockKind::Actual];
+
     pub fn as_str(self) -> &'static str {
         match self {
             BlockKind::Planned => "planned",
             BlockKind::Actual => "actual",
         }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.as_str() == s)
     }
 }
 

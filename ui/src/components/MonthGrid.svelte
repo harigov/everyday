@@ -11,7 +11,8 @@
   // changes as you page through the year makes everything below it jump.
 
   import { calendar } from '../lib/calendar.svelte'
-  import { daysFrom, locale, startOfWeek, todayIso } from '../lib/time'
+  import { daysFrom, startOfWeek, todayIso } from '../lib/time'
+  import { dateFormat, timeOfDay } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import { calendarTaskMenu, dayMenu, eventMenu, readingMenu, slotMenu } from '../lib/menus'
   import Icon from './Icon.svelte'
@@ -19,16 +20,12 @@
 
   let { days }: { days: string[] } = $props()
 
-  const weekdayFmt = new Intl.DateTimeFormat(locale(), { weekday: 'short' })
-  const timeFmt = new Intl.DateTimeFormat(locale(), { hour: 'numeric', minute: '2-digit' })
-  const monthFmt = new Intl.DateTimeFormat(locale(), { month: 'short' })
-
   /** Most rows a cell shows before collapsing into "+n more". */
   const MAX_ROWS = 4
 
   const headings = $derived(
     daysFrom(startOfWeek(todayIso(), calendar.weekStart), 7).map((iso) =>
-      weekdayFmt.format(new Date(iso + 'T00:00')),
+      dateFormat({ weekday: 'short' }).format(new Date(iso + 'T00:00')),
     ),
   )
 
@@ -101,7 +98,7 @@
       timed.push({
         key: slot.key,
         label: slot.reading ? `${slot.title} · ${slot.subtitle}` : slot.title,
-        time: start ? timeFmt.format(new Date(start)) : '',
+        time: start ? timeOfDay(new Date(start)) : '',
         color: slot.color,
         kind: slot.kind,
         muted: slot.cancelled,
@@ -114,7 +111,7 @@
       timed.push({
         key: mark.key,
         label: mark.label,
-        time: mark.reading.at ? timeFmt.format(new Date(mark.reading.at)) : '',
+        time: mark.reading.at ? timeOfDay(new Date(mark.reading.at)) : '',
         color: mark.tracker.color,
         kind: 'reading',
         onopen: () => calendar.goto(iso),
@@ -156,7 +153,9 @@
           >
             <!-- The first of a month names itself, so the boundary between
                  two months is legible without counting back to a heading. -->
-            {#if first}<span class="mon">{monthFmt.format(new Date(iso + 'T00:00'))}</span>{/if}
+            {#if first}<span class="mon"
+                >{dateFormat({ month: 'short' }).format(new Date(iso + 'T00:00'))}</span
+              >{/if}
             {Number(iso.slice(8, 10))}
           </button>
           {#if calendar.hasEntry(iso)}

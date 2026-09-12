@@ -81,10 +81,6 @@ impl FrontMatter {
         self
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.fields.is_empty()
-    }
-
     /// The block, fences included, ending in a blank line. Empty when nothing
     /// was set: a file with no metadata should not carry an empty fence.
     pub fn render(&self) -> String {
@@ -254,11 +250,15 @@ fn split_flow(inner: &str) -> Vec<String> {
 pub struct Csv {
     out: String,
     columns: usize,
+    /// Lines written, header included -- kept rather than counted from `out`
+    /// on every call, which an index export otherwise did once per row
+    /// added, turning a linear write into a quadratic one.
+    lines: usize,
 }
 
 impl Csv {
     pub fn new(header: &[&str]) -> Self {
-        let mut csv = Self { out: String::new(), columns: header.len() };
+        let mut csv = Self { out: String::new(), columns: header.len(), lines: 0 };
         csv.row(&header.iter().map(|h| h.to_string()).collect::<Vec<_>>());
         csv
     }
@@ -270,11 +270,12 @@ impl Csv {
         // reading a file written on Linux as one long row.
         self.out.push_str(&line.join(","));
         self.out.push_str("\r\n");
+        self.lines += 1;
     }
 
     /// Rows written so far, the header excluded.
     pub fn rows(&self) -> usize {
-        self.out.matches("\r\n").count().saturating_sub(1)
+        self.lines.saturating_sub(1)
     }
 
     pub fn finish(self) -> String {
@@ -293,7 +294,7 @@ fn cell(value: &str) -> String {
 /// One row of a CSV, addressed by column name.
 pub struct Row<'a> {
     header: &'a [String],
-    cells: Vec<String>,
+    cells: &'a [String],
 }
 
 impl Row<'_> {
@@ -352,7 +353,7 @@ impl Table {
     pub fn rows(&self) -> impl Iterator<Item = Row<'_>> {
         self.rows
             .iter()
-            .map(|cells| Row { header: &self.header, cells: cells.clone() })
+            .map(|cells| Row { header: &self.header, cells: cells.as_slice() })
             .filter(|row| !row.is_empty())
     }
 

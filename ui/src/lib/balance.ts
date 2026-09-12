@@ -13,6 +13,7 @@
 // database to decrypt them to group a bar chart would undo the whole reason
 // the pointer is a clear column.
 
+import { addDays } from './time'
 import type { BalanceReport, Goal, Purpose, Role, RoleId } from './types'
 
 /** One row of the balance view: a role, and what went to it. */
@@ -155,7 +156,7 @@ export function neglected(
   today: string,
   sinceDays = 14,
 ): { role: Role; days: number | null }[] {
-  const cutoff = daysBefore(today, sinceDays)
+  const cutoff = addDays(today, -sinceDays)
   const out: { role: Role; days: number | null }[] = []
 
   for (const role of roles) {
@@ -183,13 +184,6 @@ export function neglected(
 
   // The stalest first, and never-touched ahead of everything.
   return out.sort((a, b) => (b.days ?? Infinity) - (a.days ?? Infinity))
-}
-
-function daysBefore(iso: string, days: number): string {
-  const at = new Date(`${iso}T00:00:00`)
-  at.setDate(at.getDate() - days)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${at.getFullYear()}-${p(at.getMonth() + 1)}-${p(at.getDate())}`
 }
 
 function daysBetween(from: string, to: string): number {

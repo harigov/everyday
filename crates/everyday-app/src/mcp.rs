@@ -19,10 +19,13 @@
 //!
 //! [`crate::sharing::Sharing`] is the other independent switch over this
 //! service, and both may be on together. Neither module reaches into the
-//! other's state; `start`, `stop_and_remember` and `set_destructive` below
-//! all take an `other` list of whatever sharing is currently contributing,
-//! supplied by the caller in `commands.rs`, and fold it in through
-//! [`crate::fanout::compose`]. See that module's doc.
+//! other's state: `start`, `stop_and_remember` and `set_destructive` below
+//! only start and stop this listener, and it is
+//! [`crate::state::AppState::recompose_events`] -- called by `commands.rs`
+//! right after any of them returns -- that asks both switches for their
+//! current sink and folds them together through [`crate::fanout::compose`].
+//! See that module's doc for what a call site forgetting to do this used to
+//! cost.
 //!
 //! # Restarting rebinds the port
 //!
@@ -51,12 +54,14 @@
 //! `Registry::open` of the same file is a bug and not just untidiness.
 
 use everyday_server::Registry;
-use everyday_server::mcp::{Config, Running, issue_token};
+use everyday_server::mcp::{Config, issue_token};
 use everyday_service::Scope;
 use everyday_service::error::CommandResult;
 use everyday_service::events::EventSink;
 use serde::Serialize;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use crate::listener::Listener;
 
 /// What the settings pane draws.
 #[derive(Debug, Clone, Serialize)]
@@ -81,7 +86,7 @@ pub struct McpStatus {
 
 #[derive(Default)]
 pub struct Mcp {
-    running: Mutex<Option<Running>>,
+    listener: Listener<Arc<dyn EventSink>>,
 }
 
 impl Mcp {
@@ -101,7 +106,7 @@ impl Mcp {
 
     /// Is a listener actually answering right now?
     pub fn is_running(&self) -> bool {
-        self.running.lock().unwrap().is_some()
+        self.listener.is_running()
     }
 
     /// This switch's own contribution to the event fan-out, if it is on.
@@ -110,51 +115,40 @@ impl Mcp {
     /// caller composing the whole fan-out never has to ask twice whether
     /// this switch is running.
     pub fn sink(&self) -> Option<Arc<dyn EventSink>> {
-        self.running.lock().unwrap().as_ref().map(|r| r.sink.clone())
+        self.listener.with(|running| running.map(|r| r.server.clone()))
     }
 
-    /// Start answering, and point the service's events at the window,
-    /// every open MCP stream, and whatever else (sharing) is already
-    /// listening.
+    /// Start answering.
     ///
     /// See the module doc's "Restarting rebinds the port" for why
-    /// `stop_and_wait` comes first, and "Composing with sharing" for
-    /// `other`. `registry` is the process's one [`Registry`] over
-    /// `devices.json` -- see this module's doc's "One registry, handed
-    /// in" -- and is handed straight to [`everyday_server::mcp::start`]
-    /// rather than opened again here.
+    /// `stop_and_wait` comes first. `registry` is the process's one
+    /// [`Registry`] over `devices.json` -- see this module's doc's "One
+    /// registry, handed in" -- and is handed straight to
+    /// [`everyday_server::mcp::start`] rather than opened again here. The
+    /// caller -- `commands.rs` -- points the service's events at the window
+    /// and every other listener once this returns, by calling
+    /// [`crate::state::AppState::recompose_events`]; see the module doc's
+    /// "Composing with sharing".
     pub async fn start(
         &self,
         service: Arc<everyday_service::Service>,
-        window_sink: Arc<dyn EventSink>,
-        other: Vec<Arc<dyn EventSink>>,
         mut config: Config,
         registry: Arc<Registry>,
     ) -> CommandResult<McpStatus> {
         self.stop_and_wait().await;
 
         let dir = Self::dir();
-        let running = everyday_server::mcp::start(service.clone(), registry, &config).await?;
-
-        // The window still needs its events, so does every open MCP stream
-        // -- `running.sink` is what carries `lock_state` to
-        // `notifications/tools/list_changed`, see `everyday_server::mcp`'s
-        // module doc -- and so does sharing if it is on.
-        let mut sinks: Vec<Arc<dyn EventSink>> = vec![running.sink.clone()];
-        sinks.extend(other);
-        service.set_events(crate::fanout::compose(window_sink, sinks));
+        let running = everyday_server::mcp::start(service, registry, &config).await?;
 
         config.enabled = true;
         config.save(&dir)?;
-        *self.running.lock().unwrap() = Some(running);
+        self.listener.set(running);
         Ok(self.status())
     }
 
     /// Stop answering.
     pub fn stop(&self) {
-        if let Some(running) = self.running.lock().unwrap().take() {
-            running.stop();
-        }
+        self.listener.stop();
     }
 
     /// Stop answering, and wait for the port to be released.
@@ -162,25 +156,15 @@ impl Mcp {
     /// For a caller about to bind the same address. Signalling a shutdown
     /// is not the same moment as the socket actually being free.
     pub async fn stop_and_wait(&self) {
-        let previous = self.running.lock().unwrap().take();
-        if let Some(running) = previous {
-            running.stop_and_wait().await;
-        }
+        self.listener.stop_and_wait().await;
     }
 
     /// Stop answering, and remember not to start next time.
-    pub fn stop_and_remember(
-        &self,
-        window_sink: Arc<dyn EventSink>,
-        other: Vec<Arc<dyn EventSink>>,
-        service: &everyday_service::Service,
-    ) -> CommandResult<McpStatus> {
+    ///
+    /// As with `start`, the caller recomposes the event fan-out once this
+    /// returns; nothing here touches `service.set_events` any more.
+    pub fn stop_and_remember(&self) -> CommandResult<McpStatus> {
         self.stop();
-        // Back to the window and whatever else (sharing) is still
-        // listening. Without this the fan-out would carry a stream nothing
-        // is reading from any more, or -- the bug this exists to avoid --
-        // would drop sharing's broadcaster because MCP stopped.
-        service.set_events(crate::fanout::compose(window_sink, other));
         let dir = Self::dir();
         let mut config = Config::load(&dir);
         config.enabled = false;
@@ -198,8 +182,6 @@ impl Mcp {
     pub async fn set_destructive(
         &self,
         service: Arc<everyday_service::Service>,
-        window_sink: Arc<dyn EventSink>,
-        other: Vec<Arc<dyn EventSink>>,
         allow: bool,
         registry: Arc<Registry>,
     ) -> CommandResult<McpStatus> {
@@ -207,7 +189,7 @@ impl Mcp {
         let mut config = Config::load(&dir);
         config.allow_destructive = allow;
         if self.is_running() {
-            return self.start(service, window_sink, other, config, registry).await;
+            return self.start(service, config, registry).await;
         }
         config.save(&dir)?;
         Ok(self.status())
@@ -227,16 +209,17 @@ impl Mcp {
     }
 
     pub fn status(&self) -> McpStatus {
-        let running = self.running.lock().unwrap();
-        let config = Self::config();
-        McpStatus {
-            running: running.is_some(),
-            address: running.as_ref().map(|r| r.address.to_string()),
-            addresses: crate::sharing::advertisable_addresses(),
-            port: config.listen.port(),
-            allow_destructive: config.allow_destructive,
-            has_token: config.token.is_some(),
-            device_id: config.device_id,
-        }
+        self.listener.with(|running| {
+            let config = Self::config();
+            McpStatus {
+                running: running.is_some(),
+                address: running.map(|r| r.address.to_string()),
+                addresses: crate::sharing::advertisable_addresses(),
+                port: config.listen.port(),
+                allow_destructive: config.allow_destructive,
+                has_token: config.token.is_some(),
+                device_id: config.device_id,
+            }
+        })
     }
 }

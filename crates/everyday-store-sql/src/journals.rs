@@ -10,6 +10,7 @@
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{BlobId, EntryId, JournalId};
 use everyday_core::model::{Entry, EntrySummary, Journal};
+use everyday_core::purpose::Purpose;
 use everyday_core::store::agent::AgentStore;
 use everyday_core::store::calendars::CalendarStore;
 use everyday_core::store::library::LibraryStore;
@@ -19,12 +20,72 @@ use everyday_core::store::routines::RoutineStore;
 use everyday_core::store::tasks::TaskStore;
 use everyday_core::store::trackers::TrackerStore;
 use everyday_core::store::{
-    Capabilities, EntryQuery, JournalStore, SortOrder, StoreStats, journal_aad,
+    Capabilities, EntryQuery, JournalStore, SortOrder, StoreStats, entry_aad, journal_aad,
 };
 
-use crate::conn::{SqlExt, Value};
+use crate::conn::{SqlExt, ToValue, Value, Where};
 use crate::purpose::{RecordKind, forget_purposes, set_purpose};
+use crate::record::Record;
 use crate::{SqlStore, to_us, vals};
+
+impl Record for Journal {
+    const TABLE: &'static str = "journals";
+    const KIND: &'static str = "journal";
+    type Id = JournalId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        journal_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("sort_order", self.sort_order.to_value()),
+            ("updated_us", to_us(self.updated_at).to_value()),
+        ]
+    }
+}
+
+/// Only used for [`SqlStore::get`]. `put_entry` keeps its own hand-written
+/// `INSERT`, because an entry's row has a `summary` column beside `data`
+/// that this crate's generic upsert cannot fill in -- sealing it needs the
+/// store's cipher, and [`Record::columns`] is a method on the record alone.
+/// Do not reach for [`SqlStore::upsert`] with this impl; it would insert a
+/// row with no summary at all.
+impl Record for Entry {
+    const TABLE: &'static str = "entries";
+    const KIND: &'static str = "entry";
+    type Id = EntryId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        entry_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("journal_id", self.journal_id.to_string().to_value()),
+            ("local_date", self.local_date.to_string().to_value()),
+            ("created_us", to_us(self.created_at).to_value()),
+            ("updated_us", to_us(self.updated_at).to_value()),
+            ("starred", self.starred.to_value()),
+        ]
+    }
+
+    fn purpose_kind() -> Option<RecordKind> {
+        Some(RecordKind::Entry)
+    }
+
+    fn purpose(&self) -> Option<&Purpose> {
+        self.purpose.as_ref()
+    }
+}
 
 impl JournalStore for SqlStore {
     fn backend(&self) -> &'static str {
@@ -84,36 +145,27 @@ impl JournalStore for SqlStore {
     }
 
     fn get_journal(&self, id: JournalId) -> Result<Journal> {
-        let sealed = self
-            .read()
-            .sealed("SELECT data FROM journals WHERE id = ?1", &vals![id.to_string()])?
-            .ok_or_else(|| Error::not_found("journal", id))?;
-        self.unseal(&journal_aad(id), &sealed)
+        self.get(id)
     }
 
     fn put_journal(&self, j: &Journal) -> Result<()> {
-        let sealed = self.seal(&journal_aad(j.id), j)?;
-        self.write().execute(
-            "INSERT INTO journals (id, sort_order, updated_us, data) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (id) DO UPDATE SET sort_order = ?2, updated_us = ?3, data = ?4",
-            &vals![j.id.to_string(), j.sort_order, to_us(j.updated_at), sealed],
-        )?;
-        Ok(())
+        self.upsert(j)
     }
 
     fn delete_journal(&self, id: JournalId) -> Result<()> {
-        // The readings survive and are only detached, which is why this runs
-        // before the transaction rather than inside it: it reseals a payload
-        // per row, and the sealing is the expensive part.
+        // The readings survive and are only detached, in the same
+        // transaction as the journal's own row -- see
+        // `TrackerStore::detach_readings_in` for why the two used to be
+        // separate transactions and are not any more.
         //
         // They used to be deleted here, because a tracker was a field inside
         // the journal record about to go, so its numbers had no meaning
         // without it. Trackers are vault records now: a reading belongs to
         // the tracker, and the journal is only where it was ticked.
-        TrackerStore::detach_readings_in(self, id)?;
-
         let mut conn = self.write();
         let mut tx = conn.begin()?;
+        self.detach_readings_in_tx(tx.as_mut(), id)?;
+
         let args = vals![id.to_string()];
         let doomed: Vec<String> = tx
             .query("SELECT id FROM entries WHERE journal_id = ?1", &args)?
@@ -140,42 +192,39 @@ impl JournalStore for SqlStore {
         // other backends use, so results stay identical across backends.
         let needs_memory_pass = !query.tags.is_empty() || query.sort == SortOrder::TitleAsc;
 
-        let mut sql = String::from("SELECT id, summary FROM entries WHERE 1=1");
-        let mut args: Vec<Value> = Vec::new();
-
+        let mut w = Where::new();
         if let Some(j) = query.journal_id {
-            args.push(Value::Text(j.to_string()));
-            sql.push_str(&format!(" AND journal_id = ?{}", args.len()));
+            w = w.eq("journal_id", j.to_string());
         }
         if let Some(from) = query.from {
-            args.push(Value::Text(from.to_string()));
-            sql.push_str(&format!(" AND local_date >= ?{}", args.len()));
+            w = w.gte("local_date", from.to_string());
         }
         if let Some(to) = query.to {
-            args.push(Value::Text(to.to_string()));
-            sql.push_str(&format!(" AND local_date <= ?{}", args.len()));
+            w = w.lte("local_date", to.to_string());
         }
         if let Some(starred) = query.starred {
-            args.push(Value::Bool(starred));
-            sql.push_str(&format!(" AND starred = ?{}", args.len()));
+            w = w.eq("starred", starred);
         }
+        let (where_sql, args) = w.finish();
+        let mut sql = format!("SELECT id, summary FROM entries WHERE {where_sql}");
 
         if !needs_memory_pass {
             // The chosen sort and nothing before it. The entry list used to
             // put `pinned DESC` first, and no longer does -- see
             // `everyday_core::store::sort_summaries`, which is the in-memory
             // pass this has to agree with exactly.
-            sql.push_str(" ORDER BY ");
-            sql.push_str(match query.sort {
-                SortOrder::DateDesc => "local_date DESC, created_us DESC",
-                SortOrder::DateAsc => "local_date ASC, created_us ASC",
-                SortOrder::UpdatedDesc => "updated_us DESC",
-                SortOrder::CreatedDesc => "created_us DESC",
-                SortOrder::TitleAsc => unreachable!("handled by the in-memory pass"),
-            });
-            // Neither database honours an OFFSET without a LIMIT, and they
-            // spell "no limit" differently. See `Dialect::limit_offset`.
-            sql.push_str(&self.dialect.limit_offset(query.limit, query.offset));
+            self.page(
+                &mut sql,
+                match query.sort {
+                    SortOrder::DateDesc => "local_date DESC, created_us DESC",
+                    SortOrder::DateAsc => "local_date ASC, created_us ASC",
+                    SortOrder::UpdatedDesc => "updated_us DESC",
+                    SortOrder::CreatedDesc => "created_us DESC",
+                    SortOrder::TitleAsc => unreachable!("handled by the in-memory pass"),
+                },
+                query.limit,
+                query.offset,
+            );
         }
 
         let rows = self.read().records(&sql, &args)?;
@@ -189,11 +238,7 @@ impl JournalStore for SqlStore {
     }
 
     fn get_entry(&self, id: EntryId) -> Result<Entry> {
-        let sealed = self
-            .read()
-            .sealed("SELECT data FROM entries WHERE id = ?1", &vals![id.to_string()])?
-            .ok_or_else(|| Error::not_found("entry", id))?;
-        self.open_entry(id, &sealed)
+        self.get(id)
     }
 
     fn put_entry(&self, e: &Entry) -> Result<()> {
@@ -291,14 +336,15 @@ impl JournalStore for SqlStore {
 
     fn delete_entry(&self, id: EntryId) -> Result<()> {
         // Readings survive the entry they were logged beside, and are
-        // detached from it rather than deleted with it. Deleting the
-        // paragraph you wrote about a run does not undo the run, and the
-        // number is the part a year of charts is made of. What must not
-        // survive is the *pointer*: a reading naming an entry that is gone
-        // is a link the next feature to follow it would trip over.
-        self.detach_readings_from(id)?;
+        // detached from it rather than deleted with it, in the same
+        // transaction as the entry's own row. Deleting the paragraph you
+        // wrote about a run does not undo the run, and the number is the
+        // part a year of charts is made of. What must not survive is the
+        // *pointer*: a reading naming an entry that is gone is a link the
+        // next feature to follow it would trip over.
         let mut conn = self.write();
         let mut tx = conn.begin()?;
+        self.detach_readings_from(tx.as_mut(), id)?;
         tx.execute("DELETE FROM entries WHERE id = ?1", &vals![id.to_string()])?;
         forget_purposes(tx.as_mut(), RecordKind::Entry, &[id.to_string()])?;
         tx.commit()

@@ -129,31 +129,26 @@ async fn new_role(svc: Arc<Service>, _ctx: Ctx, args: Named) -> CommandResult<Ro
 }
 
 async fn save_role(svc: Arc<Service>, _ctx: Ctx, args: SaveRole) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_role(&args.role)?)).await
+    svc.on_vault(move |vault| vault.save_role(&args.role)).await
 }
 
 /// Delete a role. Refused, with a message naming the count, while goals still
 /// point at it.
 async fn delete_role(svc: Arc<Service>, _ctx: Ctx, args: RoleRef) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_role(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_role(args.id)).await
 }
 
 /// Offer a starting set of roles, and answer zero if there are any already.
 async fn seed_roles(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<usize> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.seed_roles()?)).await
+    svc.on_vault(move |vault| vault.seed_roles()).await
 }
 
 async fn list_goals(svc: Arc<Service>, _ctx: Ctx, args: Goals) -> CommandResult<Vec<Goal>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.goals(&args.query)?)).await
+    svc.on_vault(move |vault| vault.goals(&args.query)).await
 }
 
 async fn get_goal(svc: Arc<Service>, _ctx: Ctx, args: GoalRef) -> CommandResult<Goal> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.goal(args.id)?)).await
+    svc.on_vault(move |vault| vault.goal(args.id)).await
 }
 
 /// Mint a goal under a role. Unsaved.
@@ -163,18 +158,15 @@ async fn new_goal(svc: Arc<Service>, _ctx: Ctx, args: NewGoal) -> CommandResult<
 }
 
 async fn save_goal(svc: Arc<Service>, _ctx: Ctx, args: SaveGoal) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_goal(&args.goal)?)).await
+    svc.on_vault(move |vault| vault.save_goal(&args.goal)).await
 }
 
 async fn save_goals(svc: Arc<Service>, _ctx: Ctx, args: SaveGoals) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_goals(&args.goals)?)).await
+    svc.on_vault(move |vault| vault.save_goals(&args.goals)).await
 }
 
 async fn delete_goal(svc: Arc<Service>, _ctx: Ctx, args: GoalRef) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_goal(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_goal(args.id)).await
 }
 
 async fn time_by_purpose(
@@ -194,8 +186,7 @@ async fn time_by_purpose(
 }
 
 async fn goal_activity(svc: Arc<Service>, _ctx: Ctx, args: GoalRef) -> CommandResult<GoalActivity> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.goal_activity(args.id)?)).await
+    svc.on_vault(move |vault| vault.goal_activity(args.id)).await
 }
 
 pub static COMMANDS: &[crate::command::Command] = &[

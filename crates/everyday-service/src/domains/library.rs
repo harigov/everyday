@@ -15,7 +15,7 @@
 
 use crate::command;
 use crate::ctx::Ctx;
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use crate::websearch;
 use everyday_core::library::{Item, ItemStatus, Kind, LibraryStats, LogEntry, LogEvent, Progress};
@@ -203,41 +203,34 @@ fn slugify(name: &str) -> String {
 }
 
 async fn save_kind(svc: Arc<Service>, _ctx: Ctx, args: SaveKind) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_kind(&args.kind)?)).await
+    svc.on_vault(move |vault| vault.save_kind(&args.kind)).await
 }
 
 /// Delete the shelf, everything on it, and every log row those items had.
 async fn delete_kind(svc: Arc<Service>, _ctx: Ctx, args: KindRef) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_kind(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_kind(args.id)).await
 }
 
 async fn list_items(svc: Arc<Service>, _ctx: Ctx, args: Items) -> CommandResult<Vec<Item>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.items(&args.query)?)).await
+    svc.on_vault(move |vault| vault.items(&args.query)).await
 }
 
 async fn get_item(svc: Arc<Service>, _ctx: Ctx, args: ItemRef) -> CommandResult<Item> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.item(args.id)?)).await
+    svc.on_vault(move |vault| vault.item(args.id)).await
 }
 
 async fn save_item(svc: Arc<Service>, _ctx: Ctx, args: SaveItem) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_item(&args.item)?)).await
+    svc.on_vault(move |vault| vault.save_item(&args.item)).await
 }
 
 /// One write for many items: what a re-ordered shelf is.
 async fn save_items(svc: Arc<Service>, _ctx: Ctx, args: SaveItems) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_items(&args.items)?)).await
+    svc.on_vault(move |vault| vault.save_items(&args.items)).await
 }
 
 /// Delete the item and its whole log.
 async fn delete_item(svc: Arc<Service>, _ctx: Ctx, args: ItemRef) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_item(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_item(args.id)).await
 }
 
 /// Add something to a shelf, and -- if asked -- go and find out what it is.
@@ -257,7 +250,7 @@ async fn add_item(svc: Arc<Service>, ctx: Ctx, args: AddItem) -> CommandResult<A
     let vault = svc.require()?;
     let title = args.title.trim().to_string();
     if title.is_empty() {
-        return Err(CommandError::new("invalid", "give it a name and it will be added"));
+        return Err(CommandError::new(codes::INVALID, "give it a name and it will be added"));
     }
     let kind_id = args.kind_id;
     let kind = {
@@ -387,8 +380,7 @@ async fn set_item_progress(svc: Arc<Service>, _ctx: Ctx, args: SetProgress) -> C
 }
 
 async fn list_logs(svc: Arc<Service>, _ctx: Ctx, args: Logs) -> CommandResult<Vec<LogEntry>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.logs(&args.query)?)).await
+    svc.on_vault(move |vault| vault.logs(&args.query)).await
 }
 
 /// Mint a log row dated today on the machine's own calendar. Unsaved.
@@ -402,13 +394,11 @@ async fn new_log(svc: Arc<Service>, _ctx: Ctx, args: NewLog) -> CommandResult<Lo
 }
 
 async fn save_log(svc: Arc<Service>, _ctx: Ctx, args: SaveLog) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_log(&args.log)?)).await
+    svc.on_vault(move |vault| vault.save_log(&args.log)).await
 }
 
 async fn delete_log(svc: Arc<Service>, _ctx: Ctx, args: LogRef) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_log(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_log(args.id)).await
 }
 
 /// Counts for the library sidebar, as of the machine's own calendar year.

@@ -72,8 +72,9 @@ export function periodStart(iso: string, per: Period, weekStart: number): string
   return isoDate(new Date(at.getFullYear(), at.getMonth(), 1))
 }
 
-/** The day after the period beginning at `start` ends. */
-export function nextPeriod(start: string, per: Period): string {
+// Not exported: `periodEnd` is what everything outside this module actually
+// wants, and it is a wrapper over this rather than a caller of it.
+function nextPeriod(start: string, per: Period): string {
   if (per === 'day') return addDays(start, 1)
   if (per === 'week') return addDays(start, 7)
   const at = startOfDay(start)

@@ -9,7 +9,7 @@
 
 use crate::command;
 use crate::ctx::Ctx;
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use everyday_core::agent::{AgentSettings, Conversation, Memory, Message};
 use everyday_core::store::agent::ConversationQuery;
@@ -98,8 +98,7 @@ async fn agent_settings(
     _ctx: Ctx,
     _args: Nothing,
 ) -> CommandResult<AgentSettings> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.agent_settings()?)).await
+    svc.on_vault(move |vault| vault.agent_settings()).await
 }
 
 async fn save_agent_settings(
@@ -120,13 +119,11 @@ async fn save_agent_settings(
 
 /// Store the API key. There is no command that reads one back.
 async fn set_agent_key(svc: Arc<Service>, _ctx: Ctx, args: SetKey) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.set_agent_key(&args.key)?)).await
+    svc.on_vault(move |vault| vault.set_agent_key(&args.key)).await
 }
 
 async fn clear_agent_key(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.clear_agent_key()?)).await
+    svc.on_vault(move |vault| vault.clear_agent_key()).await
 }
 
 async fn list_conversations(
@@ -166,8 +163,7 @@ async fn conversation_messages(
     _ctx: Ctx,
     args: ConversationRef,
 ) -> CommandResult<Vec<Message>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.messages(args.id)?)).await
+    svc.on_vault(move |vault| vault.messages(args.id)).await
 }
 
 async fn delete_conversation(
@@ -175,8 +171,7 @@ async fn delete_conversation(
     _ctx: Ctx,
     args: ConversationRef,
 ) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_conversation(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_conversation(args.id)).await
 }
 
 /// Answer a confirmation the assistant is waiting on.
@@ -189,8 +184,7 @@ async fn confirm_tool_call(svc: Arc<Service>, _ctx: Ctx, args: Confirm) -> Comma
 }
 
 async fn list_memories(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<Memory>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.memories()?)).await
+    svc.on_vault(move |vault| vault.memories()).await
 }
 
 /// Write a memory by hand, which also pins it: a fact somebody typed is not one
@@ -214,13 +208,11 @@ async fn new_memory(_svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandRes
 /// person could not unpin a fact they had pinned by accident, and meant the
 /// pane's own switch did nothing.
 async fn save_memory(svc: Arc<Service>, _ctx: Ctx, args: SaveMemory) -> CommandResult<Vec<Memory>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_memory(&args.memory)?)).await
+    svc.on_vault(move |vault| vault.save_memory(&args.memory)).await
 }
 
 async fn delete_memory(svc: Arc<Service>, _ctx: Ctx, args: MemoryRef) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_memory(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_memory(args.id)).await
 }
 
 /// Placeholder for the one command that does not answer with a value.
@@ -229,7 +221,7 @@ async fn delete_memory(svc: Arc<Service>, _ctx: Ctx, args: MemoryRef) -> Command
 /// the surface snapshot all see the whole surface. Never reached: dispatch
 /// refuses a streaming command before it gets here.
 async fn send_message(_svc: Arc<Service>, _ctx: Ctx, _args: SendMessage) -> CommandResult<()> {
-    Err(CommandError::new("unknown_command", "send_message answers with a stream"))
+    Err(CommandError::new(codes::UNKNOWN_COMMAND, "send_message answers with a stream"))
 }
 
 pub static COMMANDS: &[crate::command::Command] = &[

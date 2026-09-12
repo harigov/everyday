@@ -15,18 +15,17 @@
 // silently dropped. Get that ordering wrong in one of three copies and the
 // bug is a keystroke that vanishes under a slow disk, once a fortnight.
 
-import { VaultError } from './types'
-
-/**
- * The vault locking under a write, as opposed to the write failing.
- *
- * Duplicated from `state.svelte.ts`'s `isLocked` rather than imported: that
- * module imports this one, and a cycle between them is not worth introducing
- * for one comparison.
- */
-function isLockedError(e: unknown): boolean {
-  return e instanceof VaultError && e.code === 'locked'
-}
+// `isLocked` used to be duplicated here rather than imported, because
+// `state.svelte.ts` imports this module for `AUTOSAVE_MS`, and importing
+// `isLocked` from `state.svelte.ts` would have closed a cycle for the sake of
+// one comparison. It moved to `errors.ts` instead, which settles the point
+// rather than sidestepping it: `errors.ts` does not import
+// `state.svelte.ts` in either direction -- the two things its `handle` needs
+// from the session are handed to it by `setPolicy`, which `state.svelte.ts`
+// calls beside the line that builds `app` -- so loading `isLocked` here never
+// touches `api.ts`, the vault, or anything that needs a `window` to exist.
+// That is also what keeps this module loadable, alone, by its own test.
+import { isLocked } from './errors'
 
 /**
  * Idle delay before an edited record is written.
@@ -139,7 +138,7 @@ export class Autosave<Id> {
       // the records have already been dropped from memory by the reset that
       // a lock triggers, and rescheduling would leave a timer firing into a
       // vault that is not open.
-      if (isLockedError(e)) return
+      if (isLocked(e)) return
       for (const id of writing) this.#dirty.add(id)
       this.#retryDelay = Math.min(
         this.#retryDelay === null ? this.#delay : this.#retryDelay * 2,

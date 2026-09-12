@@ -8,6 +8,7 @@
 
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{BlockId, ProjectId, TaskId};
+use everyday_core::purpose::Purpose;
 use everyday_core::store::tasks::{
     BlockQuery, ParentScope, ProjectScope, TaskQuery, TaskSort, TaskStore, block_aad, project_aad,
     task_aad,
@@ -16,9 +17,114 @@ use everyday_core::task::{
     BlockKind, Project, ProjectTaskCount, Task, TaskStats, TaskStatus, TimeBlock,
 };
 
-use crate::conn::{Sql, SqlExt, Value};
-use crate::purpose::{RecordKind, forget_purposes, set_purpose};
+use crate::conn::{Sql, SqlExt, ToValue, Value, Where};
+use crate::purpose::{RecordKind, forget_purposes};
+use crate::record::Record;
 use crate::{SqlStore, date_str, id_str, to_us, vals};
+
+impl Record for Project {
+    const TABLE: &'static str = "projects";
+    const KIND: &'static str = "project";
+    type Id = ProjectId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        project_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("status", self.status.as_str().to_value()),
+            ("priority", self.priority.rank().to_value()),
+            ("due_date", date_str(self.due_date).to_value()),
+            ("sort_order", self.sort_order.to_value()),
+            ("created_us", to_us(self.created_at).to_value()),
+            ("updated_us", to_us(self.updated_at).to_value()),
+            ("completed_us", self.completed_at.map(to_us).to_value()),
+        ]
+    }
+
+    fn purpose_kind() -> Option<RecordKind> {
+        Some(RecordKind::Project)
+    }
+
+    fn purpose(&self) -> Option<&Purpose> {
+        self.purpose.as_ref()
+    }
+}
+
+impl Record for Task {
+    const TABLE: &'static str = "tasks";
+    const KIND: &'static str = "task";
+    type Id = TaskId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        task_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("project_id", id_str(self.project_id).to_value()),
+            ("parent_id", id_str(self.parent_id).to_value()),
+            ("status", self.status.as_str().to_value()),
+            ("priority", self.priority.rank().to_value()),
+            ("start_date", date_str(self.start_date).to_value()),
+            ("due_date", date_str(self.due_date).to_value()),
+            ("sort_order", self.sort_order.to_value()),
+            ("created_us", to_us(self.created_at).to_value()),
+            ("updated_us", to_us(self.updated_at).to_value()),
+            ("completed_us", self.completed_at.map(to_us).to_value()),
+        ]
+    }
+
+    fn purpose_kind() -> Option<RecordKind> {
+        Some(RecordKind::Task)
+    }
+
+    fn purpose(&self) -> Option<&Purpose> {
+        self.purpose.as_ref()
+    }
+}
+
+impl Record for TimeBlock {
+    const TABLE: &'static str = "time_blocks";
+    const KIND: &'static str = "block";
+    type Id = BlockId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        block_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("task_id", id_str(self.subject.task_id()).to_value()),
+            ("project_id", id_str(self.subject.project_id()).to_value()),
+            ("local_date", self.local_date.to_string().to_value()),
+            ("start_us", to_us(self.start).to_value()),
+            ("end_us", to_us(self.end).to_value()),
+            ("kind", self.kind.as_str().to_value()),
+        ]
+    }
+
+    fn purpose_kind() -> Option<RecordKind> {
+        Some(RecordKind::Block)
+    }
+
+    fn purpose(&self) -> Option<&Purpose> {
+        self.purpose.as_ref()
+    }
+}
 
 impl TaskStore for SqlStore {
     // ---- projects -------------------------------------------------------
@@ -31,39 +137,11 @@ impl TaskStore for SqlStore {
     }
 
     fn get_project(&self, id: ProjectId) -> Result<Project> {
-        let sealed = self
-            .read()
-            .sealed("SELECT data FROM projects WHERE id = ?1", &vals![id.to_string()])?
-            .ok_or_else(|| Error::not_found("project", id))?;
-        self.unseal(&project_aad(id), &sealed)
+        self.get(id)
     }
 
     fn put_project(&self, p: &Project) -> Result<()> {
-        let data = self.seal(&project_aad(p.id), p)?;
-        let mut conn = self.write();
-        let mut tx = conn.begin()?;
-        tx.execute(
-            "INSERT INTO projects
-                (id, status, priority, due_date, sort_order, created_us, updated_us,
-                 completed_us, data)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT (id) DO UPDATE SET
-                status = ?2, priority = ?3, due_date = ?4, sort_order = ?5,
-                created_us = ?6, updated_us = ?7, completed_us = ?8, data = ?9",
-            &vals![
-                p.id.to_string(),
-                p.status.as_str(),
-                p.priority.rank(),
-                date_str(p.due_date),
-                p.sort_order,
-                to_us(p.created_at),
-                to_us(p.updated_at),
-                p.completed_at.map(to_us),
-                data,
-            ],
-        )?;
-        set_purpose(tx.as_mut(), RecordKind::Project, &p.id.to_string(), p.purpose.as_ref())?;
-        tx.commit()
+        self.upsert(p)
     }
 
     fn delete_project(&self, id: ProjectId) -> Result<()> {
@@ -103,69 +181,58 @@ impl TaskStore for SqlStore {
             || !query.text.trim().is_empty()
             || query.sort == TaskSort::TitleAsc;
 
-        let mut sql = String::from("SELECT id, data FROM tasks WHERE 1=1");
-        let mut args: Vec<Value> = Vec::new();
-
+        let mut w = Where::new();
         match query.project {
             ProjectScope::Any => {}
-            ProjectScope::Inbox => sql.push_str(" AND project_id IS NULL"),
-            ProjectScope::Project { id } => {
-                args.push(Value::Text(id.to_string()));
-                sql.push_str(&format!(" AND project_id = ?{}", args.len()));
-            }
+            ProjectScope::Inbox => w = w.is_null("project_id"),
+            ProjectScope::Project { id } => w = w.eq("project_id", id.to_string()),
         }
         match query.parent {
             ParentScope::Any => {}
-            ParentScope::TopLevel => sql.push_str(" AND parent_id IS NULL"),
-            ParentScope::Of { id } => {
-                args.push(Value::Text(id.to_string()));
-                sql.push_str(&format!(" AND parent_id = ?{}", args.len()));
-            }
+            ParentScope::TopLevel => w = w.is_null("parent_id"),
+            ParentScope::Of { id } => w = w.eq("parent_id", id.to_string()),
         }
         if !query.statuses.is_empty() {
-            let mut holes = Vec::with_capacity(query.statuses.len());
-            for status in &query.statuses {
-                args.push(Value::Text(status.as_str().to_string()));
-                holes.push(format!("?{}", args.len()));
-            }
-            sql.push_str(&format!(" AND status IN ({})", holes.join(",")));
+            w = w.in_list("status", query.statuses.iter().map(|s| s.as_str()));
         }
         if let Some(min) = query.priority_at_least {
-            args.push(Value::Int(min.rank()));
-            sql.push_str(&format!(" AND priority >= ?{}", args.len()));
+            w = w.gte("priority", min.rank());
         }
         if let Some(want) = query.has_due {
-            sql.push_str(if want { " AND due_date IS NOT NULL" } else { " AND due_date IS NULL" });
+            w = if want { w.not_null("due_date") } else { w.is_null("due_date") };
         }
         // NULL compares as neither >= nor <=, so an undated task falls out
         // of a date window here for the same reason it does in
         // `TaskQuery::matches`. That agreement is what the conformance suite
         // pins down.
         if let Some(from) = query.due_from {
-            args.push(Value::Text(from.to_string()));
-            sql.push_str(&format!(" AND due_date >= ?{}", args.len()));
+            w = w.gte("due_date", from.to_string());
         }
         if let Some(to) = query.due_to {
-            args.push(Value::Text(to.to_string()));
-            sql.push_str(&format!(" AND due_date <= ?{}", args.len()));
+            w = w.lte("due_date", to.to_string());
         }
+        let (where_sql, args) = w.finish();
+        let mut sql = format!("SELECT id, data FROM tasks WHERE {where_sql}");
 
         if !needs_memory_pass {
-            sql.push_str(" ORDER BY ");
-            sql.push_str(match query.sort {
-                TaskSort::Manual => "sort_order ASC, created_us ASC",
-                // "Undated last" has to be said out loud. The two databases
-                // put NULLs at opposite ends of an ASC sort, and neither
-                // default is the one wanted -- so the leading boolean decides
-                // it and they agree.
-                TaskSort::DueAsc => "due_date IS NULL, due_date ASC, sort_order ASC",
-                TaskSort::PriorityDesc => "priority DESC, sort_order ASC",
-                TaskSort::CreatedDesc => "created_us DESC",
-                TaskSort::UpdatedDesc => "updated_us DESC",
-                TaskSort::CompletedDesc => "completed_us IS NULL, completed_us DESC",
-                TaskSort::TitleAsc => unreachable!("handled by the in-memory pass"),
-            });
-            sql.push_str(&self.dialect.limit_offset(query.limit, query.offset));
+            self.page(
+                &mut sql,
+                match query.sort {
+                    TaskSort::Manual => "sort_order ASC, created_us ASC",
+                    // "Undated last" has to be said out loud. The two
+                    // databases put NULLs at opposite ends of an ASC sort,
+                    // and neither default is the one wanted -- so the
+                    // leading boolean decides it and they agree.
+                    TaskSort::DueAsc => "due_date IS NULL, due_date ASC, sort_order ASC",
+                    TaskSort::PriorityDesc => "priority DESC, sort_order ASC",
+                    TaskSort::CreatedDesc => "created_us DESC",
+                    TaskSort::UpdatedDesc => "updated_us DESC",
+                    TaskSort::CompletedDesc => "completed_us IS NULL, completed_us DESC",
+                    TaskSort::TitleAsc => unreachable!("handled by the in-memory pass"),
+                },
+                query.limit,
+                query.offset,
+            );
         }
 
         let rows = self.read().records(&sql, &args)?;
@@ -174,11 +241,7 @@ impl TaskStore for SqlStore {
     }
 
     fn get_task(&self, id: TaskId) -> Result<Task> {
-        let sealed = self
-            .read()
-            .sealed("SELECT data FROM tasks WHERE id = ?1", &vals![id.to_string()])?
-            .ok_or_else(|| Error::not_found("task", id))?;
-        self.unseal(&task_aad(id), &sealed)
+        self.get(id)
     }
 
     fn put_task(&self, t: &Task) -> Result<()> {
@@ -186,44 +249,7 @@ impl TaskStore for SqlStore {
     }
 
     fn put_tasks(&self, tasks: &[Task]) -> Result<()> {
-        if tasks.is_empty() {
-            return Ok(());
-        }
-        // Sealed before the lock is taken: encryption is the expensive part
-        // and there is no reason to hold the connection through it.
-        let sealed: Vec<(&Task, Vec<u8>)> =
-            tasks.iter().map(|t| Ok((t, self.seal(&task_aad(t.id), t)?))).collect::<Result<_>>()?;
-
-        let mut conn = self.write();
-        let mut tx = conn.begin()?;
-        for (t, data) in sealed {
-            tx.execute(
-                "INSERT INTO tasks
-                    (id, project_id, parent_id, status, priority, start_date, due_date,
-                     sort_order, created_us, updated_us, completed_us, data)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-                 ON CONFLICT (id) DO UPDATE SET
-                    project_id = ?2, parent_id = ?3, status = ?4, priority = ?5,
-                    start_date = ?6, due_date = ?7, sort_order = ?8, created_us = ?9,
-                    updated_us = ?10, completed_us = ?11, data = ?12",
-                &vals![
-                    t.id.to_string(),
-                    id_str(t.project_id),
-                    id_str(t.parent_id),
-                    t.status.as_str(),
-                    t.priority.rank(),
-                    date_str(t.start_date),
-                    date_str(t.due_date),
-                    t.sort_order,
-                    to_us(t.created_at),
-                    to_us(t.updated_at),
-                    t.completed_at.map(to_us),
-                    data,
-                ],
-            )?;
-            set_purpose(tx.as_mut(), RecordKind::Task, &t.id.to_string(), t.purpose.as_ref())?;
-        }
-        tx.commit()
+        self.upsert_many(tasks)
     }
 
     fn delete_task(&self, id: TaskId) -> Result<()> {
@@ -237,70 +263,36 @@ impl TaskStore for SqlStore {
     // ---- time blocks ----------------------------------------------------
 
     fn list_blocks(&self, query: &BlockQuery) -> Result<Vec<TimeBlock>> {
-        let mut sql = String::from("SELECT id, data FROM time_blocks WHERE 1=1");
-        let mut args: Vec<Value> = Vec::new();
-
+        let mut w = Where::new();
         if let Some(from) = query.from {
-            args.push(Value::Text(from.to_string()));
-            sql.push_str(&format!(" AND local_date >= ?{}", args.len()));
+            w = w.gte("local_date", from.to_string());
         }
         if let Some(to) = query.to {
-            args.push(Value::Text(to.to_string()));
-            sql.push_str(&format!(" AND local_date <= ?{}", args.len()));
+            w = w.lte("local_date", to.to_string());
         }
         if let Some(task) = query.task_id {
-            args.push(Value::Text(task.to_string()));
-            sql.push_str(&format!(" AND task_id = ?{}", args.len()));
+            w = w.eq("task_id", task.to_string());
         }
         if let Some(project) = query.project_id {
-            args.push(Value::Text(project.to_string()));
-            sql.push_str(&format!(" AND project_id = ?{}", args.len()));
+            w = w.eq("project_id", project.to_string());
         }
         if let Some(kind) = query.kind {
-            args.push(Value::Text(kind.as_str().to_string()));
-            sql.push_str(&format!(" AND kind = ?{}", args.len()));
+            w = w.eq("kind", kind.as_str());
         }
-        sql.push_str(" ORDER BY start_us ASC, end_us ASC");
-        if let Some(limit) = query.limit {
-            sql.push_str(&format!(" LIMIT {limit}"));
-        }
+        let (where_sql, args) = w.finish();
+        let mut sql = format!("SELECT id, data FROM time_blocks WHERE {where_sql}");
+        self.page(&mut sql, "start_us ASC, end_us ASC", query.limit, 0);
 
         let rows = self.read().records(&sql, &args)?;
         self.collect(rows, block_aad)
     }
 
     fn get_block(&self, id: BlockId) -> Result<TimeBlock> {
-        let sealed = self
-            .read()
-            .sealed("SELECT data FROM time_blocks WHERE id = ?1", &vals![id.to_string()])?
-            .ok_or_else(|| Error::not_found("block", id))?;
-        self.unseal(&block_aad(id), &sealed)
+        self.get(id)
     }
 
     fn put_block(&self, b: &TimeBlock) -> Result<()> {
-        let data = self.seal(&block_aad(b.id), b)?;
-        let mut conn = self.write();
-        let mut tx = conn.begin()?;
-        tx.execute(
-            "INSERT INTO time_blocks
-                (id, task_id, project_id, local_date, start_us, end_us, kind, data)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT (id) DO UPDATE SET
-                task_id = ?2, project_id = ?3, local_date = ?4, start_us = ?5,
-                end_us = ?6, kind = ?7, data = ?8",
-            &vals![
-                b.id.to_string(),
-                id_str(b.subject.task_id()),
-                id_str(b.subject.project_id()),
-                b.local_date.to_string(),
-                to_us(b.start),
-                to_us(b.end),
-                b.kind.as_str(),
-                data,
-            ],
-        )?;
-        set_purpose(tx.as_mut(), RecordKind::Block, &b.id.to_string(), b.purpose.as_ref())?;
-        tx.commit()
+        self.upsert(b)
     }
 
     fn delete_block(&self, id: BlockId) -> Result<()> {

@@ -19,6 +19,8 @@
   // per-column tooltip and in the table below, which is the accessible twin
   // rather than an extra.
 
+  import { dateFormat } from '../lib/format'
+
   interface Point {
     /** `YYYY-MM-DD`. The column's identity and its tooltip's date. */
     date: string
@@ -87,11 +89,11 @@
 
   function shortDate(iso: string): string {
     const at = new Date(`${iso}T00:00:00`)
-    return at.toLocaleDateString(undefined, {
+    return dateFormat({
       day: 'numeric',
       month: 'short',
       ...(spansYears ? { year: '2-digit' as const } : {}),
-    })
+    }).format(at)
   }
 </script>
 

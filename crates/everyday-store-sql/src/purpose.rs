@@ -12,7 +12,7 @@
 //! # The one interesting query
 //!
 //! [`time_by_purpose`](PurposeStore::time_by_purpose) is why the pointer is
-//! two clear columns rather than a field inside a sealed payload. A block's
+//! two clear columns rather than a field inside the sealed payload. A block's
 //! purpose is its own, else its task's, else that task's project's, and
 //! `COALESCE` over a two-step `LEFT JOIN` expresses exactly that in one
 //! grouped scan — a year of blocks costs an index scan and decrypts nothing.
@@ -30,7 +30,8 @@ use everyday_core::id::{GoalId, RoleId};
 use everyday_core::purpose::{Goal, GoalActivity, Purpose, PurposeMinutes, Role, RoleEventMinutes};
 use everyday_core::store::purpose::{GoalQuery, PurposeStore, PurposeWindow, goal_aad, role_aad};
 
-use crate::conn::{Sql, SqlExt, Value};
+use crate::conn::{Sql, SqlExt, ToValue, Value, Where};
+use crate::record::Record;
 use crate::{SqlStore, date_str, from_us, to_us, vals};
 
 /// What kind of record a `purposes` row belongs to.
@@ -113,6 +114,55 @@ pub(crate) fn forget_purposes(tx: &mut dyn Sql, kind: RecordKind, ids: &[String]
     Ok(())
 }
 
+impl Record for Role {
+    const TABLE: &'static str = "roles";
+    const KIND: &'static str = "role";
+    type Id = RoleId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        role_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("archived", self.archived.to_value()),
+            ("sort_order", self.sort_order.to_value()),
+            ("created_us", to_us(self.created_at).to_value()),
+            ("updated_us", to_us(self.updated_at).to_value()),
+        ]
+    }
+}
+
+impl Record for Goal {
+    const TABLE: &'static str = "goals";
+    const KIND: &'static str = "goal";
+    type Id = GoalId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        goal_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("role_id", self.role_id.to_string().to_value()),
+            ("status", self.status.as_str().to_value()),
+            ("horizon", date_str(self.horizon).to_value()),
+            ("sort_order", self.sort_order.to_value()),
+            ("created_us", to_us(self.created_at).to_value()),
+            ("updated_us", to_us(self.updated_at).to_value()),
+            ("completed_us", self.completed_at.map(to_us).to_value()),
+        ]
+    }
+}
+
 impl PurposeStore for SqlStore {
     // ---- roles ----------------------------------------------------------
 
@@ -124,43 +174,27 @@ impl PurposeStore for SqlStore {
     }
 
     fn get_role(&self, id: RoleId) -> Result<Role> {
-        let sealed = self
-            .read()
-            .sealed("SELECT data FROM roles WHERE id = ?1", &vals![id.to_string()])?
-            .ok_or_else(|| Error::not_found("role", id))?;
-        self.unseal(&role_aad(id), &sealed)
+        self.get(id)
     }
 
     fn put_role(&self, role: &Role) -> Result<()> {
         // The name and the colour are inside `data`. A database whose roles
         // table said "parent" and "recovering alcoholic" would be telling
         // somebody a great deal more than a list of shelf names would.
-        let data = self.seal(&role_aad(role.id), role)?;
-        self.write().execute(
-            "INSERT INTO roles (id, archived, sort_order, created_us, updated_us, data)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT (id) DO UPDATE SET
-                archived = ?2, sort_order = ?3, created_us = ?4, updated_us = ?5, data = ?6",
-            &vals![
-                role.id.to_string(),
-                role.archived,
-                role.sort_order,
-                to_us(role.created_at),
-                to_us(role.updated_at),
-                data,
-            ],
-        )?;
-        Ok(())
+        self.upsert(role)
     }
 
     fn delete_role(&self, id: RoleId) -> Result<()> {
         // Refused rather than cascaded, and the count is in the message so
         // the interface can say what is in the way rather than "no". See the
         // trait's module docs for why this one parent does not take its
-        // children with it.
+        // children with it. Counted and deleted in one transaction, so
+        // nothing can file a goal under this role between the count that
+        // cleared it and the delete that follows.
         let mut conn = self.write();
-        let goals = conn
-            .scalar_i64("SELECT COUNT(*) FROM goals WHERE role_id = ?1", &vals![id.to_string()])?;
+        let mut tx = conn.begin()?;
+        let goals =
+            tx.scalar_i64("SELECT COUNT(*) FROM goals WHERE role_id = ?1", &vals![id.to_string()])?;
         if goals > 0 {
             return Err(Error::Invalid(format!(
                 "this role still has {goals} goal{} under it. Move them to another role, \
@@ -168,35 +202,28 @@ impl PurposeStore for SqlStore {
                 if goals == 1 { "" } else { "s" }
             )));
         }
-        conn.execute("DELETE FROM roles WHERE id = ?1", &vals![id.to_string()])?;
-        Ok(())
+        tx.execute("DELETE FROM roles WHERE id = ?1", &vals![id.to_string()])?;
+        tx.commit()
     }
 
     // ---- goals ----------------------------------------------------------
 
     fn list_goals(&self, query: &GoalQuery) -> Result<Vec<Goal>> {
-        let mut sql = String::from("SELECT id, data FROM goals WHERE 1=1");
-        let mut args: Vec<Value> = Vec::new();
-
+        let mut w = Where::new();
         if let Some(role) = query.role_id {
-            args.push(Value::Text(role.to_string()));
-            sql.push_str(&format!(" AND role_id = ?{}", args.len()));
+            w = w.eq("role_id", role.to_string());
         }
         if !query.statuses.is_empty() {
-            let mut names = Vec::new();
-            for status in &query.statuses {
-                args.push(Value::Text(status.as_str().to_string()));
-                names.push(format!("?{}", args.len()));
-            }
-            sql.push_str(&format!(" AND status IN ({})", names.join(",")));
+            w = w.in_list("status", query.statuses.iter().map(|s| s.as_str()));
         }
         if let Some(to) = query.horizon_to {
             // NULL compares as neither, so an undated goal falls outside the
             // bound rather than sweeping into every quarter's list. Same
             // behaviour as `GoalQuery::matches`, deliberately.
-            args.push(Value::Text(to.to_string()));
-            sql.push_str(&format!(" AND horizon <= ?{}", args.len()));
+            w = w.lte("horizon", to.to_string());
         }
+        let (where_sql, args) = w.finish();
+        let sql = format!("SELECT id, data FROM goals WHERE {where_sql}");
 
         let rows = self.read().records(&sql, &args)?;
         // Sorted and capped in Rust, as the library's items are: the
@@ -207,28 +234,15 @@ impl PurposeStore for SqlStore {
     }
 
     fn get_goal(&self, id: GoalId) -> Result<Goal> {
-        let sealed = self
-            .read()
-            .sealed("SELECT data FROM goals WHERE id = ?1", &vals![id.to_string()])?
-            .ok_or_else(|| Error::not_found("goal", id))?;
-        self.unseal(&goal_aad(id), &sealed)
+        self.get(id)
     }
 
     fn put_goal(&self, goal: &Goal) -> Result<()> {
-        let data = self.seal(&goal_aad(goal.id), goal)?;
-        self.write().execute(GOAL_UPSERT, &goal_row(goal, data))?;
-        Ok(())
+        self.upsert(goal)
     }
 
     fn put_goals(&self, goals: &[Goal]) -> Result<()> {
-        let sealed: Vec<(&Goal, Vec<u8>)> =
-            goals.iter().map(|g| Ok((g, self.seal(&goal_aad(g.id), g)?))).collect::<Result<_>>()?;
-        let mut conn = self.write();
-        let mut tx = conn.begin()?;
-        for (goal, data) in sealed {
-            tx.execute(GOAL_UPSERT, &goal_row(goal, data))?;
-        }
-        tx.commit()
+        self.upsert_many(goals)
     }
 
     fn delete_goal(&self, id: GoalId) -> Result<()> {
@@ -236,7 +250,7 @@ impl PurposeStore for SqlStore {
         // unresolvable pointer already reads as no purpose at all, and
         // rewriting every task, block, entry and item that mentioned this
         // goal is a great deal of writing to make one report row shorter.
-        self.write().execute("DELETE FROM goals WHERE id = ?1", &vals![id.to_string()])?;
+        self.delete_by_id::<Goal>(id)?;
         Ok(())
     }
 
@@ -464,25 +478,4 @@ impl PurposeStore for SqlStore {
 
         Ok(out)
     }
-}
-
-const GOAL_UPSERT: &str = "INSERT INTO goals
-        (id, role_id, status, horizon, sort_order, created_us, updated_us, completed_us, data)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-     ON CONFLICT (id) DO UPDATE SET
-        role_id = ?2, status = ?3, horizon = ?4, sort_order = ?5,
-        created_us = ?6, updated_us = ?7, completed_us = ?8, data = ?9";
-
-fn goal_row(goal: &Goal, data: Vec<u8>) -> Vec<Value> {
-    vals![
-        goal.id.to_string(),
-        goal.role_id.to_string(),
-        goal.status.as_str(),
-        date_str(goal.horizon),
-        goal.sort_order,
-        to_us(goal.created_at),
-        to_us(goal.updated_at),
-        goal.completed_at.map(to_us),
-        data,
-    ]
 }

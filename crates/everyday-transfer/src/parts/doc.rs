@@ -324,7 +324,7 @@ fn attach(
     }
     let resolved = segments.join("/");
     let bytes = src.get(&resolved)?;
-    let mime = everyday_vault::media::sniff_mime(bytes);
+    let mime = everyday_core::media::sniff_mime(bytes);
     let blob = store.put_blob(bytes).ok()?;
 
     // The exporter prefixed the name with eight digits of the blob's address

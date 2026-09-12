@@ -19,23 +19,10 @@
 // exactly as the application compiles it.
 
 import assert from 'node:assert/strict'
-import { createServer } from 'vite'
+import { load } from './harness.mjs'
 
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  // `watch: null` because a test loads a module once and exits. Vite's
-  // watcher is on by default even in middleware mode, and a watcher is a
-  // per-user resource: a suite that starts one server per file exhausts the
-  // supply (`EMFILE`) on any machine that already has a dev server running.
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
-})
-
-const { channelFor, push, toToast, DWELL, MAX_TOASTS } = await server.ssrLoadModule(
-  '/src/lib/notify-policy.ts',
-)
+const { module: notifyPolicy, close } = await load('/src/lib/notify-policy.ts')
+const { channelFor, push, toToast, DWELL, MAX_TOASTS } = notifyPolicy
 
 const AWAY = { focused: false, osReady: true }
 const HERE = { focused: true, osReady: true }
@@ -171,5 +158,5 @@ assert.ok(
 )
 assert.equal(stack[0].id, 2, 'and the oldest sticky one is what makes room for it')
 
-await server.close()
+await close()
 console.log('notify: all checks passed')

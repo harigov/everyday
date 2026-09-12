@@ -173,13 +173,13 @@ export interface Commands {
   listKinds: { args: Record<string, never>; result: KindInfo[] }
   listLogs: { args: { query: LogQuery }; result: LogEntry[] }
   listMemories: { args: Record<string, never>; result: Memory[] }
-  listNotes: { args: { query: NoteQuery }; result: NoteSummary[] }
+  listNotes: { args: { query?: NoteQuery }; result: NoteSummary[] }
   listParts: { args: Record<string, never>; result: PartInfo[] }
   listProjects: { args: Record<string, never>; result: Project[] }
   listReadings: { args: { query: ReadingQuery }; result: Reading[] }
   listRoles: { args: Record<string, never>; result: RoleInfo[] }
   listRoutines: { args: Record<string, never>; result: RoutineInfo[] }
-  listRuns: { args: { query: RunQuery }; result: RoutineRun[] }
+  listRuns: { args: { query?: RunQuery }; result: RoutineRun[] }
   listTags: { args: Record<string, never>; result: string[] }
   listTasks: { args: { query: TaskQuery }; result: Task[] }
   listTools: { args: Record<string, never>; result: ToolInfo[] }
@@ -311,8 +311,8 @@ export interface Commands {
   }
   setItemStatus: { args: { id: ItemId; status: ItemStatus; log: boolean }; result: Item }
   setQuickJob: { args: { name: string; on: boolean }; result: QuickJobRow[] }
-  startExport: { args: { parts: string[]; media: boolean }; result: ExportHandle }
-  startImport: { args: { name: string; bytes: number }; result: ImportUpload }
+  startExport: { args: { parts?: string[]; media?: boolean }; result: ExportHandle }
+  startImport: { args: { name?: string; bytes: number }; result: ImportUpload }
   status: { args: Record<string, never>; result: VaultStatus }
   subscribeCalendar: { args: { name: string; url: string; color: string }; result: CalendarInfo }
   syncCalendar: { args: { id: CalendarId }; result: SyncReport }
@@ -760,7 +760,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
 ])
 
 /** What a listener should reload after a command succeeds. */
-export const CHANGE_KINDS: Readonly<Record<string, string>> = {
+export const CHANGE_KINDS = {
   add_item: 'item',
   apply_metadata: 'item',
   change_password: 'settings',
@@ -822,4 +822,16 @@ export const CHANGE_KINDS: Readonly<Record<string, string>> = {
   subscribe_calendar: 'calendar',
   sync_calendar: 'event',
   sync_due_calendars: 'event',
-}
+} as const
+
+/**
+ * What a change touched, for `live.svelte.ts` and everything else that
+ * routes on it.
+ *
+ * Derived from `CHANGE_KINDS` above rather than listed a second time by hand
+ * -- the hand-written union in `types.ts` used to be the one place this could
+ * fall out of step with the Rust, since nothing checked that every kind a
+ * command could emit was still spelled out there. `types.ts` re-exports this
+ * so nothing that already imports `ChangeKind` from there has to change.
+ */
+export type ChangeKind = (typeof CHANGE_KINDS)[keyof typeof CHANGE_KINDS]

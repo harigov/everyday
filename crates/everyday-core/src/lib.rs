@@ -84,6 +84,7 @@ pub mod ics;
 pub mod id;
 pub mod library;
 pub mod lockfile;
+pub mod media;
 pub mod model;
 pub mod note;
 pub mod profile;
@@ -94,6 +95,8 @@ pub mod routine;
 pub mod search;
 pub mod store;
 pub mod task;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod tracker;
 pub mod vault;
 pub mod websearch;
@@ -128,6 +131,7 @@ pub use store::calendars::{CalendarStore, EventQuery};
 pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
 pub use store::notes::{NoteQuery, NoteSort, NoteStore};
 pub use store::purpose::{GoalQuery, PurposeStore, PurposeWindow};
+pub use store::routines::RunQuery;
 pub use store::tasks::{BlockQuery, ParentScope, ProjectScope, TaskQuery, TaskSort, TaskStore};
 pub use store::trackers::{ReadingQuery, TrackerDay, TrackerStore};
 pub use store::{

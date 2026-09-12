@@ -23,52 +23,36 @@
 // assertion.
 
 import assert from 'node:assert/strict'
-import { createServer } from 'vite'
-import { svelte } from '@sveltejs/vite-plugin-svelte'
+import { load, stubBrowser } from './harness.mjs'
 
 // The stores were written for a browser. Enough of one is lent to them to let
 // the modules evaluate and to let a save reach the mock backend; nothing below
 // depends on the shims being faithful, because nothing below draws anything.
-globalThis.window ??= globalThis
-globalThis.localStorage ??= {
-  getItem: () => null,
-  setItem: () => {},
-  removeItem: () => {},
-}
-globalThis.matchMedia ??= () => ({
-  matches: false,
-  addEventListener: () => {},
-  removeEventListener: () => {},
-})
-globalThis.document ??= {
-  querySelector: () => null,
-  documentElement: {
-    style: { setProperty: () => {} },
-    classList: { toggle: () => {} },
-    setAttribute: () => {},
-    removeAttribute: () => {},
+stubBrowser({
+  window: globalThis,
+  localStorage: true,
+  matchMedia: true,
+  document: {
+    querySelector: () => null,
+    documentElement: {
+      style: { setProperty: () => {} },
+      classList: { toggle: () => {} },
+      setAttribute: () => {},
+      removeAttribute: () => {},
+    },
+    addEventListener: () => {},
   },
-  addEventListener: () => {},
-}
-globalThis.navigator ??= { userAgent: 'node', language: 'en-GB' }
-globalThis.location ??= new URL('http://localhost/?unlocked=1')
-globalThis.URL.createObjectURL ??= () => 'blob:stub'
-
-// The Svelte plugin, for the same reason `actions.test.mjs` names it: a
-// `.svelte.ts` module needs it, because it is what turns `$state` into
-// something that exists. `watch: null` keeps one server per file from
-// exhausting the machine's watches.
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  plugins: [svelte()],
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
+  navigator: { userAgent: 'node', language: 'en-GB' },
+  location: new URL('http://localhost/?unlocked=1'),
+  createObjectURL: () => 'blob:stub',
 })
 
-const { notes } = await server.ssrLoadModule('/src/lib/notes.svelte.ts')
-const { app } = await server.ssrLoadModule('/src/lib/state.svelte.ts')
+const {
+  modules: [notesModule, stateModule],
+  close,
+} = await load(['/src/lib/notes.svelte.ts', '/src/lib/state.svelte.ts'], { svelte: true })
+const { notes } = notesModule
+const { app } = stateModule
 
 // The vault is opened first: every store gates itself on what the backend
 // says it carries, so a notes store asked to load before `status` is known
@@ -147,7 +131,7 @@ journalAsked = 0
 await app.flush()
 assert.equal(journalAsked, 1, 'a journal save asks the editor for its document exactly once')
 
-await server.close()
+await close()
 console.log('editor: all checks passed')
 
 // Said explicitly, because this is the one test file that boots the whole

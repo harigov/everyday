@@ -10,11 +10,11 @@
 //!   decrypts two chunks instead of the whole file.
 //!
 //! The interesting decisions -- range parsing, response sizing, type sniffing
-//! -- live in [`everyday_vault::media`] so they are testable without a
+//! -- live in [`everyday_core::media`] so they are testable without a
 //! webview. This file is the adapter.
 
 use everyday_core::BlobId;
-use everyday_vault::media;
+use everyday_core::media;
 use tauri::http::{Request, Response, StatusCode, header};
 use tauri::{Manager, Runtime};
 
@@ -105,7 +105,8 @@ fn serve<R: Runtime>(app: &tauri::AppHandle<R>, request: &Request<Vec<u8>>) -> R
         return error(StatusCode::BAD_REQUEST, "not a blob address");
     };
 
-    let total = match crate::commands::blob_len(&vault, id) {
+    let service = state.service();
+    let total = match service.blob_len(id) {
         Ok(n) => n,
         Err(e) => {
             tracing::debug!(%id, error = %e, "media request for an unknown blob");
@@ -116,7 +117,7 @@ fn serve<R: Runtime>(app: &tauri::AppHandle<R>, request: &Request<Vec<u8>>) -> R
     let plan =
         media::plan(total, request.headers().get(header::RANGE).and_then(|v| v.to_str().ok()));
 
-    let bytes = match crate::commands::read_blob_range(&vault, id, plan.start, plan.len) {
+    let bytes = match service.blob_range(id, plan.start, plan.len) {
         Ok(b) => b,
         Err(e) => {
             tracing::warn!(%id, error = %e, "could not read attachment");

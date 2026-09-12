@@ -29,7 +29,6 @@ import { calendar } from './calendar.svelte'
 import {
   addWidget,
   defaultLayout,
-  LAYOUT_KEY,
   moveWidget,
   needsOf,
   parseLayout,
@@ -46,7 +45,9 @@ import {
 } from './dashboard'
 import { summarise, type HabitSummary } from './habits'
 import { purpose } from './purpose.svelte'
+import { pref } from './prefs'
 import { app, handle } from './state.svelte'
+import { latest } from './store/latest'
 import { addDays, isoDate, localeWeekStart, minutesBetween, startOfWeek, todayIso } from './time'
 import { tracking } from './tracking.svelte'
 import type {
@@ -61,6 +62,13 @@ import type {
 
 /** How far back a heatmap looks. Long enough for a streak to mean something. */
 const HABIT_DAYS = 120
+
+const layoutPref = pref<Widget[]>(
+  'everyday.overview.layout',
+  (raw) => parseLayout(raw) ?? defaultLayout(),
+  defaultLayout(),
+  (widgets) => JSON.stringify($state.snapshot(widgets)),
+)
 
 class OverviewState {
   // ── what is on screen ────────────────────────────────────────────────
@@ -100,7 +108,7 @@ class OverviewState {
   bookedToday = $state<{ logged: number; planned: number }>({ logged: 0, planned: 0 })
   loading = $state(false)
 
-  #generation = 0
+  #generation = latest()
   #weekStart = localeWeekStart()
 
   constructor() {
@@ -108,7 +116,7 @@ class OverviewState {
     // `start` on every mount -- which happens on every switch back to this
     // app -- so a hook registered there would be added again each time.
     app.onLock(() => this.reset())
-    this.widgets = parseLayout(localStorage.getItem(LAYOUT_KEY)) ?? defaultLayout()
+    this.widgets = layoutPref.get()
   }
 
   get enabled(): boolean {
@@ -255,7 +263,7 @@ class OverviewState {
   }
 
   private save() {
-    localStorage.setItem(LAYOUT_KEY, JSON.stringify($state.snapshot(this.widgets)))
+    layoutPref.set(this.widgets)
   }
 
   // ── lifecycle ────────────────────────────────────────────────────────
@@ -274,7 +282,7 @@ class OverviewState {
   }
 
   reset() {
-    this.#generation += 1
+    this.#generation.next()
     this.report = null
     this.habitDays = []
     this.taskStats = null
@@ -304,7 +312,7 @@ class OverviewState {
    */
   async refresh() {
     if (!this.enabled) return
-    const mine = ++this.#generation
+    const mine = this.#generation.next()
     const needs = this.needs
     this.loading = true
     /** The first read that failed, if any. Reported once, at the end. */
@@ -359,7 +367,7 @@ class OverviewState {
           ask(needs.has('notes'), () => api.notes({ limit: 6 }), []),
           ask(needs.has('today'), () => api.blocks({ from: today, to: today }), []),
         ])
-      if (mine !== this.#generation) return
+      if (!this.#generation.isCurrent(mine)) return
 
       this.report = report
       this.habitDays = days
@@ -393,7 +401,7 @@ class OverviewState {
     } catch (e) {
       await handle(e)
     } finally {
-      if (mine === this.#generation) this.loading = false
+      if (this.#generation.isCurrent(mine)) this.loading = false
     }
   }
 

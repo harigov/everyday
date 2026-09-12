@@ -13,20 +13,19 @@
   // does, because a plan you have already made is not a thing to nag about.
 
   import { calendar } from '../lib/calendar.svelte'
-  import { formatMinutes, friendlyDate } from '../lib/format'
-  import { locale, minutesBetween, offsetInDay } from '../lib/time'
+  import {
+    dayHeading,
+    formatMinutes,
+    friendlyDate,
+    timeOfDay,
+    toLocalTimeValue,
+  } from '../lib/format'
+  import { minutesBetween, offsetInDay } from '../lib/time'
   import { menu } from '../lib/menu.svelte'
   import { blockMenu, calendarTaskMenu, eventMenu } from '../lib/menus'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import type { CalendarEvent, Task, TimeBlock } from '../lib/types'
-
-  const timeFmt = new Intl.DateTimeFormat(locale(), { hour: 'numeric', minute: '2-digit' })
-  const dayFmt = new Intl.DateTimeFormat(locale(), {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-  })
 
   let pendingDelete = $state<TimeBlock | null>(null)
 
@@ -40,7 +39,7 @@
 
   function span(start: string, end: string, allDay = false): string {
     if (allDay) return 'All day'
-    return `${timeFmt.format(new Date(start))} – ${timeFmt.format(new Date(end))}`
+    return `${timeOfDay(new Date(start))} – ${timeOfDay(new Date(end))}`
   }
 
   function onTaskDragStart(e: DragEvent, task: Task) {
@@ -62,8 +61,7 @@
   }
 
   function clockValue(ts: string): string {
-    const at = new Date(ts)
-    return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+    return toLocalTimeValue(new Date(ts))
   }
 
   async function remove() {
@@ -104,7 +102,7 @@
       />
 
       <p class="when">
-        {dayFmt.format(new Date(block.start))}
+        {dayHeading(new Date(block.start))}
         <span class="dot">·</span>
         {formatMinutes(minutesBetween(block.start, block.end))}
       </p>
@@ -200,7 +198,7 @@
 
       <h2 class="etitle" class:cancelled={event.status === 'cancelled'}>{event.title}</h2>
       <p class="when">
-        {dayFmt.format(new Date(event.start))}
+        {dayHeading(new Date(event.start))}
         <span class="dot">·</span>
         {span(event.start, event.end, event.allDay)}
       </p>

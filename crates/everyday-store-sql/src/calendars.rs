@@ -7,13 +7,68 @@
 //! only what an index needs: which calendar, which days, and when.
 
 use everyday_core::calendar::{Calendar, Event};
-use everyday_core::error::{Error, Result};
+use everyday_core::error::Result;
 use everyday_core::id::{CalendarId, EventId};
 use everyday_core::store::calendars::{CalendarStore, EventQuery, calendar_aad, event_aad};
 
-use crate::conn::{SqlExt, Value};
+use crate::conn::{SqlExt, ToValue, Value, Where};
 use crate::purpose::{RecordKind, forget_purposes, set_purpose};
+use crate::record::{Record, upsert_stmt};
 use crate::{SqlStore, to_us, vals};
+
+impl Record for Calendar {
+    const TABLE: &'static str = "calendars";
+    const KIND: &'static str = "calendar";
+    type Id = CalendarId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        calendar_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("visible", self.visible.to_value()),
+            ("created_us", to_us(self.created_at).to_value()),
+            ("updated_us", to_us(self.updated_at).to_value()),
+            ("synced_us", self.last_synced_at.map(to_us).to_value()),
+        ]
+    }
+
+    // A calendar's purpose is derived from `role_id` rather than carried as
+    // a `Purpose` field of its own, so it cannot be handed back as a
+    // borrowed `&Purpose` the way every other record's can. `put_calendar`
+    // computes it and calls `set_purpose` itself instead of going through
+    // `SqlStore::upsert_many`; see there.
+}
+
+impl Record for Event {
+    const TABLE: &'static str = "events";
+    const KIND: &'static str = "event";
+    type Id = EventId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn aad(id: Self::Id) -> Vec<u8> {
+        event_aad(id)
+    }
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("calendar_id", self.calendar_id.to_string().to_value()),
+            ("local_date", self.local_date.to_string().to_value()),
+            ("end_date", self.end_date.to_string().to_value()),
+            ("start_us", to_us(self.start).to_value()),
+            ("end_us", to_us(self.end).to_value()),
+            ("all_day", self.all_day.to_value()),
+        ]
+    }
+}
 
 impl CalendarStore for SqlStore {
     // ---- subscriptions --------------------------------------------------
@@ -25,11 +80,7 @@ impl CalendarStore for SqlStore {
     }
 
     fn get_calendar(&self, id: CalendarId) -> Result<Calendar> {
-        let sealed = self
-            .read()
-            .sealed("SELECT data FROM calendars WHERE id = ?1", &vals![id.to_string()])?
-            .ok_or_else(|| Error::not_found("calendar", id))?;
-        self.unseal(&calendar_aad(id), &sealed)
+        self.get(id)
     }
 
     fn put_calendar(&self, c: &Calendar) -> Result<()> {
@@ -38,20 +89,8 @@ impl CalendarStore for SqlStore {
         let data = self.seal(&calendar_aad(c.id), c)?;
         let mut conn = self.write();
         let mut tx = conn.begin()?;
-        tx.execute(
-            "INSERT INTO calendars (id, visible, created_us, updated_us, synced_us, data)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT (id) DO UPDATE SET
-                visible = ?2, created_us = ?3, updated_us = ?4, synced_us = ?5, data = ?6",
-            &vals![
-                c.id.to_string(),
-                c.visible,
-                to_us(c.created_at),
-                to_us(c.updated_at),
-                c.last_synced_at.map(to_us),
-                data,
-            ],
-        )?;
+        let (sql, args) = upsert_stmt(c, data);
+        tx.execute(&sql, &args)?;
         // A feed's role goes in the same pointer table as everything else,
         // always `role`-kinded: a calendar serves a role, and its forty
         // meetings are not each yours to file.
@@ -80,36 +119,36 @@ impl CalendarStore for SqlStore {
         // sealed -- so it is the one thing that cannot be pushed into SQL.
         // Everything else is a clear column, and the window is an overlap
         // test on the two date columns rather than a bound on the start.
-        let mut sql = String::from("SELECT id, data FROM events WHERE 1=1");
-        let mut args: Vec<Value> = Vec::new();
-
+        let mut w = Where::new();
         if let Some(from) = query.from {
-            args.push(Value::Text(from.to_string()));
-            sql.push_str(&format!(" AND end_date >= ?{}", args.len()));
+            w = w.gte("end_date", from.to_string());
         }
         if let Some(to) = query.to {
-            args.push(Value::Text(to.to_string()));
-            sql.push_str(&format!(" AND local_date <= ?{}", args.len()));
+            w = w.lte("local_date", to.to_string());
         }
         if let Some(cal) = query.calendar_id {
-            args.push(Value::Text(cal.to_string()));
-            sql.push_str(&format!(" AND calendar_id = ?{}", args.len()));
+            w = w.eq("calendar_id", cal.to_string());
         }
+        let (where_sql, args) = w.finish();
+        let mut sql = format!("SELECT id, data FROM events WHERE {where_sql}");
         if query.visible_only {
             // `WHERE visible` rather than `WHERE visible = 1`: Postgres will
             // not compare a boolean to an integer, and both understand this.
+            // A fixed, argument-free subquery, so it is appended directly
+            // rather than through `Where`, which exists for conditions that
+            // carry their own placeholder.
             sql.push_str(" AND calendar_id IN (SELECT id FROM calendars WHERE visible)");
         }
         // All-day first within a day, then chronological: what every
         // calendar draws, and therefore where the eye looks for them.
-        sql.push_str(" ORDER BY all_day DESC, start_us ASC, end_us ASC");
+        //
         // A text filter cuts rows after the fact, so the limit cannot be
         // pushed down with it -- it would cap the wrong set.
         let in_memory_pass = !query.text.trim().is_empty();
-        if let Some(limit) = query.limit
-            && !in_memory_pass
-        {
-            sql.push_str(&format!(" LIMIT {limit}"));
+        if in_memory_pass {
+            sql.push_str(" ORDER BY all_day DESC, start_us ASC, end_us ASC");
+        } else {
+            self.page(&mut sql, "all_day DESC, start_us ASC, end_us ASC", query.limit, 0);
         }
 
         let rows = self.read().records(&sql, &args)?;
@@ -118,11 +157,7 @@ impl CalendarStore for SqlStore {
     }
 
     fn get_event(&self, id: EventId) -> Result<Event> {
-        let sealed = self
-            .read()
-            .sealed("SELECT data FROM events WHERE id = ?1", &vals![id.to_string()])?
-            .ok_or_else(|| Error::not_found("event", id))?;
-        self.unseal(&event_aad(id), &sealed)
+        self.get(id)
     }
 
     fn replace_events(&self, calendar: CalendarId, events: &[Event]) -> Result<()> {
@@ -136,48 +171,35 @@ impl CalendarStore for SqlStore {
         // *before* sealing, so the payload and the clear column agree; doing
         // it only in the column left `get_event` returning an event whose own
         // `calendar_id` named a feed it was not stored under.
-        let sealed: Vec<(String, Vec<u8>)> = events
+        let filed: Vec<(Event, Vec<u8>)> = events
             .iter()
             .map(|e| {
-                let data = if e.calendar_id == calendar {
-                    self.seal(&event_aad(e.id), e)?
+                if e.calendar_id == calendar {
+                    let data = self.seal(&event_aad(e.id), e)?;
+                    Ok((e.clone(), data))
                 } else {
                     let mut filed = e.clone();
                     filed.calendar_id = calendar;
-                    self.seal(&event_aad(e.id), &filed)?
-                };
-                Ok((e.id.to_string(), data))
+                    let data = self.seal(&event_aad(filed.id), &filed)?;
+                    Ok((filed, data))
+                }
             })
             .collect::<Result<_>>()?;
 
         let mut conn = self.write();
         let mut tx = conn.begin()?;
         tx.execute("DELETE FROM events WHERE calendar_id = ?1", &vals![calendar.to_string()])?;
-        for (event, (id, data)) in events.iter().zip(&sealed) {
+        for (event, data) in filed {
             // An upsert, because a feed is not obliged to be well formed.
             // Two occurrences deriving the same id -- a publisher repeating a
             // UID, a recurrence rule that lands twice on one instant -- broke
             // the primary key and aborted the whole transaction, so that feed
             // could never sync again. Last one wins is the right answer for a
-            // cache of what a server said.
-            tx.execute(
-                "INSERT INTO events
-                    (id, calendar_id, local_date, end_date, start_us, end_us, all_day, data)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT (id) DO UPDATE SET
-                    calendar_id = ?2, local_date = ?3, end_date = ?4, start_us = ?5,
-                    end_us = ?6, all_day = ?7, data = ?8",
-                &vals![
-                    id,
-                    calendar.to_string(),
-                    event.local_date.to_string(),
-                    event.end_date.to_string(),
-                    to_us(event.start),
-                    to_us(event.end),
-                    event.all_day,
-                    data,
-                ],
-            )?;
+            // cache of what a server said. Built with `upsert_stmt` rather
+            // than `SqlStore::upsert`, which owns its own transaction, so the
+            // whole sync stays the one transaction the delete opened.
+            let (sql, args) = upsert_stmt(&event, data);
+            tx.execute(&sql, &args)?;
         }
         tx.commit()
     }

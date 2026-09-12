@@ -52,10 +52,9 @@
 //! it goes in the front matter beside it; where even that would be silly, it
 //! is lost, and the [`Spec`] says so in words the settings dialog shows.
 
-pub mod ics;
 mod manifest;
 mod parts;
-pub mod text;
+pub(crate) mod text;
 pub mod zip;
 
 use everyday_core::store::JournalStore;
@@ -223,12 +222,71 @@ impl Report {
         }
     }
 
+    /// Count a record by what [`land`] decided. The same three-way split as
+    /// [`Report::count`], read off the enum a call site already has rather
+    /// than a hand-kept `existed` boolean it would otherwise have to carry
+    /// past the point where `land` already knew the answer.
+    pub fn landed<T>(&mut self, landing: &Landing<T>) {
+        match landing {
+            Landing::Fresh(_) => self.added += 1,
+            Landing::Existing(_) => self.replaced += 1,
+            Landing::Skipped => self.skipped += 1,
+        }
+    }
+
     pub fn problem(&mut self, file: &str, why: impl std::fmt::Display) {
         self.problems.push(format!("{file}: {why}"));
     }
 
     pub fn touched(&self) -> u64 {
         self.added + self.replaced
+    }
+}
+
+/// What became of a record an import is about to write, once its id has told
+/// the part whether that id is already in the vault.
+///
+/// Every part's import used the same four steps with a different type in the
+/// middle: parse the id from the file or mint one, look it up, leave already
+/// -- here alone when the mode says to, and otherwise hand back something to
+/// fill in and save. `land` is those four steps, done once; `Landing` is the
+/// answer, which is either a record to fill in -- new, or about to be
+/// overwritten -- or nothing further to do.
+pub enum Landing<T> {
+    /// Nothing here yet. Filled in and saved as a new record.
+    Fresh(T),
+    /// Already here, and the mode allows writing over it.
+    Existing(T),
+    /// Already here, and [`Mode::Skip`] says to leave it exactly as it is.
+    Skipped,
+}
+
+impl<T> Landing<T> {
+    /// The record to fill in and save, or `None` when [`Mode::Skip`] means
+    /// there is nothing left for the caller to do.
+    ///
+    /// Borrowed rather than taken, and on purpose: a site fills the record
+    /// in through this and saves it while `landing` is still whole, so that
+    /// [`Report::landed`] -- called once the save has actually gone through
+    /// -- still knows which of the three this was. Counting a save before
+    /// finding out whether it succeeded is the bug this shape does not let a
+    /// call site write.
+    pub fn as_mut(&mut self) -> Option<&mut T> {
+        match self {
+            Landing::Fresh(t) | Landing::Existing(t) => Some(t),
+            Landing::Skipped => None,
+        }
+    }
+}
+
+/// Decide what an import site does with a record at an id it may already
+/// hold. `fresh` builds a new record and is only called when there is none
+/// already, so it never pays for a `Type::new(..)` about to be thrown away.
+pub fn land<T>(existing: Option<T>, fresh: impl FnOnce() -> T, mode: Mode) -> Landing<T> {
+    match existing {
+        Some(t) if mode == Mode::Skip => Landing::Skipped,
+        Some(t) => Landing::Existing(t),
+        None => Landing::Fresh(fresh()),
     }
 }
 
@@ -435,7 +493,7 @@ pub fn write_into(vault: &Vault, opts: &Options, sink: &mut dyn Sink) -> Result<
 /// protocol already follows: what a document *says* a file is can be wrong or
 /// hostile, and what it starts with cannot.
 fn extension(body: &[u8]) -> &'static str {
-    match everyday_vault::media::sniff_mime(body) {
+    match everyday_core::media::sniff_mime(body) {
         "image/png" => ".png",
         "image/jpeg" => ".jpg",
         "image/gif" => ".gif",
@@ -515,6 +573,19 @@ pub fn inspect(archive: &zip::Reader) -> Result<Manifest> {
         .and_then(|bytes| serde_json::from_slice::<Manifest>(bytes).ok());
     let mut manifest = stated.unwrap_or_else(Manifest::unstated);
 
+    // A format newer than this build understands is not the same problem as
+    // a folder edited by hand: the layout below the version this build knows
+    // may have changed in a way it would misread rather than merely miss, so
+    // this is refused outright rather than attempted and half-trusted.
+    if manifest.format_version > manifest::FORMAT_VERSION {
+        return Err(Error::Invalid(format!(
+            "this archive is in format {}, and this version of Every Day only reads \
+             up to {}; a newer version of the app is needed to open it",
+            manifest.format_version,
+            manifest::FORMAT_VERSION
+        )));
+    }
+
     // Whatever the manifest says, what is *there* is what can be imported.
     // An archive edited by hand -- a folder deleted, a folder added -- is the
     // ordinary case rather than a corruption.
@@ -529,6 +600,13 @@ pub fn inspect(archive: &zip::Reader) -> Result<Manifest> {
             let count = files.files().count() as u64;
             manifest.add(spec, 0, count, 0);
         }
+    }
+    // Whether a part imports is a fact about *this build*, not about the
+    // archive: an old export's manifest carries whatever the version that
+    // wrote it believed, and `PartEntry::imports` says it is filled in on
+    // inspection rather than trusted from the file for exactly that reason.
+    for entry in &mut manifest.parts {
+        entry.imports = find(&entry.id).is_some_and(|p| p.spec().imports);
     }
     if manifest.parts.is_empty() {
         return Err(Error::Invalid(
@@ -630,5 +708,128 @@ mod tests {
         r.count(true, Mode::Replace);
         assert_eq!((r.added, r.skipped, r.replaced), (1, 1, 1));
         assert_eq!(r.touched(), 2);
+    }
+
+    #[test]
+    fn landing_makes_the_same_three_way_split_as_count() {
+        // The point of `land` is that a call site stops writing this
+        // three-way branch by hand -- so the branch it replaces is the
+        // fixture that proves it still lands the same way.
+        assert!(matches!(land(None::<i32>, || 1, Mode::Skip), Landing::Fresh(1)));
+        assert!(matches!(land(None::<i32>, || 1, Mode::Replace), Landing::Fresh(1)));
+        assert!(matches!(land(Some(2), || 1, Mode::Skip), Landing::Skipped));
+        assert!(matches!(land(Some(2), || 1, Mode::Replace), Landing::Existing(2)));
+
+        let mut r = Report::new("journal");
+        r.landed(&land(None::<i32>, || 1, Mode::Skip));
+        r.landed(&land(Some(2), || 1, Mode::Skip));
+        r.landed(&land(Some(2), || 1, Mode::Replace));
+        assert_eq!((r.added, r.skipped, r.replaced), (1, 1, 1));
+    }
+
+    #[test]
+    fn landings_fresh_closure_never_runs_for_a_record_already_here() {
+        let mut ran = false;
+        let landing = land(
+            Some(2),
+            || {
+                ran = true;
+                1
+            },
+            Mode::Replace,
+        );
+        assert!(matches!(landing, Landing::Existing(2)));
+        assert!(!ran, "`fresh` was called for a record that already existed");
+    }
+
+    /// Every part used to keep its own copy of an enum's wire strings; now
+    /// each part calls the enum's own `as_str`/`parse` in core. This is the
+    /// test that copy would have caught it losing sync with a new variant:
+    /// one round trip per enum this crate reads or writes, so a variant
+    /// added to core without a matching `parse` arm fails here rather than
+    /// as a silent drop on import.
+    #[test]
+    fn every_enum_a_part_writes_reads_its_own_wire_names_back() {
+        use everyday_core::calendar::CalendarProvider;
+        use everyday_core::library::{FieldType, ItemStatus, LogEvent};
+        use everyday_core::purpose::GoalStatus;
+        use everyday_core::task::{BlockKind, Priority, ProjectStatus, TaskStatus};
+        use everyday_core::tracker::{Period, TrackerKind};
+
+        for v in FieldType::ALL {
+            assert_eq!(FieldType::parse(v.as_str()), Some(v));
+        }
+        for v in ItemStatus::ALL {
+            assert_eq!(ItemStatus::parse(v.as_str()), Some(v));
+        }
+        for v in LogEvent::ALL {
+            assert_eq!(LogEvent::parse(v.as_str()), Some(v));
+        }
+        for v in CalendarProvider::ALL {
+            assert_eq!(CalendarProvider::parse(v.as_str()), Some(v));
+        }
+        for v in TaskStatus::ALL {
+            assert_eq!(TaskStatus::parse(v.as_str()), Some(v));
+        }
+        for v in ProjectStatus::ALL {
+            assert_eq!(ProjectStatus::parse(v.as_str()), Some(v));
+        }
+        for v in Priority::ALL {
+            assert_eq!(Priority::parse(v.as_str()), Some(v));
+        }
+        for v in BlockKind::ALL {
+            assert_eq!(BlockKind::parse(v.as_str()), Some(v));
+        }
+        for v in TrackerKind::ALL {
+            assert_eq!(TrackerKind::parse(v.as_str()), Some(v));
+        }
+        for v in Period::ALL {
+            assert_eq!(Period::parse(v.as_str()), Some(v));
+        }
+        for v in GoalStatus::ALL {
+            assert_eq!(GoalStatus::parse(v.as_str()), Some(v));
+        }
+    }
+
+    /// A minimal archive: one file under a real part's folder, and whatever
+    /// `manifest_json` says `everyday.json` holds. Enough for `inspect` to
+    /// have both a stated manifest and something real to check it against.
+    fn archive_with_manifest(manifest_json: &str) -> zip::Reader {
+        let mut w = zip::Writer::new(Vec::new(), jiff::civil::date(2026, 9, 10).at(9, 0, 0, 0));
+        w.add(
+            "notes/A-note.md",
+            b"# A note
+",
+        )
+        .unwrap();
+        w.add("everyday.json", manifest_json.as_bytes()).unwrap();
+        let bytes = w.finish().unwrap();
+        zip::Reader::open(&bytes).unwrap()
+    }
+
+    #[test]
+    fn inspect_refuses_a_format_newer_than_this_build_reads() {
+        let archive = archive_with_manifest(
+            r#"{"application":"Every Day","formatVersion":999999,"parts":[]}"#,
+        );
+        let err = inspect(&archive).unwrap_err().to_string();
+        assert!(err.contains("999999"), "{err}");
+        assert!(err.contains(&manifest::FORMAT_VERSION.to_string()), "{err}");
+    }
+
+    #[test]
+    fn inspect_fills_in_imports_from_this_builds_own_specs_rather_than_the_file() {
+        // A manifest can only have been written by a build with an opinion
+        // about whether "notes" imports; whatever it wrote, this build's own
+        // answer -- true, today -- is the one that ends up on the entry,
+        // because it is `inspect`'s job to say what *this* build can do.
+        let archive = archive_with_manifest(
+            r#"{"application":"Every Day","formatVersion":1,"parts":[
+                {"id":"notes","label":"Notes","format":"Markdown","imports":false}
+            ]}"#,
+        );
+        let manifest = inspect(&archive).unwrap();
+        let notes = manifest.parts.iter().find(|p| p.id == "notes").unwrap();
+        assert!(notes.imports, "inspect should have corrected this from the live spec");
     }
 }

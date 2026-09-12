@@ -11,28 +11,22 @@ use everyday_service::{Service, error::CommandError};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+#[allow(dead_code)]
+mod support;
+
+/// The shared fixture, plus one entry -- these tests are about moving a
+/// vault's contents over the wire, so unlike `tests/call.rs` they need
+/// something in it to move.
 fn service(password: Option<&str>) -> (Arc<Service>, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
-    let config = everyday_core::VaultConfig {
-        name: "Test".into(),
-        backend: "sqlite".into(),
-        settings: Default::default(),
-        password: password.map(str::to_string),
-        kdf: everyday_core::crypto::KdfParams::insecure_fast(),
-        auto_lock_seconds: 900,
-        forget_key_seconds: 0,
-    };
-    let vault = everyday_vault::create(dir.path(), config).unwrap();
-    let journal = everyday_core::Journal::new("Personal");
-    vault.save_journal(&journal).unwrap();
+    let (svc, dir) = support::vault::service(password);
+    let vault = svc.get().unwrap();
+    let journal = vault.journals().unwrap().into_iter().next().unwrap();
 
     let mut entry = everyday_core::model::Entry::new(journal.id, "Europe/London");
     entry.title = "Morning pages".into();
     entry.body = everyday_core::richtext::RichDoc::from_markdown("It **rained**.\n");
     vault.save_entry(&entry, None).unwrap();
 
-    let svc = Arc::new(Service::new());
-    svc.set(vault);
     (svc, dir)
 }
 

@@ -101,10 +101,11 @@ impl GoalQuery {
         true
     }
 
-    /// Sort and cap. Ordered by the role's own ordering first so a list
-    /// reads as sections, then by `sort_order`, then by title — the same
-    /// three-step the todo app's projects use.
+    /// Filter, sort and cap. Ordered by the role's own ordering first so a
+    /// list reads as sections, then by `sort_order`, then by title — the
+    /// same three-step the todo app's projects use.
     pub fn apply(&self, mut goals: Vec<Goal>) -> Vec<Goal> {
+        goals.retain(|g| self.matches(g));
         goals.sort_by(|a, b| {
             a.sort_order
                 .cmp(&b.sort_order)
@@ -303,6 +304,19 @@ mod tests {
         let capped = GoalQuery { limit: Some(2), ..Default::default() }.apply(vec![a, b, c]);
         assert_eq!(capped.len(), 2);
         assert_eq!(capped[0].title, "apple");
+    }
+
+    #[test]
+    fn apply_filters_as_well_as_sorting_and_capping() {
+        // `apply` used to sort and truncate without ever calling `matches`,
+        // so a backend that fetched everything and left the filtering to
+        // this -- rather than pushing it into its own query -- would hand
+        // back every goal regardless of role or status.
+        let mine = RoleId::new();
+        let theirs = RoleId::new();
+        let out = GoalQuery::under(mine).apply(vec![goal(mine, "a"), goal(theirs, "b")]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].title, "a");
     }
 
     #[test]

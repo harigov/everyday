@@ -4,6 +4,7 @@
   import { library } from '../lib/library.svelte'
   import { menu } from '../lib/menu.svelte'
   import { tidyMenu, type MenuItem } from '../lib/menu'
+  import { onOffPref } from '../lib/prefs'
   import { app } from '../lib/state.svelte'
   import { web, type LiveOutcome } from '../lib/websearch'
   import type { KindInfo, SearchResult } from '../lib/types'
@@ -50,8 +51,9 @@
   let draft = $state('')
   let field = $state<HTMLInputElement | null>(null)
   let busy = $state(false)
+  const enrichPref = onOffPref('everyday.library.enrich')
   /** Whether to go and look the title up. Remembered across the session. */
-  let enrich = $state(localStorage.getItem('everyday.library.enrich') !== 'off')
+  let enrich = $state(enrichPref.get())
 
   // ── the suggestion list ──────────────────────────────────────────────
   //
@@ -106,7 +108,7 @@
 
   function setEnrich(on: boolean) {
     enrich = on
-    localStorage.setItem('everyday.library.enrich', on ? 'on' : 'off')
+    enrichPref.set(on)
     if (!on) {
       hits = []
       search.stop()

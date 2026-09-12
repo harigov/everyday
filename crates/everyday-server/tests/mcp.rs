@@ -467,7 +467,7 @@ async fn get_opens_a_legacy_stream_that_learns_of_an_unlock() {
     // Nothing has happened yet: the legacy stream has no acknowledgement to
     // send, unlike `subscriptions/listen`'s. Fire the same event the vault
     // itself raises on unlock and see it arrive.
-    h.running.sink.lock_state(false);
+    h.running.server.lock_state(false);
 
     let chunk = tokio::time::timeout(Duration::from_secs(2), response.chunk())
         .await

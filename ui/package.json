@@ -12,7 +12,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "node scripts/quickadd.test.mjs && node scripts/autosave.test.mjs && node scripts/calendar.test.mjs && node scripts/conflict.test.mjs && node scripts/notify.test.mjs && node scripts/library.test.mjs && node scripts/tracking.test.mjs && node scripts/overview.test.mjs && node scripts/dashboard.test.mjs && node scripts/quicktrack.test.mjs && node scripts/menu.test.mjs && node scripts/agent.test.mjs && node scripts/markdown.test.mjs && node scripts/keys.test.mjs && node scripts/actions.test.mjs && node scripts/live.test.mjs && node scripts/quick.test.mjs && node scripts/suggestions.test.mjs && node scripts/assistant.test.mjs && node scripts/editor.test.mjs && node scripts/format.test.mjs",
+    "test": "node scripts/harness.mjs",
     "gen:api": "node scripts/gen-api.mjs && prettier --write --log-level warn src/lib/generated"
   },
   "dependencies": {

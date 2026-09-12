@@ -7,8 +7,8 @@
   // day is the cheapest possible answer to "is there anything on then".
 
   import { calendar } from '../lib/calendar.svelte'
-  import { addMonths, daysFrom, locale, monthGrid, startOfWeek, todayIso } from '../lib/time'
-  import { relativeTime } from '../lib/format'
+  import { addMonths, daysFrom, monthGrid, startOfWeek, todayIso } from '../lib/time'
+  import { monthYear, relativeTime, weekdayNarrow } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { colourItems, dayMenu, purposeItems } from '../lib/menus'
@@ -16,9 +16,6 @@
   import ConfirmDialog from './ConfirmDialog.svelte'
   import AddCalendar from './AddCalendar.svelte'
   import type { CalendarInfo } from '../lib/types'
-
-  const monthFmt = new Intl.DateTimeFormat(locale(), { month: 'long', year: 'numeric' })
-  const initialFmt = new Intl.DateTimeFormat(locale(), { weekday: 'narrow' })
 
   let adding = $state(false)
   let pendingDelete = $state<CalendarInfo | null>(null)
@@ -38,7 +35,7 @@
   const miniDays = $derived(monthGrid(miniAnchor, calendar.weekStart))
   const initials = $derived(
     daysFrom(startOfWeek(todayIso(), calendar.weekStart), 7).map((iso) =>
-      initialFmt.format(new Date(iso + 'T00:00')),
+      weekdayNarrow(new Date(iso + 'T00:00')),
     ),
   )
   const shown = $derived(new Set(calendar.days))
@@ -139,7 +136,7 @@
       ><span class="back"><Icon name="chevron" size={13} /></span></button
     >
     <button class="minititle" onclick={() => calendar.goto(miniAnchor)}>
-      {monthFmt.format(new Date(miniAnchor + 'T00:00'))}
+      {monthYear(new Date(miniAnchor + 'T00:00'))}
     </button>
     <button
       class="ministep"

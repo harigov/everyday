@@ -41,7 +41,7 @@
 
 use super::doc;
 use crate::text::{Csv, FrontMatter, Table, safe_name};
-use crate::{Files, Mode, Options, Part, Portable, Report, Spec};
+use crate::{Files, Mode, Options, Part, Portable, Report, Spec, land};
 use everyday_core::store::JournalStore;
 use everyday_core::store::tasks::{BlockQuery, TaskQuery, TaskStore};
 use everyday_core::task::{
@@ -295,15 +295,15 @@ fn read_project(
         None
     } else {
         let id = fields.parse::<ProjectId>("id").unwrap_or_else(ProjectId::new);
+        let title = fields
+            .get("project")
+            .map(str::to_string)
+            .or_else(|| heading(body))
+            .unwrap_or_else(|| file.trim_end_matches(".md").replace('-', " "));
+
         let existing = tasks.get_project(id).ok();
-        let existed = existing.is_some();
-        if !existed || mode == Mode::Replace {
-            let title = fields
-                .get("project")
-                .map(str::to_string)
-                .or_else(|| heading(body))
-                .unwrap_or_else(|| file.trim_end_matches(".md").replace('-', " "));
-            let mut project = existing.clone().unwrap_or_else(|| Project::new(&title));
+        let mut landing = land(existing, || Project::new(&title), mode);
+        if let Some(project) = landing.as_mut() {
             project.id = id;
             project.name = title;
             project.notes = prose(body);
@@ -325,9 +325,9 @@ fn read_project(
             }
             project.created_at = fields.parse("created").unwrap_or(project.created_at);
             project.updated_at = jiff::Timestamp::now();
-            tasks.put_project(&project)?;
+            tasks.put_project(project)?;
         }
-        report.count(existed, mode);
+        report.landed(&landing);
         Some(id)
     };
 
@@ -339,15 +339,14 @@ fn read_project(
         ancestry.truncate(parsed.depth);
         let parent = ancestry.last().copied();
         let id = parsed.id.unwrap_or_else(TaskId::new);
-        let existing = tasks.get_task(id).ok();
-        let existed = existing.is_some();
         ancestry.push(id);
 
-        if existed && mode == Mode::Skip {
-            report.skipped += 1;
+        let existing = tasks.get_task(id).ok();
+        let mut landing = land(existing, || Task::new(&parsed.title), mode);
+        let Some(task) = landing.as_mut() else {
+            report.landed(&landing);
             continue;
-        }
-        let mut task = existing.unwrap_or_else(|| Task::new(&parsed.title));
+        };
         task.id = id;
         task.project_id = project_id;
         task.parent_id = parent;
@@ -372,8 +371,8 @@ fn read_project(
             TaskStatus::Done => parsed.completed.or(task.completed_at).or(Some(task.updated_at)),
             _ => None,
         };
-        tasks.put_task(&task)?;
-        report.count(existed, mode);
+        tasks.put_task(task)?;
+        report.landed(&landing);
         order += 1;
     }
     Ok(())
@@ -532,17 +531,15 @@ fn parse_clock(text: &str) -> Option<Time> {
 }
 
 fn priority(word: &str) -> Option<Priority> {
-    Priority::ALL.into_iter().find(|p| p.as_str() == word.to_ascii_lowercase())
+    Priority::parse(&word.to_ascii_lowercase())
 }
 
 fn status(word: &str) -> Option<TaskStatus> {
-    TaskStatus::ALL.into_iter().find(|s| s.as_str() == word.to_ascii_lowercase())
+    TaskStatus::parse(&word.to_ascii_lowercase())
 }
 
 fn project_status(word: &str) -> Option<ProjectStatus> {
-    [ProjectStatus::Active, ProjectStatus::Paused, ProjectStatus::Done, ProjectStatus::Archived]
-        .into_iter()
-        .find(|s| s.as_str() == word.to_ascii_lowercase())
+    ProjectStatus::parse(&word.to_ascii_lowercase())
 }
 
 // ---- time ---------------------------------------------------------------
@@ -601,7 +598,7 @@ fn time_csv(blocks: &[TimeBlock]) -> String {
 /// meant to spend sitting on top of the hour you did spend, both unlabelled,
 /// is worse than not exporting them at all.
 fn time_ics(blocks: &[TimeBlock], tasks: &[Task], projects: &[Project]) -> String {
-    let mut ics = crate::ics::Ics::new("Every Day \u{2014} time");
+    let mut ics = everyday_core::ics::Ics::new("Every Day \u{2014} time");
     for block in blocks {
         let subject = match block.subject {
             BlockSubject::Task { id } => tasks.iter().find(|t| t.id == id).map(|t| t.title.clone()),
@@ -638,8 +635,11 @@ fn read_time(tasks: &dyn TaskStore, csv: &str, mode: Mode, report: &mut Report) 
     for row in table.rows() {
         let id = row.parse::<BlockId>("id").unwrap_or_else(BlockId::new);
         let existing = tasks.get_block(id).ok();
-        let existed = existing.is_some();
-        if existed && mode == Mode::Skip {
+        // The order matters: a row already here and left alone by
+        // `Mode::Skip` is never checked for a usable start and end, because
+        // nothing about it is about to be read. Validating it first would
+        // turn a row silently skipped today into one reported as broken.
+        if existing.is_some() && mode == Mode::Skip {
             report.skipped += 1;
             continue;
         }
@@ -660,7 +660,12 @@ fn read_time(tasks: &dyn TaskStore, csv: &str, mode: Mode, report: &mut Report) 
             "" => "UTC".to_string(),
             tz => tz.to_string(),
         };
-        let mut block = existing.unwrap_or_else(|| TimeBlock::new(subject, start, 0, &tz));
+        // `existing` can only be `None` or a record `mode` allows overwriting
+        // here -- the one combination `land` would call `Skipped` was ruled
+        // out above, before there was a start and end to build a fresh block
+        // from.
+        let mut landing = land(existing, || TimeBlock::new(subject, start, 0, &tz), mode);
+        let Some(block) = landing.as_mut() else { continue };
         block.id = id;
         block.subject = subject;
         block.title = row.get("title").to_string();
@@ -680,8 +685,8 @@ fn read_time(tasks: &dyn TaskStore, csv: &str, mode: Mode, report: &mut Report) 
         block.purpose = doc::parse_purpose(row.get("purpose"));
         block.updated_at = jiff::Timestamp::now();
 
-        match tasks.put_block(&block) {
-            Ok(()) => report.count(existed, mode),
+        match tasks.put_block(block) {
+            Ok(()) => report.landed(&landing),
             Err(e) => report.problem("time.csv", e),
         }
     }

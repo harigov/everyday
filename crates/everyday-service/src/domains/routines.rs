@@ -129,8 +129,7 @@ async fn save_routine(svc: Arc<Service>, _ctx: Ctx, args: SaveRoutine) -> Comman
 }
 
 async fn delete_routine(svc: Arc<Service>, _ctx: Ctx, args: RoutineRef) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_routine(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_routine(args.id)).await
 }
 
 /// Ask for a run, and let the scheduler do it.
@@ -155,28 +154,23 @@ async fn run_routine(svc: Arc<Service>, _ctx: Ctx, args: RoutineRef) -> CommandR
 }
 
 async fn list_runs(svc: Arc<Service>, _ctx: Ctx, args: Runs) -> CommandResult<Vec<RoutineRun>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.runs(&args.query)?)).await
+    svc.on_vault(move |vault| vault.runs(&args.query)).await
 }
 
 async fn get_run(svc: Arc<Service>, _ctx: Ctx, args: RunRef) -> CommandResult<RoutineRun> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.run(args.id)?)).await
+    svc.on_vault(move |vault| vault.run(args.id)).await
 }
 
 async fn delete_run(svc: Arc<Service>, _ctx: Ctx, args: RunRef) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_run(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_run(args.id)).await
 }
 
 async fn mark_runs_seen(svc: Arc<Service>, _ctx: Ctx, args: SeenRuns) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.mark_runs_seen(&args.ids)?)).await
+    svc.on_vault(move |vault| vault.mark_runs_seen(&args.ids)).await
 }
 
 async fn unseen_runs(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<u64> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.unseen_runs()?)).await
+    svc.on_vault(move |vault| vault.unseen_runs()).await
 }
 
 async fn routine_templates(
@@ -290,7 +284,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "list_runs", scope: Agent, effect: Read,
         args: Runs, returns: "RoutineRun[]",
-        signature: &[("query", "RunQuery", true)],
+        signature: &[("query", "RunQuery", false)],
         run: list_runs,
     },
     command! {

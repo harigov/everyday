@@ -18,11 +18,15 @@
 //! # Composing with MCP
 //!
 //! [`crate::mcp::Mcp`] is a second, independent switch over the same
-//! service, and it wants a say in the same fan-out. Rather than either
-//! module reaching into the other's state, `start` and `stop_and_remember`
-//! below take an `other` list of whatever the other switch is currently
-//! contributing, supplied by the caller in `commands.rs`, and fold it in
-//! through [`crate::fanout::compose`].
+//! service, and it wants a say in the same fan-out. Neither module reaches
+//! into the other's state to get it: `start`, `stop` and `stop_and_remember`
+//! below only start and stop the listener itself, and it is
+//! [`crate::state::AppState::recompose_events`] -- called by `commands.rs`
+//! right after any of them returns -- that asks both switches for their
+//! current sink and folds them together through [`crate::fanout::compose`].
+//! That used to be seven call sites in `commands.rs` each remembering to ask
+//! the *other* listener for its sink, and forgetting one silently dropped a
+//! stream rather than failing loudly.
 //!
 //! # One registry, handed in
 //!
@@ -35,11 +39,13 @@
 //! process. See [`everyday_server::Registry`]'s own doc for why a second
 //! `Registry::open` of the same file is a bug and not just untidiness.
 
-use everyday_server::{Broadcaster, Config, Registry, Running};
+use everyday_server::{Broadcaster, Config, Registry, Server};
 use everyday_service::error::{CommandError, CommandResult};
 use everyday_service::events::EventSink;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
+
+use crate::listener::Listener;
 
 /// What the settings pane draws.
 #[derive(Debug, Clone, Serialize)]
@@ -62,7 +68,7 @@ pub struct ShareStatus {
 
 #[derive(Default)]
 pub struct Sharing {
-    running: Mutex<Option<Running>>,
+    listener: Listener<Arc<Server>>,
     /// Kept across a stop and start so the broadcaster's own state --
     /// nothing today, but see `Broadcaster`'s own doc -- does not have to be
     /// rebuilt for no reason when somebody toggles the switch.
@@ -105,9 +111,11 @@ impl Sharing {
         registry: &Registry,
         allow: bool,
     ) -> CommandResult<ShareStatus> {
-        if let Some(running) = self.running.lock().unwrap().as_ref() {
-            running.server.set_allow_remote_unlock(allow);
-        }
+        self.listener.with(|running| {
+            if let Some(running) = running {
+                running.server.set_allow_remote_unlock(allow);
+            }
+        });
         let dir = Self::dir();
         let mut config = Config::load(&dir);
         config.allow_remote_unlock = allow;
@@ -115,18 +123,18 @@ impl Sharing {
         Ok(self.status(registry))
     }
 
-    /// Start answering, and point the service's events at the window, every
-    /// connected device, and whatever else (MCP) is already listening.
+    /// Start answering.
     ///
     /// `registry` is the process's one [`Registry`] over `devices.json` --
     /// see this module's doc's "One registry, handed in" -- and is handed
     /// straight to [`everyday_server::prepare_with`] rather than opened
-    /// again here.
+    /// again here. The caller -- `commands.rs` -- is the one that points the
+    /// service's events at the window and every other listener, by calling
+    /// [`crate::state::AppState::recompose_events`] once this returns; see
+    /// the module doc's "Composing with MCP".
     pub async fn start(
         &self,
         service: Arc<everyday_service::Service>,
-        window_sink: Arc<dyn EventSink>,
-        other: Vec<Arc<dyn EventSink>>,
         mut config: Config,
         registry: Arc<Registry>,
     ) -> CommandResult<ShareStatus> {
@@ -139,28 +147,19 @@ impl Sharing {
         let parts = everyday_server::prepare_with(&dir, &config, registry.clone())?;
         let broadcaster = parts.broadcaster.clone();
 
-        // The window still needs its events, so does every paired device,
-        // and so does MCP if it is on. None of the three can be told to
-        // look at either of the others'.
-        let mut sinks: Vec<Arc<dyn EventSink>> = vec![broadcaster.clone()];
-        sinks.extend(other);
-        service.set_events(crate::fanout::compose(window_sink, sinks));
-
         let name = service.get().map(|v| v.status().name).unwrap_or_else(|| "Every Day".into());
         let running = everyday_server::start(service, parts, &config, name).await?;
 
         config.enabled = true;
         config.save(&dir)?;
         *self.parts.lock().unwrap() = Some(SharedParts { broadcaster });
-        *self.running.lock().unwrap() = Some(running);
+        self.listener.set(running);
         Ok(self.status(&registry))
     }
 
     /// Stop answering. Paired devices are remembered.
     pub fn stop(&self) {
-        if let Some(running) = self.running.lock().unwrap().take() {
-            running.stop();
-        }
+        self.listener.stop();
         *self.invitation.lock().unwrap() = None;
     }
 
@@ -169,27 +168,16 @@ impl Sharing {
     /// For a caller that is about to bind the same address. Signalling a
     /// shutdown is not the same as having shut down.
     pub async fn stop_and_wait(&self) {
-        let previous = self.running.lock().unwrap().take();
         *self.invitation.lock().unwrap() = None;
-        if let Some(running) = previous {
-            running.stop_and_wait().await;
-        }
+        self.listener.stop_and_wait().await;
     }
 
     /// Stop answering, and remember not to start next time.
-    pub fn stop_and_remember(
-        &self,
-        registry: &Registry,
-        window_sink: Arc<dyn EventSink>,
-        other: Vec<Arc<dyn EventSink>>,
-        service: &everyday_service::Service,
-    ) -> CommandResult<ShareStatus> {
+    ///
+    /// As with `start`, the caller recomposes the event fan-out once this
+    /// returns; nothing here touches `service.set_events` any more.
+    pub fn stop_and_remember(&self, registry: &Registry) -> CommandResult<ShareStatus> {
         self.stop();
-        // Back to the window and whatever else (MCP) is still listening.
-        // Without this the fan-out would keep a broadcaster alive that
-        // nothing is reading from, or -- the bug this exists to avoid --
-        // would drop MCP's stream on the floor because sharing stopped.
-        service.set_events(crate::fanout::compose(window_sink, other));
         let dir = Self::dir();
         let mut config = Config::load(&dir);
         config.enabled = false;
@@ -199,29 +187,28 @@ impl Sharing {
 
     /// Offer to pair, for the next five minutes.
     pub fn invite(&self, registry: &Registry) -> CommandResult<ShareStatus> {
-        let invitation = {
-            let running = self.running.lock().unwrap();
-            let running = running
-                .as_ref()
-                .ok_or_else(|| CommandError::new("not_sharing", "turn sharing on first"))?;
+        let invitation = self.listener.with(|running| {
+            let running =
+                running.ok_or_else(|| CommandError::new("not_sharing", "turn sharing on first"))?;
             let code = running.server.registry.new_pairing_code();
-            everyday_server::pairing::invitation(
+            Ok::<_, CommandError>(everyday_server::pairing::invitation(
                 &advertised_host(running),
                 running.fingerprint(),
                 &code,
                 &running.server.name,
-            )
-        };
+            ))
+        })?;
         *self.invitation.lock().unwrap() = Some(invitation);
-        // `status` takes the same lock, so the borrow above has to be over.
         Ok(self.status(registry))
     }
 
     /// Withdraw the offer.
     pub fn cancel_invite(&self, registry: &Registry) -> ShareStatus {
-        if let Some(running) = self.running.lock().unwrap().as_ref() {
-            running.server.registry.clear_pairing_code();
-        }
+        self.listener.with(|running| {
+            if let Some(running) = running {
+                running.server.registry.clear_pairing_code();
+            }
+        });
         *self.invitation.lock().unwrap() = None;
         self.status(registry)
     }
@@ -233,7 +220,7 @@ impl Sharing {
 
     /// Is a server actually listening right now?
     pub fn is_running(&self) -> bool {
-        self.running.lock().unwrap().is_some()
+        self.listener.is_running()
     }
 
     /// This switch's own contribution to the event fan-out, if it is on.
@@ -255,29 +242,29 @@ impl Sharing {
     /// of the file for -- see this module's doc's "One registry, handed
     /// in".
     pub fn status(&self, registry: &Registry) -> ShareStatus {
-        let running = self.running.lock().unwrap();
-        let config = Self::config();
-        ShareStatus {
-            sharing: running.is_some(),
-            address: running.as_ref().map(|r| r.address.to_string()),
-            addresses: advertisable_addresses(),
-            port: config.listen.port(),
-            // From the running server when there is one, because it is live
-            // there and the file is only where it is remembered.
-            allow_remote_unlock: running
-                .as_ref()
-                .map(|r| r.server.allow_remote_unlock())
-                .unwrap_or(config.allow_remote_unlock),
-            devices: registry.devices(),
-            invitation: self.invitation.lock().unwrap().clone(),
-            listeners: self
-                .parts
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|p| p.broadcaster.listeners())
-                .unwrap_or(0),
-        }
+        self.listener.with(|running| {
+            let config = Self::config();
+            ShareStatus {
+                sharing: running.is_some(),
+                address: running.map(|r| r.address.to_string()),
+                addresses: advertisable_addresses(),
+                port: config.listen.port(),
+                // From the running server when there is one, because it is
+                // live there and the file is only where it is remembered.
+                allow_remote_unlock: running
+                    .map(|r| r.server.allow_remote_unlock())
+                    .unwrap_or(config.allow_remote_unlock),
+                devices: registry.devices(),
+                invitation: self.invitation.lock().unwrap().clone(),
+                listeners: self
+                    .parts
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|p| p.broadcaster.listeners())
+                    .unwrap_or(0),
+            }
+        })
     }
 }
 
@@ -286,7 +273,7 @@ impl Sharing {
 /// The listening address when it names one, and otherwise the first address
 /// this machine actually has -- because `0.0.0.0:7397` is the right thing to
 /// *listen* on and a useless thing to hand somebody.
-fn advertised_host(running: &Running) -> String {
+fn advertised_host(running: &everyday_server::Running<Arc<Server>>) -> String {
     if !running.address.ip().is_unspecified() {
         return running.address.to_string();
     }

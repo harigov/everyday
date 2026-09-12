@@ -48,8 +48,7 @@ pub struct SaveProfile {
 /// weather's, when either of those exists. See `everyday_core::profile` for
 /// why a fact that changes is a memory instead.
 async fn profile(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Profile> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.profile()?)).await
+    svc.on_vault(move |vault| vault.profile()).await
 }
 
 async fn save_profile(svc: Arc<Service>, _ctx: Ctx, args: SaveProfile) -> CommandResult<Profile> {
@@ -111,13 +110,11 @@ async fn change_password(svc: Arc<Service>, _ctx: Ctx, args: ChangePassword) -> 
 }
 
 async fn set_auto_lock(svc: Arc<Service>, _ctx: Ctx, args: AutoLock) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.set_auto_lock(args.seconds)?)).await
+    svc.on_vault(move |vault| vault.set_auto_lock(args.seconds)).await
 }
 
 async fn set_forget_key(svc: Arc<Service>, _ctx: Ctx, args: AutoLock) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.set_forget_key(args.seconds)?)).await
+    svc.on_vault(move |vault| vault.set_forget_key(args.seconds)).await
 }
 
 /// Defer the moment the key is dropped. Called on real interaction, so it
@@ -156,13 +153,11 @@ async fn poll_auto_lock(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> Command
 }
 
 async fn vault_stats(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<StoreStats> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.stats()?)).await
+    svc.on_vault(move |vault| vault.stats()).await
 }
 
 async fn collect_garbage(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<u64> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.collect_garbage(everyday_core::store::GC_GRACE)?)).await
+    svc.on_vault(move |vault| vault.collect_garbage(everyday_core::store::GC_GRACE)).await
 }
 
 /// Push pending writes to durable storage.

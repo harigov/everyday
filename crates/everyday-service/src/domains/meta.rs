@@ -30,7 +30,7 @@
 
 use crate::command;
 use crate::ctx::{Ctx, Scope};
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{PROTOCOL, Service, blocking};
 use everyday_core::agent::tools;
 use everyday_core::model::{system_tz, today_local};
@@ -40,36 +40,12 @@ use std::sync::Arc;
 
 use super::Nothing;
 
-/// One command, as a client generator sees it.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CommandInfo {
-    pub name: String,
-    pub scope: String,
-    pub effect: &'static str,
-    pub sensitive: bool,
-    pub streams: bool,
-    pub args: Vec<ArgInfo>,
-    pub returns: &'static str,
-    /// What a listener should reload after this succeeds, if anything.
-    pub changes: Option<&'static str>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ArgInfo {
-    pub name: &'static str,
-    #[serde(rename = "type")]
-    pub ty: &'static str,
-    pub required: bool,
-}
-
 /// The surface, and what version of it this build speaks.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Surface {
     pub protocol: u32,
-    pub commands: Vec<CommandInfo>,
+    pub commands: Vec<crate::command::CommandInfo>,
 }
 
 /// One tool, with a label for a person rather than a description for a model.
@@ -98,14 +74,6 @@ pub struct RunTool {
     /// rather than have the refusal quietly skipped.
     #[serde(default)]
     pub confirm_destructive: bool,
-}
-
-fn effect_name(effect: tools::Effect) -> &'static str {
-    match effect {
-        tools::Effect::Read => "read",
-        tools::Effect::Write => "write",
-        tools::Effect::Destructive => "destructive",
-    }
 }
 
 /// The scope a tool's domain is gated behind.
@@ -154,45 +122,7 @@ pub fn title_of(name: &str) -> String {
 }
 
 async fn list_commands(_svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Surface> {
-    let commands = crate::command::catalog()
-        .iter()
-        .map(|c| CommandInfo {
-            name: c.name.to_string(),
-            scope: c.scope.as_str().to_string(),
-            effect: effect_name(c.effect),
-            sensitive: c.sensitive,
-            streams: c.streams,
-            args: c
-                .signature
-                .args
-                .iter()
-                .map(|(name, ty, required)| ArgInfo { name, ty, required: *required })
-                .collect(),
-            returns: c.signature.returns,
-            changes: c.change.map(|(kind, _)| match kind {
-                crate::events::Kind::Journal => "journal",
-                crate::events::Kind::Entry => "entry",
-                crate::events::Kind::Note => "note",
-                crate::events::Kind::Project => "project",
-                crate::events::Kind::Task => "task",
-                crate::events::Kind::Block => "block",
-                crate::events::Kind::Calendar => "calendar",
-                crate::events::Kind::Event => "event",
-                crate::events::Kind::Shelf => "shelf",
-                crate::events::Kind::Item => "item",
-                crate::events::Kind::Log => "log",
-                crate::events::Kind::Tracker => "tracker",
-                crate::events::Kind::Reading => "reading",
-                crate::events::Kind::Role => "role",
-                crate::events::Kind::Goal => "goal",
-                crate::events::Kind::Routine => "routine",
-                crate::events::Kind::RoutineRun => "routineRun",
-                crate::events::Kind::Conversation => "conversation",
-                crate::events::Kind::Memory => "memory",
-                crate::events::Kind::Settings => "settings",
-            }),
-        })
-        .collect();
+    let commands = crate::command::catalog().iter().map(|c| crate::command::describe(c)).collect();
     Ok(Surface { protocol: PROTOCOL, commands })
 }
 
@@ -218,7 +148,7 @@ async fn list_tools(svc: Arc<Service>, ctx: Ctx, _args: Nothing) -> CommandResul
                     name: t.name,
                     title: title_of(t.name),
                     description: t.description,
-                    effect: effect_name(t.effect),
+                    effect: crate::command::effect_name(t.effect),
                     scope: scope.as_str(),
                     schema: t.parameters(),
                 })
@@ -238,7 +168,7 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
     let vault = svc.require()?;
     let Some(tool) = tools::find(&args.name) else {
         return Err(CommandError::new(
-            "unknown_tool",
+            codes::UNKNOWN_TOOL,
             format!("there is no tool called {:?}", args.name),
         ));
     };
@@ -257,13 +187,13 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
     };
     if !offered {
         return Err(CommandError::new(
-            "unsupported",
+            codes::UNSUPPORTED,
             format!("{} is not available on this vault", args.name),
         ));
     }
     if matches!(tool.effect, tools::Effect::Destructive) && !args.confirm_destructive {
         return Err(CommandError::new(
-            "confirm_required",
+            codes::CONFIRM_REQUIRED,
             format!("{} deletes something; call it again with confirmDestructive", args.name),
         ));
     }
