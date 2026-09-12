@@ -105,7 +105,8 @@ fn serve<R: Runtime>(app: &tauri::AppHandle<R>, request: &Request<Vec<u8>>) -> R
         return error(StatusCode::BAD_REQUEST, "not a blob address");
     };
 
-    let total = match crate::commands::blob_len(&vault, id) {
+    let service = state.service();
+    let total = match service.blob_len(id) {
         Ok(n) => n,
         Err(e) => {
             tracing::debug!(%id, error = %e, "media request for an unknown blob");
@@ -116,7 +117,7 @@ fn serve<R: Runtime>(app: &tauri::AppHandle<R>, request: &Request<Vec<u8>>) -> R
     let plan =
         media::plan(total, request.headers().get(header::RANGE).and_then(|v| v.to_str().ok()));
 
-    let bytes = match crate::commands::read_blob_range(&vault, id, plan.start, plan.len) {
+    let bytes = match service.blob_range(id, plan.start, plan.len) {
         Ok(b) => b,
         Err(e) => {
             tracing::warn!(%id, error = %e, "could not read attachment");

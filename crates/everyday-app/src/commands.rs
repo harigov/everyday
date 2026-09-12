@@ -24,7 +24,7 @@
 //! blocking pool -- it holds the window while it runs. Everything here is
 //! `async` and the service does its own hop to the blocking pool inside.
 
-use everyday_core::{BlobId, Journal, Vault, VaultConfig, VaultStatus};
+use everyday_core::{Journal, VaultConfig, VaultStatus};
 use everyday_service::agent::AgentEvent;
 use everyday_service::ctx::Ctx;
 use everyday_service::error::{CommandError, CommandResult};
@@ -767,20 +767,4 @@ pub async fn hide_tray(app: tauri::AppHandle) -> CommandResult<()> {
         Ok(())
     })
     .await
-}
-
-// ---- media --------------------------------------------------------------
-
-/// Read a blob for the media protocol handler.
-pub fn read_blob_range(
-    vault: &Arc<Vault>,
-    id: BlobId,
-    offset: u64,
-    len: u64,
-) -> everyday_core::Result<Vec<u8>> {
-    vault.with_store(|s| s.get_blob_range(id, offset, len))
-}
-
-pub fn blob_len(vault: &Arc<Vault>, id: BlobId) -> everyday_core::Result<u64> {
-    vault.with_store(|s| s.blob_len(id))
 }
