@@ -47,6 +47,7 @@ pub mod events;
 pub mod feeds;
 pub mod http;
 pub mod idempotency;
+pub mod llm;
 pub mod quick;
 pub mod scheduler;
 pub mod service;

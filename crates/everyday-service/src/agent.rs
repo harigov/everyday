@@ -1,8 +1,8 @@
 //! The assistant's harness: the half that owns a socket.
 //!
 //! The other half is [`everyday_core::agent`], which decides what the
-//! assistant *is* — its settings, its prompt, and the thirty-four tools it
-//! may run — with no provider and no network anywhere in it. This file is
+//! assistant *is* — its settings, its prompt, and the tools it may run —
+//! with no provider and no network anywhere in it. This file is
 //! the adapter: it wraps those tools in the shape [`rig`](rig_agent) wants,
 //! opens the connection, and turns what comes back into events the interface
 //! can draw and records the vault can keep.
@@ -28,13 +28,13 @@
 //!
 //! # Chat Completions, not the Responses API
 //!
-//! Rig's default OpenAI client speaks the Responses API. This one asks for
+//! [`crate::llm::client`], which this opens its connection through, asks for
 //! [`CompletionsClient`](rig_agent::core::providers::openai::CompletionsClient)
-//! instead, because the whole point of the base-URL override is that Ollama,
-//! LM Studio, vLLM and OpenRouter can be pointed at — and what they all
-//! implement is `/chat/completions`. Choosing the newer API here would make
-//! the setting that exists for local models work everywhere except local
-//! models.
+//! rather than rig's default -- the Responses API -- because the whole point
+//! of the base-URL override is that Ollama, LM Studio, vLLM and OpenRouter
+//! can be pointed at, and what they all implement is `/chat/completions`.
+//! Choosing the newer API there would make the setting that exists for local
+//! models work everywhere except local models.
 //!
 //! # Where the confirmation gate lives
 //!
@@ -57,7 +57,6 @@ use rig_agent::agent::hook::{
     ToolCall as HookToolCall, ToolCallAction, ToolResultAction, ToolResultEvent,
 };
 use rig_agent::core::client::completion::CompletionClient;
-use rig_agent::core::providers::openai;
 use rig_agent::core::tool::{PortableDynamicTool, ToolExecutionError, ToolOutput};
 use rig_agent::prelude::*;
 use rig_agent::{Agent, AgentBuilder, AgentHook, HookContext};
@@ -367,18 +366,9 @@ fn build(
     let model = &settings.assistant_model;
     let connection = &settings.provider_config;
 
-    // A local model needs no credential and is usually configured without
-    // one, and the endpoint ignores whatever is sent -- so a keyless
-    // configuration sends an empty bearer rather than omitting the step,
-    // which would leave the builder's auth type unresolved. See
-    // `Provider::needs_key` for when a key is insisted on at all.
-    let client = openai::CompletionsClient::builder()
-        .base_url(connection.endpoint())
-        .api_key::<rig_agent::core::client::BearerAuth>(key.unwrap_or_default())
-        .build()
-        .map_err(|e| {
-            CommandError::new(codes::AGENT, format!("could not start the assistant: {e}"))
-        })?;
+    let client = crate::llm::client(connection, key).map_err(|e| {
+        CommandError::new(codes::AGENT, format!("could not start the assistant: {e}"))
+    })?;
 
     let memories = vault.memories()?;
     // Who, and what time it is where they are. Both read from the vault
@@ -393,15 +383,10 @@ fn build(
         context,
     );
 
-    let mut builder = AgentBuilder::new(client.completion_model(&model.model))
+    let builder = AgentBuilder::new(client.completion_model(&model.model))
         .preamble(&preamble)
         .default_max_turns(settings.max_steps as usize);
-    if let Some(t) = model.temperature {
-        builder = builder.temperature(t);
-    }
-    if let Some(m) = model.max_tokens {
-        builder = builder.max_tokens(u64::from(m));
-    }
+    let builder = crate::llm::configure(builder, model);
 
     // Only the tools this vault can actually serve. A model is never told
     // about storage that does not exist, so it cannot claim to have used it.
@@ -823,7 +808,9 @@ async fn stream(
                 (channel)(AgentEvent::Delta { text: t.text });
             }
             Ok(_) => {}
-            Err(e) => return Err(CommandError::new(codes::AGENT, friendly(&e.to_string()))),
+            Err(e) => {
+                return Err(CommandError::new(codes::AGENT, crate::llm::friendly(&e.to_string())));
+            }
         }
     }
 
@@ -850,33 +837,6 @@ fn summarise(output: &ToolOutput) -> String {
         };
     }
     format!("{action} {kind} {name}").trim().to_string()
-}
-
-/// Turn a provider's error into something worth showing a person.
-///
-/// The raw text is a transport error or a JSON body, and the three failures
-/// that actually happen -- a wrong key, a wrong model name, nothing listening
-/// -- all have an answer the person can act on.
-fn friendly(raw: &str) -> String {
-    let lower = raw.to_lowercase();
-    if lower.contains("401") || lower.contains("unauthorized") || lower.contains("invalid_api_key")
-    {
-        return "The API key was refused. Check it in Settings.".into();
-    }
-    if lower.contains("404") || lower.contains("model_not_found") {
-        return "That endpoint does not know the model you have configured. \
-                Check the model name in Settings."
-            .into();
-    }
-    if lower.contains("connection refused") || lower.contains("dns") || lower.contains("connect") {
-        return "Could not reach the model. If it runs on this machine, check it is started; \
-                otherwise check the base URL in Settings."
-            .into();
-    }
-    if lower.contains("429") || lower.contains("rate limit") {
-        return "The provider is rate limiting this key. Try again shortly.".into();
-    }
-    raw.to_string()
 }
 
 #[cfg(test)]
