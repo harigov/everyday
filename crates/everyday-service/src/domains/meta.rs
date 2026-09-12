@@ -30,7 +30,7 @@
 
 use crate::command;
 use crate::ctx::{Ctx, Scope};
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{PROTOCOL, Service, blocking};
 use everyday_core::agent::tools;
 use everyday_core::model::{system_tz, today_local};
@@ -168,7 +168,7 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
     let vault = svc.require()?;
     let Some(tool) = tools::find(&args.name) else {
         return Err(CommandError::new(
-            "unknown_tool",
+            codes::UNKNOWN_TOOL,
             format!("there is no tool called {:?}", args.name),
         ));
     };
@@ -187,13 +187,13 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
     };
     if !offered {
         return Err(CommandError::new(
-            "unsupported",
+            codes::UNSUPPORTED,
             format!("{} is not available on this vault", args.name),
         ));
     }
     if matches!(tool.effect, tools::Effect::Destructive) && !args.confirm_destructive {
         return Err(CommandError::new(
-            "confirm_required",
+            codes::CONFIRM_REQUIRED,
             format!("{} deletes something; call it again with confirmDestructive", args.name),
         ));
     }

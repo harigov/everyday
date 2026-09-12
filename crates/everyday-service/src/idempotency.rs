@@ -26,7 +26,7 @@
 //! mechanism would only cover retries that arrive after the original finished,
 //! which is the easy half.
 
-use crate::error::CommandError;
+use crate::error::{CommandError, codes};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -127,7 +127,7 @@ impl Idempotency {
         self.fulfil(
             slot,
             Err(CommandError::new(
-                "retry",
+                codes::RETRY,
                 "the first attempt at this request did not finish; \
                  ask again with a new request id",
             )),
@@ -222,7 +222,7 @@ mod tests {
     async fn a_failure_is_replayed_as_a_failure() {
         let cache = Idempotency::default();
         let Claim::Mine(slot) = cache.claim("k") else { panic!() };
-        cache.fulfil(&slot, Err(CommandError::new("conflict", "changed since you loaded it")));
+        cache.fulfil(&slot, Err(CommandError::new(codes::CONFLICT, "changed since you loaded it")));
         let Claim::Theirs(again) = cache.claim("k") else { panic!() };
         assert_eq!(wait(again).await.unwrap_err().code, "conflict");
     }

@@ -34,7 +34,7 @@
 //! than as a client that stopped working.
 
 use crate::ctx::{Caller, Ctx, Scope};
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Change, Kind, Op};
 use crate::service::Service;
 use everyday_core::agent::tools::Effect;
@@ -263,13 +263,14 @@ pub fn parse<A: DeserializeOwned>(name: &str, raw: Value) -> CommandResult<A> {
     // been through JSON -- and refusing it would make every no-argument call
     // site write `{}`.
     let raw = if raw.is_null() { Value::Object(Default::default()) } else { raw };
-    serde_json::from_value(raw).map_err(|e| CommandError::new("invalid", format!("{name}: {e}")))
+    serde_json::from_value(raw)
+        .map_err(|e| CommandError::new(codes::INVALID, format!("{name}: {e}")))
 }
 
 /// Serialise a command's result.
 pub fn encode<R: Serialize>(value: R) -> CommandResult<Value> {
     serde_json::to_value(value)
-        .map_err(|e| CommandError::new("internal", format!("could not encode a result: {e}")))
+        .map_err(|e| CommandError::new(codes::INTERNAL, format!("could not encode a result: {e}")))
 }
 
 /// Build one table entry.

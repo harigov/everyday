@@ -21,7 +21,7 @@
 use crate::agent::Pending;
 use crate::command;
 use crate::ctx::Ctx;
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{EventSink, Silent};
 use crate::idempotency::{Claim, Idempotency};
 use crate::transfers::Transfers;
@@ -191,7 +191,7 @@ impl Service {
 
     /// The open vault, or a `no_vault` error a caller can route on.
     pub fn require(&self) -> CommandResult<Arc<Vault>> {
-        self.get().ok_or_else(|| CommandError::new("no_vault", "no vault is open"))
+        self.get().ok_or_else(|| CommandError::new(codes::NO_VAULT, "no vault is open"))
     }
 
     /// The open vault, refusing if it is locked.
@@ -312,13 +312,13 @@ impl Service {
     pub async fn call(self: &Arc<Self>, ctx: Ctx, name: &str, args: Value) -> CommandResult<Value> {
         let Some(command) = command::find(name) else {
             return Err(CommandError::new(
-                "unknown_command",
+                codes::UNKNOWN_COMMAND,
                 format!("no command called {name:?}"),
             ));
         };
         if command.streams {
             return Err(CommandError::new(
-                "unknown_command",
+                codes::UNKNOWN_COMMAND,
                 format!("{name} answers with a stream and cannot be called for a value"),
             ));
         }
@@ -423,7 +423,7 @@ impl Service {
         ctx.require(crate::ctx::Scope::Journals)?;
         if bytes.len() > Self::MAX_ATTACHMENT_BYTES {
             return Err(CommandError::new(
-                "too_large",
+                codes::TOO_LARGE,
                 format!(
                     "attachment is {} MB; the limit is {} MB",
                     bytes.len() / 1_048_576,
@@ -468,7 +468,7 @@ where
 {
     tokio::task::spawn_blocking(f)
         .await
-        .map_err(|e| CommandError::new("panic", format!("background task failed: {e}")))?
+        .map_err(|e| CommandError::new(codes::PANIC, format!("background task failed: {e}")))?
 }
 
 /// A run this process has taken, released when it is dropped.

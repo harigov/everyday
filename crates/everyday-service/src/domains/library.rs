@@ -15,7 +15,7 @@
 
 use crate::command;
 use crate::ctx::Ctx;
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use crate::websearch;
 use everyday_core::library::{Item, ItemStatus, Kind, LibraryStats, LogEntry, LogEvent, Progress};
@@ -250,7 +250,7 @@ async fn add_item(svc: Arc<Service>, ctx: Ctx, args: AddItem) -> CommandResult<A
     let vault = svc.require()?;
     let title = args.title.trim().to_string();
     if title.is_empty() {
-        return Err(CommandError::new("invalid", "give it a name and it will be added"));
+        return Err(CommandError::new(codes::INVALID, "give it a name and it will be added"));
     }
     let kind_id = args.kind_id;
     let kind = {

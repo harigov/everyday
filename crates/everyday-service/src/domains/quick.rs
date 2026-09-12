@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::command;
 use crate::ctx::Ctx;
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 
 use super::Nothing;
@@ -132,7 +132,10 @@ where
     // because `ask` is the only path to the socket and a check that lives
     // beside the thing it protects cannot be left off a new command.
     if !ctx.holds(crate::ctx::Scope::Quick) {
-        return Err(CommandError::new("forbidden", "this client may not spend the quick model"));
+        return Err(CommandError::new(
+            codes::FORBIDDEN,
+            "this client may not spend the quick model",
+        ));
     }
     let vault = svc.require()?;
     let prompt = {
@@ -146,7 +149,7 @@ where
     };
     let job = job.to_string();
     let raw = crate::quick::run(vault, prompt).await?;
-    quick::parse(&job, raw).map_err(|e| CommandError::new("quick", e.to_string()))
+    quick::parse(&job, raw).map_err(|e| CommandError::new(codes::QUICK, e.to_string()))
 }
 
 /// The roles and goals a purpose suggestion chooses between, in the order the
@@ -732,7 +735,7 @@ async fn quick_goal_backfill(
                 .goals(&GoalQuery::default())?
                 .into_iter()
                 .find(|g| g.id == id)
-                .ok_or_else(|| CommandError::new("not_found", "no such goal"))?;
+                .ok_or_else(|| CommandError::new(codes::NOT_FOUND, "no such goal"))?;
             let tasks = vault.tasks(&TaskQuery { limit: Some(120), ..Default::default() })?;
             let open: Vec<(TaskId, String)> = tasks
                 .into_iter()

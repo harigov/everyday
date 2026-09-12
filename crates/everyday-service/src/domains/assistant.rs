@@ -9,7 +9,7 @@
 
 use crate::command;
 use crate::ctx::Ctx;
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use everyday_core::agent::{AgentSettings, Conversation, Memory, Message};
 use everyday_core::store::agent::ConversationQuery;
@@ -221,7 +221,7 @@ async fn delete_memory(svc: Arc<Service>, _ctx: Ctx, args: MemoryRef) -> Command
 /// the surface snapshot all see the whole surface. Never reached: dispatch
 /// refuses a streaming command before it gets here.
 async fn send_message(_svc: Arc<Service>, _ctx: Ctx, _args: SendMessage) -> CommandResult<()> {
-    Err(CommandError::new("unknown_command", "send_message answers with a stream"))
+    Err(CommandError::new(codes::UNKNOWN_COMMAND, "send_message answers with a stream"))
 }
 
 pub static COMMANDS: &[crate::command::Command] = &[

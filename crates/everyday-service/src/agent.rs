@@ -65,7 +65,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::oneshot;
 
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 
 /// Where a turn's events go.
 ///
@@ -376,7 +376,9 @@ fn build(
         .base_url(connection.endpoint())
         .api_key::<rig_agent::core::client::BearerAuth>(key.unwrap_or_default())
         .build()
-        .map_err(|e| CommandError::new("agent", format!("could not start the assistant: {e}")))?;
+        .map_err(|e| {
+            CommandError::new(codes::AGENT, format!("could not start the assistant: {e}"))
+        })?;
 
     let memories = vault.memories()?;
     // Who, and what time it is where they are. Both read from the vault
@@ -821,7 +823,7 @@ async fn stream(
                 (channel)(AgentEvent::Delta { text: t.text });
             }
             Ok(_) => {}
-            Err(e) => return Err(CommandError::new("agent", friendly(&e.to_string()))),
+            Err(e) => return Err(CommandError::new(codes::AGENT, friendly(&e.to_string()))),
         }
     }
 

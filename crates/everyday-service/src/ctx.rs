@@ -30,7 +30,7 @@
 //! password, exporting a vault -- is where it will be consulted, and the
 //! field is here so that the day it is, no client needs a new protocol.
 
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use serde::{Deserialize, Serialize};
 
 /// What a caller is allowed to reach.
@@ -236,7 +236,7 @@ impl Ctx {
             Ok(())
         } else {
             Err(CommandError::new(
-                "forbidden",
+                codes::FORBIDDEN,
                 format!("this connection is not allowed to reach {}", scope.as_str()),
             ))
         }

@@ -2,7 +2,7 @@
 
 use crate::command;
 use crate::ctx::{Ctx, Scope};
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use everyday_core::model::{local_date_in, system_tz};
 use everyday_core::search::{SearchHit, SearchScope};
@@ -186,7 +186,7 @@ async fn search(svc: Arc<Service>, ctx: Ctx, args: Search) -> CommandResult<Vec<
 }
 
 fn refused(scope: Scope) -> CommandError {
-    CommandError::new("forbidden", format!("this needs the {} scope", scope.as_str()))
+    CommandError::new(codes::FORBIDDEN, format!("this needs the {} scope", scope.as_str()))
 }
 
 async fn list_tags(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<String>> {
