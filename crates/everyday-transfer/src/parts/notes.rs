@@ -14,7 +14,7 @@
 
 use super::doc;
 use crate::text::{FrontMatter, safe_name};
-use crate::{Files, Mode, Options, Part, Portable, Report, Spec};
+use crate::{Files, Mode, Options, Part, Portable, Report, Spec, land};
 use everyday_core::note::Note;
 use everyday_core::store::JournalStore;
 use everyday_core::store::notes::NoteQuery;
@@ -85,8 +85,8 @@ impl Portable for NotesPart {
         };
 
         for (name, source) in src.documents(".md") {
-            match read(store, notes, src, name, source, mode) {
-                Ok(existed) => report.count(existed, mode),
+            match read(store, notes, src, name, source, mode, &mut report) {
+                Ok(()) => {}
                 Err(e) => report.problem(name, e),
             }
         }
@@ -101,17 +101,18 @@ fn read(
     name: &str,
     source: &str,
     mode: Mode,
-) -> Result<bool> {
+    report: &mut Report,
+) -> Result<()> {
     let read = doc::read(store, src, name, source)?;
     let fields = &read.fields;
     let id = fields.parse::<NoteId>("id").unwrap_or_else(NoteId::new);
-    let existing = notes.get_note(id).ok();
-    if existing.is_some() && mode == Mode::Skip {
-        return Ok(true);
-    }
-    let existed = existing.is_some();
 
-    let mut note = existing.unwrap_or_else(|| Note::new(&read.title));
+    let existing = notes.get_note(id).ok();
+    let mut landing = land(existing, || Note::new(&read.title), mode);
+    let Some(note) = landing.as_mut() else {
+        report.landed(&landing);
+        return Ok(());
+    };
     note.id = id;
     note.title = read.title;
     note.body = read.body;
@@ -121,6 +122,7 @@ fn read(
     note.purpose = doc::parse_purpose(&fields.text("purpose"));
     note.created_at = fields.parse("created").unwrap_or(note.created_at);
     note.updated_at = fields.parse("updated").unwrap_or_else(jiff::Timestamp::now);
-    notes.put_note(&note)?;
-    Ok(existed)
+    notes.put_note(note)?;
+    report.landed(&landing);
+    Ok(())
 }

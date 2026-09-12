@@ -86,6 +86,10 @@ impl CalendarProvider {
         }
     }
 
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|provider| provider.as_str() == s)
+    }
+
     /// Guess the provider from a feed URL, so the person pasting one does
     /// not also have to answer a question the URL already answers.
     pub fn guess(url: &str) -> Self {

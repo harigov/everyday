@@ -390,14 +390,12 @@ async fn get_blob(
     let id = BlobId::parse(&id).map_err(|_| CommandError::new("invalid", "not a blob address"))?;
 
     let total = server.service.blob_len(id)?;
-    let plan = everyday_vault::media::plan(
-        total,
-        headers.get(header::RANGE).and_then(|v| v.to_str().ok()),
-    );
+    let plan =
+        everyday_core::media::plan(total, headers.get(header::RANGE).and_then(|v| v.to_str().ok()));
     let bytes = server.service.blob_range(id, plan.start, plan.len)?;
 
     let mut response = Response::builder()
-        .header(header::CONTENT_TYPE, everyday_vault::media::sniff_mime(&bytes))
+        .header(header::CONTENT_TYPE, everyday_core::media::sniff_mime(&bytes))
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CONTENT_LENGTH, bytes.len().to_string())
         // Blobs are content-addressed, so the bytes behind a URL can never

@@ -12,6 +12,7 @@
 //! and imports it before the goal exists has lost the attribution. Those only
 //! show up end to end.
 
+use everyday_core::calendar::{Calendar, Event, EventStatus};
 use everyday_core::library::{Item, ItemStatus, Kind};
 use everyday_core::model::{Entry, Journal};
 use everyday_core::note::Note;
@@ -27,7 +28,7 @@ use everyday_core::task::{
     BlockKind, BlockSubject, Priority, Project, Task, TaskStatus, TimeBlock,
 };
 use everyday_core::tracker::{Reading, Tracker, TrackerKind};
-use everyday_core::{Vault, VaultConfig};
+use everyday_core::{EventId, Vault, VaultConfig};
 use everyday_transfer::{Mode, Options, zip};
 
 fn vault(dir: &std::path::Path) -> Vault {
@@ -100,6 +101,30 @@ fn fill(vault: &Vault) {
     let mut reading = Reading::on(tracker.id, jiff::civil::date(2026, 9, 10), 72.5);
     reading.note = "after a run".into();
 
+    let calendar = Calendar::imported("Family", "family.ics");
+    let event_start: jiff::Timestamp = "2026-09-14T09:00:00Z".parse().unwrap();
+    let event_end: jiff::Timestamp = "2026-09-14T15:00:00Z".parse().unwrap();
+    let event = Event {
+        id: EventId::new(),
+        calendar_id: calendar.id,
+        uid: "sports-day".into(),
+        title: "Sports day".into(),
+        description: "Bring a water bottle.".into(),
+        location: String::new(),
+        start: event_start,
+        end: event_end,
+        local_date: jiff::civil::date(2026, 9, 14),
+        end_date: jiff::civil::date(2026, 9, 14),
+        tz: "Europe/London".into(),
+        all_day: false,
+        status: EventStatus::Confirmed,
+        organizer: String::new(),
+        attendees: Vec::new(),
+        url: String::new(),
+        busy: true,
+        updated_at: event_start,
+    };
+
     vault.save_journal(&journal).unwrap();
     vault
         .with_store(|store| {
@@ -119,6 +144,9 @@ fn fill(vault: &Vault) {
             let trackers = store.trackers().unwrap();
             trackers.put_tracker(&tracker)?;
             trackers.put_reading(&reading)?;
+            let calendars = store.calendars().unwrap();
+            calendars.put_calendar(&calendar)?;
+            calendars.replace_events(calendar.id, std::slice::from_ref(&event))?;
             Ok(())
         })
         .unwrap();
@@ -152,7 +180,7 @@ fn a_vault_comes_back_out_of_its_own_archive() {
     assert!(archive.contains("README.md"));
     let inspected = everyday_transfer::inspect(&archive).unwrap();
     let ids: Vec<&str> = inspected.parts.iter().map(|p| p.id.as_str()).collect();
-    for expected in ["journal", "notes", "todo", "library", "trackers", "purpose"] {
+    for expected in ["journal", "notes", "todo", "calendar", "library", "trackers", "purpose"] {
         assert!(ids.contains(&expected), "{expected} is missing from {ids:?}");
     }
 
@@ -229,7 +257,12 @@ fn a_vault_comes_back_out_of_its_own_archive() {
             // out of the same archive, or the attribution is decoration.
             assert_eq!(entry.purpose, Some(Purpose::Goal { id: goals[0].id }));
 
-            assert_eq!(store.calendars().unwrap().list_events(&EventQuery::default())?.len(), 0);
+            let calendars = store.calendars().unwrap();
+            assert_eq!(calendars.list_calendars()?.len(), 1);
+            let events = calendars.list_events(&EventQuery::default())?;
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].title, "Sports day");
+            assert_eq!(events[0].description, "Bring a water bottle.");
             Ok(())
         })
         .unwrap();

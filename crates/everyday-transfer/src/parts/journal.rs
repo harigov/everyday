@@ -15,8 +15,9 @@
 //! thing from being one file.
 
 use super::doc;
+use super::index::Namer;
 use crate::text::{Csv, FrontMatter, safe_name};
-use crate::{Files, Mode, Options, Part, Portable, Report, Spec};
+use crate::{Files, Mode, Options, Part, Portable, Report, Spec, land};
 use everyday_core::model::{Entry, Journal, Location, Weather};
 use everyday_core::store::JournalStore;
 use everyday_core::{EntryId, JournalId, Result};
@@ -55,19 +56,14 @@ impl Portable for JournalPart {
     fn export(&self, store: &dyn JournalStore, out: &mut Files<'_>, opts: &Options) -> Result<()> {
         let journals = store.list_journals()?;
         let mut folders: BTreeMap<JournalId, String> = BTreeMap::new();
-        let mut taken: Vec<String> = Vec::new();
+        let mut namer = Namer::new();
 
         for journal in &journals {
             // Two journals may share a name, and after `safe_name` more of
             // them may. A folder per journal that silently merged two of them
             // would put one journal's entries in another's.
-            let mut folder = safe_name(&journal.name);
-            let mut n = 2;
-            while taken.contains(&folder) {
-                folder = format!("{}-{n}", safe_name(&journal.name));
-                n += 1;
-            }
-            taken.push(folder.clone());
+            let base = safe_name(&journal.name);
+            let folder = namer.unique(&base, |b, n| format!("{b}-{n}"));
             out.text(&format!("{folder}/{JOURNAL_FILE}"), render_journal(journal))?;
             folders.insert(journal.id, folder);
         }
@@ -119,11 +115,10 @@ impl Portable for JournalPart {
             if !name.ends_with(JOURNAL_FILE) {
                 continue;
             }
-            match read_journal(store, name, body, mode) {
-                Ok((id, existed)) => {
+            match read_journal(store, name, body, mode, &mut report) {
+                Ok(id) => {
                     let folder = name.trim_end_matches(JOURNAL_FILE).trim_end_matches('/');
                     by_folder.insert(folder.to_string(), id);
-                    report.count(existed, mode);
                 }
                 Err(e) => report.problem(name, e),
             }
@@ -155,9 +150,8 @@ impl Portable for JournalPart {
                     id
                 }
             };
-            match read_entry(store, src, name, body, journal_id, mode) {
-                Ok(Some(existed)) => report.count(existed, mode),
-                Ok(None) => report.skipped += 1,
+            match read_entry(store, src, name, body, journal_id, mode, &mut report) {
+                Ok(()) => {}
                 Err(e) => report.problem(name, e),
             }
         }
@@ -183,19 +177,22 @@ fn read_journal(
     name: &str,
     source: &str,
     mode: Mode,
-) -> Result<(JournalId, bool)> {
+    report: &mut Report,
+) -> Result<JournalId> {
     let (fields, body) = crate::text::split_front_matter(source);
     let id = fields.parse::<JournalId>("id").unwrap_or_else(JournalId::new);
-    let existing = store.get_journal(id).ok();
-    if existing.is_some() && mode == Mode::Skip {
-        return Ok((id, true));
-    }
-
     let title = fields
         .get("name")
         .map(str::to_string)
         .unwrap_or_else(|| safe_name(name.trim_end_matches(JOURNAL_FILE)).replace('-', " "));
-    let mut journal = existing.clone().unwrap_or_else(|| Journal::new(&title));
+
+    let existing = store.get_journal(id).ok();
+    let mut landing = land(existing, || Journal::new(&title), mode);
+    let Some(journal) = landing.as_mut() else {
+        report.landed(&landing);
+        return Ok(id);
+    };
+
     journal.id = id;
     journal.name = title;
     journal.description = body.trim_start_matches("# ").trim_start().to_string();
@@ -215,8 +212,9 @@ fn read_journal(
     if let Some(order) = fields.parse("order") {
         journal.sort_order = order;
     }
-    store.put_journal(&journal)?;
-    Ok((id, existing.is_some()))
+    store.put_journal(journal)?;
+    report.landed(&landing);
+    Ok(id)
 }
 
 fn front_matter(entry: &Entry, journal: &str) -> FrontMatter {
@@ -255,15 +253,11 @@ fn read_entry(
     source: &str,
     journal_id: JournalId,
     mode: Mode,
-) -> Result<Option<bool>> {
+    report: &mut Report,
+) -> Result<()> {
     let read = doc::read(store, src, name, source)?;
     let fields = &read.fields;
     let id = fields.parse::<EntryId>("id").unwrap_or_else(EntryId::new);
-    let existing = store.get_entry(id).ok();
-    if existing.is_some() && mode == Mode::Skip {
-        return Ok(Some(true));
-    }
-    let existed = existing.is_some();
 
     let date = fields
         .parse::<jiff::civil::Date>("date")
@@ -275,7 +269,13 @@ fn read_entry(
 
     let now = jiff::Timestamp::now();
     let tz = fields.get("timezone").unwrap_or("UTC").to_string();
-    let mut entry = existing.unwrap_or_else(|| Entry::new(journal_id, &tz));
+
+    let existing = store.get_entry(id).ok();
+    let mut landing = land(existing, || Entry::new(journal_id, &tz), mode);
+    let Some(entry) = landing.as_mut() else {
+        report.landed(&landing);
+        return Ok(());
+    };
     entry.id = id;
     // The folder decides, unless the front matter names a journal that is
     // actually here. An entry whose journal was deleted before the export was
@@ -308,8 +308,9 @@ fn read_entry(
     // A vault that already holds this entry is asked to replace it
     // unconditionally: the conditional save exists to catch two *editors*
     // racing, and an import is neither of them.
-    store.put_entry(&entry)?;
-    Ok(Some(existed))
+    store.put_entry(entry)?;
+    report.landed(&landing);
+    Ok(())
 }
 
 /// The date at the front of an exported file name.
