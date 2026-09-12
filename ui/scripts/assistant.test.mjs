@@ -6,27 +6,25 @@
 // another in the real one.
 
 import assert from 'node:assert/strict'
-import { createServer } from 'vite'
-import { svelte } from '@sveltejs/vite-plugin-svelte'
-
-const server = await createServer({
-  configFile: false,
-  plugins: [svelte({ compilerOptions: { hmr: false } })],
-  // A watcher per test file exhausts inotify on a machine running the suite.
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
-})
+import { load, stubBrowser } from './harness.mjs'
 
 // Enough of a browser for the modules to evaluate. Nothing here is called.
-globalThis.window ??= {}
-globalThis.localStorage ??= { getItem: () => null, setItem: () => {} }
-globalThis.matchMedia ??= () => ({ matches: false, addEventListener() {} })
-globalThis.document ??= { documentElement: { style: { setProperty() {} } } }
-globalThis.location ??= { search: '', href: 'http://localhost/' }
-globalThis.crypto ??= { randomUUID: () => 'x' }
+stubBrowser({
+  window: true,
+  localStorage: { getItem: () => null, setItem: () => {} },
+  matchMedia: () => ({ matches: false, addEventListener() {} }),
+  document: { documentElement: { style: { setProperty() {} } } },
+  location: true,
+  crypto: { randomUUID: () => 'x' },
+})
 
-const { PANES, PANE_LABELS } = await server.ssrLoadModule('/src/lib/assistant.svelte.ts')
+const {
+  modules: [assistant, mock],
+  close,
+} = await load(['/src/lib/assistant.svelte.ts', '/src/lib/mock.ts'], {
+  svelte: { compilerOptions: { hmr: false } },
+})
+const { PANES, PANE_LABELS } = assistant
 
 // ── Every pane has a name, and the names are what the sidebar draws ────
 
@@ -42,7 +40,7 @@ assert.equal(PANES[0], 'runs')
 
 // ── The mock spells a trigger the way the core does ────────────────────
 
-const { mockInvoke } = await server.ssrLoadModule('/src/lib/mock.ts')
+const { mockInvoke } = mock
 // The demo vault starts locked, as a real one does.
 await mockInvoke('unlock', { password: 'everyday' })
 
@@ -66,5 +64,5 @@ assert.equal(await mockInvoke('unseen_runs', {}), 1)
 await mockInvoke('mark_runs_seen', { ids: [] })
 assert.equal(await mockInvoke('unseen_runs', {}), 0, 'an empty list means all of them')
 
-await server.close()
+await close()
 console.log('assistant: all checks passed')

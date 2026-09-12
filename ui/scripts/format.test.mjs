@@ -13,10 +13,9 @@
 // one locale would ever see.
 
 import assert from 'node:assert/strict'
-import { createServer } from 'vite'
+import { load, stubBrowser } from './harness.mjs'
 
-globalThis.window ??= globalThis
-globalThis.location ??= new URL('http://localhost/')
+stubBrowser({ window: globalThis, location: new URL('http://localhost/') })
 
 // `locale()` reads `navigator.language`, and the last check below moves it.
 // Node's own `navigator` is a getter-only property, so it is redefined rather
@@ -43,16 +42,21 @@ Intl.RelativeTimeFormat = function (...args) {
   return new RealRelativeTimeFormat(...args)
 }
 
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
-})
-
-const { formatInstantTime, friendlyDate, longDate, relativeTime, weekdayShort } =
-  await server.ssrLoadModule('/src/lib/format.ts')
+const { module: format, close } = await load('/src/lib/format.ts')
+const {
+  dateFormat,
+  dayHeading,
+  formatInstantTime,
+  friendlyDate,
+  hourLabel,
+  longDate,
+  monthYear,
+  relativeTime,
+  timeOfDay,
+  toLocalTimeValue,
+  weekdayNarrow,
+  weekdayShort,
+} = format
 
 // ── Built once, however often it is asked ─────────────────────────────
 //
@@ -61,19 +65,32 @@ const { formatInstantTime, friendlyDate, longDate, relativeTime, weekdayShort } 
 
 const day = '2026-03-04'
 const stamp = '2026-03-04T09:00:00.000Z'
+const noon = new Date(2026, 2, 4, 12, 0)
 
 // The first of each pays for its formatter; the rest are free.
 weekdayShort(day)
 longDate(day)
 relativeTime(stamp)
+timeOfDay(noon)
+weekdayNarrow(noon)
+monthYear(noon)
+dayHeading(noon)
+hourLabel(9)
+dateFormat({ dateStyle: 'full' })
 
 built = 0
 for (let i = 0; i < 100; i++) {
   weekdayShort(day)
   longDate(day)
   relativeTime(stamp)
+  timeOfDay(noon)
+  weekdayNarrow(noon)
+  monthYear(noon)
+  dayHeading(noon)
+  hourLabel(9)
+  dateFormat({ dateStyle: 'full' })
 }
-assert.equal(built, 0, `three hundred calls built ${built} formatters; they should all be cached`)
+assert.equal(built, 0, `nine hundred calls built ${built} formatters; they should all be cached`)
 
 // ── ...and the answers are still right ────────────────────────────────
 //
@@ -94,6 +111,29 @@ const LONG = { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }
 assert.equal(weekdayShort(day), freshWeekday(new Date(2026, 2, 4)))
 assert.equal(longDate(day), asFreshlyBuilt(LONG, new Date(2026, 2, 4)))
 assert.equal(friendlyDate(new Date().toISOString().slice(0, 10)), 'Today')
+
+// The presentations components used to build their own formatters for --
+// each checked against a fresh one built with the exact same options, which
+// is what pins the option shape as well as the caching.
+assert.equal(timeOfDay(noon), asFreshlyBuilt({ hour: 'numeric', minute: '2-digit' }, noon))
+assert.equal(weekdayNarrow(noon), asFreshlyBuilt({ weekday: 'narrow' }, noon))
+assert.equal(monthYear(noon), asFreshlyBuilt({ month: 'long', year: 'numeric' }, noon))
+assert.equal(
+  dayHeading(noon),
+  asFreshlyBuilt({ weekday: 'long', day: 'numeric', month: 'long' }, noon),
+)
+const nineOClock = new Date(2026, 2, 4, 9, 0)
+assert.equal(hourLabel(9), asFreshlyBuilt({ hour: 'numeric' }, nineOClock))
+assert.equal(
+  toLocalTimeValue(new Date(2026, 2, 4, 8, 5)),
+  '08:05',
+  'padded for an <input type=time>',
+)
+assert.equal(
+  dateFormat({ dateStyle: 'full' }).format(noon),
+  new RealDateTimeFormat('en-GB', { dateStyle: 'full' }).format(noon),
+  'the exported factory is the same cache everything else draws from',
+)
 
 // A second date through the same kept formatter, because a cache that handed
 // out the right object once could still be handing out the same *answer*.
@@ -142,5 +182,5 @@ assert.equal(formatInstantTime(nineAm), inLondon, 'coming home must read as it d
 if (before === undefined) delete process.env.TZ
 else process.env.TZ = before
 
-await server.close()
+await close()
 console.log('format: all checks passed')

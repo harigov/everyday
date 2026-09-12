@@ -59,8 +59,19 @@ function cacheKey(options: object): string {
   return `${locale()}\u0000${new Date().getTimezoneOffset()}\u0000${JSON.stringify(options)}`
 }
 
-/** The `Intl.DateTimeFormat` for these options, made once per locale and zone. */
-function dateFormat(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+/**
+ * The `Intl.DateTimeFormat` for these options, made once per locale and zone.
+ *
+ * Exported for the presentation a component needs once and nowhere else --
+ * a chart label whose options depend on the chart's own data, a bare
+ * `dateStyle: 'full'` read by nothing but an accessibility label. Anything
+ * shaped the same way twice belongs below as a named function instead, the
+ * way `weekdayShort` and the others already are: a second hand-built
+ * `new Intl.DateTimeFormat(locale(), {...})` beside this file is exactly the
+ * bug this cache exists to prevent, whether or not it remembers to build one
+ * only once.
+ */
+export function dateFormat(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
   const id = cacheKey(options)
   let made = dateFormats.get(id)
   if (!made) {
@@ -115,6 +126,23 @@ export function longDate(iso: string): string {
   }).format(startOfDay(iso))
 }
 
+/**
+ * A day's own heading, with no year: "Tuesday 4 March".
+ *
+ * `longDate` above is this plus a year, for an entry that can be read years
+ * later; this is for the calendar's day view and a time block's own detail,
+ * both of which are always looking at a day close enough that the year is
+ * implied by the screen it is already on.
+ */
+export function dayHeading(at: Date): string {
+  return dateFormat({ weekday: 'long', day: 'numeric', month: 'long' }).format(at)
+}
+
+/** "September 2026": a month heading, for whatever is paging by month. */
+export function monthYear(at: Date): string {
+  return dateFormat({ month: 'long', year: 'numeric' }).format(at)
+}
+
 /** Heading for a group of entries in the list. */
 export function groupLabel(iso: string): string {
   const d = startOfDay(iso)
@@ -139,6 +167,15 @@ export function dayNumber(iso: string): string {
 
 export function weekdayShort(iso: string): string {
   return dateFormat({ weekday: 'short' }).format(startOfDay(iso)).replace('.', '')
+}
+
+/**
+ * A single-letter weekday, for a column heading a full name would crowd --
+ * the mini month in the calendar's sidebar and the one over the journal's
+ * entry grid, both a handful of pixels wide per day.
+ */
+export function weekdayNarrow(at: Date): string {
+  return dateFormat({ weekday: 'narrow' }).format(at)
 }
 
 export function relativeTime(isoTimestamp: string): string {
@@ -213,17 +250,41 @@ export function formatMinutes(minutes: number): string {
   return rest === 0 ? `${hours}h` : `${hours}h ${rest}m`
 }
 
+/**
+ * The time of day an instant falls on: `9:41 AM`, `14:06`.
+ *
+ * The one presentation everything else on this page that draws a clock face
+ * is built from -- a row of time blocks, the timer's "since 14:05", a day
+ * cell's own start time -- so a formatter built by hand beside one of them
+ * is always this shape typed out again rather than a different one.
+ */
+export function timeOfDay(at: Date): string {
+  return dateFormat({ hour: 'numeric', minute: '2-digit' }).format(at)
+}
+
 /** `HH:MM:SS` from the core as a local-looking clock time. */
 export function formatClock(hms: string): string {
   const [h, m] = hms.split(':').map(Number)
   const at = new Date()
   at.setHours(h ?? 0, m ?? 0, 0, 0)
-  return dateFormat({ hour: 'numeric', minute: '2-digit' }).format(at)
+  return timeOfDay(at)
 }
 
 /** The time of day an instant falls on, for a row of time blocks. */
 export function formatInstantTime(isoTimestamp: string): string {
-  return dateFormat({ hour: 'numeric', minute: '2-digit' }).format(new Date(isoTimestamp))
+  return timeOfDay(new Date(isoTimestamp))
+}
+
+/** The hour a grid row stands for: "9 AM", "14:00". */
+export function hourLabel(hour: number): string {
+  const at = new Date()
+  at.setHours(hour, 0, 0, 0)
+  return dateFormat({ hour: 'numeric' }).format(at)
+}
+
+/** Two digits, padded -- what both `<input>` values below are built from. */
+function pad(n: number): string {
+  return String(n).padStart(2, '0')
 }
 
 /**
@@ -233,6 +294,14 @@ export function formatInstantTime(isoTimestamp: string): string {
  * is UTC, so the field would open an hour or ten off wherever the user is.
  */
 export function toLocalInputValue(at: Date): string {
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${isoDate(at)}T${p(at.getHours())}:${p(at.getMinutes())}`
+  return `${isoDate(at)}T${pad(at.getHours())}:${pad(at.getMinutes())}`
+}
+
+/**
+ * `HH:MM` for an `<input type="time">` -- the other half of the pair above,
+ * for a field that carries no date at all: a block's own start and end, a
+ * reading logged at a particular minute of a day already on screen.
+ */
+export function toLocalTimeValue(at: Date): string {
+  return `${pad(at.getHours())}:${pad(at.getMinutes())}`
 }

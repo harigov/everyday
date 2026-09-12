@@ -7,7 +7,7 @@
 
   import { FILTER_LABELS, TASK_FILTERS, todo, type GroupBy } from '../lib/todo.svelte'
   import { friendlyDate, plural } from '../lib/format'
-  import { todayIso } from '../lib/time'
+  import { isoDate, todayIso } from '../lib/time'
   import { menu } from '../lib/menu.svelte'
   import { purpose } from '../lib/purpose.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
@@ -15,25 +15,9 @@
   import TaskRow from './TaskRow.svelte'
   import { rovingFocus } from '../lib/roving'
   import type { TaskNode } from '../lib/todo.svelte'
-  import type { Task } from '../lib/types'
   import { priorityRank } from '../lib/types'
-
-  const STATUS_LABELS: Record<string, string> = {
-    backlog: 'Backlog',
-    todo: 'To do',
-    doing: 'Doing',
-    blocked: 'Blocked',
-    done: 'Done',
-    cancelled: 'Cancelled',
-  }
-
-  const PRIORITY_LABELS: Record<string, string> = {
-    urgent: 'Urgent',
-    high: 'High',
-    medium: 'Medium',
-    low: 'Low',
-    none: 'Unprioritised',
-  }
+  import type { Task } from '../lib/types'
+  import { STATUS_LABELS, PRIORITY_LABELS } from '../lib/labels'
 
   /**
    * The bucket a deadline falls into.
@@ -51,8 +35,7 @@
     // it, the date. `friendlyDate` already draws that line.
     const week = new Date()
     week.setDate(week.getDate() + 7)
-    const p = (n: number) => String(n).padStart(2, '0')
-    const horizon = `${week.getFullYear()}-${p(week.getMonth() + 1)}-${p(week.getDate())}`
+    const horizon = isoDate(week)
     if (task.dueDate <= horizon) {
       return { key: task.dueDate, label: friendlyDate(task.dueDate), order: 2 }
     }

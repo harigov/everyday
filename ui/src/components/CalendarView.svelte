@@ -8,8 +8,7 @@
 
   import { onMount } from 'svelte'
   import { calendar, type Layer, type View } from '../lib/calendar.svelte'
-  import { formatMinutes } from '../lib/format'
-  import { locale } from '../lib/time'
+  import { dateFormat, dayHeading, formatMinutes, monthYear } from '../lib/format'
   import Icon from './Icon.svelte'
   import TimeGrid from './TimeGrid.svelte'
   import MonthGrid from './MonthGrid.svelte'
@@ -41,16 +40,10 @@
     const first = new Date(days[0] + 'T00:00')
     const last = new Date(days[days.length - 1] + 'T00:00')
     if (calendar.view === 'day') {
-      return new Intl.DateTimeFormat(locale(), {
-        weekday: 'long',
-        day: 'numeric',
-        month: 'long',
-      }).format(first)
+      return dayHeading(first)
     }
     if (calendar.view === 'month') {
-      return new Intl.DateTimeFormat(locale(), { month: 'long', year: 'numeric' }).format(
-        new Date(calendar.anchor + 'T00:00'),
-      )
+      return monthYear(new Date(calendar.anchor + 'T00:00'))
     }
     // A week that straddles two months should say so, and one that straddles
     // two years doubly so. `formatRange` decides all of that for itself and
@@ -58,7 +51,7 @@
     // replaces did not: asking for a day and a year with no month between
     // them is a combination `Intl` has no pattern for, so a week inside one
     // month came out reading "Sep 6 – 2026 (day: 12)".
-    return new Intl.DateTimeFormat(locale(), {
+    return dateFormat({
       day: 'numeric',
       month: 'short',
       year: 'numeric',

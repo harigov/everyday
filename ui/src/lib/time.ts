@@ -36,8 +36,6 @@ export const SNAP_MINUTES = 15
 /** Shortest block the grid will create or resize to. */
 export const MIN_BLOCK_MINUTES = 15
 
-export const MINUTES_IN_DAY = 24 * 60
-
 /** `YYYY-MM-DD` for a `Date`, in local time. */
 export function isoDate(at: Date): string {
   const p = (n: number) => String(n).padStart(2, '0')

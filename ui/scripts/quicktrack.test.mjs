@@ -12,31 +12,12 @@
 // `npm run check`, with the TypeScript loaded through Vite so it compiles
 // exactly as the application compiles it.
 
-import { createServer } from 'vite'
+import { load, makeCheck } from './harness.mjs'
 
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  // `watch: null` because a test loads a module once and exits. Vite's
-  // watcher is on by default even in middleware mode, and a watcher is a
-  // per-user resource: a suite that starts one server per file exhausts the
-  // supply (`EMFILE`) on any machine that already has a dev server running.
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
-})
+const { module: quicktrack, close } = await load('/src/lib/quicktrack.ts')
+const { describeQuickTrack, parseQuickTrack, readValue } = quicktrack
 
-const { describeQuickTrack, parseQuickTrack, readValue } =
-  await server.ssrLoadModule('/src/lib/quicktrack.ts')
-
-let failed = 0
-function check(what, got, want) {
-  const a = JSON.stringify(got)
-  const b = JSON.stringify(want)
-  if (a === b) return
-  failed++
-  console.error(`✗ ${what}\n  got  ${a}\n  want ${b}`)
-}
+const { check, finish } = makeCheck()
 
 const tracker = (over = {}) => ({
   id: 't',
@@ -237,10 +218,5 @@ check(
   'New tracker “weight” (in kg) — 78.4',
 )
 
-await server.close()
-
-if (failed) {
-  console.error(`\nquick-track: ${failed} check(s) failed`)
-  process.exit(1)
-}
-console.log('quick-track: all checks passed')
+await close()
+finish('quick-track')

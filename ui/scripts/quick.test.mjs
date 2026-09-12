@@ -19,38 +19,26 @@
 //                 comes back a moment later.
 
 import assert from 'node:assert/strict'
-import { createServer } from 'vite'
-import { svelte } from '@sveltejs/vite-plugin-svelte'
+import { load, stubBrowser } from './harness.mjs'
 
 // Enough of a browser for the stores this module imports to evaluate. Same
 // reasoning as `live.test.mjs`.
-globalThis.window ??= {}
-globalThis.localStorage ??= { getItem: () => null, setItem: () => {}, removeItem: () => {} }
-globalThis.matchMedia ??= () => ({
-  matches: false,
-  addEventListener: () => {},
-  removeEventListener: () => {},
-})
-globalThis.document ??= {
-  querySelector: () => null,
-  documentElement: { style: { setProperty: () => {} }, classList: { toggle: () => {} } },
-  addEventListener: () => {},
-}
-globalThis.navigator ??= { userAgent: 'node' }
-globalThis.location ??= { search: '', href: 'http://localhost/' }
-globalThis.URL.createObjectURL ??= () => 'blob:stub'
-
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  plugins: [svelte()],
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
+stubBrowser({
+  window: true,
+  localStorage: true,
+  matchMedia: true,
+  document: true,
+  navigator: true,
+  location: true,
+  createObjectURL: () => 'blob:stub',
 })
 
-const { ask, quick, slot } = await server.ssrLoadModule('/src/lib/quick.svelte.ts')
-const { agent } = await server.ssrLoadModule('/src/lib/agent.svelte.ts')
+const {
+  modules: [quickModule, agentModule],
+  close,
+} = await load(['/src/lib/quick.svelte.ts', '/src/lib/agent.svelte.ts'], { svelte: true })
+const { ask, quick, slot } = quickModule
+const { agent } = agentModule
 
 /**
  * Configure -- or unconfigure -- the quick model.
@@ -247,5 +235,5 @@ const flush = () => new Promise((r) => setTimeout(r, 0))
   assert.deepEqual(quiet, [null])
 }
 
-await server.close()
+await close()
 console.log('quick: all checks passed')

@@ -19,41 +19,24 @@
 // many distinct targets a batch produces.
 
 import assert from 'node:assert/strict'
-import { createServer } from 'vite'
-import { svelte } from '@sveltejs/vite-plugin-svelte'
+import { load, stubBrowser } from './harness.mjs'
 
 // The router imports the four stores, and they were written for a browser.
 // Enough of one to let the modules evaluate; nothing below runs a reload, so
 // nothing depends on the stubs being faithful. Same reasoning as
 // `actions.test.mjs`.
-globalThis.window ??= {}
-globalThis.localStorage ??= { getItem: () => null, setItem: () => {}, removeItem: () => {} }
-globalThis.matchMedia ??= () => ({
-  matches: false,
-  addEventListener: () => {},
-  removeEventListener: () => {},
-})
-globalThis.document ??= {
-  querySelector: () => null,
-  documentElement: { style: { setProperty: () => {} }, classList: { toggle: () => {} } },
-  addEventListener: () => {},
-}
-globalThis.navigator ??= { userAgent: 'node' }
-globalThis.location ??= { search: '', href: 'http://localhost/' }
-globalThis.URL.createObjectURL ??= () => 'blob:stub'
-
-// The Svelte plugin by name rather than the project config, and no watcher.
-// See the same note in `actions.test.mjs`.
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  plugins: [svelte()],
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
+stubBrowser({
+  window: true,
+  localStorage: true,
+  matchMedia: true,
+  document: true,
+  navigator: true,
+  location: true,
+  createObjectURL: () => 'blob:stub',
 })
 
-const { RELOAD, RELOADS, targetsFor } = await server.ssrLoadModule('/src/lib/live.svelte.ts')
+const { module: live, close } = await load('/src/lib/live.svelte.ts', { svelte: true })
+const { RELOAD, RELOADS, targetsFor } = live
 
 // ── Every kind has an answer, and it is one that exists ───────────────
 
@@ -152,5 +135,5 @@ const everything = targetsFor([...KINDS, ...KINDS, ...KINDS], true)
 assert.equal(new Set(everything).size, everything.length, 'a target ran twice')
 assert.ok(everything.length <= Object.keys(RELOAD).length)
 
-await server.close()
+await close()
 console.log('live: all checks passed')

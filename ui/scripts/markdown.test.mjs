@@ -27,21 +27,10 @@
 // exactly as the application compiles it.
 
 import assert from 'node:assert/strict'
-import { createServer } from 'vite'
+import { load } from './harness.mjs'
 
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  // `watch: null` because a test loads a module once and exits. Vite's
-  // watcher is on by default even in middleware mode, and a watcher is a
-  // per-user resource: a suite that starts one server per file exhausts the
-  // supply (`EMFILE`) on any machine that already has a dev server running.
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
-})
-
-const { renderMarkdown, escapeHtml } = await server.ssrLoadModule('/src/lib/markdown.ts')
+const { module: markdown, close } = await load('/src/lib/markdown.ts')
+const { renderMarkdown, escapeHtml } = markdown
 
 /** Assert that `source` renders to exactly `want`. */
 function renders(source, want, why) {
@@ -306,5 +295,5 @@ assert.ok(!renderMarkdown(' 0  `code`').includes('<code>code</code><code>'))
   assert.ok(html.includes('<pre><code class="language-sh">everyday search rain</code></pre>'), html)
 }
 
-await server.close()
+await close()
 console.log('markdown: all checks passed')

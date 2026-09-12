@@ -17,7 +17,7 @@
   // is untouched.
 
   import { calendar, DEFAULT_BLOCK_MINUTES, type Slot } from '../lib/calendar.svelte'
-  import { formatMinutes } from '../lib/format'
+  import { dateFormat, formatMinutes, hourLabel, timeOfDay } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import {
     calendarTaskMenu,
@@ -30,7 +30,6 @@
   import {
     MIN_BLOCK_MINUTES,
     SNAP_MINUTES,
-    locale,
     minutesOfDay,
     packLanes,
     snap,
@@ -46,10 +45,6 @@
   const DAY_HEIGHT = HOUR * 24
   /** How close to the bottom edge counts as "resize" rather than "move". */
   const RESIZE_GRIP = 7
-
-  const weekdayFmt = new Intl.DateTimeFormat(locale(), { weekday: 'short' })
-  const hourFmt = new Intl.DateTimeFormat(locale(), { hour: 'numeric' })
-  const timeFmt = new Intl.DateTimeFormat(locale(), { hour: 'numeric', minute: '2-digit' })
 
   let body = $state<HTMLDivElement | null>(null)
 
@@ -89,17 +84,11 @@
 
   const hours = Array.from({ length: 24 }, (_, h) => h)
 
-  function hourLabel(h: number): string {
-    const at = new Date()
-    at.setHours(h, 0, 0, 0)
-    return hourFmt.format(at)
-  }
-
   function clockOf(minutes: number): string {
     const at = new Date()
     at.setHours(0, 0, 0, 0)
     at.setMinutes(minutes)
-    return timeFmt.format(at)
+    return timeOfDay(at)
   }
 
   /** Minutes from midnight for a pointer at `clientY` within `el`. */
@@ -344,7 +333,9 @@
             calendar.goto(iso)
           }}
         >
-          <span class="weekday">{weekdayFmt.format(new Date(iso + 'T00:00'))}</span>
+          <span class="weekday"
+            >{dateFormat({ weekday: 'short' }).format(new Date(iso + 'T00:00'))}</span
+          >
           <span class="daynum">{Number(iso.slice(8, 10))}</span>
         </button>
         <div class="daymeta">

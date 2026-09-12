@@ -17,33 +17,16 @@
 // `npm run check`, with the TypeScript loaded through Vite so it compiles
 // exactly as the application compiles it.
 
-import { createServer } from 'vite'
+import { load, makeCheck } from './harness.mjs'
 
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  // `watch: null` because a test loads a module once and exits. Vite's
-  // watcher is on by default even in middleware mode, and a watcher is a
-  // per-user resource: a suite that starts one server per file exhausts the
-  // supply (`EMFILE`) on any machine that already has a dev server running.
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
-})
+const {
+  modules: [habits, balance],
+  close,
+} = await load(['/src/lib/habits.ts', '/src/lib/balance.ts'])
+const { describeStreak, periodEnd, periodStart, periodsBetween, summarise } = habits
+const { byRole, neglected, roleOf, totalMinutes } = balance
 
-const { describeStreak, periodEnd, periodStart, periodsBetween, summarise } =
-  await server.ssrLoadModule('/src/lib/habits.ts')
-const { byRole, neglected, roleOf, totalMinutes } =
-  await server.ssrLoadModule('/src/lib/balance.ts')
-
-let failed = 0
-function check(what, got, want) {
-  const a = JSON.stringify(got)
-  const b = JSON.stringify(want)
-  if (a === b) return
-  failed++
-  console.error(`✗ ${what}\n  got  ${a}\n  want ${b}`)
-}
+const { check, finish } = makeCheck()
 
 // Monday-start weeks throughout, which is what `localeWeekStart` answers in
 // most of the world and is the value the Overview passes.
@@ -330,10 +313,5 @@ check('no report at all still draws the rows', byRole(null, roles, goals).length
   check('and reports no age rather than a made-up one', found[0].days, null)
 }
 
-await server.close()
-
-if (failed) {
-  console.error(`\noverview: ${failed} check(s) failed`)
-  process.exit(1)
-}
-console.log('overview: all checks passed')
+await close()
+finish('overview')

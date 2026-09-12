@@ -20,7 +20,8 @@
   import type { Reading, Tracker } from '../lib/types'
   import { dismissable } from '../lib/dismiss'
   import { focusOnMount } from '../lib/focus'
-  import { locale, todayIso } from '../lib/time'
+  import { todayIso } from '../lib/time'
+  import { timeOfDay, toLocalTimeValue } from '../lib/format'
   import Icon from './Icon.svelte'
   import TrackerIcon from './TrackerIcon.svelte'
   import LogReading from './LogReading.svelte'
@@ -40,8 +41,6 @@
   /** Whether the "record something else" popover is open. */
   let logging = $state(false)
 
-  const timeFmt = new Intl.DateTimeFormat(locale(), { hour: 'numeric', minute: '2-digit' })
-
   $effect(() => {
     void tracking.open(journalId, date)
   })
@@ -51,14 +50,12 @@
   }
 
   function shortTime(at: string | null | undefined): string {
-    return at ? timeFmt.format(new Date(at)) : ''
+    return at ? timeOfDay(new Date(at)) : ''
   }
 
   /** `HH:MM` for a time input, from an instant or from the clock. */
   function clockValue(at: string | null | undefined): string {
-    const d = at ? new Date(at) : new Date()
-    const p = (n: number) => String(n).padStart(2, '0')
-    return `${p(d.getHours())}:${p(d.getMinutes())}`
+    return toLocalTimeValue(at ? new Date(at) : new Date())
   }
 
   /** An instant on *this* page's day at `HH:MM`, for the time field. */

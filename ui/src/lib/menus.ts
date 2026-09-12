@@ -22,35 +22,9 @@ import { todo } from './todo.svelte'
 import { addDays, minutesBetween, offsetInDay, todayIso } from './time'
 import { formatMinutes, friendlyDate } from './format'
 import { MAX_STARS, fromStars, stars } from './rating'
+import { STATUS_LABELS, PRIORITY_LABELS } from './labels'
 import { ITEM_STATUSES, PRIORITIES, TASK_STATUSES } from './types'
-import type {
-  CalendarEvent,
-  Item,
-  Priority,
-  Purpose,
-  Reading,
-  Task,
-  TaskStatus,
-  TimeBlock,
-  Tracker,
-} from './types'
-
-const STATUS_LABELS: Record<TaskStatus, string> = {
-  backlog: 'Backlog',
-  todo: 'To do',
-  doing: 'Doing',
-  blocked: 'Blocked',
-  done: 'Done',
-  cancelled: 'Cancelled',
-}
-
-const PRIORITY_LABELS: Record<Priority, string> = {
-  none: 'None',
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  urgent: 'Urgent',
-}
+import type { CalendarEvent, Item, Purpose, Reading, Task, TimeBlock, Tracker } from './types'
 
 /**
  * The palette, as a submenu.

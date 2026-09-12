@@ -11,22 +11,14 @@
 // exactly as the application compiles it.
 
 import assert from 'node:assert/strict'
-import { createServer } from 'vite'
+import { load } from './harness.mjs'
 
-const server = await createServer({
-  configFile: false,
-  root: new URL('..', import.meta.url).pathname,
-  // `watch: null` because a test loads a module once and exits. Vite's
-  // watcher is on by default even in middleware mode, and a watcher is a
-  // per-user resource: a suite that starts one server per file exhausts the
-  // supply (`EMFILE`) on any machine that already has a dev server running.
-  server: { middlewareMode: true, watch: null },
-  appType: 'custom',
-  logLevel: 'error',
-})
-
-const { Autosave, AUTOSAVE_MS } = await server.ssrLoadModule('/src/lib/autosave.ts')
-const { VaultError } = await server.ssrLoadModule('/src/lib/types.ts')
+const {
+  modules: [autosaveModule, types],
+  close,
+} = await load(['/src/lib/autosave.ts', '/src/lib/types.ts'])
+const { Autosave, AUTOSAVE_MS } = autosaveModule
+const { VaultError } = types
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 /** A write that can be finished by hand, so a flush can be caught mid-air. */
@@ -226,5 +218,5 @@ function gate() {
   assert.deepEqual(written, [['b']])
 }
 
-await server.close()
+await close()
 console.log('autosave: all checks passed')
