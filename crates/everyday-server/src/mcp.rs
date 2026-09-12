@@ -97,7 +97,7 @@ use everyday_service::{CommandError, CommandResult, Ctx, EventSink, Scope, Servi
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::broadcast;
 
 use crate::auth::Registry;
 
@@ -677,53 +677,19 @@ async fn delete_mcp() -> StatusCode {
 // ---- lifecycle ----------------------------------------------------------
 
 /// A running MCP listener, and the handle that stops it.
-pub struct Running {
-    /// Where it actually bound, which is not what was asked for when the
-    /// configured port was `0`.
-    pub address: SocketAddr,
-    /// This listener's own [`EventSink`]. Fold it into
-    /// `everyday_server::fanout` alongside whatever else the vault's
-    /// events already go to, and every open stream learns about an unlock
-    /// the moment it happens. Not done automatically here: this module has
-    /// no opinion on what else is in that fan-out, and phase 4 is where
-    /// the whole application's wiring lives.
-    pub sink: Arc<dyn EventSink>,
-    shutdown: watch::Sender<bool>,
-    stopped: watch::Sender<bool>,
-}
-
-impl Running {
-    /// Stop answering. Connections in flight are allowed to finish.
-    ///
-    /// Returns as soon as the request is *made*; see [`Running::stop_and_wait`]
-    /// for the version that waits for the port to actually be released.
-    pub fn stop(&self) {
-        let _ = self.shutdown.send(true);
-    }
-
-    /// Stop answering, and wait until the listener is actually closed.
-    ///
-    /// The same shape as `everyday_server::Running::stop_and_wait`, for the
-    /// same reason: signalling shutdown is not the same moment as the
-    /// socket being released, and a bind that follows a bare [`stop`](Running::stop)
-    /// loses that race often enough to matter to whoever is about to rebind
-    /// this port.
-    pub async fn stop_and_wait(&self) {
-        self.stop();
-        let mut rx = self.stopped.subscribe();
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            rx.wait_for(|stopped| *stopped),
-        )
-        .await;
-    }
-}
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
+///
+/// [`crate::Running`] generic, instantiated with an `Arc<dyn EventSink>`
+/// rather than a name of its own: this listener and the sharing one
+/// (`everyday_server::start`) used to keep two copies of the same
+/// `address`/`shutdown`/`stopped` and the same `stop`/`stop_and_wait`/`Drop`,
+/// and the copies had already drifted once -- the TLS branch of one forgot
+/// to signal `stopped` on its way out, and the fix landed only there until
+/// this module stopped keeping its own copy to fix. The field is still
+/// called `server` rather than `sink`, matching `crate::Running`'s own
+/// field: what a caller here gets back is this listener's [`Server`], seen
+/// through the one trait it implements that a caller of *this* function
+/// actually needs.
+pub type Running = crate::Running<Arc<dyn EventSink>>;
 
 /// Start answering `POST/GET/DELETE /mcp` on `config.listen`.
 ///
@@ -741,25 +707,12 @@ pub async fn start(
     let listener = tokio::net::TcpListener::bind(config.listen).await.map_err(|e| {
         CommandError::new("io", format!("could not listen on {}: {e}", config.listen))
     })?;
-    let address = listener.local_addr().map_err(|e| CommandError::new("io", e.to_string()))?;
-
-    let (shutdown, mut rx) = watch::channel(false);
-    let (stopped, _) = watch::channel(false);
     let router = router(server.clone());
 
-    let done = stopped.clone();
-    tokio::spawn(async move {
-        let shutdown = async move {
-            let _ = rx.wait_for(|stop| *stop).await;
-        };
-        if let Err(e) =
-            axum::serve(listener, router.into_make_service()).with_graceful_shutdown(shutdown).await
-        {
-            tracing::warn!(error = %e, "the MCP listener stopped");
-        }
-        let _ = done.send(true);
-    });
-
-    tracing::info!(%address, "serving MCP");
-    Ok(Running { address, sink: server, shutdown, stopped })
+    // Always plain: an MCP client has no pinning story of its own and would
+    // simply refuse to connect to a self-signed certificate -- see the
+    // module doc's "Loopback by default, and `Origin` is checked".
+    let running = crate::spawn_server(listener, router, None, server as Arc<dyn EventSink>)?;
+    tracing::info!(address = %running.address, "serving MCP");
+    Ok(running)
 }

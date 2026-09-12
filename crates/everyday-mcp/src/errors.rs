@@ -20,6 +20,14 @@ pub(crate) const INVALID_PARAMS: i64 = -32602;
 pub(crate) const INTERNAL_ERROR: i64 = -32603;
 pub(crate) const HEADER_MISMATCH: i64 = -32020;
 pub(crate) const UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
+/// Outside `-32768`..`-32000` on purpose: MCP partitions that whole block
+/// for itself, `-32000`..`-32019` as legacy implementation-defined codes
+/// ("new implementations SHOULD NOT use codes from this sub-range at
+/// all") and `-32020`..`-32099` reserved to the specification, so an
+/// undefined code from either is not this crate's to spend. See
+/// [`transport_error`]'s own doc for who does use this one.
+pub(crate) const TRANSPORT_ERROR: i64 = -31000;
+pub(crate) const REQUEST_REFUSED: i64 = -31001;
 
 /// Build the `Outcome::Reply` for a JSON-RPC error, with the HTTP status
 /// the specification pairs it with.
@@ -89,5 +97,36 @@ pub fn unsupported_protocol_version(id: &Value, requested: &str) -> Outcome {
         "Unsupported protocol version",
         Some(json!({ "supported": crate::SUPPORTED_VERSIONS, "requested": requested })),
         400,
+    )
+}
+
+/// `-31000 Transport error`: nothing answered a `POST /mcp` at all.
+///
+/// Not a failure of the protocol this crate implements but of whatever sits
+/// underneath it -- `everyday mcp`'s pipe is the one caller today, forwarding
+/// a request to a listener that may not even be running, since the switch it
+/// depends on is off by default. Every transport this crate answers directly
+/// always gets an HTTP response of some kind; a caller reaching for this
+/// code is, by definition, one that did not.
+pub fn transport_error(id: &Value, detail: &str) -> Outcome {
+    error_reply(id, TRANSPORT_ERROR, "Transport error", Some(json!({ "detail": detail })), 502)
+}
+
+/// `-31001 Request refused`: the listener answered, but with a status whose
+/// body is empty by design -- `401`, `403`, `405`, or anything else with
+/// nothing in it to forward as this reply's `data`.
+///
+/// Kept apart from [`transport_error`]: that code means no HTTP answer
+/// arrived at all; this one means an answer arrived and said no. `status`
+/// is echoed in `data` rather than reused as this `Outcome`'s own HTTP
+/// status, because a caller piping this over stdio -- as `everyday mcp`
+/// does -- has no HTTP response of its own to carry one on.
+pub fn request_refused(id: &Value, status: u16, detail: &str) -> Outcome {
+    error_reply(
+        id,
+        REQUEST_REFUSED,
+        "Request refused",
+        Some(json!({ "status": status, "detail": detail })),
+        status,
     )
 }

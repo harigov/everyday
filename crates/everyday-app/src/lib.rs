@@ -12,6 +12,7 @@ mod commands;
 mod events;
 mod fanout;
 mod hotkey;
+mod listener;
 mod mcp;
 mod protocol;
 mod remote;

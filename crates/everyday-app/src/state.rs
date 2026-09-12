@@ -143,6 +143,32 @@ impl AppState {
         self.sink.read().unwrap().clone()
     }
 
+    /// Point the service's events at the window, and at sharing and MCP,
+    /// whichever of them happen to be on right now.
+    ///
+    /// The one place this is decided. Before this existed, every call site
+    /// that started or stopped either listener had to ask the *other* one
+    /// for its current sink and fold the two together itself -- seven
+    /// places in `commands.rs` doing the same three lines -- and forgetting
+    /// the other listener's sink at any one of them silently dropped its
+    /// stream rather than failing loudly: a phone that stopped hearing
+    /// about writes, or an MCP client that stopped hearing that the vault
+    /// had unlocked, with nothing in a log to say why. Now `Sharing` and
+    /// `Mcp` only start and stop their own listener, and every caller in
+    /// `commands.rs` that does either calls this afterwards and nothing
+    /// else touches `service.set_events`.
+    ///
+    /// A no-op before the window has a sink to give -- the earliest moment
+    /// in startup, before `set_sink` runs -- since composing around nothing
+    /// would silently throw away whatever sharing or MCP had to say.
+    pub fn recompose_events(&self) {
+        let Some(window) = self.sink() else { return };
+        let mut other = Vec::new();
+        other.extend(self.sharing.sink());
+        other.extend(self.mcp.sink());
+        self.service.set_events(crate::fanout::compose(window, other));
+    }
+
     /// Run something against whichever vault this window is looking at.
     ///
     /// A closure rather than a returned guard, because a `Session` is behind a

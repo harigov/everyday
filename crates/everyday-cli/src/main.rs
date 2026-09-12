@@ -6,11 +6,17 @@
 //! built.
 
 mod app;
+mod args;
+mod format;
+mod mcp_pipe;
+mod serve;
+mod verbs;
 
+use args::Cli;
 use clap::Parser;
 
 fn main() -> std::process::ExitCode {
-    let cli = app::Cli::parse();
+    let cli = Cli::parse();
     match app::run(cli) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {

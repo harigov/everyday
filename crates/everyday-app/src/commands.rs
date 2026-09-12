@@ -1,9 +1,10 @@
 //! What the webview can call.
 //!
-//! Eleven entries, where there were ninety. Everything a vault can be asked to
-//! do is in [`everyday_service`] now and is reached through [`call`], which
-//! takes a name and a bag of JSON and hands back JSON. What is left here is the
-//! handful of things that are about *this process* rather than about a vault.
+//! A small, fixed set, where there were ninety. Everything a vault can be
+//! asked to do is in [`everyday_service`] now and is reached through
+//! [`call`], which takes a name and a bag of JSON and hands back JSON. What
+//! is left here is the handful of things that are about *this process*
+//! rather than about a vault.
 //!
 //! # Which things, and why they cannot be commands
 //!
@@ -23,7 +24,7 @@
 //! blocking pool -- it holds the window while it runs. Everything here is
 //! `async` and the service does its own hop to the blocking pool inside.
 
-use everyday_core::{BlobId, Journal, Vault, VaultConfig, VaultStatus};
+use everyday_core::{Journal, VaultConfig, VaultStatus};
 use everyday_service::agent::AgentEvent;
 use everyday_service::ctx::Ctx;
 use everyday_service::error::{CommandError, CommandResult};
@@ -175,55 +176,44 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
         }
     }
 
-    // A machine that was sharing when it was shut down is sharing when it comes
-    // back. Done here rather than in `setup` because there is nothing to serve
-    // until a vault is open, and this is the call that opens it.
-    let config = crate::sharing::Sharing::config();
-    if config.enabled
-        && service.get().is_some()
-        && !state.sharing().is_running()
-        && let Some(sink) = state.sink()
-    {
-        // A registry that cannot be opened is not fatal here either, for the
-        // same reason a bind failure below is not: it is named in the
-        // sharing pane, not a dialog blocking the journal.
-        match state.registry() {
-            Ok(registry) => {
-                let other = state.mcp().sink().into_iter().collect();
-                if let Err(e) =
-                    state.sharing().start(service.clone(), sink, other, config, registry).await
-                {
-                    // Not fatal, and not a dialog. A port already taken, or a
-                    // network that is not up yet, should not stop somebody
-                    // reading their journal; the sharing pane says what
-                    // happened when they go looking.
-                    tracing::warn!(error = %e, "could not resume sharing this vault");
-                }
-            }
-            Err(e) => tracing::warn!(error = %e, "could not open the device registry"),
-        }
-    }
+    // A machine that was sharing when it was shut down is sharing when it
+    // comes back, and the same is true of MCP. Done here rather than in
+    // `setup` because there is nothing to serve until a vault is open, and
+    // this is the call that opens it. Not fatal in either case, and not a
+    // dialog: a port already taken, or a network that is not up yet, should
+    // not stop somebody reading their journal, and each pane says what
+    // happened when somebody goes looking.
+    let sharing_config = crate::sharing::Sharing::config();
+    resume_listener(
+        sharing_config.enabled
+            && service.get().is_some()
+            && !state.sharing().is_running()
+            && state.sink().is_some(),
+        "sharing this vault",
+        async || {
+            let registry = state.registry()?;
+            state.sharing().start(service.clone(), sharing_config, registry).await?;
+            state.recompose_events();
+            Ok(())
+        },
+    )
+    .await;
 
-    // Same for MCP: a machine that was serving it when it shut down is
-    // serving it again once a vault is open.
     let mcp_config = crate::mcp::Mcp::config();
-    if mcp_config.enabled
-        && service.get().is_some()
-        && !state.mcp().is_running()
-        && let Some(sink) = state.sink()
-    {
-        match state.registry() {
-            Ok(registry) => {
-                let other = state.sharing().sink().into_iter().collect();
-                if let Err(e) =
-                    state.mcp().start(service.clone(), sink, other, mcp_config, registry).await
-                {
-                    tracing::warn!(error = %e, "could not resume serving MCP");
-                }
-            }
-            Err(e) => tracing::warn!(error = %e, "could not open the device registry"),
-        }
-    }
+    resume_listener(
+        mcp_config.enabled
+            && service.get().is_some()
+            && !state.mcp().is_running()
+            && state.sink().is_some(),
+        "serving MCP",
+        async || {
+            let registry = state.registry()?;
+            state.mcp().start(service.clone(), mcp_config, registry).await?;
+            state.recompose_events();
+            Ok(())
+        },
+    )
+    .await;
 
     Ok(Bootstrap {
         vault_exists: everyday_vault::exists(&path),
@@ -238,6 +228,28 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
         remotes: remotes::list(),
         remote: None,
     })
+}
+
+/// Start a listener again on the way up, if it was on when the process last
+/// stopped.
+///
+/// `bootstrap` used to have two copies of this shape, one for sharing and one
+/// for MCP, differing only in which config, which switch and which words go
+/// in the warning. `should_resume` is the caller's whole gate -- config
+/// enabled, a vault open, not already running, a window sink to compose
+/// around -- computed there because it names two different switches and two
+/// different configs and there is nothing generic left to say about it here.
+async fn resume_listener(
+    should_resume: bool,
+    what: &str,
+    start: impl AsyncFnOnce() -> CommandResult<()>,
+) {
+    if !should_resume {
+        return;
+    }
+    if let Err(e) = start().await {
+        tracing::warn!(error = %e, "could not resume {what}");
+    }
 }
 
 #[tauri::command]
@@ -547,8 +559,9 @@ pub async fn share_start(
             "this window is looking at a vault on another computer; share it from there",
         ));
     }
-    let sink =
-        state.sink().ok_or_else(|| CommandError::new("internal", "the window is not ready yet"))?;
+    if state.sink().is_none() {
+        return Err(CommandError::new("internal", "the window is not ready yet"));
+    }
 
     let mut config = crate::sharing::Sharing::config();
     if let Some(unlock) = allow_remote_unlock {
@@ -565,18 +578,18 @@ pub async fn share_start(
     };
     config.listen = std::net::SocketAddr::new(ip, port);
 
-    let other = state.mcp().sink().into_iter().collect();
-    state.sharing().start(state.service(), sink, other, config, state.registry()?).await
+    let status = state.sharing().start(state.service(), config, state.registry()?).await?;
+    state.recompose_events();
+    Ok(status)
 }
 
 /// Stop answering, and remember not to start next time.
 #[tauri::command]
 pub async fn share_stop(state: State<'_, AppState>) -> CommandResult<crate::sharing::ShareStatus> {
-    let sink =
-        state.sink().ok_or_else(|| CommandError::new("internal", "the window is not ready yet"))?;
-    let other = state.mcp().sink().into_iter().collect();
     let registry = state.registry()?;
-    state.sharing().stop_and_remember(&registry, sink, other, &state.service())
+    let status = state.sharing().stop_and_remember(&registry)?;
+    state.recompose_events();
+    Ok(status)
 }
 
 /// Offer to pair, for the next five minutes.
@@ -630,8 +643,9 @@ pub async fn mcp_start(
             "this window is looking at a vault on another computer; serve it from there",
         ));
     }
-    let sink =
-        state.sink().ok_or_else(|| CommandError::new("internal", "the window is not ready yet"))?;
+    if state.sink().is_none() {
+        return Err(CommandError::new("internal", "the window is not ready yet"));
+    }
 
     let mut config = crate::mcp::Mcp::config();
     let port = port.unwrap_or_else(|| config.listen.port());
@@ -646,17 +660,17 @@ pub async fn mcp_start(
     };
     config.listen = std::net::SocketAddr::new(ip, port);
 
-    let other = state.sharing().sink().into_iter().collect();
-    state.mcp().start(state.service(), sink, other, config, state.registry()?).await
+    let status = state.mcp().start(state.service(), config, state.registry()?).await?;
+    state.recompose_events();
+    Ok(status)
 }
 
 /// Stop answering, and remember not to start next time.
 #[tauri::command]
 pub async fn mcp_stop(state: State<'_, AppState>) -> CommandResult<crate::mcp::McpStatus> {
-    let sink =
-        state.sink().ok_or_else(|| CommandError::new("internal", "the window is not ready yet"))?;
-    let other = state.sharing().sink().into_iter().collect();
-    state.mcp().stop_and_remember(sink, other, &state.service())
+    let status = state.mcp().stop_and_remember()?;
+    state.recompose_events();
+    Ok(status)
 }
 
 /// Change whether a destructive tool is offered at all. Off by default; see
@@ -666,10 +680,9 @@ pub async fn mcp_set_destructive(
     state: State<'_, AppState>,
     allow: bool,
 ) -> CommandResult<crate::mcp::McpStatus> {
-    let sink =
-        state.sink().ok_or_else(|| CommandError::new("internal", "the window is not ready yet"))?;
-    let other = state.sharing().sink().into_iter().collect();
-    state.mcp().set_destructive(state.service(), sink, other, allow, state.registry()?).await
+    let status = state.mcp().set_destructive(state.service(), allow, state.registry()?).await?;
+    state.recompose_events();
+    Ok(status)
 }
 
 /// Mint a token for an MCP client, and hand it back once.
@@ -754,20 +767,4 @@ pub async fn hide_tray(app: tauri::AppHandle) -> CommandResult<()> {
         Ok(())
     })
     .await
-}
-
-// ---- media --------------------------------------------------------------
-
-/// Read a blob for the media protocol handler.
-pub fn read_blob_range(
-    vault: &Arc<Vault>,
-    id: BlobId,
-    offset: u64,
-    len: u64,
-) -> everyday_core::Result<Vec<u8>> {
-    vault.with_store(|s| s.get_blob_range(id, offset, len))
-}
-
-pub fn blob_len(vault: &Arc<Vault>, id: BlobId) -> everyday_core::Result<u64> {
-    vault.with_store(|s| s.blob_len(id))
 }
