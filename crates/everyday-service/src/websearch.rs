@@ -39,7 +39,7 @@ use everyday_core::{Item, Kind, Vault};
 /// How many results a lookup asks for when the caller has no opinion.
 pub use everyday_core::websearch::DEFAULT_LIMIT;
 
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
 
 /// Run one search: build the request in the core, fetch it here, parse it in
@@ -53,7 +53,7 @@ pub async fn search(request: &SearchRequest) -> CommandResult<Vec<SearchResult>>
         // act on. Say what happened rather than quoting a serde error.
         tracing::warn!(source = request.source.slug(), error = %e, "could not read the results");
         CommandError::new(
-            "unreadable",
+            codes::UNREADABLE,
             format!("{} answered with something this app could not read", request.source.label()),
         )
     })?;
@@ -100,7 +100,7 @@ async fn get(request: &Request) -> CommandResult<String> {
 
     let status = response.status();
     if !status.is_success() {
-        return Err(CommandError::new("network", explain_status(status, request)));
+        return Err(CommandError::new(codes::NETWORK, explain_status(status, request)));
     }
 
     let body = http::read_capped(response, MAX_RESPONSE_BYTES, || {
@@ -133,13 +133,13 @@ pub async fn fetch_image(url: &str) -> CommandResult<Vec<u8>> {
         .await
         .map_err(|e| {
             CommandError::new(
-                "network",
+                codes::NETWORK,
                 format!("the picture could not be fetched: {}", http::strip_url(&e.to_string())),
             )
         })?;
     if !response.status().is_success() {
         return Err(CommandError::new(
-            "network",
+            codes::NETWORK,
             format!("the picture could not be fetched ({}).", response.status()),
         ));
     }
@@ -154,7 +154,7 @@ pub async fn fetch_image(url: &str) -> CommandResult<Vec<u8>> {
     let mime = everyday_core::media::sniff_mime(&bytes);
     if !mime.starts_with("image/") {
         return Err(CommandError::new(
-            "not_an_image",
+            codes::NOT_AN_IMAGE,
             "that address did not return a picture, so nothing has been saved.",
         ));
     }
@@ -185,7 +185,7 @@ fn describe(e: &reqwest::Error, request: &Request) -> CommandError {
         // something the person typed.
         format!("the lookup failed: {}", http::strip_url(&e.to_string()))
     };
-    CommandError::new("network", message)
+    CommandError::new(codes::NETWORK, message)
 }
 
 /// Apply a result to an item and bring its cover home, in that order.

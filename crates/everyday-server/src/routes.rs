@@ -145,18 +145,64 @@ impl From<CommandError> for Failure {
 
 impl IntoResponse for Failure {
     fn into_response(self) -> Response {
+        use everyday_service::error::codes;
         let status = match self.0.code.as_str() {
-            "unauthorized" => StatusCode::UNAUTHORIZED,
-            "forbidden" => StatusCode::FORBIDDEN,
-            "too_many_attempts" => StatusCode::TOO_MANY_REQUESTS,
-            "bad_code" | "invalid" => StatusCode::BAD_REQUEST,
-            "unknown_command" | "unknown_tool" | "not_found" => StatusCode::NOT_FOUND,
-            "conflict" => StatusCode::CONFLICT,
-            "too_large" => StatusCode::PAYLOAD_TOO_LARGE,
-            "protocol" => StatusCode::UPGRADE_REQUIRED,
-            "locked" | "no_vault" | "unsupported" | "confirm_required" => {
-                StatusCode::UNPROCESSABLE_ENTITY
+            // This server's own codes, from `auth.rs` and `client.rs` --
+            // `bad_password` joins `unauthorized` here because both say the
+            // same thing about a credential: it did not check out.
+            "unauthorized" | codes::BAD_PASSWORD => StatusCode::UNAUTHORIZED,
+            codes::FORBIDDEN => StatusCode::FORBIDDEN,
+            // Concurrency limits, not authentication: `busy` is `everyday-service`'s
+            // own transfer-slot ceiling, the same shape as a pairing code's
+            // attempt limit.
+            "too_many_attempts" | codes::BUSY => StatusCode::TOO_MANY_REQUESTS,
+            // Malformed input, whether the shape came from JSON that would
+            // not deserialise or from a vault descriptor naming a backend or
+            // a cipher this build has never heard of.
+            "bad_code" | codes::INVALID | codes::UNKNOWN_BACKEND | codes::UNKNOWN_CIPHER => {
+                StatusCode::BAD_REQUEST
             }
+            codes::UNKNOWN_COMMAND | codes::UNKNOWN_TOOL | codes::NOT_FOUND => {
+                StatusCode::NOT_FOUND
+            }
+            // `already_initialised` is a conflict for the same reason a
+            // stale save is: the thing this call assumed did not exist,
+            // does. `retry` joins it because the answer is the same one a
+            // conflict gets -- ask again, deliberately, with a fresh id.
+            codes::CONFLICT | codes::ALREADY_INITIALISED | codes::RETRY => StatusCode::CONFLICT,
+            codes::TOO_LARGE => StatusCode::PAYLOAD_TOO_LARGE,
+            // A version older or newer than this build understands.
+            // `unsupported_version` is a vault's on-disk format saying the
+            // same thing `protocol` says about the wire: upgrade the build
+            // rather than retry the call.
+            "protocol" | codes::UNSUPPORTED_VERSION => StatusCode::UPGRADE_REQUIRED,
+            // Understood, but this vault or this input cannot honour it --
+            // `not_an_image` is the same shape as `unsupported`: a caller
+            // that gave a well-formed request pointed at the wrong thing.
+            codes::LOCKED
+            | codes::NO_VAULT
+            | codes::UNSUPPORTED
+            | codes::CONFIRM_REQUIRED
+            | codes::NOT_AN_IMAGE => StatusCode::UNPROCESSABLE_ENTITY,
+            // Another copy of this process holds the write claim. Distinct
+            // from `conflict`'s optimistic-concurrency meaning -- nothing
+            // about the record changed, the vault itself is spoken for --
+            // which is what the WebDAV status name actually means.
+            codes::VAULT_IN_USE => StatusCode::LOCKED,
+            // A request this server could not carry out because something
+            // beyond it did not answer, or answered with something that
+            // could not be used: the web, or the model behind the assistant
+            // and the quick model, whichever endpoint a person configured.
+            codes::NETWORK | codes::AGENT | codes::QUICK | codes::UNREADABLE => {
+                StatusCode::BAD_GATEWAY
+            }
+            // Everything left is this side's own failure to make sense of
+            // its own data or finish its own work: `decrypt_failed` is
+            // ciphertext that does not check out against the key that
+            // opened it, which is a corruption question rather than a
+            // caller's mistake; `internal`, `panic`, `io`, `serde` and
+            // `backend` are this process failing at something with no
+            // caller-facing shape at all.
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(self.0)).into_response()
@@ -506,4 +552,89 @@ pub fn peer(request: &Request) -> Option<String> {
 #[allow(dead_code)]
 pub fn refusal(code: &str, message: &str) -> Value {
     json!({ "code": code, "message": message })
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use everyday_service::error::codes;
+
+    fn status_of(code: &str) -> StatusCode {
+        Failure(CommandError::new(code, "test")).into_response().status()
+    }
+
+    /// Every code this server's own `CommandError::new` calls can carry --
+    /// see `auth.rs` and `client.rs` -- mapped somewhere other than the
+    /// default 500, so a status new to this list is a choice rather than an
+    /// accident.
+    #[test]
+    fn this_servers_own_codes_are_covered() {
+        assert_eq!(status_of("unauthorized"), StatusCode::UNAUTHORIZED);
+        assert_eq!(status_of("too_many_attempts"), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(status_of("bad_code"), StatusCode::BAD_REQUEST);
+        assert_eq!(status_of("protocol"), StatusCode::UPGRADE_REQUIRED);
+    }
+
+    /// Every code `everyday-service` can put on a `CommandError` -- every
+    /// literal inside that crate, and everything `everyday_core::Error::code`
+    /// produces -- maps to a status somebody chose on purpose. Before
+    /// `codes::ALL` existed, seven of these fell through to the default 500
+    /// because nothing here had been taught the word: `bad_password`,
+    /// `vault_in_use`, `decrypt_failed`, `unsupported_version`, `network`,
+    /// `quick` and `agent`. This is what stops an eighth arriving the same
+    /// way -- a code missing from this match is still answered, just not
+    /// with the status this test was told to expect, so a new one added to
+    /// `codes::ALL` without a line here fails this rather than shipping
+    /// silently as a 500.
+    #[test]
+    fn every_code_this_server_can_receive_maps_to_a_deliberate_status() {
+        let expected: &[(&str, StatusCode)] = &[
+            (codes::LOCKED, StatusCode::UNPROCESSABLE_ENTITY),
+            (codes::BAD_PASSWORD, StatusCode::UNAUTHORIZED),
+            (codes::ALREADY_INITIALISED, StatusCode::CONFLICT),
+            (codes::NO_VAULT, StatusCode::UNPROCESSABLE_ENTITY),
+            (codes::UNSUPPORTED_VERSION, StatusCode::UPGRADE_REQUIRED),
+            (codes::UNKNOWN_BACKEND, StatusCode::BAD_REQUEST),
+            (codes::UNKNOWN_CIPHER, StatusCode::BAD_REQUEST),
+            (codes::NOT_FOUND, StatusCode::NOT_FOUND),
+            (codes::DECRYPT_FAILED, StatusCode::INTERNAL_SERVER_ERROR),
+            (codes::UNSUPPORTED, StatusCode::UNPROCESSABLE_ENTITY),
+            (codes::VAULT_IN_USE, StatusCode::LOCKED),
+            (codes::CONFLICT, StatusCode::CONFLICT),
+            (codes::INVALID, StatusCode::BAD_REQUEST),
+            (codes::IO, StatusCode::INTERNAL_SERVER_ERROR),
+            (codes::SERDE, StatusCode::INTERNAL_SERVER_ERROR),
+            (codes::BACKEND, StatusCode::INTERNAL_SERVER_ERROR),
+            (codes::AGENT, StatusCode::BAD_GATEWAY),
+            (codes::BUSY, StatusCode::TOO_MANY_REQUESTS),
+            (codes::CONFIRM_REQUIRED, StatusCode::UNPROCESSABLE_ENTITY),
+            (codes::FORBIDDEN, StatusCode::FORBIDDEN),
+            (codes::INTERNAL, StatusCode::INTERNAL_SERVER_ERROR),
+            (codes::NETWORK, StatusCode::BAD_GATEWAY),
+            (codes::NOT_AN_IMAGE, StatusCode::UNPROCESSABLE_ENTITY),
+            (codes::PANIC, StatusCode::INTERNAL_SERVER_ERROR),
+            (codes::QUICK, StatusCode::BAD_GATEWAY),
+            (codes::RETRY, StatusCode::CONFLICT),
+            (codes::TOO_LARGE, StatusCode::PAYLOAD_TOO_LARGE),
+            (codes::UNKNOWN_COMMAND, StatusCode::NOT_FOUND),
+            (codes::UNKNOWN_TOOL, StatusCode::NOT_FOUND),
+            (codes::UNREADABLE, StatusCode::BAD_GATEWAY),
+        ];
+        // Every constant is in the table above, and the table has nothing
+        // beyond the constants -- so a code added to `codes::ALL` without a
+        // line here is caught, and so is a line here for a code that no
+        // longer exists.
+        assert_eq!(
+            expected.len(),
+            codes::ALL.len(),
+            "this table and `codes::ALL` have drifted apart"
+        );
+        for code in codes::ALL {
+            let (_, want) = expected
+                .iter()
+                .find(|(c, _)| c == code)
+                .unwrap_or_else(|| panic!("{code} is in `codes::ALL` but not in this table"));
+            assert_eq!(status_of(code), *want, "{code} did not map to the status this expects");
+        }
+    }
 }

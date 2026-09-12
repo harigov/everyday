@@ -114,8 +114,7 @@ async fn list_projects(
     _ctx: Ctx,
     _args: Nothing,
 ) -> CommandResult<Vec<Project>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.projects()?)).await
+    svc.on_vault(move |vault| vault.projects()).await
 }
 
 async fn new_project(svc: Arc<Service>, _ctx: Ctx, args: Named) -> CommandResult<Project> {
@@ -124,24 +123,20 @@ async fn new_project(svc: Arc<Service>, _ctx: Ctx, args: Named) -> CommandResult
 }
 
 async fn save_project(svc: Arc<Service>, _ctx: Ctx, args: SaveProject) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_project(&args.project)?)).await
+    svc.on_vault(move |vault| vault.save_project(&args.project)).await
 }
 
 /// Delete a project, its tasks and every block of time booked against them.
 async fn delete_project(svc: Arc<Service>, _ctx: Ctx, args: ProjectRef) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_project(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_project(args.id)).await
 }
 
 async fn list_tasks(svc: Arc<Service>, _ctx: Ctx, args: Tasks) -> CommandResult<Vec<Task>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.tasks(&args.query)?)).await
+    svc.on_vault(move |vault| vault.tasks(&args.query)).await
 }
 
 async fn get_task(svc: Arc<Service>, _ctx: Ctx, args: TaskRef) -> CommandResult<Task> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.task(args.id)?)).await
+    svc.on_vault(move |vault| vault.task(args.id)).await
 }
 
 /// Mint a task, without saving it.
@@ -159,26 +154,22 @@ async fn new_task(svc: Arc<Service>, _ctx: Ctx, args: NewTask) -> CommandResult<
 }
 
 async fn save_task(svc: Arc<Service>, _ctx: Ctx, args: SaveTask) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_task(&args.task)?)).await
+    svc.on_vault(move |vault| vault.save_task(&args.task)).await
 }
 
 /// Write several tasks at once. This is what dragging a card across a board is:
 /// two columns renumbered, which must land as one change or not at all.
 async fn save_tasks(svc: Arc<Service>, _ctx: Ctx, args: SaveTasks) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_tasks(&args.tasks)?)).await
+    svc.on_vault(move |vault| vault.save_tasks(&args.tasks)).await
 }
 
 /// Delete a task, its subtasks and their time blocks.
 async fn delete_task(svc: Arc<Service>, _ctx: Ctx, args: TaskRef) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_task(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_task(args.id)).await
 }
 
 async fn list_blocks(svc: Arc<Service>, _ctx: Ctx, args: Blocks) -> CommandResult<Vec<TimeBlock>> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.blocks(&args.query)?)).await
+    svc.on_vault(move |vault| vault.blocks(&args.query)).await
 }
 
 /// Mint a block of time, without saving it.
@@ -197,13 +188,11 @@ async fn new_block(svc: Arc<Service>, _ctx: Ctx, args: NewBlock) -> CommandResul
 }
 
 async fn save_block(svc: Arc<Service>, _ctx: Ctx, args: SaveBlock) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.save_block(&args.block)?)).await
+    svc.on_vault(move |vault| vault.save_block(&args.block)).await
 }
 
 async fn delete_block(svc: Arc<Service>, _ctx: Ctx, args: BlockRef) -> CommandResult<()> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.delete_block(args.id)?)).await
+    svc.on_vault(move |vault| vault.delete_block(args.id)).await
 }
 
 /// Every tag used anywhere in the task domain, most used first.
@@ -221,8 +210,7 @@ async fn task_tags(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResul
 /// webview, so that "overdue" is decided by the same code that decides which
 /// day an entry is filed under.
 async fn task_stats(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<TaskStats> {
-    let vault = svc.require()?;
-    blocking(move || Ok(vault.task_stats(today_local())?)).await
+    svc.on_vault(move |vault| vault.task_stats(today_local())).await
 }
 
 pub static COMMANDS: &[crate::command::Command] = &[

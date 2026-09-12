@@ -36,7 +36,7 @@
 use super::Nothing;
 use crate::command;
 use crate::ctx::Ctx;
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Change, Kind, Op};
 use crate::service::{Service, blocking};
 use crate::transfers::MAX_IMPORT;
@@ -198,11 +198,11 @@ async fn end_export(svc: Arc<Service>, _ctx: Ctx, args: Handle) -> CommandResult
 async fn start_import(svc: Arc<Service>, _ctx: Ctx, args: Incoming) -> CommandResult<ImportUpload> {
     svc.require_unlocked()?;
     if args.bytes == 0 {
-        return Err(CommandError::new("invalid", "that file is empty"));
+        return Err(CommandError::new(codes::INVALID, "that file is empty"));
     }
     if args.bytes > MAX_IMPORT {
         return Err(CommandError::new(
-            "invalid",
+            codes::INVALID,
             "that file is too large to read in one piece; `everyday import` on the \
              command line will take it",
         ));
@@ -218,7 +218,7 @@ async fn write_import(
 ) -> CommandResult<ImportProgress> {
     let chunk = base64::engine::general_purpose::STANDARD
         .decode(args.data.as_bytes())
-        .map_err(|e| CommandError::new("invalid", format!("that chunk is not base64: {e}")))?;
+        .map_err(|e| CommandError::new(codes::INVALID, format!("that chunk is not base64: {e}")))?;
     let transfers = svc.transfers();
     let bytes = transfers.write(&args.handle, args.offset, &chunk)?;
     Ok(ImportProgress { bytes, done: transfers.complete(&args.handle).is_ok() })
@@ -244,7 +244,7 @@ async fn read_import(svc: Arc<Service>, _ctx: Ctx, args: Handle) -> CommandResul
 async fn run_import(svc: Arc<Service>, ctx: Ctx, args: RunImport) -> CommandResult<ImportResult> {
     let vault = svc.require_unlocked()?;
     let mode = Mode::parse(&args.mode)
-        .ok_or_else(|| CommandError::new("invalid", format!("no such mode: {}", args.mode)))?;
+        .ok_or_else(|| CommandError::new(codes::INVALID, format!("no such mode: {}", args.mode)))?;
     let bytes = svc.transfers().complete(&args.handle)?;
     let parts = args.parts;
 
@@ -312,7 +312,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
         // client needs a new protocol on the day it does.
         sensitive: true,
         args: Choose, returns: "ExportHandle",
-        signature: &[("parts", "string[]", true), ("media", "boolean", true)],
+        signature: &[("parts", "string[]", false), ("media", "boolean", false)],
         run: start_export,
     },
     command! {
@@ -331,7 +331,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "start_import", scope: All, effect: Read,
         args: Incoming, returns: "ImportUpload",
-        signature: &[("name", "string", true), ("bytes", "number", true)],
+        signature: &[("name", "string", false), ("bytes", "number", true)],
         run: start_import,
     },
     command! {

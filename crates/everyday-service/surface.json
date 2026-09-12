@@ -958,7 +958,7 @@
       "args": [
         {
           "name": "query",
-          "required": true,
+          "required": false,
           "type": "NoteQuery"
         }
       ],
@@ -1036,7 +1036,7 @@
       "args": [
         {
           "name": "query",
-          "required": true,
+          "required": false,
           "type": "RunQuery"
         }
       ],
@@ -2794,12 +2794,12 @@
       "args": [
         {
           "name": "parts",
-          "required": true,
+          "required": false,
           "type": "string[]"
         },
         {
           "name": "media",
-          "required": true,
+          "required": false,
           "type": "boolean"
         }
       ],
@@ -2816,7 +2816,7 @@
       "args": [
         {
           "name": "name",
-          "required": true,
+          "required": false,
           "type": "string"
         },
         {

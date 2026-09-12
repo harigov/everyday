@@ -27,7 +27,7 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 
 /// Longest a single fetch may take, connection included.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -65,7 +65,7 @@ pub fn client() -> CommandResult<&'static reqwest::Client> {
                 .map_err(|e| e.to_string())
         })
         .as_ref()
-        .map_err(|e| CommandError::new("network", format!("could not start the fetcher: {e}")))
+        .map_err(|e| CommandError::new(codes::NETWORK, format!("could not start the fetcher: {e}")))
 }
 
 /// Read a response body, refusing to grow past `max_bytes`.
@@ -82,12 +82,12 @@ pub async fn read_capped(
     too_large: impl Fn() -> String,
 ) -> CommandResult<Vec<u8>> {
     if response.content_length().is_some_and(|n| n as usize > max_bytes) {
-        return Err(CommandError::new("too_large", too_large()));
+        return Err(CommandError::new(codes::TOO_LARGE, too_large()));
     }
     let mut body: Vec<u8> = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|e| transport(&e))? {
         if body.len() + chunk.len() > max_bytes {
-            return Err(CommandError::new("too_large", too_large()));
+            return Err(CommandError::new(codes::TOO_LARGE, too_large()));
         }
         body.extend_from_slice(&chunk);
     }
@@ -99,7 +99,7 @@ pub async fn read_capped(
 /// Callers with better words for their own situation should use those; this
 /// is the floor, and its job is the redaction rather than the phrasing.
 pub fn transport(e: &reqwest::Error) -> CommandError {
-    CommandError::new("network", format!("the request failed: {}", strip_url(&e.to_string())))
+    CommandError::new(codes::NETWORK, format!("the request failed: {}", strip_url(&e.to_string())))
 }
 
 /// Remove anything that looks like a URL from an error message.

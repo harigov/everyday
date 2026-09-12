@@ -173,13 +173,13 @@ export interface Commands {
   listKinds: { args: Record<string, never>; result: KindInfo[] }
   listLogs: { args: { query: LogQuery }; result: LogEntry[] }
   listMemories: { args: Record<string, never>; result: Memory[] }
-  listNotes: { args: { query: NoteQuery }; result: NoteSummary[] }
+  listNotes: { args: { query?: NoteQuery }; result: NoteSummary[] }
   listParts: { args: Record<string, never>; result: PartInfo[] }
   listProjects: { args: Record<string, never>; result: Project[] }
   listReadings: { args: { query: ReadingQuery }; result: Reading[] }
   listRoles: { args: Record<string, never>; result: RoleInfo[] }
   listRoutines: { args: Record<string, never>; result: RoutineInfo[] }
-  listRuns: { args: { query: RunQuery }; result: RoutineRun[] }
+  listRuns: { args: { query?: RunQuery }; result: RoutineRun[] }
   listTags: { args: Record<string, never>; result: string[] }
   listTasks: { args: { query: TaskQuery }; result: Task[] }
   listTools: { args: Record<string, never>; result: ToolInfo[] }
@@ -311,8 +311,8 @@ export interface Commands {
   }
   setItemStatus: { args: { id: ItemId; status: ItemStatus; log: boolean }; result: Item }
   setQuickJob: { args: { name: string; on: boolean }; result: QuickJobRow[] }
-  startExport: { args: { parts: string[]; media: boolean }; result: ExportHandle }
-  startImport: { args: { name: string; bytes: number }; result: ImportUpload }
+  startExport: { args: { parts?: string[]; media?: boolean }; result: ExportHandle }
+  startImport: { args: { name?: string; bytes: number }; result: ImportUpload }
   status: { args: Record<string, never>; result: VaultStatus }
   subscribeCalendar: { args: { name: string; url: string; color: string }; result: CalendarInfo }
   syncCalendar: { args: { id: CalendarId }; result: SyncReport }

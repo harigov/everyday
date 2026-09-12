@@ -20,9 +20,11 @@
 
 use std::path::PathBuf;
 
-use everyday_core::agent::tools::{self, Effect, Sensitivity};
+use everyday_core::agent::tools::{self, Sensitivity};
+use everyday_service::command::effect_name;
 use everyday_service::domains::meta::{scope_of, title_of};
 
+#[allow(dead_code)]
 mod support;
 
 fn snapshot_path() -> PathBuf {
@@ -34,14 +36,6 @@ fn snapshot_path() -> PathBuf {
 /// own, because nothing inside `everyday-core` needed one until now.
 fn domain_name(domain: tools::Domain) -> String {
     format!("{domain:?}").to_lowercase()
-}
-
-fn effect_name(effect: Effect) -> &'static str {
-    match effect {
-        Effect::Read => "read",
-        Effect::Write => "write",
-        Effect::Destructive => "destructive",
-    }
 }
 
 fn sensitivity_name(sensitivity: Sensitivity) -> &'static str {

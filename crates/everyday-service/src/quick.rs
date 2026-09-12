@@ -47,12 +47,11 @@ use rig_agent::AgentBuilder;
 use rig_agent::agent::OutputMode;
 use rig_agent::core::client::completion::CompletionClient;
 use rig_agent::core::message::ToolChoice;
-use rig_agent::core::providers::openai;
 use rig_agent::core::tool::{PortableDynamicTool, ToolOutput};
 use rig_agent::prelude::*;
 use serde_json::{Value, json};
 
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 
 /// How long a quick job may take before it is abandoned.
 ///
@@ -79,20 +78,14 @@ const SUBMIT: &str = "submit";
 pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value> {
     let (settings, key) = vault
         .quick_credentials(&prompt.job)
-        .map_err(|e| CommandError::new("quick", e.to_string()))?;
+        .map_err(|e| CommandError::new(codes::QUICK, e.to_string()))?;
     let model = settings
         .quick_model
         .clone()
-        .ok_or_else(|| CommandError::new("quick", "no quick model is configured"))?;
+        .ok_or_else(|| CommandError::new(codes::QUICK, "no quick model is configured"))?;
 
-    let client = openai::CompletionsClient::builder()
-        .base_url(settings.provider_config.endpoint())
-        // A local endpoint needs no credential and is usually configured
-        // without one; an empty bearer rather than no bearer, for the reason
-        // `agent::build` gives.
-        .api_key::<rig_agent::core::client::BearerAuth>(key.unwrap_or_default())
-        .build()
-        .map_err(|e| CommandError::new("quick", format!("could not reach the model: {e}")))?;
+    let client = crate::llm::client(&settings.provider_config, key)
+        .map_err(|e| CommandError::new(codes::QUICK, format!("could not reach the model: {e}")))?;
 
     // The answer arrives as the arguments of the tool call rather than as
     // prose, which is the whole point: there is no fenced block to find, no
@@ -118,7 +111,7 @@ pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value>
         },
     );
 
-    let mut builder = AgentBuilder::new(client.completion_model(&model.model))
+    let builder = AgentBuilder::new(client.completion_model(&model.model))
         .preamble(&format!(
             "{}\n\nCall the `submit` function with your answer. Call it even when \
              the answer is empty — an empty answer is a real answer here, and \
@@ -128,12 +121,7 @@ pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value>
         .default_max_turns(MAX_TURNS)
         .tool_choice(ToolChoice::Required)
         .output_mode(OutputMode::Tool);
-    if let Some(t) = model.temperature {
-        builder = builder.temperature(t);
-    }
-    if let Some(m) = model.max_tokens {
-        builder = builder.max_tokens(u64::from(m));
-    }
+    let builder = crate::llm::configure(builder, &model);
     // Registering the tool last: the builder is a typestate and this is the
     // move from "no tools" to "tools", so everything set by `if let` has to
     // happen while the type is still the first one.
@@ -149,12 +137,12 @@ pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value>
         // way, so the answer is checked before the error is believed.
         Ok(Err(e)) => {
             if answer.lock().expect("not poisoned").is_none() {
-                return Err(CommandError::new("quick", format!("the quick model failed: {e}")));
+                return Err(CommandError::new(codes::QUICK, crate::llm::friendly(&e.to_string())));
             }
         }
         Err(_) => {
             return Err(CommandError::new(
-                "quick",
+                codes::QUICK,
                 format!("the quick model took longer than {}s", TIMEOUT.as_secs()),
             ));
         }
@@ -164,5 +152,5 @@ pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value>
         .lock()
         .expect("the quick answer slot is never poisoned")
         .take()
-        .ok_or_else(|| CommandError::new("quick", "the quick model did not answer"))
+        .ok_or_else(|| CommandError::new(codes::QUICK, "the quick model did not answer"))
 }

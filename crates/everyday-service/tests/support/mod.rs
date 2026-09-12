@@ -1,23 +1,21 @@
-//! Comparing a committed snapshot against what the code says today.
+//! Test fixtures shared across this crate's integration tests.
 //!
-//! Two snapshots are kept in this crate -- `surface.json`, the command table
-//! every client is generated from, and `mcp.json`, the tool catalogue an MCP
-//! client and a model read -- and they want the same three things: write the
-//! file when the environment says to, compare it when it does not, and fail
-//! with a message that says how to accept the change rather than merely that
-//! something differs.
-//!
-//! It lives in a module rather than being written twice because the second
-//! copy is where the drift starts: a better diff, a different environment
-//! variable, or a decision about what a missing file means would otherwise
-//! have to be made twice and would silently stop being the same rule.
+//! Two unrelated things live here for the same reason: each is something
+//! more than one test file built by hand before this existed, and a second
+//! copy is where the drift starts. [`compare`] writes or checks a committed
+//! snapshot -- `surface.json`, the command table every client is generated
+//! from, and `mcp.json`, the tool catalogue an MCP client and a model read --
+//! and [`vault::service`] builds a vault to run commands against, which
+//! `tests/call.rs` and `tests/transfer.rs` both need and neither is about.
 //!
 //! Rust compiles every file in `tests/` as its own binary, so this is shared
 //! by `mod support;` in each of them rather than by being importable. That is
-//! also why it carries `#![allow(dead_code)]` in effect: a binary that uses
-//! only part of it would otherwise warn about the rest.
+//! also why each of those declarations carries `#[allow(dead_code)]`: no one
+//! binary uses all of both halves, and the other half would otherwise warn.
 
 use std::path::Path;
+
+pub mod vault;
 
 /// The environment variable that turns a comparison into an update.
 ///

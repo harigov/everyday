@@ -23,7 +23,7 @@
 //! line writes straight to disk with no ceiling at all for the vault where
 //! that is not enough.
 
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
@@ -77,7 +77,7 @@ impl Transfers {
         let mut held = self.held.write().unwrap();
         if held.len() >= MAX_IN_FLIGHT {
             return Err(CommandError::new(
-                "busy",
+                codes::BUSY,
                 "too many transfers are already in progress; finish or cancel one first",
             ));
         }
@@ -117,13 +117,13 @@ impl Transfers {
             entry.bytes.extend_from_slice(chunk);
         } else if offset + chunk.len() as u64 > at {
             return Err(CommandError::new(
-                "invalid",
+                codes::INVALID,
                 format!("this file's parts arrived out of order: expected {at}, got {offset}"),
             ));
         }
         if entry.bytes.len() as u64 > entry.expected {
             return Err(CommandError::new(
-                "invalid",
+                codes::INVALID,
                 "more of this file arrived than was promised",
             ));
         }
@@ -135,7 +135,7 @@ impl Transfers {
         self.with(handle, |held| {
             if (held.bytes.len() as u64) < held.expected {
                 return Err(CommandError::new(
-                    "invalid",
+                    codes::INVALID,
                     format!(
                         "only {} of {} bytes of this file have arrived",
                         held.bytes.len(),
@@ -195,7 +195,7 @@ impl Transfers {
 
 fn gone() -> CommandError {
     CommandError::new(
-        "not_found",
+        codes::NOT_FOUND,
         "that transfer is no longer in progress -- it may have finished, been cancelled, \
          or been dropped when the vault locked",
     )
