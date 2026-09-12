@@ -122,11 +122,37 @@ fn context(settings: &AgentSettings) -> QuickContext {
 /// parse the answer.
 ///
 /// The shape every command here has. `prep` runs on the blocking pool
-/// because it touches the store; the request does not.
+/// because it touches the store; the request does not. A thin shell over
+/// [`ask_extra`] for the common case, which is every command that has
+/// nothing else to say about what it read.
 async fn ask<T, P>(svc: &Arc<Service>, ctx: &Ctx, job: &str, prep: P) -> CommandResult<T>
 where
     T: serde::de::DeserializeOwned,
     P: FnOnce(&Vault, &QuickContext) -> CommandResult<quick::Prompt> + Send + 'static,
+{
+    let (answer, ()) =
+        ask_extra(svc, ctx, job, move |vault, qctx| Ok((prep(vault, qctx)?, ()))).await?;
+    Ok(answer)
+}
+
+/// `ask`, when `prep` has something else worth keeping from the same read.
+///
+/// `quick_entry_labels`, `quick_note_labels` and `quick_import_columns` each
+/// used to read a record inside `prep` to build the prompt, then read the
+/// same record again afterwards -- in a `blocking` call of their own -- for
+/// one field off it: an entry's tags, a note's tags, a kind's own column
+/// names. `prep` here hands both back from the one read, so the second trip
+/// to the store is a value already sitting in a local instead.
+async fn ask_extra<T, E, P>(
+    svc: &Arc<Service>,
+    ctx: &Ctx,
+    job: &str,
+    prep: P,
+) -> CommandResult<(T, E)>
+where
+    T: serde::de::DeserializeOwned,
+    E: Send + 'static,
+    P: FnOnce(&Vault, &QuickContext) -> CommandResult<(quick::Prompt, E)> + Send + 'static,
 {
     // Declared by every command as its scope too; checked here as well
     // because `ask` is the only path to the socket and a check that lives
@@ -138,7 +164,7 @@ where
         ));
     }
     let vault = svc.require()?;
-    let prompt = {
+    let (prompt, extra) = {
         let vault = vault.clone();
         blocking(move || {
             let settings = vault.agent_settings()?;
@@ -149,7 +175,39 @@ where
     };
     let job = job.to_string();
     let raw = crate::quick::run(vault, prompt).await?;
-    quick::parse(&job, raw).map_err(|e| CommandError::new(codes::QUICK, e.to_string()))
+    let answer =
+        quick::parse(&job, raw).map_err(|e| CommandError::new(codes::QUICK, e.to_string()))?;
+    Ok((answer, extra))
+}
+
+/// Ask the quick model to choose a purpose and tags, and assemble the
+/// answer into [`Labels`].
+///
+/// The tail every one of `quick_task_labels`, `quick_entry_labels` and
+/// `quick_note_labels` shares once the model has answered: clamp the tags
+/// against whatever the record already carries -- empty for a task, which
+/// has none yet -- and resolve the answer's one-based choice back through
+/// `roles` and `goals`. `prep` is the one thing that differs between the
+/// three: which prompt to build, and, for the two with a record to read,
+/// its tags -- read in the same trip `prep` builds the prompt from, through
+/// [`ask_extra`], rather than a second one afterwards just to re-read them.
+async fn labels_for<P>(
+    svc: &Arc<Service>,
+    ctx: &Ctx,
+    job: &str,
+    roles: &[Role],
+    goals: &[Goal],
+    prep: P,
+) -> CommandResult<Labels>
+where
+    P: FnOnce(&Vault, &QuickContext) -> CommandResult<(quick::Prompt, Vec<String>)>
+        + Send
+        + 'static,
+{
+    let (mut answer, existing): (quick::LabelsAnswer, Vec<String>) =
+        ask_extra(svc, ctx, job, prep).await?;
+    answer.clamp(&existing);
+    Ok(Labels { purpose: purpose_at(roles, goals, answer.purpose), tags: answer.tags })
 }
 
 /// The roles and goals a purpose suggestion chooses between, in the order the
@@ -345,23 +403,19 @@ async fn quick_import_columns(
     args: ImportColumns,
 ) -> CommandResult<quick::MappingAnswer> {
     let ImportColumns { kind_id, columns, sample } = args;
-    let (their_columns, kind_id2) = (columns.clone(), kind_id);
-    let mut answer: quick::MappingAnswer =
-        ask(&svc, &ctx, "library.import_map", move |vault, qctx| {
-            let kind = vault.kind(kind_id2)?;
-            Ok(quick::library_import_map(qctx, &kind, &columns, &sample))
+    let their_columns = columns.clone();
+    let (mut answer, ours): (quick::MappingAnswer, Vec<String>) =
+        ask_extra(&svc, &ctx, "library.import_map", move |vault, qctx| {
+            let kind = vault.kind(kind_id)?;
+            let prompt = quick::library_import_map(qctx, &kind, &columns, &sample);
+            let ours = ["title", "subtitle", "creator", "year"]
+                .iter()
+                .map(|s| s.to_string())
+                .chain(kind.fields.iter().map(|f| f.key.clone()))
+                .collect();
+            Ok((prompt, ours))
         })
         .await?;
-    let vault = svc.require()?;
-    let ours: Vec<String> = blocking(move || {
-        let kind = vault.kind(kind_id)?;
-        Ok(["title", "subtitle", "creator", "year"]
-            .iter()
-            .map(|s| s.to_string())
-            .chain(kind.fields.iter().map(|f| f.key.clone()))
-            .collect())
-    })
-    .await?;
     answer.clamp(&ours, &their_columns);
     Ok(answer)
 }
@@ -400,13 +454,13 @@ async fn quick_task_labels(svc: Arc<Service>, ctx: Ctx, args: Title) -> CommandR
     }
     let (r, g) = (roles.clone(), goals.clone());
     let title = args.title;
-    let mut answer: quick::LabelsAnswer = ask(&svc, &ctx, "todo.purpose", move |vault, qctx| {
+    // No record yet, so no existing tags to clamp against -- a task being
+    // captured has not been saved, let alone tagged.
+    labels_for(&svc, &ctx, "todo.purpose", &roles, &goals, move |vault, qctx| {
         let tags = known_tags(vault.task_tags());
-        Ok(quick::todo_purpose(qctx, &title, &r, &g, &tags))
+        Ok((quick::todo_purpose(qctx, &title, &r, &g, &tags), Vec::new()))
     })
-    .await?;
-    answer.clamp(&[]);
-    Ok(Labels { purpose: purpose_at(&roles, &goals, answer.purpose), tags: answer.tags })
+    .await
 }
 
 /// T2 — the line the sigil grammar could not read.
@@ -555,18 +609,13 @@ async fn quick_entry_labels(svc: Arc<Service>, ctx: Ctx, args: EntryRef) -> Comm
         blocking(move || purposes(&vault)).await?
     };
     let (r, g, id) = (roles.clone(), goals.clone(), args.entry_id);
-    let mut answer: quick::LabelsAnswer = ask(&svc, &ctx, "journal.labels", move |vault, qctx| {
+    labels_for(&svc, &ctx, "journal.labels", &roles, &goals, move |vault, qctx| {
         let entry = vault.entry(id)?;
         let tags = known_tags(vault.entry_tags());
-        Ok(quick::journal_labels(qctx, &entry.body.plain_text(), &r, &g, &tags))
+        let prompt = quick::journal_labels(qctx, &entry.body.plain_text(), &r, &g, &tags);
+        Ok((prompt, entry.tags))
     })
-    .await?;
-    let existing = {
-        let vault = svc.require()?;
-        blocking(move || Ok(vault.entry(id)?.tags)).await?
-    };
-    answer.clamp(&existing);
-    Ok(Labels { purpose: purpose_at(&roles, &goals, answer.purpose), tags: answer.tags })
+    .await
 }
 
 // ── Notes ────────────────────────────────────────────────────────────────
@@ -612,18 +661,13 @@ async fn quick_note_labels(svc: Arc<Service>, ctx: Ctx, args: NoteRef) -> Comman
         blocking(move || purposes(&vault)).await?
     };
     let (r, g, id) = (roles.clone(), goals.clone(), args.note_id);
-    let mut answer: quick::LabelsAnswer = ask(&svc, &ctx, "notes.labels", move |vault, qctx| {
+    labels_for(&svc, &ctx, "notes.labels", &roles, &goals, move |vault, qctx| {
         let note = vault.note(id)?;
         let tags = known_tags(vault.note_tags());
-        Ok(quick::notes_labels(qctx, &note.body.plain_text(), &r, &g, &tags))
+        let prompt = quick::notes_labels(qctx, &note.body.plain_text(), &r, &g, &tags);
+        Ok((prompt, note.tags))
     })
-    .await?;
-    let existing = {
-        let vault = svc.require()?;
-        blocking(move || Ok(vault.note(id)?.tags)).await?
-    };
-    answer.clamp(&existing);
-    Ok(Labels { purpose: purpose_at(&roles, &goals, answer.purpose), tags: answer.tags })
+    .await
 }
 
 // ── Tracking ─────────────────────────────────────────────────────────────
