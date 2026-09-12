@@ -12,7 +12,8 @@
 
 import { api } from './api'
 import { parseQuickTrack } from './quicktrack'
-import { app, handle, isLocked } from './state.svelte'
+import { app, handle, isLocked, quietly } from './state.svelte'
+import { latest } from './store/latest'
 import { todayIso } from './time'
 import type {
   EntryId,
@@ -41,10 +42,10 @@ class TrackingState {
   }
 
   #loaded = false
-  #generation = 0
+  #generation = latest()
 
   reset() {
-    this.#generation += 1
+    this.#generation.next()
     this.trackers = []
     this.readings = []
     this.#key = ''
@@ -64,10 +65,10 @@ class TrackingState {
   async load(force = false) {
     if (!this.enabled) return
     if (this.#loaded && !force) return
-    const mine = ++this.#generation
+    const mine = this.#generation.next()
     try {
       const all = await api.trackers()
-      if (mine !== this.#generation) return
+      if (!this.#generation.isCurrent(mine)) return
       this.trackers = all
       this.#loaded = true
     } catch (e) {
@@ -399,7 +400,7 @@ class TrackingState {
     try {
       return await api.trackerDays(opts)
     } catch (e) {
-      if (isLocked(e)) await app.lock()
+      await quietly(e)
       return []
     }
   }

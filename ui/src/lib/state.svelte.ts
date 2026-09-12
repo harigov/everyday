@@ -7,7 +7,11 @@
 import { tick } from 'svelte'
 import { api, isMock, newRequestId } from './api'
 import { AUTOSAVE_MS } from './autosave'
+import { errorMessage, handle, isConflict, isLocked, quietly } from './errors'
 import { notify } from './notify.svelte'
+import { pref } from './prefs'
+import { debounce } from './store/debounce'
+import { DocBinding } from './store/doc-binding'
 import { todayIso } from './time'
 import type {
   Bootstrap,
@@ -22,7 +26,11 @@ import type {
   EntryHit,
   VaultStatus,
 } from './types'
-import { VaultError } from './types'
+
+// `errors.ts` holds the actual definitions now -- see it for why. Re-exported
+// so every store that already writes `import { handle, isLocked } from
+// './state.svelte'` keeps working unchanged.
+export { errorMessage, handle, isConflict, isLocked, quietly } from './errors'
 
 /**
  * How often the machine holding the vault is asked whether it has given up
@@ -69,62 +77,23 @@ export const SECTIONS = [
 ] as const
 export type Section = (typeof SECTIONS)[number]
 
-/**
- * Was this the vault locking under us rather than a fault?
- *
- * Nearly every caller wants `handle` below instead. This is exported for
- * the handful that deliberately do something else with the distinction --
- * a background refresh that swallows everything, or a dialog that returns
- * its message instead of posting it over the window.
- */
-export function isLocked(e: unknown): boolean {
-  return e instanceof VaultError && e.code === 'locked'
-}
+export type Theme = 'light' | 'dark' | 'system'
 
-/**
- * Was this save refused because the entry changed elsewhere?
- *
- * Distinct from a failure: nothing is wrong, two people (or two processes)
- * simply wrote the same entry, and the interface has to ask rather than
- * pick a winner.
- */
-export function isConflict(e: unknown): boolean {
-  return e instanceof VaultError && e.code === 'conflict'
+// Unvalidated, matching what this read has always done: a value nobody but
+// this interface writes, cast rather than checked, with `system` standing in
+// only for "nothing was there". Named rather than inlined into `themePref`
+// below, because `start` also runs it against a `?theme=` override that has
+// not been through `localStorage` at all.
+function parseTheme(raw: string | null): Theme {
+  return (raw as Theme | null) ?? 'system'
 }
+const themePref = pref<Theme>('everyday.theme', parseTheme, 'system')
 
-export function errorMessage(e: unknown): string {
-  if (e instanceof VaultError) return e.message
-  if (e instanceof Error) return e.message
-  return String(e)
+/** Same reason `parseTheme` is named: `start` also runs a `?section=` override through it. */
+function parseSection(raw: string | null): Section | null {
+  return SECTIONS.includes(raw as Section) ? (raw as Section) : null
 }
-
-/**
- * What every store does when a call into the vault fails.
- *
- * There is one policy and it is this: a vault that locked under us is not an
- * error to report, it is a screen to go to -- the auto-lock can fire in the
- * middle of any call, and telling somebody "locked" in red at the top of the
- * window they are about to be taken away from is noise. Anything else is
- * worth saying.
- *
- * It lives here, beside `app`, and not as a copy in each store. This idiom
- * was written out twenty-six times across the three stores, with three
- * separate definitions of `isLocked` and several methods that had simply
- * forgotten to check -- so a lock during those produced an unhandled
- * rejection instead of the lock screen. The next store to be added gets the
- * behaviour by calling this rather than by remembering to copy it.
- *
- * `revert` re-reads whatever the caller had already changed optimistically,
- * for the writes that update the screen before the disk.
- */
-export async function handle(e: unknown, revert?: () => Promise<unknown>): Promise<void> {
-  if (isLocked(e)) {
-    await app.lock()
-    return
-  }
-  app.error = errorMessage(e)
-  if (revert) await revert()
-}
+const sectionPref = pref<Section | null>('everyday.section', parseSection, null)
 
 class AppState {
   screen = $state<Screen>('loading')
@@ -243,7 +212,8 @@ class AppState {
    * `null` whenever the text changes.
    */
   #writeStamp: { updatedAt: string; requestId: string } | null = null
-  #searchTimer: ReturnType<typeof setTimeout> | null = null
+  /** The journal search box's debounce. See `setQuery`. */
+  #search = debounce((q: string) => void this.#runSearch(q), 140)
   #lockTimer: ReturnType<typeof setInterval> | null = null
   #screenTimer: ReturnType<typeof setInterval> | null = null
   /** When this window last saw a person. Drives the screen timeout. */
@@ -271,9 +241,10 @@ class AppState {
    * serialised JSON into `entry.body` on every keystroke meant walking and
    * copying the whole document per character, and -- because `entry` is deep
    * reactive state -- waking every effect that touches the open entry. The
-   * body is pulled once, at save time, instead.
+   * body is pulled once, at save time, instead. See `DocBinding`; the notes
+   * app has its own copy of this same slot, for its own editor.
    */
-  #bodySource: (() => Entry['body']) | null = null
+  #body = new DocBinding<Entry['body']>()
 
   // ── lifecycle ────────────────────────────────────────────────────────
 
@@ -281,18 +252,13 @@ class AppState {
     // A mock build accepts `?theme=` so the interface can be reviewed in a
     // fixed theme without clicking through to Settings first.
     const forced = isMock ? new URLSearchParams(location.search).get('theme') : null
-    this.theme =
-      (forced as typeof this.theme | null) ??
-      (localStorage.getItem('everyday.theme') as typeof this.theme) ??
-      'system'
+    this.theme = parseTheme(forced ?? localStorage.getItem('everyday.theme'))
     this.applyTheme()
     // `?section=` alongside `?theme=`, and for the same reason: so the
     // interface can be opened straight to the app under review.
     const asked = isMock ? new URLSearchParams(location.search).get('section') : null
-    const remembered = asked ?? localStorage.getItem('everyday.section')
-    if (SECTIONS.includes(remembered as Section)) {
-      this.section = remembered as Section
-    }
+    const section = parseSection(asked ?? localStorage.getItem('everyday.section'))
+    if (section) this.section = section
     try {
       const boot = await api.bootstrap()
       this.boot = boot
@@ -549,7 +515,7 @@ class AppState {
   setSection(section: Section) {
     if (!this.canShow(section)) return
     this.section = section
-    localStorage.setItem('everyday.section', section)
+    sectionPref.set(section)
   }
 
   /**
@@ -594,7 +560,7 @@ class AppState {
     const el = document.documentElement
     if (this.theme === 'system') el.removeAttribute('data-theme')
     else el.setAttribute('data-theme', this.theme)
-    localStorage.setItem('everyday.theme', this.theme)
+    themePref.set(this.theme)
   }
 
   setTheme(t: typeof this.theme) {
@@ -807,12 +773,13 @@ class AppState {
 
   /** Register (or with `null`, retire) the editor's document getter. */
   bindBody(fn: (() => Entry['body']) | null) {
-    this.#bodySource = fn
+    this.#body.bind(fn)
   }
 
   /** Pull the editor's current document into state. Cheap enough per save. */
   syncBody() {
-    if (this.entry && this.#bodySource) this.entry.body = this.#bodySource()
+    const body = this.#body.read()
+    if (this.entry && body !== undefined) this.entry.body = body
   }
 
   // ── journals ─────────────────────────────────────────────────────────
@@ -1327,7 +1294,7 @@ class AppState {
     } catch (e) {
       // Not worth a message over the window: the calendar is an aid beside
       // the list, and the list is the thing that has to be right.
-      if (isLocked(e)) await app.lock()
+      await quietly(e)
     }
     return out
   }
@@ -1337,36 +1304,37 @@ class AppState {
   /** Debounced, so typing does not fire a query per keystroke. */
   setQuery(q: string) {
     this.query = q
-    if (this.#searchTimer) clearTimeout(this.#searchTimer)
     if (!q.trim()) {
+      this.#search.cancel()
       this.results = []
       this.searching = false
       return
     }
     this.searching = true
-    this.#searchTimer = setTimeout(async () => {
-      try {
-        // Entries only. This box is the journal's, and quietly mixing notes
-        // into a list whose rows carry a journal colour and a date would be
-        // answering a question nobody asked. Narrowed here rather than cast
-        // at the drawing end, so the rows genuinely have the fields they use.
-        const hits = await api.search(q, this.selectedJournal, 50, 'entry')
-        this.results = hits.filter((h): h is EntryHit => h.type === 'entry')
-      } catch (e) {
-        await handle(e)
-      } finally {
-        this.searching = false
-      }
-    }, 140)
+    this.#search.call(q)
+  }
+
+  async #runSearch(q: string) {
+    try {
+      // Entries only. This box is the journal's, and quietly mixing notes
+      // into a list whose rows carry a journal colour and a date would be
+      // answering a question nobody asked. Narrowed here rather than cast
+      // at the drawing end, so the rows genuinely have the fields they use.
+      const hits = await api.search(q, this.selectedJournal, 50, 'entry')
+      this.results = hits.filter((h): h is EntryHit => h.type === 'entry')
+    } catch (e) {
+      await handle(e)
+    } finally {
+      this.searching = false
+    }
   }
 
   clearSearch() {
-    // The pending query goes too. `setQuery` leaves a timer armed against
-    // the text as it was, so clearing without this let a search typed a
-    // moment ago land afterwards and refill a list that had been emptied on
-    // purpose -- results for a query no longer in the box.
-    if (this.#searchTimer) clearTimeout(this.#searchTimer)
-    this.#searchTimer = null
+    // The pending query goes too. Without this a search typed a moment ago,
+    // still waiting on `#search`'s timer, lands afterwards and refills a
+    // list that had been emptied on purpose -- results for a query no
+    // longer in the box.
+    this.#search.cancel()
     this.query = ''
     this.results = []
     this.searching = false

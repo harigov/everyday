@@ -763,19 +763,30 @@ export const ACTIONS: (Binding & { group: Group })[] = [
   },
 ]
 
-/** What "the next thing" means in the app that is open. */
-function create() {
-  if (app.section === 'assistant') void assistant.draft()
-  else if (app.section === 'notes') void notes.create()
+/**
+ * What "the next thing" means in the app that is open.
+ *
+ * A table keyed by `Section`, the same shape `App.svelte`'s `ACCENTS` uses
+ * and for the same reason: this used to be an `if`/`else` chain with the
+ * journal on the end of it, so a new app that forgot to add a clause did not
+ * fail to compile, it silently opened a fresh journal entry instead -- the
+ * one answer that is right nowhere else. This does not compile until the
+ * new app says what its own "next thing" is.
+ */
+const CREATE: Record<Section, () => unknown> = {
+  journal: () => app.newEntry(),
+  notes: () => notes.create(),
   // The goals pane has no task line to put a cursor in, and the next thing
   // somebody wants there is a goal.
-  else if (app.section === 'todo') {
-    if (todo.showingGoals) focusNewGoal()
-    else todo.focusCapture()
-  } else if (app.section === 'calendar') void calendar.bookNow()
-  else if (app.section === 'library') library.focusCapture()
-  else if (app.section === 'overview') overview.wantsLog = true
-  else void app.newEntry()
+  todo: () => (todo.showingGoals ? focusNewGoal() : todo.focusCapture()),
+  calendar: () => calendar.bookNow(),
+  library: () => library.focusCapture(),
+  overview: () => (overview.wantsLog = true),
+  assistant: () => assistant.draft(),
+}
+
+function create() {
+  void CREATE[app.section]()
 }
 
 /**

@@ -3,6 +3,7 @@
   import { dayNumber, groupLabel, plural, weekdayShort } from '../lib/format'
   import { mediaUrl } from '../lib/api'
   import { menu } from '../lib/menu.svelte'
+  import { onOffPref } from '../lib/prefs'
   import { rovingFocus } from '../lib/roving'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { purposeItems } from '../lib/menus'
@@ -14,6 +15,8 @@
 
   let pendingDelete = $state<{ id: EntryId; title: string } | null>(null)
 
+  const showCalendarPref = onOffPref('everyday.journal.calendar')
+
   /**
    * Whether the month is showing above the list.
    *
@@ -21,10 +24,10 @@
    * navigates by date wants it there every time, and somebody who reads down
    * the list wants the height back.
    */
-  let showCalendar = $state(localStorage.getItem('everyday.journal.calendar') !== 'off')
+  let showCalendar = $state(showCalendarPref.get())
   function toggleCalendar() {
     showCalendar = !showCalendar
-    localStorage.setItem('everyday.journal.calendar', showCalendar ? 'on' : 'off')
+    showCalendarPref.set(showCalendar)
   }
 
   async function remove() {

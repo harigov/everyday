@@ -17,6 +17,9 @@
 import { api, newRequestId } from './api'
 import { Autosave } from './autosave'
 import { app, handle, isConflict, isLocked } from './state.svelte'
+import { debounce } from './store/debounce'
+import { DocBinding } from './store/doc-binding'
+import { latest } from './store/latest'
 import type { Note, NoteHit, NoteId, NoteSort, NoteSummary } from './types'
 
 /** How many notes a list loads at once. A drawer, not a database. */
@@ -71,9 +74,12 @@ class NotesState {
    * record holds the older version.
    */
   #stamp: string | null = null
-  #searchTimer: ReturnType<typeof setTimeout> | null = null
+  /** The search box's debounce. See `setQuery`. */
+  #search = debounce((q: string) => void this.#runSearch(q), 140)
   /** How to ask the editor for its document. See `bindBody`. */
-  #bodySource: (() => Note['body']) | null = null
+  #body = new DocBinding<Note['body']>()
+  /** Which load is the current one. See `refresh`. */
+  #generation = latest()
 
   #saver = new Autosave<NoteId>(async () => {
     const note = this.open
@@ -125,6 +131,8 @@ class NotesState {
   }
 
   reset() {
+    // Nothing loaded before the lock may land after it.
+    this.#generation.next()
     this.list = []
     this.open = null
     this.selected = null
@@ -153,16 +161,27 @@ class NotesState {
     }
   }
 
-  /** Reload the list without the loading state, after a write. */
+  /**
+   * Reload the list without the loading state, after a write.
+   *
+   * Generation-guarded like the todo and library lists: switching the tag
+   * filter twice in quick succession put two of these in the air at once,
+   * and nothing here stopped the older answer from landing last and sitting
+   * on screen showing the wrong tag's notes.
+   */
   async refresh() {
     if (!app.supportsNotes) return
+    const generation = this.#generation.next()
     try {
-      this.list = await api.notes({
+      const list = await api.notes({
         tags: this.tag ? [this.tag] : [],
         sort: this.sort,
         limit: PAGE,
       })
-      this.tags = await api.noteTags()
+      const tags = await api.noteTags()
+      if (!this.#generation.isCurrent(generation)) return
+      this.list = list
+      this.tags = tags
     } catch (e) {
       if (isLocked(e)) return
       await handle(e)
@@ -247,7 +266,7 @@ class NotesState {
    * So the store keeps a way to *ask* instead, and asks once per save.
    */
   bindBody(fn: (() => Note['body']) | null) {
-    this.#bodySource = fn
+    this.#body.bind(fn)
   }
 
   /**
@@ -257,7 +276,8 @@ class NotesState {
    * what makes it safe for the note in memory to lag the caret in between.
    */
   syncBody() {
-    if (this.open && this.#bodySource) this.open.body = this.#bodySource()
+    const body = this.#body.read()
+    if (this.open && body !== undefined) this.open.body = body
   }
 
   /** Called by the editor on every change. The document is left where it is. */
@@ -345,33 +365,33 @@ class NotesState {
 
   setQuery(q: string) {
     this.query = q
-    if (this.#searchTimer) clearTimeout(this.#searchTimer)
-    this.#searchTimer = null
     if (!q.trim()) {
+      this.#search.cancel()
       this.results = []
       this.searching = false
       return
     }
     this.searching = true
-    this.#searchTimer = setTimeout(async () => {
-      try {
-        const hits = await api.search(q, null, 50, 'note')
-        // Narrowed rather than cast: the rows drawn from this have to
-        // genuinely carry the fields they read.
-        this.results = hits.filter((h): h is NoteHit => h.type === 'note')
-      } catch (e) {
-        await handle(e)
-      } finally {
-        this.searching = false
-      }
-    }, 140)
+    this.#search.call(q)
+  }
+
+  async #runSearch(q: string) {
+    try {
+      const hits = await api.search(q, null, 50, 'note')
+      // Narrowed rather than cast: the rows drawn from this have to
+      // genuinely carry the fields they read.
+      this.results = hits.filter((h): h is NoteHit => h.type === 'note')
+    } catch (e) {
+      await handle(e)
+    } finally {
+      this.searching = false
+    }
   }
 
   clearSearch() {
     // The armed timer goes too, or a search typed a moment ago lands after
     // the box was emptied and refills a list that was cleared on purpose.
-    if (this.#searchTimer) clearTimeout(this.#searchTimer)
-    this.#searchTimer = null
+    this.#search.cancel()
     this.query = ''
     this.results = []
     this.searching = false

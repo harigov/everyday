@@ -16,6 +16,7 @@
   import { rovingFocus } from '../lib/roving'
   import type { TaskNode } from '../lib/todo.svelte'
   import type { Task } from '../lib/types'
+  import { priorityRank } from '../lib/types'
 
   const STATUS_LABELS: Record<string, string> = {
     backlog: 'Backlog',
@@ -101,7 +102,7 @@
           label: PRIORITY_LABELS[key] ?? key,
           // Most important first, and "unprioritised" at the bottom rather
           // than at the top where `none` would otherwise sort.
-          order: key === 'none' ? 9 : 4 - todo.rank(key),
+          order: key === 'none' ? 9 : 4 - priorityRank(key),
         }
       }
       const group = out.get(bucket.key) ?? { ...bucket, nodes: [] }

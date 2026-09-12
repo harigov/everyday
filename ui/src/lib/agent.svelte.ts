@@ -14,10 +14,19 @@
 
 import { api, sendMessage } from './api'
 import { applyEvent, emptyTurn, isLoopback, replay, settle, type Turn } from './agent'
-import { app, handle, isLocked } from './state.svelte'
+import { pref } from './prefs'
+import { app, handle, isLocked, quietly } from './state.svelte'
 import type { AgentSettings, ConversationId, ConversationSummary, Memory } from './types'
 
 export type { ToolCard, Turn } from './agent'
+
+/** Whether the rail is showing. `'1'`/`'0'`, from before this file used `pref`. */
+const openPref = pref<boolean>(
+  'everyday:assistant-open',
+  (raw) => raw === '1',
+  false,
+  (v) => (v ? '1' : '0'),
+)
 
 class AgentState {
   /** Threads, newest first. Loaded when the panel opens. */
@@ -88,13 +97,13 @@ class AgentState {
 
   async toggle() {
     this.open = !this.open
-    localStorage.setItem('everyday:assistant-open', this.open ? '1' : '0')
+    openPref.set(this.open)
     if (this.open) await this.load()
   }
 
   /** Restore whether the panel was showing. Called once, at startup. */
   restore() {
-    this.open = localStorage.getItem('everyday:assistant-open') === '1'
+    this.open = openPref.get()
   }
 
   /**
@@ -126,7 +135,7 @@ class AgentState {
     } catch (e) {
       // Quiet: every caller of this draws a suggestion or nothing, and the
       // rail's own `load` reports properly for the case somebody is looking.
-      if (isLocked(e)) return void (await handle(e))
+      await quietly(e)
     }
   }
 

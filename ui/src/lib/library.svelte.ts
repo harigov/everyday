@@ -21,7 +21,11 @@
 import { api } from './api'
 import { ask } from './quick.svelte'
 import { Autosave } from './autosave'
-import { app, errorMessage, handle, isLocked } from './state.svelte'
+import { pref } from './prefs'
+import { app, errorMessage, handle, isLocked, quietly } from './state.svelte'
+import { debounce } from './store/debounce'
+import { FocusRequest } from './store/focus-request'
+import { latest } from './store/latest'
 import { web, type SearchOutcome } from './websearch'
 import type {
   Item,
@@ -70,6 +74,13 @@ export function statusesFor(filter: Filter): ItemStatus[] {
 
 export type View = 'grid' | 'list'
 
+const viewPref = pref<View | null>(
+  'everyday.library.view',
+  (raw) => (raw === 'grid' || raw === 'list' ? raw : null),
+  null,
+)
+const captureShelfPref = pref<KindId | null>('everyday.library.capture', (raw) => raw, null)
+
 class LibraryState {
   // -- what is on screen ------------------------------------------------
   view = $state<View>('grid')
@@ -109,9 +120,10 @@ class LibraryState {
   /** A line under the shelf after something happened. Cleared on navigation. */
   note = $state<string | null>(null)
 
-  #queryTimer: ReturnType<typeof setTimeout> | null = null
+  /** The shelf query's debounce. See `setQuery`. */
+  #queryDebounce = debounce(() => void this.refresh(), 160)
   /** Which load is the current one. See `refresh`. */
-  #generation = 0
+  #generation = latest()
   /**
    * How to put the cursor in the capture field, registered by the view.
    *
@@ -119,13 +131,7 @@ class LibraryState {
    * reason: a quick action from the menu bar has no reference to a component
    * and should not have to be handed one down through the view tree.
    */
-  #capture: (() => void) | null = null
-  /**
-   * A focus asked for before the view was there to take it. The ordinary
-   * case for the tray: the request arrives while the journal is on screen and
-   * the library view mounts a frame later.
-   */
-  #captureWanted = false
+  #capture = new FocusRequest()
 
   constructor() {
     // Registered once, here, rather than from `start()`.
@@ -140,9 +146,9 @@ class LibraryState {
     // Which view somebody last chose is chrome state, remembered locally the
     // way the open section is. Reading it in `start` would be too late: the
     // grid has already drawn by then, so it would visibly flip to the list.
-    const remembered = localStorage.getItem('everyday.library.view')
-    if (remembered === 'grid' || remembered === 'list') this.view = remembered
-    this.captureShelf = localStorage.getItem('everyday.library.capture')
+    const remembered = viewPref.get()
+    if (remembered) this.view = remembered
+    this.captureShelf = captureShelfPref.get()
     app.onFlush(() => this.flush())
   }
 
@@ -165,17 +171,12 @@ class LibraryState {
 
   /** Register (or with `null`, retire) the capture field's focus. */
   bindCapture(fn: (() => void) | null) {
-    this.#capture = fn
-    if (fn && this.#captureWanted) {
-      this.#captureWanted = false
-      fn()
-    }
+    this.#capture.bind(fn)
   }
 
   /** Put the cursor in the capture field, now or as soon as there is one. */
   focusCapture() {
-    if (this.#capture) this.#capture()
-    else this.#captureWanted = true
+    this.#capture.request()
   }
 
   /**
@@ -200,12 +201,10 @@ class LibraryState {
    */
   reset() {
     this.#saves.cancel()
-    if (this.#queryTimer) clearTimeout(this.#queryTimer)
-    this.#queryTimer = null
+    this.#queryDebounce.cancel()
     // Nothing loaded before the lock may land after it: those rows are the
     // decrypted contents this reset exists to drop.
-    this.#generation++
-    this.#captureWanted = false
+    this.#generation.next()
     this.kinds = []
     this.items = []
     this.logs = []
@@ -240,7 +239,7 @@ class LibraryState {
       this.kinds = kinds
       this.stats = stats
     } catch (e) {
-      if (isLocked(e)) await app.lock()
+      await quietly(e)
     }
   }
 
@@ -265,13 +264,13 @@ class LibraryState {
 
   setView(view: View) {
     this.view = view
-    localStorage.setItem('everyday.library.view', view)
+    viewPref.set(view)
   }
 
   /** Choose the shelf the everything view's capture line adds to. */
   setCaptureShelf(id: KindId) {
     this.captureShelf = id
-    localStorage.setItem('everyday.library.capture', id)
+    captureShelfPref.set(id)
   }
 
   setFavouritesOnly(only: boolean) {
@@ -288,19 +287,14 @@ class LibraryState {
     this.filter = 'all'
     this.favouritesOnly = false
     this.query = ''
-    if (this.#queryTimer) clearTimeout(this.#queryTimer)
-    this.#queryTimer = null
+    this.#queryDebounce.cancel()
     void this.refresh()
   }
 
   /** Debounced, so typing does not fire a query per keystroke. */
   setQuery(text: string) {
     this.query = text
-    if (this.#queryTimer) clearTimeout(this.#queryTimer)
-    this.#queryTimer = setTimeout(() => {
-      this.#queryTimer = null
-      void this.refresh()
-    }, 160)
+    this.#queryDebounce.call()
   }
 
   async newShelf(name: string): Promise<boolean> {
@@ -393,7 +387,7 @@ class LibraryState {
    */
   async refresh() {
     if (!app.supportsLibrary) return
-    const generation = ++this.#generation
+    const generation = this.#generation.next()
     this.loading = true
     try {
       const [items, stats] = await Promise.all([
@@ -407,7 +401,7 @@ class LibraryState {
         }),
         api.libraryStats(),
       ])
-      if (generation !== this.#generation) return
+      if (!this.#generation.isCurrent(generation)) return
       this.items = items
       this.stats = stats
       // A selection that has scrolled out of the filter is dropped rather
@@ -419,7 +413,7 @@ class LibraryState {
     } catch (e) {
       await handle(e)
     } finally {
-      if (generation === this.#generation) this.loading = false
+      if (this.#generation.isCurrent(generation)) this.loading = false
     }
   }
 
@@ -769,8 +763,12 @@ export function coverRatio(kind: Kind | null): string {
   return kind && landscape.includes(kind.slug) ? '4 / 3' : '2 / 3'
 }
 
-/** Shelf accents. The journal palette, so one vault has one set of colours. */
-export const DEFAULT_SHELF_COLORS = [
+/**
+ * Shelf accents. The journal palette, so one vault has one set of colours.
+ *
+ * Not exported: nothing outside this file chooses a shelf's default colour.
+ */
+const DEFAULT_SHELF_COLORS = [
   '#b4530f',
   '#0f766e',
   '#7c3aed',

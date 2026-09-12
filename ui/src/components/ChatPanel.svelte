@@ -17,6 +17,7 @@
   import { agent } from '../lib/agent.svelte'
   import { renderMarkdown } from '../lib/markdown'
   import { panels } from '../lib/panels.svelte'
+  import { pref } from '../lib/prefs'
   import { app } from '../lib/state.svelte'
   import { todo } from '../lib/todo.svelte'
   import { assistant, PANE_LABELS } from '../lib/assistant.svelte'
@@ -50,6 +51,12 @@
   /** Never more than this share of the window: the app is the point. */
   const MAX_SHARE = 0.62
 
+  const widthPref = pref<number>(
+    'everyday:assistant-width',
+    (raw) => Number(raw) || DEFAULT_WIDTH,
+    DEFAULT_WIDTH,
+  )
+
   /**
    * The width somebody asked for, and the width they get.
    *
@@ -61,7 +68,7 @@
    * what the rail is actually given, recomputed whenever the window changes
    * shape.
    */
-  let width = $state(Number(localStorage.getItem('everyday:assistant-width')) || DEFAULT_WIDTH)
+  let width = $state(widthPref.get())
   let viewport = $state(window.innerWidth)
   let dragging = $state(false)
 
@@ -100,7 +107,7 @@
       handle.removeEventListener('pointermove', move)
       handle.removeEventListener('pointerup', end)
       handle.removeEventListener('pointercancel', end)
-      localStorage.setItem('everyday:assistant-width', String(width))
+      widthPref.set(width)
     }
     handle.addEventListener('pointermove', move)
     handle.addEventListener('pointerup', end)
@@ -116,7 +123,7 @@
     // Taken here, so the same arrow key does not also page the calendar
     // behind the rail: the window's shortcut handler checks this first.
     event.preventDefault()
-    localStorage.setItem('everyday:assistant-width', String(width))
+    widthPref.set(width)
   }
 
   /** Which turn's copy button has just been pressed, for the tick. */
@@ -278,7 +285,7 @@
     onkeydown={nudge}
     ondblclick={() => {
       width = DEFAULT_WIDTH
-      localStorage.setItem('everyday:assistant-width', String(width))
+      widthPref.set(width)
     }}
   ></div>
 

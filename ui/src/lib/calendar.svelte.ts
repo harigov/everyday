@@ -22,7 +22,9 @@ import { SvelteMap } from 'svelte/reactivity'
 import { notify } from './notify.svelte'
 import { ask, quick } from './quick.svelte'
 import { Autosave } from './autosave'
-import { app, errorMessage, handle, isLocked } from './state.svelte'
+import { pref } from './prefs'
+import { app, errorMessage, handle, isLocked, quietly } from './state.svelte'
+import { latest } from './store/latest'
 import { todo } from './todo.svelte'
 import { durationMinutes, formatValue } from './tracker'
 import { tracking } from './tracking.svelte'
@@ -70,6 +72,12 @@ const TIMER_KEY = 'everyday.calendar.timer'
 const OPEN_STATUSES = TASK_STATUSES.filter(isOpen)
 
 export type View = 'day' | 'week' | 'month'
+
+const viewPref = pref<View | null>(
+  'everyday.calendar.view',
+  (raw) => (raw === 'day' || raw === 'week' || raw === 'month' ? raw : null),
+  null,
+)
 
 /** Which of the two halves of a time block the grid is showing. */
 export type Layer = 'both' | 'planned' | 'actual'
@@ -239,6 +247,17 @@ class CalendarState {
    * from before the write. The hour was on disk and not on the grid.
    */
   #started: Promise<void> | null = null
+  /**
+   * Which navigation is the current one. See `refresh`.
+   *
+   * Missing until now: paging quickly -- `step`, `goto` and `setView` each
+   * fire their own `refresh` without waiting for the last one -- let an
+   * older batch of events and blocks land after a newer one and sit on
+   * screen showing the wrong day until the next navigation happened to fix
+   * it. This closes that race the way the todo and library stores already
+   * close theirs.
+   */
+  #generation = latest()
 
   constructor() {
     app.onLock(() => this.reset())
@@ -260,6 +279,8 @@ class CalendarState {
     this.#clock = null
     this.#saves.cancel()
     this.#started = null
+    // Nothing loaded before the lock may land after it.
+    this.#generation.next()
     this.calendars = []
     this.events = []
     this.blocks = []
@@ -289,8 +310,8 @@ class CalendarState {
   }
 
   async #start() {
-    const view = localStorage.getItem('everyday.calendar.view')
-    if (view === 'day' || view === 'week' || view === 'month') this.view = view
+    const view = viewPref.get()
+    if (view) this.view = view
 
     // The clock only runs while something needs it: a per-second re-render
     // of the whole grid for the sake of a "now" line nobody is watching is
@@ -327,7 +348,7 @@ class CalendarState {
 
   setView(view: View) {
     this.view = view
-    localStorage.setItem('everyday.calendar.view', view)
+    viewPref.set(view)
     void this.refresh()
   }
 
@@ -360,6 +381,7 @@ class CalendarState {
 
   async refresh() {
     if (!app.supportsCalendar) return
+    const generation = this.#generation.next()
     const [from, to] = this.range
     this.loading = true
     try {
@@ -377,6 +399,12 @@ class CalendarState {
           api.entries({ from, to, sort: 'dateAsc', limit: 500 }),
           app.supportsTrackers ? api.readings({ from, to }) : Promise.resolve([]),
         ])
+      // Only the newest navigation may land. `step`, `goto` and `setView`
+      // each fire this without waiting for the last call to answer, so
+      // paging quickly -- or switching from week to month and back -- put
+      // two of these in the air at once, and nothing before this guaranteed
+      // they landed in the order they were asked for.
+      if (!this.#generation.isCurrent(generation)) return
       this.calendars = calendars
       this.events = events
       this.blocks = blocks
@@ -390,7 +418,7 @@ class CalendarState {
     } catch (e) {
       await handle(e)
     } finally {
-      this.loading = false
+      if (this.#generation.isCurrent(generation)) this.loading = false
     }
   }
 
@@ -408,7 +436,7 @@ class CalendarState {
     try {
       this.readings = await api.readings({ from, to })
     } catch (e) {
-      if (isLocked(e)) await app.lock()
+      await quietly(e)
     }
   }
 
@@ -426,7 +454,7 @@ class CalendarState {
       // spill has no column to be drawn in.
       this.blocks = await api.blocks({ from: addDays(from, -1), to })
     } catch (e) {
-      if (isLocked(e)) await app.lock()
+      await quietly(e)
     }
   }
 
@@ -1279,7 +1307,7 @@ class CalendarState {
     } catch (e) {
       // A feed that is down is recorded on the calendar it belongs to and
       // shown beside it. It is not an error over the whole application.
-      if (isLocked(e)) await app.lock()
+      await quietly(e)
     } finally {
       this.syncing = false
     }
