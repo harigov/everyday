@@ -17,12 +17,14 @@
 //! colour it is drawn in. That is `calendars.csv`, and it is what makes an
 //! import restore a *subscription* rather than a frozen copy of one afternoon.
 
-use crate::text::{Csv, Table, safe_name};
-use crate::{Files, Mode, Options, Part, Portable, Report, Spec};
+use super::index::{Namer, index_map};
+use crate::text::{Csv, safe_name};
+use crate::{Files, Landing, Mode, Options, Part, Portable, Report, Spec, land};
 use everyday_core::calendar::{Calendar, CalendarOrigin, CalendarProvider};
 use everyday_core::store::JournalStore;
 use everyday_core::store::calendars::{CalendarStore, EventQuery};
 use everyday_core::{CalendarId, Result, RoleId};
+use std::collections::BTreeMap;
 
 pub struct CalendarPart;
 pub static CALENDAR: CalendarPart = CalendarPart;
@@ -68,21 +70,18 @@ impl Portable for CalendarPart {
     fn export(&self, store: &dyn JournalStore, out: &mut Files<'_>, _opts: &Options) -> Result<()> {
         let Some(calendars) = store.calendars() else { return Ok(()) };
         let mut index = Csv::new(COLUMNS);
-        let mut taken: Vec<String> = Vec::new();
+        let mut namer = Namer::new();
 
         for calendar in calendars.list_calendars()? {
-            let mut stem = safe_name(&calendar.name);
-            while taken.contains(&stem) {
-                stem = format!("{stem}-{}", calendar.id.short());
-            }
-            taken.push(stem.clone());
+            let base = safe_name(&calendar.name);
+            let stem = namer.unique(&base, |b, _| format!("{b}-{}", calendar.id.short()));
             let file = format!("{stem}.ics");
 
             let events = calendars.list_events(&EventQuery {
                 calendar_id: Some(calendar.id),
                 ..Default::default()
             })?;
-            let mut ics = crate::ics::Ics::new(&calendar.name);
+            let mut ics = everyday_core::ics::Ics::new(&calendar.name);
             for event in &events {
                 ics.event(event);
             }
@@ -98,7 +97,7 @@ impl Portable for CalendarPart {
                 origin.to_string(),
                 url,
                 calendar.color.clone(),
-                provider_name(calendar.provider).to_string(),
+                calendar.provider.as_str().to_string(),
                 calendar.visible.to_string(),
                 calendar.refresh_minutes.to_string(),
                 calendar.role_id.map(|r| r.to_string()).unwrap_or_default(),
@@ -121,41 +120,32 @@ impl Portable for CalendarPart {
         // The index tells each `.ics` what it is. A folder of `.ics` files
         // with no index -- somebody's export from another program -- still
         // imports: every file becomes a calendar named after itself.
-        let table = src.text(INDEX).map(Table::parse);
-        let described: Vec<(String, Calendar)> = table
-            .iter()
-            .flat_map(Table::rows)
-            .filter_map(|row| Some((row.get("file").to_string(), calendar_from(&row)?)))
-            .collect();
+        let described: BTreeMap<String, Calendar> = index_map(src.text(INDEX), |row| {
+            Some((row.get("file").to_string(), calendar_from(row)))
+        });
 
         for (name, body) in src.files() {
             if !name.ends_with(".ics") || name.starts_with("media/") {
                 continue;
             }
-            let listed = described.iter().find(|(file, _)| file == name);
-            let calendar = match listed {
-                Some((_, calendar)) => calendar.clone(),
-                None => Calendar::imported(name.trim_end_matches(".ics"), name.to_string()),
-            };
-            match read(calendars, calendar, body, mode) {
-                Ok(Some(landed)) => {
-                    report.count(landed.calendar_existed, mode);
-                    report.added += landed.added;
-                    report.replaced += landed.replaced;
-                }
-                // The calendar was already here and the mode said to leave it,
-                // so the file's events were never looked at. Counting them
-                // would be reporting on work that did not happen.
-                Ok(None) => report.skipped += 1,
-                Err(e) => report.problem(name, e),
+            let calendar = described.get(name).cloned().unwrap_or_else(|| {
+                Calendar::imported(name.trim_end_matches(".ics"), name.to_string())
+            });
+            if let Err(e) = read(calendars, calendar, body, mode, &mut report) {
+                report.problem(name, e);
             }
         }
         Ok(report)
     }
 }
 
-fn calendar_from(row: &crate::text::Row<'_>) -> Option<Calendar> {
-    let id = CalendarId::parse(row.get("id")).ok()?;
+fn calendar_from(row: &crate::text::Row<'_>) -> Calendar {
+    // An id that will not parse mints a fresh one rather than dropping the
+    // row, matching every other part: a hand-edited index is the ordinary
+    // case for something a person is expected to open in a spreadsheet, and
+    // an id column left blank or mistyped should cost that row its identity
+    // across re-imports, not the calendar it names.
+    let id = CalendarId::parse(row.get("id")).unwrap_or_else(|_| CalendarId::new());
     let name = row.get("name");
     let mut calendar = match row.get("origin") {
         "url" => Calendar::subscribed(name, row.get("url")),
@@ -163,13 +153,13 @@ fn calendar_from(row: &crate::text::Row<'_>) -> Option<Calendar> {
     };
     calendar.id = id;
     calendar.color = row.get("color").to_string();
-    calendar.provider = provider(row.get("provider"));
+    calendar.provider = CalendarProvider::parse(row.get("provider")).unwrap_or_default();
     calendar.visible = row.get("visible").is_empty() || row.flag("visible");
     if let Some(minutes) = row.parse("refresh_minutes") {
         calendar.refresh_minutes = minutes;
     }
     calendar.role_id = RoleId::parse(row.get("role_id")).ok();
-    Some(calendar)
+    calendar
 }
 
 /// Save the calendar and replace its events with what the file holds.
@@ -179,33 +169,38 @@ fn calendar_from(row: &crate::text::Row<'_>) -> Option<Calendar> {
 /// refresh makes, and an import is a refresh from a file rather than from a
 /// URL. Merging them would leave an event that the publisher has since
 /// cancelled sitting on the grid for ever.
-/// What one `.ics` did.
-struct Landed {
-    calendar_existed: bool,
-    added: u64,
-    replaced: u64,
-}
-
+///
+/// A calendar counts as one record and its events are not counted again
+/// individually against it -- `report` gets both, through [`land`] for the
+/// calendar itself and by arithmetic for the events, because there is no
+/// per-event id in a file for `land` to look up.
 fn read(
     calendars: &dyn CalendarStore,
-    calendar: Calendar,
+    mut calendar: Calendar,
     body: &[u8],
     mode: Mode,
-) -> Result<Option<Landed>> {
+    report: &mut Report,
+) -> Result<()> {
     let text = std::str::from_utf8(body)
         .map_err(|_| everyday_core::Error::Invalid("this is not an iCalendar file".into()))?;
-    let existing = calendars.get_calendar(calendar.id).ok();
-    if existing.is_some() && mode == Mode::Skip {
-        return Ok(None);
-    }
-    let existed = existing.is_some();
 
-    let mut calendar = calendar;
-    if let Some(existing) = existing {
-        // Keep what the vault knows and the file cannot: when it last synced,
-        // and whether it was failing.
-        calendar.created_at = existing.created_at;
-        calendar.last_synced_at = existing.last_synced_at;
+    let existing = calendars.get_calendar(calendar.id).ok();
+    let landing = land(existing, || calendar.clone(), mode);
+    match &landing {
+        Landing::Skipped => {
+            // The calendar was already here and the mode said to leave it,
+            // so the file's events were never looked at. Counting them would
+            // be reporting on work that did not happen.
+            report.landed(&landing);
+            return Ok(());
+        }
+        Landing::Existing(stored) => {
+            // Keep what the vault knows and the file cannot: when it last
+            // synced, and whether it was failing.
+            calendar.created_at = stored.created_at;
+            calendar.last_synced_at = stored.last_synced_at;
+        }
+        Landing::Fresh(_) => {}
     }
     let feed = everyday_core::ics::parse(text);
     if calendar.name.trim().is_empty() {
@@ -231,23 +226,9 @@ fn read(
     let before = calendars.count_events(calendar.id).unwrap_or(0);
     let replaced = before.min(count);
     calendars.replace_events(calendar.id, &events)?;
-    Ok(Some(Landed { calendar_existed: existed, added: count - replaced, replaced }))
-}
 
-fn provider_name(provider: CalendarProvider) -> &'static str {
-    match provider {
-        CalendarProvider::Google => "google",
-        CalendarProvider::Outlook => "outlook",
-        CalendarProvider::Apple => "apple",
-        CalendarProvider::Other => "other",
-    }
-}
-
-fn provider(name: &str) -> CalendarProvider {
-    match name {
-        "google" => CalendarProvider::Google,
-        "outlook" => CalendarProvider::Outlook,
-        "apple" => CalendarProvider::Apple,
-        _ => CalendarProvider::Other,
-    }
+    report.landed(&landing);
+    report.added += count - replaced;
+    report.replaced += replaced;
+    Ok(())
 }

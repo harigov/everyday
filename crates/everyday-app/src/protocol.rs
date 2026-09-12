@@ -10,11 +10,11 @@
 //!   decrypts two chunks instead of the whole file.
 //!
 //! The interesting decisions -- range parsing, response sizing, type sniffing
-//! -- live in [`everyday_vault::media`] so they are testable without a
+//! -- live in [`everyday_core::media`] so they are testable without a
 //! webview. This file is the adapter.
 
 use everyday_core::BlobId;
-use everyday_vault::media;
+use everyday_core::media;
 use tauri::http::{Request, Response, StatusCode, header};
 use tauri::{Manager, Runtime};
 

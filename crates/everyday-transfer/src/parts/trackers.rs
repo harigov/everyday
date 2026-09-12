@@ -20,8 +20,9 @@
 //! where a tracker is a sealed record and a reading is a row in the clear.
 
 use super::doc;
+use super::index::{Namer, index_map, owner};
 use crate::text::{Csv, Table, safe_name};
-use crate::{Files, Mode, Options, Part, Portable, Report, Spec};
+use crate::{Files, Mode, Options, Part, Portable, Report, Spec, land};
 use everyday_core::store::JournalStore;
 use everyday_core::store::trackers::{ReadingQuery, TrackerStore};
 use everyday_core::tracker::{Cadence, Period, Reading, Tracker, TrackerKind};
@@ -77,19 +78,16 @@ impl Portable for TrackersPart {
         let readings = trackers.list_readings(&ReadingQuery::default())?;
 
         let mut index = Csv::new(INDEX_COLUMNS);
-        let mut taken: Vec<String> = Vec::new();
+        let mut namer = Namer::new();
         for tracker in &definitions {
-            let mut stem = safe_name(&tracker.name);
-            while taken.contains(&stem) {
-                stem = format!("{stem}-{}", tracker.id.short());
-            }
-            taken.push(stem.clone());
+            let base = safe_name(&tracker.name);
+            let stem = namer.unique(&base, |b, _| format!("{b}-{}", tracker.id.short()));
             let file = format!("{stem}.csv");
 
             index.row(&[
                 tracker.name.clone(),
                 file.clone(),
-                kind_name(tracker.kind).to_string(),
+                tracker.kind.as_str().to_string(),
                 tracker.unit.clone(),
                 tracker.icon.clone(),
                 tracker.color.clone(),
@@ -99,7 +97,7 @@ impl Portable for TrackersPart {
                 tracker
                     .cadence
                     .as_ref()
-                    .map(|c| format!("{} per {}", c.times, period_name(c.per)))
+                    .map(|c| format!("{} per {}", c.times, c.per.as_str()))
                     .unwrap_or_default(),
                 tracker.on_calendar.to_string(),
                 doc::purpose_text(tracker.purpose.as_ref()),
@@ -148,18 +146,15 @@ impl Portable for TrackersPart {
             return Ok(report);
         };
 
-        let mut by_file: BTreeMap<String, TrackerId> = BTreeMap::new();
-        if let Some(text) = src.text(INDEX) {
-            for row in Table::parse(text).rows() {
-                match read_tracker(trackers, &row, mode) {
-                    Ok((id, existed)) => {
-                        by_file.insert(row.get("file").to_string(), id);
-                        report.count(existed, mode);
-                    }
-                    Err(e) => report.problem(INDEX, e),
+        let mut by_file: BTreeMap<String, TrackerId> = index_map(src.text(INDEX), |row| {
+            match read_tracker(trackers, row, mode, &mut report) {
+                Ok(id) => Some((row.get("file").to_string(), id)),
+                Err(e) => {
+                    report.problem(INDEX, e);
+                    None
                 }
             }
-        }
+        });
 
         // A journal for readings that name one. Readings do not require it --
         // the field is optional -- so this stays `None` rather than inventing
@@ -175,22 +170,18 @@ impl Portable for TrackersPart {
                 report.problem(name, "no `value` column, so this is not a tracker");
                 continue;
             }
-            let tracker = match by_file.get(name) {
-                Some(id) => *id,
-                None => match tracker_named(trackers, name.trim_end_matches(".csv"), &table) {
-                    Ok(id) => {
-                        by_file.insert(name.to_string(), id);
-                        id
-                    }
-                    Err(e) => {
-                        report.problem(name, e);
-                        continue;
-                    }
-                },
+            let tracker = match owner(&mut by_file, name, || {
+                tracker_named(trackers, name.trim_end_matches(".csv"), &table)
+            }) {
+                Ok(id) => id,
+                Err(e) => {
+                    report.problem(name, e);
+                    continue;
+                }
             };
             for row in table.rows() {
-                match read_reading(trackers, &row, tracker, journal, mode) {
-                    Ok(existed) => report.count(existed, mode),
+                match read_reading(trackers, &row, tracker, journal, mode, &mut report) {
+                    Ok(()) => {}
                     Err(e) => report.problem(name, e),
                 }
             }
@@ -203,18 +194,23 @@ fn read_tracker(
     trackers: &dyn TrackerStore,
     row: &crate::text::Row<'_>,
     mode: Mode,
-) -> Result<(TrackerId, bool)> {
+    report: &mut Report,
+) -> Result<TrackerId> {
     let id = TrackerId::parse(row.get("id")).unwrap_or_else(|_| TrackerId::new());
+
     let existing = trackers.get_tracker(id).ok();
-    if existing.is_some() && mode == Mode::Skip {
-        return Ok((id, true));
-    }
-    let mut tracker = existing.clone().unwrap_or_else(|| {
-        Tracker::new(row.get("name"), kind(row.get("kind")).unwrap_or_default())
-    });
+    let mut landing = land(
+        existing,
+        || Tracker::new(row.get("name"), tracker_kind(row.get("kind")).unwrap_or_default()),
+        mode,
+    );
+    let Some(tracker) = landing.as_mut() else {
+        report.landed(&landing);
+        return Ok(id);
+    };
     tracker.id = id;
     tracker.name = row.get("name").to_string();
-    tracker.kind = kind(row.get("kind")).unwrap_or(tracker.kind);
+    tracker.kind = tracker_kind(row.get("kind")).unwrap_or(tracker.kind);
     tracker.unit = row.get("unit").to_string();
     if !row.get("icon").is_empty() {
         tracker.icon = row.get("icon").to_string();
@@ -237,8 +233,9 @@ fn read_tracker(
         tracker.sort_order = order;
     }
     tracker.updated_at = jiff::Timestamp::now();
-    trackers.put_tracker(&tracker)?;
-    Ok((id, existing.is_some()))
+    trackers.put_tracker(tracker)?;
+    report.landed(&landing);
+    Ok(id)
 }
 
 /// The tracker a file belongs to when no index named one.
@@ -266,13 +263,17 @@ fn read_reading(
     tracker_id: TrackerId,
     journal_id: Option<JournalId>,
     mode: Mode,
-) -> Result<bool> {
+    report: &mut Report,
+) -> Result<()> {
     let id = ReadingId::parse(row.get("id")).unwrap_or_else(|_| ReadingId::new());
     let existing = trackers.get_reading(id).ok();
+    // As in `read_time`: a reading already here is never asked for a valid
+    // date and value when the mode says to leave it alone, so this check
+    // comes before the ones that can fail.
     if existing.is_some() && mode == Mode::Skip {
-        return Ok(true);
+        report.skipped += 1;
+        return Ok(());
     }
-    let existed = existing.is_some();
     let date: jiff::civil::Date = row
         .parse("date")
         .ok_or_else(|| everyday_core::Error::Invalid("a reading has no date".into()))?;
@@ -284,7 +285,11 @@ fn read_reading(
         "" => "UTC".to_string(),
         tz => tz.to_string(),
     };
-    let mut reading = existing.unwrap_or_else(|| Reading::on(tracker_id, date, value));
+    // `existing` can only be `None` or a record `mode` allows overwriting --
+    // the `Mode::Skip` case was ruled out above, before there was a valid
+    // date and value to build a fresh reading from.
+    let mut landing = land(existing, || Reading::on(tracker_id, date, value), mode);
+    let Some(reading) = landing.as_mut() else { return Ok(()) };
     reading.id = id;
     reading.tracker_id = tracker_id;
     reading.journal_id = reading.journal_id.or(journal_id);
@@ -294,8 +299,9 @@ fn read_reading(
     reading.note = row.get("note").to_string();
     reading.at = clock(row.get("time"), date, &reading.tz);
     reading.updated_at = jiff::Timestamp::now();
-    trackers.put_reading(&reading)?;
-    Ok(existed)
+    trackers.put_reading(reading)?;
+    report.landed(&landing);
+    Ok(())
 }
 
 /// `08:15` on `date` in `tz`, as an instant. `None` for a reading whose time
@@ -310,31 +316,8 @@ fn zone(tz: &str) -> jiff::tz::TimeZone {
     jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC)
 }
 
-fn kind_name(kind: TrackerKind) -> &'static str {
-    match kind {
-        TrackerKind::Check => "check",
-        TrackerKind::Dose => "dose",
-        TrackerKind::Scale => "scale",
-        TrackerKind::Amount => "amount",
-    }
-}
-
-fn kind(name: &str) -> Option<TrackerKind> {
-    match name.trim().to_ascii_lowercase().as_str() {
-        "check" => Some(TrackerKind::Check),
-        "dose" => Some(TrackerKind::Dose),
-        "scale" => Some(TrackerKind::Scale),
-        "amount" => Some(TrackerKind::Amount),
-        _ => None,
-    }
-}
-
-fn period_name(period: Period) -> &'static str {
-    match period {
-        Period::Day => "day",
-        Period::Week => "week",
-        Period::Month => "month",
-    }
+fn tracker_kind(name: &str) -> Option<TrackerKind> {
+    TrackerKind::parse(&name.trim().to_ascii_lowercase())
 }
 
 /// `3 per week`, as it is written in the file.
@@ -357,7 +340,7 @@ mod tests {
     #[test]
     fn a_cadence_reads_the_way_it_is_written() {
         let c = Cadence { times: 3, per: Period::Week };
-        let text = format!("{} per {}", c.times, period_name(c.per));
+        let text = format!("{} per {}", c.times, c.per.as_str());
         let back = cadence(&text).unwrap();
         assert_eq!((back.times, back.per), (3, Period::Week));
         assert!(cadence("").is_none());

@@ -116,7 +116,7 @@ async fn get(request: &Request) -> CommandResult<String> {
 /// picture.
 ///
 /// The type is *sniffed*, not read from the `Content-Type` header, for the
-/// reason [`everyday_vault::media::sniff_mime`] exists: a header is a claim
+/// reason [`everyday_core::media::sniff_mime`] exists: a header is a claim
 /// by somebody else's server, and what ends up in the vault should be what
 /// the bytes actually are. Anything that is not a recognised image is
 /// refused rather than stored — a shelf full of `application/octet-stream`
@@ -151,7 +151,7 @@ pub async fn fetch_image(url: &str) -> CommandResult<Vec<u8>> {
     })
     .await?;
 
-    let mime = everyday_vault::media::sniff_mime(&bytes);
+    let mime = everyday_core::media::sniff_mime(&bytes);
     if !mime.starts_with("image/") {
         return Err(CommandError::new(
             "not_an_image",

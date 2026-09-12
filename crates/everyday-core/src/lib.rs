@@ -84,6 +84,7 @@ pub mod ics;
 pub mod id;
 pub mod library;
 pub mod lockfile;
+pub mod media;
 pub mod model;
 pub mod note;
 pub mod profile;

@@ -19,7 +19,7 @@
 
 use super::doc;
 use crate::text::{FrontMatter, split_front_matter};
-use crate::{Files, Mode, Options, Part, Portable, Report, Spec};
+use crate::{Files, Mode, Options, Part, Portable, Report, Spec, land};
 use everyday_core::purpose::{Goal, GoalStatus, Role};
 use everyday_core::store::JournalStore;
 use everyday_core::store::purpose::{GoalQuery, PurposeStore};
@@ -119,7 +119,7 @@ fn write_goal(body: &mut String, goal: &Goal) {
         let _ = write!(body, " @{horizon}");
     }
     if !matches!(goal.status, GoalStatus::Active | GoalStatus::Done) {
-        let _ = write!(body, " %{}", status_name(goal.status));
+        let _ = write!(body, " %{}", goal.status.as_str());
     }
     let mut hidden = format!("id:{}; role:{}", goal.id, goal.role_id);
     let _ = write!(hidden, "; created:{}", doc::stamp(goal.created_at));
@@ -216,11 +216,8 @@ fn read_page(
 
     let mut goal_order = 0;
     for (role_order, block) in blocks.iter().enumerate() {
-        let role_id = match read_role(purpose, block, role_order as i32, mode) {
-            Ok((id, existed)) => {
-                report.count(existed, mode);
-                id
-            }
+        let role_id = match read_role(purpose, block, role_order as i32, mode, report) {
+            Ok(id) => id,
             Err(e) => {
                 report.problem(PAGE, e);
                 continue;
@@ -253,9 +250,8 @@ fn write_one(
     mode: Mode,
     report: &mut Report,
 ) {
-    match read_goal(purpose, goal, role_id, order, mode) {
-        Ok(existed) => report.count(existed, mode),
-        Err(e) => report.problem(PAGE, e),
+    if let Err(e) = read_goal(purpose, goal, role_id, order, mode, report) {
+        report.problem(PAGE, e);
     }
 }
 
@@ -273,18 +269,21 @@ fn read_role(
     block: &Block,
     order: i32,
     mode: Mode,
-) -> Result<(RoleId, bool)> {
+    report: &mut Report,
+) -> Result<RoleId> {
     let id = block.fields.get("id").and_then(|id| RoleId::parse(id).ok()).unwrap_or_default();
-    let existing = purpose.get_role(id).ok();
-    if existing.is_some() && mode == Mode::Skip {
-        return Ok((id, true));
-    }
     // The heading is "<icon> <name>", and the icon is one grapheme. Splitting
     // on the first space is wrong for an icon that is two code points -- a
     // flag, a profession with a modifier -- so the split is on the first
     // *alphanumeric* run instead.
     let (icon, name) = split_icon(&block.heading);
-    let mut role = existing.clone().unwrap_or_else(|| Role::new(name));
+
+    let existing = purpose.get_role(id).ok();
+    let mut landing = land(existing, || Role::new(name), mode);
+    let Some(role) = landing.as_mut() else {
+        report.landed(&landing);
+        return Ok(id);
+    };
     role.id = id;
     role.name = name.to_string();
     role.notes = block.notes.clone();
@@ -300,8 +299,9 @@ fn read_role(
         role.created_at = created;
     }
     role.updated_at = jiff::Timestamp::now();
-    purpose.put_role(&role)?;
-    Ok((id, existing.is_some()))
+    purpose.put_role(role)?;
+    report.landed(&landing);
+    Ok(id)
 }
 
 fn read_goal(
@@ -310,17 +310,13 @@ fn read_goal(
     role_id: RoleId,
     order: i32,
     mode: Mode,
-) -> Result<bool> {
+    report: &mut Report,
+) -> Result<()> {
     let (visible, fields) = match pending.line.split_once("<!--") {
         Some((visible, hidden_part)) => (visible, hidden(hidden_part)),
         None => (pending.line.as_str(), Default::default()),
     };
     let id = fields.get("id").and_then(|id| GoalId::parse(id).ok()).unwrap_or_default();
-    let existing = purpose.get_goal(id).ok();
-    if existing.is_some() && mode == Mode::Skip {
-        return Ok(true);
-    }
-    let existed = existing.is_some();
 
     let mut title: Vec<&str> = Vec::new();
     let mut horizon = None;
@@ -335,7 +331,12 @@ fn read_goal(
         }
     }
 
-    let mut goal = existing.unwrap_or_else(|| Goal::new(role_id, title.join(" ")));
+    let existing = purpose.get_goal(id).ok();
+    let mut landing = land(existing, || Goal::new(role_id, title.join(" ")), mode);
+    let Some(goal) = landing.as_mut() else {
+        report.landed(&landing);
+        return Ok(());
+    };
     goal.id = id;
     goal.role_id = fields.get("role").and_then(|r| RoleId::parse(r).ok()).unwrap_or(role_id);
     goal.title = title.join(" ").trim().to_string();
@@ -356,8 +357,9 @@ fn read_goal(
             .or(Some(goal.updated_at)),
         _ => None,
     };
-    purpose.put_goal(&goal)?;
-    Ok(existed)
+    purpose.put_goal(goal)?;
+    report.landed(&landing);
+    Ok(())
 }
 
 /// A role for goals that arrived without one.
@@ -391,23 +393,8 @@ fn split_icon(heading: &str) -> (&str, &str) {
     }
 }
 
-fn status_name(status: GoalStatus) -> &'static str {
-    match status {
-        GoalStatus::Active => "active",
-        GoalStatus::Paused => "paused",
-        GoalStatus::Done => "done",
-        GoalStatus::Dropped => "dropped",
-    }
-}
-
 fn goal_status(word: &str) -> Option<GoalStatus> {
-    match word.trim().to_ascii_lowercase().as_str() {
-        "active" => Some(GoalStatus::Active),
-        "paused" => Some(GoalStatus::Paused),
-        "done" => Some(GoalStatus::Done),
-        "dropped" => Some(GoalStatus::Dropped),
-        _ => None,
-    }
+    GoalStatus::parse(&word.trim().to_ascii_lowercase())
 }
 
 #[cfg(test)]

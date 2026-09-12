@@ -38,6 +38,7 @@
 //! future caller remembering the rule.
 
 use everyday_core::{Error, Result};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
@@ -117,10 +118,21 @@ impl<W: Write> Writer<W> {
             return Err(Error::Invalid(format!("{name} is not a path an archive may contain")));
         }
         let crc = crc32fast::hash(body);
-        let (method, payload) = match squeeze(body) {
-            Some(deflated) => (DEFLATED, deflated),
-            None => (STORED, body.to_vec()),
-        };
+        // Deflating a photograph or a video spends CPU to make it bigger by
+        // a few bytes of framing; `squeeze` already measures rather than
+        // guesses, but measuring means encoding the whole thing first, and
+        // an export is thousands of files. Sniffing the format is the cheap
+        // question that skips the expensive one for a JPEG without ever
+        // running the encoder over it.
+        let (method, payload): (u16, Cow<'_, [u8]>) =
+            if already_compressed(everyday_core::media::sniff_mime(body)) {
+                (STORED, Cow::Borrowed(body))
+            } else {
+                match squeeze(body) {
+                    Some(deflated) => (DEFLATED, Cow::Owned(deflated)),
+                    None => (STORED, Cow::Borrowed(body)),
+                }
+            };
 
         let entry = Entry {
             name: name.to_string(),
@@ -274,6 +286,34 @@ impl<W: Write> Writer<W> {
         self.out.flush()?;
         Ok(self.out)
     }
+}
+
+/// Formats whose own encoding already squeezed out the redundancy deflate
+/// looks for, so attempting it is a wasted pass over the bytes.
+///
+/// This is a shortlist rather than "everything `sniff_mime` returns except
+/// text": a container format is not always compressed by what fills it --
+/// `image/bmp` and a `.wav` are both raw samples, and get the same chance at
+/// deflate as a Markdown file. Missing one here only costs the CPU
+/// `squeeze` was already allowed to spend; the measurement it makes is what
+/// keeps this list from ever costing correctness.
+fn already_compressed(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png"
+            | "image/jpeg"
+            | "image/gif"
+            | "image/webp"
+            | "image/avif"
+            | "image/heic"
+            | "video/mp4"
+            | "video/quicktime"
+            | "video/webm"
+            | "audio/mp4"
+            | "audio/mpeg"
+            | "audio/ogg"
+            | "audio/flac"
+    )
 }
 
 /// Deflate `body`, or `None` when storing it is the better answer.
@@ -598,6 +638,19 @@ mod tests {
         let r = roundtrip(&[("s", b"tiny"), ("d", "compress me ".repeat(100).as_bytes())]);
         assert_eq!(r.get("s").unwrap(), b"tiny");
         assert_eq!(r.get("d").unwrap(), "compress me ".repeat(100).as_bytes());
+    }
+
+    #[test]
+    fn a_photograph_shaped_payload_is_never_deflated() {
+        // Ten thousand zero bytes behind a PNG signature would deflate to
+        // almost nothing; an archive at least as large as the body is proof
+        // the encoder was never run over it.
+        let mut body = b"\x89PNG\r\n\x1a\n".to_vec();
+        body.extend(vec![0u8; 10_000]);
+        let mut w = Writer::new(Vec::new(), stamp());
+        w.add("media/photo.png", &body).unwrap();
+        let archive = w.finish().unwrap();
+        assert!(archive.len() >= body.len(), "a sniffed image was deflated anyway");
     }
 
     #[test]
