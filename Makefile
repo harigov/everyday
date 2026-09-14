@@ -19,7 +19,7 @@ UI_DIR  := ui
 ARGS ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help setup run dev ui build test test-postgres test-imap lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
+.PHONY: help setup run dev ui build test test-postgres test-imap test-smtp lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
 
 help: ## Show this help
 	@echo "Every Day -- make <target>"
@@ -125,6 +125,38 @@ test-imap: ## Run the IMAP adapter's suite against a throwaway Dovecot in Docker
 		cargo test -p everyday-mail --features insecure-test-tls --test imap_dovecot; \
 	status=$$?; \
 	docker rm -f everyday-imaptest >/dev/null; \
+	exit $$status
+
+# The SMTP client's suite (crates/everyday-mail/tests/smtp_mailpit.rs),
+# against a throwaway Mailpit -- the official image, which is given exactly
+# one SMTP credential (MP_SMTP_AUTH=everyday:testpass) so the suite can
+# prove both that the right password is accepted and that a wrong one comes
+# back as this crate's own auth error, and exposes an HTTP API the test
+# reads delivered messages back through, so nothing here needs its own
+# IMAP-style server to check what arrived. Auth is exercised in the clear
+# (MP_SMTP_AUTH_ALLOW_INSECURE): this suite is about the SMTP verb sequence
+# and this crate's own error mapping, not about proving
+# `rustls-platform-verifier` again -- `make test-imap` already does that
+# against Dovecot's TLS, and `smtp.rs`'s `connect` uses the identical
+# `tokio1-rustls` configuration. The container is removed when it stops.
+test-smtp: ## Run the SMTP client's suite against a throwaway Mailpit in Docker
+	@docker rm -f everyday-smtptest >/dev/null 2>&1 || true
+	docker run -d --rm --name everyday-smtptest \
+		-e MP_SMTP_AUTH=everyday:testpass -e MP_SMTP_AUTH_ALLOW_INSECURE=1 \
+		-p 11025:1025 -p 18025:8025 \
+		axllent/mailpit:latest >/dev/null
+	@echo "waiting for Mailpit..."
+	@bash -c 'for i in $$(seq 1 60); do \
+		(exec 3<>/dev/tcp/127.0.0.1/18025) 2>/dev/null && exec 3<&- 3>&- && exit 0; \
+		sleep 1; \
+	done; exit 1'
+	@EVERYDAY_TEST_SMTP=1 \
+		EVERYDAY_TEST_SMTP_HOST=127.0.0.1 \
+		EVERYDAY_TEST_SMTP_PORT=11025 \
+		EVERYDAY_TEST_SMTP_API=http://127.0.0.1:18025 \
+		cargo test -p everyday-mail --features insecure-test-tls --test smtp_mailpit; \
+	status=$$?; \
+	docker rm -f everyday-smtptest >/dev/null; \
 	exit $$status
 
 # The pair to reach for: `lint` says what is wrong, `fix` fixes what it can.

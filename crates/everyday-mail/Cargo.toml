@@ -64,9 +64,65 @@ rustls-platform-verifier = "0.7"
 # `Stream` combinators over the fetch and IDLE streams async-imap hands back.
 futures = "0.3"
 
+# MIME out: builds the RFC 5322 bytes `smtp.rs` sends, from the fields
+# `compose.rs`'s `Outgoing` collects. Sibling project to `mail-parser`
+# above, so a message this crate builds and one it reads share the same
+# understanding of what a header means. `gethostname` (the only optional
+# feature) is off -- `compose::build` always mints its own Message-ID from
+# the sender's own domain (see that function's docs), so the fallback that
+# feature exists for never runs here.
+mail-builder = { version = "=1.0.0", default-features = false }
+
+# Inlines a compose message's <style> rules into style="" attributes before
+# it goes out, because most mail clients delete <style> blocks outright.
+# `default-features = false` matters here beyond tidiness: the crate's
+# default features include `http`, which pulls in `reqwest` -- a second
+# HTTP client this workspace does not otherwise have, and one this crate
+# never wants dialling out on a person's behalf anyway. See `compose.rs`'s
+# module docs for how remote loading is also switched off at the
+# `InlineOptions` level, independent of which features are compiled in.
+css-inline = { version = "=0.21.2", default-features = false }
+
+# The SMTP client `smtp.rs` sends through. See that module's docs for the
+# full reasoning behind each feature:
+#   - smtp-transport, pool: the client itself, and its per-account pool.
+#   - tokio1-rustls: the same tokio runtime and rustls major version this
+#     crate already pins for IMAP, not a second async runtime or a second
+#     `native-tls`/`boring` TLS stack.
+#   - rustls-platform-verifier, ring: the same trust store and crypto
+#     provider choice as `imap.rs`'s `tls_config`, rather than a bundled
+#     `webpki-roots` list or an ambiguous default crypto provider.
+#   - hostname: reads the local machine's hostname for the EHLO command's
+#     default, the one place this crate still lets `lettre` decide
+#     something rather than deciding it itself.
+lettre = { version = "=0.11.23", default-features = false, features = [
+    "smtp-transport",
+    "pool",
+    "tokio1-rustls",
+    "rustls-platform-verifier",
+    "ring",
+    "hostname",
+] }
+
+# Sixteen random bytes for a Message-ID -- see `compose::generate_message_id`.
+# Already pinned at the workspace level (`crypto.rs`, `supervisor.rs`); this
+# is only new as a *direct* dependency of this crate.
+rand.workspace = true
+
 [dev-dependencies]
 proptest = "=1.11.0"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "test-util"] }
+# The SMTP integration suite's HTTP client, reading what `make test-smtp`'s
+# throwaway Mailpit container delivered back through its own API -- see
+# `tests/smtp_mailpit.rs`. Dev-only: never linked into a shipped binary.
+# Version 0.13 to match the one `reqwest` already in the tree
+# (`everyday-service`, `everyday-server`, `everyday-cli`) rather than a
+# second, differently-pinned copy -- the same "one of everything" rule
+# `smtp.rs`'s module docs apply to `rustls`.
+reqwest = { version = "0.13", features = ["json"] }
+# One random subject per test run, so `tests/smtp_mailpit.rs` can tell its
+# own messages apart from another test's in Mailpit's one shared inbox.
+uuid.workspace = true
 
 [features]
 # A certificate verifier that trusts anything, for `make test-imap`'s

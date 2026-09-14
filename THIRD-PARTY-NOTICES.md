@@ -16,6 +16,9 @@ Reproduced below in full:
   7. html2text — © 2016 Chris Emerson, https://github.com/jugglerchris/rust-html2text
   8. htmd — the htmd contributors, https://github.com/letmutex/htmd
   9. async-imap — © 2019 the async-imap authors, https://github.com/async-email/async-imap
+  10. mail-builder — © Stalwart Labs LLC, https://github.com/stalwartlabs/mail-builder
+  11. css-inline — © 2020-2023 Dmitry Dygalo, https://github.com/Stranger6667/css-inline
+  12. lettre — © 2014-2025 Alexis Mousset, Paolo Barbolini and K., https://github.com/lettre/lettre
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
@@ -575,6 +578,110 @@ choice, reproduced below.
 MIT License
 
 Copyright (c) 2019
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+---
+
+## 10. mail-builder
+
+`crates/everyday-mail/src/compose.rs` builds the RFC 5322 bytes this crate
+sends through `mail-builder` (https://github.com/stalwartlabs/mail-builder),
+dual MIT/Apache-2.0 licensed, the sibling project to `mail-parser` above;
+this project takes it under the MIT terms below.
+
+Copyright (c) Stalwart Labs LLC <hello@stalw.art>
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+---
+
+## 11. css-inline
+
+`crates/everyday-mail/src/compose.rs` inlines a compose message's CSS
+through `css-inline` (https://github.com/Stranger6667/css-inline), MIT
+licensed, so that a mail client which deletes `<style>` blocks still shows
+the compose editor's formatting. Remote stylesheet loading is switched off
+in every `InlineOptions` this crate builds; see that module's docs.
+
+MIT License
+
+Copyright (c) 2020-2023 Dmitry Dygalo
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 12. lettre
+
+`crates/everyday-mail/src/smtp.rs` sends every message through `lettre`
+(https://github.com/lettre/lettre), MIT licensed, the library chosen in
+`docs/plans/mail.md`'s "The libraries" for speaking SMTP: XOAUTH2, pooled
+connections, the same rustls this crate already pins for IMAP.
+
+Copyright (c) 2014-2024 Alexis Mousset <contact@amousset.me>
+Copyright (c) 2019-2025 Paolo Barbolini <paolo@paolo565.org>
+Copyright (c) 2018 K. <kayo@illumium.org>
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
