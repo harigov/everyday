@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -88,7 +88,7 @@ pub fn migrate(
 
 /// Every migration step, in order. Index 0 is version 1.
 pub fn steps(d: Dialect) -> Vec<Vec<String>> {
-    vec![v1(d), v2(d), v3(d), v4(d), v5(d), v6(d), v7(d), v8(d)]
+    vec![v1(d), v2(d), v3(d), v4(d), v5(d), v6(d), v7(d), v8(d), v9(d)]
 }
 
 /// The `blobs` table, for a backend that keeps attachments in the database.
@@ -744,6 +744,74 @@ fn v8(d: Dialect) -> Vec<String> {
             .into(),
         // The count on the app bar, and the list behind it.
         "CREATE INDEX IF NOT EXISTS runs_unseen ON routine_runs (seen, started_us)".into(),
+    ]
+}
+
+/// Version 9: mail's groundwork, laid down ahead of the domain itself.
+///
+/// `docs/plans/mail.md` calls this phase 0 -- "the part of this plan that is
+/// not about mail at all" -- and its schema section says the rule this step
+/// follows: every later phase of that plan adds its tables to this same
+/// step, so a vault passes through one "mail exists now" migration rather
+/// than a fresh version for each phase, the way version 4 folded shelves,
+/// items and the log into a single arrival rather than three. Two tables
+/// land here because two things earlier work needs regardless of whether
+/// mail itself ever ships: a secret store that is not a singleton, and
+/// somewhere for a Postgres vault to put raw messages that is not a row per
+/// attachment-sized blob.
+///
+/// `record_secrets` generalises the singleton `agent_secret` above -- a
+/// credential keyed by *who it belongs to* (`owner_kind`, `owner_id`,
+/// together the primary key) rather than pinned to the one row a `CHECK`
+/// allows. See [`everyday_core::store::secrets`] for the trait. `owner_kind`
+/// and `owner_id` sit in the clear, which is the same trade every other
+/// pointer column in this file makes: a lookup needs *something* to search
+/// on, and what leaks is that some record of that kind holds a credential,
+/// never the credential, and never which record -- the id is a UUID, as
+/// opaque here as `tracker_id` is in `readings`. What actually stops a
+/// secret sealed for one owner opening as another's is not secrecy of the
+/// columns but the associated data `record_secret_aad` builds from them,
+/// which the sealing key checks and a copied row cannot satisfy.
+///
+/// `mail_packs` is the Postgres answer to "where do raw messages live" --
+/// see [`everyday_core::packstore`]. A SQLite vault keeps its packs in files
+/// beside the database instead and never gains a row here, the same choice
+/// `blobs_table` makes for attachments and for the same reason: the database
+/// is on this machine, so a file the filesystem already buffers and syncs is
+/// cheaper than a column WAL-logging the same bytes twice. Unlike
+/// `blobs_table`, this table *is* one of the numbered steps rather than
+/// created on open -- the plan's own schema section lists it there, and
+/// keeping it out would need a second "does this table exist" check
+/// (`blobs_table`'s reason for existing) for a backend split that is
+/// per-*domain* here, not per-driver: every vault, on either database, ends
+/// up with the same tables after this step, and it is only mail's own store
+/// that chooses whether to ever write a row into this particular one. `seq`
+/// is a per-account arrival order, for whenever something later wants packs
+/// back in the order they were written rather than by id; `id` is what a
+/// `PackRef` actually names, and it is what `read` looks a row up by.
+fn v9(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS record_secrets (
+                 owner_kind  TEXT NOT NULL,
+                 owner_id    TEXT NOT NULL,
+                 data        {blob} NOT NULL,
+                 PRIMARY KEY (owner_kind, owner_id)
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS mail_packs (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 account_id  TEXT    NOT NULL,
+                 seq         {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        // One account's rows, in the order they arrived -- the only
+        // question this table is asked before the mail domain itself lands
+        // and gives it something to join against.
+        "CREATE INDEX IF NOT EXISTS mail_packs_by_account ON mail_packs (account_id, seq)".into(),
     ]
 }
 

@@ -32,6 +32,7 @@ mod library;
 mod notes;
 mod purpose;
 mod routines;
+mod secrets;
 mod tasks;
 mod trackers;
 
@@ -41,6 +42,7 @@ pub use library::run_library_suite;
 pub use notes::run_note_suite;
 pub use purpose::run_purpose_suite;
 pub use routines::run_routine_suite;
+pub use secrets::run_secret_suite;
 pub use tasks::run_task_suite;
 pub use trackers::run_tracker_suite;
 
@@ -157,6 +159,14 @@ pub fn run_all(store: &dyn JournalStore) {
     match store.agent() {
         Some(agent) => run_agent_suite(agent),
         None => eprintln!("backend {name:?} stores no assistant; skipping the agent suite"),
+    }
+
+    // And per-record secrets, on the same terms again.
+    match store.secrets() {
+        Some(secrets) => run_secret_suite(secrets),
+        None => {
+            eprintln!("backend {name:?} stores no per-record secrets; skipping the secret suite")
+        }
     }
 
     journal::cleanup(store);

@@ -116,6 +116,7 @@ mod profile;
 mod purpose;
 mod record;
 mod routines;
+mod secrets;
 mod tasks;
 mod trackers;
 
@@ -283,6 +284,7 @@ impl SqlStore {
             notes: true,
             routines: true,
             agent: true,
+            secrets: true,
         }
     }
 

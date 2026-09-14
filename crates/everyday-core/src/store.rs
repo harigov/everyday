@@ -35,6 +35,7 @@ use crate::store::library::LibraryStore;
 use crate::store::notes::NoteStore;
 use crate::store::purpose::PurposeStore;
 use crate::store::routines::RoutineStore;
+use crate::store::secrets::SecretStore;
 use crate::store::tasks::TaskStore;
 use crate::store::trackers::TrackerStore;
 use jiff::civil::Date;
@@ -120,6 +121,16 @@ pub struct Capabilities {
     /// entries, and its task tools will say the backend does not do tasks.
     #[serde(default)]
     pub agent: bool,
+    /// Backend implements [`secrets::SecretStore`], so a record other than
+    /// the assistant can hold a credential of its own -- an account's
+    /// refresh token, in the first domain to need one.
+    ///
+    /// Independent of `agent` in the type: the two singleton tables the
+    /// assistant's secret has always used stay exactly as they are, and this
+    /// flag is about the *general* case, one credential per record, that
+    /// nothing needed until now.
+    #[serde(default)]
+    pub secrets: bool,
 }
 
 /// Per-vault configuration a backend needs and the core knows nothing about.
@@ -480,6 +491,16 @@ pub trait JournalStore: Send + Sync {
         None
     }
 
+    /// Storage for secrets scoped to a single record, if this backend has
+    /// any.
+    ///
+    /// Same shape and same reasoning as [`JournalStore::tasks`]. See
+    /// [`secrets`](crate::store::secrets) for why this is a table keyed by
+    /// owner rather than a second `agent_secret`.
+    fn secrets(&self) -> Option<&dyn SecretStore> {
+        None
+    }
+
     // ---- the owner ------------------------------------------------------
 
     /// Who this vault belongs to.
@@ -659,6 +680,13 @@ pub trait JournalStore: Send + Sync {
     /// the reference walk says. The cost of keeping an orphan another day is
     /// a few kilobytes; the cost of collecting a live one is an attachment
     /// that is gone for good.
+    ///
+    /// **Not yet mail-aware.** A synced attachment is a blob like any other,
+    /// reachable only through the message that embeds it -- and a `Message`
+    /// does not exist in this crate yet. This walk will need a fourth branch
+    /// once it does, alongside `library` and `notes`, or the first sweep
+    /// after mail lands will delete every attachment nobody had opened in a
+    /// day. Left for phase 2 of the mail plan, which adds the record to walk.
     fn collect_garbage(&self, grace: std::time::Duration) -> Result<u64> {
         let mut live = std::collections::BTreeSet::new();
         for entry in self.all_entries()? {
@@ -796,6 +824,7 @@ pub mod library;
 pub mod notes;
 pub mod purpose;
 pub mod routines;
+pub mod secrets;
 pub mod tasks;
 pub mod trackers;
 
