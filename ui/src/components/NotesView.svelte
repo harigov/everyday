@@ -424,7 +424,7 @@
     background: none;
     padding: 0;
     font-family: var(--font-read);
-    font-size: var(--text-3xl);
+    font-size: var(--text-page-title);
     font-weight: 650;
     line-height: var(--leading-tight);
     letter-spacing: -0.018em;

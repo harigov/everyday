@@ -681,6 +681,44 @@ class LibraryState {
     }
   }
 
+  /**
+   * Put a picture somebody chose on an item: a file off their disk, or an
+   * image address they pasted. Either way it is stored in the vault first,
+   * like every other cover.
+   *
+   * A file clears `coverUrl`, because the address a lookup found is no longer
+   * where this cover came from -- and "Get the cover" would otherwise offer
+   * to swap the chosen picture back the moment it was removed.
+   */
+  async chooseCover(id: ItemId, from: File | string) {
+    this.enriching = true
+    try {
+      const blob =
+        typeof from === 'string'
+          ? await api.fetchImage(from)
+          : await api.putBlob(new Uint8Array(await from.arrayBuffer()))
+      const item = this.items.find((i) => i.id === id)
+      if (!item) return
+      item.cover = blob
+      item.coverUrl = typeof from === 'string' ? from : ''
+      this.touch(id)
+      this.note = null
+    } catch (e) {
+      if (isLocked(e)) await app.lock()
+      else this.note = errorMessage(e)
+    } finally {
+      this.enriching = false
+    }
+  }
+
+  removeCover(id: ItemId) {
+    const item = this.items.find((i) => i.id === id)
+    if (!item) return
+    item.cover = null
+    item.coverUrl = ''
+    this.touch(id)
+  }
+
   // ── derived ──────────────────────────────────────────────────────────
 
   get kind(): KindInfo | null {

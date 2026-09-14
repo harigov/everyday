@@ -226,6 +226,25 @@
               ondismiss={() => (title = '')}
             />
           {/if}
+        </header>
+
+        <RichText
+          oneditor={(ed: TipTapEditor | null) => (editor = ed)}
+          docId={entry.id}
+          doc={() => app.entry?.body}
+          placeholder="What happened today?"
+          bindBody={(get: (() => RichDoc) | null) => app.bindBody(get)}
+          syncBody={() => app.syncBody()}
+          onedit={() => app.scheduleSave()}
+          onattach={attach}
+          onwords={(n: number) => (words = n)}
+          onstoring={(f: string | null) => (storing = f)}
+        />
+
+        <!-- Everything about the day that is not the writing, under it. The
+             page opens on the title and then the prose, so the first thing a
+             blank entry offers is somewhere to type, not a row of chips. -->
+        <section class="day" aria-label="About this day">
           <EntryMeta {entry} />
           <!-- What the day recorded in numbers, under what it recorded in
                prose. Keyed on the journal and the date rather than on the
@@ -268,20 +287,7 @@
             onaccept={acceptTag}
             ondismiss={() => (tagChips = [])}
           />
-        </header>
-
-        <RichText
-          oneditor={(ed: TipTapEditor | null) => (editor = ed)}
-          docId={entry.id}
-          doc={() => app.entry?.body}
-          placeholder="What happened today?"
-          bindBody={(get: (() => RichDoc) | null) => app.bindBody(get)}
-          syncBody={() => app.syncBody()}
-          onedit={() => app.scheduleSave()}
-          onattach={attach}
-          onwords={(n: number) => (words = n)}
-          onstoring={(f: string | null) => (storing = f)}
-        />
+        </section>
       </div>
     </div>
 
@@ -320,9 +326,9 @@
 {/if}
 
 <style>
-  /* Under the tracker strip and above the prose, because that is where the
-     numbers live on this page. Quiet by default: these are offers, and a page
-     you write on should not be a page of buttons. */
+  /* Under the tracker strip, because that is where the numbers live on this
+     page. Quiet by default: these are offers, and a page you write on should
+     not be a page of buttons. */
   .quick-row {
     display: flex;
     gap: var(--sp-2);
@@ -366,14 +372,22 @@
 
   /* --measure is the text column; the padding sits outside it. Setting it as
      the box width instead cost two thirds of an inch of line on every side. */
+  /* --measure is the text column; the padding sits outside it. Setting it as
+     the box width instead cost two thirds of an inch of line on every side. */
   .page {
     max-width: calc(var(--measure) + var(--sp-8) * 2);
     margin: 0 auto;
-    padding: var(--sp-10) var(--sp-8) 30vh;
+    padding: var(--sp-8) var(--sp-8) 30vh;
   }
 
   .head {
-    margin-bottom: var(--sp-6);
+    margin-bottom: var(--sp-3);
+  }
+
+  .day {
+    margin-top: var(--sp-8);
+    padding-top: var(--sp-2);
+    border-top: 1px solid var(--border);
   }
 
   .date {
@@ -390,7 +404,7 @@
     background: none;
     padding: 0;
     font-family: var(--font-read);
-    font-size: var(--text-3xl);
+    font-size: var(--text-page-title);
     font-weight: 650;
     line-height: var(--leading-tight);
     letter-spacing: -0.018em;

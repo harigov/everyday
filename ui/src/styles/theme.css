@@ -45,8 +45,11 @@
   --text-2xl: 28px;
   --text-3xl: 34px;
 
-  /* Entry bodies. */
-  --text-prose: 18px;
+  /* Entry and note bodies. */
+  --text-prose: 17px;
+  /* The title above them: one step down from the top of the ladder, so the
+     heading does not outweigh the page it sits on. */
+  --text-page-title: var(--text-2xl);
 
   --leading-tight: 1.25;
   --leading-snug: 1.45;
@@ -101,10 +104,11 @@
   --fab-size: 48px;
   --fab-clear: calc(var(--fab-size) + var(--sp-6) * 2);
   /* The width of the *text*, not of the box around it -- the page adds its
-     padding on top. About 75 characters at --text-prose, which is the top of
-     the range where the eye still finds the next line reliably, and a good
-     deal more of the window than the 60 characters this used to allow. */
-  --measure: 38rem;
+     padding on top. It was 38rem, about 75 characters, which left most of a
+     wide window empty either side of a journal or a note written in long
+     sittings; this is wider by choice, and the column still narrows with
+     the pane. */
+  --measure: 50rem;
 
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
   --fast: 120ms;

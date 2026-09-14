@@ -2,6 +2,7 @@
   import { api } from '../lib/api'
   import { friendlyDate, plural, pluralWord } from '../lib/format'
   import { ask, quick, slot } from '../lib/quick.svelte'
+  import { focusOnMount } from '../lib/focus'
   import { coverRatio, library } from '../lib/library.svelte'
   import { ratingLabel } from '../lib/rating'
   import { sourceLabel } from '../lib/websearch'
@@ -26,6 +27,28 @@
 
   let confirming = $state(false)
   let tagDraft = $state('')
+
+  // ── choosing a cover by hand ─────────────────────────────────────────
+  //
+  // For when no lookup finds the right edition, or finds nothing at all: a
+  // file off the disk, or the address of a picture somebody has open in a
+  // browser. Both are stored in the vault; neither is ever hot-linked.
+
+  let coverInput = $state<HTMLInputElement | null>(null)
+  let coverUrlDraft = $state<string | null>(null)
+
+  function pickedCover(e: Event & { currentTarget: HTMLInputElement }) {
+    const file = e.currentTarget.files?.[0]
+    e.currentTarget.value = ''
+    if (file) void library.chooseCover(item.id, file)
+  }
+
+  async function useCoverUrl() {
+    const url = coverUrlDraft?.trim()
+    if (!url) return
+    coverUrlDraft = null
+    await library.chooseCover(item.id, url)
+  }
 
   // ── re-looking something up ──────────────────────────────────────────
   //
@@ -161,6 +184,11 @@
     })
   }
 
+  function setYear(raw: string) {
+    const year = Number.parseInt(raw, 10)
+    edit(() => (item.year = Number.isFinite(year) ? year : null))
+  }
+
   async function commitProgress(raw: string) {
     const position = Number.parseInt(raw, 10)
     if (!Number.isFinite(position) || position < 0) return
@@ -254,13 +282,56 @@
   <div class="scroll body">
     <div class="hero">
       <div class="art">
-        <Cover
-          blob={item.cover}
-          title={item.title}
-          icon={kind?.icon ?? ''}
-          {color}
-          ratio={coverRatio(kind)}
+        <button
+          class="cover-pick"
+          title="Choose a picture"
+          disabled={library.enriching}
+          onclick={() => coverInput?.click()}
+        >
+          <Cover
+            blob={item.cover}
+            title={item.title}
+            icon={kind?.icon ?? ''}
+            {color}
+            ratio={coverRatio(kind)}
+          />
+        </button>
+        <input
+          bind:this={coverInput}
+          class="hidden"
+          type="file"
+          accept="image/*"
+          aria-label="Cover picture"
+          onchange={pickedCover}
         />
+        <div class="cover-actions">
+          <button
+            class="cover-act"
+            disabled={library.enriching}
+            onclick={() => coverInput?.click()}
+          >
+            <Icon name="image" size={12} /> Choose
+          </button>
+          <button
+            class="cover-act"
+            title="Use the address of a picture"
+            aria-label="Use the address of a picture"
+            disabled={library.enriching}
+            onclick={() => (coverUrlDraft = coverUrlDraft === null ? '' : null)}
+          >
+            <Icon name="link" size={12} />
+          </button>
+          {#if item.cover}
+            <button
+              class="cover-act"
+              title="Remove the cover"
+              aria-label="Remove the cover"
+              onclick={() => library.removeCover(item.id)}
+            >
+              <Icon name="close" size={12} />
+            </button>
+          {/if}
+        </div>
         {#if !item.cover && item.coverUrl}
           <!-- The address is known and the picture is not here: a lookup that
                found the details while the network was flaky. One button
@@ -279,8 +350,16 @@
         <input
           class="title"
           value={item.title}
+          placeholder="Title"
           aria-label="Title"
           oninput={(e) => edit(() => (item.title = e.currentTarget.value))}
+        />
+        <input
+          class="creator subtitle"
+          value={item.subtitle}
+          placeholder="Subtitle"
+          aria-label="Subtitle"
+          oninput={(e) => edit(() => (item.subtitle = e.currentTarget.value))}
         />
         <input
           class="creator"
@@ -315,6 +394,28 @@
         {/each}
       </div>
     </div>
+
+    {#if coverUrlDraft !== null}
+      <form
+        class="cover-url"
+        onsubmit={(e) => {
+          e.preventDefault()
+          void useCoverUrl()
+        }}
+      >
+        <input
+          type="url"
+          placeholder="https://… address of a picture"
+          aria-label="Picture address"
+          bind:value={coverUrlDraft}
+          use:focusOnMount
+          onkeydown={(e) => {
+            if (e.key === 'Escape') coverUrlDraft = null
+          }}
+        />
+        <button class="mini" type="submit" disabled={!coverUrlDraft.trim()}>Use</button>
+      </form>
+    {/if}
 
     <!-- Status: five buttons, in this shelf's own words. A select would be
          one click shorter to build and one click longer to use, and this is
@@ -378,15 +479,19 @@
       </section>
     {/if}
 
-    {#if item.summary}
-      <section>
-        <h3>About</h3>
-        <!-- Their words, so it is not editable here. What you think goes in
-             Notes, and keeping the two apart is what lets a re-fetch replace
-             one without touching the other. -->
-        <p class="summary">{item.summary}</p>
-      </section>
-    {/if}
+    <section>
+      <h3>About</h3>
+      <!-- The blurb, usually in the source's words, and editable because a
+           source gets it wrong. What you think still goes in Notes: keeping
+           the two apart is what lets a re-fetch replace this and never that. -->
+      <textarea
+        class="summary"
+        rows="3"
+        placeholder="What it is"
+        value={item.summary}
+        oninput={(e) => edit(() => (item.summary = e.currentTarget.value))}
+      ></textarea>
+    </section>
 
     <section>
       <h3>Notes</h3>
@@ -399,46 +504,53 @@
       ></textarea>
     </section>
 
-    {#if shownFields.length > 0 || orphanFacts.length > 0}
-      <section>
-        <h3>Details</h3>
-        <dl class="facts">
-          {#each shownFields as field (field.key)}
-            <dt>{field.label}</dt>
-            <dd>
-              {#if field.fieldType === 'multiline'}
-                <textarea
-                  rows="2"
-                  placeholder={field.placeholder}
-                  value={item.facts[field.key] ?? ''}
-                  oninput={(e) => setFact(field.key, e.currentTarget.value)}
-                ></textarea>
-              {:else}
-                <input
-                  type={field.fieldType === 'number'
-                    ? 'number'
-                    : field.fieldType === 'date'
-                      ? 'date'
-                      : 'text'}
-                  placeholder={field.placeholder}
-                  value={item.facts[field.key] ?? ''}
-                  oninput={(e) => setFact(field.key, e.currentTarget.value)}
-                />
-              {/if}
-            </dd>
-          {/each}
-          {#each orphanFacts as key (key)}
-            <dt class="orphan" title="This shelf no longer has a field called “{key}”">{key}</dt>
-            <dd>
+    <section>
+      <h3>Details</h3>
+      <dl class="facts">
+        <dt>Year</dt>
+        <dd>
+          <input
+            type="number"
+            value={item.year ?? ''}
+            aria-label="Year"
+            oninput={(e) => setYear(e.currentTarget.value)}
+          />
+        </dd>
+        {#each shownFields as field (field.key)}
+          <dt>{field.label}</dt>
+          <dd>
+            {#if field.fieldType === 'multiline'}
+              <textarea
+                rows="2"
+                placeholder={field.placeholder}
+                value={item.facts[field.key] ?? ''}
+                oninput={(e) => setFact(field.key, e.currentTarget.value)}
+              ></textarea>
+            {:else}
               <input
-                value={item.facts[key] ?? ''}
-                oninput={(e) => setFact(key, e.currentTarget.value)}
+                type={field.fieldType === 'number'
+                  ? 'number'
+                  : field.fieldType === 'date'
+                    ? 'date'
+                    : 'text'}
+                placeholder={field.placeholder}
+                value={item.facts[field.key] ?? ''}
+                oninput={(e) => setFact(field.key, e.currentTarget.value)}
               />
-            </dd>
-          {/each}
-        </dl>
-      </section>
-    {/if}
+            {/if}
+          </dd>
+        {/each}
+        {#each orphanFacts as key (key)}
+          <dt class="orphan" title="This shelf no longer has a field called “{key}”">{key}</dt>
+          <dd>
+            <input
+              value={item.facts[key] ?? ''}
+              oninput={(e) => setFact(key, e.currentTarget.value)}
+            />
+          </dd>
+        {/each}
+      </dl>
+    </section>
 
     <section>
       <h3>Tags</h3>
@@ -712,6 +824,73 @@
     width: 116px;
     flex: none;
   }
+  .cover-pick {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border-radius: var(--radius-sm);
+  }
+  .cover-pick:hover:not(:disabled) {
+    opacity: 0.85;
+  }
+  .hidden {
+    display: none;
+  }
+  .cover-actions {
+    display: flex;
+    gap: 2px;
+    margin-top: var(--sp-1);
+  }
+  .cover-act {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    height: 22px;
+    padding: 0 4px;
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    color: var(--fg-subtle);
+    background: var(--bg-hover);
+  }
+  /* Only "Choose" carries a word: three labelled buttons do not fit under a
+     116px cover, and the other two say what they are on hover. */
+  .cover-act + .cover-act {
+    flex: none;
+    width: 24px;
+  }
+  .cover-act:hover:not(:disabled) {
+    color: var(--fg);
+    background: var(--bg-active);
+  }
+  .cover-act:disabled {
+    opacity: 0.45;
+  }
+  .cover-url {
+    display: flex;
+    gap: var(--sp-2);
+    margin-top: calc(var(--sp-3) * -1);
+  }
+  .cover-url input {
+    flex: 1;
+    min-width: 0;
+    height: 26px;
+    padding: 0 var(--sp-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-raised);
+    font-size: var(--text-sm);
+    color: var(--fg);
+    user-select: text;
+  }
+  .cover-url input:focus {
+    outline: none;
+    border-color: var(--tint);
+  }
+  .cover-url .mini {
+    height: 26px;
+  }
   .cover-fetch {
     display: flex;
     align-items: center;
@@ -756,6 +935,19 @@
   .creator {
     font-size: var(--text-base);
     color: var(--fg-muted);
+  }
+  /* A faint rule under each, so they read as fields you can type in and not
+     as a heading: drawn borderless, nobody found out the title was editable. */
+  .title,
+  .creator {
+    box-shadow: inset 0 -1px 0 var(--border);
+  }
+  .subtitle {
+    font-size: var(--text-sm);
+  }
+  .title::placeholder,
+  .creator::placeholder {
+    color: var(--fg-faint);
   }
   .title:hover,
   .creator:hover {
@@ -893,7 +1085,13 @@
   }
 
   .summary {
-    margin: 0;
+    width: 100%;
+    padding: var(--sp-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-raised);
+    resize: vertical;
+    user-select: text;
     font-family: var(--font-read);
     font-size: var(--text-base);
     line-height: var(--leading-normal);
@@ -919,6 +1117,7 @@
     line-height: var(--leading-normal);
   }
   .notes:focus,
+  .summary:focus,
   .facts textarea:focus,
   .facts input:focus {
     outline: none;
