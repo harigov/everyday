@@ -333,3 +333,6 @@ mod tests;
 
 #[cfg(test)]
 mod keyset_tests;
+
+#[cfg(test)]
+mod scale;
