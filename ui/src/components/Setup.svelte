@@ -145,11 +145,11 @@
     {#if mode === 'connect'}
       <Connect />
     {:else}
-      <label class="label" for="name">What should we call it?</label>
+      <label class="field-label" for="name">What should we call it?</label>
       <input id="name" class="field" bind:value={name} placeholder="My Journal" />
 
       <div class="group">
-        <span class="label">How should it be stored?</span>
+        <span class="field-label">How should it be stored?</span>
         {#each backends as b (b.id)}
           <label class="option" class:on={backend === b.id}>
             <input type="radio" name="backend" value={b.id} bind:group={backend} />
@@ -165,7 +165,7 @@
          that lives in a folder on this computer, which is why this is driven
          by the backend's own declaration rather than by a branch on its id. -->
       {#each fields as f (backend + f.key)}
-        <label class="label" for="set-{f.key}">
+        <label class="field-label" for="set-{f.key}">
           {f.label}{#if !f.required}<span class="opt-desc"> — optional</span>{/if}
         </label>
         <input
@@ -202,7 +202,7 @@
       </div>
 
       {#if encrypt}
-        <label class="label" for="pw">Password</label>
+        <label class="field-label" for="pw">Password</label>
         <input
           id="pw"
           class="field"

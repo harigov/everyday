@@ -20,6 +20,7 @@ import { FocusRequest } from './store/focus-request'
 import { latest } from './store/latest'
 import { addDays, todayIso } from './time'
 import { parseQuickAdd } from './quickadd'
+import { bySortOrder, planDrop, sectionPatch, type GroupBy, type Zone } from './tasklist'
 import type {
   BlockKind,
   Priority,
@@ -67,7 +68,7 @@ export type Scope =
   | { kind: 'goals' }
 
 export type View = 'list' | 'board'
-export type GroupBy = 'none' | 'status' | 'due' | 'priority' | 'purpose'
+export type { GroupBy }
 
 const viewPref = pref<View | null>(
   'everyday.todo.view',
@@ -401,9 +402,13 @@ class TodoState {
       .sort((a, b) => priorityRank(b) - priorityRank(a))
   }
 
-  /** Top-level tasks in scope, each with its loaded subtasks nested. */
+  /**
+   * Top-level tasks in scope, each with its loaded subtasks nested, in the
+   * order they were dragged into. See `bySortOrder` for the ones never
+   * dragged.
+   */
   get tree(): TaskNode[] {
-    const rows = this.visible
+    const rows = bySortOrder(this.visible)
     const byParent = new Map<TaskId, Task[]>()
     const present = new Set(rows.map((t) => t.id))
     const roots: Task[] = []
@@ -715,6 +720,78 @@ class TodoState {
     this.#saves.touchAll(touched.map((t) => t.id))
     await this.flush()
     void this.refreshStats()
+  }
+
+  // ── the list ─────────────────────────────────────────────────────────
+
+  /**
+   * Can `id` be dropped here? What the list asks on every `dragover`, so the
+   * cursor refuses a drop before the pointer is released rather than after.
+   *
+   * `section` is the grouping key of the row dropped on; it only matters
+   * when the drop leaves the task at the top level, since a subtask is
+   * drawn in its parent's section whatever its own fields say.
+   */
+  canDrop(
+    id: TaskId,
+    target: { id: TaskId; zone: Zone; parentId: TaskId | null },
+    section: string,
+  ) {
+    const plan = planDrop(this.tasks, id, target)
+    if (!plan) return false
+    return plan.parentId !== null || this.#sectionPatchFor(id, section) !== null
+  }
+
+  /**
+   * Drop a row in the list, beside another or onto it.
+   *
+   * Every sibling at the destination is renumbered and written in one call,
+   * for the reason `move` gives. A task that becomes a subtask takes its new
+   * parent's project, because a subtask filed somewhere other than its
+   * parent is the thing `setProject` exists to prevent.
+   */
+  async place(
+    id: TaskId,
+    target: { id: TaskId; zone: Zone; parentId: TaskId | null },
+    section: string,
+  ) {
+    const task = this.tasks.find((t) => t.id === id)
+    const plan = planDrop(this.tasks, id, target)
+    if (!task || !plan) return
+    const joining = plan.parentId === null ? this.#sectionPatchFor(id, section) : {}
+    if (!joining) return
+
+    if ((task.parentId ?? null) !== plan.parentId) {
+      const parent = plan.parentId ? this.tasks.find((t) => t.id === plan.parentId) : null
+      this.patch(id, {
+        parentId: plan.parentId,
+        ...(parent && (parent.projectId ?? null) !== (task.projectId ?? null)
+          ? { projectId: parent.projectId ?? null }
+          : {}),
+      })
+      // Dropped onto a folded task, it would vanish into the fold.
+      if (parent && !this.isExpanded(parent.id)) this.toggleExpanded(parent.id)
+    }
+
+    const { status, ...rest } = joining
+    if (status) this.setStatus(id, status)
+    if (Object.keys(rest).length > 0) this.patch(id, rest)
+
+    plan.order.forEach((sibling, i) => {
+      const t = this.tasks.find((x) => x.id === sibling)
+      if (t && t.sortOrder !== i) this.patch(sibling, { sortOrder: i })
+    })
+
+    await this.flush()
+  }
+
+  #sectionPatchFor(id: TaskId, section: string) {
+    const task = this.tasks.find((t) => t.id === id)
+    if (!task) return null
+    return sectionPatch(this.groupBy, section, task, {
+      today: todayIso(),
+      projectPurpose: this.projectOf(task.projectId)?.purpose ?? null,
+    })
   }
 
   // ── the detail panel ─────────────────────────────────────────────────
