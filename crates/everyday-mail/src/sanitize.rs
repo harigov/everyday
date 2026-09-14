@@ -158,7 +158,9 @@ impl Shared {
             let content_id = trimmed[trimmed.len() - rest.len()..].trim();
             return format!(
                 "{}://mail/part/{}/{}",
-                self.rewrite.scheme, self.rewrite.message_id, content_id
+                self.rewrite.scheme,
+                path_segment(&self.rewrite.message_id),
+                path_segment(content_id)
             );
         }
 
@@ -173,10 +175,27 @@ impl Shared {
             return self.proxy(&format!("https://{rest}"));
         }
 
-        // Everything else -- relative paths, `data:`, `mailto:`, an
-        // already-rewritten `{scheme}://` from a message sanitised twice --
-        // is left exactly as it was.
-        trimmed.to_string()
+        // Already rewritten, from a message sanitised twice.
+        if lower.starts_with(&format!("{}://mail/", self.rewrite.scheme)) {
+            return trimmed.to_string();
+        }
+
+        // An inline raster image carries its own bytes and fetches nothing.
+        // SVG is not on the list: an SVG document can carry script and its
+        // own references.
+        const INLINE: [&str; 4] =
+            ["data:image/png", "data:image/gif", "data:image/jpeg", "data:image/webp"];
+        if INLINE.iter().any(|p| lower.starts_with(p)) {
+            return trimmed.to_string();
+        }
+
+        // Everything else becomes nothing. Leaving an unrecognised reference
+        // as it was is how a scheme nobody thought of -- `ftp:`, a relative
+        // path the frame would resolve against something, an escape this
+        // scanner never decoded -- turns into a request the person did not
+        // choose to make. The frame's CSP would refuse it too; this is the
+        // wall before that one.
+        String::new()
     }
 
     fn proxy(&mut self, url: &str) -> String {
@@ -440,7 +459,20 @@ fn rewrite_srcset(value: &str, shared: &Rc<RefCell<Shared>>) -> String {
 /// to understand is three keywords and balanced parentheses, and a real
 /// parser would need to also *re-serialise* correctly-parsed CSS, which is
 /// far more surface for something to go subtly wrong on hostile input.
+///
+/// Three things make that small grammar honest. Comments are removed first,
+/// so `url/**/(` cannot hide a reference between two tokens. CSS with a
+/// backslash anywhere is dropped whole, because escapes (`u\72l(`,
+/// `@\69mport`) are the other way to spell a keyword this scanner looks
+/// for, and decoding them correctly is the parser this is avoiding;
+/// legitimate mail almost never needs one. And `image-set(` fetches without
+/// saying `url(`, so it is dropped like `expression(`.
 fn scrub_css(css: &str, on_url: &mut dyn FnMut(&str) -> String) -> String {
+    if css.contains('\\') {
+        return String::new();
+    }
+    let css = strip_css_comments(css);
+    let css = css.as_str();
     let mut out = String::with_capacity(css.len());
     let mut i = 0usize;
 
@@ -453,11 +485,17 @@ fn scrub_css(css: &str, on_url: &mut dyn FnMut(&str) -> String) -> String {
             continue;
         }
 
-        if ci_starts_with(rest, "expression(") {
-            if let Some(close) = matching_close_paren(rest, "expression".len()) {
-                i += close + 1;
-                continue;
+        if let Some(name) =
+            ["expression", "-webkit-image-set", "image-set"].into_iter().find(|name| {
+                ci_starts_with(rest, name) && rest.as_bytes().get(name.len()) == Some(&b'(')
+            })
+        {
+            match matching_close_paren(rest, name.len()) {
+                Some(close) => i += close + 1,
+                // Unclosed: nothing after it can be trusted to mean what it says.
+                None => break,
             }
+            continue;
         }
 
         if ci_starts_with(rest, "url(") {
@@ -470,6 +508,9 @@ fn scrub_css(css: &str, on_url: &mut dyn FnMut(&str) -> String) -> String {
                 i += close + 1;
                 continue;
             }
+            // An unclosed `url(` swallows the rest of the text in a browser;
+            // here it ends it.
+            break;
         }
 
         let ch = rest.chars().next().expect("i < css.len() implies a char here");
@@ -477,6 +518,37 @@ fn scrub_css(css: &str, on_url: &mut dyn FnMut(&str) -> String) -> String {
         i += ch.len_utf8();
     }
 
+    out
+}
+
+/// `/* ... */` removed, and an unterminated comment taken to the end, as a
+/// browser does.
+fn strip_css_comments(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(start) = rest.find("/*") {
+        out.push_str(&rest[..start]);
+        match rest[start + 2..].find("*/") {
+            Some(end) => rest = &rest[start + 2 + end + 2..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Percent-encodes everything but the characters a message or content id is
+/// normally made of, so an id cannot close a quote, add a path segment, or
+/// start a query in the URL it is written into.
+fn path_segment(id: &str) -> String {
+    let mut out = String::with_capacity(id.len());
+    for b in id.bytes() {
+        if b.is_ascii_alphanumeric() || b"@._-+".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
     out
 }
 
@@ -584,6 +656,47 @@ mod tests {
         let out = sanitize(r#"<div style="width: expression(alert(1))">hi</div>"#, &rewrite());
         assert!(!out.html.contains("expression"));
         assert!(!out.html.contains("alert"));
+    }
+
+    #[test]
+    fn a_css_escape_cannot_spell_a_reference_past_the_scanner() {
+        let out = sanitize(
+            r#"<div style="background: u\72l(https://evil.example/a.png)">hi</div><style>@\69mport 'https://evil.example/x.css';</style>"#,
+            &rewrite(),
+        );
+        assert!(!out.html.contains("evil.example"));
+    }
+
+    #[test]
+    fn a_comment_cannot_split_url_from_its_parenthesis() {
+        let out = sanitize(
+            r#"<div style="background: url/**/(https://evil.example/a.png)">hi</div>"#,
+            &rewrite(),
+        );
+        assert!(!out.html.contains("evil.example"));
+    }
+
+    #[test]
+    fn image_set_and_unclosed_url_fetch_nothing() {
+        let out = sanitize(
+            r#"<style>p { background: image-set("https://evil.example/a.png" 1x); } q { background: url(https://evil.example/b.png</style>"#,
+            &rewrite(),
+        );
+        assert!(!out.html.contains("evil.example"));
+    }
+
+    #[test]
+    fn a_scheme_nobody_listed_becomes_nothing() {
+        let out =
+            sanitize(r#"<img src="ftp://evil.example/a.png" width="200" height="60">"#, &rewrite());
+        assert!(!out.html.contains("evil.example"));
+        assert!(out.remote_images.is_empty());
+    }
+
+    #[test]
+    fn a_content_id_cannot_break_out_of_its_url() {
+        let out = sanitize(r#"<img src='cid:a"/../b?x'>"#, &rewrite());
+        assert!(out.html.contains("everyday://mail/part/msg-1@example.com/a%22%2F..%2Fb%3Fx"));
     }
 
     #[test]
