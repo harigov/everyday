@@ -1614,6 +1614,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "everyday-mail"
+version = "0.1.0"
+dependencies = [
+ "everyday-core",
+ "jiff",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "everyday-mcp"
 version = "0.1.0"
 dependencies = [
