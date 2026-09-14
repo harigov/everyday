@@ -19,7 +19,7 @@ UI_DIR  := ui
 ARGS ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help setup run dev ui build test test-postgres lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
+.PHONY: help setup run dev ui build test test-postgres test-imap lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
 
 help: ## Show this help
 	@echo "Every Day -- make <target>"
@@ -93,6 +93,38 @@ test-postgres: ## Run the storage suite against a throwaway Postgres in Docker
 		cargo test -p everyday-store-postgres; \
 	status=$$?; \
 	docker rm -f everyday-pgtest >/dev/null; \
+	exit $$status
+
+# The IMAP adapter's suite (crates/everyday-mail/tests/imap_dovecot.rs),
+# against a throwaway Dovecot -- the official image, confined and rootless,
+# which authenticates any username against the one password in
+# USER_PASSWORD and auto-creates that user's mailbox, so nothing here seeds
+# a user database. It supports CONDSTORE, QRESYNC, IDLE, MOVE, UIDPLUS and
+# SPECIAL-USE without extra configuration. `insecure-test-tls` is the
+# feature that makes this crate trust the container's self-signed
+# certificate; see `Security::InsecureTestTls` in `src/imap.rs` for why it
+# exists and why it is never on by default. The container is removed when
+# it stops.
+test-imap: ## Run the IMAP adapter's suite against a throwaway Dovecot in Docker
+	@docker rm -f everyday-imaptest >/dev/null 2>&1 || true
+	docker run -d --rm --name everyday-imaptest \
+		-e USER_PASSWORD=testpass \
+		-p 15993:31993 -p 15143:31143 \
+		dovecot/dovecot:latest >/dev/null
+	@echo "waiting for Dovecot..."
+	@bash -c 'for i in $$(seq 1 60); do \
+		(exec 3<>/dev/tcp/127.0.0.1/15993) 2>/dev/null && exec 3<&- 3>&- && exit 0; \
+		sleep 1; \
+	done; exit 1'
+	@EVERYDAY_TEST_IMAP=1 \
+		EVERYDAY_TEST_IMAP_HOST=127.0.0.1 \
+		EVERYDAY_TEST_IMAP_TLS_PORT=15993 \
+		EVERYDAY_TEST_IMAP_STARTTLS_PORT=15143 \
+		EVERYDAY_TEST_IMAP_USER=everyday \
+		EVERYDAY_TEST_IMAP_PASS=testpass \
+		cargo test -p everyday-mail --features insecure-test-tls --test imap_dovecot; \
+	status=$$?; \
+	docker rm -f everyday-imaptest >/dev/null; \
 	exit $$status
 
 # The pair to reach for: `lint` says what is wrong, `fix` fixes what it can.

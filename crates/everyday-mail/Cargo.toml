@@ -39,6 +39,40 @@ html2text = { version = "=0.17.1", default-features = false, features = ["css"] 
 
 # HTML out, for the assistant's Markdown prompts later.
 htmd = "=0.5.5"
+zeroize.workspace = true
+
+# The IMAP client. Pinned to the same tokio as everyday-service, since the
+# two run in the same process and a mismatched minor version would mean two
+# copies of the runtime in one binary.
+tokio = { version = "1.53.1", features = ["net", "rt", "macros", "sync", "time", "io-util"] }
+async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
+# The parser async-imap itself is built on. A direct dependency, not just a
+# transitive one, because ImapSession::headers reads a FETCH attribute
+# (X-GM-THRID) that async-imap's typed wrapper never grew an accessor for --
+# see crates/everyday-mail/src/imap.rs's module docs for the whole story.
+imap-proto = "0.16"
+# TLS underneath it, pinned to the same rustls and tokio-rustls as the rest
+# of the tree (see Cargo.lock) so there is one copy of `ring` in the binary,
+# not two built with different feature sets.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# The platform's own trust store, the same choice `everyday-store-postgres`
+# makes for the same reason: one answer to "which certificates does this
+# app trust", rather than a second bundled root list to keep in step with
+# webpki-roots' releases.
+rustls-platform-verifier = "0.7"
+# `Stream` combinators over the fetch and IDLE streams async-imap hands back.
+futures = "0.3"
 
 [dev-dependencies]
 proptest = "=1.11.0"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "test-util"] }
+
+[features]
+# A certificate verifier that trusts anything, for `make test-imap`'s
+# throwaway Dovecot container -- see `Security::InsecureTestTls` in
+# `src/imap.rs`. Off by default: nothing in a normal build, `cargo build`
+# included, enables it. `tests/imap_dovecot.rs` builds without it too --
+# see that file's docs -- so `cargo test -p everyday-mail` always compiles
+# and explains why it did nothing, the same way the Postgres suite does.
+insecure-test-tls = []
