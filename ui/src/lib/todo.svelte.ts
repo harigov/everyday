@@ -20,6 +20,17 @@ import { FocusRequest } from './store/focus-request'
 import { latest } from './store/latest'
 import { addDays, todayIso } from './time'
 import { parseQuickAdd } from './quickadd'
+import {
+  ORDER_STEP,
+  byManualOrder,
+  drawnAtTop,
+  moveCard,
+  numberOrder,
+  planDrop,
+  sectionPatch,
+  type GroupBy,
+  type Zone,
+} from './tasklist'
 import type {
   BlockKind,
   Priority,
@@ -67,7 +78,7 @@ export type Scope =
   | { kind: 'goals' }
 
 export type View = 'list' | 'board'
-export type GroupBy = 'none' | 'status' | 'due' | 'priority' | 'purpose'
+export type { GroupBy }
 
 const viewPref = pref<View | null>(
   'everyday.todo.view',
@@ -401,22 +412,25 @@ class TodoState {
       .sort((a, b) => priorityRank(b) - priorityRank(a))
   }
 
-  /** Top-level tasks in scope, each with its loaded subtasks nested. */
+  /**
+   * Top-level tasks in scope, each with its loaded subtasks nested, in manual
+   * order -- the board's order, and whatever the list was dragged into.
+   */
   get tree(): TaskNode[] {
-    const rows = this.visible
+    const rows = byManualOrder(this.visible)
     const byParent = new Map<TaskId, Task[]>()
-    const present = new Set(rows.map((t) => t.id))
+    const drawn = this.#drawn()
     const roots: Task[] = []
     for (const task of rows) {
-      // A subtask whose parent is out of scope -- a smart list showing one
-      // step of a bigger job -- is drawn at the top level rather than
-      // vanishing under a parent that is not there.
-      if (task.parentId && present.has(task.parentId)) {
-        const kids = byParent.get(task.parentId) ?? []
-        kids.push(task)
-        byParent.set(task.parentId, kids)
-      } else {
+      // A subtask whose parent is not drawn -- a smart list showing one step
+      // of a bigger job, or a filter hiding the job -- is drawn at the top
+      // level rather than vanishing under a parent that is not there.
+      if (drawnAtTop(task, drawn)) {
         roots.push(task)
+      } else {
+        const kids = byParent.get(task.parentId!) ?? []
+        kids.push(task)
+        byParent.set(task.parentId!, kids)
       }
     }
     const node = (task: Task): TaskNode => ({
@@ -586,7 +600,7 @@ class TodoState {
       // New work goes to the end of whatever it is joining, not the top: a
       // list that reorders itself as you fill it in is impossible to type
       // into.
-      task.sortOrder = this.#nextSortOrder(task.status, opts.parentId ?? null)
+      task.sortOrder = this.#nextSortOrder(opts.parentId ?? null)
 
       await api.saveTask($state.snapshot(task))
       // Show it immediately rather than waiting for a round trip, and leave
@@ -615,13 +629,14 @@ class TodoState {
     return this.scope.kind === 'today' ? todayIso() : null
   }
 
-  /** One past the last task in the column (or under the parent) it joins. */
-  #nextSortOrder(status: TaskStatus, parentId: TaskId | null): number {
-    return (
-      this.tasks
-        .filter((t) => (t.parentId ?? null) === parentId && t.status === status)
-        .reduce((max, t) => Math.max(max, t.sortOrder), -1) + 1
-    )
+  /**
+   * After every task it joins, whatever their status: the end of the list,
+   * and so the end of whichever board column it lands in too.
+   */
+  #nextSortOrder(parentId: TaskId | null): number {
+    const siblings = this.tasks.filter((t) => (t.parentId ?? null) === parentId)
+    if (siblings.length === 0) return 0
+    return Math.max(...siblings.map((t) => t.sortOrder)) + ORDER_STEP
   }
 
   async remove(id: TaskId) {
@@ -668,9 +683,7 @@ class TodoState {
    * toggle.
    */
   column(status: TaskStatus): Task[] {
-    return this.tasks
-      .filter((t) => !t.parentId && t.status === status)
-      .sort((a, b) => a.sortOrder - b.sortOrder)
+    return byManualOrder(this.tasks.filter((t) => !t.parentId && t.status === status))
   }
 
   /** Which columns the board draws: every status that is used, plus the
@@ -682,39 +695,102 @@ class TodoState {
   }
 
   /**
-   * Drop a card into `status` at `index`, renumbering what it displaced.
+   * Drop a card into `status` at `index`.
    *
-   * Both affected columns are renumbered and written as one call, because
-   * half a reorder on disk is a board that reshuffles itself on next load.
+   * The order is the list's too, so the card is placed among every top-level
+   * task rather than only its column's. Whatever has to be renumbered is
+   * written in one call, because half a reorder on disk is a board that
+   * reshuffles itself on next load.
    */
   async move(id: TaskId, status: TaskStatus, index: number) {
     const moved = this.tasks.find((t) => t.id === id)
     if (!moved) return
-    const from = moved.status
-
-    const target = this.column(status).filter((t) => t.id !== id)
-    target.splice(Math.max(0, Math.min(index, target.length)), 0, moved)
-
-    const touched: Task[] = []
-    const renumber = (rows: Task[]) => {
-      rows.forEach((task, i) => {
-        if (task.sortOrder !== i || task.id === id) {
-          task.sortOrder = i
-          task.updatedAt = new Date().toISOString()
-          if (!touched.includes(task)) touched.push(task)
-        }
-      })
-    }
-
-    if (from !== status) {
-      this.setStatus(id, status)
-      renumber(this.column(from).filter((t) => t.id !== id))
-    }
-    renumber(target)
-
-    this.#saves.touchAll(touched.map((t) => t.id))
+    if (moved.status !== status) this.setStatus(id, status)
+    this.#renumber(moveCard(this.tasks, id, status, index), id)
     await this.flush()
     void this.refreshStats()
+  }
+
+  /** Write the `sortOrder`s that make `order` read in order. */
+  #renumber(order: TaskId[], moved: TaskId) {
+    const current = new Map(this.tasks.map((t) => [t.id, t.sortOrder]))
+    for (const [id, sortOrder] of numberOrder(order, current, moved)) {
+      this.patch(id, { sortOrder })
+    }
+  }
+
+  /** The tasks the list has on screen, for deciding what is top level. */
+  #drawn(): Set<TaskId> {
+    return new Set(this.visible.map((t) => t.id))
+  }
+
+  // ── the list ─────────────────────────────────────────────────────────
+
+  /**
+   * Can `id` be dropped here? What the list asks on every `dragover`, so the
+   * cursor refuses a drop before the pointer is released rather than after.
+   *
+   * `section` is the grouping key of the row dropped on; it only matters
+   * when the drop leaves the task at the top level, since a subtask is
+   * drawn in its parent's section whatever its own fields say.
+   */
+  canDrop(
+    id: TaskId,
+    target: { id: TaskId; zone: Zone; parentId: TaskId | null },
+    section: string,
+  ) {
+    const plan = planDrop(this.tasks, this.#drawn(), id, target)
+    if (!plan) return false
+    return plan.parentId !== null || this.#sectionPatchFor(id, section) !== null
+  }
+
+  /**
+   * Drop a row in the list, beside another or onto it.
+   *
+   * What has to be renumbered is written in one call, for the reason `move`
+   * gives. A task that becomes a subtask takes its new
+   * parent's project, because a subtask filed somewhere other than its
+   * parent is the thing `setProject` exists to prevent.
+   */
+  async place(
+    id: TaskId,
+    target: { id: TaskId; zone: Zone; parentId: TaskId | null },
+    section: string,
+  ) {
+    const task = this.tasks.find((t) => t.id === id)
+    const plan = planDrop(this.tasks, this.#drawn(), id, target)
+    if (!task || !plan) return
+    const joining = plan.parentId === null ? this.#sectionPatchFor(id, section) : {}
+    if (!joining) return
+
+    if ((task.parentId ?? null) !== plan.parentId) {
+      const parent = plan.parentId ? this.tasks.find((t) => t.id === plan.parentId) : null
+      this.patch(id, {
+        parentId: plan.parentId,
+        ...(parent && (parent.projectId ?? null) !== (task.projectId ?? null)
+          ? { projectId: parent.projectId ?? null }
+          : {}),
+      })
+      // Dropped onto a folded task, it would vanish into the fold.
+      if (parent && !this.isExpanded(parent.id)) this.toggleExpanded(parent.id)
+    }
+
+    const { status, ...rest } = joining
+    if (status) this.setStatus(id, status)
+    if (Object.keys(rest).length > 0) this.patch(id, rest)
+
+    this.#renumber(plan.order, id)
+
+    await this.flush()
+  }
+
+  #sectionPatchFor(id: TaskId, section: string) {
+    const task = this.tasks.find((t) => t.id === id)
+    if (!task) return null
+    return sectionPatch(this.groupBy, section, task, {
+      today: todayIso(),
+      projectPurpose: this.projectOf(task.projectId)?.purpose ?? null,
+    })
   }
 
   // ── the detail panel ─────────────────────────────────────────────────

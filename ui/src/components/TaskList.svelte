@@ -6,8 +6,9 @@
   // makes flipping between "by due date" and "by priority" instant.
 
   import { FILTER_LABELS, TASK_FILTERS, todo, type GroupBy } from '../lib/todo.svelte'
-  import { friendlyDate, plural } from '../lib/format'
-  import { isoDate, todayIso } from '../lib/time'
+  import { plural } from '../lib/format'
+  import { todayIso } from '../lib/time'
+  import { dueBucket, purposeKey, type Bucket } from '../lib/tasklist'
   import { menu } from '../lib/menu.svelte'
   import { purpose } from '../lib/purpose.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
@@ -16,50 +17,24 @@
   import { rovingFocus } from '../lib/roving'
   import type { TaskNode } from '../lib/todo.svelte'
   import { priorityRank } from '../lib/types'
-  import type { Task } from '../lib/types'
   import { STATUS_LABELS, PRIORITY_LABELS } from '../lib/labels'
 
-  /**
-   * The bucket a deadline falls into.
-   *
-   * Overdue is first and separate: something that slipped is a different
-   * kind of problem from something that is merely soon, and folding the two
-   * together is how a list stops being looked at.
-   */
-  function dueBucket(task: Task): { key: string; label: string; order: number } {
-    const today = todayIso()
-    if (!task.dueDate) return { key: 'none', label: 'No date', order: 9 }
-    if (task.dueDate < today) return { key: 'overdue', label: 'Overdue', order: 0 }
-    if (task.dueDate === today) return { key: 'today', label: 'Today', order: 1 }
-    // Within a week, the weekday alone is what people navigate by; beyond
-    // it, the date. `friendlyDate` already draws that line.
-    const week = new Date()
-    week.setDate(week.getDate() + 7)
-    const horizon = isoDate(week)
-    if (task.dueDate <= horizon) {
-      return { key: task.dueDate, label: friendlyDate(task.dueDate), order: 2 }
-    }
-    return { key: 'later', label: 'Later', order: 8 }
-  }
-
-  interface Group {
-    key: string
-    label: string
-    order: number
+  interface Group extends Bucket {
     nodes: TaskNode[]
   }
 
   const groups = $derived.by((): Group[] => {
     const roots = todo.tree
+    const today = todayIso()
     if (todo.groupBy === 'none') {
       return [{ key: 'all', label: '', order: 0, nodes: roots }]
     }
 
     const out = new Map<string, Group>()
     for (const node of roots) {
-      let bucket: { key: string; label: string; order: number }
+      let bucket: Bucket
       if (todo.groupBy === 'due') {
-        bucket = dueBucket(node.task)
+        bucket = dueBucket(node.task, today)
       } else if (todo.groupBy === 'purpose') {
         // The resolved purpose, not the task's own: a task under a filed
         // project belongs in that project's section, which is the whole
@@ -69,7 +44,7 @@
         const resolved = node.task.purpose ?? todo.projectOf(node.task.projectId)?.purpose ?? null
         const label = purpose.describe(resolved)
         bucket = resolved
-          ? { key: `${resolved.type}:${resolved.id}`, label: label.name, order: 0 }
+          ? { key: purposeKey(resolved), label: label.name, order: 0 }
           : { key: 'none', label: 'Not filed', order: 9 }
       } else if (todo.groupBy === 'status') {
         const key = node.task.status
@@ -220,7 +195,7 @@
         </div>
       {/if}
       {#each group.nodes as node (node.task.id)}
-        <TaskRow {node} />
+        <TaskRow {node} section={group.key} />
       {/each}
     {/each}
   {/if}

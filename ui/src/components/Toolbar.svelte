@@ -204,7 +204,7 @@
   <div class="scrim" onclick={closeLink}></div>
   <div class="sheet" role="dialog" aria-label="Link address" aria-modal="true" use:trapFocus>
     <form onsubmit={applyLink}>
-      <label class="label" for="link-href">Link address</label>
+      <label class="field-label" for="link-href">Link address</label>
       <input
         id="link-href"
         class="field"

@@ -134,6 +134,9 @@
        text, and the swatch beside it carries the identity. */
     color: var(--fg);
     font-size: var(--text-sm);
+    /* Once inherited from the global form label, and kept as it looked. */
+    font-weight: 600;
+    margin-bottom: var(--sp-2);
   }
 
   .swatch {

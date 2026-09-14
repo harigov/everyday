@@ -115,6 +115,8 @@ export function purposeItems(
 export interface TaskMenuHooks {
   /** Reveal the subtask line under this row. Absent where there is none. */
   onAddSubtask?: () => void
+  /** Edit the title in place. Absent where the view has no field for it. */
+  onRename?: () => void
   /** Ask before deleting: the dialog belongs to the view holding the row. */
   onDelete: () => void
 }
@@ -143,6 +145,7 @@ export function taskMenu(task: Task, hooks: TaskMenuHooks): MenuItem[] {
       icon: 'list',
       run: () => todo.open(showing ? null : task.id),
     },
+    hooks.onRename && { label: 'Rename', icon: 'pencil', run: hooks.onRename },
     SEP,
     {
       label: 'Status',

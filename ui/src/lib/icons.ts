@@ -239,6 +239,11 @@ export const ICONS = {
     '<circle cx="9.5" cy="12" r="1.1"/><circle cx="14.5" cy="12" r="1.1"/>' +
     '<circle cx="9.5" cy="17.5" r="1.1"/><circle cx="14.5" cy="17.5" r="1.1"/>',
 
+  // Three dots in a row: the rest of what a row's menu has.
+  more:
+    '<circle cx="5.5" cy="12" r="1.1"/><circle cx="12" cy="12" r="1.1"/>' +
+    '<circle cx="18.5" cy="12" r="1.1"/>',
+
   // Two tracks with a handle on each: legible at 16px in a way that a
   // twelve-toothed cogwheel is not.
   // A closed book seen from the spine side, which is what a shelf of them

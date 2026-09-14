@@ -99,7 +99,7 @@
     <p class="hint where">{hint}</p>
   {/if}
 
-  <label class="label" for="cal-url">Calendar address</label>
+  <label class="field-label" for="cal-url">Calendar address</label>
   <input
     id="cal-url"
     class="field"
@@ -116,7 +116,7 @@
 
   <div class="row">
     <div class="grow">
-      <label class="label" for="cal-name">Name <span class="opt">optional</span></label>
+      <label class="field-label" for="cal-name">Name <span class="opt">optional</span></label>
       <input
         id="cal-name"
         class="field"
@@ -125,7 +125,7 @@
       />
     </div>
     <div>
-      <span class="label">Colour</span>
+      <span class="field-label">Colour</span>
       <div class="swatches">
         {#each DEFAULT_COLORS as c (c)}
           <button

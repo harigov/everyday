@@ -192,7 +192,10 @@ button {
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 18%, transparent);
 }
 
-.label {
+/* `field-label` and not `label`: a component's own `.label` inherited this
+   margin, which lifted every context-menu and palette row's text 4px above
+   its icon. */
+.field-label {
   display: block;
   margin-bottom: var(--sp-2);
   font-size: var(--text-sm);
