@@ -20,6 +20,10 @@ serde.workspace = true
 serde_json.workspace = true
 jiff.workspace = true
 tracing.workspace = true
+# A keyset cursor is JSON wrapped in base64, so it is a string a UI can hold
+# in a URL or a saved scroll position without knowing what is inside. See
+# `keyset::KeyCursor`.
+base64 = "0.22"
 
 [dev-dependencies]
 everyday-core = { workspace = true, features = ["testing"] }

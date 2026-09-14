@@ -1692,6 +1692,7 @@ dependencies = [
 name = "everyday-store-sql"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "everyday-core",
  "jiff",
  "serde",
