@@ -1,0 +1,35 @@
+From: "Bob Baker" <bob@example.com>
+To: "Alice Adams" <alice@example.com>
+Subject: Re: Lunch on Thursday?
+Message-ID: <gmail-reply-2@mail.gmail.com>
+In-Reply-To: <gmail-root-1@mail.gmail.com>
+References: <gmail-root-1@mail.gmail.com>
+Date: Tue, 13 Jan 2026 11:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="gmail-boundary"
+
+--gmail-boundary
+Content-Type: text/plain; charset=utf-8
+
+Thursday works for me, how about noon?
+
+On Tue, 13 Jan 2026 at 10:30, Alice Adams <alice@example.com> wrote:
+> Are you free for lunch on Thursday? I was thinking that new place
+> downtown.
+>
+> Alice
+
+--gmail-boundary
+Content-Type: text/html; charset=utf-8
+
+<div dir="ltr">Thursday works for me, how about noon?</div>
+<div class="gmail_quote">
+<div dir="ltr" class="gmail_attr">On Tue, 13 Jan 2026 at 10:30, Alice Adams
+&lt;<a href="mailto:alice@example.com">alice@example.com</a>&gt; wrote:</div>
+<blockquote class="gmail_quote" style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">
+<div dir="ltr">Are you free for lunch on Thursday? I was thinking that new
+place downtown.<div><br></div><div>Alice</div></div>
+</blockquote>
+</div>
+
+--gmail-boundary--
