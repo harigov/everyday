@@ -14,5 +14,31 @@ serde_json.workspace = true
 thiserror.workspace = true
 jiff.workspace = true
 tracing.workspace = true
+blake3.workspace = true
+
+# MIME in: RFC 822/2045/2231/2047, every charset, never panics on malformed
+# input (it is fuzzed against exactly that). `full_encoding` pulls in
+# `encoding_rs` for the legacy charsets (Windows-125x, ISO-8859, Shift-JIS...)
+# that Outlook and old newsletters still send; the extra code is small next
+# to the alternative of silently mangling a quarter of the corpus.
+mail-parser = { version = "=0.11.9", default-features = false, features = ["full_encoding"] }
+
+# HTML in, first pass: a streaming rewriter that touches every `src`,
+# `srcset`, `background` and CSS `url()` once, at sync, before the allow-list
+# runs. See `sanitize.rs` for why the two libraries divide the work this way.
+lol_html = "=3.0.1"
+
+# HTML in, second pass: the allow-list that removes anything with behaviour.
+ammonia = "=4.1.4"
+
+# HTML out: the plain-text body and the assistant's `model_text`. `css`
+# is the feature that lets it resolve `display: none` from inline and
+# document styles, which is load-bearing -- see `text.rs`'s module docs on
+# hidden content.
+html2text = { version = "=0.17.1", default-features = false, features = ["css"] }
+
+# HTML out, for the assistant's Markdown prompts later.
+htmd = "=0.5.5"
 
 [dev-dependencies]
+proptest = "=1.11.0"
