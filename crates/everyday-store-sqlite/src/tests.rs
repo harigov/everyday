@@ -12,16 +12,19 @@ use everyday_core::calendar::Event;
 use everyday_core::crypto::{AeadCipher, Cipher, NullCipher, SecretKey};
 use everyday_core::model::Entry;
 use everyday_core::note::Note;
+use everyday_core::packstore::{PackStore, run_pack_store_suite};
 use everyday_core::store::calendars::{CalendarStore, EventQuery};
 use everyday_core::store::conformance;
 use everyday_core::store::notes::NoteStore;
 use everyday_core::store::purpose::PurposeStore;
+use everyday_core::store::secrets::SecretStore;
 use everyday_core::store::tasks::{TaskQuery, TaskSort, TaskStore};
 use everyday_core::store::trackers::{ReadingQuery, TrackerStore};
 use everyday_core::store::{EntryQuery, JournalStore, SortOrder, StoreContext};
 use everyday_core::task::{Project, Task, TimeBlock};
 use everyday_core::tracker::{Aggregate, Reading, Tracker, TrackerKind};
 use everyday_core::{RichDoc, model::Journal};
+use everyday_store_sql::packs::TablePacks;
 use everyday_store_sql::schema::SCHEMA_VERSION;
 use std::path::Path;
 use std::sync::Arc;
@@ -1014,4 +1017,86 @@ fn a_version_7_database_gains_notes_without_losing_goals() {
     let note = Note::written("and the new table must work", "with a body");
     store.put_note(&note).unwrap();
     assert_eq!(store.get_note(note.id).unwrap(), note);
+}
+
+#[test]
+fn a_version_8_database_gains_mails_groundwork_without_losing_notes() {
+    // The migration people will actually run once mail lands: a vault
+    // written before this phase existed, opened by a build that has it.
+    let dir = tempfile::tempdir().unwrap();
+    let note = Note::written("this must survive the migration", "body");
+
+    {
+        let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+        store.put_note(&note).unwrap();
+    }
+    // Rewind to the world as version 8 left it: the new tables gone and the
+    // recorded version behind.
+    {
+        let conn = raw(dir.path());
+        conn.execute_batch("DROP TABLE record_secrets; DROP TABLE mail_packs;").unwrap();
+        conn.pragma_update(None, "user_version", 8i64).unwrap();
+    }
+
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    assert_eq!(
+        store.get_note(note.id).unwrap().title,
+        "this must survive the migration",
+        "migrating must not disturb what was already there"
+    );
+
+    // The new tables must work: a secret round trips through `record_secrets`...
+    store.put_secret("account", "acc-1", b"a token").unwrap();
+    assert_eq!(
+        store.get_secret("account", "acc-1").unwrap().as_deref(),
+        Some(b"a token".as_slice())
+    );
+
+    // ...and `mail_packs` takes rows through `TablePacks`.
+    let refs = TablePacks::new(&store).append_batch("acc-1", &[b"raw message".as_slice()]).unwrap();
+    assert_eq!(TablePacks::new(&store).read(&refs[0]).unwrap(), b"raw message");
+}
+
+#[test]
+fn a_secret_sealed_for_one_owner_cannot_be_opened_under_another() {
+    // The conformance suite checks this through the trait; this reaches
+    // underneath it, the way `a_database_written_under_one_key_does_not_open_under_another`
+    // does for the vault as a whole: an attacker with database access but not
+    // the vault's key must not be able to move a row's sealed bytes onto a
+    // different owner's primary key and have it decrypt there.
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    store.put_secret("account", "victim", b"the real secret").unwrap();
+    store.put_secret("account", "attacker", b"whatever is already here").unwrap();
+
+    let conn = raw(dir.path());
+    let victim_data: Vec<u8> = conn
+        .query_row(
+            "SELECT data FROM record_secrets WHERE owner_kind = 'account' AND owner_id = 'victim'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "UPDATE record_secrets SET data = ?1 WHERE owner_kind = 'account' AND owner_id = 'attacker'",
+        rusqlite::params![victim_data],
+    )
+    .unwrap();
+
+    assert_eq!(store.get_secret("account", "attacker").unwrap_err().code(), "decrypt_failed");
+    // The victim's own row is untouched and still opens normally.
+    assert_eq!(
+        store.get_secret("account", "victim").unwrap().as_deref(),
+        Some(b"the real secret".as_slice())
+    );
+}
+
+#[test]
+fn the_table_backed_pack_store_passes_the_shared_conformance_suite() {
+    // `TablePacks` is written for a vault with no local disk -- Postgres --
+    // but it is plain SQL over `mail_packs`, so it is exercised here too:
+    // one less thing that works only on the backend it was designed for.
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    run_pack_store_suite(&TablePacks::new(&store), "acc-conformance");
 }

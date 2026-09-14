@@ -113,11 +113,13 @@ mod calendars;
 mod journals;
 mod library;
 mod notes;
+pub mod packs;
 mod pool;
 mod profile;
 mod purpose;
 mod record;
 mod routines;
+mod secrets;
 mod tasks;
 mod trackers;
 
@@ -285,6 +287,7 @@ impl SqlStore {
             notes: true,
             routines: true,
             agent: true,
+            secrets: true,
         }
     }
 
