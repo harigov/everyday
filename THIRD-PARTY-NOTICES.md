@@ -10,10 +10,16 @@ Reproduced below in full:
   1. Inter — © 2016 The Inter Project Authors, https://github.com/rsms/inter
   2. Source Sans 3 — © 2010-2023 Adobe, https://github.com/adobe-fonts/source-sans
   3. virtua — © 2022 inokawa, https://github.com/inokawa/virtua
+  4. async-imap — © 2019 the async-imap authors, https://github.com/async-email/async-imap
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
 licensed.
+
+Every other Rust crate this project depends on is MIT, Apache-2.0, BSD,
+ISC or 0BSD licensed and none is modified from its published form, so
+`Cargo.lock` and each crate's own entry on crates.io is the authoritative
+record of what is included and under what licence.
 
 ---
 
@@ -241,3 +247,42 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+## 4. async-imap
+
+`crates/everyday-mail/src/imap.rs` is built on `async-imap`
+(https://github.com/async-email/async-imap), dual MIT/Apache-2.0 licensed,
+the library chosen in `docs/plans/mail.md`'s "The libraries" for speaking
+IMAP: `IDLE`, `CONDSTORE`, `MOVE`, `UIDPLUS`, `COMPRESS`, pluggable SASL and
+Gmail's labels and message ids. Used here under the MIT half of that
+choice, reproduced below.
+
+MIT License
+
+Copyright (c) 2019
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
