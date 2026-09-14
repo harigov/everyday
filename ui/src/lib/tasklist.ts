@@ -44,17 +44,96 @@ export function purposeKey(purpose: Purpose | null | undefined): string {
 }
 
 /**
- * Tasks in the order the list draws them: by hand, and otherwise as loaded.
+ * Tasks in their manual order: the one order the list and the board share.
  *
- * Stable, so tasks that have never been dragged keep the backend's due-date
- * order among themselves -- which is what every section showed before there
- * was a manual order to show.
+ * Ties -- tasks numbered before the two views shared an order, or numbered
+ * in different scopes -- fall back to when each was added, and then to its
+ * id. Never to the order they were loaded in: the board loads by manual
+ * order and the list by due date, and a tie broken by that would put the
+ * same two tasks one way round on the board and the other in the list.
  */
-export function bySortOrder<T extends Pick<Task, 'sortOrder'>>(tasks: T[]): T[] {
-  return tasks
-    .map((task, i) => ({ task, i }))
-    .sort((a, b) => a.task.sortOrder - b.task.sortOrder || a.i - b.i)
-    .map((x) => x.task)
+export function byManualOrder<T extends Pick<Task, 'sortOrder' | 'createdAt' | 'id'>>(
+  tasks: T[],
+): T[] {
+  return [...tasks].sort(
+    (a, b) =>
+      a.sortOrder - b.sortOrder ||
+      a.createdAt.localeCompare(b.createdAt) ||
+      a.id.localeCompare(b.id),
+  )
+}
+
+/**
+ * Is this task drawn at the top of the list, given the set of tasks drawn?
+ *
+ * A subtask is, when its parent is not drawn -- out of scope, or hidden by
+ * a filter -- rather than vanishing with it. `tree` and `planDrop` both ask
+ * this, so what the drop logic thinks is the top level is what is on screen.
+ */
+export function drawnAtTop(task: Task, drawn: ReadonlySet<TaskId>): boolean {
+  return !task.parentId || (drawn.has(task.id) && !drawn.has(task.parentId))
+}
+
+/**
+ * The spacing a renumbered order is given. Room between neighbours is what
+ * lets a later drop be one write instead of a write for every task after it.
+ */
+export const ORDER_STEP = 1024
+
+/**
+ * The `sortOrder` values to write so `order` reads in that order, given
+ * each task's `current` value: only the ones that change.
+ *
+ * `moved` is the task that was dropped. If everything else is already in
+ * strictly increasing order and there is an integer between its new
+ * neighbours, it alone is written. Otherwise the whole order is renumbered
+ * at `ORDER_STEP` apart, which makes room for the next drops.
+ */
+export function numberOrder(
+  order: TaskId[],
+  current: ReadonlyMap<TaskId, number>,
+  moved: TaskId,
+): Map<TaskId, number> {
+  const value = (id: TaskId) => current.get(id) ?? 0
+  const others = order.filter((id) => id !== moved).map(value)
+  if (others.every((v, i) => i === 0 || v > others[i - 1]!)) {
+    const i = order.indexOf(moved)
+    const prev = i > 0 ? value(order[i - 1]!) : null
+    const next = i < order.length - 1 ? value(order[i + 1]!) : null
+    let slot: number | null = null
+    if (prev === null && next === null) slot = 0
+    else if (prev === null) slot = next! - ORDER_STEP
+    else if (next === null) slot = prev + ORDER_STEP
+    else if (next - prev > 1) slot = Math.floor((prev + next) / 2)
+    if (slot !== null)
+      return value(moved) === slot ? new Map<TaskId, number>() : new Map([[moved, slot]])
+  }
+  const out = new Map<TaskId, number>()
+  order.forEach((id, k) => {
+    if (value(id) !== k * ORDER_STEP) out.set(id, k * ORDER_STEP)
+  })
+  return out
+}
+
+/**
+ * The top-level order after a card is dropped into `status` at `index`.
+ *
+ * The board shows one column at a time of an order that spans them all, so
+ * a drop is placed relative to its neighbours in that column: before the
+ * card it lands above, or after the last card if it lands at the foot.
+ */
+export function moveCard(tasks: Task[], id: TaskId, status: TaskStatus, index: number): TaskId[] {
+  const roots = byManualOrder(tasks.filter((t) => !t.parentId && t.id !== id))
+  const column = roots.filter((t) => t.status === status)
+  const order = roots.map((t) => t.id)
+  const at =
+    index < column.length
+      ? order.indexOf(column[Math.max(0, index)]!.id)
+      : column.length > 0
+        ? order.indexOf(column[column.length - 1]!.id) + 1
+        : order.length
+  order.splice(at, 0, id)
+  return order
 }
 
 /** Where a row was dropped on: above it, below it, or onto it. */
@@ -91,45 +170,53 @@ export interface Placement {
  * Work out a drop, or `null` if it is not one the list allows.
  *
  * `target.parentId` is the parent the row is *drawn* under, not the one on
- * the record: a subtask whose parent is out of scope is drawn at the top
- * level, and dropping beside it has to mean the top level too.
+ * the record: a subtask whose parent is not drawn is drawn at the top level,
+ * and dropping beside it has to mean the top level too. `drawn` is the set
+ * of tasks on screen, which is what decides that -- see `drawnAtTop`.
  *
  * Two levels, as everywhere else in the list: a task that has subtasks of
- * its own cannot become one, and only a top-level row can take a drop onto
- * it.
+ * its own cannot become one, and only a task with no parent can take a drop
+ * onto it. A subtask drawn at the top level still has one, and a task
+ * dropped onto it would be a third level down.
  */
 export function planDrop(
   tasks: Task[],
+  drawn: ReadonlySet<TaskId>,
   draggedId: TaskId,
   target: { id: TaskId; zone: Zone; parentId: TaskId | null },
 ): Placement | null {
   const dragged = tasks.find((t) => t.id === draggedId)
-  if (!dragged || draggedId === target.id) return null
+  const onto = tasks.find((t) => t.id === target.id)
+  if (!dragged || !onto || draggedId === target.id) return null
   const hasKids = tasks.some((t) => t.parentId === draggedId)
 
-  const loaded = new Set(tasks.map((t) => t.id))
   const siblingsUnder = (parentId: TaskId | null) =>
-    bySortOrder(
-      tasks.filter((t) =>
-        parentId === null ? !t.parentId || !loaded.has(t.parentId) : t.parentId === parentId,
-      ),
+    byManualOrder(
+      tasks.filter((t) => (parentId === null ? drawnAtTop(t, drawn) : t.parentId === parentId)),
     )
       .map((t) => t.id)
       .filter((id) => id !== draggedId)
 
   if (target.zone === 'into') {
-    if (hasKids || target.parentId !== null) return null
+    if (hasKids || target.parentId !== null || onto.parentId) return null
     return { parentId: target.id, order: [...siblingsUnder(target.id), draggedId] }
   }
 
   if (target.parentId !== null && hasKids) return null
   // With two levels, the only way to drop a task inside its own subtree is
   // beside one of its own subtasks -- which `hasKids` has already refused.
-  const order = siblingsUnder(target.parentId)
+  // Two subtasks of one hidden parent are both drawn at the top level, and
+  // putting one beside the other is reordering the steps of that job -- not
+  // lifting one out of it.
+  const parentId =
+    target.parentId === null && onto.parentId && dragged.parentId === onto.parentId
+      ? onto.parentId
+      : target.parentId
+  const order = siblingsUnder(parentId)
   const i = order.indexOf(target.id)
   if (i < 0) return null
   order.splice(target.zone === 'before' ? i : i + 1, 0, draggedId)
-  return { parentId: target.parentId, order }
+  return { parentId, order }
 }
 
 /** The fields a top-level drop into another section rewrites. */

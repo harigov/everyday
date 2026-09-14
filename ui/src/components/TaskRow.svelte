@@ -115,7 +115,9 @@
     if (!drag.id) return null
     const box = (e.currentTarget as HTMLElement).getBoundingClientRect()
     const zone = zoneAt(e.clientY, box, {
-      nest: depth === 0 && todo.progressOf(drag.id)[1] === 0,
+      // Only a task with no parent takes a drop onto it. A subtask drawn at
+      // the top level because its parent is hidden still has one.
+      nest: !task.parentId && todo.progressOf(drag.id)[1] === 0,
       openParent: open && node.children.length > 0,
     })
     const target = { id: task.id, zone, parentId: drawnParent }

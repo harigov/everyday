@@ -11,7 +11,16 @@ import { load, makeCheck, stubBrowser } from './harness.mjs'
 stubBrowser({ navigator: true })
 
 const { module: lib, close } = await load('/src/lib/tasklist.ts')
-const { bySortOrder, planDrop, sectionPatch, zoneAt, dueBucket } = lib
+const {
+  byManualOrder,
+  planDrop,
+  sectionPatch,
+  zoneAt,
+  dueBucket,
+  numberOrder,
+  moveCard,
+  ORDER_STEP,
+} = lib
 
 const { check, finish } = makeCheck()
 
@@ -41,58 +50,165 @@ const TASKS = [
   task('a2', { parentId: 'a', sortOrder: 1 }),
   task('d', { parentId: 'gone', sortOrder: 3 }),
 ]
+const ALL = new Set(TASKS.map((t) => t.id))
+const drop = (dragged, target, drawn = ALL) => planDrop(TASKS, drawn, dragged, target)
 const top = (id, zone) => ({ id, zone, parentId: null })
 const under = (parentId, id, zone) => ({ id, zone, parentId })
 
 // ── order ─────────────────────────────────────────────────────────────
 
 check(
-  'ties keep the order they were loaded in',
-  bySortOrder([task('x', { sortOrder: 1 }), task('y'), task('z')]).map((t) => t.id),
+  'ties go to the task added first, not the one loaded first',
+  byManualOrder([
+    task('x', { sortOrder: 1 }),
+    task('z', { createdAt: '2026-09-02' }),
+    task('y', { createdAt: '2026-09-01' }),
+  ]).map((t) => t.id),
   ['y', 'z', 'x'],
 )
 
 // ── beside ────────────────────────────────────────────────────────────
 
-check('before a row', planDrop(TASKS, 'c', top('a', 'before')), {
+check('before a row', drop('c', top('a', 'before')), {
   parentId: null,
   order: ['c', 'a', 'b', 'd'],
 })
-check('after a row', planDrop(TASKS, 'a', top('b', 'after')), {
+check('after a row', drop('a', top('b', 'after')), {
   parentId: null,
   order: ['b', 'a', 'c', 'd'],
 })
-check('beside a subtask moves it among them', planDrop(TASKS, 'c', under('a', 'a1', 'after')), {
+check('beside a subtask moves it among them', drop('c', under('a', 'a1', 'after')), {
   parentId: 'a',
   order: ['a1', 'c', 'a2'],
 })
-check('a subtask dragged to the top level', planDrop(TASKS, 'a2', top('b', 'before')), {
+check('a subtask dragged to the top level', drop('a2', top('b', 'before')), {
   parentId: null,
   order: ['a', 'a2', 'b', 'c', 'd'],
 })
-check(
-  'an orphan drawn at the top level is a top-level sibling',
-  planDrop(TASKS, 'b', top('d', 'after')),
-  { parentId: null, order: ['a', 'c', 'd', 'b'] },
-)
+check('an orphan drawn at the top level is a top-level sibling', drop('b', top('d', 'after')), {
+  parentId: null,
+  order: ['a', 'c', 'd', 'b'],
+})
 
 // ── onto ──────────────────────────────────────────────────────────────
 
-check('onto a row appends it as the last subtask', planDrop(TASKS, 'b', top('a', 'into')), {
+check('onto a row appends it as the last subtask', drop('b', top('a', 'into')), {
   parentId: 'a',
   order: ['a1', 'a2', 'b'],
 })
 
 // ── refused ───────────────────────────────────────────────────────────
 
-check('onto itself', planDrop(TASKS, 'a', top('a', 'into')), null)
-check('a task with subtasks cannot become one', planDrop(TASKS, 'a', top('b', 'into')), null)
-check('nor be put beside one', planDrop(TASKS, 'a', under('a', 'a1', 'before')), null)
+check('onto itself', drop('a', top('a', 'into')), null)
+check('a task with subtasks cannot become one', drop('a', top('b', 'into')), null)
+check('nor be put beside one', drop('a', under('a', 'a1', 'before')), null)
+check('only a top-level row takes a drop onto it', drop('b', under('a', 'a1', 'into')), null)
+
+// A parent hidden by a filter: its subtask is drawn at the top level, and
+// the drop logic has to agree with what is on screen.
+const NO_A = new Set(['b', 'c', 'a1', 'd'])
+// The hidden parent keeps its place in the order, so clearing the filter
+// does not move it.
+check('beside a subtask drawn at the top level', drop('b', top('a1', 'after'), NO_A), {
+  parentId: null,
+  order: ['a', 'a1', 'b', 'c', 'd'],
+})
 check(
-  'only a top-level row takes a drop onto it',
-  planDrop(TASKS, 'b', under('a', 'a1', 'into')),
-  null,
+  'a sibling beside it stays a step of the same hidden job',
+  drop('a2', top('a1', 'before'), new Set(['a1', 'a2'])),
+  { parentId: 'a', order: ['a2', 'a1'] },
 )
+check('but not onto one: that would be a third level', drop('b', top('a1', 'into'), NO_A), null)
+check('nor onto an orphan whose parent is out of scope', drop('b', top('d', 'into')), null)
+
+// ── numbering ─────────────────────────────────────────────────────────
+
+const values = (pairs) => new Map(pairs)
+check(
+  'a gap between neighbours is one write',
+  [
+    ...numberOrder(
+      ['p', 'm', 'q'],
+      values([
+        ['p', 0],
+        ['q', 1024],
+        ['m', 5000],
+      ]),
+      'm',
+    ),
+  ],
+  [['m', 512]],
+)
+check(
+  'at the end, a step past the last',
+  [
+    ...numberOrder(
+      ['p', 'q', 'm'],
+      values([
+        ['p', 0],
+        ['q', 1024],
+        ['m', 0],
+      ]),
+      'm',
+    ),
+  ],
+  [['m', 1024 + ORDER_STEP]],
+)
+check(
+  'no gap renumbers, writing only what changes',
+  [
+    ...numberOrder(
+      ['p', 'm', 'q'],
+      values([
+        ['p', 0],
+        ['q', 1],
+        ['m', 9],
+      ]),
+      'm',
+    ),
+  ],
+  [
+    ['m', ORDER_STEP],
+    ['q', 2 * ORDER_STEP],
+  ],
+)
+check(
+  'ties among the rest renumber too',
+  [
+    ...numberOrder(
+      ['p', 'q', 'm'],
+      values([
+        ['p', 0],
+        ['q', 0],
+        ['m', 3],
+      ]),
+      'm',
+    ),
+  ],
+  [
+    ['q', ORDER_STEP],
+    ['m', 2 * ORDER_STEP],
+  ],
+)
+
+// ── the board ─────────────────────────────────────────────────────────
+
+const BOARD = [
+  task('t1', { sortOrder: 0 }),
+  task('d1', { sortOrder: 1, status: 'doing' }),
+  task('t2', { sortOrder: 2 }),
+  task('d2', { sortOrder: 3, status: 'doing' }),
+  task('t3', { sortOrder: 4 }),
+]
+check('above a card in another column', moveCard(BOARD, 't3', 'doing', 1), [
+  't1',
+  'd1',
+  't2',
+  't3',
+  'd2',
+])
+check('at the foot of a column', moveCard(BOARD, 't1', 'doing', 2), ['d1', 't2', 'd2', 't1', 't3'])
+check('into an empty column', moveCard(BOARD, 'd1', 'blocked', 0), ['t1', 't2', 'd2', 't3', 'd1'])
 
 // ── zones ─────────────────────────────────────────────────────────────
 
