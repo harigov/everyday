@@ -108,7 +108,7 @@ pub(crate) fn upsert_stmt<R: Record>(record: &R, sealed: Vec<u8>) -> (String, Ve
     (sql, cols.into_iter().map(|(_, v)| v).collect())
 }
 
-/// A batch of [`upsert_many`](SqlStore::upsert_many) closes at four
+/// A batch of [`upsert_batched`](SqlStore::upsert_batched) closes at four
 /// megabytes of sealed payload, or [`BATCH_MAX_ROWS`], whichever comes
 /// first.
 ///
@@ -171,67 +171,76 @@ impl SqlStore {
         self.upsert_many(std::slice::from_ref(record))
     }
 
-    /// Insert or replace many records — what a re-ordered list, or moving
-    /// several things to another parent at once, actually is. Each record's
-    /// row is built once from [`Record::columns`], and its purpose pointer,
-    /// for the tables that carry one, is written alongside it rather than in
-    /// a transaction of its own.
+    /// Insert or replace many records in one transaction — what a re-ordered
+    /// list, or moving several things to another parent at once, actually
+    /// is. Each record's row is built once from [`Record::columns`], and its
+    /// purpose pointer, for the tables that carry one, is written alongside
+    /// it rather than in a transaction of its own.
     ///
-    /// # Batches, not one transaction
-    ///
-    /// A call with a handful of records — every call this crate makes today
-    /// — is one transaction, same as it always was: the vault's single
-    /// writer connection is held for as long as a few `INSERT`s take, which
-    /// is not measurable. A call with tens of thousands — a mailbox's first
-    /// sync, landing headers "in batches of a few hundred, committed per
-    /// batch" — would hold that same connection, and so block every other
-    /// write in the vault, for as long as the *whole* call takes if it went
-    /// through one transaction. So this closes a transaction and opens the
-    /// next whenever [`BATCH_MAX_BYTES`] or [`BATCH_MAX_ROWS`] is reached,
-    /// whichever comes first: bytes alone would let a batch of blank tasks
-    /// grow to a million rows before either cap noticed, and rows alone
-    /// would let a batch of a few enormous message bodies blow well past a
-    /// sensible lock-hold time at a handful of rows.
-    ///
-    /// The trade this makes explicit: a call of one batch's worth is still
-    /// atomic, exactly as before. A call of several batches is no longer
-    /// atomic *as a whole* — a crash between batches leaves a prefix
-    /// committed and the rest not — which is safe only because `upsert_stmt`
-    /// is `ON CONFLICT ... DO UPDATE`: every batch is safe to replay, so the
-    /// caller of a many-batch write is one that already has to resume after
-    /// a crash (a sync engine with its own cursor) rather than one that
-    /// depends on all-or-nothing. No caller in this crate today is the
-    /// latter — see the size of every existing call site — so nothing here
-    /// changes behaviour for them; this is groundwork for the one that will
-    /// be.
-    ///
-    /// A single record larger than [`BATCH_MAX_BYTES`] is still its own
-    /// batch rather than an error: the cap is a target for how long a batch
-    /// takes to write, not a hard ceiling this refuses to cross.
+    /// All or nothing, whatever the size: a board reorder that half landed
+    /// is a board in an order nobody chose. A write too large to hold the
+    /// writer through is [`upsert_batched`](SqlStore::upsert_batched)'s job,
+    /// and choosing it is the caller saying it can resume.
     pub(crate) fn upsert_many<R: Record>(&self, records: &[R]) -> Result<()> {
         if records.is_empty() {
             return Ok(());
         }
-        // Sealed before the lock is taken: encryption is the expensive part,
-        // and there is no reason to hold the connection through it.
-        let sealed: Vec<(&R, Vec<u8>)> = records
-            .iter()
-            .map(|r| Ok((r, self.seal(&R::aad(r.id()), r)?)))
-            .collect::<Result<_>>()?;
+        let sealed = self.seal_all(records)?;
+        self.write_batch(sealed)
+    }
 
+    /// Insert or replace many records, committing every
+    /// [`BATCH_MAX_BYTES`] or [`BATCH_MAX_ROWS`], whichever comes first.
+    ///
+    /// For a mailbox's first sync — headers "in batches of a few hundred,
+    /// committed per batch" — which would otherwise hold the vault's single
+    /// writer, and so block every other write, for as long as the whole call
+    /// takes. Bytes alone would let a batch of tiny rows grow without limit;
+    /// rows alone would let a handful of enormous bodies hold the lock for
+    /// seconds.
+    ///
+    /// The trade is explicit: a call of several batches is not atomic as a
+    /// whole, and a crash between batches leaves a prefix committed. That is
+    /// safe only because `upsert_stmt` is `ON CONFLICT ... DO UPDATE`, so a
+    /// replay is harmless, and only for a caller that already resumes from a
+    /// cursor of its own. Anything that needs all-or-nothing calls
+    /// [`upsert_many`](SqlStore::upsert_many).
+    ///
+    /// A single record larger than [`BATCH_MAX_BYTES`] is still its own
+    /// batch rather than an error: the cap is a target for how long a batch
+    /// takes to write, not a ceiling this refuses to cross.
+    // First caller is the mail sync engine; until it lands, only the batch
+    // splitter's tests exercise the arithmetic underneath.
+    #[allow(dead_code)]
+    pub(crate) fn upsert_batched<R: Record>(&self, records: &[R]) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let sealed = self.seal_all(records)?;
         for batch in batches_by_size(sealed, BATCH_MAX_BYTES, BATCH_MAX_ROWS) {
-            let mut conn = self.write();
-            let mut tx = conn.begin()?;
-            for (record, data) in batch {
-                let (sql, args) = upsert_stmt(record, data);
-                tx.execute(&sql, &args)?;
-                if let Some(kind) = R::purpose_kind() {
-                    set_purpose(tx.as_mut(), kind, &record.id().to_string(), record.purpose())?;
-                }
-            }
-            tx.commit()?;
+            self.write_batch(batch)?;
         }
         Ok(())
+    }
+
+    /// Sealed before the lock is taken: encryption is the expensive part,
+    /// and there is no reason to hold the connection through it.
+    fn seal_all<'r, R: Record>(&self, records: &'r [R]) -> Result<Vec<(&'r R, Vec<u8>)>> {
+        records.iter().map(|r| Ok((r, self.seal(&R::aad(r.id()), r)?))).collect()
+    }
+
+    /// One transaction on the writer for rows already sealed.
+    fn write_batch<R: Record>(&self, rows: Vec<(&R, Vec<u8>)>) -> Result<()> {
+        let mut conn = self.write();
+        let mut tx = conn.begin()?;
+        for (record, data) in rows {
+            let (sql, args) = upsert_stmt(record, data);
+            tx.execute(&sql, &args)?;
+            if let Some(kind) = R::purpose_kind() {
+                set_purpose(tx.as_mut(), kind, &record.id().to_string(), record.purpose())?;
+            }
+        }
+        tx.commit()
     }
 
     /// `DELETE FROM table WHERE id = ?1`, on its own connection.
