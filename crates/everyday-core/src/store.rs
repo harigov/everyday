@@ -29,6 +29,7 @@ use crate::crypto::Cipher;
 use crate::error::{Error, Result};
 use crate::id::{BlobId, EntryId, JournalId};
 use crate::model::{Entry, EntrySummary, Journal};
+use crate::store::accounts::AccountStore;
 use crate::store::agent::AgentStore;
 use crate::store::calendars::CalendarStore;
 use crate::store::library::LibraryStore;
@@ -131,6 +132,17 @@ pub struct Capabilities {
     /// nothing needed until now.
     #[serde(default)]
     pub secrets: bool,
+    /// Backend implements [`accounts::AccountStore`], so a mailbox provider
+    /// can be signed in to at all.
+    ///
+    /// False hides Settings → Accounts, and with it the mail app and the
+    /// calendar's "other people's calendars" that reads over CalDAV -- both
+    /// need somewhere to keep the credential this flag is about. Independent
+    /// of `secrets` in the type, though every backend that carries one
+    /// carries the other: an account with nowhere to seal its refresh token
+    /// is an account that cannot stay signed in.
+    #[serde(default)]
+    pub accounts: bool,
 }
 
 /// Per-vault configuration a backend needs and the core knows nothing about.
@@ -501,6 +513,15 @@ pub trait JournalStore: Send + Sync {
         None
     }
 
+    /// Storage for accounts, if this backend has any.
+    ///
+    /// Same shape and same reasoning as [`JournalStore::tasks`]. See
+    /// [`accounts`](crate::store::accounts) for the one cascade it owns and
+    /// why the record carries almost nothing in the clear.
+    fn accounts(&self) -> Option<&dyn AccountStore> {
+        None
+    }
+
     // ---- the owner ------------------------------------------------------
 
     /// Who this vault belongs to.
@@ -818,6 +839,7 @@ impl BackendRegistry {
     }
 }
 
+pub mod accounts;
 pub mod agent;
 pub mod calendars;
 pub mod library;

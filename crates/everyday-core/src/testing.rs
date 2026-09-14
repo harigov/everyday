@@ -61,6 +61,7 @@ impl JournalStore for MemStore {
             purpose: false,
             agent: false,
             secrets: false,
+            accounts: false,
         }
     }
     fn list_journals(&self) -> Result<Vec<Journal>> {

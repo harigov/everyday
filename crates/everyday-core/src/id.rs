@@ -137,9 +137,15 @@ typed_id!(MemoryId, "memory");
 // The mail domain's storage groundwork, laid in phase 0 of the mail plan
 // ahead of the domain itself. A `PackId` names one pack -- a file of raw
 // messages sealed one at a time, or the row a Postgres vault keeps instead --
-// never a message on its own. See `crate::packstore`. `Account`, `Mailbox`,
-// `Message` and `Thread` ids arrive with the domain in a later phase.
+// never a message on its own. See `crate::packstore`. `Mailbox`, `Message`
+// and `Thread` ids arrive with the rest of the domain in a later phase.
 typed_id!(PackId, "pack");
+
+// Phase 1 of the mail plan: accounts. An `AccountId` names one mailbox
+// provider you have signed in to -- see `crate::account`. It is a
+// vault-level record, minted before mail or the calendar exist to use it,
+// which is why it arrives on its own here rather than beside `PackId` above.
+typed_id!(AccountId, "account");
 
 /// Content address of an attachment payload.
 ///

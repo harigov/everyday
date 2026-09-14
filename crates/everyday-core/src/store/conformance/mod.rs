@@ -25,6 +25,7 @@
 //! and is public so a backend under construction can run one suite alone
 //! while the rest of it is still unwritten.
 
+mod accounts;
 mod agent;
 mod calendars;
 mod journal;
@@ -36,6 +37,7 @@ mod secrets;
 mod tasks;
 mod trackers;
 
+pub use accounts::run_account_suite;
 pub use agent::run_agent_suite;
 pub use calendars::run_calendar_suite;
 pub use library::run_library_suite;
@@ -167,6 +169,14 @@ pub fn run_all(store: &dyn JournalStore) {
         None => {
             eprintln!("backend {name:?} stores no per-record secrets; skipping the secret suite")
         }
+    }
+
+    // And accounts, on the same terms again. Handed the whole journal store
+    // because the one cascade worth checking -- deleting an account takes its
+    // secret with it -- reaches into the secret store, not this domain's own.
+    match store.accounts() {
+        Some(_) => run_account_suite(store),
+        None => eprintln!("backend {name:?} stores no accounts; skipping the account suite"),
     }
 
     journal::cleanup(store);
