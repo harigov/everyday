@@ -192,12 +192,18 @@ async fn a_write_announces_what_it_touched_and_who_did_it() {
     svc.set_events(collector.clone());
 
     let minted = call(&svc, "new_journal", json!({ "name": "Ledger" })).await;
+    let minted_id = minted["id"].as_str().map(str::to_string);
     call(&svc, "save_journal", json!({ "journal": minted })).await;
 
     let changes = collector.changes.lock().unwrap();
     let change = changes.last().expect("a save must announce itself");
     assert_eq!(serde_json::to_value(change.kind).unwrap(), "journal");
     assert_eq!(change.origin.as_deref(), Some("local"));
+    // The id comes from the argument the client already had -- see
+    // `Outcome`'s doc in `command.rs` -- not from `save_journal`'s `void`
+    // result, which has nothing to read it out of.
+    assert_eq!(change.id, minted_id);
+    assert!(change.ids.is_empty());
 }
 
 #[tokio::test]

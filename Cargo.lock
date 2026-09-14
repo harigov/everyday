@@ -1675,6 +1675,7 @@ dependencies = [
  "everyday-vault",
  "futures",
  "jiff",
+ "rand 0.9.5",
  "reqwest",
  "rig-agent",
  "rig-core",

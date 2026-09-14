@@ -210,6 +210,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_tracker", scope: Trackers, effect: Write,
         change: Tracker / Updated,
+        id: |a: &SaveTracker| Some(a.tracker.id.to_string()),
         args: SaveTracker, returns: "void",
         signature: &[("tracker", "Tracker", true)],
         run: save_tracker,
@@ -256,6 +257,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_reading", scope: Trackers, effect: Write,
         change: Reading / Updated,
+        id: |a: &SaveReading| Some(a.reading.id.to_string()),
         args: SaveReading, returns: "void",
         signature: &[("reading", "Reading", true)],
         run: save_reading,
@@ -263,6 +265,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_reading", scope: Trackers, effect: Destructive,
         change: Reading / Deleted,
+        id: |a: &ReadingRef| Some(a.id.to_string()),
         args: ReadingRef, returns: "void",
         signature: &[("id", "ReadingId", true)],
         run: delete_reading,
@@ -270,6 +273,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_tracker", scope: Trackers, effect: Destructive,
         change: Tracker / Deleted,
+        id: |a: &TrackerRef| Some(a.id.to_string()),
         args: TrackerRef, returns: "number",
         signature: &[("id", "TrackerId", true)],
         run: delete_tracker,

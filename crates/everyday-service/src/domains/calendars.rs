@@ -394,6 +394,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_calendar", scope: Calendars, effect: Write,
         change: Calendar / Updated,
+        id: |a: &SaveCalendar| Some(a.calendar.id.to_string()),
         args: SaveCalendar, returns: "void",
         signature: &[("calendar", "Calendar", true)],
         run: save_calendar,
@@ -401,6 +402,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_calendar", scope: Calendars, effect: Destructive,
         change: Calendar / Deleted,
+        id: |a: &CalendarRef| Some(a.id.to_string()),
         args: CalendarRef, returns: "void",
         signature: &[("id", "CalendarId", true)],
         run: delete_calendar,

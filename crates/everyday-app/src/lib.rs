@@ -101,7 +101,15 @@ pub fn run() {
             // Held for the life of the process. The scheduler stops when the
             // process does, and nothing else should be able to stop it.
             std::mem::forget(_stop);
-            tauri::async_runtime::spawn(everyday_service::scheduler::run(service, listen));
+            tauri::async_runtime::spawn(everyday_service::scheduler::run(service.clone(), listen));
+            // The mail phase's per-account sync tasks, tied to this vault's
+            // lock through `Service::locked` and `Service::unlocked` -- see
+            // `everyday_service::supervisor`'s module doc. Constructed here,
+            // after `set_sink` above, so its announcements reach the window
+            // from its very first task; nothing has registered one yet.
+            service.set_supervisor(std::sync::Arc::new(
+                everyday_service::supervisor::Supervisor::new(service.events()),
+            ));
             Ok(())
         })
         // Registered here rather than on the icon, and once rather than per

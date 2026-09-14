@@ -204,6 +204,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_role", scope: Purpose, effect: Write,
         change: Role / Updated,
+        id: |a: &SaveRole| Some(a.role.id.to_string()),
         args: SaveRole, returns: "void",
         signature: &[("role", "Role", true)],
         run: save_role,
@@ -211,6 +212,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_role", scope: Purpose, effect: Destructive,
         change: Role / Deleted,
+        id: |a: &RoleRef| Some(a.id.to_string()),
         args: RoleRef, returns: "void",
         signature: &[("id", "RoleId", true)],
         run: delete_role,
@@ -242,6 +244,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_goal", scope: Purpose, effect: Write,
         change: Goal / Updated,
+        id: |a: &SaveGoal| Some(a.goal.id.to_string()),
         args: SaveGoal, returns: "void",
         signature: &[("goal", "Goal", true)],
         run: save_goal,
@@ -249,6 +252,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_goals", scope: Purpose, effect: Write,
         change: Goal / Updated,
+        ids: |a: &SaveGoals| a.goals.iter().map(|g| g.id.to_string()).collect(),
         args: SaveGoals, returns: "void",
         signature: &[("goals", "Goal[]", true)],
         run: save_goals,
@@ -256,6 +260,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_goal", scope: Purpose, effect: Destructive,
         change: Goal / Deleted,
+        id: |a: &GoalRef| Some(a.id.to_string()),
         args: GoalRef, returns: "void",
         signature: &[("id", "GoalId", true)],
         run: delete_goal,

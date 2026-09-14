@@ -100,7 +100,7 @@ pub async fn tick(service: &Arc<Service>) {
         return;
     }
     if vault.forget_key_if_idle() {
-        service.locked();
+        service.locked().await;
         return;
     }
     // A second copy of the application holds the write claim. Reading is
@@ -585,6 +585,7 @@ async fn resume(
             kind,
             op: Op::Updated,
             id: None,
+            ids: Vec::new(),
             origin: Some("assistant".to_string()),
         });
     }
@@ -697,6 +698,7 @@ fn run_change() -> Change {
         kind: Kind::RoutineRun,
         op: Op::Updated,
         id: None,
+        ids: Vec::new(),
         origin: Some("assistant".to_string()),
     }
 }

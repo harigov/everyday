@@ -178,6 +178,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "apply_metadata", scope: Web, effect: Write,
         change: Item / Updated,
+        id: |a: &Apply| Some(a.id.to_string()),
         args: Apply, returns: "Item",
         signature: &[
             ("id", "ItemId", true),

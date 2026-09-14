@@ -156,6 +156,19 @@ pub enum Kind {
     Memory,
     /// The vault's own settings: auto-lock, the assistant's configuration.
     Settings,
+    /// One of [`crate::supervisor::Supervisor`]'s long-lived keyed tasks --
+    /// today nothing but the tests, since phase 0 registers no factories;
+    /// later, one IMAP account's sync.
+    ///
+    /// Not tied to any command's `change:` -- see `command.rs`'s module
+    /// doc -- because nothing calls one yet. `ui/scripts/gen-api.mjs`
+    /// therefore leaves it out of the generated `ChangeKind` union until a
+    /// command exposes a task's status; the event still carries the string
+    /// correctly over the wire in the meantime, a client simply has nothing
+    /// typed to switch on. This is deliberate groundwork, not an oversight:
+    /// the variant has to exist before the first task does, and the first
+    /// task is mail's, not phase 0's.
+    BackgroundTask,
 }
 
 /// One write, on its way to everyone who did not make it.
@@ -168,6 +181,15 @@ pub struct Change {
     /// reorder writes forty tasks and the useful statement is "tasks moved".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// The records, when a single write touched more than one -- the board
+    /// reorder above, or a mailbox's sync landing a page of messages at
+    /// once. Empty rather than `id` filled with the first of many: a client
+    /// that only reads `id` must not quietly act as though the rest were
+    /// never written, and an empty array is what `#[serde(default)]` gives
+    /// an older client that has never heard of this field, which is exactly
+    /// the "batch: no single id" case it already had to handle.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ids: Vec<String>,
     /// Who made it. A client compares this with its own id and ignores a
     /// match, so a save does not make the window that saved it reload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -176,7 +198,7 @@ pub struct Change {
 
 impl Change {
     pub fn new(kind: Kind, op: Op) -> Self {
-        Self { kind, op, id: None, origin: None }
+        Self { kind, op, id: None, ids: Vec::new(), origin: None }
     }
 }
 

@@ -92,6 +92,16 @@ pub(crate) fn serve(
         let (stop_scheduler, listen) = tokio::sync::watch::channel(false);
         let scheduling = tokio::spawn(everyday_service::scheduler::run(service.clone(), listen));
 
+        // Mail's future per-account sync tasks, tied to this vault's lock
+        // through `Service::locked` and `Service::unlocked` -- see
+        // `everyday_service::supervisor`'s module doc. Built here, after
+        // every `set_events` call above, so its own announcements reach
+        // whichever sinks this run ended up with; nothing has registered a
+        // task on it yet.
+        let supervisor =
+            std::sync::Arc::new(everyday_service::supervisor::Supervisor::new(service.events()));
+        service.set_supervisor(supervisor.clone());
+
         // The local socket as well, always. It is how `everyday new` writes
         // through a running server instead of coming up read-only beside it,
         // and how a browser-extension host will reach a vault that is not
@@ -162,6 +172,11 @@ pub(crate) fn serve(
                 println!("Stopping anyway. A run in flight will not be written down.");
             }
         }
+        // Every supervised task next, the same way the vault's own lock
+        // stops them -- see `Service::locked`. Bounded by each task's own
+        // grace period rather than by a run's fifteen minutes, so this
+        // cannot make Ctrl-C wait the way a routine mid-run could.
+        supervisor.stop_all().await;
         running.stop();
         // Give the vault its checkpoint before the process goes.
         if let Some(v) = service.get() {
