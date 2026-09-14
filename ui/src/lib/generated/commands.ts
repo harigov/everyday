@@ -7,7 +7,12 @@
 //   npm --prefix ui run gen:api
 
 import type {
+  Account,
+  AccountId,
+  AccountView,
   AddedItem,
+  AgentCallerKind,
+  AgentMailAccess,
   AgentMessage,
   AgentSettings,
   ArchiveManifest,
@@ -52,6 +57,7 @@ import type {
   LogEvent,
   LogId,
   LogQuery,
+  MailProviderInfo,
   Memory,
   MemoryId,
   Note,
@@ -114,6 +120,7 @@ export const PROTOCOL = 1
 
 /** What each command takes and gives back. */
 export interface Commands {
+  accountPresets: { args: Record<string, never>; result: MailProviderInfo[] }
   addItem: { args: { kindId: KindId; title: string; lookup: boolean }; result: AddedItem }
   agentSettings: { args: Record<string, never>; result: AgentSettings }
   applyMetadata: { args: { id: ItemId; result: SearchResult; overwrite: boolean }; result: Item }
@@ -123,6 +130,7 @@ export interface Commands {
   collectGarbage: { args: Record<string, never>; result: number }
   confirmToolCall: { args: { callId: string; approved: boolean }; result: boolean }
   conversationMessages: { args: { id: ConversationId }; result: AgentMessage[] }
+  deleteAccount: { args: { id: AccountId }; result: void }
   deleteBlock: { args: { id: BlockId }; result: void }
   deleteCalendar: { args: { id: CalendarId }; result: void }
   deleteConversation: { args: { id: ConversationId }; result: void }
@@ -145,6 +153,7 @@ export interface Commands {
   endImport: { args: { handle: string }; result: void }
   fetchImage: { args: { url: string }; result: string }
   flush: { args: Record<string, never>; result: void }
+  getAccount: { args: { id: AccountId }; result: AccountView }
   getEntry: { args: { id: EntryId }; result: Entry }
   getEvent: { args: { id: EventId }; result: CalendarEvent }
   getGoal: { args: { id: GoalId }; result: Goal }
@@ -158,6 +167,7 @@ export interface Commands {
     result: CalendarInfo
   }
   libraryStats: { args: Record<string, never>; result: LibraryStats }
+  listAccounts: { args: Record<string, never>; result: AccountView[] }
   listBlocks: { args: { query: BlockQuery }; result: TimeBlock[] }
   listCalendars: { args: Record<string, never>; result: CalendarInfo[] }
   listCommands: { args: Record<string, never>; result: Surface }
@@ -269,6 +279,8 @@ export interface Commands {
     args: { name: string; arguments?: unknown; confirmDestructive?: boolean }
     result: unknown
   }
+  saveAccount: { args: { account: Account }; result: void }
+  saveAccountPassword: { args: { id: AccountId; password: string }; result: void }
   saveAgentSettings: { args: { settings: AgentSettings }; result: AgentSettings }
   saveBlock: { args: { block: TimeBlock }; result: void }
   saveCalendar: { args: { calendar: Calendar }; result: void }
@@ -302,6 +314,10 @@ export interface Commands {
     args: { conversationId: ConversationId; prompt: string; context?: string | null }
     result: void
   }
+  setAgentAccess: {
+    args: { id: AccountId; caller: AgentCallerKind; access: AgentMailAccess }
+    result: void
+  }
   setAgentKey: { args: { key: string }; result: void }
   setAutoLock: { args: { seconds: number }; result: void }
   setForgetKey: { args: { seconds: number }; result: void }
@@ -332,6 +348,7 @@ export interface Commands {
 
 /** The name each method sends over the wire. */
 export const COMMAND_NAMES = {
+  accountPresets: 'account_presets',
   addItem: 'add_item',
   agentSettings: 'agent_settings',
   applyMetadata: 'apply_metadata',
@@ -341,6 +358,7 @@ export const COMMAND_NAMES = {
   collectGarbage: 'collect_garbage',
   confirmToolCall: 'confirm_tool_call',
   conversationMessages: 'conversation_messages',
+  deleteAccount: 'delete_account',
   deleteBlock: 'delete_block',
   deleteCalendar: 'delete_calendar',
   deleteConversation: 'delete_conversation',
@@ -363,6 +381,7 @@ export const COMMAND_NAMES = {
   endImport: 'end_import',
   fetchImage: 'fetch_image',
   flush: 'flush',
+  getAccount: 'get_account',
   getEntry: 'get_entry',
   getEvent: 'get_event',
   getGoal: 'get_goal',
@@ -373,6 +392,7 @@ export const COMMAND_NAMES = {
   goalActivity: 'goal_activity',
   importCalendar: 'import_calendar',
   libraryStats: 'library_stats',
+  listAccounts: 'list_accounts',
   listBlocks: 'list_blocks',
   listCalendars: 'list_calendars',
   listCommands: 'list_commands',
@@ -447,6 +467,8 @@ export const COMMAND_NAMES = {
   runImport: 'run_import',
   runRoutine: 'run_routine',
   runTool: 'run_tool',
+  saveAccount: 'save_account',
+  saveAccountPassword: 'save_account_password',
   saveAgentSettings: 'save_agent_settings',
   saveBlock: 'save_block',
   saveCalendar: 'save_calendar',
@@ -474,6 +496,7 @@ export const COMMAND_NAMES = {
   searchSources: 'search_sources',
   seedRoles: 'seed_roles',
   sendMessage: 'send_message',
+  setAgentAccess: 'set_agent_access',
   setAgentKey: 'set_agent_key',
   setAutoLock: 'set_auto_lock',
   setForgetKey: 'set_forget_key',
@@ -511,6 +534,7 @@ export const COMMAND_NAMES = {
  * cannot drift out of step with the Rust.
  */
 export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
+  'account_presets',
   'add_item',
   'agent_settings',
   'apply_metadata',
@@ -520,6 +544,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'collect_garbage',
   'confirm_tool_call',
   'conversation_messages',
+  'delete_account',
   'delete_block',
   'delete_calendar',
   'delete_conversation',
@@ -542,6 +567,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'end_import',
   'fetch_image',
   'flush',
+  'get_account',
   'get_entry',
   'get_event',
   'get_goal',
@@ -552,6 +578,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'goal_activity',
   'import_calendar',
   'library_stats',
+  'list_accounts',
   'list_blocks',
   'list_calendars',
   'list_commands',
@@ -626,6 +653,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'run_import',
   'run_routine',
   'run_tool',
+  'save_account',
+  'save_account_password',
   'save_agent_settings',
   'save_block',
   'save_calendar',
@@ -652,6 +681,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'search',
   'search_sources',
   'seed_roles',
+  'set_agent_access',
   'set_agent_key',
   'set_auto_lock',
   'set_forget_key',
@@ -691,6 +721,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'clear_agent_key',
   'collect_garbage',
   'confirm_tool_call',
+  'delete_account',
   'delete_block',
   'delete_calendar',
   'delete_conversation',
@@ -720,6 +751,8 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'run_import',
   'run_routine',
   'run_tool',
+  'save_account',
+  'save_account_password',
   'save_agent_settings',
   'save_block',
   'save_calendar',
@@ -745,6 +778,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_tracker',
   'seed_roles',
   'send_message',
+  'set_agent_access',
   'set_agent_key',
   'set_auto_lock',
   'set_forget_key',
@@ -765,6 +799,7 @@ export const CHANGE_KINDS = {
   apply_metadata: 'item',
   change_password: 'settings',
   clear_agent_key: 'settings',
+  delete_account: 'account',
   delete_block: 'block',
   delete_calendar: 'calendar',
   delete_conversation: 'conversation',
@@ -788,6 +823,8 @@ export const CHANGE_KINDS = {
   mark_runs_seen: 'routineRun',
   merge_trackers: 'tracker',
   run_routine: 'routineRun',
+  save_account: 'account',
+  save_account_password: 'account',
   save_agent_settings: 'settings',
   save_block: 'block',
   save_calendar: 'calendar',
@@ -813,6 +850,7 @@ export const CHANGE_KINDS = {
   save_tracker: 'tracker',
   seed_roles: 'role',
   send_message: 'conversation',
+  set_agent_access: 'account',
   set_agent_key: 'settings',
   set_auto_lock: 'settings',
   set_forget_key: 'settings',

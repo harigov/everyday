@@ -3,14 +3,16 @@
 //! This is [`JournalStore`], the trait every backend must implement. Each
 //! optional domain has a file of its own beside this one -- `notes.rs`,
 //! `tasks.rs`, `calendars.rs`, `library.rs`, `trackers.rs`, `purpose.rs`,
-//! `routines.rs`, `agent.rs` -- mirroring the split `everyday_core::store`
-//! already makes between the trait and its siblings. Unnumbered and unlisted
-//! by count, because both go stale the release after they are written.
+//! `routines.rs`, `agent.rs`, `accounts.rs` -- mirroring the split
+//! `everyday_core::store` already makes between the trait and its siblings.
+//! Unnumbered and unlisted by count, because both go stale the release after
+//! they are written.
 
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{BlobId, EntryId, JournalId};
 use everyday_core::model::{Entry, EntrySummary, Journal};
 use everyday_core::purpose::Purpose;
+use everyday_core::store::accounts::AccountStore;
 use everyday_core::store::agent::AgentStore;
 use everyday_core::store::calendars::CalendarStore;
 use everyday_core::store::library::LibraryStore;
@@ -130,6 +132,10 @@ impl JournalStore for SqlStore {
     }
 
     fn secrets(&self) -> Option<&dyn SecretStore> {
+        Some(self)
+    }
+
+    fn accounts(&self) -> Option<&dyn AccountStore> {
         Some(self)
     }
 

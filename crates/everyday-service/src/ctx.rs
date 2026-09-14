@@ -66,6 +66,17 @@ pub enum Scope {
     /// roles and goals can read the *shape* of somebody's life -- which roles
     /// exist, how much time each takes -- without reading a single entry.
     Purpose,
+    /// Accounts: the mailbox providers this vault has been signed in to.
+    ///
+    /// Its own scope rather than a corner of `Journals`, for a reason
+    /// stronger than most of the others here: an account's own record is not
+    /// sensitive, but the account is the credential mail and the calendar
+    /// both borrow, and a client that could list or edit accounts could
+    /// switch on an external agent's send access for a mailbox it does not
+    /// otherwise touch. Never granted to the mail or calendar tool
+    /// catalogues themselves -- those read `assistant_access` and
+    /// `mcp_access` off the account they are already scoped to, not this.
+    Accounts,
     Agent,
     /// Spending the quick model: the small extractions in
     /// [`everyday_core::quick`].
@@ -118,6 +129,7 @@ impl Scope {
             Scope::Library => "library",
             Scope::Trackers => "trackers",
             Scope::Purpose => "purpose",
+            Scope::Accounts => "accounts",
             Scope::Agent => "agent",
             Scope::Quick => "quick",
             Scope::Web => "web",
@@ -139,6 +151,7 @@ impl Scope {
         Scope::Library,
         Scope::Trackers,
         Scope::Purpose,
+        Scope::Accounts,
         Scope::Agent,
         Scope::Quick,
         Scope::Web,

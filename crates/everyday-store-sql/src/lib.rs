@@ -45,6 +45,9 @@
 //! | note `pinned`, `created_us`, `updated_us` | how many notes there are, which are pinned, and when they were touched -- never a title |
 //! | routine `created_us`, `updated_us` | how many standing jobs the assistant has |
 //! | run `routine_id`, `started_us`, `seen` | that a routine ran at seven and that nobody has read the result |
+//! | `record_secrets` (`owner_kind`, `owner_id`) | that some record of that kind holds a credential, never which one or what it is |
+//! | account `created_us`, `updated_us` | how many mailbox providers are signed in to, and roughly when -- never the address, the host, or a single credential |
+//! | `account_calendars` (`calendar_id`, `account_id`) | which calendar came from which account, once phase 6 writes a row here -- never either one's name |
 //!
 //! Titles, bodies, tags, locations, attachments and file names are all
 //! sealed. Someone with the database learns *that* you journalled on 14 July
@@ -102,6 +105,7 @@
 //! same one `everyday_core::store` makes between the trait and its five
 //! optional siblings.
 
+mod accounts;
 pub(crate) mod blobs;
 pub mod conn;
 pub mod dialect;
@@ -288,6 +292,7 @@ impl SqlStore {
             routines: true,
             agent: true,
             secrets: true,
+            accounts: true,
         }
     }
 

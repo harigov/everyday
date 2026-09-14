@@ -61,6 +61,7 @@ const KINDS = [
   'conversation',
   'memory',
   'settings',
+  'account',
 ]
 
 for (const kind of KINDS) {

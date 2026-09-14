@@ -12,6 +12,9 @@
 import type {
   AddedItem,
   QuickJobRow,
+  Account,
+  AccountView,
+  AgentMailAccess,
   BlockKind,
   BlockQuery,
   BlockSubject,
@@ -20,6 +23,7 @@ import type {
   CalendarEvent,
   CalendarInfo,
   BalanceReport,
+  MailProviderInfo,
   EventQuery,
   Goal,
   GoalActivity,
@@ -1414,6 +1418,173 @@ const calendars: CalendarInfo[] = [
     events: 0,
   },
 ]
+
+// ── Accounts ──────────────────────────────────────────────────────────────
+//
+// Two seeded accounts, deliberately unlike each other: one OAuth, one a
+// password; one with the calendar switched on, one without -- so a
+// Settings → Accounts screen built against this mock has both shapes to
+// draw from the first day, rather than discovering the password case only
+// once somebody adds a Fastmail account by hand.
+
+const accounts: AccountView[] = [
+  {
+    id: 'acct-google',
+    provider: 'google',
+    address: 'me@gmail.com',
+    displayName: 'Personal Gmail',
+    identities: [],
+    imap: { host: 'imap.gmail.com', port: 993, security: 'tls' },
+    smtp: { host: 'smtp.gmail.com', port: 465, security: 'tls' },
+    caldav: null,
+    auth: {
+      type: 'oAuth',
+      clientId: 'demo-app.apps.googleusercontent.com',
+      authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+      scopes: ['https://mail.google.com/'],
+    },
+    services: { mail: true, calendar: false },
+    assistantAccess: {
+      read: true,
+      draft: true,
+      edit: true,
+      remove: true,
+      archive: true,
+      send: false,
+    },
+    mcpAccess: { read: true, draft: true, edit: true, remove: true, archive: true, send: false },
+    assistantProviderAcknowledged: null,
+    attachmentCapBytes: null,
+    status: { type: 'ok' },
+    lastSyncedAt: iso(0),
+    createdAt: iso(120),
+    updatedAt: iso(0),
+    hasPassword: false,
+    signedIn: true,
+  },
+  {
+    id: 'acct-fastmail',
+    provider: 'fastmail',
+    address: 'me@fastmail.com',
+    displayName: 'Fastmail',
+    identities: [
+      { name: 'Me', address: 'me@fastmail.com', signatureHtml: '<p>Sent from Fastmail</p>' },
+    ],
+    imap: { host: 'imap.fastmail.com', port: 993, security: 'tls' },
+    smtp: { host: 'smtp.fastmail.com', port: 465, security: 'tls' },
+    caldav: 'https://caldav.fastmail.com',
+    auth: { type: 'password', username: 'me@fastmail.com' },
+    services: { mail: true, calendar: true },
+    assistantAccess: {
+      read: true,
+      draft: true,
+      edit: true,
+      remove: true,
+      archive: true,
+      send: false,
+    },
+    mcpAccess: {
+      read: false,
+      draft: false,
+      edit: false,
+      remove: false,
+      archive: false,
+      send: false,
+    },
+    assistantProviderAcknowledged: null,
+    attachmentCapBytes: 25_000_000,
+    status: { type: 'ok' },
+    lastSyncedAt: iso(1),
+    createdAt: iso(200),
+    updatedAt: iso(1),
+    hasPassword: true,
+    signedIn: true,
+  },
+]
+
+/** Mirrors `Provider::preset` in `everyday-core`; see that function for the
+ *  rationale behind each host, port and scope. */
+const MAIL_PROVIDER_PRESETS: MailProviderInfo[] = [
+  {
+    provider: 'google',
+    label: 'Google',
+    imap: { host: 'imap.gmail.com', port: 993, security: 'tls' },
+    smtp: { host: 'smtp.gmail.com', port: 465, security: 'tls' },
+    caldav: null,
+    oauth: {
+      authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+      mailScopes: ['https://mail.google.com/'],
+      calendarScopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+    },
+    needsClientSecret: true,
+    appPasswordHelpUrl: null,
+  },
+  {
+    provider: 'microsoft',
+    label: 'Microsoft 365 / Outlook',
+    imap: { host: 'outlook.office365.com', port: 993, security: 'tls' },
+    smtp: { host: 'smtp.office365.com', port: 587, security: 'startTls' },
+    caldav: null,
+    oauth: {
+      authUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+      tokenUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+      mailScopes: [
+        'https://outlook.office.com/IMAP.AccessAsUser.All',
+        'https://outlook.office.com/SMTP.Send',
+        'offline_access',
+      ],
+      calendarScopes: ['Calendars.Read'],
+    },
+    needsClientSecret: true,
+    appPasswordHelpUrl: null,
+  },
+  {
+    provider: 'iCloud',
+    label: 'iCloud',
+    imap: { host: 'imap.mail.me.com', port: 993, security: 'tls' },
+    smtp: { host: 'smtp.mail.me.com', port: 587, security: 'startTls' },
+    caldav: 'https://caldav.icloud.com',
+    oauth: null,
+    needsClientSecret: false,
+    appPasswordHelpUrl: 'https://support.apple.com/en-us/102654',
+  },
+  {
+    provider: 'fastmail',
+    label: 'Fastmail',
+    imap: { host: 'imap.fastmail.com', port: 993, security: 'tls' },
+    smtp: { host: 'smtp.fastmail.com', port: 465, security: 'tls' },
+    caldav: 'https://caldav.fastmail.com',
+    oauth: null,
+    needsClientSecret: false,
+    appPasswordHelpUrl: 'https://www.fastmail.help/hc/en-us/articles/360058752854',
+  },
+  {
+    provider: 'yahoo',
+    label: 'Yahoo',
+    imap: { host: 'imap.mail.yahoo.com', port: 993, security: 'tls' },
+    smtp: { host: 'smtp.mail.yahoo.com', port: 465, security: 'tls' },
+    caldav: null,
+    oauth: null,
+    needsClientSecret: false,
+    appPasswordHelpUrl: 'https://help.yahoo.com/kb/SLN15241.html',
+  },
+  {
+    provider: 'custom',
+    label: 'Custom (IMAP)',
+    imap: { host: '', port: 993, security: 'tls' },
+    smtp: { host: '', port: 587, security: 'startTls' },
+    caldav: null,
+    oauth: null,
+    needsClientSecret: false,
+    appPasswordHelpUrl: null,
+  },
+]
+
+/** Password secrets the mock has been given, keyed by account id -- what
+ *  `has_password` and `signed_in` are computed from after `save_account_password`. */
+const accountPasswords = new Map<string, string>([['acct-fastmail', 'hunter2-demo']])
 
 function eventAt(
   id: string,
@@ -3899,6 +4070,72 @@ export const mockInvoke = async <T>(
         replaced: args.mode === 'replace' ? parts.length : 0,
         skipped: args.mode === 'replace' ? 0 : parts.length,
       } as T
+    }
+
+    // ── Accounts ────────────────────────────────────────────────────
+
+    case 'list_accounts': {
+      requireUnlocked()
+      return structuredClone(accounts) as T
+    }
+
+    case 'get_account': {
+      requireUnlocked()
+      const found = accounts.find((a) => a.id === str(args.id))
+      if (!found) throw new VaultError('notFound', 'no such account')
+      return structuredClone(found) as T
+    }
+
+    case 'save_account': {
+      requireUnlocked()
+      const account = args.account as Account
+      const at = accounts.findIndex((a) => a.id === account.id)
+      const existing = at >= 0 ? accounts[at] : undefined
+      const password = accountPasswords.get(account.id)
+      const view: AccountView = {
+        ...account,
+        hasPassword: password !== undefined,
+        signedIn:
+          account.auth.type === 'password' ? password !== undefined : (existing?.signedIn ?? false),
+      }
+      if (existing) accounts[at] = view
+      else accounts.push(view)
+      return undefined as T
+    }
+
+    case 'delete_account': {
+      requireUnlocked()
+      const id = str(args.id)
+      const at = accounts.findIndex((a) => a.id === id)
+      if (at >= 0) accounts.splice(at, 1)
+      accountPasswords.delete(id)
+      return undefined as T
+    }
+
+    case 'account_presets':
+      requireUnlocked()
+      return structuredClone(MAIL_PROVIDER_PRESETS) as T
+
+    case 'save_account_password': {
+      requireUnlocked()
+      const id = str(args.id)
+      const account = accounts.find((a) => a.id === id)
+      if (!account) throw new VaultError('notFound', 'no such account')
+      accountPasswords.set(id, str(args.password))
+      account.hasPassword = true
+      account.signedIn = true
+      return undefined as T
+    }
+
+    case 'set_agent_access': {
+      requireUnlocked()
+      const id = str(args.id)
+      const account = accounts.find((a) => a.id === id)
+      if (!account) throw new VaultError('notFound', 'no such account')
+      const access = args.access as AgentMailAccess
+      if (args.caller === 'assistant') account.assistantAccess = access
+      else if (args.caller === 'mcp') account.mcpAccess = access
+      return undefined as T
     }
 
     default:

@@ -1,6 +1,17 @@
 {
   "commands": [
     {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "account_presets",
+      "orScope": null,
+      "returns": "MailProviderInfo[]",
+      "scope": "accounts",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "kindId",
@@ -168,6 +179,26 @@
       "orScope": null,
       "returns": "AgentMessage[]",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "AccountId"
+        }
+      ],
+      "changes": {
+        "kind": "account",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_account",
+      "orScope": null,
+      "returns": "void",
+      "scope": "accounts",
       "sensitive": false,
       "streams": false
     },
@@ -598,6 +629,23 @@
         {
           "name": "id",
           "required": true,
+          "type": "AccountId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_account",
+      "orScope": null,
+      "returns": "AccountView",
+      "scope": "accounts",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "EntryId"
         }
       ],
@@ -772,6 +820,17 @@
       "orScope": null,
       "returns": "LibraryStats",
       "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_accounts",
+      "orScope": null,
+      "returns": "AccountView[]",
+      "scope": "accounts",
       "sensitive": false,
       "streams": false
     },
@@ -2086,6 +2145,51 @@
     {
       "args": [
         {
+          "name": "account",
+          "required": true,
+          "type": "Account"
+        }
+      ],
+      "changes": {
+        "kind": "account",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_account",
+      "orScope": null,
+      "returns": "void",
+      "scope": "accounts",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "AccountId"
+        },
+        {
+          "name": "password",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "account",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_account_password",
+      "orScope": null,
+      "returns": "void",
+      "scope": "accounts",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "settings",
           "required": true,
           "type": "AgentSettings"
@@ -2639,6 +2743,36 @@
       "scope": "agent",
       "sensitive": false,
       "streams": true
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "AccountId"
+        },
+        {
+          "name": "caller",
+          "required": true,
+          "type": "AgentCallerKind"
+        },
+        {
+          "name": "access",
+          "required": true,
+          "type": "AgentMailAccess"
+        }
+      ],
+      "changes": {
+        "kind": "account",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_agent_access",
+      "orScope": null,
+      "returns": "void",
+      "scope": "accounts",
+      "sensitive": false,
+      "streams": false
     },
     {
       "args": [

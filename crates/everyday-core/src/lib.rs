@@ -74,6 +74,7 @@
 //! inside the sealed journal record, which made a tracker belong to one
 //! journal — see [`Journal::shown_trackers`](model::Journal::shown_trackers).
 
+pub mod account;
 pub mod agent;
 pub mod blobstore;
 pub mod calendar;
@@ -102,6 +103,10 @@ pub mod tracker;
 pub mod vault;
 pub mod websearch;
 
+pub use account::{
+    Account, AccountSecret, AccountStatus, AgentCaller, AgentMailAccess, AuthMethod, Endpoint,
+    EndpointSecurity, Identity, Permission as MailPermission, Preset as AccountPreset, Services,
+};
 pub use agent::{
     AgentSettings, Conversation, LLMModelConfig, LLMProviderConfig, Memory, Message, Provider,
     Role as MessageRole, ToolCall,
@@ -110,8 +115,8 @@ pub use blobstore::FileBlobStore;
 pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatus, SyncReport};
 pub use error::{Error, Result};
 pub use id::{
-    BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, GoalId, ItemId, JournalId,
-    KindId, LogId, MemoryId, MessageId, NoteId, ProjectId, ReadingId, RoleId, RoutineId,
+    AccountId, BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, GoalId, ItemId,
+    JournalId, KindId, LogId, MemoryId, MessageId, NoteId, ProjectId, ReadingId, RoleId, RoutineId,
     RoutineRunId, TaskId, TrackerId,
 };
 pub use library::{
@@ -127,6 +132,7 @@ pub use purpose::{
 pub use quick::{Prompt as QuickPrompt, QuickApp, QuickContext, QuickJob, QuickPolicy};
 pub use richtext::RichDoc;
 pub use routine::{Due, Outcome, Routine, RoutineRun, Trigger, Weekday};
+pub use store::accounts::AccountStore;
 pub use store::agent::{AgentStore, ConversationQuery};
 pub use store::calendars::{CalendarStore, EventQuery};
 pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};

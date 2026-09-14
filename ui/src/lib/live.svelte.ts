@@ -145,6 +145,10 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   conversation: null,
   memory: null,
   settings: 'status',
+  // A mailbox provider signed in to. No reload target yet -- Settings →
+  // Accounts, the first reader of this, arrives in a later change; until
+  // then the event exists so a save is not silently invisible on the wire.
+  account: null,
 }
 
 /**

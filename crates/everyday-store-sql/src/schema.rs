@@ -754,11 +754,14 @@ fn v8(d: Dialect) -> Vec<String> {
 /// follows: every later phase of that plan adds its tables to this same
 /// step, so a vault passes through one "mail exists now" migration rather
 /// than a fresh version for each phase, the way version 4 folded shelves,
-/// items and the log into a single arrival rather than three. Two tables
-/// land here because two things earlier work needs regardless of whether
-/// mail itself ever ships: a secret store that is not a singleton, and
-/// somewhere for a Postgres vault to put raw messages that is not a row per
-/// attachment-sized blob.
+/// items and the log into a single arrival rather than three. Phase 0 laid
+/// two tables here because two things earlier work needs regardless of
+/// whether mail itself ever ships: a secret store that is not a singleton,
+/// and somewhere for a Postgres vault to put raw messages that is not a row
+/// per attachment-sized blob. Phase 1 -- accounts -- adds two more, on the
+/// same reasoning: an account is not mail either, and the calendar's
+/// "other people's calendars" phase (6) needs it regardless of whether the
+/// mail app it was built alongside ever ships to everyone.
 ///
 /// `record_secrets` generalises the singleton `agent_secret` above -- a
 /// credential keyed by *who it belongs to* (`owner_kind`, `owner_id`,
@@ -789,6 +792,27 @@ fn v8(d: Dialect) -> Vec<String> {
 /// is a per-account arrival order, for whenever something later wants packs
 /// back in the order they were written rather than by id; `id` is what a
 /// `PackRef` actually names, and it is what `read` looks a row up by.
+///
+/// `accounts` is the vault-level record of a mailbox provider signed in to
+/// -- see [`everyday_core::account`] and
+/// [`everyday_core::store::accounts`]. It carries nothing in the clear
+/// beyond the two timestamps every table in this file has: unlike a task or
+/// an event, there is no list of accounts large enough, or queried finely
+/// enough, to make a clear column worth what it would leak. Its secret --
+/// the refresh token or password `AuthMethod` needs -- is never in this
+/// table at all; it lives in `record_secrets` above, under owner kind
+/// `"account"`, exactly like every other per-record credential this step
+/// introduced.
+///
+/// `account_calendars` is a pointer table in the shape `purposes` pioneered:
+/// a calendar's own row stays wherever `calendars` puts it, and this says
+/// only which account it came from, so that deleting an account can find
+/// every calendar it needs to leave dangling-free without a foreign key the
+/// backend would otherwise have to enforce by hand. It is empty until phase
+/// 6 gives `CalendarOrigin` an `Account` variant to write one from; it
+/// exists now, alongside `accounts` itself, because `AccountStore::
+/// delete_account` promises today to clear it, and a promise about a table
+/// that does not exist yet is not a promise this crate can keep.
 fn v9(d: Dialect) -> Vec<String> {
     let (blob, int) = (d.blob(), d.int());
     vec![
@@ -812,6 +836,24 @@ fn v9(d: Dialect) -> Vec<String> {
         // question this table is asked before the mail domain itself lands
         // and gives it something to join against.
         "CREATE INDEX IF NOT EXISTS mail_packs_by_account ON mail_packs (account_id, seq)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS accounts (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE TABLE IF NOT EXISTS account_calendars (
+             calendar_id  TEXT PRIMARY KEY NOT NULL,
+             account_id   TEXT NOT NULL
+         )"
+        .into(),
+        // What `AccountStore::delete_account` reads before it deletes: every
+        // calendar one account is behind.
+        "CREATE INDEX IF NOT EXISTS account_calendars_by_account \
+         ON account_calendars (account_id)"
+            .into(),
     ]
 }
 
