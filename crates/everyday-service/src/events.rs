@@ -148,6 +148,8 @@ pub enum Kind {
     Role,
     /// An outcome under a role.
     Goal,
+    /// A mailbox provider signed in to. See `everyday_core::account`.
+    Account,
     Conversation,
     /// The assistant's standing work.
     Routine,

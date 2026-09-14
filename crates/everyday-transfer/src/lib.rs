@@ -41,10 +41,24 @@
 //! # What is deliberately not here
 //!
 //! **Secrets.** The assistant's API key, the device tokens, the wrapped data
-//! key. An export is a plaintext file that will end up in a Downloads folder,
-//! and a credential in it is a credential leaked. The vault's own
-//! `backup` — which copies it *sealed* — is the thing that carries those, and
-//! it is a different verb on purpose.
+//! key, and — since `docs/plans/mail.md` phase 1 — every account's refresh
+//! token, password and client secret. An export is a plaintext file that
+//! will end up in a Downloads folder, and a credential in it is a credential
+//! leaked. The vault's own `backup` — which copies it *sealed* — is the
+//! thing that carries those, and it is a different verb on purpose.
+//!
+//! **Accounts and mail entirely.** Not only their secrets: the account
+//! records themselves, and everything mail's later phases add under them,
+//! have no part in [`PARTS`] and gain no `Portable` implementation. The
+//! plan is explicit about this — "the server is the backup;
+//! `everyday-transfer` skips mail and accounts, and says so" — because a
+//! folder of `.eml` files with the account that fetched them beside it in
+//! plain text is a bigger leak than any other part of this crate hands
+//! over, and because the provider is already keeping every message this
+//! would re-export. Adding a part later is possible in principle, the same
+//! way it is for anything else in [`PARTS`]; nothing about this crate's
+//! design forbids it, and this paragraph is only true until somebody
+//! decides otherwise and writes one.
 //!
 //! **A promise of perfect fidelity in both directions.** Markdown does not
 //! have a node type for everything the editor can produce, and CSV has no
