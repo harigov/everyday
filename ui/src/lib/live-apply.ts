@@ -11,16 +11,8 @@
 import type { ChangeEvent } from './types'
 import type { ReloadTarget } from './live.svelte'
 
-/**
- * `ChangeEvent` widened with the batch id workstream (c) is adding to the
- * Rust event -- `everyday-service/src/events.rs` -- and, once that lands, to
- * `ChangeEvent` itself in `types.ts`. Declared here instead so this file does
- * not collide with that change when it arrives.
- *
- * TODO(workstream c): once `ChangeEvent` in `types.ts` carries `ids`, drop
- * this alias and use `ChangeEvent` directly everywhere it appears below.
- */
-export type ChangeWithIds = ChangeEvent & { ids?: string[] | null }
+/** A change as the backend sends it, `id` for one record and `ids` for a batch. */
+export type ChangeWithIds = ChangeEvent
 
 /**
  * What a store hands `registerApply`: given the changes routed to its
