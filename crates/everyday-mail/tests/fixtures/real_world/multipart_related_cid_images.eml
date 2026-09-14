@@ -1,0 +1,37 @@
+From: "Design Team" <design@corp.example>
+To: all@corp.example
+Subject: New brand guidelines
+Message-ID: <cid-images-1@corp.example>
+Date: Thu, 15 Jan 2026 09:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="related-boundary"
+
+--related-boundary
+Content-Type: text/html; charset=utf-8
+
+<html>
+<body>
+<p>Here is our new logo:</p>
+<img src="cid:logo@corp.example" alt="Logo">
+<p>And the new wordmark:</p>
+<img src="cid:wordmark@corp.example" alt="Wordmark">
+</body>
+</html>
+
+--related-boundary
+Content-Type: image/png
+Content-ID: <logo@corp.example>
+Content-Transfer-Encoding: base64
+Content-Disposition: inline; filename="logo.png"
+
+aGVsbG8gbG9nbw==
+
+--related-boundary
+Content-Type: image/png
+Content-ID: <wordmark@corp.example>
+Content-Transfer-Encoding: base64
+Content-Disposition: inline; filename="wordmark.png"
+
+aGVsbG8gd29yZG1hcms=
+
+--related-boundary--

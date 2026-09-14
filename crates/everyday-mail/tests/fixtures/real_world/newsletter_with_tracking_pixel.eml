@@ -1,0 +1,19 @@
+From: "Daily Times" <newsletter@dailytimes.example>
+To: reader@example.com
+Subject: Your Tuesday digest
+Message-ID: <newsletter-1@dailytimes.example>
+List-Id: Daily Times Newsletter <newsletter.dailytimes.example>
+List-Unsubscribe: <https://dailytimes.example/unsubscribe?u=12345>
+Precedence: bulk
+Date: Tue, 13 Jan 2026 07:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html>
+<body>
+<h1>Your Tuesday digest</h1>
+<p>Top story: local council approves new park.</p>
+<p><a href="https://dailytimes.example/story/1">Read more</a></p>
+<img src="https://track.dailytimes.example/open.gif?u=12345" width="1" height="1" alt="">
+</body>
+</html>
