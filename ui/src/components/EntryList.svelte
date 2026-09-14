@@ -1,16 +1,18 @@
 <script lang="ts">
   import { app } from '../lib/state.svelte'
-  import { dayNumber, groupLabel, plural, weekdayShort } from '../lib/format'
+  import { dayNumber, plural, weekdayShort } from '../lib/format'
   import { mediaUrl } from '../lib/api'
   import { menu } from '../lib/menu.svelte'
   import { onOffPref } from '../lib/prefs'
   import { rovingFocus } from '../lib/roving'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { purposeItems } from '../lib/menus'
+  import { toRows, type EntryRow } from '../lib/entry-rows'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import EmptyState from './EmptyState.svelte'
   import EntryCalendar from './EntryCalendar.svelte'
   import Icon from './Icon.svelte'
+  import VirtualList from './VirtualList.svelte'
   import type { EntryId, EntrySummary, JournalId } from '../lib/types'
 
   let pendingDelete = $state<{ id: EntryId; title: string } | null>(null)
@@ -36,18 +38,11 @@
     if (doomed) await app.deleteEntry(doomed.id)
   }
 
-  // Group by the label the reader would use ("Today", "March"), preserving
-  // the order the backend already sorted into.
-  const groups = $derived.by(() => {
-    const out: { label: string; rows: EntrySummary[] }[] = []
-    for (const row of app.entries) {
-      const label = groupLabel(row.localDate)
-      const last = out[out.length - 1]
-      if (last && last.label === label) last.rows.push(row)
-      else out.push({ label, rows: [row] })
-    }
-    return out
-  })
+  // Flattened for `VirtualList`: a header row and an entry row interleaved,
+  // in the order the backend already sorted `app.entries` into. See
+  // `entry-rows.ts` for why a heading is a row of its own kind rather than a
+  // nested list.
+  const rows = $derived(toRows(app.entries))
 
   const heading = $derived(app.showStarredOnly ? 'Starred' : (app.journal?.name ?? 'All entries'))
 
@@ -259,49 +254,53 @@
         {/snippet}
       </EmptyState>
     {:else}
-      {#each groups as group (group.label)}
-        <div class="grouphead"><span class="eyebrow">{group.label}</span></div>
-        {#each group.rows as row (row.id)}
-          <button
-            class="row"
-            class:sel={app.selectedEntry === row.id}
-            data-row={row.id}
-            onclick={() => app.openEntry(row.id)}
-            oncontextmenu={(e) => menu.show(e, entryMenu(row))}
-          >
-            <span class="bar" style="background: {colorOf(row.journalId)}"></span>
+      <VirtualList items={rows} getKey={(r: EntryRow) => r.key} selectedId={app.selectedEntry}>
+        {#snippet children(r: EntryRow)}
+          {#if r.kind === 'header'}
+            <div class="grouphead"><span class="eyebrow">{r.label}</span></div>
+          {:else}
+            {@const row: EntrySummary = (r as Extract<EntryRow, { kind: 'entry' }>).entry}
+            <button
+              class="row"
+              class:sel={app.selectedEntry === row.id}
+              data-row={row.id}
+              onclick={() => app.openEntry(row.id)}
+              oncontextmenu={(e) => menu.show(e, entryMenu(row))}
+            >
+              <span class="bar" style="background: {colorOf(row.journalId)}"></span>
 
-            <div class="cal" aria-hidden="true">
-              <span class="dow">{weekdayShort(row.localDate)}</span>
-              <span class="dom">{dayNumber(row.localDate)}</span>
-            </div>
-
-            <div class="body">
-              <div class="title">
-                <span class="titletext">{row.title || 'Untitled entry'}</span>
-                {#if row.starred}<span class="star" title="Starred"
-                    ><Icon name="star" size={12} filled /></span
-                  >{/if}
+              <div class="cal" aria-hidden="true">
+                <span class="dow">{weekdayShort(row.localDate)}</span>
+                <span class="dom">{dayNumber(row.localDate)}</span>
               </div>
-              {#if row.excerpt}<div class="excerpt">{row.excerpt}</div>{/if}
-              {#if row.tags.length || row.place}
-                <div class="chips">
-                  {#if row.place}
-                    <span class="place"
-                      ><Icon name="place" size={12} weight={1.6} /> {row.place}</span
-                    >
-                  {/if}
-                  {#each row.tags.slice(0, 3) as tag (tag)}<span class="chip">{tag}</span>{/each}
-                </div>
-              {/if}
-            </div>
 
-            {#if row.cover}
-              <img class="thumb" src={mediaUrl(row.cover)} alt="" loading="lazy" />
-            {/if}
-          </button>
-        {/each}
-      {/each}
+              <div class="body">
+                <div class="title">
+                  <span class="titletext">{row.title || 'Untitled entry'}</span>
+                  {#if row.starred}<span class="star" title="Starred"
+                      ><Icon name="star" size={12} filled /></span
+                    >{/if}
+                </div>
+                {#if row.excerpt}<div class="excerpt">{row.excerpt}</div>{/if}
+                {#if row.tags.length || row.place}
+                  <div class="chips">
+                    {#if row.place}
+                      <span class="place"
+                        ><Icon name="place" size={12} weight={1.6} /> {row.place}</span
+                      >
+                    {/if}
+                    {#each row.tags.slice(0, 3) as tag (tag)}<span class="chip">{tag}</span>{/each}
+                  </div>
+                {/if}
+              </div>
+
+              {#if row.cover}
+                <img class="thumb" src={mediaUrl(row.cover)} alt="" loading="lazy" />
+              {/if}
+            </button>
+          {/if}
+        {/snippet}
+      </VirtualList>
     {/if}
   </div>
 </section>
