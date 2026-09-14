@@ -20,12 +20,14 @@
 //! so point this at a scratch database and never at one with anything in it.
 
 use everyday_core::crypto::{AeadCipher, Cipher, NullCipher, SecretKey};
+use everyday_core::packstore::run_pack_store_suite;
 use everyday_core::store::conformance;
 use everyday_core::store::trackers::{ReadingQuery, TrackerStore};
 use everyday_core::store::{BackendSettings, JournalStore, StoreContext};
 use everyday_core::tracker::Reading;
 use everyday_core::{Journal, TrackerId};
 use everyday_store_postgres::{PostgresStore, SCHEMA_KEY};
+use everyday_store_sql::packs::TablePacks;
 use std::sync::Arc;
 
 /// A store on its own schema, or `None` if no server was configured.
@@ -111,6 +113,15 @@ fn attachments_live_in_the_database_and_seek_without_downloading() {
 
     store.delete_blob(id).unwrap();
     assert!(!store.has_blob(id).unwrap());
+}
+
+#[test]
+fn the_table_backed_pack_store_passes_the_shared_conformance_suite() {
+    // The Postgres-shaped answer to `PackStore`, proven against the database
+    // it exists for -- see `everyday_store_sql::packs` for why a row is
+    // already its own pack and `compact` has nothing to rewrite here.
+    let Some(store) = store("conformance_packs", true) else { return };
+    run_pack_store_suite(&TablePacks::new(&store), "acc-conformance");
 }
 
 #[test]

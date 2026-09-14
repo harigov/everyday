@@ -134,6 +134,13 @@ typed_id!(ConversationId, "conversation");
 typed_id!(MessageId, "message");
 typed_id!(MemoryId, "memory");
 
+// The mail domain's storage groundwork, laid in phase 0 of the mail plan
+// ahead of the domain itself. A `PackId` names one pack -- a file of raw
+// messages sealed one at a time, or the row a Postgres vault keeps instead --
+// never a message on its own. See `crate::packstore`. `Account`, `Mailbox`,
+// `Message` and `Thread` ids arrive with the domain in a later phase.
+typed_id!(PackId, "pack");
+
 /// Content address of an attachment payload.
 ///
 /// Blobs are content-addressed with BLAKE3 so that the same photo dropped into

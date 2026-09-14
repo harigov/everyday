@@ -87,6 +87,7 @@ pub mod lockfile;
 pub mod media;
 pub mod model;
 pub mod note;
+pub mod packstore;
 pub mod profile;
 pub mod purpose;
 pub mod quick;

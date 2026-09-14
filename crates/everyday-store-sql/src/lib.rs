@@ -111,6 +111,7 @@ mod calendars;
 mod journals;
 mod library;
 mod notes;
+pub mod packs;
 mod pool;
 mod profile;
 mod purpose;
