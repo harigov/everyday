@@ -43,6 +43,7 @@ export type GoalId = string
 export type KindId = string
 export type ItemId = string
 export type LogId = string
+export type AccountId = string
 
 /** A ProseMirror document. Opaque to everything but the editor. */
 export type RichDoc = { type: 'doc'; content?: unknown[] }
@@ -1143,6 +1144,125 @@ export interface ChangeEvent {
  * needed to learn where it actually comes from.
  */
 export type { ChangeKind } from './generated/commands'
+
+// ── Accounts ──────────────────────────────────────────────────────────────
+//
+// A mailbox provider signed in to. Not owned by the mail app -- mail and the
+// calendar's "other people's calendars" both borrow the same credential --
+// which is why this sits beside Purpose and the calendar rather than inside
+// either. Mirrors `everyday_core::account`; see that module for why almost
+// nothing here is sensitive and the one thing that is (the credential
+// itself) never crosses the wire at all.
+
+// Named `Mail*` rather than plain `Provider`/`ProviderInfo` -- both names are
+// already taken, by the LLM provider a model is spoken to over and by the
+// calendar's own picker -- and disambiguating here is cheaper than renaming
+// either of those two much older types for a newcomer.
+export const MAIL_PROVIDERS = [
+  'google',
+  'microsoft',
+  'iCloud',
+  'fastmail',
+  'yahoo',
+  'custom',
+] as const
+export type MailProvider = (typeof MAIL_PROVIDERS)[number]
+
+export type EndpointSecurity = 'tls' | 'startTls'
+
+export interface Endpoint {
+  host: string
+  port: number
+  security: EndpointSecurity
+}
+
+export interface Identity {
+  name: string
+  address: string
+  signatureHtml: string
+}
+
+export type AuthMethod =
+  | { type: 'oAuth'; clientId: string; authUrl: string; tokenUrl: string; scopes: string[] }
+  | { type: 'password'; username: string }
+
+export interface Services {
+  mail: boolean
+  calendar: boolean
+}
+
+/**
+ * What the chat assistant, or an MCP client, may do to one account's mail.
+ * Every field but `send` defaults to on -- see `AgentMailAccess::default`
+ * in Rust for why sending is the one action that starts off.
+ */
+export interface AgentMailAccess {
+  read: boolean
+  draft: boolean
+  edit: boolean
+  remove: boolean
+  archive: boolean
+  send: boolean
+}
+
+export type AgentCallerKind = 'assistant' | 'mcp'
+
+export type AccountStatus =
+  { type: 'ok' } | { type: 'needsSignIn'; reason: string } | { type: 'error'; message: string }
+
+export interface Account {
+  id: AccountId
+  provider: MailProvider
+  address: string
+  displayName: string
+  identities: Identity[]
+  imap: Endpoint
+  smtp: Endpoint
+  caldav?: string | null
+  auth: AuthMethod
+  services: Services
+  assistantAccess: AgentMailAccess
+  mcpAccess: AgentMailAccess
+  assistantProviderAcknowledged?: string | null
+  attachmentCapBytes?: number | null
+  status: AccountStatus
+  lastSyncedAt?: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+/**
+ * An account, plus what the interface is allowed to know about its secret --
+ * never the secret itself. What `list_accounts` and `get_account` answer
+ * with.
+ */
+export interface AccountView extends Account {
+  hasPassword: boolean
+  signedIn: boolean
+}
+
+export interface OAuthPreset {
+  authUrl: string
+  tokenUrl: string
+  mailScopes: string[]
+  calendarScopes: string[]
+}
+
+/** Host, port, security and OAuth endpoints a well-known provider publishes. */
+export interface Preset {
+  imap: Endpoint
+  smtp: Endpoint
+  caldav?: string | null
+  oauth?: OAuthPreset | null
+  needsClientSecret: boolean
+  appPasswordHelpUrl?: string | null
+}
+
+/** One provider's label and preset, for the add-account picker. */
+export interface MailProviderInfo extends Preset {
+  provider: MailProvider
+  label: string
+}
 
 // ── The command surface, describing itself ─────────────────────────────
 //
