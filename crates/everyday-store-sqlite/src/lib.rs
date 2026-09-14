@@ -330,3 +330,9 @@ fn from_sqlite(v: ValueRef<'_>) -> Value {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod keyset_tests;
+
+#[cfg(test)]
+mod scale;

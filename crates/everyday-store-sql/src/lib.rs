@@ -87,6 +87,7 @@
 //!   record.rs      the id/columns/sealed-payload shape every table has,
 //!                  and the get/upsert/delete it buys a table that names it
 //!   dialect.rs     the five places SQLite and Postgres disagree
+//!   keyset.rs      page_after -- keyset paging, beside the offset form
 //!   schema.rs      the tables, and the migrations that reach them
 //!   blobs.rs       attachments, in a table, for a store with no local disk
 //!   journals.rs    impl JournalStore -- journals, entries, blobs
@@ -104,6 +105,7 @@
 pub(crate) mod blobs;
 pub mod conn;
 pub mod dialect;
+pub mod keyset;
 pub mod schema;
 
 mod agent;
