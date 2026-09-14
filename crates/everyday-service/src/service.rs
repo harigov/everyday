@@ -24,6 +24,7 @@ use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{EventSink, Silent};
 use crate::idempotency::{Claim, Idempotency};
+use crate::supervisor::Supervisor;
 use crate::transfers::Transfers;
 use everyday_core::{BlobId, CalendarId, Vault};
 use serde_json::Value;
@@ -51,6 +52,13 @@ pub struct Service {
     vault: RwLock<Option<Arc<Vault>>>,
     last_path: RwLock<Option<PathBuf>>,
     events: RwLock<Arc<dyn EventSink>>,
+    /// The keyed long-lived tasks this session runs -- mail's future sync
+    /// tasks, and nothing yet. Defaults to a supervisor with nowhere to send
+    /// its own announcements, exactly as `events` defaults to [`Silent`],
+    /// because a `Service` exists for a moment before whatever constructs
+    /// the scheduler beside it can hand this a real sink -- see
+    /// [`Service::set_supervisor`].
+    supervisor: RwLock<Arc<Supervisor>>,
     pending: Arc<Pending>,
     idempotency: Idempotency,
     /// Archives on their way out of this vault or into it.
@@ -103,6 +111,7 @@ impl Service {
             vault: RwLock::new(None),
             last_path: RwLock::new(None),
             events: RwLock::new(Arc::new(Silent)),
+            supervisor: RwLock::new(Arc::new(Supervisor::new(Arc::new(Silent)))),
             pending: Arc::default(),
             idempotency: Idempotency::default(),
             transfers: Arc::default(),
@@ -121,11 +130,32 @@ impl Service {
     /// it. A service with no sink drops its remarks, which is the right
     /// behaviour for the CLI.
     pub fn set_events(&self, sink: Arc<dyn EventSink>) {
-        *self.events.write().unwrap() = sink;
+        *self.events.write().unwrap() = sink.clone();
+        // The supervisor raises its own change events -- see `set_events`'s
+        // own doc -- and `everyday-app` composes a fresh fanout every time a
+        // paired device or an MCP client connects, so the sink this started
+        // with is not the only one it will ever need.
+        self.supervisor().set_events(sink);
     }
 
     pub fn events(&self) -> Arc<dyn EventSink> {
         self.events.read().unwrap().clone()
+    }
+
+    /// Replace the supervisor this service hooks lock and unlock to.
+    ///
+    /// Called once, wherever the scheduler is spawned -- `everyday-app`'s
+    /// `setup` and the CLI's `serve` -- because that is the earliest point
+    /// either owns both a `Service` whose sink is final and a runtime to
+    /// spawn a supervised task's first attempt on. Nothing before that
+    /// point can lock or unlock a vault for real, so the placeholder
+    /// [`Service::new`] built has nothing to have missed.
+    pub fn set_supervisor(&self, supervisor: Arc<Supervisor>) {
+        *self.supervisor.write().unwrap() = supervisor;
+    }
+
+    pub fn supervisor(&self) -> Arc<Supervisor> {
+        self.supervisor.read().unwrap().clone()
     }
 
     pub fn pending(&self) -> Arc<Pending> {
@@ -144,9 +174,29 @@ impl Service {
     /// and it has to go when the key does. One method rather than a rule to
     /// remember in three places, one of which is a scheduler nobody is
     /// watching.
-    pub fn locked(&self) {
+    ///
+    /// Every one of this session's supervised tasks stops too, because a
+    /// locked vault has no key for a sync task to write with -- see
+    /// `supervisor.rs`'s module doc. Their factories stay registered, so
+    /// [`Service::unlocked`] starts the same ones again.
+    pub async fn locked(&self) {
         self.transfers.clear();
+        self.supervisor().stop_all().await;
         self.events().lock_state(true);
+    }
+
+    /// Say the vault has unlocked, and act on it.
+    ///
+    /// The other half of [`Service::locked`]: every task that was running
+    /// when the vault locked, and nothing else, starts again. A vault
+    /// nobody has ever registered a task on -- every vault today, since
+    /// phase 0 wires this mechanism without using it -- does nothing here,
+    /// which is the point: this is where mail's account tasks will start
+    /// once there is an account to start one for, and nothing about that
+    /// day needs this method to change.
+    pub fn unlocked(&self) {
+        self.supervisor().restart_registered();
+        self.events().lock_state(false);
     }
 
     // ---- the vault ------------------------------------------------------
@@ -398,6 +448,7 @@ impl Service {
                 kind,
                 op: crate::events::Op::Updated,
                 id: None,
+                ids: Vec::new(),
                 origin: origin.clone(),
             });
         }
@@ -405,6 +456,7 @@ impl Service {
             kind: crate::events::Kind::Conversation,
             op: crate::events::Op::Updated,
             id: Some(args.conversation_id.to_string()),
+            ids: Vec::new(),
             origin,
         });
         Ok(())

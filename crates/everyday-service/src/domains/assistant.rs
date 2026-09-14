@@ -270,6 +270,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_conversation", scope: Agent, effect: Destructive,
         change: Conversation / Deleted,
+        id: |a: &ConversationRef| Some(a.id.to_string()),
         args: ConversationRef, returns: "void",
         signature: &[("id", "ConversationId", true)],
         run: delete_conversation,
@@ -305,6 +306,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_memory", scope: Agent, effect: Write,
         change: Memory / Updated,
+        id: |a: &SaveMemory| Some(a.memory.id.to_string()),
         args: SaveMemory, returns: "Memory[]",
         signature: &[("memory", "Memory", true)],
         run: save_memory,
@@ -312,6 +314,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_memory", scope: Agent, effect: Destructive,
         change: Memory / Deleted,
+        id: |a: &MemoryRef| Some(a.id.to_string()),
         args: MemoryRef, returns: "void",
         signature: &[("id", "MemoryId", true)],
         run: delete_memory,

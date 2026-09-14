@@ -263,6 +263,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_routine", scope: Agent, effect: Write,
         change: Routine / Updated,
+        id: |a: &SaveRoutine| Some(a.routine.id.to_string()),
         args: SaveRoutine, returns: "Routine",
         signature: &[("routine", "Routine", true)],
         run: save_routine,
@@ -270,6 +271,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_routine", scope: Agent, effect: Destructive,
         change: Routine / Deleted,
+        id: |a: &RoutineRef| Some(a.id.to_string()),
         args: RoutineRef, returns: "void",
         signature: &[("id", "RoutineId", true)],
         run: delete_routine,
@@ -277,6 +279,12 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "run_routine", scope: Agent, effect: Write,
         change: RoutineRun / Created,
+        // No `id:` here on purpose: `args` names the *routine*, and what
+        // this writes is a new `RoutineRun` whose id the body mints and this
+        // table has no way to see. Filling one in from `args.id` would put
+        // the routine's id on a `RoutineRun` change, which is worse than
+        // leaving it absent -- a listener would reload the right list for
+        // the wrong reason and nobody would notice until it mattered.
         args: RoutineRef, returns: "RoutineRun",
         signature: &[("id", "RoutineId", true)],
         run: run_routine,
@@ -296,6 +304,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_run", scope: Agent, effect: Destructive,
         change: RoutineRun / Deleted,
+        id: |a: &RunRef| Some(a.id.to_string()),
         args: RunRef, returns: "void",
         signature: &[("id", "RoutineRunId", true)],
         run: delete_run,
@@ -303,6 +312,11 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "mark_runs_seen", scope: Agent, effect: Write,
         change: RoutineRun / Updated,
+        // Empty means "all of them" -- see `SeenRuns` -- so an empty `ids`
+        // here is the same absence of a hint a caller that named none of
+        // this crate's batch commands would also leave a listener with:
+        // "something moved, reload the list."
+        ids: |a: &SeenRuns| a.ids.iter().map(|id| id.to_string()).collect(),
         args: SeenRuns, returns: "void",
         signature: &[("ids", "RoutineRunId[]", false)],
         run: mark_runs_seen,

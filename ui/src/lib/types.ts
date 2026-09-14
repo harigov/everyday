@@ -1124,6 +1124,8 @@ export interface ChangeEvent {
   kind: ChangeKind
   op: 'created' | 'updated' | 'deleted'
   id?: string | null
+  /** More than one record, for a batch write -- a board reorder, a sync. */
+  ids?: string[]
   origin?: string | null
 }
 

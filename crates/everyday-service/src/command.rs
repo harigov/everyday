@@ -45,7 +45,46 @@ use serde_json::Value;
 use std::sync::Arc;
 
 /// What a command's body is, once the macro has wrapped it.
-pub type Handler = fn(Arc<Service>, Ctx, Value) -> BoxFuture<'static, CommandResult<Value>>;
+pub type Handler = fn(Arc<Service>, Ctx, Value) -> BoxFuture<'static, CommandResult<Outcome>>;
+
+/// What a generated `run` function actually answers with, before
+/// [`Command::invoke`] separates the value a caller sees from the id or ids
+/// that go on the [`Change`] it raises.
+///
+/// # Why the id travels this way rather than in the result
+///
+/// The obvious place to look for "what did this write" is the JSON a command
+/// returns, and [`encode`] is right there to read it back out of -- but it is
+/// the wrong place. Every `save_*` and `delete_*` command in the table
+/// answers `void`: the record a save wrote is the one the caller already
+/// had, echoing it back would be wasted bytes on every save in the
+/// application, and a delete has nothing left to echo. What every one of
+/// them *does* have is arguments that already name the record -- a `Save*`
+/// struct wraps the record itself, whose id the core minted before the
+/// client ever saw it; a `*Ref` struct wrapped by a delete is nothing but an
+/// id. So the macro reads the id out of the typed arguments it has already
+/// parsed, immediately before handing them to the command's body, rather
+/// than out of a result that in most cases does not carry it.
+///
+/// This is why `id:` and `ids:` in the [`command!`] table take a function of
+/// `&$args`, not of the result: the args are what a save or a delete
+/// commands actually has an id in hand for, and reading them costs nothing
+/// extra -- the macro's generated `run` already deserialised them once, and
+/// this borrows that same value before moving it into the body.
+///
+/// Declaring `id:` or `ids:` is opt-in per command rather than derived from
+/// the argument type automatically, because automatic derivation would need
+/// either a trait every argument struct in the table implements -- read
+/// commands and batch commands included, for a fact only a handful of them
+/// have -- or a naming convention over field names that a `Save*` struct
+/// would have to keep matching for ever. A two-line closure beside the
+/// command it describes is less machinery than either, and is exactly as
+/// visible in review as the `change:` line right beside it.
+pub struct Outcome {
+    pub value: Value,
+    pub id: Option<String>,
+    pub ids: Vec<String>,
+}
 
 /// One thing a client can ask for.
 pub struct Command {
@@ -247,9 +286,9 @@ impl Command {
         }
         let out = (self.run)(svc.clone(), ctx, args).await?;
         if let Some((kind, op)) = self.change {
-            svc.events().changed(Change { kind, op, id: None, origin });
+            svc.events().changed(Change { kind, op, id: out.id, ids: out.ids, origin });
         }
-        Ok(out)
+        Ok(out.value)
     }
 }
 
@@ -287,6 +326,8 @@ macro_rules! command {
         $(or_scope: $or_scope:ident,)?
         effect: $effect:ident,
         $(change: $kind:ident / $op:ident,)?
+        $(id: $idfn:expr,)?
+        $(ids: $idsfn:expr,)?
         $(sensitive: $sensitive:literal,)?
         $(streams: $streams:literal,)?
         args: $args:ty,
@@ -298,12 +339,21 @@ macro_rules! command {
             svc: ::std::sync::Arc<$crate::service::Service>,
             ctx: $crate::ctx::Ctx,
             raw: ::serde_json::Value,
-        ) -> ::futures::future::BoxFuture<'static, $crate::error::CommandResult<::serde_json::Value>>
+        ) -> ::futures::future::BoxFuture<'static, $crate::error::CommandResult<$crate::command::Outcome>>
         {
             ::std::boxed::Box::pin(async move {
                 let args: $args = $crate::command::parse($name, raw)?;
+                // Read before the body consumes `args` -- see `Outcome`'s
+                // doc for why this, rather than the result, is where a
+                // save or a delete's id actually lives.
+                let id = ($crate::command::id_fn!($($idfn)?))(&args);
+                let ids = ($crate::command::ids_fn!($($idsfn)?))(&args);
                 let out = $body(svc, ctx, args).await?;
-                $crate::command::encode(out)
+                ::std::result::Result::Ok($crate::command::Outcome {
+                    value: $crate::command::encode(out)?,
+                    id,
+                    ids,
+                })
             })
         }
         fn check_args(raw: ::serde_json::Value) -> ::std::result::Result<(), ::std::string::String> {
@@ -358,7 +408,33 @@ macro_rules! flag {
     };
 }
 
-pub use crate::{change, flag, or_scope};
+/// A closure that reads the one id out of a command's parsed arguments, or
+/// the default that says there is none -- see [`Outcome`] for why arguments
+/// rather than a result.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! id_fn {
+    () => {
+        |_: &_| -> ::std::option::Option<::std::string::String> { ::std::option::Option::None }
+    };
+    ($f:expr) => {
+        $f
+    };
+}
+
+/// The batch equivalent of [`id_fn!`].
+#[macro_export]
+#[doc(hidden)]
+macro_rules! ids_fn {
+    () => {
+        |_: &_| -> ::std::vec::Vec<::std::string::String> { ::std::vec::Vec::new() }
+    };
+    ($f:expr) => {
+        $f
+    };
+}
+
+pub use crate::{change, flag, id_fn, ids_fn, or_scope};
 
 /// Every command, in the order the domains are listed.
 ///

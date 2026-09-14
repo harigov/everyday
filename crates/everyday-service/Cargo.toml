@@ -15,6 +15,10 @@ serde.workspace = true
 serde_json.workspace = true
 jiff.workspace = true
 tracing.workspace = true
+# Jitter on a supervised task's backoff -- see `supervisor.rs` -- so that a
+# provider outage does not turn into every account's sync task hammering it
+# on the same second.
+rand.workspace = true
 # The one network dependency, here rather than in the core on purpose:
 # `everyday-core` has no async runtime, no TLS stack and no ability to open a
 # socket, and the calendar and library features are built so that stays true.

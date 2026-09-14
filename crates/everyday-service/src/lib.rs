@@ -52,6 +52,7 @@ pub mod llm;
 pub mod quick;
 pub mod scheduler;
 pub mod service;
+pub mod supervisor;
 pub mod transfers;
 pub mod websearch;
 
