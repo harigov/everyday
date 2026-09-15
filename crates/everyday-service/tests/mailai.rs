@@ -275,6 +275,101 @@ async fn summarize_thread_asks_the_configured_model_and_caches_the_answer() {
     assert_eq!(cached, summary);
 }
 
+/// Reproduces finding 1 directly: repeated summaries of the *same* thread,
+/// each forced to actually ask the model by ingesting one more message
+/// first (so the cache -- keyed by `message_count` -- misses every time),
+/// must not start refusing after twenty of them. Before the fix, the
+/// constant turn string `"mail-summarize"` meant `RateLimitState`'s
+/// per-turn counter for this thread's key never reset, so call 21 (the
+/// per-turn cap is 20) and every one after it came back
+/// `RATE_LIMITED` -- forever, since nothing ever looked like a new turn
+/// again.
+#[tokio::test]
+async fn summarize_thread_survives_more_than_twenty_uncached_calls_on_one_thread() {
+    let fake =
+        fake_model(r#"{"summary":"They are asking about dinner on Friday."}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let account = seed_account(&svc, mail_ai(false, true, false));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let thread_id = ThreadId::new();
+    let mut msg = seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        1,
+        thread_id,
+        "friend@example.com",
+        &["me@example.com"],
+        "Dinner?",
+        "Are you free Friday for dinner?",
+        Some(Category::Important),
+    );
+
+    for i in 2..=25u32 {
+        let summary =
+            everyday_service::mailai::summarize_thread(&svc, thread_id).await.unwrap_or_else(|e| {
+                panic!("call {i} (message_count now {i}) was refused: {}", e.message)
+            });
+        assert_eq!(summary, "They are asking about dinner on Friday.");
+
+        // One more message, so the thread's `message_count` moves and the
+        // next call is a genuine cache miss rather than a free hit.
+        msg = seed_message(
+            &svc,
+            account.id,
+            mailbox,
+            i,
+            thread_id,
+            "friend@example.com",
+            &["me@example.com"],
+            "Dinner?",
+            "Still free Friday?",
+            Some(Category::Important),
+        );
+    }
+    let _ = msg;
+}
+
+/// The other half of finding 1: once an answer is cached, repeating the
+/// call must never touch the rate limiter at all -- proved here by
+/// exhausting the limiter directly first, then showing a cached call still
+/// succeeds.
+#[tokio::test]
+async fn a_cached_summary_never_touches_the_rate_limiter() {
+    let fake =
+        fake_model(r#"{"summary":"They are asking about dinner on Friday."}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let account = seed_account(&svc, mail_ai(false, true, false));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let msg = seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        1,
+        ThreadId::new(),
+        "friend@example.com",
+        &["me@example.com"],
+        "Dinner?",
+        "Are you free Friday for dinner?",
+        Some(Category::Important),
+    );
+
+    let summary = everyday_service::mailai::summarize_thread(&svc, msg.thread_id).await.unwrap();
+
+    // Exhaust this thread's own per-turn budget directly, the way the old,
+    // buggy code would have on its own -- twenty calls on the same turn
+    // string this thread's conversation key would always resolve to.
+    let origin = Origin::Assistant { conversation: format!("mail-summarize:{}", msg.thread_id) };
+    for _ in 0..20 {
+        svc.check_mail_rate_limit(&origin, "mail-summarize").unwrap();
+    }
+    assert!(svc.check_mail_rate_limit(&origin, "mail-summarize").is_err(), "the budget is spent");
+
+    // The model is gone, too, so a call that reached it would fail outright.
+    drop(fake);
+    let cached = everyday_service::mailai::summarize_thread(&svc, msg.thread_id).await.unwrap();
+    assert_eq!(cached, summary, "a cache hit needs neither the limiter nor the model");
+}
 #[tokio::test]
 async fn summarize_thread_refuses_when_summaries_are_not_switched_on() {
     let fake = fake_model(r#"{"summary":"anything"}"#.to_string()).await;

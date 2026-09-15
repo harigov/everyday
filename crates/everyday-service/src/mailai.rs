@@ -288,12 +288,28 @@ pub async fn summarize_thread(
     mail_ai_allowed(&account, &provider, MailAiFeature::Summaries)
         .map_err(|r| refused(&account, MailAiFeature::Summaries, r))?;
 
-    let origin = Origin::Assistant { conversation: format!("mail-summarize:{thread_id}") };
-    service.check_mail_rate_limit(&origin, "mail-summarize")?;
-
+    // A cached answer costs nothing -- not a model call, and not a token
+    // from the rate limiter below -- so it is checked before either, not
+    // after. Reopening the same thread a dozen times in an afternoon must
+    // never spend this caller's budget on the eleven answers already known.
     if let Some(cached) = service.mail_summary_cached(thread_id, thread.message_count) {
         return Ok(cached);
     }
+
+    let origin = Origin::Assistant { conversation: format!("mail-summarize:{thread_id}") };
+    // A fresh id every call, never the tool string `"mail-summarize"`
+    // itself: `RateLimitState::check`'s per-turn counter only resets when
+    // the `turn` it is given changes, and a constant turn means it never
+    // does -- the twenty-first *ever* call to summarise this thread would
+    // refuse, and every one after it, forever, since nothing about a
+    // constant string ever looks like a new turn. Summaries are not a
+    // multi-op turn the per-turn cap was built for (see
+    // `Service::check_mail_rate_limit`'s own docs) -- one summary is one
+    // model call -- so a unique id per call switches that cap off and
+    // leaves only the per-minute budget actually governing "not too many
+    // model calls per minute."
+    let turn = uuid::Uuid::now_v7().to_string();
+    service.check_mail_rate_limit(&origin, &turn)?;
 
     let text = summary_input(&vault, &messages).await?;
     if text.trim().is_empty() {
