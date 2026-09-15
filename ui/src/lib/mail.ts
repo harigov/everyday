@@ -334,6 +334,20 @@ export function mergeSearchPage(existing: readonly Thread[], page: readonly Thre
   return merged
 }
 
+// ── Refresh: covering what is already on screen ─────────────────────────
+
+/**
+ * How many rows `refresh` asks for -- ordinarily one page, but widened to
+ * cover whatever is already loaded, so a live refresh mid-scroll cannot
+ * shrink the list out from under a reader who has scrolled past page one
+ * (finding 2). Capped well short of "the whole mailbox": a mailbox scrolled
+ * deep into is exactly the case a live refresh has to stay cheap for, not
+ * the case to make into a full requery.
+ */
+export function refreshLimit(loadedCount: number, page = 50): number {
+  return Math.min(Math.max(page, loadedCount), page * 20)
+}
+
 // ── Remote images: allow-list matching ──────────────────────────────
 
 /** Would the standing allow-list let this sender's remote images load --

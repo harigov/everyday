@@ -27,6 +27,7 @@ const {
   originPhrase,
   recentActionLine,
   mailboxHasTabs,
+  refreshLimit,
 } = mailLib
 
 function person(name, email) {
@@ -310,6 +311,13 @@ assert.equal(mailboxHasTabs({ role: 'sent' }), false)
 assert.equal(mailboxHasTabs({ role: 'archive' }), false)
 assert.equal(mailboxHasTabs(null), false, 'no mailbox selected yet: no tabs to have set from')
 assert.equal(mailboxHasTabs(undefined), false)
+
+// ── Finding 2: refresh covers what is already loaded ────────────────────
+
+assert.equal(refreshLimit(0, 50), 50, 'never less than one page')
+assert.equal(refreshLimit(30, 50), 50, 'never less than one page')
+assert.equal(refreshLimit(120, 50), 120, 'covers everything already scrolled past')
+assert.equal(refreshLimit(50000, 50), 1000, 'capped well short of the whole mailbox')
 
 await close()
 console.log('mail: all checks passed')

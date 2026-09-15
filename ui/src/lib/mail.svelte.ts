@@ -25,6 +25,7 @@ import {
   applyRowPatch,
   mailboxHasTabs,
   mergeSearchPage,
+  refreshLimit,
   removeRow,
   restoreRow,
   revertRow,
@@ -223,7 +224,18 @@ class MailState {
     await this.refreshMailboxes()
   }
 
-  /** Reload the first page of the open mailbox. */
+  /**
+   * Reload the open mailbox -- covering however much of it is already
+   * loaded, not just page one (`refreshLimit`), so a live refresh mid-scroll
+   * neither shrinks the list nor loses track of a thread that is merely
+   * further down it than page one reaches (finding 2).
+   *
+   * Because this refetches the whole loaded range rather than a narrow first
+   * page, the open thread's absence from the result is trustworthy: it means
+   * the backend no longer has it here -- deleted, or moved out of this
+   * mailbox -- not merely "not on this page", which is what the previous,
+   * page-one-only check was mistaking it for.
+   */
   async refresh() {
     if (!this.selectedMailbox) return
     const generation = ++this.#generation
@@ -237,12 +249,12 @@ class MailState {
         this.selectedMailbox,
         category ? { category } : undefined,
         null,
-        PAGE,
+        refreshLimit(this.threads.length, PAGE),
       )
       if (generation !== this.#generation) return
       this.threads = page.threads
       this.nextCursor = page.nextCursor ?? null
-      if (this.selectedThread && !page.threads.some((t) => t.id === this.selectedThread)) {
+      if (this.selectedThread && !this.threads.some((t) => t.id === this.selectedThread)) {
         this.selectedThread = null
         this.openThread = null
       }
