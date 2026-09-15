@@ -4,29 +4,34 @@
 //!
 //! Newest first: the primary sort key is `date`, descending, matching
 //! `docs/plans/mail.md`'s "mail search sorts newest first, with relevance
-//! breaking ties among free-text matches". Concretely, a hit's rank is
-//! `(date, score)` compared lexicographically — a later date always
-//! outranks an earlier one regardless of score, and score only ever
-//! decides between two messages sent at the exact same instant.
+//! breaking ties among free-text matches". "Breaking ties" names what score
+//! is allowed to decide: [`query::build`] is what score comes from, and a
+//! document either matches a query or it does not, so score has already
+//! done its work by the time a hit reaches this module's own collector.
+//! What free-text relevance never gets to decide is a *page's* order:
+//! [`MailIndex::search`]'s collector orders strictly by `(date, message_key)`,
+//! both descending, matching exactly what [`SearchPage::next`]'s cursor
+//! carries and [`query::cursor_filter`] filters on. Score and the page
+//! order are two different questions -- "does this match, and how well"
+//! against "where does it sit relative to its neighbours" -- and keeping
+//! them answered by two different things is what keeps paging correct: an
+//! earlier version of this module ordered by `(date, score)` while the
+//! cursor filtered on `(date, message_key)`, which agree only when every
+//! date in the result set is unique. They are not -- a mailbox with a few
+//! hundred messages routinely has several sharing the same microsecond,
+//! particularly from bulk imports and providers whose own clock resolution
+//! is coarser than that -- so a page boundary landing mid-tie skipped or
+//! repeated whichever documents fell on the wrong side of it, deterministically,
+//! every time that page was requested. Ordering and filtering on the same
+//! key removes the disagreement rather than trying to make the two
+//! occasionally-differing orders agree by chance.
 //!
-//! The *cursor* [`SearchPage::next`] hands back, though, carries `(date,
-//! message_key)`, not score — see [`SearchCursor`]'s docs for the shape,
-//! and `query.rs`'s `cursor_filter` for how it is turned into a query-level
-//! boundary rather than a collector-level one. That is a deliberate,
-//! narrower promise than "resume exactly where the ranking left off": a
-//! floating-point relevance score is not indexed as a queryable value (the
-//! schema keeps only what `docs/plans/mail.md` allows to be a stored/fast
-//! field, and a BM25 score is neither stable across commits nor something
-//! worth spending index size on), so it cannot be a term in a keyset
-//! boundary query the way a date or a key can. In exchange, message dates
-//! are unique to the microsecond in every realistic mailbox, so two
-//! messages tying on `date` — the only case where score and the cursor's
-//! silence about it could disagree about a page boundary — essentially
-//! never happens; `message_key` (compared as raw bytes, which is how the
-//! term dictionary already orders `STRING` terms) breaks that tie
-//! deterministically so that even the pathological case has a well-defined
-//! order, only not one weighted by relevance. This is the trade
-//! `docs/plans/mail.md` describes as "keyset-style cursors on (date,
+//! `message_key` -- compared as raw bytes, which is how the term dictionary
+//! already orders `STRING` terms, and how [`query::cursor_filter`]'s own
+//! `RangeQuery` compares it -- is not a synthetic tiebreak invented for
+//! this: it is what makes the order total. Two messages can share a `date`
+//! down to the microsecond; no two ever share a `message_key`. This is the
+//! trade `docs/plans/mail.md` describes as "keyset-style cursors on (date,
 //! message_key)".
 //!
 //! # The writer
@@ -157,12 +162,32 @@ impl MailIndex {
     }
 }
 
-/// The sort key [`MailIndex::search`]'s collector orders by: date first,
-/// score second. See the module docs' "ordering and the keyset cursor".
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+/// The sort key [`MailIndex::search`]'s collector orders by: `date`
+/// descending, then `message_key` descending as the deterministic tiebreak.
+/// See the module docs' "ordering and the keyset cursor" for why that pair,
+/// and why `score` -- present on every `RankKey`, needed to fill in
+/// [`Hit::score`] once a document has been chosen -- plays no part in
+/// comparing two of them. That is exactly why `PartialOrd` is written by
+/// hand below rather than derived over all three fields: a derive would
+/// have silently put score back into the comparison the first time someone
+/// reordered the struct's fields.
+#[derive(Debug, Clone)]
 struct RankKey {
     date: i64,
+    message_key: String,
     score: Score,
+}
+
+impl PartialEq for RankKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.date == other.date && self.message_key == other.message_key
+    }
+}
+
+impl PartialOrd for RankKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        (self.date, &self.message_key).partial_cmp(&(other.date, &other.message_key))
+    }
 }
 
 impl MailSearch for MailIndex {
@@ -223,15 +248,31 @@ impl MailSearch for MailIndex {
 
         let searcher = opened.reader.searcher();
         let date_field = self.fields.date;
+        let message_key_field = self.fields.message_key;
         let collector =
             TopDocs::with_limit(limit).tweak_score(move |segment_reader: &SegmentReader| {
                 let date_col = segment_reader
                     .fast_fields()
                     .i64(schema_field_name(segment_reader.schema(), date_field))
                     .unwrap_or_else(|_| panic!("date field must be a fast field"));
-                move |doc: DocId, score: Score| RankKey {
-                    date: date_col.first(doc).unwrap_or(i64::MIN),
-                    score,
+                // `message_key` is `STRING | STORED | FAST` (`schema.rs`'s
+                // own docs on why); the fast half is exactly what lets a
+                // page's own order be compared against without a second
+                // trip through the stored document for every candidate
+                // `tweak_score` considers, not only the ones that make the
+                // final page.
+                let message_key_col = segment_reader
+                    .fast_fields()
+                    .str(schema_field_name(segment_reader.schema(), message_key_field))
+                    .unwrap_or_else(|_| panic!("message_key field must be a fast field"))
+                    .unwrap_or_else(|| panic!("message_key field must be a string fast field"));
+                move |doc: DocId, score: Score| {
+                    let date = date_col.first(doc).unwrap_or(i64::MIN);
+                    let mut message_key = String::new();
+                    if let Some(ord) = message_key_col.term_ords(doc).next() {
+                        let _ = message_key_col.ord_to_str(ord, &mut message_key);
+                    }
+                    RankKey { date, message_key, score }
                 }
             });
 
@@ -240,11 +281,15 @@ impl MailSearch for MailIndex {
         let mut hits = Vec::with_capacity(results.len());
         for (rank, addr) in &results {
             let doc: TantivyDocument = searcher.doc(*addr).map_err(wrap_tantivy)?;
-            let message_key = text_value(&doc, self.fields.message_key)?;
             let thread_key = text_value(&doc, self.fields.thread_key)?;
             let date = Timestamp::from_microsecond(rank.date)
                 .map_err(|e| Error::Invalid(format!("indexed date out of range: {e}")))?;
-            hits.push(Hit { message_key, thread_key, score: rank.score, date });
+            hits.push(Hit {
+                message_key: rank.message_key.clone(),
+                thread_key,
+                score: rank.score,
+                date,
+            });
         }
 
         let next = if hits.len() >= limit {

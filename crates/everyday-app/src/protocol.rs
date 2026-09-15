@@ -17,7 +17,7 @@
 //!
 //! Three more routes, dispatched on the request's *host* rather than its
 //! path: `everyday://mail/body/{id}`, `everyday://mail/part/{msg}/{id}` and
-//! `everyday://mail/img/{token}?m={msg}` -- exactly the addresses
+//! `everyday://mail/img/{msg}/{token}` -- exactly the addresses
 //! `everyday_mail::sanitize::sanitize` already wrote into a message's HTML
 //! at sync time, and exactly the three functions
 //! [`everyday_service::mailview`] exists to answer, so this file stays the
@@ -26,6 +26,26 @@
 //! See that module's docs for what each answers and why; see
 //! `everyday-server/src/routes.rs` for the HTTP shape a remote vault
 //! answers the identical three requests with.
+//!
+//! [`parse_mail_route`] also answers `mail/img/{token}?m={msg}` -- the
+//! image address's first shape, with the message id in a query parameter
+//! rather than the path. A body `sanitize::sanitize` already sealed into the
+//! vault under that shape is never rewritten to the new one, so a route
+//! that stopped understanding it would break every remote image in a
+//! message synced before this file's own change to write the new shape.
+//! Both parse to the same [`MailRoute::Img`]; nothing downstream of
+//! [`parse_mail_route`] can tell which shape a request arrived in, or needs
+//! to.
+//!
+//! Every id, token and content id this parses out of a path is
+//! percent-decoded exactly once before anything compares it against
+//! stored data -- `sanitize::sanitize`'s own `path_segment` is what encoded
+//! it going in, for the same reason a `cid:` or a `Message-ID` header can
+//! itself contain a character (`/`, a space, `=`) that would otherwise be
+//! read as a second path segment or corrupt the URL outright. Comparing an
+//! encoded path segment against a raw stored value -- a `cid:` from a
+//! message's MIME parts, most importantly -- silently finds nothing rather
+//! than the part that is actually there.
 //!
 //! ## Why `frame-src` had to change for this, and to exactly this
 //!
@@ -164,26 +184,49 @@ async fn serve_remote(
 /// Which of the three `mail/…` addresses a request named, with the ids
 /// already parsed -- everything after this point works with real
 /// [`MailMessageId`]s, never strings a route handler has to re-validate.
+#[derive(Debug)]
 enum MailRoute {
     /// `mail/body/{id}`.
     Body(MailMessageId),
     /// `mail/part/{message}/{content_id_or_index}`.
     Part(MailMessageId, String),
-    /// `mail/img/{token}?m={message}`.
+    /// `mail/img/{message}/{token}`, or the older `mail/img/{token}?m={message}`
+    /// -- see the module docs on why both still parse.
     Img(String, MailMessageId),
 }
 
+/// Parses `request`'s path (and, for the image route's older shape, its
+/// query) into a [`MailRoute`], with every segment percent-decoded exactly
+/// once -- see the module docs. A pure function of the request, deliberately
+/// apart from anything that touches a vault, so a test can drive it with a
+/// URL taken straight from [`everyday_mail::sanitize::sanitize`]'s own
+/// output rather than one this file's tests would otherwise have to
+/// hand-assemble and hope stays in step with what the sanitiser writes.
 fn parse_mail_route(request: &Request<Vec<u8>>) -> Option<MailRoute> {
     let path = request.uri().path().trim_start_matches('/');
     let mut segments = path.split('/');
     match (segments.next(), segments.next(), segments.next(), segments.next()) {
-        (Some("body"), Some(id), None, None) => MailMessageId::parse(id).ok().map(MailRoute::Body),
-        (Some("part"), Some(msg), Some(identifier), None) => {
-            MailMessageId::parse(msg).ok().map(|m| MailRoute::Part(m, identifier.to_string()))
+        (Some("body"), Some(id), None, None) => {
+            MailMessageId::parse(&percent_decode(id)).ok().map(MailRoute::Body)
         }
+        (Some("part"), Some(msg), Some(identifier), None) => {
+            let msg = percent_decode(msg);
+            let identifier = percent_decode(identifier);
+            MailMessageId::parse(&msg).ok().map(|m| MailRoute::Part(m, identifier))
+        }
+        // `mail/img/{message}/{token}` -- what `sanitize::sanitize` writes
+        // today.
+        (Some("img"), Some(msg), Some(token), None) => {
+            let msg = percent_decode(msg);
+            let token = percent_decode(token);
+            MailMessageId::parse(&msg).ok().map(|m| MailRoute::Img(token, m))
+        }
+        // `mail/img/{token}?m={message}` -- what a body sanitised before
+        // this file's own change to the image address still carries; see
+        // the module docs.
         (Some("img"), Some(token), None, None) => {
             let msg = query_param(request.uri().query().unwrap_or(""), "m")?;
-            MailMessageId::parse(&msg).ok().map(|m| MailRoute::Img(token.to_string(), m))
+            MailMessageId::parse(&msg).ok().map(|m| MailRoute::Img(percent_decode(token), m))
         }
         _ => None,
     }
@@ -473,4 +516,105 @@ fn respond(plan: media::ResponsePlan, bytes: Vec<u8>) -> Response<Vec<u8>> {
     builder
         .body(bytes)
         .unwrap_or_else(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "could not build a response"))
+}
+
+#[cfg(test)]
+mod mail_route_tests {
+    use super::*;
+
+    fn request(uri: &str) -> Request<Vec<u8>> {
+        Request::builder().uri(uri).body(Vec::new()).expect("a test URI is always well formed")
+    }
+
+    /// Every URL used below is taken from a real [`sanitize::sanitize`] call
+    /// rather than hand-built, so this exercises the same address the sync
+    /// engine actually seals into a body -- see the module docs on why
+    /// `parse_mail_route` is a pure function for exactly this reason. A
+    /// real [`MailMessageId`] rather than an arbitrary `Message-ID` header,
+    /// because that is what `MailMessageId::parse` -- and every production
+    /// caller of this function -- actually expects.
+    fn sanitized(html: &str, message_id: MailMessageId) -> everyday_mail::sanitize::Sanitised {
+        everyday_mail::sanitize::sanitize(
+            html,
+            &everyday_mail::sanitize::Rewrite::new(message_id.to_string()),
+        )
+    }
+
+    /// Pulls the first `everyday://...` address out of a sanitised
+    /// document's `src="..."`, the same way a webview would resolve one.
+    fn first_src(html: &str) -> &str {
+        let start = html.find("src=\"everyday://").expect("a rewritten src") + "src=\"".len();
+        let end = html[start..].find('"').expect("a closing quote") + start;
+        &html[start..end]
+    }
+
+    #[test]
+    fn a_remote_images_new_path_shape_round_trips() {
+        let message_id = MailMessageId::new();
+        let out = sanitized(r#"<img src="https://cdn.example.com/logo.png">"#, message_id);
+        let uri = first_src(&out.html);
+
+        let route = parse_mail_route(&request(uri)).expect("a recognised mail route");
+        match route {
+            MailRoute::Img(token, msg) => {
+                assert_eq!(msg, message_id);
+                assert_eq!(token, out.remote_images[0].token);
+            }
+            other => panic!("expected Img, got {other:?}"),
+        }
+    }
+
+    /// A body sanitised under the address's first shape -- the message id in
+    /// a query parameter, not the path -- must still resolve, because a
+    /// stored body is never rewritten after the fact. See the module docs.
+    #[test]
+    fn the_old_query_parameter_shape_still_parses() {
+        let message_id = MailMessageId::new();
+        let uri = format!("everyday://mail/img/abc123?m={message_id}");
+        let route = parse_mail_route(&request(&uri)).expect("a recognised mail route");
+        match route {
+            MailRoute::Img(token, msg) => {
+                assert_eq!(token, "abc123");
+                assert_eq!(msg, message_id);
+            }
+            other => panic!("expected Img, got {other:?}"),
+        }
+    }
+
+    /// The bug this guards against: a `cid:` reference containing `=`, `$`,
+    /// `/` and a space, percent-encoded by `sanitize::sanitize`'s own
+    /// `path_segment`, has to decode back to exactly what the message's own
+    /// MIME part carries -- `find_part` in `everyday-service::mailview`
+    /// compares it against the raw, undecoded content id, so a route that
+    /// decoded it wrongly (or not at all) would never find the part a
+    /// message actually has.
+    #[test]
+    fn a_cid_with_characters_needing_escaping_round_trips() {
+        let message_id = MailMessageId::new();
+        let cid = "a=b$c/d e";
+        let out = sanitized(&format!(r#"<img src="cid:{cid}">"#), message_id);
+        let uri = first_src(&out.html);
+
+        let route = parse_mail_route(&request(uri)).expect("a recognised mail route");
+        match route {
+            MailRoute::Part(msg, identifier) => {
+                assert_eq!(msg, message_id);
+                assert_eq!(identifier, cid);
+            }
+            other => panic!("expected Part, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_body_route_round_trips_through_the_message_id() {
+        let message_id = MailMessageId::new();
+        let uri = format!("everyday://mail/body/{message_id}");
+        let route = parse_mail_route(&request(&uri)).expect("a recognised mail route");
+        assert!(matches!(route, MailRoute::Body(id) if id == message_id));
+    }
+
+    #[test]
+    fn an_unrecognised_host_path_is_refused() {
+        assert!(parse_mail_route(&request("everyday://mail/nonsense")).is_none());
+    }
 }

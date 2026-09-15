@@ -325,9 +325,20 @@ impl RemoteClient {
     /// A remote image, fetched (or refused, or served from the cache) on
     /// the machine holding the vault -- never by this process, which is the
     /// whole point: see `everyday_service::mailview::remote_image`'s docs.
+    ///
+    /// Requests `/v1/mail/img/{message_id}/{token}`, matching the path
+    /// shape `everyday-mail::sanitize::sanitize` writes today (message id
+    /// first, the same order `mail_part` already uses) -- never the older
+    /// `?m=` query form, even when the address a caller resolved this
+    /// `token` and `message_id` from was itself written under that older
+    /// shape: `everyday-server`'s route answers a given `(message_id,
+    /// token)` pair identically no matter which shape asked for it, so
+    /// there is nothing for this client to preserve by choosing one over
+    /// the other. See `routes.rs`'s `get_mail_image_legacy` for why the
+    /// server still keeps the older route at all.
     pub async fn mail_image(&self, token: &str, message_id: &str) -> CommandResult<MailBytes> {
         let response = self
-            .request(reqwest::Method::GET, &format!("/v1/mail/img/{token}?m={message_id}"))
+            .request(reqwest::Method::GET, &format!("/v1/mail/img/{message_id}/{token}"))
             .send()
             .await
             .map_err(transport)?

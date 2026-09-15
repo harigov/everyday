@@ -29,18 +29,57 @@
 //! instead of a code, this refuses rather than waiting for a better one
 //! that -- if the mismatch was a real attacker's guess rather than a
 //! browser's retry -- may never come.
+//!
+//! # Why every accepted connection gets its own task
+//!
+//! Loopback ports draw more than browsers: a pre-connect probe a browser
+//! itself makes before it has decided which address to actually request, a
+//! port scanner, health-check tooling that opens a socket and never writes
+//! to it. None of those ever send a byte, and a version of this listener
+//! that read the accepted connection inline -- `accept()`, then `await` its
+//! request line before looping back to `accept()` again -- would sit
+//! blocked on that first silent connection's `read_line` forever, unable to
+//! notice the deadline elapsing, a cancellation arriving, or the *next*
+//! connection, which might be the one actually carrying the browser's
+//! redirect. So [`Loopback::wait`]'s own loop only ever does one thing with
+//! an accepted connection: hand it to [`tokio::spawn`] and go straight back
+//! to `select!`. Each spawned task is bounded by [`CONNECTION_TIMEOUT`] on
+//! its own, and reports a callback it finds through an
+//! [`mpsc`](tokio::sync::mpsc) channel the main loop is *also* selecting
+//! on, alongside the deadline and the cancellation watch -- so whichever of
+//! the three happens first is what `wait` returns, regardless of how many
+//! other connections are still open and going nowhere. A per-connection I/O
+//! error (a reset, a truncated request) ends that one task quietly; it was
+//! never this sign-in's only chance, so it is not this sign-in's failure.
 
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
-/// How many header lines [`Loopback::wait`] will read past the request line
+/// How many header lines [`handle_one`] will read past the request line
 /// before giving up on a connection. Loopback-only, so this is not a defence
 /// against a remote attacker -- it is a defence against a malformed or
 /// enormous request wedging the one flow this process is waiting on.
 const MAX_HEADER_LINES: usize = 64;
+
+/// The longest single line -- the request line, or one header -- [`handle_one`]
+/// will read before giving up on a connection. A well-formed browser
+/// redirect is nowhere near this; what it bounds is how much a connection
+/// that never sends a newline can make this process buffer while
+/// [`CONNECTION_TIMEOUT`] runs out on it regardless.
+const MAX_LINE_BYTES: usize = 8 * 1024;
+
+/// How long one accepted connection is given to send a complete request
+/// line and headers before this process gives up on it and moves on to the
+/// next. See the module docs' "why every accepted connection gets its own
+/// task" for what this actually defends: a browser's own redirect arrives
+/// within the same round trip that opened the connection, so five seconds
+/// is generous for the request this listener is actually waiting for, and
+/// short enough that a silent connection is never mistaken for the one that
+/// matters for long.
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A bound loopback listener, and the redirect URI it answers to.
 pub struct Loopback {
@@ -106,6 +145,12 @@ impl Loopback {
     /// Wait for the browser's redirect, refusing anything that does not
     /// carry `state`, and give up after `timeout` or the moment `cancel`
     /// turns true, whichever comes first.
+    ///
+    /// See the module docs for why an accepted connection is never awaited
+    /// inline: each one is handed to its own task, bounded by
+    /// [`CONNECTION_TIMEOUT`], so that a connection which never sends
+    /// anything cannot stop this loop from noticing `timeout`, `cancel`, or
+    /// the next connection.
     pub async fn wait(
         self,
         state: &str,
@@ -119,6 +164,17 @@ impl Loopback {
         }
         let deadline = tokio::time::sleep(timeout);
         tokio::pin!(deadline);
+
+        // Every spawned task below gets a clone of `tx`. Only the first
+        // valid callback anyone sends through it is ever read -- see the
+        // `rx.recv()` arm -- so a later send (a second connection landing
+        // on `/callback` after this `wait` has already returned) simply has
+        // nowhere to go, which is exactly the "the first request is final"
+        // rule the module docs describe, now enforced by the channel rather
+        // than by returning out of an inline loop.
+        let (tx, mut rx) = mpsc::unbounded_channel::<Result<String, LoopbackError>>();
+        let state = state.to_string();
+
         loop {
             tokio::select! {
                 biased;
@@ -128,13 +184,46 @@ impl Loopback {
                     }
                 }
                 _ = &mut deadline => return Err(LoopbackError::TimedOut),
+                outcome = rx.recv() => {
+                    // `None` only if every sender had already been dropped,
+                    // which cannot happen while this loop is still holding
+                    // its own `tx` below -- there is always at least one
+                    // live sender for as long as this `recv` could return.
+                    return outcome.expect("this loop holds its own sender for as long as it runs");
+                }
                 accepted = self.listener.accept() => {
-                    let (stream, _) = accepted?;
-                    if let Some(outcome) = handle_one(stream, state).await? {
-                        return outcome;
-                    }
-                    // `None`: a request to some path other than `/callback`
-                    // (a favicon probe, most often). Keep waiting.
+                    let Ok((stream, _)) = accepted else {
+                        // Accepting itself can fail (a resource limit, a
+                        // connection reset between the kernel's queue and
+                        // this call) -- not this sign-in's problem to abort
+                        // over any more than a single connection's own I/O
+                        // error is; keep listening.
+                        continue;
+                    };
+                    let tx = tx.clone();
+                    let state = state.clone();
+                    tokio::spawn(async move {
+                        let handled =
+                            tokio::time::timeout(CONNECTION_TIMEOUT, handle_one(stream, &state))
+                                .await;
+                        // Three ways this can end without anything to
+                        // report, all treated alike: the connection never
+                        // finished inside `CONNECTION_TIMEOUT` (`Err`, from
+                        // `timeout` itself), it hit an I/O error partway
+                        // through (`Ok(Err(_))`, a reset or a truncated
+                        // request), or it was a real request to some path
+                        // other than `/callback` (`Ok(Ok(None))`, a favicon
+                        // probe most often). Only `Ok(Ok(Some(_)))` -- a
+                        // complete request to `/callback`, whatever it said
+                        // -- is worth sending; `send`'s own error is ignored
+                        // because a dropped receiver only means some other
+                        // connection (or the deadline, or a cancellation)
+                        // already decided this `wait`, not that anything
+                        // here went wrong.
+                        if let Ok(Ok(Some(outcome))) = handled {
+                            let _ = tx.send(outcome);
+                        }
+                    });
                 }
             }
         }
@@ -151,16 +240,26 @@ async fn handle_one(
     let mut reader = BufReader::new(reader);
 
     let mut request_line = String::new();
-    if reader.read_line(&mut request_line).await? == 0 {
-        // The connection closed before sending anything -- nothing to
-        // answer and nothing to act on.
-        return Ok(None);
+    match read_capped_line(&mut reader, &mut request_line).await? {
+        0 => {
+            // The connection closed before sending anything -- nothing to
+            // answer and nothing to act on.
+            return Ok(None);
+        }
+        n if n > MAX_LINE_BYTES => {
+            // Not a request line this listener is going to try to parse --
+            // see `MAX_LINE_BYTES`'s own docs. Nothing has been answered
+            // yet, so this simply stops rather than guessing at a response.
+            return Ok(None);
+        }
+        _ => {}
     }
     // Drain the rest of the headers so the client is not left mid-write
     // when this closes the connection just after responding.
     for _ in 0..MAX_HEADER_LINES {
         let mut line = String::new();
-        if reader.read_line(&mut line).await? == 0 || line == "\r\n" || line == "\n" {
+        let n = read_capped_line(&mut reader, &mut line).await?;
+        if n == 0 || n > MAX_LINE_BYTES || line == "\r\n" || line == "\n" {
             break;
         }
     }
@@ -202,6 +301,40 @@ async fn handle_one(
             Ok(Some(Err(LoopbackError::NoCode)))
         }
     }
+}
+
+/// Reads one line, up to and including its `\n`, into `buf` -- the same
+/// contract as `AsyncBufReadExt::read_line`, except this stops growing
+/// `buf` once [`MAX_LINE_BYTES`] is passed rather than continuing to read
+/// forever looking for a newline that may never come. The return value
+/// mirrors `read_line`'s own convention (bytes read; `0` only at EOF before
+/// anything arrived) with one addition callers check for themselves: a
+/// return greater than `MAX_LINE_BYTES` means the line was cut off rather
+/// than terminated, which is this listener's signal that whatever sent it
+/// was never going to be a request line or header any real provider
+/// writes.
+async fn read_capped_line<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    buf: &mut String,
+) -> std::io::Result<usize> {
+    let mut raw: Vec<u8> = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        if reader.read(&mut byte).await? == 0 {
+            break;
+        }
+        raw.push(byte[0]);
+        if byte[0] == b'\n' || raw.len() > MAX_LINE_BYTES {
+            break;
+        }
+    }
+    let total = raw.len();
+    // `from_utf8_lossy` rather than propagating an encoding error: a
+    // malformed or hostile line is exactly the input this function exists
+    // to bound, not to validate -- the caller's own parsing (a URL, a
+    // header) is what actually decides whether the result means anything.
+    buf.push_str(&String::from_utf8_lossy(&raw));
+    Ok(total)
 }
 
 async fn respond(
@@ -325,6 +458,92 @@ mod tests {
         let lb = Loopback::bind().await.unwrap();
         let (tx, rx) = watch::channel(false);
         let waiting = tokio::spawn(lb.wait("s", Duration::from_secs(30), rx));
+        tokio::task::yield_now().await;
+        tx.send(true).unwrap();
+        assert!(matches!(waiting.await.unwrap(), Err(LoopbackError::Cancelled)));
+    }
+
+    // ---- the bug this file's own fix closes: one connection cannot block
+    // every other connection, the deadline, or cancellation --------------
+
+    /// Connects and never writes a byte, the way a pre-connect probe or a
+    /// port scanner does -- left open (not dropped) for as long as the
+    /// caller holds it, so a test can prove something else still worked
+    /// while this connection sat there doing nothing.
+    async fn open_silent_connection(redirect: &str) -> TcpStream {
+        let url = url::Url::parse(redirect).unwrap();
+        TcpStream::connect((url.host_str().unwrap(), url.port().unwrap())).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_silent_connection_does_not_prevent_the_real_callback() {
+        let lb = Loopback::bind().await.unwrap();
+        let redirect = lb.redirect_uri().to_string();
+        let (_tx, rx) = watch::channel(false);
+
+        let waiting = tokio::spawn(lb.wait("s", Duration::from_secs(5), rx));
+
+        // Opened first, and held for the rest of the test -- before this
+        // file's fix, awaiting this connection inline would have blocked
+        // the accept loop here forever, and the real callback below would
+        // never have been read at all.
+        let _silent = open_silent_connection(&redirect).await;
+
+        let (status, _) = get(&redirect, "code=the-code&state=s").await;
+        assert_eq!(status, 200);
+        assert_eq!(waiting.await.unwrap().unwrap(), "the-code");
+    }
+
+    #[tokio::test]
+    async fn a_reset_connection_does_not_abort_the_wait() {
+        let lb = Loopback::bind().await.unwrap();
+        let redirect = lb.redirect_uri().to_string();
+        let (_tx, rx) = watch::channel(false);
+
+        let waiting = tokio::spawn(lb.wait("s", Duration::from_secs(5), rx));
+
+        // A connection that writes a few bytes and then vanishes -- the
+        // same shape as a network reset, from this listener's side:
+        // `handle_one` reads a fragment with no line terminator, then EOF,
+        // never anything resembling a complete `/callback` request. Before
+        // this file's fix, an I/O error reading this connection would have
+        // propagated out of `wait` itself via `?` and aborted the whole
+        // sign-in.
+        {
+            let url = url::Url::parse(&redirect).unwrap();
+            let mut stream =
+                TcpStream::connect((url.host_str().unwrap(), url.port().unwrap())).await.unwrap();
+            stream.write_all(b"incomplete").await.unwrap();
+            drop(stream);
+        }
+
+        let (status, _) = get(&redirect, "code=the-real-code&state=s").await;
+        assert_eq!(status, 200);
+        assert_eq!(waiting.await.unwrap().unwrap(), "the-real-code");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_timeout_still_fires_while_a_silent_connection_is_open() {
+        let lb = Loopback::bind().await.unwrap();
+        let redirect = lb.redirect_uri().to_string();
+        let (_tx, rx) = watch::channel(false);
+
+        let waiting = tokio::spawn(lb.wait("s", Duration::from_secs(1), rx));
+        let _silent = open_silent_connection(&redirect).await;
+
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(matches!(waiting.await.unwrap(), Err(LoopbackError::TimedOut)));
+    }
+
+    #[tokio::test]
+    async fn cancelling_still_works_while_a_silent_connection_is_open() {
+        let lb = Loopback::bind().await.unwrap();
+        let redirect = lb.redirect_uri().to_string();
+        let (tx, rx) = watch::channel(false);
+
+        let waiting = tokio::spawn(lb.wait("s", Duration::from_secs(30), rx));
+        let _silent = open_silent_connection(&redirect).await;
+
         tokio::task::yield_now().await;
         tx.send(true).unwrap();
         assert!(matches!(waiting.await.unwrap(), Err(LoopbackError::Cancelled)));

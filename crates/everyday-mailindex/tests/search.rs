@@ -381,6 +381,74 @@ fn pagination_through_a_thousand_docs_has_no_duplicates_or_gaps() {
     assert_eq!(seen.len(), 1000, "every document must have been seen exactly once");
 }
 
+/// The bug this test is named for: a page ordered by `(date, score)` but
+/// filtered by a cursor on `(date, message_key)` agree only when every date
+/// in the result set is unique. `pagination_through_a_thousand_docs...`
+/// above never exercises the disagreement, because every one of its
+/// thousand dates is -- deliberately -- unique too. Here, only three dates
+/// cover fifty documents, so most page boundaries land mid-tie, and each
+/// document's relevance for the `"urgent"` query is deliberately varied
+/// (more repeats of the word, a higher BM25 score) so that if score had
+/// leaked back into the page's order, this would see it as a document
+/// skipped or repeated across the boundary.
+#[test]
+fn paging_across_tied_dates_visits_every_document_exactly_once_in_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mi = open(tmp.path());
+
+    let dates = [date_ts(2024, 1, 1), date_ts(2024, 1, 2), date_ts(2024, 1, 3)];
+    let docs: Vec<MailDoc> = (0..50)
+        .map(|i| {
+            let key = format!("m{i:04}");
+            let mut doc = Doc::new(Box::leak(key.into_boxed_str()), dates[i % 3]);
+            doc.body = Box::leak(format!("urgent {}", "urgent ".repeat(i % 5)).into_boxed_str());
+            doc.build()
+        })
+        .collect();
+    index_and_commit(&mi, docs);
+
+    // One query tantivy scores identically for every hit (`""`, an
+    // `AllQuery`) and one where relevance genuinely differs per document
+    // (`"urgent"`) -- the fix must hold for both, since the earlier bug
+    // was in the collector's own sort key, not in how a particular query
+    // happens to score.
+    for query in ["", "urgent"] {
+        let mut seen_in_order: Vec<(Timestamp, String)> = Vec::new();
+        let mut cursor: Option<SearchCursor> = None;
+        let page_size = 7; // deliberately not a divisor of 50
+        loop {
+            let page = mi.search(&MailQuery::parse(query), page_size, cursor.clone()).unwrap();
+            assert!(page.hits.len() <= page_size, "query {query:?}");
+            for hit in &page.hits {
+                seen_in_order.push((hit.date, hit.message_key.clone()));
+            }
+            match page.next {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+
+        assert_eq!(
+            seen_in_order.len(),
+            50,
+            "query {query:?}: every document must be visited exactly once, not skipped or repeated"
+        );
+        let seen_keys: std::collections::HashSet<_> =
+            seen_in_order.iter().map(|(_, k)| k.clone()).collect();
+        assert_eq!(seen_keys.len(), 50, "query {query:?}: a document was repeated across pages");
+
+        // The order this crate actually promises: `(date, message_key)`,
+        // both descending -- the same key `query::cursor_filter` filters
+        // on, so this only holds once the collector orders by it too.
+        let mut expected = seen_in_order.clone();
+        expected.sort_by(|a, b| b.cmp(a));
+        assert_eq!(
+            seen_in_order, expected,
+            "query {query:?}: page order does not match (date desc, message_key desc)"
+        );
+    }
+}
+
 #[test]
 fn reopening_after_commit_finds_what_was_indexed() {
     let tmp = tempfile::tempdir().unwrap();
