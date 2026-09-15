@@ -765,6 +765,23 @@
         {
           "name": "id",
           "required": true,
+          "type": "ThreadId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_thread",
+      "orScope": null,
+      "returns": "ThreadDetail",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "GoalId"
         }
       ],
@@ -1003,6 +1020,23 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "account",
+          "required": true,
+          "type": "AccountId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_mailboxes",
+      "orScope": null,
+      "returns": "Mailbox[]",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -1133,6 +1167,38 @@
       "orScope": null,
       "returns": "Task[]",
       "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "mailbox",
+          "required": true,
+          "type": "MailboxId"
+        },
+        {
+          "name": "filter",
+          "required": false,
+          "type": "ThreadFilter"
+        },
+        {
+          "name": "cursor",
+          "required": false,
+          "type": "string | null"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "number | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_threads",
+      "orScope": null,
+      "returns": "ThreadPage",
+      "scope": "mail",
       "sensitive": false,
       "streams": false
     },

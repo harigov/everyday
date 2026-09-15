@@ -1264,6 +1264,119 @@ export interface MailProviderInfo extends Preset {
   label: string
 }
 
+// ── Mail ──────────────────────────────────────────────────────────────────
+//
+// Mailboxes, threads and the messages in them -- storage only, read-only,
+// for now. Mirrors `everyday_core::mail` and `everyday_core::store::mail`;
+// see those for the two-views-of-a-thread design (a thread's own aggregates
+// versus its per-mailbox row in `thread_mailboxes`) and for which columns
+// stay sealed. `list_mailboxes`, `list_threads` and `get_thread` are the
+// only commands that read any of this so far -- the sync engine, the outbox
+// and the interface that writes to it all arrive later.
+
+export type MailboxId = string
+export type ThreadId = string
+export type MailMessageId = string
+export type PackId = string
+
+export type MailboxRole =
+  'inbox' | 'sent' | 'drafts' | 'archive' | 'trash' | 'spam' | 'all' | 'other'
+
+export interface Mailbox {
+  id: MailboxId
+  accountId: AccountId
+  remoteName: string
+  role: MailboxRole
+  uidvalidity: number
+  uidnext: number
+  highestModseq: number
+}
+
+/** A closed, small set -- see `crate::mail::Category` for why a user-named
+ * category (phase 7) cannot be one of these without leaking its name. */
+export type MailCategory = 'important' | 'other' | 'newsletter' | 'notification'
+
+export interface MailAddress {
+  name: string
+  email: string
+}
+
+export interface MessageFlags {
+  seen: boolean
+  answered: boolean
+  flagged: boolean
+  draft: boolean
+  deleted: boolean
+}
+
+export interface GmailMeta {
+  threadId?: string | null
+  messageId?: string | null
+}
+
+/** Where one message's raw bytes live in the pack store. */
+export interface PackRef {
+  account: string
+  pack: PackId
+  offset: number
+  len: number
+}
+
+export interface MailMessage {
+  id: MailMessageId
+  accountId: AccountId
+  threadId: ThreadId
+  messageIdHeader: string
+  date: string
+  from: MailAddress
+  to: MailAddress[]
+  cc: MailAddress[]
+  bcc: MailAddress[]
+  replyTo: MailAddress[]
+  subject: string
+  snippet: string
+  flags: MessageFlags
+  labels: string[]
+  hasAttachments: boolean
+  size: number
+  category?: MailCategory | null
+  pack: PackRef
+  gmail?: GmailMeta | null
+}
+
+export interface Thread {
+  id: ThreadId
+  accountId: AccountId
+  subject: string
+  participants: MailAddress[]
+  lastDate: string
+  messageCount: number
+  unreadCount: number
+  category?: MailCategory | null
+  snoozedUntil?: string | null
+}
+
+/** All three fields ANDed; `null`/absent means "do not filter on this." */
+export interface ThreadFilter {
+  unread?: boolean | null
+  category?: MailCategory | null
+  snoozed?: boolean | null
+}
+
+/** One keyset-paged page of threads. `nextCursor` is opaque: hand it back as
+ * `cursor` for the next page, and never inspect it. */
+export interface ThreadPage {
+  threads: Thread[]
+  nextCursor?: string | null
+}
+
+/** A thread and every message in it -- what opening one reads. Bodies are
+ * not included. */
+export interface ThreadDetail {
+  thread: Thread
+  messages: MailMessage[]
+}
+
 // ── The command surface, describing itself ─────────────────────────────
 //
 // What `list_commands` answers with. Not used to *call* anything — the
