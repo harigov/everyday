@@ -129,6 +129,17 @@ pub struct Outgoing {
     /// function's docs for why this crate generates its own rather than
     /// letting `mail-builder` fall back to the machine's hostname.
     pub message_id_domain: String,
+    /// A `Message-ID` already minted for this exact draft, reused rather
+    /// than generating another -- what [`crate::outbox::send`] passes once
+    /// it has one, so that every attempt at sending the same draft (a retry
+    /// after a transient network failure, a crash recovered from
+    /// `InFlight`) produces byte-identical `Message-ID`s. That stability is
+    /// what lets recovery ask the server "is this one already there?" and
+    /// get a meaningful answer; a fresh id on every attempt would make that
+    /// question unanswerable. `None` mints a fresh one, per [`build`]'s own
+    /// docs -- the ordinary case for a first attempt, and for every
+    /// autosave [`crate::outbox::append_draft`] makes.
+    pub message_id: Option<String>,
 }
 
 /// What [`build`] hands back: the bytes to send, the id it minted for them,
@@ -180,7 +191,10 @@ impl fmt::Debug for Built {
 /// Never becomes a header. `outgoing.bcc` only ever appears in
 /// [`Built::envelope_to`] — see [`build_omits_bcc_from_the_written_headers`].
 pub fn build(outgoing: &Outgoing) -> Result<Built> {
-    let message_id = generate_message_id(&outgoing.message_id_domain);
+    let message_id = outgoing
+        .message_id
+        .clone()
+        .unwrap_or_else(|| generate_message_id(&outgoing.message_id_domain));
     let html = inline_css(&outgoing.html)?;
     let text = outgoing.text.clone().unwrap_or_else(|| html_to_text(&html));
 
@@ -349,7 +363,11 @@ fn escape_html(s: &str) -> String {
 }
 
 /// Sixteen random bytes, hex-encoded, `@` `domain` — see [`build`]'s docs.
-fn generate_message_id(domain: &str) -> String {
+/// `pub(crate)` rather than private: `crate::outbox::send` calls this
+/// directly the first time a `Send` op builds a given draft, so it can
+/// persist the id it minted *before* asking [`build`] to use it -- see
+/// [`Outgoing::message_id`]'s own docs for why that order matters.
+pub(crate) fn generate_message_id(domain: &str) -> String {
     let mut bytes = [0u8; 16];
     rand::rng().fill_bytes(&mut bytes);
     let mut hex = String::with_capacity(bytes.len() * 2);
@@ -386,6 +404,7 @@ mod tests {
             in_reply_to: None,
             references: Vec::new(),
             message_id_domain: "example.com".to_string(),
+            message_id: None,
         }
     }
 

@@ -154,6 +154,13 @@ impl MailSession for FakeSession {
     ) -> SessionResult<Option<Uid>> {
         Ok(Some(1))
     }
+    async fn search_message_id(
+        &mut self,
+        _mailbox: &str,
+        _message_id: &str,
+    ) -> SessionResult<Option<Uid>> {
+        Ok(None)
+    }
     async fn idle(&mut self, _stop: tokio::sync::watch::Receiver<()>) -> SessionResult<IdleEvent> {
         Ok(IdleEvent::Stopped)
     }
@@ -290,6 +297,43 @@ async fn saving_a_draft_twice_quickly_enqueues_one_append() {
         1,
         "the second save within thirty seconds must not enqueue a second append"
     );
+}
+
+// ---- recovering an op stranded `InFlight` by a crash -----------------------
+
+#[tokio::test]
+async fn an_inflight_op_left_by_a_crash_is_recovered_and_drains() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let inbox = seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+    seed_mailbox(&svc, account, "Archive", MailboxRole::Archive);
+    let thread = seed_message(&svc, account, inbox, 1);
+
+    let ops = call(&svc, "archive", json!({ "threads": [thread] })).await;
+    let op_id: everyday_core::id::OpId =
+        ops.as_array().unwrap()[0]["id"].as_str().unwrap().parse().unwrap();
+
+    let vault = svc.get().unwrap();
+    // What a crash between `drain_outbox` claiming this op and recording
+    // how it went leaves behind -- nothing else ever moves an op out of
+    // `InFlight` again, per `crate::outbox`'s own module docs.
+    let mut stranded = vault.op(op_id).unwrap();
+    stranded.transition_to(OpState::InFlight).unwrap();
+    vault.update_op(&stranded).unwrap();
+    let attempts_before = stranded.attempts;
+
+    let mut session = FakeSession::default();
+    everyday_service::outbox::recover_inflight_ops(&svc, account, &mut session).await.unwrap();
+
+    let recovered = vault.op(op_id).unwrap();
+    assert_eq!(recovered.state, OpState::Pending, "a stranded op must go back to work");
+    assert!(recovered.attempts > attempts_before, "recovery counts as a failed attempt");
+
+    // Recovery did not just flip a state bit: the op is genuinely runnable
+    // again.
+    let sender = FakeSender;
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.done, 1, "{report:?}");
 }
 
 // ---- snooze release ---------------------------------------------------------

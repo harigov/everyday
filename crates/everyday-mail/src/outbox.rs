@@ -105,6 +105,12 @@ pub trait Lookups {
     /// The draft an [`OpKind::Send`] or [`OpKind::AppendDraft`] op names.
     fn draft(&self, id: DraftId) -> Result<Draft>;
 
+    /// Persist the `Message-ID` [`send`] just minted for this draft's first
+    /// send attempt, before it actually sends -- see that function's own
+    /// docs on why this write happens ahead of the send rather than after
+    /// it.
+    fn set_draft_message_id(&self, id: DraftId, message_id: &str) -> Result<()>;
+
     /// Where this crate's own previous `APPEND` of `id` to Drafts landed,
     /// if there has been one — what [`OpKind::AppendDraft`] deletes before
     /// writing the fresh copy, so editing a draft ten times does not leave
@@ -182,8 +188,11 @@ pub enum Executed {
     /// the outgoing message, so the caller can mark the draft
     /// [`everyday_core::mail::DraftState::Sent`] and recognise the copy
     /// that lands back through ordinary sync as this same send rather than
-    /// a new incoming message.
-    Sent { message_id: String },
+    /// a new incoming message. `sent_append_error` is `Some` when the
+    /// message reached the server but this crate's own follow-up copy to
+    /// Sent could not be made -- see [`send`]'s own docs for why that is
+    /// still success, not a failure to retry.
+    Sent { message_id: String, sent_append_error: Option<String> },
     /// [`OpKind::AppendDraft`] succeeded: the server's own uid for the
     /// fresh copy, when `APPENDUID` said so (see [`MailSession::append`]'s
     /// own docs for when it does not) — what the caller remembers as this
@@ -405,6 +414,11 @@ async fn outgoing<S: MailSession, T: Sender, L: Lookups>(
         in_reply_to,
         references,
         message_id_domain: ctx.lookups.message_id_domain(),
+        // Never set here: [`send`] is the one caller that ever needs a
+        // stable id, and it sets this field itself on the [`Outgoing`] this
+        // returns before handing it to [`compose::build`]. `append_draft`
+        // takes what this leaves -- `None`, a fresh id every autosave.
+        message_id: None,
     })
 }
 
@@ -420,6 +434,32 @@ fn address(a: &CoreAddress) -> compose::Address {
 /// `APPEND` to Sent. Returns the minted `Message-ID` so the caller can mark
 /// the draft sent and recognise the copy that lands back through ordinary
 /// sync.
+///
+/// # A stable `Message-ID` across retries
+///
+/// `draft.message_id` is filled in, and persisted through
+/// [`Lookups::set_draft_message_id`], the first time this draft is ever
+/// built for sending -- before the message is actually sent, so a crash
+/// between the two still leaves the id recorded. Every later attempt at
+/// the same draft (a retryable failure, a `Send` op recovered from
+/// `InFlight`) reads the same field back and reuses it rather than minting
+/// another, which is what lets recovery ask the server "did the id I would
+/// send with already arrive?" and get an answer that actually means
+/// something -- see `crates/everyday-service/src/outbox.rs`'s recovery
+/// path, the one caller that reads this back.
+///
+/// # Once `ctx.sender.send` returns `Ok`, this can no longer fail
+///
+/// The message has, at that point, actually reached the server -- the one
+/// thing a `Send` op exists to make true. Everything after it is this
+/// crate's own bookkeeping copy, not the send itself, and the drain loop's
+/// only two responses to an `Err` are "retry" and "permanently failed,
+/// reverse the local change": neither is survivable here, because retrying
+/// means asking `ctx.sender` to send the same message again, and reversing
+/// means telling the person their message was never sent when it was. So a
+/// failure appending to Sent, or even finding out where Sent is, is caught
+/// rather than propagated, and carried back as a note on the success value
+/// instead -- see [`Executed::Sent`].
 async fn send<S: MailSession, T: Sender, L: Lookups>(
     op: &Op,
     ctx: &mut ExecContext<'_, S, T, L>,
@@ -427,16 +467,43 @@ async fn send<S: MailSession, T: Sender, L: Lookups>(
     let OpTarget::Draft(id) = op.target else {
         return Err(MailError::Protocol("a Send op must target a draft".into()));
     };
-    let draft = ctx.lookups.draft(id)?;
-    let built = build(&draft, ctx).await?;
+    let mut draft = ctx.lookups.draft(id)?;
+    if draft.message_id.is_none() {
+        let minted = compose::generate_message_id(&ctx.lookups.message_id_domain());
+        ctx.lookups.set_draft_message_id(id, &minted)?;
+        draft.message_id = Some(minted);
+    }
+    let mut out = outgoing(&draft, ctx).await?;
+    out.message_id = draft.message_id.clone();
+    let built = compose::build(&out).map_err(|e| MailError::Protocol(e.to_string()))?;
     ctx.sender.send(&built).await?;
 
+    let sent_append_error = match append_sent_copy(ctx, &built).await {
+        Ok(()) => None,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                message_id = %built.message_id,
+                "sent, but could not append the Sent copy"
+            );
+            Some(e.to_string())
+        }
+    };
+    Ok(Executed::Sent { message_id: built.message_id, sent_append_error })
+}
+
+/// The half of [`send`] that can fail without the send itself having
+/// failed -- split out so `send` can catch exactly this and nothing else.
+async fn append_sent_copy<S: MailSession, T: Sender, L: Lookups>(
+    ctx: &mut ExecContext<'_, S, T, L>,
+    built: &Built,
+) -> Result<()> {
     if crate::smtp::needs_sent_append(ctx.session.capabilities())
         && let Some(sent) = ctx.lookups.special_use(MailboxRole::Sent)?
     {
         ctx.session.append(&sent, &built.raw, Flags::SEEN).await?;
     }
-    Ok(Executed::Sent { message_id: built.message_id })
+    Ok(())
 }
 
 /// `APPEND` a fresh copy of the draft to the account's Drafts mailbox,
@@ -580,6 +647,17 @@ mod tests {
             Ok(Some(self.appended.len() as u32))
         }
 
+        async fn search_message_id(
+            &mut self,
+            _mailbox: &str,
+            _message_id: &str,
+        ) -> Result<Option<Uid>> {
+            // Never exercised by this module's own tests -- `execute` never
+            // calls it; only the recovery path in `everyday-service`'s
+            // `outbox.rs` does, against its own fake session.
+            Ok(None)
+        }
+
         async fn idle(&mut self, _stop: tokio::sync::watch::Receiver<()>) -> Result<IdleEvent> {
             Ok(IdleEvent::Stopped)
         }
@@ -624,7 +702,14 @@ mod tests {
         thread_locations: HashMap<ThreadId, Vec<Located>>,
         special_use: HashMap<&'static str, String>,
         mailbox_names: HashMap<MailboxId, String>,
-        drafts: HashMap<DraftId, Draft>,
+        // `RefCell`, not a plain map: `Lookups::set_draft_message_id` takes
+        // `&self`, the same as every other method on the trait, so this is
+        // the one field a test can still mutate through a shared reference
+        // -- the same interior-mutability trade `FakeSender::sent` already
+        // makes with a `Mutex`, chosen here as a `RefCell` since nothing in
+        // this module's tests touches a `FakeLookups` from more than one
+        // task at once.
+        drafts: std::cell::RefCell<HashMap<DraftId, Draft>>,
         server_copies: HashMap<DraftId, Located>,
         parents: HashMap<MailMessageId, Vec<u8>>,
     }
@@ -636,7 +721,7 @@ mod tests {
                 thread_locations: HashMap::new(),
                 special_use: HashMap::new(),
                 mailbox_names: HashMap::new(),
-                drafts: HashMap::new(),
+                drafts: std::cell::RefCell::new(HashMap::new()),
                 server_copies: HashMap::new(),
                 parents: HashMap::new(),
             }
@@ -652,8 +737,8 @@ mod tests {
             self
         }
 
-        fn with_draft(mut self, draft: Draft) -> Self {
-            self.drafts.insert(draft.id, draft);
+        fn with_draft(self, draft: Draft) -> Self {
+            self.drafts.borrow_mut().insert(draft.id, draft);
             self
         }
 
@@ -692,7 +777,19 @@ mod tests {
         }
 
         fn draft(&self, id: DraftId) -> Result<Draft> {
-            self.drafts.get(&id).cloned().ok_or_else(|| MailError::Protocol("no such draft".into()))
+            self.drafts
+                .borrow()
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| MailError::Protocol("no such draft".into()))
+        }
+
+        fn set_draft_message_id(&self, id: DraftId, message_id: &str) -> Result<()> {
+            let mut drafts = self.drafts.borrow_mut();
+            let draft =
+                drafts.get_mut(&id).ok_or_else(|| MailError::Protocol("no such draft".into()))?;
+            draft.message_id = Some(message_id.to_string());
+            Ok(())
         }
 
         fn draft_server_copy(&self, id: DraftId) -> Result<Option<Located>> {
@@ -934,7 +1031,10 @@ mod tests {
         let outcome =
             execute(&op(account, OpKind::Send, OpTarget::Draft(id)), &mut ctx).await.unwrap();
         match outcome {
-            Executed::Sent { message_id } => assert!(message_id.ends_with("@example.com")),
+            Executed::Sent { message_id, sent_append_error } => {
+                assert!(message_id.ends_with("@example.com"));
+                assert_eq!(sent_append_error, None);
+            }
             other => panic!("expected Sent, got {other:?}"),
         }
         assert_eq!(sender.sent.lock().unwrap().len(), 1);
@@ -985,6 +1085,40 @@ Original body.\r\n"
         let raw = String::from_utf8_lossy(&sent[0].raw);
         assert!(raw.contains("In-Reply-To: <parent@example.com>"), "{raw}");
         assert!(raw.contains("References: <parent@example.com>"), "{raw}");
+    }
+
+    /// The regression for the bug this module's `send` docs describe: once
+    /// `ctx.sender.send` has succeeded, a failure appending the Sent copy
+    /// must come back as `Ok(Executed::Sent { .. })` with a note, never as
+    /// an `Err` the drain loop could turn into a retry (sending the message
+    /// again) or a permanent failure (telling the person it was never sent).
+    #[tokio::test]
+    async fn a_failed_sent_append_does_not_fail_the_send() {
+        let account = AccountId::new();
+        let draft = simple_draft(account);
+        let id = draft.id;
+        let lookups =
+            FakeLookups::new(false).with_draft(draft).with_special_use(MailboxRole::Sent, "Sent");
+        let mut session = FakeSession {
+            fail_next: Some(MailError::Server("550 mailbox full".into())),
+            ..FakeSession::default()
+        };
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        let outcome =
+            execute(&op(account, OpKind::Send, OpTarget::Draft(id)), &mut ctx).await.unwrap();
+        match outcome {
+            Executed::Sent { sent_append_error, .. } => {
+                assert!(sent_append_error.is_some(), "the append failure must be noted, not lost");
+            }
+            other => panic!("expected Sent, got {other:?}"),
+        }
+        assert_eq!(
+            sender.sent.lock().unwrap().len(),
+            1,
+            "the message must have been sent exactly once"
+        );
     }
 
     #[tokio::test]

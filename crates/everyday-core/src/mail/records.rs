@@ -550,6 +550,16 @@ pub struct Draft {
     /// a sealed record here keeps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_copy: Option<DraftServerCopy>,
+    /// The `Message-ID` minted for this draft's first send attempt, kept
+    /// stable across every retry -- see
+    /// `everyday_mail::outbox::Outgoing::message_id`'s own docs for why a
+    /// stable id is what lets a `Send` op recovered from `InFlight` ask the
+    /// server whether it already arrived rather than risking a duplicate.
+    /// `None` until a `Send` op has actually built this draft once;
+    /// `#[serde(default)]` so a draft sealed before this field existed
+    /// still decodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     pub origin: Origin,
     pub state: DraftState,
     pub created_at: Timestamp,
@@ -571,6 +581,7 @@ impl Draft {
             body_html: String::new(),
             attachments: Vec::new(),
             server_copy: None,
+            message_id: None,
             origin,
             state: DraftState::Editing,
             created_at: now,

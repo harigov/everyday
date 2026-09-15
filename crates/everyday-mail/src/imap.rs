@@ -499,6 +499,25 @@ impl MailSession for ImapSession {
         }
     }
 
+    /// `UID SEARCH HEADER Message-ID "<message_id>"` in `mailbox` --
+    /// `SELECT`ed first, since `SEARCH` acts on whatever mailbox is
+    /// current. `HEADER` search is a substring match per RFC 3501, and
+    /// [`crate::compose::build`]'s minted ids are random enough that a
+    /// substring match against the bare id (no angle brackets -- those are
+    /// the wire encoding, not part of the id this crate compares against)
+    /// is as exact as a full match would be. The first hit is returned when
+    /// more than one somehow matches; recovering from a stranded `Send` --
+    /// the one caller of this method -- only ever needs to know "is it
+    /// there at all".
+    async fn search_message_id(&mut self, mailbox: &str, message_id: &str) -> Result<Option<Uid>> {
+        self.select(mailbox).await?;
+        let session = self.session_mut()?;
+        let query = format!("HEADER Message-ID \"{message_id}\"");
+        let found: std::collections::HashSet<Uid> =
+            session.uid_search(&query).await.map_err(classify)?;
+        Ok(found.into_iter().next())
+    }
+
     async fn idle(&mut self, mut stop: watch::Receiver<()>) -> Result<IdleEvent> {
         if !self.capabilities.idle {
             return Err(MailError::Unsupported("IDLE"));
