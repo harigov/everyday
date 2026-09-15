@@ -195,6 +195,19 @@ pub trait MailStore: Send + Sync {
 
     fn put_body(&self, body: &Body) -> Result<()>;
 
+    /// [`MailStore::put_body`] for a whole batch, in one transaction where
+    /// the backend can offer one -- what the bodies pass calls instead of a
+    /// loop, so committing a batch of a hundred messages is one fsync
+    /// rather than a hundred. The default just loops; a backend with no
+    /// notion of a multi-statement transaction loses nothing by not
+    /// overriding it.
+    fn put_bodies(&self, bodies: &[Body]) -> Result<()> {
+        for body in bodies {
+            self.put_body(body)?;
+        }
+        Ok(())
+    }
+
     fn get_body(&self, message_id: MailMessageId) -> Result<Body>;
 
     // ---- drafts ------------------------------------------------------------

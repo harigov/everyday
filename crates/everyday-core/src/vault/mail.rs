@@ -17,6 +17,7 @@ use super::session::Domain;
 use crate::error::Result;
 use crate::id::{AccountId, DraftId, MailMessageId, MailboxId, ThreadId};
 use crate::mail::{Body, Category, Draft, Mailbox, Message, MessageFlags, Op, Thread};
+use crate::packstore::PackStore;
 use crate::store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
 use jiff::Timestamp;
 
@@ -28,6 +29,16 @@ impl Vault {
 
     fn with_mail<T>(&self, f: impl FnOnce(&dyn MailStore) -> Result<T>) -> Result<T> {
         self.with_domain(Domain::Mail, |s| s.mail().map(f))
+    }
+
+    /// Reach the backend's own pack store, for a backend that keeps raw
+    /// messages in its tables rather than beside itself on disk -- Postgres,
+    /// chiefly. See [`crate::store::JournalStore::mail_packs`] for why this
+    /// is the exception rather than the rule: a local backend's pack store
+    /// is opened directly from [`Vault::store_root`] and never reaches this
+    /// method at all.
+    pub fn with_mail_packs<T>(&self, f: impl FnOnce(&dyn PackStore) -> Result<T>) -> Result<T> {
+        self.with_domain(Domain::Mail, |s| s.mail_packs().map(f))
     }
 
     // ---- mailboxes ----------------------------------------------------------
@@ -117,6 +128,14 @@ impl Vault {
     pub fn save_body(&self, body: &Body) -> Result<()> {
         self.writable()?;
         self.with_mail(|m| m.put_body(body))
+    }
+
+    /// [`Vault::save_body`] for a whole batch -- see
+    /// [`MailStore::put_bodies`] for why the bodies pass calls this instead
+    /// of a loop.
+    pub fn save_bodies(&self, bodies: &[Body]) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.put_bodies(bodies))
     }
 
     pub fn body(&self, message_id: MailMessageId) -> Result<Body> {

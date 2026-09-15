@@ -243,6 +243,27 @@ impl MailStore for SqlStore {
         Ok(())
     }
 
+    fn put_bodies(&self, bodies: &[Body]) -> Result<()> {
+        if bodies.is_empty() {
+            return Ok(());
+        }
+        let mut sealed = Vec::with_capacity(bodies.len());
+        for body in bodies {
+            sealed
+                .push((body.message_id.to_string(), self.seal(&body_aad(body.message_id), body)?));
+        }
+        let mut conn = self.write();
+        let mut tx = conn.begin()?;
+        for (message_id, data) in sealed {
+            tx.execute(
+                "INSERT INTO bodies (message_id, data) VALUES (?1, ?2)
+                 ON CONFLICT (message_id) DO UPDATE SET data = ?2",
+                &vals![message_id, data],
+            )?;
+        }
+        tx.commit()
+    }
+
     fn get_body(&self, message_id: MailMessageId) -> Result<Body> {
         let sealed = self
             .read()

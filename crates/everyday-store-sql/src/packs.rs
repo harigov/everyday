@@ -113,3 +113,26 @@ impl PackStore for TablePacks<'_> {
         Ok(Vec::new())
     }
 }
+
+/// [`SqlStore`] itself answers [`JournalStore::mail_packs`](everyday_core::store::JournalStore::mail_packs)
+/// with `Some(self)`, which needs `SqlStore` to implement [`PackStore`]
+/// directly rather than only [`TablePacks`] borrowing it -- every call here
+/// is one line, building the zero-sized borrow [`TablePacks::new`] wraps and
+/// forwarding to it, so the SQL itself is written exactly once.
+impl PackStore for SqlStore {
+    fn append_batch(&self, account: &str, messages: &[&[u8]]) -> Result<Vec<PackRef>> {
+        TablePacks::new(self).append_batch(account, messages)
+    }
+
+    fn read(&self, r: &PackRef) -> Result<Vec<u8>> {
+        TablePacks::new(self).read(r)
+    }
+
+    fn mark_dead(&self, refs: &[PackRef]) -> Result<()> {
+        TablePacks::new(self).mark_dead(refs)
+    }
+
+    fn compact(&self, account: &str) -> Result<Vec<(PackRef, PackRef)>> {
+        TablePacks::new(self).compact(account)
+    }
+}

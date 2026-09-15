@@ -547,6 +547,22 @@ pub trait JournalStore: Send + Sync {
         None
     }
 
+    /// Raw messages, sealed in the pack store, if this backend keeps them in
+    /// its own tables rather than beside itself on disk.
+    ///
+    /// Unlike every other accessor above, `None` here is the *common* case
+    /// rather than the exception: a local backend's pack store is a
+    /// directory of files beside its media, opened directly by whoever
+    /// assembles the vault (see `everyday_core::vault::Vault::store_root`),
+    /// not reached through this trait at all. Only a backend with no local
+    /// disk of its own -- Postgres, whose rows are the pack -- answers
+    /// `Some` here, because a `mail_packs` row is exactly as reachable as
+    /// any other table only through the same connection every other accessor
+    /// on this trait already uses.
+    fn mail_packs(&self) -> Option<&dyn crate::packstore::PackStore> {
+        None
+    }
+
     // ---- the owner ------------------------------------------------------
 
     /// Who this vault belongs to.
