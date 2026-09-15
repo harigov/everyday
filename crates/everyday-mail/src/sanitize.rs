@@ -9,8 +9,14 @@
 //!    `srcset`, `[background]` and `style` (attribute and `<style>` block)
 //!    once and turns every reference to a remote resource into the app's own
 //!    `{scheme}://mail/...` protocol. An `http(s)` image becomes
-//!    `{scheme}://mail/img/{blake3 of the url}`; a `cid:` reference becomes
-//!    `{scheme}://mail/part/{message id}/{content id}`. Nothing this pass
+//!    `{scheme}://mail/img/{message id}/{blake3 of the url}`; a `cid:`
+//!    reference becomes `{scheme}://mail/part/{message id}/{content id}`.
+//!    Both carry the message id as a path segment, not a query parameter --
+//!    `mail/img/{token}?m={message}` was this scheme's first shape, and a
+//!    route on both transports still accepts it, because a body sanitised
+//!    under the old shape is sealed in the vault exactly as it was written
+//!    and is never re-sanitised; see [`Shared::proxy`]'s own docs for why
+//!    the path form is the one a *new* body writes. Nothing this pass
 //!    touches can cause a request to leave the app before the person asks
 //!    for it -- the token is opaque, and the protocol handler decides later,
 //!    per `docs/plans/mail.md`'s remote-image rule, whether to actually fetch
@@ -198,13 +204,31 @@ impl Shared {
         String::new()
     }
 
+    /// Rewrites a remote `http(s)` URL to `{scheme}://mail/img/{message
+    /// id}/{token}` -- the message id first, matching `.../part/{message
+    /// id}/{content id}`'s own order, so both mail routes share one shape
+    /// rather than the image route being the odd one out with its id in a
+    /// query string. That used to be exactly what it was --
+    /// `{scheme}://mail/img/{token}?m={message id}` -- until a token alone
+    /// in the path turned out to need a second question answered
+    /// (`protocol.rs`'s router and `everyday-server`'s equivalent route
+    /// both had to read a query parameter neither of the other two mail
+    /// addresses needs) before either could look anything up. Both routes
+    /// still answer the old shape too, because a body already sanitised
+    /// under it is sealed in the vault verbatim and this module never
+    /// re-sanitises a stored body to migrate it.
     fn proxy(&mut self, url: &str) -> String {
         let token = blake3::hash(url.as_bytes()).to_hex().to_string();
         if self.seen.insert(url.to_string()) {
             self.remote_images
                 .push(RemoteImage { original_url: url.to_string(), token: token.clone() });
         }
-        format!("{}://mail/img/{}", self.rewrite.scheme, token)
+        format!(
+            "{}://mail/img/{}/{}",
+            self.rewrite.scheme,
+            path_segment(&self.rewrite.message_id),
+            token
+        )
     }
 }
 
@@ -728,8 +752,37 @@ mod tests {
         assert!(!out.had_tracking_pixels);
         assert_eq!(out.remote_images.len(), 1);
         assert_eq!(out.remote_images[0].original_url, "https://cdn.example.com/logo.png");
-        assert!(out.html.contains(&format!("everyday://mail/img/{}", out.remote_images[0].token)));
+        assert!(out.html.contains(&format!(
+            "everyday://mail/img/msg-1@example.com/{}",
+            out.remote_images[0].token
+        )));
         assert!(!out.html.contains("cdn.example.com"));
+    }
+
+    #[test]
+    fn a_remote_images_address_carries_the_message_id_in_its_path() {
+        // The shape `everyday-app/src/protocol.rs` and
+        // `everyday-server/src/routes.rs` both parse without a `?m=` query
+        // parameter -- see `Shared::proxy`'s own docs for why the message id
+        // moved into the path.
+        let out = sanitize(r#"<img src="https://cdn.example.com/a.png">"#, &rewrite());
+        assert!(!out.html.contains("?m="));
+        let expected =
+            format!("everyday://mail/img/msg-1@example.com/{}", out.remote_images[0].token);
+        assert!(out.html.contains(&expected), "{}", out.html);
+    }
+
+    #[test]
+    fn a_message_id_needing_escaping_is_percent_encoded_in_the_image_address() {
+        // Most real `Message-ID` headers are already path-safe, but nothing
+        // stops a server minting one with a `/` or a space in it -- and this
+        // is the same `path_segment` the `cid:` address already relies on
+        // to keep a hostile id from adding a path segment of its own.
+        let out = sanitize(
+            r#"<img src="https://cdn.example.com/a.png">"#,
+            &Rewrite::new("weird id/with space"),
+        );
+        assert!(out.html.contains("everyday://mail/img/weird%20id%2Fwith%20space/"));
     }
 
     #[test]

@@ -57,6 +57,13 @@ jiff.workspace = true
 # there is none.
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
+[dev-dependencies]
+# `protocol.rs`'s mail route tests build their URLs from a real
+# `sanitize::sanitize` call rather than a hand-assembled string, so the
+# routing they check is the exact shape the sync engine seals into a body.
+# Test-only: nothing in the shipped binary parses a message's HTML itself.
+everyday-mail.workspace = true
+
 [features]
 # Enabled by `tauri dev`/`tauri build`; keeps devtools out of releases.
 custom-protocol = ["tauri/custom-protocol"]

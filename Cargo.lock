@@ -1816,6 +1816,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "everyday-core",
+ "everyday-mail",
  "everyday-server",
  "everyday-service",
  "everyday-vault",
@@ -1945,6 +1946,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "everyday-core",
+ "everyday-mail",
  "everyday-mcp",
  "everyday-service",
  "everyday-vault",

@@ -122,7 +122,12 @@ pub fn router(server: Arc<Server>, transport: Transport) -> Router {
         .route("/v1/blob/{id}", get(get_blob))
         .route("/v1/mail/body/{id}", get(get_mail_body))
         .route("/v1/mail/part/{message_id}/{identifier}", get(get_mail_part))
-        .route("/v1/mail/img/{token}", get(get_mail_image))
+        .route("/v1/mail/img/{message_id}/{token}", get(get_mail_image))
+        // The image address's first shape, with the message id in a query
+        // parameter instead of the path -- kept so a body sanitised before
+        // `everyday-mail::sanitize` started writing the new shape still
+        // resolves. See `get_mail_image_legacy`'s own docs.
+        .route("/v1/mail/img/{token}", get(get_mail_image_legacy))
         .route("/v1/events", get(events))
         .layer(axum::extract::DefaultBodyLimit::max(Service::MAX_ATTACHMENT_BYTES))
         .with_state((server, transport))
@@ -551,6 +556,18 @@ async fn get_mail_part(
     mail_bytes_response(served, "private, max-age=31536000, immutable")
 }
 
+/// `/v1/mail/img/{message_id}/{token}` -- the shape
+/// `everyday-mail::sanitize::sanitize` writes into a message's HTML today.
+/// The message id comes first, matching `/v1/mail/part/{message_id}/{identifier}`'s
+/// own order, so both routes share one shape.
+async fn get_mail_image(
+    State((server, transport)): Ctxt,
+    Path((message_id, token)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Answer<Response> {
+    mail_image_response(&server, transport, &headers, &message_id, &token).await
+}
+
 #[derive(Deserialize)]
 struct MailImageQuery {
     /// The message this image belongs to -- `everyday://mail/img/{token}?m={msg}`'s
@@ -558,23 +575,44 @@ struct MailImageQuery {
     m: String,
 }
 
-async fn get_mail_image(
+/// `/v1/mail/img/{token}?m={message_id}` -- the image address's first
+/// shape, with the message id in a query parameter rather than the path.
+/// Still answered, and will be for as long as a vault might hold a body
+/// sanitised before `sanitize::sanitize` started writing the message id
+/// into the path: a stored body is sealed at sync time and never
+/// re-sanitised to migrate it to the new shape, so a route that stopped
+/// understanding the old one would break every remote image in a message
+/// synced before this change. See `crates/everyday-app/src/protocol.rs`'s
+/// identical fallback for the desktop transport.
+async fn get_mail_image_legacy(
     State((server, transport)): Ctxt,
     Path(token): Path<String>,
     headers: HeaderMap,
     Query(q): Query<MailImageQuery>,
 ) -> Answer<Response> {
-    check_protocol(&headers)?;
-    let ctx = authenticate(&server, transport, &headers)?;
+    mail_image_response(&server, transport, &headers, &q.m, &token).await
+}
+
+/// What both `get_mail_image` and `get_mail_image_legacy` do once they have
+/// a message id and a token, whichever shape of address it arrived in.
+async fn mail_image_response(
+    server: &Arc<Server>,
+    transport: Transport,
+    headers: &HeaderMap,
+    message_id: &str,
+    token: &str,
+) -> Answer<Response> {
+    check_protocol(headers)?;
+    let ctx = authenticate(server, transport, headers)?;
     ctx.require(Scope::Mail)?;
-    let message_id =
-        MailMessageId::parse(&q.m).map_err(|_| CommandError::new("invalid", "not a message id"))?;
+    let message_id = MailMessageId::parse(message_id)
+        .map_err(|_| CommandError::new("invalid", "not a message id"))?;
 
     let vault = server.service.require()?;
     let one_off = server.service.remote_images_allowed_once(message_id);
     let client = everyday_service::http::public_client()?;
     let served =
-        everyday_service::mailview::remote_image(&vault, client, message_id, &token, one_off)
+        everyday_service::mailview::remote_image(&vault, client, message_id, token, one_off)
             .await?;
     // Never cached: a placeholder answered before permission was granted
     // must not shadow the real picture once it is.
@@ -785,5 +823,182 @@ mod status_tests {
                 .unwrap_or_else(|| panic!("{code} is in `codes::ALL` but not in this table"));
             assert_eq!(status_of(code), *want, "{code} did not map to the status this expects");
         }
+    }
+}
+
+/// The image route, driven through the real axum [`Router`] with
+/// [`tower::ServiceExt::oneshot`] rather than called as a plain function --
+/// what a routing bug (a path shape that does not match the route table, an
+/// extractor reading the wrong segment) would actually break. `Transport::Socket`
+/// needs no token, which is what lets this drive the router directly rather
+/// than standing up the TLS harness `tests/serve.rs` uses for the rest of
+/// this crate's HTTP-level tests -- see `authenticate`'s own docs for why a
+/// socket transport asks for none.
+#[cfg(test)]
+mod mail_route_tests {
+    use super::*;
+    use everyday_core::VaultConfig;
+    use everyday_core::id::{AccountId, PackId, ThreadId};
+    use everyday_core::mail::{
+        Address, Body, Mailbox, MailboxRole, Message, MessageFlags, RemoteImage,
+    };
+    use everyday_core::packstore::PackRef;
+    use everyday_core::store::mail::IngestMessage;
+    use tower::ServiceExt;
+
+    /// A vault with one message from `sender`, and a `Body` sealed from a
+    /// real [`everyday_mail::sanitize::sanitize`] call -- so the address
+    /// this test drives a request against is exactly what the sync engine
+    /// would have written, not a hand-built stand-in for it.
+    fn seeded(
+        sender: &str,
+        html: &str,
+    ) -> (tempfile::TempDir, Arc<Service>, MailMessageId, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = everyday_vault::create(dir.path(), VaultConfig::default()).unwrap();
+
+        let account = AccountId::new();
+        let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+        vault.save_mailbox(&mailbox).unwrap();
+
+        let message_id = MailMessageId::new();
+        let message = Message {
+            id: message_id,
+            account_id: account,
+            thread_id: ThreadId::new(),
+            message_id_header: format!("<{message_id}@routes.example>"),
+            date: jiff::Timestamp::now(),
+            from: Address::bare(sender),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            reply_to: Vec::new(),
+            subject: "hi".into(),
+            snippet: String::new(),
+            flags: MessageFlags::default(),
+            labels: Vec::new(),
+            has_attachments: false,
+            size: 0,
+            category: None,
+            pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
+            gmail: None,
+        };
+        vault
+            .ingest_mail(account, vec![IngestMessage { message, mailbox: mailbox.id, uid: 1 }])
+            .unwrap();
+
+        let out = everyday_mail::sanitize::sanitize(
+            html,
+            &everyday_mail::sanitize::Rewrite::new(message_id.to_string()),
+        );
+        let body = Body {
+            message_id,
+            html_sanitised: out.html.clone(),
+            text: String::new(),
+            quoted_ranges: Vec::new(),
+            signature_range: None,
+            parts: Vec::new(),
+            remote_images: out
+                .remote_images
+                .iter()
+                .map(|r| RemoteImage {
+                    original_url: r.original_url.clone(),
+                    token: r.token.clone(),
+                    cached_blob: None,
+                })
+                .collect(),
+        };
+        vault.save_body(&body).unwrap();
+
+        let service = Arc::new(Service::new());
+        service.set(vault);
+        (dir, service, message_id, out.html)
+    }
+
+    /// Also hands back the registry's temporary directory: it has to outlive
+    /// the router, even though nothing in these tests touches it again
+    /// after `Registry::open` has read it.
+    fn socket_router(service: Arc<Service>) -> (Router, tempfile::TempDir) {
+        let config_dir = tempfile::tempdir().unwrap();
+        let registry = Arc::new(Registry::open(config_dir.path().join("devices.json")).unwrap());
+        let broadcaster = Arc::new(Broadcaster::new());
+        let server =
+            Server::new(service, registry, broadcaster, "Test".into(), String::new(), false);
+        (router(server, Transport::Socket), config_dir)
+    }
+
+    /// Pulls the first `everyday://...` address out of a sanitised
+    /// document's `src="..."` and turns it into the path
+    /// `everyday-server`'s own routes answer -- `everyday://mail/...`
+    /// becomes `/v1/mail/...`, the same address family under a different
+    /// transport. See `everyday-app/src/protocol.rs`'s own tests for the
+    /// desktop half of this.
+    fn request_path_from(html: &str) -> String {
+        let start = html.find("src=\"everyday://mail").expect("a rewritten src") + "src=\"".len();
+        let end = html[start..].find('"').expect("a closing quote") + start;
+        format!("/v1/mail{}", &html[start..end]["everyday://mail".len()..])
+    }
+
+    async fn get(router: Router, path: &str) -> Response {
+        router
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("x-everyday-protocol", PROTOCOL.to_string())
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_new_path_shaped_image_route_serves_the_placeholder_for_an_unlisted_sender() {
+        let (_dir, service, _id, html) =
+            seeded("news@marketing.example", r#"<img src="https://cdn.example.com/logo.png">"#);
+        let path = request_path_from(&html);
+        assert!(!path.contains("?m="), "{path}");
+
+        let (router, _config_dir) = socket_router(service);
+        let response = get(router, &path).await;
+        // The sender is not on the allow-list, so this is the placeholder
+        // pixel, not a fetch -- what matters here is the 200: a route that
+        // mis-parsed the message id or the token would have answered
+        // `not_found` instead, since `remote_images_allowed` could not have
+        // found the message or `remote_image` could not have found the
+        // token.
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+            Some("image/png")
+        );
+    }
+
+    /// The image address's first shape -- the message id in `?m=`, not the
+    /// path -- still resolves: a body sanitised before that shape existed
+    /// is sealed in the vault exactly as it was, and this route is what
+    /// keeps its remote images working. See `routes.rs`'s own docs on
+    /// `get_mail_image_legacy`.
+    #[tokio::test]
+    async fn the_old_query_parameter_shaped_image_route_still_resolves() {
+        let (_dir, service, id, _html) =
+            seeded("news@marketing.example", r#"<img src="https://cdn.example.com/logo.png">"#);
+        // Reconstructed by hand into the address's first shape -- this is
+        // exactly what a body sanitised under an older build still carries,
+        // which is the case this test exists to keep working.
+        let path = format!("/v1/mail/img/sometoken?m={id}");
+
+        let (router, _config_dir) = socket_router(service);
+        let response = get(router, &path).await;
+        // Same answer as the new shape above, for the same reason: the
+        // sender is not on the allow-list, so this is the placeholder --
+        // what matters is that it is 200 at all, which only happens once
+        // `q.m` has been read and `MailMessageId::parse`d into the message
+        // this vault actually holds.
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+            Some("image/png")
+        );
     }
 }
