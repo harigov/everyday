@@ -10,6 +10,8 @@ Reproduced below in full:
   1. Inter — © 2016 The Inter Project Authors, https://github.com/rsms/inter
   2. Source Sans 3 — © 2010-2023 Adobe, https://github.com/adobe-fonts/source-sans
   3. virtua — © 2022 inokawa, https://github.com/inokawa/virtua
+  4. oauth2 — © 2014 Alex Crichton, https://github.com/ramosbugs/oauth2-rs
+  5. oauth2-reqwest — © 2014 Alex Crichton, https://github.com/ramosbugs/oauth2-rs
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
@@ -241,3 +243,81 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+## 4. oauth2
+
+`crates/everyday-mail/src/oauth/client.rs` builds on `oauth2`
+(https://github.com/ramosbugs/oauth2-rs) for the authorization-code-with-PKCE
+dance every mail account's sign-in goes through: the challenge and verifier,
+the authorization URL, and the token and refresh requests. Dual MIT/Apache-2.0;
+reproduced here under the MIT terms, as `virtua` above is.
+
+MIT License
+
+Copyright (c) 2014 Alex Crichton
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+---
+
+## 5. oauth2-reqwest
+
+The same file's `http_client` wraps `oauth2-reqwest`
+(https://github.com/ramosbugs/oauth2-rs), the alpha adapter that lets
+`oauth2`'s requests run over the workspace's reqwest 0.13 rather than the
+0.12 `oauth2`'s own bundled client feature would pull in -- see that file's
+module doc for why this crate exists and why it is pinned exactly rather
+than left to a caret. MIT licensed, from the same repository as `oauth2`
+above and reproduced under the same terms.
+
+MIT License
+
+Copyright (c) 2014 Alex Crichton
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
