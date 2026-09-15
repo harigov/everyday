@@ -143,18 +143,28 @@ fn base_uri(account: &Account) -> CommandResult<Uri> {
 
 /// Turn a `libdav` error into a [`CommandError`], recognising the one shape
 /// worth telling apart from every other kind of "the request failed": a 401
-/// or 403 means the credential itself is no good, which is what moves the
-/// account to `NeedsSignIn` rather than just leaving a complaint on the
-/// calendar (see `mod.rs`'s `sync`, which reads [`CommandError::code`] to
-/// make that same distinction for every source).
+/// means the credential itself is no good, which is what moves the account
+/// to `NeedsSignIn` rather than just leaving a complaint on the calendar
+/// (see `mod.rs`'s `sync`, which reads [`CommandError::code`] to make that
+/// same distinction for every source).
+///
+/// A 403 is deliberately *not* included here, even though CalDAV servers
+/// hand it out for something that looks similar at first glance -- a
+/// collection this credential cannot read. The difference that matters:
+/// Basic and Bearer auth on a CalDAV request either work or they do not, and
+/// a 403 on one calendar of an account whose other calendars answer fine
+/// means the credential is *not* the problem, only this collection's own
+/// permissions are. Treating it as `FORBIDDEN` would move the whole account
+/// to `NeedsSignIn` over a single calendar it was never going to be able to
+/// read regardless of signing in again -- so a 403 falls through to the
+/// ordinary `NETWORK` branch below, which `mod.rs::sync` records on the
+/// calendar itself and leaves the account alone.
 fn describe<E: std::fmt::Display>(e: WebDavError<E>) -> CommandError {
     match &e {
-        WebDavError::BadStatusCode(status) if status.as_u16() == 401 || status.as_u16() == 403 => {
-            CommandError::new(
-                codes::FORBIDDEN,
-                "the CalDAV server refused this account's credential",
-            )
-        }
+        WebDavError::BadStatusCode(status) if status.as_u16() == 401 => CommandError::new(
+            codes::FORBIDDEN,
+            "the CalDAV server refused this account's credential",
+        ),
         _ => CommandError::new(
             codes::NETWORK,
             format!("the CalDAV server could not be reached: {e}"),
@@ -279,6 +289,28 @@ pub async fn sync(
         None => etag_diff(&webdav, href, &calendar.account_sync).await?,
     };
 
+    // A recurring resource is only refetched and re-expanded when its own
+    // etag moves -- fine for what *changed about the event*, but the window
+    // occurrences are materialised into slides forward every day regardless
+    // ([`sync_window`]), and an unending weekly meeting whose etag has not
+    // moved in a year still needs fresh occurrences added at the window's
+    // far edge. Once the window has moved more than a month past where
+    // every recurring href was last expanded to, this forces a refetch of
+    // each one even though its diff says nothing changed -- see the module
+    // doc's "Re-expanding a recurring event as the window moves" for why
+    // refetching, rather than keeping the raw iCalendar around, is the
+    // choice here.
+    let window = sync_window();
+    let reexpand_due = needs_reexpansion(calendar.account_sync.expanded_through, window.1);
+    let mut changed = changed;
+    if reexpand_due {
+        for recurring_href in &calendar.account_sync.recurring_hrefs {
+            if !removed_hrefs.contains(recurring_href) && !changed.contains(recurring_href) {
+                changed.push(recurring_href.clone());
+            }
+        }
+    }
+
     let existing = {
         let vault = vault.clone();
         let id = calendar.id;
@@ -304,21 +336,29 @@ pub async fn sync(
     let mut upsert = Vec::new();
     let mut skipped = 0u64;
     let mut fresh_etags = Vec::new();
+    let mut recurring_hrefs = calendar.account_sync.recurring_hrefs.clone();
     if !changed.is_empty() {
         let fetched = webdav
             .request(GetCalendarResources::new(href).with_hrefs(changed.iter().cloned()))
             .await
             .map_err(describe)?;
-        let window = sync_window();
         let tz = everyday_core::model::system_tz();
         for resource in fetched.resources {
             let Ok(content) = resource.content else { continue };
             fresh_etags.push((resource.href.clone(), content.etag.clone()));
-            let (mut events, more_skipped) =
+            let (mut events, more_skipped, recurring) =
                 events_from_ics(&content.data, calendar.id, &resource.href, &tz, window);
             skipped += more_skipped;
             upsert.append(&mut events);
+            if recurring {
+                recurring_hrefs.insert(resource.href.clone());
+            } else {
+                recurring_hrefs.remove(&resource.href);
+            }
         }
+    }
+    for href in &removed_hrefs {
+        recurring_hrefs.remove(href);
     }
 
     // Every href this sync still cares about: what was already known, minus
@@ -337,7 +377,15 @@ pub async fn sync(
     for (href, etag) in fresh_etags {
         etags.insert(href, etag);
     }
-    let cursor = AccountSyncCursor { token: new_token, etags };
+    // Every recurring href has now been expanded as far as `window` reaches,
+    // whether this sync forced that refetch or one happened to be due
+    // anyway -- so the marker only needs moving forward on the sync that
+    // actually swept every recurring resource. Left alone otherwise: a sync
+    // that refetched one changed recurring event does not, by itself, prove
+    // every *other* recurring event is caught up too.
+    let expanded_through =
+        if reexpand_due { Some(window.1) } else { calendar.account_sync.expanded_through };
+    let cursor = AccountSyncCursor { token: new_token, etags, recurring_hrefs, expanded_through };
 
     let vault_for_write = vault.clone();
     let id = calendar.id;
@@ -539,19 +587,27 @@ async fn sync_collection(
 /// under `href` so a later sync can find every occurrence one resource
 /// produced -- see [`super::deterministic_event_id`]'s doc for why the
 /// href is folded into the uid rather than kept alongside it.
+///
+/// The third element of the answer is whether this resource is a recurring
+/// `VEVENT` (an `RRULE` or an `RDATE`) -- see [`is_recurring`] -- which
+/// [`sync`] remembers in
+/// [`everyday_core::calendar::AccountSyncCursor::recurring_hrefs`] so a
+/// later sync knows which *unchanged* hrefs still need re-expanding as the
+/// window moves forward.
 fn events_from_ics(
     ics: &str,
     calendar_id: CalendarId,
     href: &str,
     default_tz: &str,
     window: (jiff::civil::Date, jiff::civil::Date),
-) -> (Vec<Event>, u64) {
+) -> (Vec<Event>, u64, bool) {
     // Lenient in the same spirit as `everyday_core::ics::parse`: a resource
     // that does not parse as a calendar at all contributes nothing rather
     // than failing the whole sync over one bad `.ics`.
     let Ok(parsed) = calcard::icalendar::ICalendar::parse(ics) else {
-        return (Vec::new(), 0);
+        return (Vec::new(), 0, false);
     };
+    let recurring = is_recurring(&parsed);
     let tz: calcard::common::timezone::Tz =
         default_tz.parse().unwrap_or(calcard::common::timezone::Tz::Floating);
     let expanded = parsed.expand_dates(tz, EXPAND_LIMIT);
@@ -561,12 +617,15 @@ fn events_from_ics(
     for occurrence in expanded.events {
         let Some(comp) = parsed.components.get(occurrence.comp_id as usize) else { continue };
         let start = to_jiff(occurrence.start);
-        let end = match occurrence.end {
-            calcard::icalendar::dates::TimeOrDelta::Time(t) => to_jiff(t),
-            calcard::icalendar::dates::TimeOrDelta::Delta(d) => {
-                start + jiff::SignedDuration::new(d.num_seconds(), 0)
-            }
+        // `.clone()` rather than matching `occurrence.end` directly: this
+        // value is wanted twice below, once as the instant (`end`) and once
+        // for the *day* it falls on (`end_date`), and `TimeOrDelta` is
+        // `Clone` but not `Copy`.
+        let end_chrono = match occurrence.end.clone() {
+            calcard::icalendar::dates::TimeOrDelta::Time(t) => t,
+            calcard::icalendar::dates::TimeOrDelta::Delta(d) => occurrence.start + d,
         };
+        let end = to_jiff(end_chrono);
         // The *local* day this occurrence falls on, read from calcard's own
         // already-resolved zone (`occurrence.start`'s `Tz`, matched against
         // the event's `TZID` and any embedded `VTIMEZONE`) rather than
@@ -579,6 +638,22 @@ fn events_from_ics(
             continue;
         }
         let all_day = is_all_day(comp);
+        // The last day this occurrence covers -- matching
+        // `everyday_core::ics::materialise`'s own convention exactly, since
+        // that is what a feed event's `end_date` means and the calendar
+        // grid draws both the same way. An all-day `DTEND` is *exclusive*
+        // per RFC 5545 (a one-day event is `DTSTART;VALUE=DATE:20260710` /
+        // `DTEND;VALUE=DATE:20260711`), so the day it actually ends on is
+        // the day before; a timed event simply ends on whatever day its own
+        // end instant falls on in its own zone, which may be the day after
+        // `local_date` for one that crosses midnight. `.max(local_date)`
+        // guards a malformed `DTEND` that is not after `DTSTART`.
+        let end_date_naive = jiff_date_from_naive(end_chrono.date_naive());
+        let end_date = if all_day && end_date_naive > local_date {
+            end_date_naive.yesterday().unwrap_or(end_date_naive)
+        } else {
+            end_date_naive.max(local_date)
+        };
         let event_tz = tzid_of(comp).unwrap_or_else(|| default_tz.to_string());
         out.push(Event {
             id: deterministic_event_id(calendar_id, &format!("{href}#{start}")),
@@ -594,7 +669,7 @@ fn events_from_ics(
             start,
             end: end.max(start),
             local_date,
-            end_date: local_date,
+            end_date,
             tz: event_tz,
             all_day,
             status: status_of(comp),
@@ -610,7 +685,39 @@ fn events_from_ics(
             updated_at: jiff::Timestamp::now(),
         });
     }
-    (out, skipped)
+    (out, skipped, recurring)
+}
+
+/// Is a recurring resource, last expanded through `expanded_through`, due to
+/// be re-expanded now that the window reaches `window_end`? `None` -- no
+/// recurring href has ever been expanded for this calendar -- is always
+/// due, the same as any other "never synced" state in this codebase.
+///
+/// A month's grace (31 days) rather than re-expanding on every single sync:
+/// [`super::sync_window`] moves by a day each time `sync` runs, and forcing
+/// a multiget of every recurring href on every one of those days would cost
+/// as much network traffic as the etag diff this whole mechanism exists to
+/// avoid. A month is generous next to the two-year forward reach of the
+/// window itself -- an unending meeting is never more than a month short of
+/// its furthest materialised occurrence.
+fn needs_reexpansion(
+    expanded_through: Option<jiff::civil::Date>,
+    window_end: jiff::civil::Date,
+) -> bool {
+    expanded_through.is_none_or(|through| (window_end - through).get_days() > 31)
+}
+
+/// Does this resource contain a recurring `VEVENT` -- an `RRULE` or an
+/// `RDATE`, anywhere in it? Checked once per resource rather than per
+/// occurrence: every occurrence `expand_dates` produces from the same
+/// `VEVENT` shares the same answer.
+fn is_recurring(parsed: &calcard::icalendar::ICalendar) -> bool {
+    use calcard::icalendar::ICalendarProperty;
+    parsed.components.iter().any(|c| {
+        c.entries
+            .iter()
+            .any(|e| matches!(e.name, ICalendarProperty::Rrule | ICalendarProperty::Rdate))
+    })
 }
 
 fn to_jiff(dt: chrono::DateTime<calcard::common::timezone::Tz>) -> jiff::Timestamp {
@@ -812,10 +919,11 @@ mod tests {
                    END:VEVENT\r\n\
                    END:VCALENDAR\r\n";
         let window = (jiff::civil::date(2020, 1, 1), jiff::civil::date(2030, 1, 1));
-        let (events, skipped) =
+        let (events, skipped, recurring) =
             events_from_ics(ics, CalendarId::new(), "/cal/standup.ics", "America/New_York", window);
 
         assert_eq!(skipped, 0);
+        assert!(recurring, "an RRULE makes this resource recurring");
         assert_eq!(events.len(), 5, "six weekly occurrences minus the one EXDATE excluded");
         assert!(events.iter().all(|e| e.title == "Standup"));
         assert!(
@@ -853,9 +961,87 @@ mod tests {
     #[test]
     fn a_calendar_that_does_not_parse_yields_no_events_rather_than_failing() {
         let window = (jiff::civil::date(2020, 1, 1), jiff::civil::date(2030, 1, 1));
-        let (events, skipped) =
+        let (events, skipped, recurring) =
             events_from_ics("not a calendar", CalendarId::new(), "/cal/x.ics", "UTC", window);
         assert!(events.is_empty());
         assert_eq!(skipped, 0);
+        assert!(!recurring);
+    }
+
+    // ---- finding 2: a 403 is not a bad credential --------------------------
+
+    #[test]
+    fn describe_reports_a_401_as_forbidden_but_a_403_as_an_ordinary_failure() {
+        let unauthorized =
+            describe(WebDavError::<std::io::Error>::BadStatusCode(http::StatusCode::UNAUTHORIZED));
+        assert_eq!(unauthorized.code, codes::FORBIDDEN);
+
+        let forbidden_calendar =
+            describe(WebDavError::<std::io::Error>::BadStatusCode(http::StatusCode::FORBIDDEN));
+        assert_ne!(
+            forbidden_calendar.code,
+            codes::FORBIDDEN,
+            "a calendar this credential cannot read must not look like a bad credential"
+        );
+    }
+
+    // ---- finding 3: a recurring resource is re-expanded as the window
+    // moves, even when its etag has not -------------------------------------
+
+    #[test]
+    fn a_recurring_hrefs_events_are_recomputed_once_the_window_has_moved_a_month_past_it() {
+        let window_end = jiff::civil::date(2028, 9, 14);
+        assert!(
+            !needs_reexpansion(Some(window_end), window_end),
+            "freshly expanded: nothing to redo yet"
+        );
+        let thirteen_months_ago = jiff::civil::date(2027, 8, 14);
+        assert!(
+            needs_reexpansion(Some(thirteen_months_ago), window_end),
+            "thirteen months stale: due for re-expansion"
+        );
+        assert!(needs_reexpansion(None, window_end), "never expanded at all: also due");
+    }
+
+    // ---- finding 4: an event's end_date must reflect its actual end -------
+
+    #[test]
+    fn a_three_day_all_day_event_covers_all_three_days() {
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nBEGIN:VEVENT\r\n\
+            UID:trip@example.com\r\nDTSTART;VALUE=DATE:20260710\r\nDTEND;VALUE=DATE:20260713\r\n\
+            SUMMARY:Trip\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let window = (jiff::civil::date(2020, 1, 1), jiff::civil::date(2030, 1, 1));
+        let (events, skipped, recurring) =
+            events_from_ics(ics, CalendarId::new(), "/cal/trip.ics", "UTC", window);
+        assert_eq!(skipped, 0);
+        assert!(!recurring);
+        assert_eq!(events.len(), 1);
+        assert!(events[0].all_day);
+        assert_eq!(events[0].local_date, jiff::civil::date(2026, 7, 10));
+        assert_eq!(
+            events[0].end_date,
+            jiff::civil::date(2026, 7, 12),
+            "DTEND is exclusive: 10th, 11th and 12th are the three days covered, not the 13th"
+        );
+    }
+
+    #[test]
+    fn a_timed_event_crossing_midnight_covers_two_days() {
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nBEGIN:VEVENT\r\n\
+            UID:overnight@example.com\r\nDTSTART;TZID=UTC:20260710T230000\r\n\
+            DTEND;TZID=UTC:20260711T010000\r\nSUMMARY:Overnight\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let window = (jiff::civil::date(2020, 1, 1), jiff::civil::date(2030, 1, 1));
+        let (events, skipped, recurring) =
+            events_from_ics(ics, CalendarId::new(), "/cal/overnight.ics", "UTC", window);
+        assert_eq!(skipped, 0);
+        assert!(!recurring);
+        assert_eq!(events.len(), 1);
+        assert!(!events[0].all_day);
+        assert_eq!(events[0].local_date, jiff::civil::date(2026, 7, 10));
+        assert_eq!(
+            events[0].end_date,
+            jiff::civil::date(2026, 7, 11),
+            "a timed event that crosses midnight must cover both days"
+        );
     }
 }

@@ -110,6 +110,14 @@ const NEW_EVENT: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\
     UID:new@example.com\r\nDTSTART:20260922T160000Z\r\nDTEND:20260922T170000Z\r\n\
     SUMMARY:Added later\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
 
+/// A weekly meeting with no `COUNT` and no `UNTIL` -- it never ends, the way
+/// a real recurring standup never has a last occurrence typed into it. The
+/// point of this fixture is that a client has to decide for itself how far
+/// forward to materialise it; the server has no opinion.
+const UNENDING_WEEKLY_EVENT: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nBEGIN:VEVENT\r\n\
+    UID:forever@example.com\r\nDTSTART:20260901T100000Z\r\nDTEND:20260901T110000Z\r\n\
+    RRULE:FREQ=WEEKLY\r\nSUMMARY:Standing weekly\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
 #[tokio::test]
 async fn discovers_and_syncs_a_real_caldav_server_incrementally() {
     let Some(base_url) = env_or_skip("EVERYDAY_TEST_CALDAV_URL") else {
@@ -226,5 +234,127 @@ async fn discovers_and_syncs_a_real_caldav_server_incrementally() {
         after_second.iter().filter(|e| e.title == "Weekly recurring").count(),
         4,
         "occurrences nothing touched must not have been refetched or duplicated"
+    );
+
+    // A third sync, after deleting the whole recurring resource -- what
+    // finding 1's "check whether CalDAV has the same gap" asks for. Neither
+    // sync above ever obtained an RFC 6578 sync-token (Radicale's own
+    // `<d:sync-token>` is only asked for once one is already on record, and
+    // this calendar's cursor never got one from `etag_diff`), so every sync
+    // in this file, this one included, already goes through the etag-diff
+    // path -- which compares the *full* current listing against the *full*
+    // remembered one on every single run, not a delta since some token.
+    // That is why CalDAV has no version of findings 1's Google/Graph bug:
+    // there is no "full resync that only speaks for what it just listed"
+    // here, because every resync already speaks for the whole collection.
+    let after_second_calendar = vault.calendar(calendar.id).expect("reload before the third sync");
+    fixture.delete(&format!("{cal_path}recurring.ics")).await;
+    caldav::sync(&svc, &vault, &account, &after_second_calendar).await.expect("third sync");
+
+    let after_third: Vec<_> = vault
+        .events(&EventQuery { calendar_id: Some(calendar.id), ..Default::default() })
+        .expect("list_events");
+    assert!(
+        !after_third.iter().any(|e| e.title == "Weekly recurring"),
+        "every occurrence of a deleted resource must be gone, not only the ones an incremental \
+         diff would have known to look for: {:?}",
+        after_third.iter().map(|e| &e.title).collect::<Vec<_>>()
+    );
+    assert_eq!(after_third.len(), 2, "the renamed single meeting and the added one remain");
+}
+
+/// An unending weekly meeting -- no `COUNT`, no `UNTIL` -- must keep growing
+/// new occurrences at the far edge of the sync window as today moves
+/// forward, even though nothing about the event itself ever changes and its
+/// etag never moves. Finding 3's scenario ("sync on day 0, advance the
+/// clock 13 months, sync with unchanged etags") reproduced as directly as a
+/// test can without controlling the wall clock: this vault does not have a
+/// way to fake `jiff::Timestamp::now()` (nothing in this codebase does --
+/// see `everyday_core::model::today_local`), so instead of thirteen months
+/// really passing, the calendar's own sealed cursor is rewritten to say
+/// they already have, the same state a real thirteen months would have left
+/// it in. The second sync then has to notice on its own that its
+/// `expanded_through` marker is stale and force a refetch of the recurring
+/// resource despite its etag being exactly what it was -- which is the
+/// mechanism finding 3 adds, not a fact about what day it is.
+#[tokio::test]
+async fn an_unending_recurring_event_is_reexpanded_once_its_window_marker_goes_stale() {
+    let Some(base_url) = env_or_skip("EVERYDAY_TEST_CALDAV_URL") else {
+        eprintln!("skipping: set EVERYDAY_TEST_CALDAV=1 and run `make test-caldav`");
+        return;
+    };
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let user = std::env::var("EVERYDAY_TEST_CALDAV_USER").unwrap_or_else(|_| "everyday".into());
+    let pass = std::env::var("EVERYDAY_TEST_CALDAV_PASS").unwrap_or_else(|_| "testpass".into());
+    let fixture = Fixture {
+        base_url: base_url.clone(),
+        user: user.clone(),
+        pass: pass.clone(),
+        client: reqwest::Client::new(),
+    };
+
+    let home = format!("/{user}/");
+    let cal_path = format!("{home}unendingcal/");
+    fixture.mkcalendar(&cal_path, "Unending Calendar").await;
+    fixture.put(&format!("{cal_path}forever.ics"), UNENDING_WEEKLY_EVENT).await;
+
+    let (svc, _dir) = support::vault::service(Some("pw"));
+    let vault = svc.require().expect("vault is open");
+    let mut account = Account::new(Provider::Custom, format!("{user}@example.com"));
+    account.caldav = Some(base_url);
+    account.auth = AuthMethod::Password { username: user.clone() };
+    vault.save_account(&account).expect("save_account");
+    vault
+        .save_account_secret(
+            account.id,
+            &AccountSecret { password: Some(pass), ..Default::default() },
+        )
+        .expect("save_account_secret");
+
+    let remotes = caldav::discover(&svc, &vault, &account).await.expect("discover succeeds");
+    let remote = remotes
+        .iter()
+        .find(|r| r.name == "Unending Calendar")
+        .unwrap_or_else(|| panic!("did not find the seeded calendar among {remotes:?}"));
+    let mut calendar = Calendar::from_account(
+        account.id,
+        account.provider,
+        remote.source,
+        remote.remote_id.clone(),
+        remote.name.clone(),
+    );
+    vault.save_calendar(&calendar).expect("save_calendar");
+
+    caldav::sync(&svc, &vault, &account, &calendar).await.expect("first sync");
+    calendar = vault.calendar(calendar.id).expect("reload after the first sync");
+    assert!(
+        calendar.account_sync.recurring_hrefs.iter().any(|h| h.ends_with("forever.ics")),
+        "the unending event's href must be remembered as recurring: {:?}",
+        calendar.account_sync.recurring_hrefs
+    );
+    let first_expanded_through = calendar
+        .account_sync
+        .expanded_through
+        .expect("a sync that saw a recurring resource must record how far it expanded");
+
+    // Thirteen months earlier than what the first sync just recorded -- the
+    // state a real thirteen months of nothing else happening would leave
+    // behind, per this test's own doc.
+    calendar.account_sync.expanded_through =
+        Some(first_expanded_through.checked_sub(jiff::Span::new().days(396)).unwrap());
+    vault.save_calendar(&calendar).expect("rewind the expansion marker");
+
+    let report2 = caldav::sync(&svc, &vault, &account, &calendar).await.expect("second sync");
+    assert!(
+        report2.events > 0,
+        "the recurring resource must have been refetched and re-expanded despite an unchanged \
+         etag, once its window marker was stale"
+    );
+
+    let reexpanded = vault.calendar(calendar.id).expect("reload after the second sync");
+    assert_eq!(
+        reexpanded.account_sync.expanded_through,
+        Some(first_expanded_through),
+        "the marker must be caught back up to the current window, not left at the rewound date"
     );
 }

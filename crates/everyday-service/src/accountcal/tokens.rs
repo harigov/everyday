@@ -201,9 +201,15 @@ async fn access_token(
         auth_url,
         token_url,
         scopes: native_scopes,
-        // Never used: refreshing a token needs no redirect, only `begin`
-        // and `exchange` do.
-        redirect: String::new(),
+        // Not used for *content* -- refreshing a token sends no redirect_uri
+        // at all, only `begin` and `exchange` do -- but it still has to be a
+        // syntactically valid URL: `OAuthClient::configured` builds
+        // `RedirectUrl::new` unconditionally for all three verbs, sharing
+        // one setup step, and an empty string fails that parse (the `url`
+        // crate's own "relative URL without a base") before `refresh` ever
+        // gets to send a request. An arbitrary, unreachable address, never
+        // read past this parse.
+        redirect: "http://localhost/unused-on-refresh".to_string(),
     };
     let graph_scopes = Resource::graph_scopes();
     let vault_for_save = vault.clone();

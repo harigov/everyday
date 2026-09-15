@@ -188,6 +188,27 @@ pub struct AccountSyncCursor {
     /// current etags, keeps anything unchanged, and multigets only the rest.
     #[serde(default)]
     pub etags: BTreeMap<String, String>,
+    /// CalDAV only: which of `etags`' hrefs hold a recurring `VEVENT`
+    /// (`RRULE` or `RDATE`) -- see `accountcal::caldav`'s doc on "Re-
+    /// expanding a recurring event as the window moves" for why this has to
+    /// be remembered rather than reread from the resource each time: an
+    /// unchanged etag means the multiget below is skipped entirely, so
+    /// nothing else would tell a later sync which unchanged resources still
+    /// need re-expanding once the window has moved on. Always empty for
+    /// Google and Graph, whose own APIs expand recurrence for this
+    /// application and leave nothing here to track.
+    #[serde(default)]
+    pub recurring_hrefs: std::collections::BTreeSet<String>,
+    /// CalDAV only: the far edge of the window every href in
+    /// `recurring_hrefs` was last expanded into. `None` until the first
+    /// sync that has one. Compared against the *current* sync window on
+    /// every later sync so that a recurring resource whose etag never
+    /// changes -- an unending weekly meeting nobody has touched -- still
+    /// gets fresh occurrences materialised as today moves forward, rather
+    /// than stopping dead at whatever the window happened to reach the day
+    /// the event was created or last edited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expanded_through: Option<Date>,
 }
 
 impl AccountSyncCursor {
@@ -763,6 +784,28 @@ mod tests {
         });
         let cal: Calendar = serde_json::from_value(without_field).unwrap();
         assert!(cal.account_sync.is_empty());
+        assert!(cal.account_sync.recurring_hrefs.is_empty());
+        assert!(cal.account_sync.expanded_through.is_none());
+    }
+
+    #[test]
+    fn a_recurring_href_and_its_expanded_through_date_survive_a_json_round_trip() {
+        // What `accountcal::caldav::sync` writes for a recurring resource --
+        // see that module's "Re-expanding a recurring event as the window
+        // moves" doc -- has to come back exactly as it went in, or a later
+        // sync would forget which unchanged hrefs still need re-expanding.
+        let mut cal = Calendar::from_account(
+            AccountId::new(),
+            crate::account::Provider::ICloud,
+            AccountCalendarSource::CalDav,
+            "https://caldav.example.com/home/",
+            "Home",
+        );
+        cal.account_sync.etags.insert("/cal/standup.ics".to_string(), "etag-1".to_string());
+        cal.account_sync.recurring_hrefs.insert("/cal/standup.ics".to_string());
+        cal.account_sync.expanded_through = Some(jiff::civil::date(2026, 9, 14));
+        let round: Calendar = serde_json::from_slice(&serde_json::to_vec(&cal).unwrap()).unwrap();
+        assert_eq!(round, cal);
     }
 
     #[test]

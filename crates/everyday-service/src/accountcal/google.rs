@@ -16,6 +16,38 @@
 //! CalDAV's `sync-token`) is what makes a resync incremental; a `410 Gone`
 //! on it means "start over", handled by [`sync`] falling back to a bounded
 //! `timeMin`/`timeMax` list the same width as [`super::sync_window`].
+//!
+//! # A full resync has to compute its own deletions
+//!
+//! Google only ever reports a cancelled event (`status: "cancelled"`)
+//! inside an *incremental* page -- one fetched with `syncToken`. A plain,
+//! windowed `timeMin`/`timeMax` list, which is what both a first sync and
+//! the 410 fallback fall back to, never sets `showDeleted` and so never
+//! mentions a cancelled event at all: it simply is not in the list. Reading
+//! that silence as "nothing was deleted" is the bug this module used to
+//! have -- an event deleted while this vault's `syncToken` was stale would
+//! stay in the local store forever, because nothing ever told it to leave.
+//! [`sync`] closes that gap with [`super::missing_from_full_resync`]: after
+//! any windowed list, whatever this vault already had for the calendar
+//! inside that window that the fresh list did not re-mention is gone.
+//!
+//! # 403 is not always a bad credential
+//!
+//! Google spends the same status, 403, on two very different situations --
+//! see <https://developers.google.com/calendar/api/guides/errors>.
+//! `rateLimitExceeded`, `userRateLimitExceeded` and `quotaExceeded` mean
+//! "you are asking too fast", the same as a 429 everywhere else, and
+//! [`get_bytes`] retries those with a short backoff, honouring `Retry-After`
+//! when Google sends one, before giving up and asking the next scheduled
+//! poll to try again. Every other 403 reason (`accessNotConfigured`,
+//! `insufficientPermissions`, and the rest) means this account can reach
+//! Google fine but the calendar itself refused the request -- not a
+//! credential problem, so it must not move the account to `NeedsSignIn` the
+//! way a 401 does. Only a 401 -- the token itself rejected -- is
+//! [`codes::FORBIDDEN`] here; everything else a 403 can mean is
+//! [`codes::NETWORK`] or [`codes::RATE_LIMITED`], both of which `mod.rs`'s
+//! `sync` reads as an ordinary failure to record on the calendar, leaving
+//! the account alone.
 
 use std::sync::Arc;
 
@@ -27,14 +59,24 @@ use everyday_core::calendar::{
 };
 use everyday_core::id::CalendarId;
 use serde::Deserialize;
+use tokio::time::sleep;
 
 use super::tokens::{self, Credential, Resource};
-use super::{RemoteCalendar, deterministic_event_id, sync_window};
+use super::{
+    RemoteCalendar, deterministic_event_id, retry_after_delay, short_backoff, sync_window,
+};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
 use crate::service::{Service, blocking};
 
 const API: &str = "https://www.googleapis.com/calendar/v3";
+
+/// How many times one request retries a rate-limited 403 before [`sync`]
+/// gives up for this poll and lets the next one -- a minute or an hour away,
+/// per the calendar's own `refresh_minutes` -- try again. Generous enough
+/// that a brief burst clears inside one sync; small enough that a sustained
+/// limit does not hold up a background poll for minutes.
+const MAX_RATE_LIMIT_ATTEMPTS: u32 = 4;
 
 #[derive(Deserialize)]
 struct CalendarListResponse {
@@ -137,35 +179,58 @@ pub async fn sync(
     account: &Account,
     calendar: &Calendar,
 ) -> CommandResult<SyncReport> {
+    sync_with_base(svc, vault, account, calendar, API).await
+}
+
+/// [`sync`]'s own body, over `base` rather than the hardcoded [`API`] --
+/// split out so a test can point the whole conversation (events, and the
+/// diff a full resync now has to compute) at a mock server, the same way
+/// [`list_events`] already lets its own tests choose `base`.
+async fn sync_with_base(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account: &Account,
+    calendar: &Calendar,
+    base: &str,
+) -> CommandResult<SyncReport> {
     let CalendarOrigin::Account { remote_id, .. } = &calendar.origin else {
         return Err(CommandError::new(codes::INVALID, "not an account calendar"));
     };
     let token = bearer(svc, vault, account).await?;
     let encoded = urlencoding_light(remote_id);
 
-    let (events, next_token, full_resync) = match &calendar.account_sync.token {
+    let (events, next_token, full_resync_window) = match &calendar.account_sync.token {
         Some(sync_token) => {
-            match list_events(API, &encoded, &token, IncrementalOrFull::Incremental(sync_token))
+            match list_events(base, &encoded, &token, IncrementalOrFull::Incremental(sync_token))
                 .await
             {
-                Ok(pages) => (pages.0, pages.1, false),
+                Ok(pages) => (pages.0, pages.1, None),
                 Err(e) if e.code == codes::CONFLICT => {
                     // Google's 410 Gone: the token is too old. Start over with a
                     // bounded window, same as a first sync.
-                    let (from, to) = sync_window();
-                    let pages =
-                        list_events(API, &encoded, &token, IncrementalOrFull::Windowed(from, to))
-                            .await?;
-                    (pages.0, pages.1, true)
+                    let window = sync_window();
+                    let pages = list_events(
+                        base,
+                        &encoded,
+                        &token,
+                        IncrementalOrFull::Windowed(window.0, window.1),
+                    )
+                    .await?;
+                    (pages.0, pages.1, Some(window))
                 }
                 Err(e) => return Err(e),
             }
         }
         None => {
-            let (from, to) = sync_window();
-            let pages =
-                list_events(API, &encoded, &token, IncrementalOrFull::Windowed(from, to)).await?;
-            (pages.0, pages.1, true)
+            let window = sync_window();
+            let pages = list_events(
+                base,
+                &encoded,
+                &token,
+                IncrementalOrFull::Windowed(window.0, window.1),
+            )
+            .await?;
+            (pages.0, pages.1, Some(window))
         }
     };
 
@@ -183,11 +248,22 @@ pub async fn sync(
         }
     }
 
+    // A full, windowed list never mentions a cancelled event at all -- see
+    // the module doc's "A full resync has to compute its own deletions".
+    // Whatever this vault already had in the window that the fresh list did
+    // not just re-list is gone.
+    if let Some(window) = full_resync_window {
+        let kept: std::collections::HashSet<_> =
+            upsert.iter().map(|e| e.id).chain(remove_ids.iter().copied()).collect();
+        let stale = super::missing_from_full_resync(vault, calendar.id, window, &kept).await?;
+        remove_ids.extend(stale);
+    }
+
     let mut etags = calendar.account_sync.etags.clone();
-    if full_resync {
+    if full_resync_window.is_some() {
         etags.clear();
     }
-    let cursor = AccountSyncCursor { token: next_token, etags };
+    let cursor = AccountSyncCursor { token: next_token, etags, ..Default::default() };
 
     let vault = vault.clone();
     let id = calendar.id;
@@ -233,25 +309,8 @@ async fn list_events(
         if let Some(pt) = &page_token {
             url.push_str(&format!("&pageToken={pt}"));
         }
-        let response = http::client()?.get(&url).bearer_auth(token).send().await.map_err(|e| {
-            CommandError::new(codes::NETWORK, format!("could not reach Google Calendar: {e}"))
-        })?;
-        if response.status().as_u16() == 410 {
-            return Err(CommandError::new(codes::CONFLICT, "Google's sync token has expired"));
-        }
-        if response.status().as_u16() == 401 || response.status().as_u16() == 403 {
-            return Err(CommandError::new(
-                codes::FORBIDDEN,
-                "Google refused this account's credential",
-            ));
-        }
-        if !response.status().is_success() {
-            return Err(CommandError::new(
-                codes::NETWORK,
-                format!("Google Calendar answered {}", response.status()),
-            ));
-        }
-        let page: EventsResponse = response.json().await.map_err(|e| {
+        let bytes = get_bytes(&url, token).await?;
+        let page: EventsResponse = serde_json::from_slice(&bytes).map_err(|e| {
             CommandError::new(codes::NETWORK, format!("could not read Google's answer: {e}"))
         })?;
         items.extend(page.items);
@@ -345,23 +404,88 @@ async fn bearer(
 }
 
 async fn get_json<T: serde::de::DeserializeOwned>(url: &str, token: &str) -> CommandResult<T> {
-    let response = http::client()?.get(url).bearer_auth(token).send().await.map_err(|e| {
-        CommandError::new(codes::NETWORK, format!("could not reach Google Calendar: {e}"))
-    })?;
-    if response.status().as_u16() == 401 || response.status().as_u16() == 403 {
-        return Err(CommandError::new(
-            codes::FORBIDDEN,
-            "Google refused this account's credential",
-        ));
-    }
-    if !response.status().is_success() {
-        return Err(CommandError::new(
-            codes::NETWORK,
-            format!("Google Calendar answered {}", response.status()),
-        ));
-    }
-    response.json().await.map_err(|e| {
+    let bytes = get_bytes(url, token).await?;
+    serde_json::from_slice(&bytes).map_err(|e| {
         CommandError::new(codes::NETWORK, format!("could not read Google's answer: {e}"))
+    })
+}
+
+/// A GET with a bearer token, retrying a rate-limited 403 with a short
+/// backoff before giving up -- see the module doc's "403 is not always a bad
+/// credential".
+async fn get_bytes(url: &str, token: &str) -> CommandResult<Vec<u8>> {
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let response = http::client()?.get(url).bearer_auth(token).send().await.map_err(|e| {
+            CommandError::new(codes::NETWORK, format!("could not reach Google Calendar: {e}"))
+        })?;
+        let status = response.status().as_u16();
+        if status == 401 {
+            return Err(CommandError::new(
+                codes::FORBIDDEN,
+                "Google refused this account's credential",
+            ));
+        }
+        if status == 403 {
+            let retry_after = retry_after_delay(response.headers());
+            let body = response.bytes().await.unwrap_or_default();
+            if is_rate_limit_reason(&body) {
+                if attempt >= MAX_RATE_LIMIT_ATTEMPTS {
+                    return Err(CommandError::new(
+                        codes::RATE_LIMITED,
+                        "Google Calendar is rate-limiting this account; it will be tried again \
+                         on the next sync",
+                    ));
+                }
+                sleep(retry_after.unwrap_or_else(|| short_backoff(attempt))).await;
+                continue;
+            }
+            // A 403 for any other reason: this account's credential is
+            // fine, but this calendar specifically refused the request.
+            return Err(CommandError::new(
+                codes::NETWORK,
+                format!("Google Calendar refused this request: {}", String::from_utf8_lossy(&body)),
+            ));
+        }
+        if status == 410 {
+            return Err(CommandError::new(codes::CONFLICT, "Google's sync token has expired"));
+        }
+        if !response.status().is_success() {
+            return Err(CommandError::new(
+                codes::NETWORK,
+                format!("Google Calendar answered {status}"),
+            ));
+        }
+        return response.bytes().await.map(|b| b.to_vec()).map_err(|e| {
+            CommandError::new(codes::NETWORK, format!("could not read Google's answer: {e}"))
+        });
+    }
+}
+
+/// Does a Google error body name one of the three reasons that mean "you are
+/// asking too fast"? A body that does not parse, or names none of the three,
+/// reads as "no" -- safer to treat a reason this module does not recognise
+/// as an ordinary failure than to retry something that will never succeed.
+fn is_rate_limit_reason(body: &[u8]) -> bool {
+    #[derive(Default, Deserialize)]
+    struct Body {
+        #[serde(default)]
+        error: ErrorDetail,
+    }
+    #[derive(Default, Deserialize)]
+    struct ErrorDetail {
+        #[serde(default)]
+        errors: Vec<ErrorReason>,
+    }
+    #[derive(Deserialize)]
+    struct ErrorReason {
+        #[serde(default)]
+        reason: String,
+    }
+    let Ok(parsed) = serde_json::from_slice::<Body>(body) else { return false };
+    parsed.error.errors.iter().any(|e| {
+        matches!(e.reason.as_str(), "rateLimitExceeded" | "userRateLimitExceeded" | "quotaExceeded")
     })
 }
 
@@ -456,5 +580,242 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, codes::CONFLICT);
+    }
+
+    // ---- finding 1: a full resync after a 410 must compute its own
+    // deletions --------------------------------------------------------
+
+    /// A vault and a service around it, in a directory nobody has to clean
+    /// up -- the same shape `tests/support/vault.rs` builds for the
+    /// integration tests, reproduced here (rather than shared with it)
+    /// because that module is only reachable from `tests/*.rs`, not from a
+    /// unit test compiled into this crate itself.
+    fn test_vault() -> (Arc<Service>, Arc<Vault>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = everyday_core::VaultConfig {
+            name: "Test".into(),
+            backend: "sqlite".into(),
+            settings: Default::default(),
+            password: None,
+            kdf: everyday_core::crypto::KdfParams::insecure_fast(),
+            auto_lock_seconds: 900,
+            forget_key_seconds: 0,
+        };
+        let vault = everyday_vault::create(dir.path(), config).unwrap();
+        let svc = Arc::new(Service::new());
+        let vault = svc.set(vault);
+        (svc, vault, dir)
+    }
+
+    #[tokio::test]
+    async fn a_full_resync_after_a_410_removes_an_event_the_fresh_list_no_longer_names() {
+        use everyday_core::account::{Account, AccountSecret, AuthMethod, Provider};
+        use everyday_core::store::calendars::EventQuery;
+
+        let windowed_calls = std::sync::Arc::new(AtomicU32::new(0));
+        let calls_for_route = windowed_calls.clone();
+        // "Tomorrow", not a fixed date, so this test is not hostage to
+        // whenever it happens to run: `sync_window` reaches a year back and
+        // two years forward from today, and tomorrow is always inside that.
+        let start = (jiff::Timestamp::now() + jiff::SignedDuration::from_hours(24)).to_string();
+        let end = (jiff::Timestamp::now() + jiff::SignedDuration::from_hours(25)).to_string();
+
+        let app = axum::Router::new()
+            .route(
+                "/token",
+                axum::routing::post(|| async {
+                    Json(serde_json::json!({
+                        "access_token": "access-1",
+                        "token_type": "Bearer",
+                        "expires_in": 3600,
+                    }))
+                }),
+            )
+            .route(
+                "/calendars/cal-1/events",
+                get(move |Query(params): Query<HashMap<String, String>>| {
+                    let calls_for_route = calls_for_route.clone();
+                    let start = start.clone();
+                    let end = end.clone();
+                    async move {
+                        if params.contains_key("syncToken") {
+                            // The stored sync-token has gone stale.
+                            return axum::http::StatusCode::GONE.into_response();
+                        }
+                        let call = calls_for_route.fetch_add(1, Ordering::SeqCst);
+                        if call == 0 {
+                            // The first, genuine full sync: both events exist.
+                            Json(serde_json::json!({
+                                "items": [
+                                    {"id": "evt-a", "status": "confirmed", "summary": "Keeps",
+                                     "start": {"dateTime": start}, "end": {"dateTime": end}},
+                                    {"id": "evt-b", "status": "confirmed", "summary": "Deleted while stale",
+                                     "start": {"dateTime": start}, "end": {"dateTime": end}},
+                                ],
+                                "nextSyncToken": "sync-1",
+                            }))
+                            .into_response()
+                        } else {
+                            // The 410 fallback's own windowed list: evt-b is
+                            // simply absent -- exactly how a deletion looks
+                            // with no `syncToken` in play, and the shape
+                            // that used to be read as "nothing changed".
+                            Json(serde_json::json!({
+                                "items": [
+                                    {"id": "evt-a", "status": "confirmed", "summary": "Keeps",
+                                     "start": {"dateTime": start}, "end": {"dateTime": end}},
+                                ],
+                                "nextSyncToken": "sync-2",
+                            }))
+                            .into_response()
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+
+        let (svc, vault, _dir) = test_vault();
+        let mut account = Account::new(Provider::Google, "person@example.com");
+        account.services.calendar = true;
+        account.auth = AuthMethod::OAuth {
+            client_id: "test-client".into(),
+            auth_url: "https://example.test/auth".into(),
+            token_url: format!("{base}/token"),
+            scopes: vec!["https://www.googleapis.com/auth/calendar.readonly".into()],
+        };
+        vault.save_account(&account).unwrap();
+        vault
+            .save_account_secret(
+                account.id,
+                &AccountSecret { refresh_token: Some("refresh-1".into()), ..Default::default() },
+            )
+            .unwrap();
+
+        let calendar = Calendar::from_account(
+            account.id,
+            account.provider,
+            AccountCalendarSource::Google,
+            "cal-1",
+            "Work",
+        );
+        vault.save_calendar(&calendar).unwrap();
+
+        sync_with_base(&svc, &vault, &account, &calendar, &base).await.expect("first sync");
+        let after_first = vault
+            .events(&EventQuery { calendar_id: Some(calendar.id), ..Default::default() })
+            .unwrap();
+        assert_eq!(after_first.len(), 2, "both events land on a genuine first sync");
+
+        let calendar = vault.calendar(calendar.id).unwrap();
+        assert_eq!(
+            calendar.account_sync.token.as_deref(),
+            Some("sync-1"),
+            "the first sync's own token is what the second sync tries incrementally"
+        );
+
+        sync_with_base(&svc, &vault, &account, &calendar, &base)
+            .await
+            .expect("second sync, after the 410 fallback");
+        let after_second = vault
+            .events(&EventQuery { calendar_id: Some(calendar.id), ..Default::default() })
+            .unwrap();
+        assert_eq!(
+            after_second.len(),
+            1,
+            "evt-b must be gone once the fresh full list stopped naming it, even though \
+             Google never said it was cancelled"
+        );
+        assert_eq!(after_second[0].uid, "evt-a");
+    }
+
+    // ---- finding 2: 403 is not always a bad credential --------------------
+
+    fn google_error_body(reason: &str) -> serde_json::Value {
+        serde_json::json!({
+            "error": { "errors": [{ "domain": "usageLimits", "reason": reason }] }
+        })
+    }
+
+    /// A route that always answers 403 with `reason`, counting how many
+    /// times it was asked.
+    async fn mock_always_403(reason: &'static str) -> (String, std::sync::Arc<AtomicU32>) {
+        let calls = std::sync::Arc::new(AtomicU32::new(0));
+        let calls_for_route = calls.clone();
+        let app = axum::Router::new().route(
+            "/x",
+            get(move || {
+                calls_for_route.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    (
+                        axum::http::StatusCode::FORBIDDEN,
+                        [(axum::http::header::RETRY_AFTER, "0")],
+                        Json(google_error_body(reason)),
+                    )
+                        .into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        (format!("http://127.0.0.1:{port}/x"), calls)
+    }
+
+    #[tokio::test]
+    async fn a_rate_limited_403_is_retried_and_never_reported_as_forbidden() {
+        let (url, calls) = mock_always_403("rateLimitExceeded").await;
+        let err = get_bytes(&url, "tok").await.unwrap_err();
+        assert_eq!(
+            err.code,
+            codes::RATE_LIMITED,
+            "a rate limit must never be the credential-is-bad code, or the account would be \
+             wrongly marked needing sign-in"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            MAX_RATE_LIMIT_ATTEMPTS,
+            "it must have actually retried, honouring the mock's Retry-After: 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_403_for_any_other_reason_is_an_ordinary_failure_not_a_credential_one() {
+        let (url, calls) = mock_always_403("insufficientPermissions").await;
+        let err = get_bytes(&url, "tok").await.unwrap_err();
+        assert_eq!(
+            err.code,
+            codes::NETWORK,
+            "a calendar this account cannot read is not a bad credential"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "not a rate limit, so never retried");
+    }
+
+    #[tokio::test]
+    async fn a_401_is_still_reported_as_forbidden() {
+        let calls = std::sync::Arc::new(AtomicU32::new(0));
+        let calls_for_route = calls.clone();
+        let app = axum::Router::new().route(
+            "/x",
+            get(move || {
+                calls_for_route.fetch_add(1, Ordering::SeqCst);
+                async { axum::http::StatusCode::UNAUTHORIZED }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("http://127.0.0.1:{port}/x");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let err = get_bytes(&url, "tok").await.unwrap_err();
+        assert_eq!(err.code, codes::FORBIDDEN);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "a bad credential is never retried");
     }
 }
