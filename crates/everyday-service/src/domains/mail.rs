@@ -30,7 +30,9 @@ use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use everyday_core::id::{AccountId, DraftId, MailMessageId, MailboxId, ThreadId};
-use everyday_core::mail::{Draft, Mailbox, Message, Op, OpKind, Origin, Thread, undo_send_delay};
+use everyday_core::mail::{
+    Category, Draft, Mailbox, Message, Op, OpKind, Origin, Thread, undo_send_delay,
+};
 use everyday_core::store::mail::{ThreadFilter, ThreadPage};
 use everyday_mail::{compose, mime};
 use jiff::Timestamp;
@@ -371,6 +373,117 @@ async fn list_drafts(svc: Arc<Service>, _ctx: Ctx, args: DraftsQuery) -> Command
     blocking(move || Ok(vault.drafts(args.account)?)).await
 }
 
+// ---- categorisation --------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetThreadCategory {
+    pub threads: Vec<ThreadId>,
+    pub category: Category,
+}
+
+/// Set `category` on every thread named, and record it as a standing
+/// correction for each distinct sender among them — see
+/// `everyday_core::vault::mail::Vault::correct_mail_category` for what
+/// "record" actually does, including the sweep across that sender's other
+/// threads the plan asks for ("as a batch, to that sender's existing
+/// threads"). One correction per distinct `(account, sender)` pair among the
+/// given threads, derived from each thread's own last message — the plan's
+/// contract takes only a category, not a sender, so the sender a person
+/// meant is the one the thread they clicked on actually shows.
+async fn set_thread_category(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: SetThreadCategory,
+) -> CommandResult<()> {
+    let vault = svc.require()?;
+    blocking(move || {
+        let mut senders: std::collections::BTreeMap<AccountId, BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        for &thread_id in &args.threads {
+            let (thread, messages) = vault.thread(thread_id)?;
+            let Some(last) = messages.last() else { continue };
+            senders.entry(thread.account_id).or_default().insert(last.from.email.clone());
+        }
+        for (account_id, addresses) in senders {
+            for address in addresses {
+                vault.correct_mail_category(account_id, &address, args.category)?;
+            }
+        }
+        Ok(())
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecategorizeMail {
+    /// One account, or every mail-enabled account when omitted.
+    #[serde(default)]
+    pub account: Option<AccountId>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecategorizeResult {
+    /// How many messages' category actually changed.
+    pub changed: u32,
+}
+
+/// The one-off backfill: re-run the rules (and any correction already on
+/// file) over mail that was ingested before those rules, or that correction,
+/// existed. No `change:` on the command entry below — a backfill can touch
+/// thousands of threads across every mailbox, and naming every one of them
+/// on the wire would cost more than the refresh a person can ask for by hand
+/// is worth.
+async fn recategorize_mail(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: RecategorizeMail,
+) -> CommandResult<RecategorizeResult> {
+    let vault = svc.require()?;
+    let changed = blocking(move || {
+        let accounts = match args.account {
+            Some(id) => vec![vault.account(id)?],
+            None => vault.accounts()?,
+        };
+        let mut total = 0u32;
+        for account in accounts.into_iter().filter(|a| a.services.mail) {
+            total += vault.recategorize_mail(account.id)?;
+        }
+        Ok(total)
+    })
+    .await?;
+    Ok(RecategorizeResult { changed })
+}
+
+// ---- summaries --------------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummarizeThreadArgs {
+    pub id: ThreadId,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadSummary {
+    pub summary: String,
+}
+
+/// `summarize_thread`'s whole body is `everyday_service::mailai::summarize_thread`
+/// — the gate, the cache and the model call all live there, beside the other
+/// two model-assisted features, rather than here with the plain reads and
+/// writes this file is otherwise made of.
+async fn summarize_thread(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: SummarizeThreadArgs,
+) -> CommandResult<ThreadSummary> {
+    let summary = crate::mailai::summarize_thread(&svc, args.id).await?;
+    Ok(ThreadSummary { summary })
+}
+
 async fn list_mailboxes(
     svc: Arc<Service>,
     _ctx: Ctx,
@@ -568,5 +681,26 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: DraftsQuery, returns: "Draft[]",
         signature: &[("account", "AccountId", true)],
         run: list_drafts,
+    },
+    // ---- categorisation and summaries --------------------------------------
+    command! {
+        name: "set_thread_category", scope: Mail, effect: Write,
+        change: Thread/Updated,
+        ids: |a: &SetThreadCategory| a.threads.iter().map(|t| t.to_string()).collect(),
+        args: SetThreadCategory, returns: "void",
+        signature: &[("threads", "ThreadId[]", true), ("category", "MailCategory", true)],
+        run: set_thread_category,
+    },
+    command! {
+        name: "recategorize_mail", scope: Mail, effect: Write,
+        args: RecategorizeMail, returns: "RecategorizeResult",
+        signature: &[("account", "AccountId | null", false)],
+        run: recategorize_mail,
+    },
+    command! {
+        name: "summarize_thread", scope: Mail, effect: Read,
+        args: SummarizeThreadArgs, returns: "ThreadSummary",
+        signature: &[("id", "ThreadId", true)],
+        run: summarize_thread,
     },
 ];

@@ -356,6 +356,38 @@ impl AgentMailAccess {
     }
 }
 
+/// Which of the service-side, model-assisted mail features
+/// `docs/plans/mail.md`'s phase 7 adds are switched on for this account.
+///
+/// All three start `false` — the same "off is the state a new vault is in"
+/// rule [`crate::agent::AgentSettings::enabled`] follows, for the same
+/// reason: every one of these sends something about this account's mail to
+/// the configured model. Each is also gated on
+/// [`Account::assistant_provider_acknowledged`] naming that model's provider
+/// — see [`crate::mail::mail_ai_allowed`], the one function that checks
+/// both switches together, so a feature can never run because one of the two
+/// was left on from before.
+///
+/// Rules-based categorisation — headers, known senders, a person's own
+/// corrections — is not here: it sends nothing anywhere and runs whether or
+/// not any of these three is on. This struct exists only for the parts that
+/// reach a model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailAi {
+    /// Batch threads the rules could only call `Other` or low-confidence to
+    /// the quick model, sender/subject/snippet only, never a full body.
+    pub categorize: bool,
+    /// A background pass that drafts a reply, in this account's own voice,
+    /// for an inbound thread in Important that looks like it wants one.
+    /// Never sends — see `everyday_service::mailai::AUTO_DRAFT_CONVERSATION`,
+    /// the fixed [`crate::mail::Origin::Assistant`] conversation name every
+    /// draft it writes is stamped with.
+    pub auto_draft: bool,
+    /// `summarize_thread`, on request, through the configured model.
+    pub summaries: bool,
+}
+
 /// One of the six things a caller can ask to do to an account's mail.
 ///
 /// Named after the plan's own grouping: `edit` covers `update_draft`,
@@ -403,6 +435,12 @@ pub struct Account {
     /// migrate later.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assistant_provider_acknowledged: Option<String>,
+    /// The service-side, model-assisted mail features switched on for this
+    /// account — categorisation, auto-drafts, summaries. `#[serde(default)]`
+    /// and every field `false` on an account minted before phase 7, per
+    /// [`MailAi`]'s own docs: nothing here runs quietly on an upgrade.
+    #[serde(default)]
+    pub mail_ai: MailAi,
     /// Largest attachment fetched during sync, if the person has capped it.
     /// `None` is no cap, which is also what a fresh account starts with --
     /// per the plan, attachments are kept in full by default.
@@ -450,6 +488,7 @@ impl Account {
             assistant_access: AgentMailAccess::default(),
             mcp_access: AgentMailAccess::default(),
             assistant_provider_acknowledged: None,
+            mail_ai: MailAi::default(),
             attachment_cap_bytes: None,
             status: AccountStatus::NeedsSignIn { reason: "not yet signed in".into() },
             last_synced_at: None,

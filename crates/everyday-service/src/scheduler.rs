@@ -119,6 +119,14 @@ pub async fn tick(service: &Arc<Service>) {
         tracing::warn!(error = %e, "could not release due snoozes");
     }
 
+    // The two model-assisted mail features that run unasked, on their own
+    // schedule rather than a tool call's -- see `crate::mailai`'s module
+    // docs for why neither is a tool, and why each keeps its own per-minute
+    // budget rather than sharing `check_mail_rate_limit`'s. Both are no-ops,
+    // cheaply, on every account that has not turned them on.
+    crate::mailai::categorize_tick(service).await;
+    crate::mailai::auto_draft_tick(service).await;
+
     if !vault.supports_routines() {
         return;
     }

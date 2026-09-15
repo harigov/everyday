@@ -21,8 +21,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, ThreadId};
-use everyday_core::mail::{Address, Message, MessageFlags, Thread};
-use everyday_core::store::mail::{IngestMessage, message_aad, thread_aad};
+use everyday_core::mail::{
+    Address, Category, CategoryRules, Message, MessageFlags, Thread,
+    categorize::{self, CategorizeInput},
+};
+use everyday_core::store::mail::{IngestMessage, MailStore, message_aad, thread_aad};
 
 use crate::conn::{Sql, SqlExt, Value};
 use crate::record::upsert_stmt;
@@ -184,6 +187,26 @@ pub(super) fn set_message_labels(
     };
     let thread_id = message.thread_id;
     message.labels = labels;
+    let sealed = store.seal(&message_aad(id), &message)?;
+    let (sql, args) = upsert_stmt(&message, sealed);
+    tx.execute(&sql, &args)?;
+    recompute_thread(store, tx.as_mut(), thread_id, &[])?;
+    tx.commit()
+}
+
+/// See [`everyday_core::store::mail::MailStore::set_message_category`].
+pub(super) fn set_message_category(
+    store: &SqlStore,
+    id: MailMessageId,
+    category: Category,
+) -> Result<()> {
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    let Some(mut message) = message_by_id(store, tx.as_mut(), id)? else {
+        return Ok(());
+    };
+    let thread_id = message.thread_id;
+    message.category = Some(category);
     let sealed = store.seal(&message_aad(id), &message)?;
     let (sql, args) = upsert_stmt(&message, sealed);
     tx.execute(&sql, &args)?;
@@ -426,6 +449,17 @@ pub(super) fn delete_mailbox(store: &SqlStore, id: MailboxId) -> Result<()> {
 /// decrypt of anything: the caller already holds the one message that
 /// justified minting the thread. An `update_flags` or `remove_uids` call,
 /// which touches only a thread that must already exist, passes none.
+///
+/// # `thread.category`
+///
+/// Always overwritten here, from whichever message in the thread now has
+/// the latest `date_us` -- a thread's category is never its own decision,
+/// only a mirror of its newest message's, the same way `last_date` already
+/// is. That is what makes `set_thread_category`'s correction reach the
+/// thread at all: it (through [`crate::mail::CategoryRules`] and
+/// [`MailStore::recategorize`](everyday_core::store::mail::MailStore::recategorize))
+/// only ever sets a *message's* category, and this is the one place that
+/// answer becomes what a thread list actually shows.
 pub(super) fn recompute_thread(
     store: &SqlStore,
     tx: &mut dyn Sql,
@@ -434,12 +468,19 @@ pub(super) fn recompute_thread(
 ) -> Result<()> {
     let agg = tx.query_opt(
         "SELECT COUNT(*), COALESCE(SUM(CASE WHEN flags & 1 = 0 THEN 1 ELSE 0 END), 0), \
-         COALESCE(MAX(date_us), 0) FROM mail_messages WHERE thread_id = ?1",
+         COALESCE(MAX(date_us), 0), \
+         (SELECT category FROM mail_messages WHERE thread_id = ?1 ORDER BY date_us DESC LIMIT 1) \
+         FROM mail_messages WHERE thread_id = ?1",
         &vals![thread_id.to_string()],
     )?;
-    let (count, unread, last_date_us) = match &agg {
-        Some(row) => (row.i64(0)?, row.i64(1)?, row.i64(2)?),
-        None => (0, 0, 0),
+    let (count, unread, last_date_us, category) = match &agg {
+        Some(row) => (
+            row.i64(0)?,
+            row.i64(1)?,
+            row.i64(2)?,
+            row.opt_text(3)?.and_then(|c| Category::parse(&c)),
+        ),
+        None => (0, 0, 0, None),
     };
 
     if count == 0 {
@@ -466,6 +507,7 @@ pub(super) fn recompute_thread(
     thread.last_date = from_us(last_date_us);
     thread.message_count = count as u32;
     thread.unread_count = unread as u32;
+    thread.category = category;
 
     let sealed = store.seal(&thread_aad(thread_id), &thread)?;
     let (sql, args) = upsert_stmt(&thread, sealed);
@@ -600,4 +642,69 @@ fn recompute_thread_mailboxes(tx: &mut dyn Sql, thread_id: ThreadId) -> Result<(
         )?;
     }
     Ok(())
+}
+
+/// See [`everyday_core::store::mail::MailStore::recategorize`].
+///
+/// A full decrypt of every message `account` has, on the accepted terms that
+/// function's own docs give -- the same trade
+/// [`everyday_core::store::mail::MailStore::message_by_message_id_header`]
+/// already makes for a full-account scan. Batched at [`INGEST_BATCH_ROWS`]
+/// rows per transaction, the same size `ingest` itself batches at, so a
+/// large mailbox's backfill never holds the vault's single writer for the
+/// length of the whole account.
+pub(super) fn recategorize(
+    store: &SqlStore,
+    account: AccountId,
+    rules: &CategoryRules,
+) -> Result<u32> {
+    // `MailStore::contacts` is a trait method, brought into scope by the
+    // `use` above -- the contact book is vault-wide, so it is read once
+    // rather than once per batch.
+    let contacts = store.contacts()?;
+    let rows = store.read().records(
+        "SELECT id, data FROM mail_messages WHERE account_id = ?1",
+        &vals![account.to_string()],
+    )?;
+
+    let mut touched: BTreeSet<ThreadId> = BTreeSet::new();
+    let mut changed = 0u32;
+    for batch in rows.chunks(INGEST_BATCH_ROWS) {
+        let mut conn = store.write();
+        let mut tx = conn.begin()?;
+        for (id, data) in batch {
+            let mid: MailMessageId =
+                id.parse().map_err(|e: <MailMessageId as std::str::FromStr>::Err| {
+                    Error::Invalid(e.to_string())
+                })?;
+            let mut message: Message = store.unseal(&message_aad(mid), data)?;
+            let input = CategorizeInput {
+                from: &message.from.email,
+                list_id: None,
+                list_unsubscribe: None,
+                precedence: None,
+                auto_submitted: None,
+                gmail_labels: &message.labels,
+                ever_written_to: contacts.has_sent_to(&message.from.email),
+            };
+            let category = categorize::categorize(&input, rules);
+            if message.category != Some(category) {
+                message.category = Some(category);
+                let sealed = store.seal(&message_aad(mid), &message)?;
+                let (sql, args) = upsert_stmt(&message, sealed);
+                tx.execute(&sql, &args)?;
+                touched.insert(message.thread_id);
+                changed += 1;
+            }
+        }
+        tx.commit()?;
+    }
+
+    for thread_id in touched {
+        let mut conn = store.write();
+        let mut tx = conn.begin()?;
+        recompute_thread(store, tx.as_mut(), thread_id, &[])?;
+        tx.commit()?;
+    }
+    Ok(changed)
 }

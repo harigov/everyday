@@ -33,6 +33,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use everyday_core::id::{AccountId, MailboxId};
+use everyday_core::mail::categorize::{self, CategorizeInput};
 use everyday_core::mail::{Body, MailboxRole, Message, PartRef};
 use everyday_core::packstore::PackStore;
 use everyday_core::store::mail::IngestMessage;
@@ -250,6 +251,12 @@ pub async fn sync_headers<S: MailSession>(
     let mut done = 0u64;
     ctx.statuses.set_phase(ctx.account_id, Phase::Headers, done, total);
 
+    // The rules-based half of the split inbox -- see
+    // `everyday_core::mail::categorize`. Loaded once per mailbox rather than
+    // once per message: it is one small sealed row, and every message this
+    // call ingests is categorised against the same corrections.
+    let category_rules = ctx.vault.category_rules(ctx.account_id).unwrap_or_default();
+
     for batch in discovery::newest_first_chunks(new_uids, HEADER_BATCH_SIZE) {
         let uid_set: UidSet = batch.iter().copied().collect();
         let mut headers = session.headers(&uid_set).await?;
@@ -258,7 +265,7 @@ pub async fn sync_headers<S: MailSession>(
 
         let mut ingest_batch = Vec::with_capacity(headers.len());
         for header in &headers {
-            let resolved = match ingest::resolve_header(
+            let mut resolved = match ingest::resolve_header(
                 ctx.vault,
                 ctx.account_id,
                 header,
@@ -275,6 +282,11 @@ pub async fn sync_headers<S: MailSession>(
                     continue;
                 }
             };
+            // The categorisation hook -- the whole of `passes.rs`'s part in
+            // the split inbox. See `categorize_new_message`'s own docs for
+            // what it does and, as importantly, what it deliberately leaves
+            // alone.
+            categorize_new_message(&mut resolved, &category_rules, ctx.contacts.as_deref());
             ingest_batch.push(IngestMessage {
                 message: resolved.message.clone(),
                 mailbox: mailbox.row.id,
@@ -351,6 +363,46 @@ pub async fn sync_headers<S: MailSession>(
     }
 
     Ok(())
+}
+
+/// The whole of `passes.rs`'s part in the split inbox: fill in `resolved`'s
+/// category if, and only if, it does not have one yet.
+///
+/// "Does not have one yet" is deliberately the entire condition. A message
+/// arriving for the first time has `category: None` (see
+/// [`ingest::resolve_header`]), so this is exactly the fresh-message case
+/// the plan's own words ask for -- "hook it into ingest so every new thread
+/// gets a category." A message that has *already* been categorised --
+/// re-ingested here because a second Gmail label named it, or resolved from
+/// [`ThreadIndex`]'s own memory after a `UIDVALIDITY` reset -- keeps
+/// whatever it already had, which is what stops this from quietly
+/// overwriting a model's answer or a person's own correction (both of which
+/// write through [`everyday_core::Vault::set_mail_message_category`] and
+/// [`everyday_core::Vault::correct_mail_category`] respectively, never
+/// through this path) the moment the same message is seen under a second
+/// mailbox.
+///
+/// Always on, and sends nothing anywhere -- see
+/// `everyday_core::mail::categorize`'s own module docs for the whole of the
+/// rules this runs.
+fn categorize_new_message(
+    resolved: &mut ingest::HeaderIngest,
+    rules: &everyday_core::mail::CategoryRules,
+    contacts: Option<&crate::mailsync::contacts::ContactIndex>,
+) {
+    if resolved.message.category.is_some() {
+        return;
+    }
+    let input = CategorizeInput {
+        from: &resolved.message.from.email,
+        list_id: resolved.list_id.as_deref(),
+        list_unsubscribe: resolved.list_unsubscribe.as_deref(),
+        precedence: resolved.precedence.as_deref(),
+        auto_submitted: resolved.auto_submitted.as_deref(),
+        gmail_labels: &resolved.message.labels,
+        ever_written_to: contacts.is_some_and(|c| c.has_sent_to(&resolved.message.from.email)),
+    };
+    resolved.message.category = Some(categorize::categorize(&input, rules));
 }
 
 /// Diff and apply Gmail's own label set for `uids` in `mailbox`, which must

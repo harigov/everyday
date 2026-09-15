@@ -527,6 +527,13 @@ mod tests {
             // drawn from; neither touches a vault record a `Kind` names.
             "sync_account",
             "rebuild_mail_index",
+            // The one-off categorisation backfill: like `run_import`, it can
+            // touch every thread of an account (or every account), and a
+            // single `change:` would name one thread and leave the rest of
+            // the list stale. Unlike `run_import`, there is no small set of
+            // `Kind`s to enumerate instead -- see its own doc comment in
+            // `domains::mail`.
+            "recategorize_mail",
         ];
         for command in catalog() {
             if command.effect.is_write() && !INVISIBLE.contains(&command.name) {

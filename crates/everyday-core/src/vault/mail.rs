@@ -19,8 +19,9 @@ use super::session::{Domain, pick_domain};
 use crate::error::{Error, Result};
 use crate::id::{AccountId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use crate::mail::{
-    Body, Category, ContactBook, Draft, DraftState, Mailbox, MailboxRole, Message, MessageFlags,
-    Op, OpKind, OpState, OpTarget, Origin, RemoteImageSettings, Thread, apply_optimistic,
+    Body, Category, CategoryRules, ContactBook, Draft, DraftState, Mailbox, MailboxRole, Message,
+    MessageFlags, Op, OpKind, OpState, OpTarget, Origin, RemoteImageSettings, Thread,
+    apply_optimistic,
 };
 use crate::packstore::PackStore;
 use crate::store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
@@ -272,6 +273,55 @@ impl Vault {
     pub fn save_mail_contacts(&self, book: &ContactBook) -> Result<()> {
         self.writable()?;
         self.with_mail(|m| m.put_contacts(book))
+    }
+
+    // ---- categorisation -----------------------------------------------------
+
+    pub fn category_rules(&self, account: AccountId) -> Result<CategoryRules> {
+        self.with_mail(|m| m.category_rules(account))
+    }
+
+    pub fn save_category_rules(&self, account: AccountId, rules: &CategoryRules) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.put_category_rules(account, rules))
+    }
+
+    /// Record a sender-address correction for `account` and sweep every
+    /// message of `account`'s through it — see
+    /// [`crate::store::mail::MailStore::recategorize`] for what "sweep"
+    /// costs and why it is accepted here. Returns how many messages
+    /// changed, for a caller that wants to say so.
+    pub fn correct_mail_category(
+        &self,
+        account: AccountId,
+        sender: &str,
+        category: Category,
+    ) -> Result<u32> {
+        self.writable()?;
+        self.with_mail(|m| {
+            let mut rules = m.category_rules(account)?;
+            rules.set_sender(sender, category);
+            m.put_category_rules(account, &rules)?;
+            m.recategorize(account, &rules)
+        })
+    }
+
+    /// Re-run categorisation over `account`'s mail from scratch, against its
+    /// current corrections — the one-off `recategorize_mail` backfill.
+    pub fn recategorize_mail(&self, account: AccountId) -> Result<u32> {
+        self.writable()?;
+        self.with_mail(|m| {
+            let rules = m.category_rules(account)?;
+            m.recategorize(account, &rules)
+        })
+    }
+
+    /// Set one message's category directly, from a model's one-off answer —
+    /// see [`crate::store::mail::MailStore::set_message_category`] for why
+    /// this is deliberately not [`Vault::correct_mail_category`].
+    pub fn set_mail_message_category(&self, id: MailMessageId, category: Category) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.set_message_category(id, category))
     }
 
     // ---- releasing a snooze -----------------------------------------------

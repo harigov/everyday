@@ -65,13 +65,7 @@ impl Vault {
         if !settings.enabled {
             return Err(Error::Invalid("the assistant is switched off".into()));
         }
-        settings.validate()?;
-        let key = self.with_agent(|a| a.secret())?;
-        if key.is_none() && settings.provider_config.needs_key() {
-            return Err(Error::Invalid(
-                "no API key is set for the assistant; add one in Settings".into(),
-            ));
-        }
+        let (settings, key) = self.raw_llm_credentials(settings)?;
         Ok((settings, key))
     }
 
@@ -94,6 +88,31 @@ impl Vault {
         if !settings.quick_jobs.allows(job) {
             return Err(Error::Invalid(format!("{job} is switched off")));
         }
+        self.raw_llm_credentials(settings)
+    }
+
+    /// The settings and the key, validated, with no policy check of its own
+    /// — the common tail [`Vault::agent_credentials`] and
+    /// [`Vault::quick_credentials`] both run once they have decided their own
+    /// question is answered `yes`.
+    ///
+    /// The third door onto this pair: `everyday_service::mailai`'s
+    /// categorisation, summary and auto-draft features are gated by
+    /// [`crate::mail::mail_ai_allowed`] against the *account* they are about
+    /// to touch, not by [`AgentSettings::enabled`] or
+    /// [`crate::quick::QuickPolicy`] — mail's own switch, per
+    /// `docs/plans/mail.md`'s phase 7. `mailai` calls this directly, after
+    /// its own gate has already said yes, rather than being made to satisfy
+    /// either of the other two doors' unrelated conditions.
+    pub fn mail_ai_credentials(&self) -> Result<(AgentSettings, Option<String>)> {
+        let settings = self.agent_settings()?;
+        self.raw_llm_credentials(settings)
+    }
+
+    fn raw_llm_credentials(
+        &self,
+        settings: AgentSettings,
+    ) -> Result<(AgentSettings, Option<String>)> {
         settings.validate()?;
         let key = self.with_agent(|a| a.secret())?;
         if key.is_none() && settings.provider_config.needs_key() {

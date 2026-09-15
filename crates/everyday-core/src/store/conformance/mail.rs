@@ -35,6 +35,7 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     merge_threads_migrates_messages_and_deletes_the_others(store);
     pending_bodies_finds_only_unfetched_messages_newest_first(store);
     account_delete_cascades_every_mail_row(store);
+    category_rules_and_recategorize_round_trip(store);
 
     eprintln!("--- mail suite passed ---");
 }
@@ -575,6 +576,63 @@ fn account_delete_cascades_every_mail_row(store: &dyn JournalStore) {
         "the op must not survive"
     );
     assert!(m.attachment_blob_refs().unwrap().is_empty());
+}
+
+/// Phase 7's split inbox: [`MailStore::category_rules`] starts empty,
+/// [`MailStore::set_message_category`] writes through to the thread it
+/// recomputes, and [`MailStore::recategorize`] both applies a correction to
+/// a message the rules alone got wrong and leaves alone one it already had
+/// right.
+fn category_rules_and_recategorize_round_trip(store: &dyn JournalStore) {
+    use crate::mail::{Category, CategoryRules};
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    assert_eq!(
+        m.category_rules(account).unwrap(),
+        CategoryRules::default(),
+        "no correction saved yet"
+    );
+
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+    let thread_id = ThreadId::new();
+    let mut msg =
+        message(account, thread_id, "Weekly digest", "weekly@example.com", Timestamp::now());
+    msg.category = Some(Category::Other);
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.category, Some(Category::Other), "a thread mirrors its message's category");
+
+    // A model's one-off answer: `set_message_category`, no correction saved.
+    m.set_message_category(msg.id, Category::Newsletter).unwrap();
+    assert_eq!(m.get_message(msg.id).unwrap().category, Some(Category::Newsletter));
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.category, Some(Category::Newsletter), "the thread follows the message");
+    assert_eq!(
+        m.category_rules(account).unwrap(),
+        CategoryRules::default(),
+        "a model's answer is not a standing correction"
+    );
+
+    // A person's correction: saved, and swept over the account's mail.
+    let mut rules = m.category_rules(account).unwrap();
+    rules.set_sender("weekly@example.com", Category::Important);
+    m.put_category_rules(account, &rules).unwrap();
+    let changed = m.recategorize(account, &rules).unwrap();
+    assert_eq!(changed, 1, "the one message from the corrected sender");
+    assert_eq!(m.get_message(msg.id).unwrap().category, Some(Category::Important));
+    assert_eq!(
+        m.category_rules(account).unwrap(),
+        rules,
+        "the saved correction round-trips through its sealed row"
+    );
+
+    // Recategorizing again is idempotent: nothing left to change.
+    assert_eq!(m.recategorize(account, &rules).unwrap(), 0);
+
+    cleanup_account(store, account);
 }
 
 /// Not part of [`run_mail_suite`], for the reason
