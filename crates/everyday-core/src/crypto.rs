@@ -114,16 +114,38 @@ pub trait Cipher: Send + Sync + std::fmt::Debug {
     /// Open a sealed payload. Fails if `aad` differs from sealing time or if
     /// the ciphertext was modified.
     fn open(&self, aad: &[u8], sealed: &[u8]) -> Result<Vec<u8>>;
+
+    /// A fresh key, deterministically derived from this cipher's own key
+    /// material and `label`, for a subsystem that wants its own cipher
+    /// rather than reusing the vault's.
+    ///
+    /// Blob storage and media reuse the vault's cipher directly -- an
+    /// attachment is already scoped by the entry that references it, so a
+    /// second key buys nothing. Mail's pack store and search index are
+    /// different: they are new storage this plan adds, sealed under a key
+    /// that never otherwise leaves the vault's own records, and a mistake in
+    /// either one's framing (a nonce reused, an AAD miscomputed) should not
+    /// be able to say anything about the key that seals a journal entry.
+    /// Domain separation by label, via BLAKE3's own key-derivation mode
+    /// (`blake3::derive_key`), is what keeps every subkey independent of
+    /// every other one and of the parent key, without a second secret to
+    /// manage: the label is public, the derivation is one-way, and the same
+    /// vault key with a different label can never be mistaken for this one.
+    fn derive_subkey(&self, label: &str) -> SecretKey;
 }
 
 /// XChaCha20-Poly1305. Wire format is `nonce (24) || ciphertext || tag (16)`.
 pub struct AeadCipher {
+    /// Kept alongside the constructed cipher, not merely fed into it, so
+    /// that [`Cipher::derive_subkey`] has key material to derive from --
+    /// `XChaCha20Poly1305` itself exposes no way to read the key back out.
+    key: SecretKey,
     inner: XChaCha20Poly1305,
 }
 
 impl AeadCipher {
     pub fn new(key: &SecretKey) -> Self {
-        Self { inner: XChaCha20Poly1305::new(&Key::from(*key.expose())) }
+        Self { key: key.clone(), inner: XChaCha20Poly1305::new(&Key::from(*key.expose())) }
     }
 }
 
@@ -159,6 +181,10 @@ impl Cipher for AeadCipher {
         let nonce: &XNonce = nonce.try_into().map_err(|_| Error::Decrypt)?;
         self.inner.decrypt(nonce, Payload { msg: ct, aad }).map_err(|_| Error::Decrypt)
     }
+
+    fn derive_subkey(&self, label: &str) -> SecretKey {
+        SecretKey::from_bytes(blake3::derive_key(label, self.key.expose()))
+    }
 }
 
 /// Pass-through "cipher" for unencrypted vaults.
@@ -184,6 +210,15 @@ impl Cipher for NullCipher {
 
     fn open(&self, _aad: &[u8], sealed: &[u8]) -> Result<Vec<u8>> {
         Ok(sealed.to_vec())
+    }
+
+    /// There is no real key to derive from, so this hands back a value
+    /// derived from `label` alone -- deterministic, and distinct per label,
+    /// which is all a caller that also treats this cipher as
+    /// non-encrypting can rely on. An unencrypted vault's mail pack store
+    /// and search index are exactly as unencrypted as everything else in it.
+    fn derive_subkey(&self, label: &str) -> SecretKey {
+        SecretKey::from_bytes(blake3::derive_key(label, &[0u8; KEY_LEN]))
     }
 }
 
@@ -354,6 +389,39 @@ mod tests {
 
         let wrong = derive_key("battery staple", &salt, p).unwrap();
         assert!(matches!(unwrap_key(&wrong, &wrapped), Err(Error::BadPassword)));
+    }
+
+    #[test]
+    fn subkeys_are_stable_per_label_and_distinct_across_labels_and_parents() {
+        let a = AeadCipher::new(&key());
+        let b = AeadCipher::new(&SecretKey::from_bytes([9u8; KEY_LEN]));
+
+        let packs_1 = a.derive_subkey("everyday.mail.packstore.v1");
+        let packs_2 = a.derive_subkey("everyday.mail.packstore.v1");
+        assert_eq!(packs_1.expose(), packs_2.expose(), "deriving twice must agree");
+
+        let index = a.derive_subkey("everyday.mail.searchindex.v1");
+        assert_ne!(packs_1.expose(), index.expose(), "labels must not collide");
+        assert_ne!(
+            packs_1.expose(),
+            key().expose(),
+            "a subkey must not equal the key it was derived from"
+        );
+
+        let other_packs = b.derive_subkey("everyday.mail.packstore.v1");
+        assert_ne!(
+            packs_1.expose(),
+            other_packs.expose(),
+            "two vaults must not share a subkey even under the same label"
+        );
+    }
+
+    #[test]
+    fn a_null_ciphers_subkeys_are_still_distinct_per_label() {
+        let n = NullCipher;
+        let a = n.derive_subkey("a");
+        let b = n.derive_subkey("b");
+        assert_ne!(a.expose(), b.expose());
     }
 
     #[test]
