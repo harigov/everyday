@@ -515,6 +515,12 @@ mod tests {
             // accounts domain, and that command names its own `change:`.
             "begin_oauth_sign_in",
             "cancel_oauth_sign_in",
+            // Mail sync. `sync_account` only starts or nudges a background
+            // task -- see `crate::mailsync::wiring` -- and `rebuild_mail_index`
+            // rewrites the search index, a derived structure no list is
+            // drawn from; neither touches a vault record a `Kind` names.
+            "sync_account",
+            "rebuild_mail_index",
         ];
         for command in catalog() {
             if command.effect.is_write() && !INVISIBLE.contains(&command.name) {

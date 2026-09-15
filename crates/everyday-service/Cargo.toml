@@ -15,6 +15,14 @@ everyday-transfer.workspace = true
 # this crate's own service state and its own `CommandError` vocabulary, but
 # never re-implements the token dance itself. See `signin.rs`'s module doc.
 everyday-mail.workspace = true
+# The sealed tantivy index mail sync commits to as bodies arrive, and
+# `sync_status`/`search_mail` read through -- see `mailsync/wiring.rs`.
+everyday-mailindex.workspace = true
+# A Gmail thread id (`X-GM-THRID`) is hashed into a deterministic `ThreadId`
+# -- see `mailsync::ingest` -- the same domain-separation technique
+# `everyday-core` already uses for a pack's directory and a proxied image's
+# token, rather than a database lookup this crate has no query for.
+blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 jiff.workspace = true
@@ -48,3 +56,9 @@ tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "test-uti
 # through `everyday-server` and `everyday-mail`.
 axum = "0.8"
 url = "2"
+# `tests/mailsync_dovecot.rs` connects to a throwaway Dovecot with a
+# self-signed certificate, the same way `everyday-mail`'s own
+# `imap_dovecot.rs` does -- see that feature's own doc for why it is a
+# dev-only, default-off one.
+everyday-mail = { workspace = true, features = ["insecure-test-tls"] }
+everyday-vault = { workspace = true }

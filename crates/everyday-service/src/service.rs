@@ -122,6 +122,13 @@ pub struct Service {
     /// See `mailview::remote_images_allowed`, which reads this before the
     /// standing allow-list.
     remote_image_once: RwLock<HashSet<everyday_core::id::MailMessageId>>,
+    /// Mail's pack store and search index, and each account's sync
+    /// progress -- open and populated for exactly as long as the vault they
+    /// belong to is unlocked. See `mailsync::wiring` for how they are
+    /// opened (with a key derived from the vault's own, never reused) and
+    /// [`Service::open_mail`]/[`Service::close_mail`] for the two moments
+    /// that open and drop them.
+    mail: RwLock<Option<crate::mailsync::wiring::MailState>>,
 }
 
 impl Default for Service {
@@ -147,6 +154,7 @@ impl Service {
             sign_ins: Arc::new(SignIns::new()),
             token_cache: Arc::new(TokenCache::new()),
             remote_image_once: RwLock::new(HashSet::new()),
+            mail: RwLock::new(None),
         }
     }
 
@@ -159,6 +167,54 @@ impl Service {
     /// This session's cached access tokens -- see `token_cache.rs`.
     pub fn token_cache(&self) -> Arc<TokenCache> {
         self.token_cache.clone()
+    }
+
+    /// Mail's pack store, if the vault is unlocked and it opened cleanly.
+    /// What `everyday-app`'s protocol routes and the outbox's attachment
+    /// paths reach raw messages through -- see `mailsync::wiring`.
+    pub fn packs(&self) -> Option<Arc<dyn everyday_core::packstore::PackStore>> {
+        self.mail.read().unwrap().as_ref().map(|m| m.packs.clone())
+    }
+
+    /// Mail's search index, if the vault is unlocked and it opened cleanly.
+    /// What `search_mail` and the interface's search box both reach through
+    /// -- see `mailsearch`'s module docs on why the two must never disagree.
+    pub fn mail_index(&self) -> Option<Arc<dyn everyday_core::MailSearch>> {
+        self.mail.read().unwrap().as_ref().map(|m| m.index.clone())
+    }
+
+    /// Every account's sync progress, if the vault is unlocked. `None` only
+    /// when no vault has ever been unlocked this session; once opened, the
+    /// registry itself answers an account nobody has synced yet with
+    /// [`crate::mailsync::status::Phase::Idle`] rather than being absent.
+    pub fn mail_statuses(&self) -> Option<crate::mailsync::status::StatusRegistry> {
+        self.mail.read().unwrap().as_ref().map(|m| m.statuses.clone())
+    }
+
+    /// Replace what [`Service::packs`], [`Service::mail_index`] and
+    /// [`Service::mail_statuses`] answer. `mailsync::wiring`'s own door into
+    /// this session state -- see it for why the field itself stays private.
+    pub(crate) fn set_mail_state(&self, state: Option<crate::mailsync::wiring::MailState>) {
+        *self.mail.write().unwrap() = state;
+    }
+
+    /// Open mail's pack store and search index against `vault`, and -- if
+    /// this process holds the vault's write claim -- register a supervised
+    /// sync task for every account with `services.mail` on. See
+    /// `mailsync::wiring::open`.
+    ///
+    /// Idempotent: opening what is already open (an unlock racing a second
+    /// call, or `Service::set` catching a vault that was already unlocked)
+    /// replaces the state with an equivalent fresh copy rather than erroring,
+    /// the same tolerance [`crate::supervisor::Supervisor::ensure`] has for
+    /// asking twice.
+    pub(crate) fn open_mail(self: &Arc<Self>, vault: &Arc<everyday_core::Vault>) {
+        crate::mailsync::wiring::open(self, vault);
+    }
+
+    /// Drop mail's pack store and search index. See `mailsync::wiring::close`.
+    pub(crate) fn close_mail(&self) {
+        crate::mailsync::wiring::close(self);
     }
 
     /// Send what this service has to say somewhere.
@@ -223,6 +279,11 @@ impl Service {
         self.sign_ins.clear();
         self.token_cache.clear().await;
         self.supervisor().stop_all().await;
+        // After the tasks that were writing through it have stopped, never
+        // before: a pack store or index pulled out from under a sync task
+        // still mid-batch is a bug this ordering exists to make impossible
+        // rather than a race to get right twice.
+        self.close_mail();
         self.events().lock_state(true);
     }
 
@@ -235,17 +296,31 @@ impl Service {
     /// which is the point: this is where mail's account tasks will start
     /// once there is an account to start one for, and nothing about that
     /// day needs this method to change.
-    pub fn unlocked(&self) {
+    pub fn unlocked(self: &Arc<Self>) {
+        let Some(vault) = self.get() else { return };
+        // Before the tasks that write through it start, mirroring
+        // `locked`'s own ordering: an account's sync task registered by
+        // `open_mail` reaches `Service::packs`/`Service::mail_index` on its
+        // very first poll, and both must already answer `Some`.
+        self.open_mail(&vault);
         self.supervisor().restart_registered();
         self.events().lock_state(false);
     }
 
     // ---- the vault ------------------------------------------------------
 
-    pub fn set(&self, vault: Vault) -> Arc<Vault> {
+    pub fn set(self: &Arc<Self>, vault: Vault) -> Arc<Vault> {
         self.remember(vault.path());
         let vault = Arc::new(vault);
         *self.vault.write().unwrap() = Some(vault.clone());
+        // An unencrypted vault -- and one an OS keychain unlocks moments
+        // after this returns, see `everyday-app`'s `bootstrap` -- is usable
+        // the instant it is set, before anything calls `Service::unlocked`
+        // for it. Mail's storage, and the sync tasks that write through it,
+        // must start exactly as promptly as everything else does.
+        if vault.is_unlocked() {
+            self.open_mail(&vault);
+        }
         vault
     }
 
@@ -270,6 +345,7 @@ impl Service {
         self.claimed_runs.write().unwrap().clear();
         self.running_routine.write().unwrap().take();
         self.remote_image_once.write().unwrap().clear();
+        self.close_mail();
         let previous = self.vault.write().unwrap().take();
         if let Some(vault) = &previous {
             // Drop the key and the decrypted index now rather than whenever the
