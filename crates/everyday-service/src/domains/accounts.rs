@@ -172,7 +172,7 @@ async fn save_account(svc: Arc<Service>, _ctx: Ctx, args: SaveAccount) -> Comman
 /// Delete the account: stop its sync task first (a task still writing
 /// through `Vault::delete_account`'s own cascade partway through it is
 /// exactly the ordering `Service::close`'s own docs rule out), delete its
-/// local pack files, then the vault's own rows.
+/// local pack files and search index documents, then the vault's own rows.
 async fn delete_account(svc: Arc<Service>, _ctx: Ctx, args: AccountRef) -> CommandResult<()> {
     crate::mailsync::wiring::stop_account_task(&svc, args.id).await;
     if let Some(packs) = svc.packs() {
@@ -180,6 +180,13 @@ async fn delete_account(svc: Arc<Service>, _ctx: Ctx, args: AccountRef) -> Comma
         // files behind, not a wrong answer to any command -- the vault's
         // own rows, deleted next, are what every reader actually trusts.
         let _ = packs.delete_account(&args.id.to_string());
+    }
+    if let Some(index) = svc.mail_index() {
+        // Same best-effort reasoning as the pack store above: a search hit
+        // surviving a failed delete is a stale result, not a wrong answer
+        // any command trusts the index over the vault's own rows for.
+        let _ = index.delete_account(&args.id.to_string());
+        let _ = index.commit();
     }
     svc.on_vault(move |vault| vault.delete_account(args.id)).await
 }

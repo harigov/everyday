@@ -782,6 +782,65 @@ async fn a_flag_change_a_deletion_and_a_new_message_apply_incrementally() {
     assert!(!super::ingest::is_pending(&new_message.pack), "its body should have been fetched too");
 }
 
+/// Regression for "removed messages are never marked dead in the pack
+/// store, or removed from search": a message the server no longer has must
+/// stop being searchable, and its pack frame must actually be reclaimable
+/// -- not merely gone from the vault's own `mail_messages` row, which
+/// `remove_uids` already got right before this fix.
+#[tokio::test]
+async fn a_deleted_messages_pack_frame_is_marked_dead_and_dropped_from_search() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    let uid;
+    {
+        let mut s = server.lock().unwrap();
+        uid = s.append(
+            "INBOX",
+            raw_message(
+                "reap@example.com",
+                None,
+                "a@example.com",
+                "Reap me",
+                "01 Jan 2024 10:00:00 +0000",
+                "marmaladewords",
+            ),
+            flags_seen(),
+            None,
+        );
+    }
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+
+    let message = env
+        .vault
+        .message_by_message_id_header(env.account_id, "reap@example.com")
+        .unwrap()
+        .expect("stored");
+    assert!(!super::ingest::is_pending(&message.pack), "its body must have been fetched first");
+    let pack_before = message.pack.clone();
+
+    let hits_before = env.index.search(&MailQuery::parse("marmaladewords"), 10, None).unwrap();
+    assert!(!hits_before.hits.is_empty(), "indexed before removal");
+
+    {
+        let mut s = server.lock().unwrap();
+        s.remove("INBOX", uid);
+    }
+    env.sync(&mut session).await;
+
+    let hits_after = env.index.search(&MailQuery::parse("marmaladewords"), 10, None).unwrap();
+    assert!(hits_after.hits.is_empty(), "a removed message must no longer be searchable");
+
+    // `compact` reclaims a pack once a third of it is dead -- trivially
+    // true for a pack holding only this one, now-dead, message.
+    let remap = env.packs.compact(&env.account_id.to_string()).unwrap();
+    assert!(remap.is_empty(), "nothing live was left to remap");
+    assert!(
+        env.packs.read(&pack_before).is_err(),
+        "the dead frame's pack must actually have been reclaimed"
+    );
+}
+
 #[tokio::test]
 async fn a_uidvalidity_reset_rematches_without_refetching_raw() {
     let env = TestEnv::new();

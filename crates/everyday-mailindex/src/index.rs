@@ -216,6 +216,17 @@ impl MailSearch for MailIndex {
         Ok(())
     }
 
+    fn delete_account(&self, account: &str) -> Result<()> {
+        let opened = self.require_opened()?;
+        let writer = opened.writer.lock().unwrap_or_else(|e| e.into_inner());
+        // `account` is a `STRING` field -- see `schema::build` -- so the
+        // whole lowercased value is one term, the same one `build_document`
+        // indexed it as, and this single `delete_term` removes every
+        // document that account ever had in one call.
+        writer.delete_term(Term::from_field_text(self.fields.account, &account.to_lowercase()));
+        Ok(())
+    }
+
     fn commit(&self) -> Result<()> {
         let opened = self.require_opened()?;
         let mut writer = opened.writer.lock().unwrap_or_else(|e| e.into_inner());

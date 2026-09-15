@@ -90,7 +90,7 @@ impl AccountStore for SqlStore {
         // `delete_account` -- there is no such method; `AccountStore` is the
         // one place this trait promises the whole cascade happens, per its
         // own module docs, and every mail table names `account_id` in the
-        // clear, which is what lets each of the eight statements below run
+        // clear, which is what lets each of the statements below run
         // as a plain indexed delete rather than a join back into `accounts`.
         // Deleted inside-out -- bodies and `message_mailboxes` before the
         // messages they point at, `thread_mailboxes` before the threads --
@@ -126,6 +126,16 @@ impl AccountStore for SqlStore {
         )?;
         tx.execute(
             "DELETE FROM thread_mailboxes WHERE thread_id IN
+                 (SELECT id FROM threads WHERE account_id = ?1)",
+            &account,
+        )?;
+        // The "hidden ahead of the server confirming it" marker an
+        // in-flight archive/trash/move left behind -- see
+        // `everyday-store-sql::mail::write::hide_thread_from_mailbox`. Gone
+        // with the threads it was keyed by; nothing will ever revert an op
+        // belonging to an account that no longer exists.
+        tx.execute(
+            "DELETE FROM hidden_thread_mailboxes WHERE thread_id IN
                  (SELECT id FROM threads WHERE account_id = ?1)",
             &account,
         )?;

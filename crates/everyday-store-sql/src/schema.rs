@@ -811,6 +811,13 @@ fn v8(d: Dialect) -> Vec<String> {
 /// domain arrives once rather than a fresh version per phase. `messages` was
 /// not free to reuse -- version 6 already named the assistant's conversation
 /// turns that -- so the mail table is `mail_messages` throughout.
+/// `hidden_thread_mailboxes`, a ninth, joined later still additively: a
+/// marker table, not a mapping of its own, that says which
+/// `(thread, mailbox)` pairs an optimistic archive/trash/move has asked to
+/// have hidden from that mailbox's list ahead of the server confirming it
+/// -- see `everyday-store-sql::mail::write`'s `hide_thread_from_mailbox` for
+/// why this exists apart from `message_mailboxes`, which stays exactly as
+/// it was until the op actually executes.
 ///
 /// The sync cursors the plan's schema section lists separately
 /// (`uidvalidity`, the highest uid, `highestmodseq`) live on `mailboxes`
@@ -976,6 +983,18 @@ fn v9(d: Dialect) -> Vec<String> {
         "CREATE INDEX IF NOT EXISTS thread_mailboxes_by_mailbox \
          ON thread_mailboxes (mailbox_id, last_date_us DESC, thread_id)"
             .into(),
+        // What `hide_thread_from_mailbox` marks before it deletes a
+        // `thread_mailboxes` row, and what `restore_thread_mailboxes`
+        // clears when it recomputes that row back -- see that function's
+        // own docs for the whole design. Not a snapshot of anything: the
+        // durable mapping it stands apart from, `message_mailboxes`, is
+        // never touched by the hide at all.
+        "CREATE TABLE IF NOT EXISTS hidden_thread_mailboxes (
+             thread_id   TEXT NOT NULL,
+             mailbox_id  TEXT NOT NULL,
+             PRIMARY KEY (thread_id, mailbox_id)
+         )"
+        .into(),
         format!(
             "CREATE TABLE IF NOT EXISTS bodies (
                  message_id  TEXT PRIMARY KEY NOT NULL,

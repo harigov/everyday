@@ -20,11 +20,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use everyday_core::error::{Error, Result};
-use everyday_core::id::{AccountId, MailMessageId, MailboxId, ThreadId};
+use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
 use everyday_core::mail::{
     Address, Category, CategoryRules, Invite, Message, MessageFlags, Thread,
     categorize::{self, CategorizeInput},
 };
+use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::{IngestMessage, MailStore, message_aad, thread_aad};
 
 use crate::conn::{Sql, SqlExt, Value};
@@ -39,6 +40,20 @@ use crate::{SqlStore, from_us, placeholders, vals};
 /// does, so the row count alone already bounds how long one batch holds the
 /// writer.
 const INGEST_BATCH_ROWS: usize = 500;
+
+/// The number of `?` placeholders any `IN (...)` this module builds allows
+/// itself, whatever list it is built from.
+///
+/// SQLite refuses a prepared statement with more than 32,766 bound
+/// parameters; Postgres, 65,535. A mailbox -- or a single removal call --
+/// can hold tens of thousands of messages (`docs/plans/mail.md`'s own speed
+/// budget names a hundred thousand), which is well past the smaller of the
+/// two limits if every uid, message id or mailbox id in the list became its
+/// own placeholder in one statement. 500 leaves a wide margin under either
+/// limit while keeping the round-trip count for even the largest mailbox in
+/// the low hundreds, not the tens of thousands a one-row-at-a-time loop
+/// would need.
+const IN_CHUNK: usize = 500;
 
 /// See [`everyday_core::store::mail::MailStore::ingest`].
 pub(super) fn ingest(
@@ -57,11 +72,28 @@ pub(super) fn ingest(
             let sealed = store.seal(&message_aad(im.message.id), &im.message)?;
             let (sql, args) = upsert_stmt(&im.message, sealed);
             tx.execute(&sql, &args)?;
+            let already_filed = tx
+                .query_opt(
+                    "SELECT 1 FROM message_mailboxes WHERE message_id = ?1 AND mailbox_id = ?2",
+                    &vals![im.message.id.to_string(), im.mailbox.to_string()],
+                )?
+                .is_some();
             tx.execute(
                 "INSERT INTO message_mailboxes (message_id, mailbox_id, uid) VALUES (?1, ?2, ?3)
                  ON CONFLICT (message_id, mailbox_id) DO UPDATE SET uid = ?3",
                 &vals![im.message.id.to_string(), im.mailbox.to_string(), i64::from(im.uid)],
             )?;
+            if !already_filed {
+                // Mail newly arriving in a mailbox a thread was hidden from --
+                // a reply landing in the Inbox of an archived conversation --
+                // brings the thread back, as every mail client does. The
+                // hide was about the messages that were there when it was
+                // asked for, not about the conversation for ever.
+                tx.execute(
+                    "DELETE FROM hidden_thread_mailboxes WHERE thread_id = ?1 AND mailbox_id = ?2",
+                    &vals![im.message.thread_id.to_string(), im.mailbox.to_string()],
+                )?;
+            }
             touched.entry(im.message.thread_id).or_default().push(&im.message);
         }
         for (thread_id, hints) in &touched {
@@ -236,6 +268,32 @@ pub(super) fn set_message_category(
 }
 
 /// See [`everyday_core::store::mail::MailStore::hide_thread_from_mailbox`].
+///
+/// Deletes `thread`'s row from `mailbox`'s own `thread_mailboxes` list, as
+/// the very first version of this function did, but also records a marker
+/// in `hidden_thread_mailboxes` naming the pair -- the fix for "archiving a
+/// thread doesn't survive a flag change". [`message_mailboxes`] is
+/// deliberately left untouched: it is what the outbox executor's own
+/// `Lookups` resolves an `Archive`, `Trash` or `Move` op against to find
+/// which `(mailbox, uid)` to actually tell the server about (see
+/// `everyday_service::outbox::VaultLookups` and
+/// `everyday_mail::outbox::archive`), so deleting it here -- before the op
+/// has even reached a connection -- would leave the op with nothing to act
+/// on. The marker is what [`recompute_thread_mailboxes`] now consults
+/// before it would otherwise rebuild the very row this call just deleted:
+/// every flag or label write ends there, which is exactly what used to
+/// undo an archive the moment the next star or mark-read ran. Gmail's own
+/// "archive" -- dropping the `\Inbox` label's membership -- becomes durably
+/// true only once the op executes; until then this is the client's honest
+/// picture of what it has *asked for*, kept apart from `message_mailboxes`,
+/// which stays the client's honest picture of what the server has actually
+/// confirmed. When the sync engine later observes the real server-side
+/// move, its own `remove_uids`/`ingest` calls update `message_mailboxes`
+/// for real -- see [`remove_uids_tx`] -- and this marker is left stale but
+/// harmless: with the row it was suppressing already gone for good, there
+/// is nothing left for [`recompute_thread_mailboxes`] to need suppressing.
+/// A thread with no row for `mailbox` is a no-op past the marker insert,
+/// which is itself idempotent.
 pub(super) fn hide_thread_from_mailbox(
     store: &SqlStore,
     thread: ThreadId,
@@ -243,22 +301,34 @@ pub(super) fn hide_thread_from_mailbox(
 ) -> Result<()> {
     let mut conn = store.write();
     let mut tx = conn.begin()?;
+    let (thread_s, mailbox_s) = (thread.to_string(), mailbox.to_string());
+    tx.execute(
+        "INSERT INTO hidden_thread_mailboxes (thread_id, mailbox_id) VALUES (?1, ?2)
+         ON CONFLICT (thread_id, mailbox_id) DO NOTHING",
+        &vals![thread_s.clone(), mailbox_s.clone()],
+    )?;
     tx.execute(
         "DELETE FROM thread_mailboxes WHERE thread_id = ?1 AND mailbox_id = ?2",
-        &vals![thread.to_string(), mailbox.to_string()],
+        &vals![thread_s, mailbox_s],
     )?;
     tx.commit()
 }
 
 /// See [`everyday_core::store::mail::MailStore::restore_thread_mailboxes`].
 ///
-/// Just [`recompute_thread_mailboxes`] in its own transaction:
-/// [`hide_thread_from_mailbox`] never touched `message_mailboxes`, so
-/// recomputing from it reconstructs exactly the row that was hidden, with
-/// no undo snapshot to have kept anywhere.
+/// The exact inverse of [`hide_thread_from_mailbox`]: every marker it left
+/// in `hidden_thread_mailboxes` for `thread` is cleared, and
+/// [`recompute_thread_mailboxes`] rebuilds `thread_mailboxes` from
+/// `message_mailboxes` -- which [`hide_thread_from_mailbox`] never touched
+/// in the first place, so this reconstructs exactly the row that call hid,
+/// uid and all, with no snapshot to have kept anywhere.
 pub(super) fn restore_thread_mailboxes(store: &SqlStore, thread: ThreadId) -> Result<()> {
     let mut conn = store.write();
     let mut tx = conn.begin()?;
+    tx.execute(
+        "DELETE FROM hidden_thread_mailboxes WHERE thread_id = ?1",
+        &vals![thread.to_string()],
+    )?;
     recompute_thread_mailboxes(tx.as_mut(), thread)?;
     tx.commit()
 }
@@ -334,72 +404,152 @@ pub(super) fn merge_threads(store: &SqlStore, keep: ThreadId, others: &[ThreadId
 }
 
 /// See [`everyday_core::store::mail::MailStore::remove_uids`].
-pub(super) fn remove_uids(store: &SqlStore, mailbox: MailboxId, uids: &[u32]) -> Result<()> {
+pub(super) fn remove_uids(
+    store: &SqlStore,
+    mailbox: MailboxId,
+    uids: &[u32],
+) -> Result<Vec<(MailMessageId, PackRef)>> {
     if uids.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let mut conn = store.write();
     let mut tx = conn.begin()?;
-    remove_uids_tx(store, tx.as_mut(), mailbox, uids)?;
-    tx.commit()
+    let removed = remove_uids_tx(store, tx.as_mut(), mailbox, uids)?;
+    tx.commit()?;
+    Ok(removed)
 }
 
 /// The shared body of [`remove_uids`], [`reset_mailbox`] and
 /// [`delete_mailbox`]: drop every named `(mailbox, uid)` membership, delete
 /// any message that no mailbox names any more (body included), and
 /// recompute every thread touched.
+///
+/// Every `IN (...)` this builds is chunked to [`IN_CHUNK`] items at a time
+/// -- `uids` alone can be tens of thousands long (a mailbox holding that
+/// many messages, or `delete_mailbox` handing this every uid it ever
+/// tracked), and one placeholder per item past either backend's own limit
+/// is exactly what used to make this fail; see [`IN_CHUNK`]'s own docs.
+///
+/// Returns every message that became genuinely dead -- no mailbox names it
+/// any more -- paired with the pack address it was stored under, read back
+/// before the row naming it is deleted (afterwards, nothing else remembers
+/// it). A message still filed under a *different* mailbox (a Gmail label
+/// the removal did not touch) is not dead, and is not in the result: see
+/// [`everyday_core::store::mail::MailStore::remove_uids`]'s own docs for why
+/// only "no mailbox left at all" counts.
 fn remove_uids_tx(
     store: &SqlStore,
     tx: &mut dyn Sql,
     mailbox: MailboxId,
     uids: &[u32],
-) -> Result<()> {
+) -> Result<Vec<(MailMessageId, PackRef)>> {
     if uids.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
-    let holes = placeholders(2, uids.len());
-    let mut args = vec![Value::Text(mailbox.to_string())];
-    args.extend(uids.iter().map(|u| Value::Int(i64::from(*u))));
+    let mailbox_s = mailbox.to_string();
 
-    let touched: Vec<(String, String)> = tx
-        .query(
+    // Every `(message_id, thread_id)` pair a removed uid named, gathered
+    // chunk by chunk so the two statements below never bind more than
+    // `IN_CHUNK` uids at once.
+    let mut touched: Vec<(String, String)> = Vec::with_capacity(uids.len());
+    for chunk in uids.chunks(IN_CHUNK) {
+        let holes = placeholders(2, chunk.len());
+        let mut args = vec![Value::Text(mailbox_s.clone())];
+        args.extend(chunk.iter().map(|u| Value::Int(i64::from(*u))));
+
+        let rows = tx.query(
             &format!(
                 "SELECT mm.message_id, m.thread_id FROM message_mailboxes mm
                  JOIN mail_messages m ON m.id = mm.message_id
                  WHERE mm.mailbox_id = ?1 AND mm.uid IN ({holes})"
             ),
             &args,
-        )?
-        .into_iter()
-        .map(|r| Ok((r.text(0)?, r.text(1)?)))
-        .collect::<Result<_>>()?;
+        )?;
+        for row in rows {
+            touched.push((row.text(0)?, row.text(1)?));
+        }
+        tx.execute(
+            &format!("DELETE FROM message_mailboxes WHERE mailbox_id = ?1 AND uid IN ({holes})"),
+            &args,
+        )?;
+    }
+    if touched.is_empty() {
+        return Ok(Vec::new());
+    }
 
-    tx.execute(
-        &format!("DELETE FROM message_mailboxes WHERE mailbox_id = ?1 AND uid IN ({holes})"),
-        &args,
-    )?;
+    // A message stays alive as long as *any* mailbox still names it -- one
+    // Gmail label removed while another still holds the same physical
+    // message is not what "dead" means here. Batch the check, again in
+    // chunks, rather than one `COUNT(*)` round trip per touched message:
+    // the common case is a mailbox holding tens of thousands of messages
+    // that share no other mailbox at all, and that case must not cost tens
+    // of thousands of round trips just because it used to cost one
+    // over-wide `IN (...)` instead.
+    let touched_ids: Vec<String> = touched.iter().map(|(id, _)| id.clone()).collect();
+    let mut still_has_a_mailbox: BTreeSet<String> = BTreeSet::new();
+    for chunk in touched_ids.chunks(IN_CHUNK) {
+        let holes = placeholders(1, chunk.len());
+        let args: Vec<Value> = chunk.iter().cloned().map(Value::Text).collect();
+        let rows = tx.query(
+            &format!(
+                "SELECT DISTINCT message_id FROM message_mailboxes WHERE message_id IN ({holes})"
+            ),
+            &args,
+        )?;
+        for row in rows {
+            still_has_a_mailbox.insert(row.text(0)?);
+        }
+    }
 
     let mut orphan_threads: BTreeSet<ThreadId> = BTreeSet::new();
+    let mut orphan_ids: Vec<String> = Vec::new();
     for (message_id, thread_id) in &touched {
-        let remaining = tx.scalar_i64(
-            "SELECT COUNT(*) FROM message_mailboxes WHERE message_id = ?1",
-            &vals![message_id.clone()],
-        )?;
-        if remaining == 0 {
-            // No mailbox holds this message any more: it, and its body, are
-            // gone -- an `EXPUNGE`d message, or the last Gmail label
-            // removed.
-            tx.execute("DELETE FROM bodies WHERE message_id = ?1", &vals![message_id.clone()])?;
-            tx.execute("DELETE FROM mail_messages WHERE id = ?1", &vals![message_id.clone()])?;
-        }
         if let Ok(tid) = thread_id.parse::<ThreadId>() {
             orphan_threads.insert(tid);
         }
+        if !still_has_a_mailbox.contains(message_id) {
+            orphan_ids.push(message_id.clone());
+        }
     }
+
+    // Read each dead message's pack address before deleting its row --
+    // `mail_messages` is the only place that address lives, so this is the
+    // last moment it can be read at all.
+    let mut removed = Vec::with_capacity(orphan_ids.len());
+    for chunk in orphan_ids.chunks(IN_CHUNK) {
+        let holes = placeholders(1, chunk.len());
+        let args: Vec<Value> = chunk.iter().cloned().map(Value::Text).collect();
+        let rows = tx.query(
+            &format!(
+                "SELECT id, account_id, pack_id, pack_offset, pack_len FROM mail_messages \
+                 WHERE id IN ({holes})"
+            ),
+            &args,
+        )?;
+        for row in rows {
+            let id: MailMessageId =
+                row.text(0)?.parse().map_err(|e: <MailMessageId as std::str::FromStr>::Err| {
+                    Error::Invalid(e.to_string())
+                })?;
+            let account = row.text(1)?;
+            let pack: PackId = row
+                .text(2)?
+                .parse()
+                .map_err(|e: <PackId as std::str::FromStr>::Err| Error::Invalid(e.to_string()))?;
+            let offset = row.i64(3)? as u64;
+            let len = row.i64(4)? as u32;
+            removed.push((id, PackRef { account, pack, offset, len }));
+        }
+        // No mailbox holds this message any more: it, and its body, are
+        // gone -- an `EXPUNGE`d message, or the last Gmail label removed.
+        tx.execute(&format!("DELETE FROM bodies WHERE message_id IN ({holes})"), &args)?;
+        tx.execute(&format!("DELETE FROM mail_messages WHERE id IN ({holes})"), &args)?;
+    }
+
     for thread_id in orphan_threads {
         recompute_thread(store, tx, thread_id, &[])?;
     }
-    Ok(())
+    Ok(removed)
 }
 
 /// See [`everyday_core::store::mail::MailStore::reset_mailbox`].
@@ -444,7 +594,17 @@ pub(super) fn reset_mailbox(store: &SqlStore, mailbox: MailboxId) -> Result<()> 
 }
 
 /// See [`everyday_core::store::mail::MailStore::delete_mailbox`].
-pub(super) fn delete_mailbox(store: &SqlStore, id: MailboxId) -> Result<()> {
+///
+/// The `uid` scan below is a plain `WHERE mailbox_id = ?1`, not an
+/// `IN (...)` -- reading every uid a mailbox holds never binds more than
+/// one parameter, however many rows come back, so [`IN_CHUNK`] has nothing
+/// to do here. [`remove_uids_tx`], which this hands the whole list to, is
+/// what chunks the uids themselves once it builds its own `IN (...)`
+/// clauses over them.
+pub(super) fn delete_mailbox(
+    store: &SqlStore,
+    id: MailboxId,
+) -> Result<Vec<(MailMessageId, PackRef)>> {
     let mut conn = store.write();
     let mut tx = conn.begin()?;
     let uids: Vec<u32> = tx
@@ -452,10 +612,11 @@ pub(super) fn delete_mailbox(store: &SqlStore, id: MailboxId) -> Result<()> {
         .into_iter()
         .map(|r| Ok(r.i64(0)? as u32))
         .collect::<Result<_>>()?;
-    remove_uids_tx(store, tx.as_mut(), id, &uids)?;
+    let removed = remove_uids_tx(store, tx.as_mut(), id, &uids)?;
     tx.execute("DELETE FROM thread_mailboxes WHERE mailbox_id = ?1", &vals![id.to_string()])?;
     tx.execute("DELETE FROM mailboxes WHERE id = ?1", &vals![id.to_string()])?;
-    tx.commit()
+    tx.commit()?;
+    Ok(removed)
 }
 
 /// Recompute [`Thread`] `thread_id`'s own aggregates and every
@@ -626,12 +787,33 @@ fn merge_participants(participants: &mut Vec<Address>, hints: &[&Message]) {
 /// mailbox that no longer holds one -- the per-mailbox half of
 /// [`recompute_thread`].
 fn recompute_thread_mailboxes(tx: &mut dyn Sql, thread_id: ThreadId) -> Result<()> {
+    // A marker whose mailbox no longer holds any of the thread's messages has
+    // done its job: the server-side move landed and sync removed the
+    // membership. Left in place it would hide the thread from that mailbox
+    // for ever, including from mail that arrives there later.
+    tx.execute(
+        "DELETE FROM hidden_thread_mailboxes WHERE thread_id = ?1 AND mailbox_id NOT IN ( \
+           SELECT mm.mailbox_id FROM message_mailboxes mm \
+           JOIN mail_messages m ON m.id = mm.message_id WHERE m.thread_id = ?2 \
+         )",
+        &vals![thread_id.to_string(), thread_id.to_string()],
+    )?;
+    // The `NOT IN` sub-select is what keeps this from rebuilding a row
+    // `hide_thread_from_mailbox` just deleted on purpose:
+    // `message_mailboxes` still names the mailbox (the op has not reached a
+    // server yet, so it must), but `hidden_thread_mailboxes` says the
+    // person -- or the assistant, or a routine -- already asked to have it
+    // hidden. See that function's own docs for the whole design.
     let rows = tx.query(
         "SELECT mm.mailbox_id, COALESCE(SUM(CASE WHEN m.flags & 1 = 0 THEN 1 ELSE 0 END), 0), \
          COALESCE(MAX(m.date_us), 0) \
          FROM message_mailboxes mm JOIN mail_messages m ON m.id = mm.message_id \
-         WHERE m.thread_id = ?1 GROUP BY mm.mailbox_id",
-        &vals![thread_id.to_string()],
+         WHERE m.thread_id = ?1 \
+           AND mm.mailbox_id NOT IN ( \
+             SELECT mailbox_id FROM hidden_thread_mailboxes WHERE thread_id = ?2 \
+           ) \
+         GROUP BY mm.mailbox_id",
+        &vals![thread_id.to_string(), thread_id.to_string()],
     )?;
     let mut live = Vec::with_capacity(rows.len());
     for row in &rows {
@@ -652,6 +834,15 @@ fn recompute_thread_mailboxes(tx: &mut dyn Sql, thread_id: ThreadId) -> Result<(
             &vals![thread_id.to_string()],
         )?;
     } else {
+        // Not chunked to `IN_CHUNK`, unlike every other `IN (...)` this
+        // module builds: `live` is one row per *mailbox* a single thread's
+        // messages are currently filed under, which even a message under
+        // every Gmail label anyone has ever created stays orders of
+        // magnitude under either backend's parameter limit. It also could
+        // not be chunked correctly if it ever grew that large -- a `NOT IN`
+        // does not decompose across several statements the way an `IN`
+        // does, since each chunk would delete everything the *other*
+        // chunks were about to keep.
         let holes = placeholders(2, live.len());
         let mut args = vec![Value::Text(thread_id.to_string())];
         args.extend(live.into_iter().map(Value::Text));

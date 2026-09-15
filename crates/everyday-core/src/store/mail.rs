@@ -46,6 +46,7 @@ use crate::mail::{
     Body, Category, CategoryRules, ContactBook, Draft, Invite, Mailbox, Message, MessageFlags, Op,
     RemoteImageSettings, Thread,
 };
+use crate::packstore::PackRef;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -121,7 +122,13 @@ pub trait MailStore: Send + Sync {
     /// touches. Messages that are members of another mailbox too --
     /// Gmail's All Mail, most often -- survive; a message with no mailbox
     /// left at all is deleted along with its body.
-    fn delete_mailbox(&self, id: MailboxId) -> Result<()>;
+    ///
+    /// Returns every message this deletion made genuinely dead -- no
+    /// mailbox names it any more -- paired with the [`PackRef`] it was
+    /// stored under, on the same terms [`MailStore::remove_uids`] does: the
+    /// caller is expected to tell the pack store and the search index to
+    /// forget each one.
+    fn delete_mailbox(&self, id: MailboxId) -> Result<Vec<(MailMessageId, PackRef)>>;
 
     // ---- bulk header ingest ------------------------------------------------
 
@@ -158,7 +165,21 @@ pub trait MailStore: Send + Sync {
     /// thread and every `thread_mailboxes` row each touched message
     /// belonged to; a message left with no mailbox at all is deleted, body
     /// and all. `uids` empty is a no-op.
-    fn remove_uids(&self, mailbox: MailboxId, uids: &[u32]) -> Result<()>;
+    ///
+    /// Returns every message that removal made genuinely dead -- deleted
+    /// because no mailbox named it any more -- paired with the [`PackRef`]
+    /// it was stored under. A message still filed under a *different*
+    /// mailbox (one Gmail label removed while another still holds the same
+    /// physical message) is not dead and is not in the result. What the
+    /// caller does with it is not this trait's business -- see
+    /// `everyday_service::mailsync::passes` for the sync engine's own
+    /// removal path, which is what actually tells the pack store to mark
+    /// each one dead and the search index to forget it.
+    fn remove_uids(
+        &self,
+        mailbox: MailboxId,
+        uids: &[u32],
+    ) -> Result<Vec<(MailMessageId, PackRef)>>;
 
     // ---- the inbox query ----------------------------------------------------
 
@@ -400,17 +421,28 @@ pub trait MailStore: Send + Sync {
 
     /// Hide `thread` from `mailbox`'s own list -- the optimistic half of
     /// [`crate::mail::OpKind::Archive`], [`crate::mail::OpKind::Trash`] and
-    /// [`crate::mail::OpKind::Move`]: a `thread_mailboxes` row removed, with
-    /// `message_mailboxes` -- the durable mapping the sync engine trusts --
-    /// left exactly as it was, so this is reversible for free by
-    /// [`MailStore::restore_thread_mailboxes`] rather than needing its own
-    /// undo snapshot. A thread with no row for `mailbox` is a no-op.
+    /// [`crate::mail::OpKind::Move`]: the `thread_mailboxes` row for
+    /// `(thread, mailbox)` is deleted, and the pair is durably marked
+    /// hidden so a later flag or label write's recomputation (every one of
+    /// which rebuilds `thread_mailboxes` from `message_mailboxes`) does not
+    /// quietly bring it back before the op has even reached a server.
+    /// `message_mailboxes` itself is left exactly as it was: it is what
+    /// resolves the op against a real `(mailbox, uid)` to act on, so this
+    /// is only ever the client's own record of what it has *asked for*,
+    /// kept apart from what the server has *confirmed* -- Gmail's own
+    /// "archive" (dropping the `\Inbox` label) becomes durably true only
+    /// once that confirmation lands. A thread with no row for `mailbox` is
+    /// still marked hidden, so a flag change immediately after does not
+    /// resurrect it either.
     fn hide_thread_from_mailbox(&self, thread: ThreadId, mailbox: MailboxId) -> Result<()>;
 
-    /// The exact inverse of [`MailStore::hide_thread_from_mailbox`]: recompute
-    /// every `thread_mailboxes` row for `thread` from its current
-    /// `message_mailboxes` rows, restoring whichever ones a permanently
-    /// failed `Archive`, `Trash` or `Move` op hid.
+    /// The exact inverse of [`MailStore::hide_thread_from_mailbox`]: clear
+    /// every hidden marker it left for `thread`, then recompute every
+    /// `thread_mailboxes` row for `thread` from `message_mailboxes` --
+    /// which [`MailStore::hide_thread_from_mailbox`] never touched, so this
+    /// reconstructs exactly the row it hid, uid included, restoring
+    /// whichever ones a permanently failed `Archive`, `Trash` or `Move` op
+    /// hid.
     fn restore_thread_mailboxes(&self, thread: ThreadId) -> Result<()>;
 
     /// Set message `id`'s own category directly -- what the model-assisted
