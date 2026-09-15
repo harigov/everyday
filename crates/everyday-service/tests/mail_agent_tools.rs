@@ -161,6 +161,35 @@ fn mcp_may_send_once_an_account_turns_it_on_and_is_queued_through_the_undo_windo
     });
 }
 
+/// `respond_to_invite` is the catalogue's second `Effect::Outward` tool, and
+/// carries exactly the same confirmation requirement `send_draft` does --
+/// see `must_confirm` in `everyday_service::agent`, which is not keyed on
+/// the tool's *name*. A random, unseeded message id is enough here: the
+/// refusal fires before `run_tool` ever reaches the tool's own body, the
+/// same way `send_draft`'s equivalent test needs no recipient either.
+#[test]
+fn respond_to_invite_through_run_tool_needs_confirm_destructive_too() {
+    let (svc, _dir) = support::vault::service(None);
+    let _account = seed_account(&svc);
+    let message_id = MailMessageId::new();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let err = svc
+            .call(
+                Ctx::local(),
+                "run_tool",
+                json!({
+                    "name": "respond_to_invite",
+                    "arguments": { "message_id": message_id.to_string(), "response": "accepted" },
+                }),
+            )
+            .await
+            .expect_err("an outward call must stop and ask, exactly like send_draft's own");
+        assert_eq!(err.code, codes::CONFIRM_REQUIRED, "{err:?}");
+    });
+}
+
 #[test]
 fn mcp_send_is_still_refused_for_an_account_that_has_not_turned_it_on() {
     let (svc, _dir) = support::vault::service(None);

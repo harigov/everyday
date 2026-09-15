@@ -306,6 +306,25 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
         let rate_limit = move |origin: &MailOrigin| -> everyday_core::error::Result<()> {
             svc_for_rl.check_mail_rate_limit(origin, &call_turn).map_err(mail_rate_limit_error)
         };
+        // See `agent::run_tool`'s own `invite_responder`: the same closure,
+        // built here for the script/MCP path, which has no `Ctx` of its own
+        // by the time a tool body runs -- see
+        // `domains::mail::respond_to_invite_for_tool`'s doc for why
+        // `Change::origin` is `None` from this path too.
+        let svc_for_invite = svc.clone();
+        let invite_responder = move |message_id: everyday_core::id::MailMessageId,
+                                     response: everyday_core::mail::AttendeeResponse,
+                                     comment: Option<String>,
+                                     origin: MailOrigin|
+              -> everyday_core::error::Result<()> {
+            crate::domains::mail::respond_to_invite_for_tool(
+                &svc_for_invite,
+                message_id,
+                response,
+                comment,
+                origin,
+            )
+        };
         let ctx = tools::ToolContext {
             vault: &vault,
             today: today_local(),
@@ -321,6 +340,7 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
             // see `run_tool`'s own doc.
             assistant_provider: None,
             mail_rate_limit: Some(&rate_limit),
+            invite_responder: Some(&invite_responder),
         };
         tools::dispatch(&ctx, &args.name, &args.arguments).map_err(CommandError::from)
     })

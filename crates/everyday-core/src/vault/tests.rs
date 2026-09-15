@@ -65,6 +65,7 @@ fn the_assistant_is_offered_only_the_tools_the_backend_can_serve() {
         mail_search: None,
         assistant_provider: None,
         mail_rate_limit: None,
+        invite_responder: None,
     };
     let err = tools::dispatch(&ctx, "create_task", &serde_json::json!({ "title": "x" }))
         .expect_err("a tool the backend cannot serve must be refused");

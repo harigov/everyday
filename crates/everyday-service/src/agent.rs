@@ -52,7 +52,9 @@ use std::sync::{Arc, Mutex};
 
 use everyday_core::RoutineRunId;
 use everyday_core::agent::tools::{self, Caller as ToolCaller, Effect, ToolContext};
-use everyday_core::agent::{AgentSettings, Conversation, Message as VaultMessage, Role, ToolCall};
+use everyday_core::agent::{
+    AgentSettings, Conversation, MailLink, Message as VaultMessage, Role, ToolCall,
+};
 use everyday_core::mail::Origin as MailOrigin;
 use everyday_core::model::system_tz;
 use everyday_core::{ConversationId, Vault};
@@ -105,7 +107,18 @@ pub enum AgentEvent {
     ToolStarted { call_id: String, name: String, arguments: serde_json::Value },
     /// That tool finished, or failed. `summary` is the human sentence the
     /// card shows; the model gets the full result separately.
-    ToolFinished { call_id: String, name: String, ok: bool, summary: String },
+    ToolFinished {
+        call_id: String,
+        name: String,
+        ok: bool,
+        summary: String,
+        /// Set on a successful mail write whose own JSON result named the
+        /// thread it touched, so the panel can draw a link into Mail beside
+        /// `summary` rather than only the sentence. See
+        /// [`everyday_core::agent::Message::mail_link`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mail_link: Option<MailLink>,
+    },
     /// A call is waiting on a person before it may run. The panel draws the
     /// confirm/decline buttons and answers with `confirm_tool_call`.
     ConfirmationRequired {
@@ -244,6 +257,10 @@ struct Ran {
     /// What lets [`written`] report a `Change` with the record it actually
     /// touched rather than none at all.
     ids: Vec<String>,
+    /// The thread a mail write named itself, if any -- see
+    /// [`mail_link_of`]. Carried through to [`write_results`] so a
+    /// reopened thread shows the same link the live turn drew.
+    mail_link: Option<MailLink>,
 }
 
 /// Whether -- and, if so, why -- a call must stop and ask before it runs.
@@ -294,6 +311,7 @@ impl AgentHook for ConfirmGate {
             },
             outcome: None,
             ids: Vec::new(),
+            mail_link: None,
         });
 
         // `web_search` is not in the core catalogue -- `tools::find` answers
@@ -325,6 +343,7 @@ impl AgentHook for ConfirmGate {
                 name,
                 ok: false,
                 summary: "declined: nobody was there to confirm it".into(),
+                mail_link: None,
             });
             let reason = match kind {
                 "outward" => {
@@ -395,6 +414,7 @@ impl AgentHook for ConfirmGate {
             None => summarise(event.raw_result.output()),
         };
 
+        let mut mail_link = None;
         if ok {
             // The taint `web_search`'s own gate reads -- see the module
             // doc's "the exfiltration path through `web_search`". Set on
@@ -406,6 +426,7 @@ impl AgentHook for ConfirmGate {
             if is_mail_read {
                 self.mail_read_this_turn.store(true, Ordering::Release);
             }
+            mail_link = mail_link_of(event.tool_name, event.raw_result.output());
         }
 
         // Recorded against the call it answers, so a reopened thread shows
@@ -415,6 +436,7 @@ impl AgentHook for ConfirmGate {
             ran.outcome = Some(if ok { Ok(summary.clone()) } else { Err(summary.clone()) });
             if ok {
                 ran.ids = result_ids(event.raw_result.output());
+                ran.mail_link = mail_link.clone();
             }
         }
         drop(ledger);
@@ -424,6 +446,7 @@ impl AgentHook for ConfirmGate {
             name: event.tool_name.to_string(),
             ok,
             summary,
+            mail_link,
         });
         ToolResultAction::Keep
     }
@@ -444,14 +467,16 @@ impl ConfirmGate {
             unattended: self.unattended,
             // A confirmation card only ever reads a record to name it --
             // `describe_send_draft` reads the draft's own recipients and
-            // subject straight off the vault -- so none of the four fields
-            // below are needed here, the same way they are not needed by
-            // `every_destructive_tool_can_name_what_it_would_delete` in the
-            // core's own tests.
+            // subject straight off the vault, and `describe_respond_to_invite`
+            // reads the message's own invite the same way -- so none of the
+            // five fields below are needed here, the same way they are not
+            // needed by `every_destructive_tool_can_name_what_it_would_delete`
+            // in the core's own tests.
             caller: None,
             mail_search: None,
             assistant_provider: None,
             mail_rate_limit: None,
+            invite_responder: None,
         };
         tools::describe(&ctx, name, arguments).unwrap_or_default()
     }
@@ -470,6 +495,32 @@ fn result_ids(output: &ToolOutput) -> Vec<String> {
         Some(ids) => ids.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
         None => Vec::new(),
     }
+}
+
+/// The thread a successful mail write's own JSON result named, if any.
+///
+/// Every mutating tool in `agent::tools::mail` puts a `thread_id` in its
+/// answer when it knows one -- see that module's `done_thread` and
+/// `draft_result` -- and `done`'s own `name` is already the human subject
+/// every one of those tools reads out of the vault before it acts. Read
+/// here rather than in the core: a `Message` (this crate does not own) is
+/// what actually carries it to the panel, and the core has no notion of a
+/// transcript to draw one into.
+///
+/// `tool` has to be in [`tools::Domain::Mail`] and a write -- a read tool
+/// (`search_mail`, `list_threads`) has nothing to link to that a person has
+/// not already seen in the card's own arguments, and linking every mail
+/// read would turn a chat transcript into a list of breadcrumbs nobody
+/// asked for.
+fn mail_link_of(name: &str, output: &ToolOutput) -> Option<MailLink> {
+    let tool = tools::find(name)?;
+    if tool.domain != tools::Domain::Mail || !tool.effect.is_write() {
+        return None;
+    }
+    let json = output.as_json()?;
+    let thread_id = json.get("thread_id")?.as_str()?.to_string();
+    let subject = json.get("name")?.as_str()?.to_string();
+    Some(MailLink { thread_id, subject })
 }
 
 /// The zone to reckon a turn in: the person's, else this machine's.
@@ -684,12 +735,29 @@ async fn run_tool(
         // borrow from it -- `Service::mail_index` hands back an `Arc`, not
         // a reference, and the `Arc` has to outlive `ctx`.
         let mail_index = meta.service.mail_index();
-        // Cloned out ahead of the closure below, which otherwise moves the
-        // whole of `meta` and leaves nothing for `ctx` to read afterwards.
+        // Cloned out ahead of the closures below, which otherwise move the
+        // whole of `meta` and leave nothing for `ctx` to read afterwards.
         let service = meta.service.clone();
         let turn_id = meta.turn_id.clone();
-        let rate_limit = move |origin: &MailOrigin| -> everyday_core::error::Result<()> {
-            service.check_mail_rate_limit(origin, &turn_id).map_err(mail_rate_limit_error)
+        let rate_limit = {
+            let service = service.clone();
+            move |origin: &MailOrigin| -> everyday_core::error::Result<()> {
+                service.check_mail_rate_limit(origin, &turn_id).map_err(mail_rate_limit_error)
+            }
+        };
+        // See `agent::tools::mail`'s `respond_to_invite` and
+        // `everyday_core::agent::tools::InviteResponder`'s own doc: the
+        // core cannot build an iTIP reply itself, so this closure is the
+        // one gate that lets it, calling straight back into the same
+        // function the `respond_to_invite` command wraps.
+        let invite_responder = move |message_id: everyday_core::id::MailMessageId,
+                                     response: everyday_core::mail::AttendeeResponse,
+                                     comment: Option<String>,
+                                     origin: MailOrigin|
+              -> everyday_core::error::Result<()> {
+            crate::domains::mail::respond_to_invite_for_tool(
+                &service, message_id, response, comment, origin,
+            )
         };
         let ctx = ToolContext {
             vault: &vault,
@@ -701,6 +769,7 @@ async fn run_tool(
             mail_search: mail_index.as_deref(),
             assistant_provider: Some(assistant_provider),
             mail_rate_limit: Some(&rate_limit),
+            invite_responder: Some(&invite_responder),
         };
         tools::dispatch(&ctx, name, &arguments)
     })
@@ -932,7 +1001,8 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
 fn write_results(vault: &Vault, conversation: ConversationId, ran: &[Ran]) {
     for entry in ran {
         let Some(outcome) = entry.outcome.clone() else { continue };
-        let message = VaultMessage::tool_result(conversation, &entry.call, outcome);
+        let message =
+            VaultMessage::tool_result(conversation, &entry.call, outcome, entry.mail_link.clone());
         if let Err(e) = vault.save_message(&message) {
             tracing::warn!(error = %e, "could not write down a tool result");
         }
@@ -1080,6 +1150,7 @@ mod tests {
             },
             outcome: None,
             ids: id.map(|i| vec![i.to_string()]).unwrap_or_default(),
+            mail_link: None,
         }
     }
 

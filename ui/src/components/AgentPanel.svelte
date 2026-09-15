@@ -22,6 +22,7 @@
   import { quick } from '../lib/quick.svelte'
   import type { AgentSettings, LLMModelConfig, QuickJobRow } from '../lib/types'
   import Icon from './Icon.svelte'
+  import MailActionsList from './MailActionsList.svelte'
 
   // Edited on a copy. The pane has a Save, so a half-typed base URL must not
   // be what the next message is sent to.
@@ -437,6 +438,8 @@
         </p>
       </section>
     {/if}
+
+    <MailActionsList kind="assistant" />
   </div>
 
   <div class="save">

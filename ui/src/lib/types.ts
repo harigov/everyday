@@ -1656,6 +1656,30 @@ export interface Op {
   updatedAt: string
 }
 
+/** `mail_actions_by_origin`'s own `kind` argument and each row's own `kind`
+ *  field: which sort of non-person caller this is about. Never `'person'` --
+ *  see `AgentOriginKind` in the Rust command. */
+export type MailAgentOriginKind = 'mcp' | 'assistant' | 'routine'
+
+/** One [[Op]] `mail_actions_by_origin` found for one kind of caller,
+ *  resolved into what a person recognises -- an account's address, a
+ *  thread's subject -- rather than the bare ids [[Op]] itself carries. At
+ *  most one of `client`, `conversation` or `run` is set, matching which
+ *  `kind` this row is. */
+export interface MailActionByOrigin {
+  opId: OpId
+  kind: MailAgentOriginKind
+  state: string
+  at: string
+  account: string
+  threadId?: ThreadId | null
+  subject?: string | null
+  client?: string | null
+  conversation?: string | null
+  run?: string | null
+  lastError?: string | null
+}
+
 // ── The command surface, describing itself ─────────────────────────────
 //
 // What `list_commands` answers with. Not used to *call* anything — the
@@ -2302,6 +2326,16 @@ export interface ToolCall {
   arguments: unknown
 }
 
+/** Where a mail tool's own result named the thread it touched -- carried on
+ *  the tool message that answers it, and on the live `toolFinished` event
+ *  before that message is even saved, so the transcript can draw a link
+ *  straight into Mail ("Archived: Plans for Saturday →") without parsing
+ *  `content`, which is prose for a person, not data for a client. */
+export interface MailLink {
+  threadId: ThreadId
+  subject: string
+}
+
 export interface AgentMessage {
   id: MessageId
   conversationId: ConversationId
@@ -2312,6 +2346,9 @@ export interface AgentMessage {
   /** Set on a tool turn whose tool failed, so it can be drawn as one
    *  without the interface parsing its prose. */
   failed: boolean
+  /** See [[MailLink]]. `null` for every message but a successful mail
+   *  write's own tool result. */
+  mailLink?: MailLink | null
   createdAt: string
 }
 
@@ -2358,7 +2395,15 @@ export type AgentEvent =
   | { type: 'started'; messageId: MessageId }
   | { type: 'delta'; text: string }
   | { type: 'toolStarted'; callId: string; name: string; arguments: unknown }
-  | { type: 'toolFinished'; callId: string; name: string; ok: boolean; summary: string }
+  | {
+      type: 'toolFinished'
+      callId: string
+      name: string
+      ok: boolean
+      summary: string
+      /** See [[MailLink]]. */
+      mailLink?: MailLink | null
+    }
   | {
       type: 'confirmationRequired'
       callId: string

@@ -117,11 +117,11 @@ pub enum Effect {
     /// [`AgentSettings::confirm_destructive`](crate::agent::AgentSettings::confirm_destructive),
     /// because there is no undo in this application and no way back.
     Destructive,
-    /// Reaches somebody who is not the vault's owner. `send_draft` is the
-    /// one tool with this effect today: sending removes nothing -- a
+    /// Reaches somebody who is not the vault's owner. `send_draft` and
+    /// `respond_to_invite` carry this effect: sending removes nothing -- a
     /// [`Destructive`](Effect::Destructive) call and this one are answering
-    /// different questions -- but it cannot be taken back either, and it
-    /// puts words in front of a stranger rather than only changing a
+    /// different questions -- but neither can be taken back either, and both
+    /// put words in front of a stranger rather than only changing a
     /// record. So it is confirmed in chat unconditionally, independent of
     /// [`AgentSettings::confirm_destructive`](crate::agent::AgentSettings::confirm_destructive)
     /// -- there is no setting that sends without asking -- and an
@@ -326,6 +326,29 @@ pub enum Caller {
 /// worth a name once it has an argument and a `Result` in it.
 pub type MailRateLimit<'a> = dyn Fn(&crate::mail::Origin) -> Result<()> + 'a;
 
+/// The type behind [`ToolContext::invite_responder`].
+///
+/// `everyday-core` has no dependency on `everyday-mail` or `calcard` -- the
+/// crates that actually know how to read a `text/calendar` part and build
+/// an iTIP `REPLY` -- so `respond_to_invite` (in `agent::tools::mail`)
+/// cannot do that work itself. Instead it calls back through this closure,
+/// which the service builds over the very same function its own
+/// `respond_to_invite` command wraps
+/// (`everyday_service::domains::mail::respond_to_invite_inner`), so the
+/// tool and a person's own click run identical code. The arguments are the
+/// message carrying the invitation, the chosen response, an optional
+/// comment for the organiser, and the [`crate::mail::Origin`] the write
+/// should be stamped with -- everything [`crate::mail::AttendeeResponse`]
+/// and the rest of this crate already know how to name, so the type is
+/// nameable here without core learning what an `ICalendar` is.
+pub type InviteResponder<'a> = dyn Fn(
+        crate::id::MailMessageId,
+        crate::mail::AttendeeResponse,
+        Option<String>,
+        crate::mail::Origin,
+    ) -> Result<()>
+    + 'a;
+
 /// Everything a tool needs that is not one of its arguments.
 pub struct ToolContext<'a> {
     pub vault: &'a Vault,
@@ -372,6 +395,14 @@ pub struct ToolContext<'a> {
     /// [`crate::mail::Origin::is_rate_limited`](crate::mail::Origin) for why
     /// a person is never checked against it at all.
     pub mail_rate_limit: Option<&'a MailRateLimit<'a>>,
+    /// The one gate `respond_to_invite` passes an answer through to actually
+    /// build and queue the iTIP `REPLY` -- see [`InviteResponder`]. `None`
+    /// for the vault's owner acting directly (that path is
+    /// `everyday_service::domains::mail::respond_to_invite`, which needs no
+    /// tool at all) and for a test that has nothing wired up, in which case
+    /// the tool refuses with "not available right now" rather than
+    /// panicking on a missing hook.
+    pub invite_responder: Option<&'a InviteResponder<'a>>,
 }
 
 impl<'a> ToolContext<'a> {
