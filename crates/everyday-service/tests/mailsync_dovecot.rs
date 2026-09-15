@@ -110,6 +110,55 @@ fn message_with_attachment(
     s.into_bytes()
 }
 
+/// An invitation: a `multipart/mixed` message carrying a plain-text part and
+/// a `text/calendar; method=REQUEST` part naming `attendee_email` -- the
+/// shape phase 6's `process_body` reads with `everyday_mail::invite::parse_invite`.
+fn invite_message(
+    subject: &str,
+    message_id: &str,
+    uid: &str,
+    organizer_email: &str,
+    attendee_email: &str,
+) -> Vec<u8> {
+    let boundary = "everyday-invite-boundary";
+    let ics = format!(
+        "BEGIN:VCALENDAR\r\n\
+         PRODID:-//Every Day//Test//EN\r\n\
+         VERSION:2.0\r\n\
+         CALSCALE:GREGORIAN\r\n\
+         METHOD:REQUEST\r\n\
+         BEGIN:VEVENT\r\n\
+         DTSTART:20260901T100000Z\r\n\
+         DTEND:20260901T103000Z\r\n\
+         DTSTAMP:20260820T090000Z\r\n\
+         ORGANIZER;CN=Priya Patel:mailto:{organizer_email}\r\n\
+         UID:{uid}\r\n\
+         ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;\
+         CN=Everyday Tester:mailto:{attendee_email}\r\n\
+         SEQUENCE:0\r\n\
+         STATUS:CONFIRMED\r\n\
+         SUMMARY:Standup\r\n\
+         END:VEVENT\r\n\
+         END:VCALENDAR\r\n"
+    );
+    let mut s = String::new();
+    s.push_str(&format!("From: {organizer_email}\r\n"));
+    s.push_str(&format!("To: {attendee_email}\r\n"));
+    s.push_str(&format!("Subject: {subject}\r\n"));
+    s.push_str("Date: Mon, 14 Sep 2026 09:30:00 +0000\r\n");
+    s.push_str(&format!("Message-Id: <{message_id}@everyday-mail.test>\r\n"));
+    s.push_str("MIME-Version: 1.0\r\n");
+    s.push_str(&format!("Content-Type: multipart/mixed; boundary=\"{boundary}\"\r\n\r\n"));
+    s.push_str(&format!("--{boundary}\r\n"));
+    s.push_str("Content-Type: text/plain\r\n\r\n");
+    s.push_str("You are invited to Standup.\r\n\r\n");
+    s.push_str(&format!("--{boundary}\r\n"));
+    s.push_str("Content-Type: text/calendar; method=REQUEST; charset=utf-8\r\n\r\n");
+    s.push_str(&ics);
+    s.push_str(&format!("--{boundary}--\r\n"));
+    s.into_bytes()
+}
+
 /// A minimal base64 encoder -- this crate has no dependency that offers one
 /// outside `dev-dependencies`, and pulling one in for a single test fixture
 /// would be a heavier fix than writing the twelve lines RFC 4648 needs.
@@ -217,6 +266,7 @@ async fn a_real_mailbox_syncs_into_a_real_vault() {
         index_commit: passes::CommitPacer::new(),
         unread_cache: None,
         contacts: None,
+        identities: vec![account.address.clone()],
     };
     let mut labels = LabelMailboxes::new(&vault, account_id);
     let mut threads = ThreadIndex::new();
@@ -398,6 +448,44 @@ async fn wait_for_delivery(api: &str, subject: &str) {
     panic!("{subject:?} never showed up in Mailpit's message list");
 }
 
+/// As [`wait_for_delivery`], but returns the message's own raw RFC 5322
+/// bytes through `GET /api/v1/message/{id}/raw` once found -- the same two
+/// calls `smtp_mailpit.rs`'s own `find_delivered` makes, kept as a separate
+/// copy here on the same reasoning this file's `plain_message` is its own
+/// copy of a shape `mailsync_dovecot.rs` and `smtp_mailpit.rs` both need: two
+/// different crates' test suites, neither depending on the other's.
+async fn fetch_delivered_raw(api: &str, subject: &str) -> Vec<u8> {
+    let client = reqwest::Client::new();
+    for _ in 0..40 {
+        let body: serde_json::Value = client
+            .get(format!("{api}/api/v1/messages?limit=50"))
+            .send()
+            .await
+            .expect("Mailpit's HTTP API answers")
+            .json()
+            .await
+            .expect("a JSON message list");
+        if let Some(id) = body["messages"].as_array().and_then(|messages| {
+            messages
+                .iter()
+                .find(|m| m["Subject"].as_str() == Some(subject))
+                .and_then(|m| m["ID"].as_str())
+        }) {
+            return client
+                .get(format!("{api}/api/v1/message/{id}/raw"))
+                .send()
+                .await
+                .expect("Mailpit serves the raw message")
+                .bytes()
+                .await
+                .expect("a body")
+                .to_vec();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    panic!("{subject:?} never showed up in Mailpit's message list");
+}
+
 async fn call(
     svc: &std::sync::Arc<everyday_service::Service>,
     name: &str,
@@ -429,6 +517,14 @@ async fn sync_once_against(
     session: &mut imap::ImapSession,
 ) {
     let statuses = svc.mail_statuses().unwrap();
+    let identities = vault
+        .account(account_id)
+        .map(|a| {
+            std::iter::once(a.address.clone())
+                .chain(a.identities.iter().map(|i| i.address.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
     let ctx = SyncContext {
         vault,
         account_id,
@@ -439,6 +535,7 @@ async fn sync_once_against(
         index_commit: passes::CommitPacer::new(),
         unread_cache: svc.mail_unread_cache(),
         contacts: svc.mail_contacts(),
+        identities,
     };
     let mut labels = LabelMailboxes::new(vault, account_id);
     let mut threads = ThreadIndex::new();
@@ -590,5 +687,130 @@ async fn write_actions_sync_through_a_real_server() {
     assert!(
         !threads.is_empty(),
         "the reply should be searchable once the next sync has indexed the Sent copy: {found}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Phase 6: an invitation in mail -- parsed at sync, answered through
+// `respond_to_invite`, and the reply verified against a real Mailpit.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_invitation_is_parsed_and_a_reply_is_delivered() {
+    let Some(cfg) = config() else { return };
+    let Some(smtp) = smtp_config() else { return };
+
+    let invite_message_id = format!("write-actions-invite-{}", std::process::id());
+    let uid = format!("everyday-test-event-{}@example.com", std::process::id());
+    // Its own mailbox, not INBOX: `write_actions_sync_through_a_real_server`
+    // seeds and archives exactly one message in INBOX on this same throwaway
+    // Dovecot user, and cargo runs the tests in one binary concurrently by
+    // default, so sharing INBOX would race the two against each other.
+    let invite_folder = format!("EverydayInvite{}", std::process::id());
+
+    let mut seed_session = connect(&cfg).await;
+    seed_session.create_mailbox(&invite_folder).await.expect("CREATE the invite folder");
+    let raw = invite_message(
+        "You're invited: Standup",
+        &invite_message_id,
+        &uid,
+        "priya@example.com",
+        "everyday@example.com",
+    );
+    seed_session.append(&invite_folder, &raw, Flags::NONE).await.expect("APPEND the invitation");
+    drop(seed_session);
+
+    let (svc, _dir) = support::vault::service(None);
+    let vault = svc.get().unwrap();
+
+    let mut account = Account::new(Provider::Custom, "everyday@example.com");
+    account.auth = AuthMethod::Password { username: cfg.user.clone() };
+    account.imap.host = cfg.host.clone();
+    account.imap.port = cfg.tls_port;
+    account.smtp.host = smtp.host.clone();
+    account.smtp.port = smtp.port;
+    let account_id = account.id;
+    vault.save_account(&account).unwrap();
+    vault
+        .save_account_secret(
+            account_id,
+            &AccountSecret { password: Some(cfg.pass.clone()), ..Default::default() },
+        )
+        .unwrap();
+
+    let mut session = connect(&cfg).await;
+    sync_once_against(&svc, &vault, account_id, &mut session).await;
+
+    // ---- the invitation is parsed at sync ----
+    let seeded = vault
+        .message_by_message_id_header(
+            account_id,
+            &format!("{invite_message_id}@everyday-mail.test"),
+        )
+        .unwrap()
+        .expect("the seeded invitation should have synced");
+    let invite = seeded.invite.clone().expect("the invitation should have been parsed at sync");
+    assert_eq!(invite.method, everyday_core::mail::InviteMethod::Request);
+    assert_eq!(invite.uid, uid);
+    assert_eq!(invite.summary, "Standup");
+    assert_eq!(invite.organizer.email, "priya@example.com");
+    assert_eq!(
+        invite.my_response,
+        Some(everyday_core::mail::AttendeeResponse::NeedsAction),
+        "the seeded account's own address is one of the attendees"
+    );
+
+    // ---- accept it ----
+    call(
+        &svc,
+        "respond_to_invite",
+        serde_json::json!({ "messageId": seeded.id, "response": "accepted" }),
+    )
+    .await;
+
+    let updated = vault.mail_message(seeded.id).unwrap();
+    assert_eq!(
+        updated.invite.and_then(|i| i.my_response),
+        Some(everyday_core::mail::AttendeeResponse::Accepted),
+        "the local invite should reflect the response immediately, before the reply has gone anywhere"
+    );
+
+    // ---- drain the outbox, and check Mailpit received the REPLY ----
+    //
+    // `respond_to_invite` queues its `Send` with the undo-send window's own
+    // default -- `UNDO_SEND_DEFAULT_SECONDS`, ten seconds, per the plan's
+    // "no undo delay beyond the default" -- so this polls comfortably past
+    // that, not the five-second minimum `write_actions_sync_through_a_real_server`'s
+    // own poll above gets away with by asking for `delaySeconds: 0`.
+    let sender = TestSmtpSender::new(smtp.host.clone(), smtp.port);
+    let mut delivered = false;
+    for _ in 0..40 {
+        let report =
+            everyday_service::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
+                .await
+                .expect("draining the outbox");
+        assert_eq!(report.failed, 0, "{report:?}");
+        if report.done > 0 {
+            delivered = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert!(delivered, "the reply was never drained to Mailpit");
+
+    let reply_subject = "Accepted: Standup";
+    let raw_reply = fetch_delivered_raw(&smtp.api, reply_subject).await;
+    let parsed = everyday_mail::mime::parse(&raw_reply).expect("the reply parses as RFC 5322");
+    let calendar = parsed.calendar.expect("the reply should carry a text/calendar part");
+    let calendar_text = String::from_utf8_lossy(&calendar);
+    assert!(calendar_text.contains("METHOD:REPLY"), "{calendar_text}");
+    assert!(calendar_text.contains(&format!("UID:{uid}")), "{calendar_text}");
+    assert!(calendar_text.contains("PARTSTAT=ACCEPTED"), "{calendar_text}");
+    assert!(calendar_text.contains("mailto:everyday@example.com"), "{calendar_text}");
+
+    let raw_text = String::from_utf8_lossy(&raw_reply);
+    assert!(
+        raw_text.contains("method=REPLY") || raw_text.contains("method=\"REPLY\""),
+        "the Content-Type parameter should name the REPLY method: {raw_text}"
     );
 }
