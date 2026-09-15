@@ -17,6 +17,13 @@ const {
   removeRow,
   restoreRow,
   snoozeChoices,
+  CATEGORY_TABS,
+  stepCategoryTab,
+  isCurrentInviteResponse,
+  inviteIsCancelled,
+  applyInviteResponse,
+  mergeSearchPage,
+  remoteImagesAllowed,
 } = mailLib
 
 function person(name, email) {
@@ -158,6 +165,95 @@ assert.deepEqual(
   ['tomorrow', 'nextWeek'],
   'no "later today" once it would fall after 9pm',
 )
+
+// ── (p) The split inbox: category tab ordering ─────────────────────────
+
+assert.deepEqual(
+  CATEGORY_TABS.map((t) => t.key),
+  ['important', 'other', 'newsletter', 'notification'],
+  'mirrors Category::ALL in everyday_core::mail',
+)
+
+assert.equal(stepCategoryTab(null, 1), 'important', 'All -> the first named tab')
+assert.equal(
+  stepCategoryTab('notification', 1),
+  null,
+  'stepping past the last tab wraps back to All',
+)
+assert.equal(stepCategoryTab(null, -1), 'notification', 'stepping back from All wraps to the last')
+assert.equal(stepCategoryTab('other', -1), 'important')
+
+// ── (i) Invitations: response state ─────────────────────────────────────
+
+function invite(overrides = {}) {
+  return {
+    uid: 'invite-1',
+    method: 'request',
+    summary: 'Design review',
+    start: '2026-09-15T14:00:00Z',
+    end: '2026-09-15T14:45:00Z',
+    allDay: false,
+    location: null,
+    organizer: person('Priya Raman', 'priya@example.com'),
+    attendees: [],
+    myResponse: null,
+    recurrence: null,
+    ...overrides,
+  }
+}
+
+assert.equal(isCurrentInviteResponse(invite({ myResponse: 'accepted' }), 'accepted'), true)
+assert.equal(isCurrentInviteResponse(invite({ myResponse: 'accepted' }), 'declined'), false)
+assert.equal(
+  isCurrentInviteResponse(invite(), 'accepted'),
+  false,
+  'no response yet highlights nothing',
+)
+
+assert.equal(inviteIsCancelled(invite({ method: 'cancel' })), true)
+assert.equal(inviteIsCancelled(invite({ method: 'request' })), false)
+
+const originalInvite = invite()
+const patchedInvite = applyInviteResponse(originalInvite, 'tentative')
+assert.equal(patchedInvite.myResponse, 'tentative')
+assert.equal(originalInvite.myResponse, null, 'the source invite is never mutated')
+
+// ── Search: keyset paging merge ─────────────────────────────────────────
+
+function thread(id, lastDate = '2026-09-01T00:00:00Z') {
+  return {
+    id,
+    accountId: 'acct-google',
+    subject: id,
+    participants: [],
+    lastDate,
+    messageCount: 1,
+    unreadCount: 0,
+  }
+}
+
+const firstPage = [thread('th-1'), thread('th-2')]
+const secondPage = [thread('th-2'), thread('th-3')] // the index repeated one near the boundary
+const merged = mergeSearchPage(firstPage, secondPage)
+assert.deepEqual(
+  merged.map((t) => t.id),
+  ['th-1', 'th-2', 'th-3'],
+  'a thread a page boundary repeats is not duplicated',
+)
+assert.equal(firstPage.length, 2, 'the first page is not mutated')
+
+// ── Remote images: allow-list matching ──────────────────────────────────
+
+const settings = { senders: ['newsletter@economist.example.com'], domains: ['github.com'] }
+assert.equal(remoteImagesAllowed(settings, 'newsletter@economist.example.com'), true)
+assert.equal(
+  remoteImagesAllowed(settings, 'Newsletter@Economist.example.com'),
+  true,
+  'matching is case-insensitive',
+)
+assert.equal(remoteImagesAllowed(settings, 'notifications@github.com'), true, 'a domain match')
+assert.equal(remoteImagesAllowed(settings, 'someone@figma.com'), false)
+assert.equal(remoteImagesAllowed(settings, 'not-an-address'), false, 'no domain to match against')
 
 await close()
 console.log('mail: all checks passed')
