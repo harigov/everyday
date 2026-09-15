@@ -189,6 +189,20 @@ impl Vault {
         self.with_mail(|m| m.due_ops(account, now, limit))
     }
 
+    /// The earliest `not_before` among `account`'s still-pending ops --
+    /// what the account task sleeps until, on top of its poll and `IDLE`
+    /// waits, so a send-at or undo-send op is drained the moment its window
+    /// expires. See [`MailStore::next_pending_op_at`].
+    pub fn next_pending_op_at(&self, account: AccountId) -> Result<Option<Timestamp>> {
+        self.with_mail(|m| m.next_pending_op_at(account))
+    }
+
+    /// Every op of `account`'s stranded [`crate::mail::OpState::InFlight`]
+    /// by a crash mid-drain. See [`MailStore::in_flight_ops`].
+    pub fn in_flight_ops(&self, account: AccountId) -> Result<Vec<Op>> {
+        self.with_mail(|m| m.in_flight_ops(account))
+    }
+
     pub fn update_op(&self, op: &Op) -> Result<()> {
         self.writable()?;
         self.with_mail(|m| m.update_op(op))

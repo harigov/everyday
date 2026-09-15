@@ -264,6 +264,23 @@ pub trait MailStore: Send + Sync {
     /// What the account task's drain loop reads on every pass.
     fn due_ops(&self, account: AccountId, now: Timestamp, limit: u32) -> Result<Vec<Op>>;
 
+    /// The earliest `not_before` among `account`'s
+    /// [`crate::mail::OpState::Pending`] ops, due or not -- `None` when
+    /// there are none. What the account task's `select!` sleeps until, so an
+    /// undo-send or a send-at op is woken the moment its window expires
+    /// rather than on [`crate::mailsync`]'s own poll cadence; the same path
+    /// paces retry backoff, since a backed-off op is `Pending` with a later
+    /// `not_before` like any other.
+    fn next_pending_op_at(&self, account: AccountId) -> Result<Option<Timestamp>>;
+
+    /// Every op of `account`'s left [`crate::mail::OpState::InFlight`] --
+    /// normally a moment between one `drain_outbox` pass claiming an op and
+    /// that same pass finishing it, but a crash or a kill between the two
+    /// strands it there for good, since nothing else ever moves an op out of
+    /// `InFlight`. What the account task reads once, before its first drain,
+    /// to put every stranded op back to work.
+    fn in_flight_ops(&self, account: AccountId) -> Result<Vec<Op>>;
+
     /// Replace an op whole -- a state transition, an attempt counted, a
     /// `last_error` recorded. Callers build the next value with
     /// [`crate::mail::Op::transition_to`] rather than this trait offering a

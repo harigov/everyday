@@ -24,7 +24,7 @@ use jiff::Timestamp;
 
 use crate::conn::{Sql, SqlExt, ToValue, Value};
 use crate::record::Record;
-use crate::{SqlStore, to_us, vals};
+use crate::{SqlStore, from_us, to_us, vals};
 
 impl Record for Mailbox {
     const TABLE: &'static str = "mailboxes";
@@ -320,6 +320,22 @@ impl MailStore for SqlStore {
             .to_string();
         self.page(&mut sql, "not_before_us ASC", Some(limit), 0);
         let rows = self.read().records(&sql, &vals![account.to_string(), to_us(now)])?;
+        self.collect(rows, op_aad)
+    }
+
+    fn next_pending_op_at(&self, account: AccountId) -> Result<Option<Timestamp>> {
+        let row = self.read().query_opt(
+            "SELECT MIN(not_before_us) FROM ops WHERE account_id = ?1 AND state = 'pending'",
+            &vals![account.to_string()],
+        )?;
+        Ok(row.and_then(|r| r.opt_i64(0).transpose()).transpose()?.map(from_us))
+    }
+
+    fn in_flight_ops(&self, account: AccountId) -> Result<Vec<Op>> {
+        let mut sql =
+            "SELECT id, data FROM ops WHERE account_id = ?1 AND state = 'in_flight'".to_string();
+        self.page(&mut sql, "not_before_us ASC", None, 0);
+        let rows = self.read().records(&sql, &vals![account.to_string()])?;
         self.collect(rows, op_aad)
     }
 
