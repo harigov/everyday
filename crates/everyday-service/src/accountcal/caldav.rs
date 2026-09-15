@@ -57,6 +57,7 @@
 //! `chrono::DateTime` into a `jiff::Timestamp`; nothing past it holds a
 //! `chrono` type.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use chrono::Timelike as _;
@@ -323,28 +324,31 @@ pub async fn sync(
         .await?
     };
 
-    let mut remove_ids = Vec::new();
-    for stored in &existing {
-        let source_href = stored.uid.split('#').next().unwrap_or_default();
-        if removed_hrefs.iter().any(|h| h == source_href)
-            || changed.contains(&source_href.to_string())
-        {
-            remove_ids.push(deterministic_event_id(calendar.id, &stored.uid));
-        }
-    }
-
     let mut upsert = Vec::new();
     let mut skipped = 0u64;
     let mut fresh_etags = Vec::new();
     let mut recurring_hrefs = calendar.account_sync.recurring_hrefs.clone();
+    // Every href `changed` named that this sync could not actually turn
+    // into events -- a multiget response with an error status for it
+    // (deleted between the list and the fetch, or a transient server
+    // error), or, just as unresolved, one the response never mentioned at
+    // all. See `hrefs_pending_removal`'s own doc for what this set is
+    // for: the old events an unresolved href already had must survive
+    // this sync, not be deleted for a replacement that never arrived.
+    let mut failed_hrefs: HashSet<String> = HashSet::new();
     if !changed.is_empty() {
         let fetched = webdav
             .request(GetCalendarResources::new(href).with_hrefs(changed.iter().cloned()))
             .await
             .map_err(describe)?;
         let tz = everyday_core::model::system_tz();
+        let mut answered: HashSet<String> = HashSet::new();
         for resource in fetched.resources {
-            let Ok(content) = resource.content else { continue };
+            answered.insert(resource.href.clone());
+            let Ok(content) = resource.content else {
+                failed_hrefs.insert(resource.href.clone());
+                continue;
+            };
             fresh_etags.push((resource.href.clone(), content.etag.clone()));
             let (mut events, more_skipped, recurring) =
                 events_from_ics(&content.data, calendar.id, &resource.href, &tz, window);
@@ -356,23 +360,41 @@ pub async fn sync(
                 recurring_hrefs.remove(&resource.href);
             }
         }
+        for href in &changed {
+            if !answered.contains(href) {
+                failed_hrefs.insert(href.clone());
+            }
+        }
     }
     for href in &removed_hrefs {
         recurring_hrefs.remove(href);
     }
 
+    let to_remove = hrefs_pending_removal(&removed_hrefs, &changed, &failed_hrefs);
+    let mut remove_ids = Vec::new();
+    for stored in &existing {
+        let source_href = stored.uid.split('#').next().unwrap_or_default();
+        if to_remove.contains(source_href) {
+            remove_ids.push(deterministic_event_id(calendar.id, &stored.uid));
+        }
+    }
+
     // Every href this sync still cares about: what was already known, minus
-    // what vanished, plus fresh etags for what was just refetched. A href
-    // whose multiget came back with an error status (deleted between the
-    // list and the fetch, or genuinely unreadable) is dropped from the map
-    // rather than kept on a stale etag, so the *next* sync tries it again
-    // rather than believing it unchanged forever.
+    // what vanished, plus fresh etags for what was just refetched. A
+    // *successfully* refetched href is dropped here and replaced by its
+    // fresh etag below; a href in `failed_hrefs` keeps whatever etag it
+    // already had -- on the same reasoning `hrefs_pending_removal` already
+    // states: this sync confirmed nothing about it, so nothing about it
+    // changes, and the next sync's own diff sees it as still stale and
+    // tries it again.
     let mut etags = calendar.account_sync.etags.clone();
     for href in &removed_hrefs {
         etags.remove(href);
     }
     for href in &changed {
-        etags.remove(href);
+        if !failed_hrefs.contains(href) {
+            etags.remove(href);
+        }
     }
     for (href, etag) in fresh_etags {
         etags.insert(href, etag);
@@ -385,7 +407,16 @@ pub async fn sync(
     // every *other* recurring event is caught up too.
     let expanded_through =
         if reexpand_due { Some(window.1) } else { calendar.account_sync.expanded_through };
-    let cursor = AccountSyncCursor { token: new_token, etags, recurring_hrefs, expanded_through };
+    // The sync-token is only advanced when every changed href this sync
+    // named was actually resolved -- see `next_sync_token`'s own doc for
+    // why: RFC 6578's contract is "report everything since this token", so
+    // remembering the fresh one the moment even one href failed would tell
+    // the server this client is caught up on a resource it never actually
+    // processed, and that resource's events would stay missing until
+    // somebody happened to edit it again.
+    let token =
+        next_sync_token(new_token, calendar.account_sync.token.clone(), !failed_hrefs.is_empty());
+    let cursor = AccountSyncCursor { token, etags, recurring_hrefs, expanded_through };
 
     let vault_for_write = vault.clone();
     let id = calendar.id;
@@ -438,6 +469,55 @@ fn diff_etags(
     let removed: Vec<String> =
         previous.keys().filter(|h| !seen.contains(h.as_str())).cloned().collect();
     (changed, removed)
+}
+
+/// Which of `changed`'s hrefs [`sync`] should actually delete the old
+/// events for -- unioned with everything that outright vanished
+/// (`removed_hrefs`), but never a href in `failed_hrefs`, even though it is
+/// also in `changed`.
+///
+/// Split out from [`sync`], on the same terms [`diff_etags`] already is, so
+/// the rule this exists to enforce -- "delete an href's old events only
+/// when a replacement actually parsed" -- is a pure function with a test
+/// that needs no server at all. Before this existed, [`sync`] deleted an
+/// href's stored events the moment it appeared in `changed`, before the
+/// multiget that was meant to replace them had even run; a resource that
+/// then came back with an error status (deleted between the list and the
+/// fetch, or a transient failure on the server's side) left that href with
+/// nothing, not the events it still actually had, until some unrelated
+/// edit made the href reappear in a later `changed` list.
+fn hrefs_pending_removal(
+    removed_hrefs: &[String],
+    changed: &[String],
+    failed_hrefs: &HashSet<String>,
+) -> HashSet<String> {
+    removed_hrefs
+        .iter()
+        .cloned()
+        .chain(changed.iter().filter(|h| !failed_hrefs.contains(h.as_str())).cloned())
+        .collect()
+}
+
+/// The sync-token [`sync`] should remember for next time.
+///
+/// `new_token` when every changed href this sync named was actually
+/// resolved; the *previous* token, unchanged, the moment even one was not
+/// -- RFC 6578's own contract is "report everything since this token", so
+/// remembering a fresh one regardless would tell the server this client is
+/// caught up on a resource it never actually processed, and `sync` would
+/// have no other way to learn that href needs trying again. The
+/// alternative this module chose not to take is recording the failed
+/// hrefs in the cursor and force-refetching them next time regardless of
+/// what the server reports changed; keeping the old token is simpler and
+/// self-correcting, at the cost of the server re-reporting everything else
+/// that changed this sync too -- harmless, since every path here already
+/// tolerates being told about a href twice.
+fn next_sync_token(
+    new_token: Option<String>,
+    previous_token: Option<String>,
+    any_fetch_failed: bool,
+) -> Option<String> {
+    if any_fetch_failed { previous_token } else { new_token }
 }
 
 enum SyncCollectionError {
@@ -1042,6 +1122,83 @@ mod tests {
             events[0].end_date,
             jiff::civil::date(2026, 7, 11),
             "a timed event that crosses midnight must cover both days"
+        );
+    }
+
+    // ---- finding 5: a failed multiget must not lose an href's old events --
+
+    #[test]
+    fn a_failed_href_keeps_its_place_among_what_gets_removed_and_what_survives() {
+        let removed_hrefs = vec!["/cal/gone.ics".to_string()];
+        let changed = vec!["/cal/updated.ics".to_string(), "/cal/broken.ics".to_string()];
+        let mut failed = HashSet::new();
+        failed.insert("/cal/broken.ics".to_string());
+
+        let to_remove = hrefs_pending_removal(&removed_hrefs, &changed, &failed);
+        assert!(to_remove.contains("/cal/gone.ics"), "vanished hrefs are always removed");
+        assert!(
+            to_remove.contains("/cal/updated.ics"),
+            "a href that fetched and parsed cleanly is removed for its replacement"
+        );
+        assert!(
+            !to_remove.contains("/cal/broken.ics"),
+            "a href whose multiget failed keeps its old events rather than losing them for \
+             nothing"
+        );
+    }
+
+    #[test]
+    fn a_clean_sync_advances_the_token_but_any_failure_keeps_the_old_one() {
+        assert_eq!(
+            next_sync_token(Some("new".into()), Some("old".into()), false),
+            Some("new".into()),
+            "nothing failed: the fresh token is safe to remember"
+        );
+        assert_eq!(
+            next_sync_token(Some("new".into()), Some("old".into()), true),
+            Some("old".into()),
+            "something failed: remembering the fresh token would tell the server this client \
+             is caught up on a resource it never actually processed"
+        );
+        assert_eq!(
+            next_sync_token(Some("new".into()), None, true),
+            None,
+            "no previous token (this was already an etag-diff sync) stays none, not the fresh \
+             sync-collection token a later attempt happened to get handed"
+        );
+    }
+
+    /// End to end through [`hrefs_pending_removal`] and [`next_sync_token`]
+    /// together, on the exact shape [`sync`] itself builds them from: one
+    /// href fetched and parsed cleanly, one whose multiget came back with
+    /// an error status, and one the response never mentioned at all (a
+    /// server that silently drops a href it will not serve from a
+    /// multi-href request). Both of the latter two are treated alike --
+    /// unresolved is unresolved, whichever shape it took.
+    #[test]
+    fn an_href_missing_from_the_multiget_response_is_treated_as_failed_too() {
+        let changed = vec![
+            "/cal/ok.ics".to_string(),
+            "/cal/error-status.ics".to_string(),
+            "/cal/never-answered.ics".to_string(),
+        ];
+        let mut answered = HashSet::new();
+        answered.insert("/cal/ok.ics".to_string());
+        answered.insert("/cal/error-status.ics".to_string());
+        let mut failed = HashSet::new();
+        failed.insert("/cal/error-status.ics".to_string()); // came back, but as an error
+        for href in &changed {
+            if !answered.contains(href) {
+                failed.insert(href.clone()); // never answered at all
+            }
+        }
+
+        let to_remove = hrefs_pending_removal(&[], &changed, &failed);
+        assert_eq!(to_remove, HashSet::from(["/cal/ok.ics".to_string()]));
+        assert_eq!(
+            next_sync_token(Some("new".into()), Some("old".into()), !failed.is_empty()),
+            Some("old".into()),
+            "two unresolved hrefs, of either shape, are still a reason to hold the token back"
         );
     }
 }
