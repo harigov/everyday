@@ -105,10 +105,19 @@
   $effect(() => {
     const id = selectedId
     if (id === lastSelected) return
-    lastSelected = id
-    if (id === null || id === undefined || !handle) return
+    if (id === null || id === undefined) {
+      lastSelected = id
+      return
+    }
+    // Remembered only once the scroll has actually happened. Before the
+    // handle is bound, or before the selected row's page has arrived, this
+    // waits: `handle` and `items` are both read here, so the effect runs
+    // again when either changes, and the selection is scrolled to then.
+    if (!handle) return
     const index = items.findIndex((item, i) => keyOf(item, i) === id)
-    if (index >= 0) handle.scrollToIndex(index, { align: 'nearest' })
+    if (index < 0) return
+    lastSelected = id
+    handle.scrollToIndex(index, { align: 'nearest' })
   })
 
   // ── The end-of-list callback ─────────────────────────────────────────────

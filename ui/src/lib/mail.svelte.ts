@@ -250,12 +250,16 @@ class MailState {
     this.loadingMore = true
     const cursor = this.nextCursor
     try {
+      const generation = this.#generation
       const page = await mailApi.listThreads(
         this.selectedMailbox,
         this.category ? { category: this.category } : undefined,
         cursor,
         PAGE,
       )
+      // A mailbox or category change while this page was on its way bumps
+      // the generation; its rows belong to a list no longer showing.
+      if (generation !== this.#generation || cursor !== this.nextCursor) return
       this.threads = [...this.threads, ...page.threads]
       this.nextCursor = page.nextCursor ?? null
     } catch (e) {
@@ -272,6 +276,9 @@ class MailState {
     this.summary = null
     try {
       const detail = await mailApi.getThread(id)
+      // Moved on while this was loading: a later open owns the pane now, and
+      // this thread must not be shown, marked read or prefetched around.
+      if (this.selectedThread !== id) return
       this.openThread = detail
       // The newest message starts expanded; every earlier one collapsed to
       // its one-line summary, as the plan asks.
@@ -662,7 +669,15 @@ class MailState {
     try {
       const detail = await mailApi.getThread(id)
       const at = this.threads.findIndex((t) => t.id === id)
-      if (at >= 0) this.threads = this.threads.map((t, i) => (i === at ? detail.thread : t))
+      if (at >= 0) {
+        this.threads = this.threads.map((t, i) => (i === at ? detail.thread : t))
+      } else {
+        // Not in the list: a new thread, or one that has just moved into this
+        // mailbox. Where it belongs depends on the mailbox, the category and
+        // the sort, which only the backend knows, so the page is asked for
+        // again rather than the row guessed into place.
+        await this.refresh()
+      }
       if (this.selectedThread === id) this.openThread = detail
     } catch {
       await this.refresh()

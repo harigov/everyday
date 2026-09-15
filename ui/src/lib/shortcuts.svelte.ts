@@ -144,6 +144,17 @@ function oneSweep<T>(sweep: () => T): T {
 }
 
 /** Anywhere past the lock screen, with no dialog over the window. */
+/** Focus is on something Enter already activates. */
+function focusIsControl(): boolean {
+  const el = document.activeElement as HTMLElement | null
+  if (!el || el === document.body) return false
+  return (
+    /^(BUTTON|A|SUMMARY)$/.test(el.tagName) ||
+    el.getAttribute('role') === 'button' ||
+    el.getAttribute('role') === 'tab'
+  )
+}
+
 function anywhere(): boolean {
   return app.screen === 'main' && !dialogOpen()
 }
@@ -551,7 +562,10 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     keys: 'Enter',
     label: 'Open the thread',
     group: 'Mail',
-    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
+    // Not while a button, link or tab has focus: Enter belongs to that
+    // control, and taking it here would re-open the thread instead of
+    // pressing Reply or Show images.
+    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread && !focusIsControl(),
     run: () => void mail.openThreadById(mail.selectedThread!),
   },
   {

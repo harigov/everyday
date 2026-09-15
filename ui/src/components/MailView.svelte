@@ -165,36 +165,42 @@
       {#snippet note()}This mailbox has no threads matching what is showing.{/snippet}
     </EmptyState>
   {:else}
-    <VirtualList
-      items={mail.threads}
-      selectedId={mail.selectedThread}
-      onEndReached={() => void mail.loadMore()}
-    >
-      {#snippet children(t: Thread)}
-        <button
-          class="row"
-          class:sel={mail.selectedThread === t.id}
-          class:unread={t.unreadCount > 0}
-          onclick={() => void mail.openThreadById(t.id)}
-          oncontextmenu={(e) => menu.show(e, rowMenu(t))}
-        >
-          <span class="dot" class:on={t.unreadCount > 0} aria-hidden="true"></span>
-          <div class="body">
-            <div class="line1">
-              <span class="from">{formatSenders(t.participants)}</span>
-              <span class="date">{threadListDate(t.lastDate)}</span>
-            </div>
-            <div class="line2">
-              <!-- No snippet here: `Thread` carries no cached one -- see its
+    <!-- The scrolling parent `VirtualList` needs: `virtua` watches its
+         container's parent for scroll, and `section.list` itself never
+         scrolls, so without this the rows past the first screen were
+         unreachable and `onEndReached` never fired. -->
+    <div class="scroll thread-rows">
+      <VirtualList
+        items={mail.threads}
+        selectedId={mail.selectedThread}
+        onEndReached={() => void mail.loadMore()}
+      >
+        {#snippet children(t: Thread)}
+          <button
+            class="row"
+            class:sel={mail.selectedThread === t.id}
+            class:unread={t.unreadCount > 0}
+            onclick={() => void mail.openThreadById(t.id)}
+            oncontextmenu={(e) => menu.show(e, rowMenu(t))}
+          >
+            <span class="dot" class:on={t.unreadCount > 0} aria-hidden="true"></span>
+            <div class="body">
+              <div class="line1">
+                <span class="from">{formatSenders(t.participants)}</span>
+                <span class="date">{threadListDate(t.lastDate)}</span>
+              </div>
+              <div class="line2">
+                <!-- No snippet here: `Thread` carries no cached one -- see its
                    own doc in `types.ts` for why that is a reported gap
                    rather than a faked field. -->
-              <span class="subject">{t.subject || '(no subject)'}</span>
-              {#if t.messageCount > 1}<span class="count">{t.messageCount}</span>{/if}
+                <span class="subject">{t.subject || '(no subject)'}</span>
+                {#if t.messageCount > 1}<span class="count">{t.messageCount}</span>{/if}
+              </div>
             </div>
-          </div>
-        </button>
-      {/snippet}
-    </VirtualList>
+          </button>
+        {/snippet}
+      </VirtualList>
+    </div>
   {/if}
 </section>
 
@@ -506,6 +512,11 @@
   .scroll {
     flex: 1;
     overflow-y: auto;
+  }
+
+  .thread-rows {
+    flex: 1;
+    min-height: 0;
   }
 
   .undo-toast {
