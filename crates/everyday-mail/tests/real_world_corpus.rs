@@ -16,6 +16,9 @@ fn fixture(name: &str) -> &'static [u8] {
         "multipart_related_cid_images" => {
             include_bytes!("fixtures/real_world/multipart_related_cid_images.eml")
         }
+        "newsletter_encoded_image_query_string" => {
+            include_bytes!("fixtures/real_world/newsletter_encoded_image_query_string.eml")
+        }
         other => panic!("no such fixture: {other}"),
     }
 }
@@ -94,6 +97,28 @@ fn a_newsletters_tracking_pixel_is_dropped_and_its_links_survive() {
     );
     assert!(parsed.list_unsubscribe.is_some());
     assert_eq!(parsed.precedence.as_deref(), Some("bulk"));
+}
+
+/// Finding 1: `lol_html::Element::get_attribute` hands back an attribute's
+/// *source* text, entities and all, so a `src` written the standards-correct
+/// way -- `&amp;` for a literal `&` in a URL's query string -- used to be
+/// hashed and proxied with the `&amp;` still in it, and then fetched
+/// literally, breaking the image for most commercial mail. It has to be
+/// decoded once, before hashing, so the token and the eventual fetch agree
+/// on the same URL the sender actually meant.
+#[test]
+fn an_image_urls_entities_are_decoded_before_it_is_proxied() {
+    let parsed = parse("newsletter_encoded_image_query_string");
+    let html = parsed.html.expect("html body");
+    let clean =
+        sanitize::sanitize(&html, &sanitize::Rewrite::new(parsed.message_id.clone().unwrap()));
+
+    assert_eq!(clean.remote_images.len(), 1);
+    assert_eq!(
+        clean.remote_images[0].original_url,
+        "https://cdn.retailer.example/banner.png?w=600&h=300&fit=crop"
+    );
+    assert!(clean.html.contains("Shop now"));
 }
 
 #[test]

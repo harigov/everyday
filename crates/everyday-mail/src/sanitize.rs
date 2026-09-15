@@ -327,7 +327,21 @@ fn rewrite_dangerous_refs(
                 return Ok(());
             }
             if let Some(src) = el.get_attribute("src") {
-                let replacement = shared.borrow_mut().classify(&src);
+                // Decoded before classification for the same reason the
+                // `style` attribute is, just below: `get_attribute` hands
+                // back the attribute's *source* text, so `?w=600&amp;h=300`
+                // arrives with its `&amp;` still spelled out. Left alone,
+                // that entity-encoded ampersand ends up hashed and stored
+                // as part of the image's `original_url`, and then fetched
+                // by the protocol handler literally -- a server asked for
+                // `?w=600&amp;h=300` either serves nothing at that query or
+                // silently ignores everything after `&amp;h=300` as one
+                // opaque parameter, either way not the image the sender
+                // meant. Decoding once, here, before the URL is ever
+                // hashed or classified, is what keeps the token and the
+                // fetch in agreement with what the link actually says.
+                let decoded = crate::entities::decode_entities(&src);
+                let replacement = shared.borrow_mut().classify(&decoded);
                 el.set_attribute("src", &replacement)?;
             }
             Ok(())
@@ -358,7 +372,9 @@ fn rewrite_dangerous_refs(
         let shared = Rc::clone(shared);
         element!("[background]", move |el| {
             if let Some(background) = el.get_attribute("background") {
-                let replacement = shared.borrow_mut().classify(&background);
+                // See the `src` handler above for why this decodes first.
+                let decoded = crate::entities::decode_entities(&background);
+                let replacement = shared.borrow_mut().classify(&decoded);
                 el.set_attribute("background", &replacement)?;
             }
             Ok(())
@@ -543,6 +559,14 @@ fn looks_like_tracking_pixel(el: &Element) -> bool {
     width_tiny && height_tiny
 }
 
+/// Rewrites every `srcset` candidate, decoding each URL first for the same
+/// reason the `src`, `background` and `style` handlers all do -- see the
+/// `img_src` handler's own doc in [`rewrite_dangerous_refs`]. Decoding
+/// happens per candidate, after the list is split on `,`, because a decoded
+/// `&amp;` could otherwise be mistaken for punctuation the splitter itself
+/// looks for; nothing in the small entity table this crate decodes spells a
+/// comma or whitespace, but splitting first keeps that true by construction
+/// rather than by checking the table.
 fn rewrite_srcset(value: &str, shared: &Rc<RefCell<Shared>>) -> String {
     value
         .split(',')
@@ -553,9 +577,13 @@ fn rewrite_srcset(value: &str, shared: &Rc<RefCell<Shared>>) -> String {
             }
             Some(match candidate.split_once(char::is_whitespace) {
                 Some((url, descriptor)) => {
-                    format!("{} {}", shared.borrow_mut().classify(url), descriptor.trim())
+                    let decoded = crate::entities::decode_entities(url);
+                    format!("{} {}", shared.borrow_mut().classify(&decoded), descriptor.trim())
                 }
-                None => shared.borrow_mut().classify(candidate),
+                None => {
+                    let decoded = crate::entities::decode_entities(candidate);
+                    shared.borrow_mut().classify(&decoded)
+                }
             })
         })
         .collect::<Vec<_>>()
@@ -909,6 +937,56 @@ mod tests {
         let out = sanitize(r#"<a href="https://example.com">hi</a>"#, &rewrite());
         assert!(out.html.contains("target=\"_blank\""));
         assert!(out.html.contains("noopener"));
+    }
+
+    // ---- finding 1: an image URL's entities are decoded before proxying ---
+
+    #[test]
+    fn a_named_entity_in_a_src_query_string_is_decoded_before_hashing() {
+        let out = sanitize(r#"<img src="https://cdn.example/p.png?w=600&amp;h=300">"#, &rewrite());
+        assert_eq!(out.remote_images.len(), 1);
+        assert_eq!(out.remote_images[0].original_url, "https://cdn.example/p.png?w=600&h=300");
+    }
+
+    #[test]
+    fn a_numeric_entity_in_a_src_query_string_is_decoded_before_hashing() {
+        let out = sanitize(r#"<img src="https://cdn.example/p.png?w=600&#38;h=300">"#, &rewrite());
+        assert_eq!(out.remote_images.len(), 1);
+        assert_eq!(out.remote_images[0].original_url, "https://cdn.example/p.png?w=600&h=300");
+    }
+
+    #[test]
+    fn the_same_decoded_url_from_either_spelling_shares_one_token() {
+        let named =
+            sanitize(r#"<img src="https://cdn.example/p.png?w=600&amp;h=300">"#, &rewrite());
+        let numeric =
+            sanitize(r#"<img src="https://cdn.example/p.png?w=600&#38;h=300">"#, &rewrite());
+        assert_eq!(named.remote_images[0].token, numeric.remote_images[0].token);
+    }
+
+    #[test]
+    fn a_srcset_candidates_entities_are_decoded_before_hashing() {
+        let out = sanitize(
+            r#"<img src="https://cdn.example/p.png" srcset="https://cdn.example/p.png?w=600&amp;h=300 1x">"#,
+            &rewrite(),
+        );
+        assert!(
+            out.remote_images
+                .iter()
+                .any(|i| i.original_url == "https://cdn.example/p.png?w=600&h=300"),
+            "{:?}",
+            out.remote_images
+        );
+    }
+
+    #[test]
+    fn a_background_attributes_entities_are_decoded_before_hashing() {
+        let out = sanitize(
+            r#"<table background="https://cdn.example/p.png?w=600&amp;h=300"></table>"#,
+            &rewrite(),
+        );
+        assert_eq!(out.remote_images.len(), 1);
+        assert_eq!(out.remote_images[0].original_url, "https://cdn.example/p.png?w=600&h=300");
     }
 
     // ---- entity-encoded CSS cannot bypass the scrubber ---------------------
