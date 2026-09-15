@@ -10,6 +10,7 @@
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
+use crate::events::{Change, Kind, Op};
 use crate::service::{Service, blocking};
 use everyday_core::agent::{AgentSettings, Conversation, Memory, Message};
 use everyday_core::store::agent::ConversationQuery;
@@ -103,18 +104,61 @@ async fn agent_settings(
 
 async fn save_agent_settings(
     svc: Arc<Service>,
-    _ctx: Ctx,
+    ctx: Ctx,
     args: SaveSettings,
 ) -> CommandResult<AgentSettings> {
     let vault = svc.require()?;
-    blocking(move || {
+    let (settings, cleared) = blocking(move || {
+        let previous = vault.agent_settings()?;
+        // Compared before the write below overwrites `previous`, on
+        // `acknowledgement_name`'s own rule -- the endpoint actually
+        // reached, not the provider label -- so switching between two
+        // gateways that both happen to be `Provider::OpenAi` still counts
+        // as a change.
+        let provider_changed = previous.provider_config.acknowledgement_name()
+            != args.settings.provider_config.acknowledgement_name();
         vault.save_agent_settings(&args.settings)?;
+
+        // A provider change must *visibly* clear mail access, not merely
+        // disable it. `Account::assistant_acknowledged_for` already refuses
+        // every mail tool the moment `acknowledgement_name` stops matching
+        // -- that part was never silent -- but the account's own
+        // `assistant_provider_acknowledged` field, and so the ticked
+        // checkbox beside it in Settings → Accounts, would otherwise go on
+        // naming a provider that is no longer the one configured. Cleared
+        // here, in the same write, on every account that had it set, rather
+        // than left for whoever next opens that account to notice it is
+        // stale.
+        let mut cleared = Vec::new();
+        if provider_changed {
+            for mut account in vault.accounts()? {
+                if account.assistant_provider_acknowledged.take().is_some() {
+                    vault.save_account(&account)?;
+                    cleared.push(account.id.to_string());
+                }
+            }
+        }
+
         // Read back rather than echoing what was sent: `has_key` is derived
         // from the secret table, so the pane must be told what is true rather
         // than what it asked for.
-        Ok(vault.agent_settings()?)
+        Ok((vault.agent_settings()?, cleared))
     })
-    .await
+    .await?;
+
+    // A batch `Change` rather than one per account, matching `events.rs`'s
+    // own "the board reorder" rule: several accounts losing their
+    // acknowledgement in one save is one thing that happened, not several.
+    if !cleared.is_empty() {
+        svc.events().changed(Change {
+            kind: Kind::Account,
+            op: Op::Updated,
+            id: None,
+            ids: cleared,
+            origin: ctx.caller.origin().map(str::to_string),
+        });
+    }
+    Ok(settings)
 }
 
 /// Store the API key. There is no command that reads one back.
