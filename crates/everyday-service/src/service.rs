@@ -219,6 +219,28 @@ impl Service {
         self.mail.read().unwrap().as_ref().map(|m| m.statuses.clone())
     }
 
+    /// The cached answer to `unread_counts`, if the vault is unlocked --
+    /// see `mailsync::unread_cache`'s module docs for what it caches and
+    /// the two writes that invalidate it.
+    pub fn mail_unread_cache(&self) -> Option<Arc<crate::mailsync::unread_cache::UnreadCache>> {
+        self.mail.read().unwrap().as_ref().map(|m| m.unread_cache.clone())
+    }
+
+    /// `account`'s unread count per mailbox, through the cache
+    /// [`Service::mail_unread_cache`] answers -- what a future
+    /// `unread_counts` command, and the assistant's own mail tools, should
+    /// read instead of calling `Vault::mail_unread_counts` directly.
+    pub fn mail_unread_counts(
+        &self,
+        account: AccountId,
+    ) -> CommandResult<Vec<(everyday_core::id::MailboxId, u64)>> {
+        let vault = self.require()?;
+        let cache = self
+            .mail_unread_cache()
+            .ok_or_else(|| CommandError::new(codes::NO_VAULT, "mail is not open"))?;
+        Ok(cache.get_or_compute(account, || vault.mail_unread_counts(account))?)
+    }
+
     /// Replace what [`Service::packs`], [`Service::mail_index`] and
     /// [`Service::mail_statuses`] answer. `mailsync::wiring`'s own door into
     /// this session state -- see it for why the field itself stays private.

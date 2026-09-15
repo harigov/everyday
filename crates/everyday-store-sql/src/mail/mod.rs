@@ -401,6 +401,31 @@ impl MailStore for SqlStore {
         rows.into_iter().map(|r| Ok(r.i64(0)? as u32)).collect()
     }
 
+    fn pending_bodies(&self, mailbox: MailboxId, limit: u32) -> Result<Vec<(Message, u32)>> {
+        // `m.pack_len = 0` is the clear-column sentinel this trait's own
+        // docs name -- see `MailStore::pending_bodies` -- so this is a
+        // query over `mail_messages`' clear columns, exactly like
+        // `uid_set` above, not a decrypt of every row `mailbox` has.
+        let mut sql = "SELECT m.id, mm.uid, m.data FROM mail_messages m
+             JOIN message_mailboxes mm ON mm.message_id = m.id
+             WHERE mm.mailbox_id = ?1 AND m.pack_len = 0"
+            .to_string();
+        self.page(&mut sql, "m.date_us DESC", Some(limit), 0);
+        let rows = self.read().query(&sql, &vals![mailbox.to_string()])?;
+        rows.into_iter()
+            .map(|r| {
+                let mid: MailMessageId = r.text(0)?.parse().map_err(
+                    |e: <MailMessageId as std::str::FromStr>::Err| {
+                        everyday_core::error::Error::Invalid(e.to_string())
+                    },
+                )?;
+                let uid = r.i64(1)? as u32;
+                let message: Message = self.unseal(&message_aad(mid), &r.bytes(2)?)?;
+                Ok((message, uid))
+            })
+            .collect()
+    }
+
     fn reset_mailbox(&self, mailbox: MailboxId) -> Result<()> {
         write::reset_mailbox(self, mailbox)
     }

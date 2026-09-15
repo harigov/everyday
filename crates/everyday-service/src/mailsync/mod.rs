@@ -47,6 +47,10 @@
 //!   reconnect, repeat.
 //! - [`status`] -- what `sync_status` reads: each account's current phase,
 //!   progress and last error, kept in memory and updated as a sync runs.
+//! - [`unread_cache`] -- [`unread_cache::UnreadCache`], caching
+//!   `MailStore::unread_counts` and invalidated by the two writes that can
+//!   change it: the sync engine's own headers pass, and a person's batch
+//!   actions in `crate::domains::mail`.
 //!
 //! # Why generic over `MailSession` rather than boxed
 //!
@@ -67,6 +71,7 @@ pub mod passes;
 pub mod sender;
 pub mod status;
 pub mod task;
+pub mod unread_cache;
 pub mod wiring;
 
 #[cfg(test)]

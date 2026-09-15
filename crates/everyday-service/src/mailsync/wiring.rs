@@ -68,6 +68,7 @@ pub struct MailState {
     pub(crate) packs: Arc<dyn PackStore>,
     pub(crate) index: Arc<dyn everyday_core::MailSearch>,
     pub(crate) statuses: StatusRegistry,
+    pub(crate) unread_cache: Arc<crate::mailsync::unread_cache::UnreadCache>,
 }
 
 /// Open mail's storage against `vault`, and start its account tasks if this
@@ -96,7 +97,12 @@ pub(crate) fn open(svc: &Arc<Service>, vault: &Arc<Vault>) {
             return;
         }
     };
-    svc.set_mail_state(Some(MailState { packs, index, statuses: StatusRegistry::new() }));
+    svc.set_mail_state(Some(MailState {
+        packs,
+        index,
+        statuses: StatusRegistry::new(),
+        unread_cache: Arc::new(crate::mailsync::unread_cache::UnreadCache::new()),
+    }));
 
     if vault.is_writable() {
         register_account_tasks(svc, vault);

@@ -214,6 +214,8 @@ async fn a_real_mailbox_syncs_into_a_real_vault() {
         index: index.clone(),
         statuses: &statuses,
         attachment_cap_bytes: None,
+        index_commit: passes::CommitPacer::new(),
+        unread_cache: None,
     };
     let mut labels = LabelMailboxes::new(&vault, account_id);
     let mut threads = ThreadIndex::new();

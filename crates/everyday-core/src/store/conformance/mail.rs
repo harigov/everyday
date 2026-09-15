@@ -32,6 +32,7 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     optimistic_writes_and_snooze_round_trip(store);
     draft_round_trips(store);
     a_uidvalidity_reset_forgets_uids_but_keeps_messages(store);
+    pending_bodies_finds_only_unfetched_messages_newest_first(store);
     account_delete_cascades_every_mail_row(store);
 
     eprintln!("--- mail suite passed ---");
@@ -432,6 +433,58 @@ fn a_uidvalidity_reset_forgets_uids_but_keeps_messages(store: &dyn JournalStore)
     m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 2 }])
         .unwrap();
     assert_eq!(m.message_by_uid(mailbox.id, 2).unwrap().unwrap().id, msg.id);
+
+    cleanup_account(store, account);
+}
+
+/// [`MailStore::pending_bodies`]: only the messages still carrying the
+/// pending sentinel come back, newest first, and a body already fetched --
+/// `pack.len != 0` -- is excluded even though it is in the same mailbox.
+fn pending_bodies_finds_only_unfetched_messages_newest_first(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let base = Timestamp::now();
+    let older_pending =
+        message(account, ThreadId::new(), "older, still pending", "a@example.com", base);
+    let newer_pending = message(
+        account,
+        ThreadId::new(),
+        "newer, still pending",
+        "a@example.com",
+        base + SignedDuration::from_secs(60),
+    );
+    let mut already_fetched =
+        message(account, ThreadId::new(), "already fetched", "a@example.com", base);
+    already_fetched.pack =
+        MailPackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 128 };
+
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: older_pending.clone(), mailbox: mailbox.id, uid: 1 },
+            IngestMessage { message: newer_pending.clone(), mailbox: mailbox.id, uid: 2 },
+            IngestMessage { message: already_fetched.clone(), mailbox: mailbox.id, uid: 3 },
+        ],
+    )
+    .unwrap();
+
+    let pending = m.pending_bodies(mailbox.id, 10).unwrap();
+    assert_eq!(pending.len(), 2, "the already-fetched message must be excluded");
+    assert_eq!(pending[0].0.id, newer_pending.id, "newest pending first");
+    assert_eq!(pending[0].1, 2, "with its own uid in this mailbox");
+    assert_eq!(pending[1].0.id, older_pending.id);
+    assert_eq!(pending[1].1, 1);
+    assert!(
+        pending.iter().all(|(msg, _)| msg.id != already_fetched.id),
+        "a body that already landed must never be reported pending"
+    );
+
+    let capped = m.pending_bodies(mailbox.id, 1).unwrap();
+    assert_eq!(capped.len(), 1);
+    assert_eq!(capped[0].0.id, newer_pending.id, "limit keeps the newest, not an arbitrary one");
 
     cleanup_account(store, account);
 }

@@ -223,6 +223,17 @@ impl Vault {
         self.with_mail(|m| m.uid_set(mailbox))
     }
 
+    /// Every message in `mailbox` still waiting for its body, with its uid
+    /// in that mailbox, newest first, capped at `limit` -- see
+    /// [`crate::store::mail::MailStore::pending_bodies`].
+    pub fn mail_pending_bodies(
+        &self,
+        mailbox: MailboxId,
+        limit: u32,
+    ) -> Result<Vec<(Message, u32)>> {
+        self.with_mail(|m| m.pending_bodies(mailbox, limit))
+    }
+
     pub fn reset_mailbox(&self, mailbox: MailboxId) -> Result<()> {
         self.writable()?;
         self.with_mail(|m| m.reset_mailbox(mailbox))

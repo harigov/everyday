@@ -300,6 +300,23 @@ pub trait MailStore: Send + Sync {
     /// has it) is compared against to find what the server no longer has.
     fn uid_set(&self, mailbox: MailboxId) -> Result<Vec<u32>>;
 
+    /// Every message in `mailbox` whose body has not been fetched yet, with
+    /// its uid *in that mailbox*, newest first, capped at `limit` -- what
+    /// the bodies pass reads instead of walking every uid `mailbox` has and
+    /// decrypting each one to ask.
+    ///
+    /// "Not fetched yet" is `pack_len = 0` -- the sentinel a header ingested
+    /// before its body arrives is stored with (a real sealed pack's length
+    /// is never zero, even for an empty message, because the AEAD overhead
+    /// alone is non-zero; `everyday-service`'s sync engine is the one place
+    /// that writes and reads this sentinel by name, as
+    /// `mailsync::ingest::pending_pack_ref`/`is_pending`) -- so this is a
+    /// query over a clear column, the same terms [`MailStore::uid_set`] and
+    /// [`MailStore::unread_counts`] already run on, not a decrypt of every
+    /// row in the mailbox the way scanning [`MailStore::message_by_uid`]
+    /// one uid at a time would be.
+    fn pending_bodies(&self, mailbox: MailboxId, limit: u32) -> Result<Vec<(Message, u32)>>;
+
     /// Forget every `message_mailboxes` row naming `mailbox`, and reset its
     /// sync cursors to zero, without touching the messages themselves or any
     /// *other* mailbox's membership. What a `UIDVALIDITY` change asks for:

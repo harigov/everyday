@@ -127,8 +127,18 @@ async fn batch_op(
     svc.check_mail_rate_limit(&origin, "person")?;
     let vault = svc.require()?;
     let ops = blocking(move || Ok(vault.apply_thread_ops(&threads, kind, origin)?)).await?;
+    let cache = svc.mail_unread_cache();
     for account in ops.iter().map(|op| op.account_id).collect::<BTreeSet<_>>() {
         svc.notify_outbox(account);
+        // Every batch action passes through here, including the five that
+        // cannot move a thread across the read/unread line (star, label,
+        // snooze and their opposites) -- invalidating regardless is the
+        // cheap, always-correct choice `mailsync::unread_cache`'s module
+        // docs describe; the alternative is a `match` on `kind` that has to
+        // be kept in step with `OpKind::is_flag_change` by hand.
+        if let Some(cache) = &cache {
+            cache.invalidate(account);
+        }
     }
     Ok(ops)
 }
