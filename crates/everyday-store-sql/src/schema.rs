@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -88,7 +88,7 @@ pub fn migrate(
 
 /// Every migration step, in order. Index 0 is version 1.
 pub fn steps(d: Dialect) -> Vec<Vec<String>> {
-    vec![v1(d), v2(d), v3(d), v4(d), v5(d), v6(d), v7(d), v8(d), v9(d)]
+    vec![v1(d), v2(d), v3(d), v4(d), v5(d), v6(d), v7(d), v8(d), v9(d), v10(d)]
 }
 
 /// The `blobs` table, for a backend that keeps attachments in the database.
@@ -1015,6 +1015,27 @@ fn v9(d: Dialect) -> Vec<String> {
         // order.
         "CREATE INDEX IF NOT EXISTS ops_by_origin ON ops (origin, not_before_us)".into(),
     ]
+}
+
+/// Version 10: the standing remote-image allow-list --
+/// [`everyday_core::mail::RemoteImageSettings`] -- a one-row singleton in
+/// exactly the shape `agent_settings` already is (`v6`, above): a fixed `id
+/// = 1` a `CHECK` pins to one row, so a bug that tried to write a second
+/// configuration fails at the database rather than leaving two and reading
+/// whichever came back first.
+///
+/// Deliberately its own step rather than folded into `v9`'s mail tables:
+/// `v9` had already shipped by the time this was designed, and every step in
+/// this file is additive precisely so that a table nobody had thought of yet
+/// arrives as a new version rather than an edit to one already on disk.
+fn v10(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![format!(
+        "CREATE TABLE IF NOT EXISTS mail_remote_image_settings (
+             id          {int} PRIMARY KEY CHECK (id = 1),
+             data        {blob} NOT NULL
+         )"
+    )]
 }
 
 #[cfg(test)]

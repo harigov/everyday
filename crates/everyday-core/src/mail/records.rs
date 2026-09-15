@@ -316,6 +316,41 @@ pub struct PartRef {
     pub blob: Option<BlobId>,
 }
 
+/// One remote image `everyday_mail::sanitize::sanitize` proxied rather than
+/// fetched, recorded so the protocol handler can decide, later and per
+/// request, whether to actually reach the sender's server.
+///
+/// This is `everyday-core`'s own copy of the shape
+/// `everyday_mail::sanitize::RemoteImage` computes at sync — deliberately a
+/// separate type rather than the sanitiser's own struct stored directly:
+/// this crate has no dependency on `everyday-mail` (see this module's docs
+/// on why the split exists at all), and a sealed record's shape belongs to
+/// the crate that stores it, not the crate that happened to compute it
+/// first. The sync engine converts one into the other on its way into
+/// [`Body::remote_images`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteImage {
+    /// The address the message actually pointed at. Never shown to the
+    /// person without them asking, and never reached until
+    /// `everyday-service::mailview` clears it against the per-sender
+    /// allow-list and the SSRF check — see the plan's "Rendering a message".
+    pub original_url: String,
+    /// `blake3(original_url)`, hex-encoded — what the sanitised HTML's
+    /// `everyday://mail/img/{token}` and this record both use, so an
+    /// attacker who reads the sealed row learns nothing the rewritten
+    /// markup did not already say.
+    pub token: String,
+    /// Set once the image has actually been fetched and cached: the blob
+    /// holding its bytes, content-addressed like every other attachment.
+    /// `None` until the first time someone allows it, which is what lets a
+    /// reopened message skip the network entirely once it has been shown
+    /// once — see [`crate::store::mail::MailStore::put_body`]'s caller in
+    /// `mailview::remote_image`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_blob: Option<BlobId>,
+}
+
 /// The sanitised, threaded-apart text of one message.
 ///
 /// A row of its own, keyed by [`MailMessageId`] rather than a field on
@@ -339,6 +374,21 @@ pub struct Body {
     pub signature_range: Option<(u32, u32)>,
     #[serde(default)]
     pub parts: Vec<PartRef>,
+    /// Every remote image `everyday_mail::sanitize::sanitize` found and
+    /// proxied in `html_sanitised`, for `everyday-service::mailview` to
+    /// answer an `everyday://mail/img/{token}` request against — see
+    /// `docs/plans/mail.md`'s "Rendering a message".
+    ///
+    /// `#[serde(default)]` and nothing stronger: `Body` is sealed and shared
+    /// between the sync engine that writes it and the service that reads it
+    /// back, so a row written before this field existed must still decode —
+    /// as an empty list, which is exactly what "this message was synced
+    /// before remote images were tracked" should mean. Adding a field is
+    /// safe here in a way that renaming or removing one would not be; see
+    /// this module's own docs on why every record in it treats a sealed
+    /// payload as a thing an older build might still hand back.
+    #[serde(default)]
+    pub remote_images: Vec<RemoteImage>,
 }
 
 impl Body {
@@ -677,6 +727,85 @@ impl Op {
     }
 }
 
+// ---- remote-image permissions ----------------------------------------------
+
+/// The standing allow-list a remote image is checked against: senders and
+/// domains someone has said yes to for good, kept sealed in the vault
+/// exactly the way `AgentSettings` is (`crate::store::agent`) — see
+/// `everyday-service::mailview` for the per-message *one-off* allowance,
+/// which is deliberately not part of this record at all, because it does
+/// not outlive the session that granted it.
+///
+/// One vault-wide list rather than one per account: a person who trusts
+/// `newsletter@example.com` on one mailbox trusts the same address on
+/// another, and a second copy of the same list per account would only be
+/// somewhere for the two to quietly disagree.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteImageSettings {
+    /// Exact sender addresses, lower-cased for comparison — see
+    /// [`RemoteImageSettings::allows`].
+    #[serde(default)]
+    pub senders: Vec<String>,
+    /// Domains a sender's address may end in — `example.com` allows
+    /// `anyone@example.com` and `anyone@mail.example.com`.
+    #[serde(default)]
+    pub domains: Vec<String>,
+}
+
+impl RemoteImageSettings {
+    /// Does this settled allow-list clear `sender` to load its images?
+    ///
+    /// Case-insensitive on both sides — mail headers are not consistent
+    /// about casing, and a person typing an address into the settings pane
+    /// should not have to match it exactly. A domain matches the sender's
+    /// address by suffix on a label boundary (`example.com` matches
+    /// `mail.example.com` but not `evilexample.com`), never by a bare
+    /// substring.
+    pub fn allows(&self, sender: &str) -> bool {
+        let sender = sender.trim().to_ascii_lowercase();
+        if self.senders.iter().any(|s| s.eq_ignore_ascii_case(&sender)) {
+            return true;
+        }
+        let Some((_, host)) = sender.rsplit_once('@') else {
+            return false;
+        };
+        self.domains.iter().any(|d| {
+            let d = d.trim().to_ascii_lowercase();
+            !d.is_empty() && (host == d || host.ends_with(&format!(".{d}")))
+        })
+    }
+
+    /// `sender` added if it is not already there. Case preserved for
+    /// display, matched case-insensitively by [`RemoteImageSettings::allows`].
+    pub fn allow_sender(&mut self, sender: &str) {
+        let sender = sender.trim();
+        if !sender.is_empty() && !self.senders.iter().any(|s| s.eq_ignore_ascii_case(sender)) {
+            self.senders.push(sender.to_string());
+        }
+    }
+
+    pub fn allow_domain(&mut self, domain: &str) {
+        let domain = domain.trim();
+        if !domain.is_empty() && !self.domains.iter().any(|d| d.eq_ignore_ascii_case(domain)) {
+            self.domains.push(domain.to_string());
+        }
+    }
+
+    /// Remove a sender or a domain, whichever was passed. A no-op if neither
+    /// was on the list, which `mailview::revoke_remote_image_allowance`
+    /// relies on rather than treating as an error — revoking something
+    /// already gone is not a mistake worth failing a command over.
+    pub fn revoke(&mut self, sender: Option<&str>, domain: Option<&str>) {
+        if let Some(sender) = sender {
+            self.senders.retain(|s| !s.eq_ignore_ascii_case(sender));
+        }
+        if let Some(domain) = domain {
+            self.domains.retain(|d| !d.eq_ignore_ascii_case(domain));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,6 +889,7 @@ mod tests {
             quoted_ranges: vec![(21, 49)],
             signature_range: Some((51, 74)),
             parts: Vec::new(),
+            remote_images: Vec::new(),
         };
         let text = body.model_text();
         assert!(text.contains("Sure, sounds good."));
@@ -776,6 +906,7 @@ mod tests {
             quoted_ranges: Vec::new(),
             signature_range: None,
             parts: Vec::new(),
+            remote_images: Vec::new(),
         };
         assert_eq!(body.model_text(), "just this");
     }
@@ -789,6 +920,7 @@ mod tests {
             quoted_ranges: vec![(2, 9_999)],
             signature_range: None,
             parts: Vec::new(),
+            remote_images: Vec::new(),
         };
         assert_eq!(body.model_text(), "sh");
     }
@@ -804,6 +936,7 @@ mod tests {
             quoted_ranges: vec![(4, 6)],
             signature_range: None,
             parts: Vec::new(),
+            remote_images: Vec::new(),
         };
         // Nudged to a boundary rather than panicking; the exact split is
         // less important than surviving it.
