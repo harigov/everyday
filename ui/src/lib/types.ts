@@ -1377,6 +1377,21 @@ export interface ThreadDetail {
   messages: MailMessage[]
 }
 
+/** Which part of the sync an account's task is doing right now. Mirrors
+ * `everyday_service::mailsync::status::Phase`. */
+export type MailSyncPhase = 'idle' | 'connecting' | 'headers' | 'bodies' | 'attachments' | 'idling'
+
+/** One account's sync progress, as `sync_status` reports it. `total` is `0`
+ * when it is not yet known, which reads as "in progress, indeterminate"
+ * rather than "nothing to do". */
+export interface MailSyncProgress {
+  accountId: AccountId
+  phase: MailSyncPhase
+  done: number
+  total: number
+  lastError?: string | null
+}
+
 // ── The command surface, describing itself ─────────────────────────────
 //
 // What `list_commands` answers with. Not used to *call* anything — the

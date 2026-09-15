@@ -60,6 +60,7 @@ import type {
   LogId,
   LogQuery,
   MailProviderInfo,
+  MailSyncProgress,
   Mailbox,
   MailboxId,
   Memory,
@@ -308,6 +309,7 @@ export interface Commands {
   quickWeekNote: { args: { thisWeek: string; lastWeek?: string }; result: string }
   readExport: { args: { handle: string; offset: number }; result: ExportChunk }
   readImport: { args: { handle: string }; result: ArchiveManifest }
+  rebuildMailIndex: { args: { id?: AccountId }; result: void }
   routineTemplates: { args: Record<string, never>; result: Template[] }
   runImport: { args: { handle: string; parts: string[]; mode: string }; result: ImportResult }
   runRoutine: { args: { id: RoutineId }; result: RoutineRun }
@@ -367,8 +369,10 @@ export interface Commands {
   startImport: { args: { name?: string; bytes: number }; result: ImportUpload }
   status: { args: Record<string, never>; result: VaultStatus }
   subscribeCalendar: { args: { name: string; url: string; color: string }; result: CalendarInfo }
+  syncAccount: { args: { id: AccountId }; result: void }
   syncCalendar: { args: { id: CalendarId }; result: SyncReport }
   syncDueCalendars: { args: { force: boolean }; result: SyncReport[] }
+  syncStatus: { args: Record<string, never>; result: MailSyncProgress[] }
   taskStats: { args: Record<string, never>; result: TaskStats }
   taskTags: { args: Record<string, never>; result: TagCount[] }
   timeByPurpose: { args: { from: string; to: string }; result: BalanceReport }
@@ -506,6 +510,7 @@ export const COMMAND_NAMES = {
   quickWeekNote: 'quick_week_note',
   readExport: 'read_export',
   readImport: 'read_import',
+  rebuildMailIndex: 'rebuild_mail_index',
   routineTemplates: 'routine_templates',
   runImport: 'run_import',
   runRoutine: 'run_routine',
@@ -550,8 +555,10 @@ export const COMMAND_NAMES = {
   startImport: 'start_import',
   status: 'status',
   subscribeCalendar: 'subscribe_calendar',
+  syncAccount: 'sync_account',
   syncCalendar: 'sync_calendar',
   syncDueCalendars: 'sync_due_calendars',
+  syncStatus: 'sync_status',
   taskStats: 'task_stats',
   taskTags: 'task_tags',
   timeByPurpose: 'time_by_purpose',
@@ -699,6 +706,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'quick_week_note',
   'read_export',
   'read_import',
+  'rebuild_mail_index',
   'routine_templates',
   'run_import',
   'run_routine',
@@ -742,8 +750,10 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'start_import',
   'status',
   'subscribe_calendar',
+  'sync_account',
   'sync_calendar',
   'sync_due_calendars',
+  'sync_status',
   'task_stats',
   'task_tags',
   'time_by_purpose',
@@ -801,6 +811,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'mark_runs_seen',
   'merge_trackers',
   'poll_auto_lock',
+  'rebuild_mail_index',
   'run_import',
   'run_routine',
   'run_tool',
@@ -839,6 +850,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_item_status',
   'set_quick_job',
   'subscribe_calendar',
+  'sync_account',
   'sync_calendar',
   'sync_due_calendars',
   'touch',

@@ -2230,6 +2230,23 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "id",
+          "required": false,
+          "type": "AccountId"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "rebuild_mail_index",
+      "orScope": null,
+      "returns": "void",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -3186,6 +3203,23 @@
         {
           "name": "id",
           "required": true,
+          "type": "AccountId"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "sync_account",
+      "orScope": null,
+      "returns": "void",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "CalendarId"
         }
       ],
@@ -3218,6 +3252,17 @@
       "orScope": null,
       "returns": "SyncReport[]",
       "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "sync_status",
+      "orScope": null,
+      "returns": "MailSyncProgress[]",
+      "scope": "mail",
       "sensitive": false,
       "streams": false
     },

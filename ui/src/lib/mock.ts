@@ -24,6 +24,7 @@ import type {
   CalendarInfo,
   BalanceReport,
   MailProviderInfo,
+  MailSyncProgress,
   EventQuery,
   Goal,
   GoalActivity,
@@ -1585,6 +1586,18 @@ const MAIL_PROVIDER_PRESETS: MailProviderInfo[] = [
 /** Password secrets the mock has been given, keyed by account id -- what
  *  `has_password` and `signed_in` are computed from after `save_account_password`. */
 const accountPasswords = new Map<string, string>([['acct-fastmail', 'hunter2-demo']])
+
+/** Each seeded account's sync progress, as `sync_status` reads it back --
+ *  both already settled at rest, the shape an account looks like once its
+ *  first sync is long done. `sync_account` nudges one back through a couple
+ *  of phases before settling again, so a status screen built against this
+ *  mock has something to watch move. */
+const mailSyncProgress = new Map<string, MailSyncProgress>(
+  accounts.map((a) => [
+    a.id,
+    { accountId: a.id, phase: 'idling', done: 0, total: 0, lastError: null },
+  ]),
+)
 
 function eventAt(
   id: string,
@@ -4148,6 +4161,67 @@ export const mockInvoke = async <T>(
       const access = args.access as AgentMailAccess
       if (args.caller === 'assistant') account.assistantAccess = access
       else if (args.caller === 'mcp') account.mcpAccess = access
+      return undefined as T
+    }
+
+    // ── Mail sync ─────────────────────────────────────────────────────
+
+    case 'sync_account': {
+      requireUnlocked()
+      const id = str(args.id)
+      const account = accounts.find((a) => a.id === id)
+      if (!account) throw new VaultError('notFound', 'no such account')
+      // A plausible "just started a pass": headers first, the phase a
+      // caller who force-syncs right after adding an account most wants to
+      // see move -- then settled back to idling, with `lastSyncedAt`
+      // bumped, once this resolves.
+      mailSyncProgress.set(id, {
+        accountId: id,
+        phase: 'headers',
+        done: 0,
+        total: 12,
+        lastError: null,
+      })
+      await sleep(400)
+      mailSyncProgress.set(id, {
+        accountId: id,
+        phase: 'idling',
+        done: 0,
+        total: 0,
+        lastError: null,
+      })
+      account.lastSyncedAt = iso(0)
+      return undefined as T
+    }
+
+    case 'sync_status': {
+      requireUnlocked()
+      return Array.from(mailSyncProgress.values()).map((p) => structuredClone(p)) as T
+    }
+
+    case 'rebuild_mail_index': {
+      requireUnlocked()
+      const id = args.id as string | undefined
+      const ids = id ? [id] : accounts.map((a) => a.id)
+      for (const accountId of ids) {
+        mailSyncProgress.set(accountId, {
+          accountId,
+          phase: 'bodies',
+          done: 0,
+          total: 0,
+          lastError: null,
+        })
+      }
+      await sleep(400)
+      for (const accountId of ids) {
+        mailSyncProgress.set(accountId, {
+          accountId,
+          phase: 'idling',
+          done: 0,
+          total: 0,
+          lastError: null,
+        })
+      }
       return undefined as T
     }
 
