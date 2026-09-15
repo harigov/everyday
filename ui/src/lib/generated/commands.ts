@@ -340,6 +340,10 @@ export interface Commands {
   readExport: { args: { handle: string; offset: number }; result: ExportChunk }
   readImport: { args: { handle: string }; result: ArchiveManifest }
   rebuildMailIndex: { args: { id?: AccountId }; result: void }
+  respondToInvite: {
+    args: { messageId: MailMessageId; response: string; comment?: string | null }
+    result: void
+  }
   revokeRemoteImageAllowance: {
     args: { sender?: string | null; domain?: string | null }
     result: void
@@ -579,6 +583,7 @@ export const COMMAND_NAMES = {
   readExport: 'read_export',
   readImport: 'read_import',
   rebuildMailIndex: 'rebuild_mail_index',
+  respondToInvite: 'respond_to_invite',
   revokeRemoteImageAllowance: 'revoke_remote_image_allowance',
   routineTemplates: 'routine_templates',
   runImport: 'run_import',
@@ -799,6 +804,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'read_export',
   'read_import',
   'rebuild_mail_index',
+  'respond_to_invite',
   'revoke_remote_image_allowance',
   'routine_templates',
   'run_import',
@@ -925,6 +931,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'new_draft',
   'poll_auto_lock',
   'rebuild_mail_index',
+  'respond_to_invite',
   'revoke_remote_image_allowance',
   'run_import',
   'run_routine',

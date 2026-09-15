@@ -97,6 +97,7 @@ import {
   mockMarkUnread,
   mockMoveToMailbox,
   mockNewDraft,
+  mockRespondToInvite,
   mockSaveDraft,
   mockSearchMail,
   mockSendDraft,
@@ -4474,6 +4475,14 @@ export const mockInvoke = async <T>(
     case 'unsnooze':
       requireUnlocked()
       mockUnsnooze(str(args.id))
+      return undefined as T
+    case 'respond_to_invite':
+      requireUnlocked()
+      mockRespondToInvite(
+        str(args.messageId),
+        str(args.response),
+        args.comment == null ? undefined : str(args.comment),
+      )
       return undefined as T
 
     case 'list_drafts':

@@ -486,6 +486,20 @@ export function mockUnsnooze(id: ThreadId): void {
   thread(id).snoozedUntil = null
 }
 
+// ── Calendar invitations (phase 6) ───────────────────────────────────
+//
+// The invite banner itself -- a message's `invite` field, and what an
+// accept/tentative/decline click should update on it -- is agent (a)'s own
+// addition to this mock (see the module docs above on why this file is
+// expected to be replaced wholesale). This satisfies only the wire
+// contract, `void`, so a call against the mock transport does not throw
+// while that lands.
+export function mockRespondToInvite(
+  _messageId: MailMessageId,
+  _response: string,
+  _comment?: string,
+): void {}
+
 // ── Drafts and sending ───────────────────────────────────────────────
 
 export function mockListDrafts(): Draft[] {
