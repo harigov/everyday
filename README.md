@@ -47,21 +47,22 @@ widgets". In exchange you get native *text*, a mature editor, and one
 codebase. For a journal — an app that is essentially a text canvas — that is
 the right side of the trade.
 
-## Seven apps, one vault
+## Eight apps, one vault
 
 A bar down the left edge switches between **Overview**, **Notes**, **Todo**,
-**Calendar**, **Library**, **Assistant** and **Journal** (`Ctrl/Cmd J`
-cycles); right-clicking one of them offers what that app can start from a
-standing stop — the same actions the tray offers, from the same registration.
-They share a vault, a password and a lock; they share nothing else — except
-that two of them are views over what the others already store. The calendar
-draws the journal's and the todo app's records on one grid, and the Overview
-says what all four amounted to. That is the whole point of both.
+**Calendar**, **Library**, **Mail**, **Assistant** and **Journal**
+(`Ctrl/Cmd J` cycles); right-clicking one of them offers what that app can
+start from a standing stop — the same actions the tray offers, from the same
+registration. They share a vault, a password and a lock; they share nothing
+else — except that two of them are views over what the others already
+store. The calendar draws the journal's and the todo app's records on one
+grid, and the Overview says what all four amounted to. That is the whole
+point of both.
 
 The order is the order of a day rather than the order they were built in. The
 Overview is first because it is the page you arrive at and it is now made of
 whatever cards its owner put on it; the journal is last because it is the one
-app you go to on purpose, with something already in mind to write. The four in
+app you go to on purpose, with something already in mind to write. The five in
 between are the ones you dip into all day.
 
 The bar sits outside the sidebar because it is not any one app's navigation:
@@ -186,14 +187,50 @@ and its events appear on the grid, read-only, in a colour you choose. A
 the same way — a team calendar, a fixture list, your country's public
 holidays.
 
-Subscriptions rather than accounts, deliberately. There is no OAuth client
+Subscriptions rather than accounts, by default. There is no OAuth client
 registered with a vendor, no redirect server, no token to refresh and no
 scope that could grow later — which is the only arrangement that keeps
 working for an application that is a binary you built yourself rather than a
 product with a client id. The honest trade: **the sync is one way.** Events
 you create here are yours and stay here.
 
-Some care went into the parts that are easy to get wrong:
+### Calendars that sign in
+
+A calendar can also come from an [account](#accounts) instead of a feed —
+the same record mail uses, with calendar switched on for it. That buys two
+things a feed cannot: a token revoked from the provider's own settings
+rather than a secret URL that has to be regenerated, and a sync that asks
+only for what changed since last time rather than downloading the whole
+calendar again.
+
+Where that sync goes depends on who is asking. Google's calendars come
+through the Calendar API rather than through CalDAV, even though Google
+publishes a CalDAV endpoint of its own (`apidata.googleusercontent.com`) —
+the REST API is the stabler of the two, and this application already has a
+client for it. Microsoft's come through Graph's `calendarView/delta`, which
+hands back only what changed since the last page, with `Prefer:
+outlook.timezone` so the times that arrive are already in the calendar's own
+zone rather than UTC. iCloud, Fastmail, Yahoo and a self-hosted server all
+speak CalDAV instead, over `libdav`: discovered the way RFC 6764 describes —
+a principal URL, then a calendar-home-set, then the calendars inside it —
+and kept current with an etag diff or, where the server advertises it, the
+RFC 6578 `sync-collection` REPORT this application writes by hand, because
+`libdav` does not implement that one request.
+
+Every one of these is read-only, exactly like a feed: nothing here ever
+writes an event back to the server it came from. Recurrence is still
+expanded once, at sync, but through a different reader than a plain feed's —
+`calcard`'s own engine, because CalDAV and Graph hand back `RRULE`-bearing
+events and delta pages rather than one static document, and a second,
+hand-rolled expander for that shape would be the DST-boundary risk the
+[assistant's two-model section](#a-second-model-for-the-small-jobs) warns
+about elsewhere, just doubled. An invitation that arrives in **mail** —
+accept, tentative, decline — sends its reply as an ordinary email back to
+whoever organised it; it does not write to the calendar API at all, which is
+what keeps every calendar in this section read-only without making RSVP a
+missing feature.
+
+Some care went into a feed's parts that are easy to get wrong:
 
 - **Recurrence is expanded at sync time, not at draw time.** A weekly
   stand-up arrives as one `VEVENT` with an `RRULE` and is stored as one row
@@ -211,16 +248,20 @@ Some care went into the parts that are easy to get wrong:
   expired link, a 200 with an error page in it: all of them parse to zero
   events, and all of them would otherwise empty a working calendar. Anything
   that is not an iCalendar document is refused before it can replace one, and
-  the reason is recorded beside the calendar rather than raised as a dialog.
+  the reason is recorded beside the calendar rather than raised as a dialog —
+  the same rule an account calendar's own sync follows when a provider
+  answers with nothing usable.
 - **The feed URL is a credential** and is sealed like everything else — never
   in a clear column, and never in an error message, which is a place error
-  strings have a habit of ending up.
+  strings have a habit of ending up. An account calendar has no URL of its
+  own to leak: its credential is the account's, sealed once in
+  `record_secrets` and never repeated per calendar.
 
 The network. This application has no telemetry, no update check, no crash
-reporter and no analytics. There are exactly two features that open a socket
-— refreshing a subscribed calendar, and looking up what a book is called —
-and both do it through one client in `crates/everyday-app/src/http.rs`, so
-the timeout, the redirect limit and the size cap are decided once.
+reporter and no analytics. Two features from the very first version open a
+socket — refreshing a subscribed calendar, and looking up what a book is
+called — and both do it through one client in `crates/everyday-app/src/http.rs`,
+so the timeout, the redirect limit and the size cap are decided once.
 `everyday-core` still has no async runtime, no TLS stack and no way to reach
 the network at all, which is what keeps the difficult halves — RFC 5545,
 recurrence and zones on one side, five reply formats and five rating scales
@@ -228,6 +269,31 @@ on the other — testable offline. The webview's own permissions are unchanged
 and remain none: its content security policy allows no outbound connection,
 so neither a feed's contents nor a search result can cause a request of
 their own.
+
+Mail and account calendars open sockets of their own, and every host either
+can reach is named here rather than left to a packet capture to discover:
+
+- **The account's own IMAP and SMTP servers** — whatever you configured or a
+  preset filled in — over TLS, for the mail a mail-enabled account fetches
+  and sends.
+- **The OAuth authorisation and token endpoints of the provider you
+  configured** — Google's, Microsoft's, or whatever a custom account's
+  preset names — only while signing in and while a token is being renewed.
+- **`www.googleapis.com`, for a Google account's calendar**, and
+  **`graph.microsoft.com`, for a Microsoft one** — only once calendar is
+  switched on for that account, never for mail alone. iCloud, Fastmail,
+  Yahoo and a self-hosted server are reached at the host their own account
+  names, over CalDAV.
+- **An image host, only for a sender you have allowed or a message you asked
+  to load images on this once** — fetched by the app's own protocol handler,
+  never by the message, so the sender learns nothing from you opening it.
+- **The model provider you configured, and only for mail features you have
+  separately switched on** — categorising, summaries, auto-drafts and the
+  assistant's own mail tools each stay off until you turn them on, per
+  account, and each says so at the switch.
+
+Nothing above is contacted unless the account, the calendar, or the feature
+it belongs to is turned on — the same rule the two original sockets follow.
 
 ## Notes
 
@@ -424,6 +490,155 @@ the answer to "dune" and win — a race that shows up as a suggestion list
 flickering to the wrong thing and staying there. It is checked in
 `ui/scripts/library.test.mjs`, by making the answers arrive out of order on
 purpose.
+
+## Accounts
+
+An **account** is a vault-level record for a mailbox provider you sign in
+to — Google, Microsoft, iCloud, Fastmail, Yahoo, or any other IMAP server —
+holding how to reach it and how to authenticate. It is not owned by the mail
+app: mail asks it for a mail scope, the calendar asks it for a calendar
+scope (see [Calendars that sign in](#calendars-that-sign-in)), and a later
+feature can ask for a third, without any of them holding the credential
+themselves. **One account, several switches** — mail and calendar are each
+turned on independently, so a work account can serve one and not the other.
+
+Signing in is either OAuth or a password, depending on what the provider
+offers. Google and Microsoft sign in with **your own OAuth client id**,
+registered in your own developer console rather than one this application
+ships. That is a deliberate trade, not an oversight: an application built
+and shared as source, with no vendor account of its own, has nothing to
+submit for Google's restricted-scope review or a CASA assessment, and
+nothing that could be revoked out from under everyone who uses it at once.
+Filling in a client id costs ten minutes with the setup guide beside the
+field; a built-in one is a preset with that field already filled, for
+whoever decides later that the verification it needs is worth paying for.
+**iCloud, Fastmail, Yahoo and a self-hosted or university server** sign in
+with an app password instead — a second, single-purpose password the
+provider can issue and revoke on its own, never your ordinary one.
+
+Two warnings the setup guide puts where they cannot be missed. A new Google
+OAuth project starts in **Testing** mode, where a refresh token expires
+every seven days and sign-in quietly stops working a week after it looked
+fine — the guide's first instruction is to **publish the project as "In
+production"** instead. And a work or school Microsoft tenant may need its
+administrator's approval, or IMAP and SMTP AUTH turned on for the mailbox,
+before sign-in will work there at all.
+
+### What agents may do
+
+Every account carries its own answer to "what may an agent do with this
+mailbox": read, draft, edit, remove — to Trash, never permanently — and
+archive, and, separately, send. One switch per permission, in two columns —
+the chat assistant and any client connected over MCP — because the two can
+disagree about the same account. **Reading, drafting, editing, removing and
+archiving are on by default for both.** **Sending is off for both**, and
+turning it on for MCP still routes every send through the same undo window
+a person's own send goes through — it is queued, not fired.
+
+The chat assistant needs one thing more before any of this applies: a
+sentence — "your mail will be sent to *(provider)* when you ask about it" —
+ticked once per account, naming the model provider actually configured right
+now. Change the provider and the tick clears, because the sentence was a
+promise about a particular one. MCP needs no such tick: connecting a client
+there was already the choice this consents to.
+
+## Mail
+
+An app on the bar for accounts with mail switched on. It speaks IMAP and
+SMTP — nothing proprietary, no vendor SDK — because the trait it syncs
+through, `MailSession`, is this application's own; a provider whose only
+API is not IMAP is an adapter that trait admits, not a rewrite. Superhuman
+is the bar for feel it was built against: a split inbox, keyboard first,
+undo send, snooze, categories, and drafts written ahead of you.
+
+**Everything is offline.** Every message, every body, every attachment —
+subject to a size cap you can set — is kept in the vault, sealed the way
+everything else here is. Opening a thread is a read of this computer; the
+server is reconciled with on a schedule and never waited on for a keypress.
+
+### How a mailbox arrives
+
+Adding an account does not mean a wait before anything shows. The first
+sync is three passes, newest first: **headers**, in batches, so the list is
+usable the moment the first batch lands; **bodies**, fetched raw into the
+pack store and parsed, sanitised and indexed as they arrive, with
+attachments extracted from those same raw bytes in the same pass rather
+than fetched a second time. After that, one long-lived task per account
+holds an IDLE connection on the inbox and polls the rest on a cadence,
+stopping when the vault locks and resuming from where it left off on
+unlock. Opening a thread never waits on any of this.
+
+### Sending, undoing, and coming back later
+
+Every action — archive, star, move, label, snooze, send — writes the local
+row and queues an op on the account's outbox in the same stroke, so the
+interface never waits on a server for a keypress, and a failure that turns
+out to be permanent reverses the local change and says so beside the
+thread, rather than leaving it stuck. **Undo send** is that same mechanism
+with a short delay before the op is allowed to run — five to thirty
+seconds — and **send later** is the identical op with whatever delay you
+chose; cancelling either just cancels the op. Both survive a restart,
+because the outbox is a table, not a timer in a window.
+
+**Snooze** (`H`) takes a thread out of the inbox and brings it back at the
+time you asked for, entirely on this computer — the server is never told a
+thread was snoozed, so there is nothing to undo on it if you change your
+mind before it returns.
+
+### Search
+
+Typed the way Gmail already trained you to: `from:`, `to:`, `cc:`,
+`subject:`, `in:`, `has:attachment`, `is:unread`, `is:read`, `is:starred`,
+`before:` and `after:`, with `OR` and a leading `-` to exclude. It runs
+through tantivy, embedded and incremental, writing its segments through a
+sealed `Directory` of this application's own rather than a plain folder
+tantivy would otherwise trust the filesystem with; decrypted segments are
+cached in memory, capped and least-recently-used, so an immutable one is
+decrypted at most once a session. Results are ordered by date and then by
+message — not by tantivy's own relevance score, because a mail search wants
+the newest match first, the same way the plain list does.
+
+### Remote images
+
+Off until you allow a sender, or ask for a particular message once. When
+allowed, an image is fetched by the app's own protocol handler — never by
+the message, so opening it tells nobody's server anything — through a
+second HTTP client whose resolver and redirect policy both refuse a private
+or loopback address, closing the gap a one-time check alone would miss (a
+redirect can still aim somewhere the first look did not see). The address
+it fetches carries the message's own id in its path, not a bare token, so
+an image can never be served against the wrong message.
+
+### Reading a message
+
+A message's HTML is sanitised exactly once, at sync, in Rust: a first pass
+rewrites every remote image and `cid:` reference to this application's own
+addresses, a second removes everything with behaviour — scripts, event
+handlers, anything a browser would execute. The interface draws the result
+in one reused sandboxed frame, never `allow-scripts`, with its own
+content-security-policy tag inside the document as a second wall, in case
+the first one missed something.
+
+### The split inbox
+
+Threads sort into categories — important, other, newsletters,
+notifications, and ones you name — decided by rules that run on this
+device and are always on: mailing-list headers, known newsletter senders,
+and corrections you have made before. A model finishes what the rules
+cannot place with confidence, and summarising a long thread and drafting a
+reply ahead of you both go through that same model — but all three stay off
+until mail's assistant features are turned on for that account and the
+sentence naming which provider they go to is ticked, exactly as the chat
+assistant's own mail tools require.
+
+### Invitations
+
+A calendar invitation inside a message draws its own banner above it —
+accept, tentative, decline — parsed with `calcard`, the same reader an
+[account calendar](#calendars-that-sign-in) uses. Answering sends an
+ordinary email reply back to whoever organised it; it never reaches into a
+calendar to write there, which is what keeps every calendar this
+application draws read-only without making RSVP a missing feature.
 
 ## Notifications
 
@@ -835,9 +1050,14 @@ crates/
   everyday-store-postgres/  Postgres driver, including Supabase
   everyday-vault/           wires core to backends; platform paths; media
                             serving; the keychain, when a vault opens itself
+  everyday-mail/            IMAP, SMTP, MIME, sanitising, OAuth, the sync
+                            engine — everything that speaks a mail protocol
+  everyday-mailindex/       tantivy behind a sealed `Directory`, kept apart
+                            so its build cost is paid once
   everyday-service/         the command surface: everything a client can ask a
                             vault to do, with no window in sight — and the one
-                            loop that runs the assistant's routines
+                            loop that runs the assistant's routines and syncs
+                            every account
   everyday-server/          serving a vault to other machines, and the client
                             that talks to one
   everyday-cli/             `everyday` — scripted capture, export, inspection,
@@ -851,9 +1071,9 @@ scripts/                    capped test runner, dev runner, Linux setup
 the same logic back a desktop shell today and a mobile one later, and it is
 why the whole test suite runs on a machine that cannot build a GUI.
 
-`everyday-service` is the middle. Every one of the ninety-odd things a vault
+`everyday-service` is the middle. Every one of the 172 things a vault
 can be asked to do is an entry in one table there, run by name from JSON, and
-the desktop shell registers nine commands rather than ninety. That is what
+the desktop shell registers nine commands rather than 172. That is what
 lets the same command bodies back this window, a server answering three
 machines, and a mobile shell later — and it is why the interface's own client
 is *generated* from that table rather than written beside it.
@@ -998,6 +1218,40 @@ by a stranger arriving in a context window that can call tools, which is the
 same shape as a fetched page or an imported calendar — and the answer is the
 one already in place: no secret domain is ever offered to a model, a scheduled
 run cannot delete anything, and the transcript says what was done.
+
+**Mail is the same risk, doubled.** It is the first domain whose contents
+are written by strangers *and* whose tools reach strangers, so once a mail
+tool has returned content in a turn, `web_search` in that same turn asks
+first and shows its query — a model that has just read a stranger's words
+can put those words in a search and send them somewhere else entirely, and
+a turn that never touched mail is unchanged.
+
+### Reading and answering your mail
+
+Once an account allows it (see [What agents may do](#what-agents-may-do)),
+the assistant can search mail, list and read threads, draft a reply or a new
+message, mark things read, label, move, snooze and archive — each the same
+kind of write a person's own action is, recorded against the same undo
+window and shown on the thread as its doing. **Sending, and answering a
+calendar invitation, are always confirmed in chat** — there is no setting
+that sends without asking, and the confirmation card names the recipients,
+the subject and the first lines of the body before anything leaves. A
+scheduled routine can read, triage and draft exactly the same way, and is
+refused outright the moment it tries to send: "draft it, and say in your
+reply that it is ready" is the reply it gets instead, the same shape as the
+refusal a destructive call already gets when nobody is watching.
+
+Every string a mail tool returns is marked, in the tool's own description,
+as text written by a stranger — the sender is shown alongside it, and the
+system prompt says once that instructions found inside a message are
+content, not something to follow. That does not stop an attempt at
+injection; the gates above are what stop it: sending needs a confirmation
+nobody automated can give, an unattended run cannot send at all, and
+`web_search` cannot be reached quietly once mail has been read. Writes the
+assistant or an MCP client make to a mailbox are also **rate-limited**, per
+turn and per minute, so nothing — a wedged model in a loop, a hostile
+instruction that half-worked — can flood an account's outbox faster than a
+person could ever click.
 
 ### A second model, for the small jobs
 
@@ -1186,7 +1440,7 @@ the vault is unreachable. The connect screen says that too.
 
 ### Adding an app does not mean touching any of this
 
-Every one of the ninety-odd things a vault can be asked to do is an entry in
+Every one of the 172 things a vault can be asked to do is an entry in
 one table in `everyday-service`, and a domain contributes its own slice of it.
 An entry declares the scope it needs, the effect it has and the change it
 emits, so authorisation, live refresh and the generated client are all *data*
@@ -1257,11 +1511,19 @@ service defers it instead, for every caller except the assistant's own.
 ## Letting another agent in
 
 The assistant in the rail is not the only thing that can use this vault's
-verbs. The same catalogue — the thirty-odd tools it has, with the same
+verbs. The same catalogue — the sixty-five tools it has, with the same
 descriptions, the same schemas and the same rules — is served over the
 [Model Context Protocol](https://modelcontextprotocol.io), so Claude Code,
 Claude Desktop, an OpenAI agent or anything else that speaks MCP can read a
-day, add a task or write a note.
+day, add a task, write a note, or, once an account allows it, search, read
+and draft mail.
+
+Mail's fourteen tools are on this list by the same per-account switches
+[Accounts](#accounts) describes — reading, drafting, editing, removing and
+archiving on by default, sending off — checked per call against the account
+a request names, so an MCP client can be read-only on a work account and
+fully open on a personal one, and the switch it tripped is named in the
+refusal.
 
 Off by default. There is a switch and a port in Settings, under Vault, beside
 sharing, and the trade is stated on that screen rather than in this document:
@@ -1910,7 +2172,7 @@ with what the platform or the webview has already taken.
 
 | | |
 |---|---|
-| `G` then `J` / `N` / `T` / `C` / `L` / `O` / `A` | journal, notes, todo, calendar, library, overview, assistant |
+| `G` then `J` / `N` / `T` / `C` / `L` / `M` / `O` / `A` | journal, notes, todo, calendar, library, mail, overview, assistant |
 | `C` | start the next thing — an entry, a note, the task capture line, an hour set aside, the "add to shelf" field, a goal, a routine |
 | `/` | search this app |
 | `A` | the assistant's rail |
@@ -1929,7 +2191,14 @@ different things in two apps without either being ambiguous. In the journal:
 todo app: `X` for finished work, `B` for the board. In the calendar: `D`,
 `W`, `M` for the three views, `T` for today, `←`/`→` to page, `Delete` to
 remove the selected block. In the library: `V` for covers or a list, `S` to
-favourite.
+favourite. In mail: `J`/`K` for the thread below and above, `Enter` or `O` to
+open one, `Escape` back to the list, `E` to archive, `#` to trash, `S` to
+star, `U`/`I` to mark unread or read, `H` to snooze, `L` to label, `V` to
+move, `R`/`W`/`F` to reply, reply all or forward, `Tab`/`Shift Tab` to change
+category, and `G` then `I`/`S`/`D`/`U` for Inbox, Starred, Drafts and Sent —
+`W` rather than the plan's `A` for reply all, because `A` already opens the
+assistant, and `G` `U` rather than `G` `T` for Sent, because `G` `T` is
+already Todo.
 
 **A letter is a letter while you are typing in a field.** Only the chords
 with a modifier in them fire from inside an input, which is why they exist.
@@ -1995,7 +2264,7 @@ means. That is a feature, not a detail.
 
 ### The assistant's verbs, without the assistant
 
-The thirty-four tools the assistant can run are also runnable directly, with
+The sixty-five tools the assistant can run are also runnable directly, with
 no model in the loop — `everyday do <tool>`, or `list_tools` and `run_tool`
 over the command surface. A destructive one is refused unless the caller says,
 in that call, that it means it: there is no undo in this application, so a
@@ -2131,16 +2400,23 @@ instead.
 
 The core, the SQL backend and both its drivers, the vault lifecycle, search,
 the media pipeline, notes, the todo app, the calendar, the library, tracking,
-roles and goals, the assistant's routines, and the CLI are implemented and
-tested — 633 tests, plus the shared backend conformance suite (run against
-SQLite always and against a real Postgres server on demand, and covering all
-nine domains) and sixteen dependency-free interface suites: the quick-add
-grammar, the quick-track grammar, the calendar's grid arithmetic, conflict
-handling, notifications, the library, the tracking arithmetic, the streak and
-balance arithmetic, the menu geometry, the assistant's two loops, the
-Assistant app, the live-refresh router, the action table, the Markdown reader,
-and the keyboard. The desktop shell and interface are complete and the
-interface builds and typechecks clean.
+roles and goals, accounts, mail, calendars that sign in, the assistant's
+routines, and the CLI are implemented and tested — 1,396 tests, plus the
+shared backend conformance suite (run against SQLite always and against a
+real Postgres server on demand, and covering all twelve domains)
+and twenty-seven dependency-free interface suites: the quick-add grammar,
+the quick-track grammar, the calendar's grid arithmetic, conflict handling,
+notifications, the library, the tracking arithmetic, the streak and balance
+arithmetic, the menu geometry, the assistant's two loops, the Assistant app,
+the live-refresh router, which changes apply in place and which fall back to
+a refresh, the action table, the Markdown reader, the keyboard, the quick
+model's interface half, the store primitives every app is built from, the
+editor's shared store contract, the Overview's layout rules, the autosave
+debounce, which suggestion chips are on offer, the list view's drag order,
+the date-formatter cache, the journal's entry list flattened for the virtual
+list, account settings, and mail's own pure logic — senders, category tabs,
+invite responses, search paging and the origin marks. The desktop shell and
+interface are complete and the interface builds and typechecks clean.
 
 The scheduler is driven end to end by a scripted model on loopback — the base
 URL is a setting so that a local model works, and a scripted one is a local
@@ -2172,6 +2448,27 @@ the job. The interface's own mock backend (`make ui`) ships two sample
 calendars, one of them deliberately in a failed state, so both paths through
 the "add a calendar" sheet can be seen without a server.
 
+Mail is exercised end to end against throwaway Dovecot and Mailpit
+containers (`make test-imap`, `make test-smtp`), and CalDAV against a
+throwaway Radicale one (`make test-caldav`); an account's Google and
+Microsoft Graph calendars have been tested only against in-process mocks of
+their own JSON APIs, never a live service — the same gap calendar
+subscriptions have. The speed budget was measured against a hundred
+thousand synthetic messages in ignored benchmark tests, not a real mailbox
+that size, and first sync "under ten seconds" has only been timed against
+those same throwaway servers with a few thousand messages in them, not a
+real provider over a real connection. A few smaller things are known and
+left for later rather than hidden: a thread's row in the list has nowhere
+to draw an assistant/MCP mark, so that mark is on the open thread and on a
+draft under review only; re-categorising an already-stored message works
+from its senders, labels and your own corrections rather than its original
+headers, which are not kept once a message is stored; `search_mail`
+collapses multiple hits in one thread down to the first, so it can hand
+back fewer than the limit asked for; the contact book used for address
+autocomplete has no cap; and the unread count is a cache recomputed on a
+miss rather than an incremental counter, which costs a full recount the
+first time it is asked for after a large sync.
+
 Tracking charts as well as stores: the Overview offers a streak, a hit rate,
 four months a square a day and a tracker plotted day by day, all off
 `tracker_days` — one `GROUP BY` over a clear index that returns a year of any
@@ -2191,8 +2488,9 @@ table like `purposes` — so the first person to want either can have it without
 undoing any of this.
 
 Not yet built: mobile shells, a map view, task recurrence, writing back to a
-subscribed calendar (see above for why not), and importers for Day One's
-export format.
+subscribed or account calendar (see above for why not), attachment
+thumbnails and PDF previews (an attachment opens through its own URL
+instead), and importers for Day One's export format.
 
 ## The icon on Linux
 
