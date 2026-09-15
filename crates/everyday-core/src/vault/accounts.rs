@@ -47,9 +47,9 @@ impl Vault {
         self.with_accounts(|a| a.put_account(account))
     }
 
-    /// Delete the account. Its secret and its `account_calendars` pointers
-    /// go with it -- see [`crate::store::accounts::AccountStore::
-    /// delete_account`].
+    /// Delete the account. Its secret and every calendar (and event) it
+    /// brought into the vault go with it -- see
+    /// [`crate::store::accounts::AccountStore::delete_account`].
     pub fn delete_account(&self, id: AccountId) -> Result<()> {
         self.writable()?;
         self.with_accounts(|a| a.delete_account(id))

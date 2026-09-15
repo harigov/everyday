@@ -2,10 +2,13 @@
 
 use super::*;
 use crate::account::{ACCOUNT_SECRET_OWNER_KIND, Account, AccountSecret};
+use crate::calendar::{AccountCalendarSource, Calendar, EventStatus};
 use crate::store::accounts::AccountStore;
+use crate::store::calendars::EventQuery;
 
-/// Everything a backend must do with accounts, including its one cascade:
-/// deleting an account takes its secret with it.
+/// Everything a backend must do with accounts, including its two cascades:
+/// deleting an account takes its secret, and phase 6's account calendars
+/// (and their events), with it.
 pub fn run_account_suite(store: &dyn JournalStore) {
     eprintln!("--- account conformance suite ---");
 
@@ -14,6 +17,8 @@ pub fn run_account_suite(store: &dyn JournalStore) {
     account_put_is_idempotent(store);
     missing_account_is_not_found(store);
     deleting_an_account_takes_its_secret_with_it(store);
+    deleting_an_account_takes_its_calendars_and_their_events_with_it(store);
+    deleting_an_account_leaves_a_url_calendar_untouched(store);
     unicode_survives_an_account_round_trip(store);
 
     account_cleanup(store);
@@ -97,6 +102,89 @@ fn deleting_an_account_takes_its_secret_with_it(store: &dyn JournalStore) {
         "the secret must not outlive the account it belongs to"
     );
 
+    account_cleanup(store);
+}
+
+/// A minimal, valid event on `calendar`, for the cascade tests below --
+/// nothing about its content matters, only that a row exists to be found
+/// again, or not.
+fn stub_event(calendar: crate::id::CalendarId) -> crate::calendar::Event {
+    use jiff::Timestamp;
+    use jiff::civil::date;
+    crate::calendar::Event {
+        id: crate::id::EventId::new(),
+        calendar_id: calendar,
+        uid: "stub@example.com".into(),
+        title: "Stub".into(),
+        description: String::new(),
+        location: String::new(),
+        start: Timestamp::now(),
+        end: Timestamp::now(),
+        local_date: date(2026, 9, 14),
+        end_date: date(2026, 9, 14),
+        tz: "UTC".into(),
+        all_day: false,
+        status: EventStatus::Confirmed,
+        organizer: String::new(),
+        attendees: Vec::new(),
+        url: String::new(),
+        busy: true,
+        updated_at: Timestamp::now(),
+    }
+}
+
+/// The cascade this phase adds: an account calendar, and the events synced
+/// onto it, do not outlive the account they were read from.
+fn deleting_an_account_takes_its_calendars_and_their_events_with_it(store: &dyn JournalStore) {
+    let Some(calendars) = store.calendars() else {
+        eprintln!("  (no calendar store; skipping the account-calendar cascade)");
+        return;
+    };
+    let a = account_store(store);
+    let account = Account::new(crate::account::Provider::ICloud, "me@icloud.com");
+    a.put_account(&account).expect("put_account");
+
+    let cal = Calendar::from_account(
+        account.id,
+        account.provider,
+        AccountCalendarSource::CalDav,
+        "https://caldav.icloud.com/1234/calendars/home/",
+        "Home",
+    );
+    calendars.put_calendar(&cal).expect("put_calendar");
+    calendars.replace_events(cal.id, &[stub_event(cal.id)]).expect("replace_events");
+    assert_eq!(calendars.count_events(cal.id).unwrap(), 1);
+
+    a.delete_account(account.id).expect("delete_account");
+
+    super::assert_not_found(calendars.get_calendar(cal.id));
+    let left = calendars
+        .list_events(&EventQuery { calendar_id: Some(cal.id), ..Default::default() })
+        .expect("list_events");
+    assert!(left.is_empty(), "an account calendar's events must not outlive the account either");
+
+    account_cleanup(store);
+}
+
+/// The cascade is specific to account calendars. A feed subscription that
+/// happens to exist alongside a deleted account is somebody else's record
+/// and must not be touched by it.
+fn deleting_an_account_leaves_a_url_calendar_untouched(store: &dyn JournalStore) {
+    let Some(calendars) = store.calendars() else {
+        eprintln!("  (no calendar store; skipping)");
+        return;
+    };
+    let a = account_store(store);
+    let account = Account::new(crate::account::Provider::Fastmail, "me@fastmail.com");
+    a.put_account(&account).expect("put_account");
+
+    let feed = Calendar::subscribed("Team fixtures", "https://example.com/team.ics");
+    calendars.put_calendar(&feed).expect("put_calendar");
+
+    a.delete_account(account.id).expect("delete_account");
+
+    assert_eq!(calendars.get_calendar(feed.id).unwrap().id, feed.id, "a feed is not an account's");
+    calendars.delete_calendar(feed.id).expect("delete_calendar");
     account_cleanup(store);
 }
 
