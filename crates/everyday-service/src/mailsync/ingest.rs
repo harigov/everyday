@@ -110,24 +110,37 @@ pub fn resolve_header(
     });
 
     if let Some(id) = &parsed.message_id {
-        let already_seen = threads.seen_by_message_id.get(id).cloned().or_else(|| {
-            if force_db_rematch {
+        // Which existing row this `Message-ID` names, from whichever of the
+        // two lookups the module docs describe answers first -- this run's
+        // own cheap memory, or (only right after a `UIDVALIDITY` reset) the
+        // vault's full scan. Either way this is *only* an id: the row
+        // itself is always read fresh, next, straight from the vault, never
+        // reused from whatever this run happened to cache earlier -- see
+        // [`ThreadIndex::seen_by_message_id`]'s own docs for why a cached
+        // copy would go stale exactly here.
+        let existing_id = threads.seen_by_message_id.get(id).copied();
+        let existing = match existing_id {
+            Some(mid) => vault.mail_message(mid).ok(),
+            None if force_db_rematch => {
                 vault.message_by_message_id_header(account_id, id).ok().flatten()
-            } else {
-                None
             }
-        });
-        if let Some(mut existing) = already_seen {
+            None => None,
+        };
+        if let Some(mut existing) = existing {
             // Already stored, under some (mailbox, uid) -- possibly this
             // very one, after a `UIDVALIDITY` reset, or another mailbox
             // entirely (Gmail's Sent naming a `Message-ID` All Mail already
-            // has). Its pack and thread stay; only what a header can tell
-            // us fresh is refreshed.
+            // has). Its pack, snippet and thread -- whatever the *current*
+            // row says, not what an earlier header this same run resolved
+            // it to, which the bodies pass or a `Merge`'s `redirect` may
+            // since have moved on from -- stay; only what a header can tell
+            // us fresh is refreshed. The caller's `ingest` is what actually
+            // adds the new `(mailbox, uid)` membership this call is for.
             existing.flags = flags;
             existing.labels = labels;
             existing.gmail = gmail;
             threads.remember(id, existing.thread_id);
-            threads.seen_by_message_id.insert(id.clone(), existing.clone());
+            threads.seen_by_message_id.insert(id.clone(), existing.id);
             return Ok(HeaderIngest { message: existing, is_new: false });
         }
     }
@@ -165,7 +178,7 @@ pub fn resolve_header(
         pack: pending_pack_ref(account_id),
         gmail,
     };
-    threads.seen_by_message_id.insert(message.message_id_header.clone(), message.clone());
+    threads.seen_by_message_id.insert(message.message_id_header.clone(), message.id);
     Ok(HeaderIngest { message, is_new: true })
 }
 
@@ -222,7 +235,21 @@ pub struct ThreadIndex {
     /// keyed by `Message-ID` -- the cheap, in-memory half of rematching; see
     /// the module docs for why this exists and when the vault's own,
     /// expensive scan is still asked instead.
-    seen_by_message_id: HashMap<String, Message>,
+    ///
+    /// An id, not a [`Message`] -- earlier this held a whole cloned copy,
+    /// reused as-is the next time the same `Message-ID` turned up, which
+    /// went stale the moment anything else touched that row in between:
+    /// the bodies pass filling in a pending pack and a real snippet, or a
+    /// `Merge` in [`ThreadIndex::resolve`] retargeting its thread via
+    /// [`ThreadIndex::redirect`] -- `redirect` only ever rewrites *this*
+    /// map's cousins (`by_message_id`, `by_referenced_id`,
+    /// `by_gmail_thrid`), never a cached `Message`, since a `Message` in
+    /// hand has nowhere to route a rewrite *to*. [`resolve_header`] re-reads
+    /// the row fresh from the vault by this id every time, so this only
+    /// ever needs to answer "have I seen this id before, and what row does
+    /// it name" -- exactly what threading needs, and nothing a message's
+    /// own fields could go stale by holding.
+    seen_by_message_id: HashMap<String, MailMessageId>,
 }
 
 impl ThreadIndex {
