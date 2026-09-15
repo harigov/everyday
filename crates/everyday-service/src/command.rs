@@ -527,6 +527,14 @@ mod tests {
             // drawn from; neither touches a vault record a `Kind` names.
             "sync_account",
             "rebuild_mail_index",
+            // Answers a calendar invitation. `id`/`ids` can only ever read
+            // `RespondToInvite`'s own arguments, which name a message, not
+            // the thread a list actually redraws for -- the thread id is
+            // only known once the handler has loaded the message. So, like
+            // `run_import`, it emits its own `Kind::Thread` by hand once it
+            // has that id, rather than through a `change:` this table could
+            // declare ahead of running.
+            "respond_to_invite",
         ];
         for command in catalog() {
             if command.effect.is_write() && !INVISIBLE.contains(&command.name) {
