@@ -46,10 +46,27 @@
 //! account key serialises that: the second caller blocks until the first's
 //! refresh has landed, then finds the cache already warm and never calls
 //! `refresh_fn` at all.
+//!
+//! # The one exception to "never a refresh token": a rotation the vault
+//! # refused
+//!
+//! The module doc above is still the rule for the refresh token a
+//! `refresh_fn` was *handed* -- that one is the caller's business, going in
+//! and out, and never touches this type. [`Self::set_pending_refresh_token`]
+//! is a narrow exception for the refresh token a provider just *rotated to*,
+//! when `crate::mailsync::credential::resolve` could not save it to the
+//! vault (a locked disk, a write that raced something else): losing that
+//! value outright would stand a real chance of stranding the account, since
+//! the provider may already have retired the token the vault still has on
+//! file. Held here, briefly, keyed by the same account key as the access
+//! token cache, until a later refresh manages to persist it -- see
+//! `credential::resolve`'s own docs for the retry this feeds into. Cleared
+//! the moment it lands durably; never written to disk from here, never
+//! logged.
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use everyday_mail::oauth::{OAuthError, Tokens};
@@ -89,6 +106,12 @@ fn deadline_from(expires_at: jiff::Timestamp) -> tokio::time::Instant {
 #[derive(Default)]
 pub struct TokenCache {
     entries: Mutex<HashMap<String, Arc<Mutex<Option<Cached>>>>>,
+    /// See the module doc's "The one exception to 'never a refresh token'".
+    /// A plain `std::sync::Mutex`, not the async `tokio::sync::Mutex`
+    /// `entries` uses: every access here is a single map lookup or
+    /// insert, never held across an `.await`, so the lighter lock is
+    /// enough and never risks blocking an executor thread.
+    pending_refresh: StdMutex<HashMap<String, String>>,
 }
 
 impl TokenCache {
@@ -141,9 +164,34 @@ impl TokenCache {
     /// Drop whatever this cache knows about one account -- called when it is
     /// removed, or when a refresh comes back `invalid_grant` and the account
     /// needs to sign in again, so a stale access token is not handed out
-    /// once more before that is noticed.
+    /// once more before that is noticed. Also drops any pending rotated
+    /// refresh token this account still owed the vault a write for: either
+    /// the account is gone, or signing in again is about to replace its
+    /// credential outright, and neither leaves anything worth retrying a
+    /// persist of.
     pub async fn forget(&self, account_key: &str) {
         self.entries.lock().await.remove(account_key);
+        self.clear_pending_refresh_token(account_key);
+    }
+
+    /// A rotated refresh token an earlier
+    /// `crate::mailsync::credential::resolve` minted but could not save to
+    /// the vault, if one is still owed -- see the module doc.
+    pub fn pending_refresh_token(&self, account_key: &str) -> Option<String> {
+        self.pending_refresh.lock().unwrap().get(account_key).cloned()
+    }
+
+    /// Remember `token` as owed to the vault for `account_key`, overwriting
+    /// whatever was owed before -- a second rotation before the first ever
+    /// landed supersedes it outright, since the provider has moved on to
+    /// the newer one regardless.
+    pub fn set_pending_refresh_token(&self, account_key: &str, token: String) {
+        self.pending_refresh.lock().unwrap().insert(account_key.to_string(), token);
+    }
+
+    /// `token` reached the vault -- nothing left owed.
+    pub fn clear_pending_refresh_token(&self, account_key: &str) {
+        self.pending_refresh.lock().unwrap().remove(account_key);
     }
 
     /// Drop every cached access token. Called when the vault locks: every
