@@ -1,28 +1,36 @@
 // Seed mail data for the mock backend, and the pure query and mutation
 // helpers `mock.ts` calls into for every mail command.
 //
-// Kept in its own file, as `docs/plans/mail.md` asks: if agent (a) lands a
-// real `mock-mail.ts` of their own first, this file is expected to be
-// replaced by theirs wholesale rather than merged line by line, and
-// `mock.ts`'s "── Mail ──" section is written to call only the handful of
-// functions exported here, so that swap costs one import line.
-//
 // About sixty threads, across the two accounts `mock.ts` already seeds
 // (`acct-google`, `acct-fastmail`), spread over every mailbox role a
 // provider offers plus two labels and a snoozed handful -- generated from a
 // small set of realistic senders and subjects rather than typed out sixty
 // times by hand. The volume is the point here, which is the one place in
 // the mock data where a generator earns its keep over prose.
+//
+// Reconciled against the real command surface: every write below takes the
+// same `threads: ThreadId[]` a batch op does and answers `Op[]`, matching
+// `crates/everyday-service/src/domains/mail.rs`; `Draft` is the real,
+// tagged-union-shaped record from `types.ts`, not the flat stand-in this
+// file used to carry. Two contracts nobody has shipped in Rust yet are
+// mocked here too, each marked with the same `TODO(i)`/`TODO(p)` this
+// build's other stand-ins carry -- see `mail-api.ts`.
 
 import type {
   AccountId,
+  Draft,
+  DraftId,
   MailAddress,
+  MailCategory,
+  MailInvite,
   Mailbox,
   MailboxId,
   MailboxRole,
-  MailCategory,
   MailMessage,
   MailMessageId,
+  Op,
+  OpKind,
+  RemoteImageSettings,
   Thread,
   ThreadDetail,
   ThreadFilter,
@@ -30,10 +38,10 @@ import type {
   ThreadPage,
 } from './types'
 import { VaultError } from './types'
-import type { Draft, SyncStatus } from './mail-api'
 
 const GOOGLE: AccountId = 'acct-google'
 const FASTMAIL: AccountId = 'acct-fastmail'
+const ME: MailAddress = { name: 'Me', email: 'me@gmail.com' }
 
 let seq = 0
 function nextId(prefix: string): string {
@@ -215,6 +223,38 @@ function bodyHtmlFor(from: MailAddress, subject: string, seed: number): string {
   )
 }
 
+/** (i) TODO: a plausible calendar invitation for every seventh message
+ *  from a person (never from an automated sender) -- see `types.ts`'s
+ *  `MailInvite` for the contract this stands in for until the calendars
+ *  agent lands `respond_to_invite` for real. */
+function inviteFor(seed: number, organizer: MailAddress): MailInvite | null {
+  if (seed % 7 !== 0) return null
+  const startHoursFromNow = -((seed % 5) - 2) * 24
+  const start = new Date(Date.now() + startHoursFromNow * 3_600_000)
+  start.setHours(14, 0, 0, 0)
+  const end = new Date(start.getTime() + 45 * 60_000)
+  const method = seed % 21 === 0 ? 'cancel' : 'request'
+  return {
+    uid: `invite-${seed}`,
+    method,
+    summary: pick(
+      ['Design review', 'Boat club committee', '1:1', 'Client call', 'Interview debrief'],
+      seed,
+    ),
+    start: start.toISOString(),
+    end: end.toISOString(),
+    allDay: false,
+    location: seed % 2 === 0 ? 'Meeting room 2' : null,
+    organizer,
+    attendees: [
+      { address: organizer, response: 'accepted' },
+      { address: ME, response: 'needsAction' },
+    ],
+    myResponse: null,
+    recurrence: null,
+  }
+}
+
 // ── The generator ────────────────────────────────────────────────────
 
 interface Seeded {
@@ -257,11 +297,7 @@ function buildSeed(): Seeded {
       : i % 5 === 0
         ? 'other'
         : 'important'
-    const from = automated
-      ? pick(AUTOMATED, i)
-      : role === 'sent'
-        ? addr('Me', 'me@example.com')
-        : pick(PEOPLE, i)
+    const from = automated ? pick(AUTOMATED, i) : role === 'sent' ? ME : pick(PEOPLE, i)
     const subject = automated
       ? pick(AUTOMATED_SUBJECTS, i)
       : i % 3 === 0
@@ -275,7 +311,7 @@ function buildSeed(): Seeded {
     for (let m = 0; m < messageCount; m++) {
       hoursAgo += 2 + (i % 5)
       const msgId: MailMessageId = nextId('msg')
-      const sender = m === 0 ? from : m % 2 === 0 ? from : addr('Me', 'me@example.com')
+      const sender = m === 0 ? from : m % 2 === 0 ? from : ME
       if (!participants.some((p) => p.email === sender.email)) participants.push(sender)
       const flagged = automated ? false : i % 11 === 0
       const message: MailMessage = {
@@ -285,7 +321,7 @@ function buildSeed(): Seeded {
         messageIdHeader: `${msgId}@example.com`,
         date: iso(hoursAgo),
         from: sender,
-        to: [addr('Me', 'me@example.com')],
+        to: [ME],
         cc: [],
         bcc: [],
         replyTo: [],
@@ -303,6 +339,14 @@ function buildSeed(): Seeded {
         size: 4200 + i * 37,
         category,
         pack: { account: account, pack: `pack-${account}`, offset: 0, len: 0 },
+        // `m === 0` here, not `messageCount - 1`: this generator's `hoursAgo`
+        // only ever grows, so the *first* message pushed for a thread is
+        // its most recent -- the one `messagesOf`'s ascending sort puts
+        // last, and the one a thread opens with expanded. An invite on any
+        // other message would be real, but collapsed and unseen until
+        // clicked open, which is a poor thing for seed data whose whole job
+        // is to make the feature visible.
+        invite: !automated && m === 0 ? inviteFor(i, sender) : null,
       }
       messages.set(msgId, message)
       bodies.set(msgId, bodyHtmlFor(sender, message.subject, i + m))
@@ -310,7 +354,6 @@ function buildSeed(): Seeded {
     }
     const last = messages.get(msgIds[msgIds.length - 1]!)!
     const unreadCount = msgIds.filter((id) => !messages.get(id)!.flags.seen).length
-    const starred = msgIds.some((id) => messages.get(id)!.flags.flagged)
     const snoozedUntil = i % 13 === 0 ? iso(-24) : null // a small handful, due back tomorrow
     const thread: Thread = {
       id: threadId,
@@ -322,10 +365,6 @@ function buildSeed(): Seeded {
       unreadCount,
       category,
       snoozedUntil,
-      starred,
-      hasAttachments: msgIds.some((id) => messages.get(id)!.hasAttachments),
-      draftedByAssistant: i % 17 === 0,
-      snippet: last.snippet,
     }
     threads.push(thread)
     threadMailboxes.set(threadId, [mailboxId(account, role)])
@@ -336,32 +375,53 @@ function buildSeed(): Seeded {
 
 const seed = buildSeed()
 
+/** Every message in `threadId`, oldest first -- the shape `mockGetThread`
+ *  already builds; pulled out because several write handlers below need it
+ *  too (starring and marking read/unread touch every message in a thread,
+ *  not just the thread's own aggregate row). */
+function messagesOf(threadId: ThreadId): MailMessage[] {
+  return [...seed.messages.values()]
+    .filter((m) => m.threadId === threadId)
+    .sort((a, b) => a.date.localeCompare(b.date))
+}
+
+/** A thread is "starred" when any of its messages is flagged -- there is no
+ *  per-thread aggregate in the real record, see `types.ts`'s own note on
+ *  `Thread`, so the mock's pseudo "Starred" mailbox reads the same message
+ *  flags a real IMAP `\Flagged` search would. */
+function isThreadStarred(id: ThreadId): boolean {
+  return messagesOf(id).some((m) => m.flags.flagged)
+}
+
 // ── Drafts ───────────────────────────────────────────────────────────
 
 const drafts: Draft[] = [
   {
     id: 'draft-1',
     accountId: GOOGLE,
-    identity: null,
+    identity: 'me@gmail.com',
     inReplyTo: null,
-    forwardOf: null,
     to: [addr('Priya Raman', 'priya@example.com')],
     cc: [],
     bcc: [],
     subject: 'Re: Q3 numbers — one more pass',
     bodyHtml: '<p>Looks right to me, one small note on the second table —</p>',
     attachments: [],
-    origin: 'person',
-    state: 'editing',
+    origin: { type: 'person' },
+    state: { type: 'editing' },
     createdAt: iso(6),
     updatedAt: iso(1),
   },
   {
     id: 'draft-2',
     accountId: GOOGLE,
-    identity: null,
-    inReplyTo: null,
-    forwardOf: null,
+    identity: 'me@gmail.com',
+    // TODO(p): an auto-draft, in reply to the first message of thread 6 --
+    // see `mail.svelte.ts`'s `#openAutoDraftIfAny`. `th-6`/`msg-…` are the
+    // ids `buildSeed` mints deterministically from `nextId`'s counter, which
+    // this file is the only writer of, so the reference below holds as long
+    // as `buildSeed`'s loop shape does not change above it.
+    inReplyTo: messagesOf('th-6')[0]?.id ?? null,
     to: [addr('Ana Ferreira', 'ana@example.com')],
     cc: [],
     bcc: [],
@@ -369,8 +429,8 @@ const drafts: Draft[] = [
     bodyHtml:
       '<p>Drafted a reply — the bookshop on the corner does gift wrapping, might be easiest.</p>',
     attachments: [],
-    origin: 'assistant',
-    state: 'editing',
+    origin: { type: 'assistant', conversation: 'demo-conversation' },
+    state: { type: 'editing' },
     createdAt: iso(3),
     updatedAt: iso(3),
   },
@@ -394,7 +454,7 @@ export function mockListThreads(
   const account = mailboxes.find((m) => m.id === mailbox)?.accountId
   let rows = seed.threads.filter((t) => {
     if (account && t.accountId !== account) return false
-    if (pseudo === 'starred') return t.starred === true
+    if (pseudo === 'starred') return isThreadStarred(t.id)
     if (pseudo === 'snoozed') return t.snoozedUntil != null
     return (seed.threadMailboxes.get(t.id) ?? []).includes(mailbox)
   })
@@ -414,10 +474,7 @@ export function mockListThreads(
 export function mockGetThread(id: ThreadId): ThreadDetail {
   const thread = seed.threads.find((t) => t.id === id)
   if (!thread) throw new VaultError('notFound', 'no such thread')
-  const messages = [...seed.messages.values()]
-    .filter((m) => m.threadId === id)
-    .sort((a, b) => a.date.localeCompare(b.date))
-  return { thread, messages }
+  return { thread, messages: messagesOf(id) }
 }
 
 export function mockMessageBodyHtml(messageId: MailMessageId): string {
@@ -426,8 +483,10 @@ export function mockMessageBodyHtml(messageId: MailMessageId): string {
 
 // ── Actions ──────────────────────────────────────────────────────────
 //
-// Each mutates the thread in place and returns it, the way `mock.ts`'s other
-// domains answer a write with the row as it now stands.
+// Every real write command takes `threads: ThreadId[]` and answers `Op[]` --
+// see `crates/everyday-service/src/domains/mail.rs`'s `batch_op`. Mocked
+// the same shape here, one op per thread, already `done`: nothing in this
+// build reads the returned ops back, but the shape is worth keeping honest.
 
 function thread(id: ThreadId): Thread {
   const t = seed.threads.find((x) => x.id === id)
@@ -435,61 +494,139 @@ function thread(id: ThreadId): Thread {
   return t
 }
 
-export function mockMarkRead(id: ThreadId): void {
-  const t = thread(id)
-  t.unreadCount = 0
-  for (const m of seed.messages.values()) if (m.threadId === id) m.flags.seen = true
+function opsFor(ids: ThreadId[], kind: OpKind): Op[] {
+  const now = new Date().toISOString()
+  return ids.map((id) => ({
+    id: nextId('op'),
+    accountId: thread(id).accountId,
+    kind,
+    target: { type: 'thread', id },
+    notBefore: now,
+    attempts: 0,
+    lastError: null,
+    state: { type: 'done' },
+    origin: { type: 'person' },
+    createdAt: now,
+    updatedAt: now,
+  }))
 }
 
-export function mockMarkUnread(id: ThreadId): void {
-  const t = thread(id)
-  t.unreadCount = Math.max(1, t.unreadCount)
-  const last = [...seed.messages.values()].filter((m) => m.threadId === id).at(-1)
-  if (last) last.flags.seen = false
+export function mockMarkRead(ids: ThreadId[]): Op[] {
+  for (const id of ids) {
+    thread(id).unreadCount = 0
+    for (const m of messagesOf(id)) m.flags.seen = true
+  }
+  return opsFor(ids, { type: 'markRead' })
 }
 
-export function mockStar(id: ThreadId): void {
-  thread(id).starred = true
-}
-export function mockUnstar(id: ThreadId): void {
-  thread(id).starred = false
-}
-
-export function mockArchive(id: ThreadId): void {
-  const t = thread(id)
-  seed.threadMailboxes.set(t.id, [mailboxId(t.accountId, 'archive')])
+export function mockMarkUnread(ids: ThreadId[]): Op[] {
+  for (const id of ids) {
+    const t = thread(id)
+    t.unreadCount = Math.max(1, t.unreadCount)
+    const last = messagesOf(id).at(-1)
+    if (last) last.flags.seen = false
+  }
+  return opsFor(ids, { type: 'markUnread' })
 }
 
-export function mockTrash(id: ThreadId): void {
-  const t = thread(id)
-  seed.threadMailboxes.set(t.id, [mailboxId(t.accountId, 'trash')])
+export function mockStar(ids: ThreadId[]): Op[] {
+  for (const id of ids) for (const m of messagesOf(id)) m.flags.flagged = true
+  return opsFor(ids, { type: 'star' })
+}
+export function mockUnstar(ids: ThreadId[]): Op[] {
+  for (const id of ids) for (const m of messagesOf(id)) m.flags.flagged = false
+  return opsFor(ids, { type: 'unstar' })
 }
 
-export function mockMoveToMailbox(id: ThreadId, mailbox: MailboxId): void {
-  seed.threadMailboxes.set(id, [mailbox])
+export function mockArchive(ids: ThreadId[]): Op[] {
+  for (const id of ids) {
+    const t = thread(id)
+    seed.threadMailboxes.set(t.id, [mailboxId(t.accountId, 'archive')])
+  }
+  return opsFor(ids, { type: 'archive' })
+}
+
+export function mockTrash(ids: ThreadId[]): Op[] {
+  for (const id of ids) {
+    const t = thread(id)
+    seed.threadMailboxes.set(t.id, [mailboxId(t.accountId, 'trash')])
+  }
+  return opsFor(ids, { type: 'trash' })
+}
+
+export function mockMoveToMailbox(ids: ThreadId[], mailbox: MailboxId): Op[] {
+  for (const id of ids) seed.threadMailboxes.set(id, [mailbox])
+  return opsFor(ids, { type: 'move', to: mailbox })
 }
 
 const threadLabels = new Map<ThreadId, Set<string>>()
-export function mockLabel(id: ThreadId, label: string): void {
-  const set = threadLabels.get(id) ?? new Set<string>()
-  set.add(label)
-  threadLabels.set(id, set)
+export function mockLabel(ids: ThreadId[], label: string): Op[] {
+  for (const id of ids) {
+    const set = threadLabels.get(id) ?? new Set<string>()
+    set.add(label)
+    threadLabels.set(id, set)
+  }
+  return opsFor(ids, { type: 'label', label })
 }
-export function mockUnlabel(id: ThreadId, label: string): void {
-  threadLabels.get(id)?.delete(label)
+export function mockUnlabel(ids: ThreadId[], label: string): Op[] {
+  for (const id of ids) threadLabels.get(id)?.delete(label)
+  return opsFor(ids, { type: 'unlabel', label })
 }
 
-export function mockSnooze(id: ThreadId, until: string): void {
-  thread(id).snoozedUntil = until
+export function mockSnooze(ids: ThreadId[], until: string): Op[] {
+  for (const id of ids) thread(id).snoozedUntil = until
+  return opsFor(ids, { type: 'snooze', until })
 }
-export function mockUnsnooze(id: ThreadId): void {
-  thread(id).snoozedUntil = null
+export function mockUnsnooze(ids: ThreadId[]): void {
+  for (const id of ids) thread(id).snoozedUntil = null
+}
+
+// ── (p) TODO: the split inbox's category rules ─────────────────────────
+//
+// `set_thread_category` is the Superhuman-layer agent's command -- see
+// `mail-api.ts`'s own TODO(p).
+
+export function mockSetThreadCategory(ids: ThreadId[], category: MailCategory): void {
+  for (const id of ids) thread(id).category = category
+}
+
+export function mockSummarizeThread(id: ThreadId): { summary: string } {
+  const messages = messagesOf(id)
+  const t = thread(id)
+  return {
+    summary:
+      `${messages.length} message${messages.length === 1 ? '' : 's'} between ` +
+      `${[...new Set(t.participants.map((p) => p.name || p.email))].join(', ')}. ` +
+      `${messages[0]?.snippet ?? ''}`.trim(),
+  }
+}
+
+// ── (i) TODO: invitations ───────────────────────────────────────────
+//
+// `respond_to_invite` is the calendars-that-sign-in agent's command -- see
+// `mail-api.ts`'s own TODO(i).
+
+export function mockRespondToInvite(
+  messageId: MailMessageId,
+  response: 'accepted' | 'tentative' | 'declined',
+): void {
+  const message = seed.messages.get(messageId)
+  if (!message?.invite) throw new VaultError('notFound', 'no invitation on that message')
+  message.invite = {
+    ...message.invite,
+    myResponse: response,
+    attendees: message.invite.attendees.map((a) =>
+      a.address.email === ME.email ? { ...a, response } : a,
+    ),
+  }
 }
 
 // ── Drafts and sending ───────────────────────────────────────────────
 
-export function mockListDrafts(): Draft[] {
-  return drafts.filter((d) => d.state !== 'discarded' && d.state !== 'sent')
+export function mockListDrafts(account: AccountId): Draft[] {
+  return drafts.filter(
+    (d) => d.accountId === account && d.state.type !== 'discarded' && d.state.type !== 'sent',
+  )
 }
 
 export function mockNewDraft(opts: {
@@ -502,15 +639,13 @@ export function mockNewDraft(opts: {
   const source = opts.inReplyTo ?? opts.forwardOf
   const original = source ? seed.messages.get(source) : undefined
   const to = original ? [original.from] : []
-  const cc =
-    original && opts.replyAll ? original.to.filter((a) => a.email !== 'me@example.com') : []
+  const cc = original && opts.replyAll ? original.to.filter((a) => a.email !== ME.email) : []
   const subjectPrefix = opts.forwardOf ? 'Fwd: ' : opts.inReplyTo ? 'Re: ' : ''
   const draft: Draft = {
     id: nextId('draft'),
     accountId: opts.account,
-    identity: null,
+    identity: opts.account === GOOGLE ? 'me@gmail.com' : 'me@fastmail.com',
     inReplyTo: opts.inReplyTo ?? null,
-    forwardOf: opts.forwardOf ?? null,
     to,
     cc,
     bcc: [],
@@ -519,8 +654,8 @@ export function mockNewDraft(opts: {
       ? `<p></p><blockquote>${mockMessageBodyHtml(original.id)}</blockquote>`
       : '<p></p>',
     attachments: [],
-    origin: 'person',
-    state: 'editing',
+    origin: { type: 'person' },
+    state: { type: 'editing' },
     createdAt: now,
     updatedAt: now,
   }
@@ -535,68 +670,107 @@ export function mockSaveDraft(draft: Draft): void {
   else drafts.push(next)
 }
 
-export function mockDiscardDraft(id: string): void {
+export function mockDiscardDraft(id: DraftId): void {
   const d = drafts.find((x) => x.id === id)
-  if (d) d.state = 'discarded'
+  if (d) d.state = { type: 'discarded' }
 }
 
 const sendTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
-export function mockSendDraft(id: string, delaySeconds: number): void {
+export function mockSendDraft(id: DraftId, delaySeconds: number): Draft {
   const d = drafts.find((x) => x.id === id)
   if (!d) throw new VaultError('notFound', 'no such draft')
-  d.state = 'queued'
+  const op = nextId('op')
+  d.state = { type: 'queued', op }
   const timer = setTimeout(() => {
     sendTimers.delete(id)
-    if (d.state === 'queued') d.state = 'sent'
+    if (d.state.type === 'queued') d.state = { type: 'sent' }
   }, delaySeconds * 1000)
   sendTimers.set(id, timer)
+  return d
 }
 
-export function mockUndoSend(draftId: string): void {
+export function mockUndoSend(draftId: DraftId): Draft {
   const timer = sendTimers.get(draftId)
   if (!timer) throw new VaultError('invalid', 'too late to undo this send')
   clearTimeout(timer)
   sendTimers.delete(draftId)
   const d = drafts.find((x) => x.id === draftId)
-  if (d) d.state = 'editing'
+  if (!d) throw new VaultError('notFound', 'no such draft')
+  d.state = { type: 'editing' }
+  return d
 }
 
 // ── Sync status ──────────────────────────────────────────────────────
 
-export function mockSyncStatus(): SyncStatus[] {
-  return [
-    { accountId: GOOGLE, progress: null, error: null },
-    { accountId: FASTMAIL, progress: null, error: null },
-  ]
-}
-
 export function mockSyncAccount(_id: AccountId): void {
   // A no-op in the mock: every message is already "synced" from the moment
-  // the seed builds. Real syncing is (s)'s task.
+  // the seed builds. Real syncing is `mailsync::wiring`'s task.
 }
 
 // ── Search and address autocomplete ─────────────────────────────────
 
-/**
- * `search_mail`'s answer is the same `Thread` shape `list_threads` and
- * `get_thread` use -- see `SearchMailResult` in `./types` -- not a
- * search-specific hit shape, so this returns `seed.threads` entries
- * directly rather than projecting them into something narrower.
- */
+/** A Gmail-style query, split into its operators and what is left over as
+ *  plain words -- the same syntax the field's own hint offers
+ *  (`MailView.svelte`'s operator hint) and the real `search_mail` is meant
+ *  to answer for real once `everyday-mailindex` lands. */
+interface ParsedSearchQuery {
+  terms: string[]
+  from?: string
+  to?: string
+  subject?: string
+  isUnread?: boolean
+  hasAttachment?: boolean
+}
+
+function parseSearchQuery(query: string): ParsedSearchQuery {
+  const parsed: ParsedSearchQuery = { terms: [] }
+  for (const token of query.trim().split(/\s+/).filter(Boolean)) {
+    const m = /^(\w+):(.+)$/.exec(token)
+    if (!m) {
+      parsed.terms.push(token.toLowerCase())
+      continue
+    }
+    const key = m[1]!.toLowerCase()
+    const value = m[2]!.toLowerCase()
+    if (key === 'from') parsed.from = value
+    else if (key === 'to') parsed.to = value
+    else if (key === 'subject') parsed.subject = value
+    else if (key === 'is' && value === 'unread') parsed.isUnread = true
+    else if (key === 'has' && value === 'attachment') parsed.hasAttachment = true
+    else parsed.terms.push(token.toLowerCase())
+  }
+  return parsed
+}
+
+function addressMatches(list: MailAddress[], needle: string): boolean {
+  return list.some((a) => `${a.name} ${a.email}`.toLowerCase().includes(needle))
+}
+
 export function mockSearchMail(
   query: string,
   cursor: string | null | undefined,
 ): { threads: Thread[]; next?: string | null } {
-  const needle = query.trim().toLowerCase()
-  const matches = needle
-    ? seed.threads.filter((t) => {
-        const hay = [t.subject, ...t.participants.map((p) => `${p.name} ${p.email}`)]
-          .join(' ')
-          .toLowerCase()
-        return hay.includes(needle)
+  const q = parseSearchQuery(query)
+  const empty =
+    q.terms.length === 0 && !q.from && !q.to && !q.subject && !q.isUnread && !q.hasAttachment
+  const matches = empty
+    ? []
+    : seed.threads.filter((t) => {
+        const msgs = messagesOf(t.id)
+        if (q.from && !msgs.some((m) => addressMatches([m.from], q.from!))) return false
+        if (q.to && !msgs.some((m) => addressMatches(m.to, q.to!))) return false
+        if (q.subject && !t.subject.toLowerCase().includes(q.subject)) return false
+        if (q.isUnread && t.unreadCount === 0) return false
+        if (q.hasAttachment && !msgs.some((m) => m.hasAttachments)) return false
+        if (q.terms.length > 0) {
+          const hay = [t.subject, ...t.participants.map((p) => `${p.name} ${p.email}`)]
+            .join(' ')
+            .toLowerCase()
+          if (!q.terms.every((term) => hay.includes(term))) return false
+        }
+        return true
       })
-    : []
   const start = cursor ? Number(cursor) : 0
   const threads = matches.slice(start, start + 20)
   return { threads, next: start + 20 < matches.length ? String(start + 20) : null }
@@ -621,7 +795,20 @@ export function mockSuggestAddresses(prefix: string): MailAddress[] {
     .map((e) => e.addr)
 }
 
-export function mockAllowRemoteImages(_messageId: MailMessageId, _forever: boolean): void {
-  // A no-op in the mock: nothing here ever fetches a remote image in the
-  // first place, so there is no cache to warm.
+// ── Remote images ────────────────────────────────────────────────────
+
+/** The one-off, in-memory grants `allow_remote_images {messageId}` makes --
+ *  the standing sender/domain allow-list is `mock.ts`'s own
+ *  `mockRemoteImageSettings`, since that is where `list_`/`revoke_` already
+ *  lived before this file was reconciled against the real command shape. */
+const oneOffImageGrants = new Set<MailMessageId>()
+
+export function mockAllowRemoteImagesOnce(messageId: MailMessageId): void {
+  oneOffImageGrants.add(messageId)
 }
+
+export function mockRemoteImagesAllowedOnce(messageId: MailMessageId): boolean {
+  return oneOffImageGrants.has(messageId)
+}
+
+export type { RemoteImageSettings }

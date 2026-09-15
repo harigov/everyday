@@ -83,9 +83,9 @@ import type {
 import { TASK_STATUSES, VaultError, goalIsOpen, isAhead, isOpen, priorityRank } from './types'
 import type { AgentEvent, AgentMessage, AgentSettings, Conversation, Memory } from './types'
 import { DEFAULT_COLORS } from './colors'
-import type { Draft } from './mail-api'
+import type { Draft, MailCategory } from './types'
 import {
-  mockAllowRemoteImages,
+  mockAllowRemoteImagesOnce,
   mockArchive,
   mockDiscardDraft,
   mockGetThread,
@@ -97,12 +97,15 @@ import {
   mockMarkUnread,
   mockMoveToMailbox,
   mockNewDraft,
+  mockRespondToInvite,
   mockSaveDraft,
   mockSearchMail,
   mockSendDraft,
+  mockSetThreadCategory,
   mockSnooze,
   mockStar,
   mockSuggestAddresses,
+  mockSummarizeThread,
   mockTrash,
   mockUndoSend,
   mockUnlabel,
@@ -123,6 +126,14 @@ const PASSWORD = 'everyday'
  */
 function str(v: unknown, fallback = ''): string {
   return typeof v === 'string' ? v : fallback
+}
+
+/** The same narrowing as `str`, for the batch mail commands' own
+ *  `threads: ThreadId[]` -- everything from `mark_read` to `snooze` takes a
+ *  list rather than a single id, per `crates/everyday-service/src/domains
+ *  /mail.rs`. */
+function strArray(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
 }
 
 function iso(daysAgo: number): string {
@@ -1531,7 +1542,7 @@ const accounts: AccountView[] = [
       send: false,
     },
     mcpAccess: { read: true, draft: true, edit: true, remove: true, archive: true, send: false },
-    assistantProviderAcknowledged: null,
+    assistantProviderAcknowledged: 'OpenAI',
     attachmentCapBytes: null,
     status: { type: 'ok' },
     lastSyncedAt: iso(0),
@@ -1539,6 +1550,12 @@ const accounts: AccountView[] = [
     updatedAt: iso(0),
     hasPassword: false,
     signedIn: true,
+    // (p) TODO: the Superhuman-layer agent's `MailAi` -- see `types.ts`'s
+    // own TODO(p). Categorising and summaries on, auto-draft off, so both
+    // halves of the split-inbox walkthrough (tabs with real categories, a
+    // Summarise button) have something to show without every thread
+    // opening straight into a drafted reply.
+    mailAi: { categorize: true, autoDraft: false, summaries: true },
   },
   {
     id: 'acct-fastmail',
@@ -1577,6 +1594,10 @@ const accounts: AccountView[] = [
     updatedAt: iso(1),
     hasPassword: true,
     signedIn: true,
+    // (p) TODO: unacknowledged, so the "Mail assistant" section in
+    // `AccountDetail.svelte` has an account to demonstrate the disabled,
+    // explained state on -- every switch off, per `MailAi`'s own default.
+    mailAi: { categorize: false, autoDraft: false, summaries: false },
   },
 ]
 
@@ -4407,12 +4428,12 @@ export const mockInvoke = async <T>(
 
     // ── Mail ────────────────────────────────────────────────────────
     //
-    // `list_mailboxes`, `list_threads` and `get_thread` are the three real
-    // commands, already in the generated surface -- see `mail-api.ts`.
-    // Everything below answers a name from `docs/plans/mail.md` that is not
-    // in `surface.json` yet; kept in its own section, as the plan asks, so
-    // reconciling this block against agent (a)'s real command table is one
-    // clearly bounded diff rather than a hunt through the whole switch.
+    // Reconciled against `crates/everyday-service/src/domains/mail.rs`:
+    // every batch action below takes `threads: ThreadId[]`, not a single
+    // `id`, and answers the `Op[]` it enqueued. Two names are not in
+    // `surface.json` at all -- `respond_to_invite` (i) and
+    // `set_thread_category`/`summarize_thread` (p) -- marked the same way
+    // `mail-api.ts` marks its own stand-ins for them.
 
     case 'list_mailboxes':
       requireUnlocked()
@@ -4433,52 +4454,62 @@ export const mockInvoke = async <T>(
 
     case 'mark_read':
       requireUnlocked()
-      mockMarkRead(str(args.id))
-      return undefined as T
+      return mockMarkRead(strArray(args.threads)) as T
     case 'mark_unread':
       requireUnlocked()
-      mockMarkUnread(str(args.id))
-      return undefined as T
+      return mockMarkUnread(strArray(args.threads)) as T
     case 'star':
       requireUnlocked()
-      mockStar(str(args.id))
-      return undefined as T
+      return mockStar(strArray(args.threads)) as T
     case 'unstar':
       requireUnlocked()
-      mockUnstar(str(args.id))
-      return undefined as T
+      return mockUnstar(strArray(args.threads)) as T
     case 'archive':
       requireUnlocked()
-      mockArchive(str(args.id))
-      return undefined as T
+      return mockArchive(strArray(args.threads)) as T
     case 'trash':
       requireUnlocked()
-      mockTrash(str(args.id))
-      return undefined as T
+      return mockTrash(strArray(args.threads)) as T
     case 'move_to_mailbox':
       requireUnlocked()
-      mockMoveToMailbox(str(args.id), str(args.mailbox))
-      return undefined as T
+      return mockMoveToMailbox(strArray(args.threads), str(args.to)) as T
     case 'label':
       requireUnlocked()
-      mockLabel(str(args.id), str(args.label))
-      return undefined as T
+      return mockLabel(strArray(args.threads), str(args.label)) as T
     case 'unlabel':
       requireUnlocked()
-      mockUnlabel(str(args.id), str(args.label))
-      return undefined as T
+      return mockUnlabel(strArray(args.threads), str(args.label)) as T
     case 'snooze':
       requireUnlocked()
-      mockSnooze(str(args.id), str(args.until))
-      return undefined as T
+      return mockSnooze(strArray(args.threads), str(args.until)) as T
     case 'unsnooze':
       requireUnlocked()
-      mockUnsnooze(str(args.id))
+      mockUnsnooze(strArray(args.threads))
+      return undefined as T
+
+    // ── (p) TODO: the Superhuman layer -- `docs/plans/mail.md` phase 7 ────
+
+    case 'set_thread_category':
+      requireUnlocked()
+      mockSetThreadCategory(strArray(args.threads), args.category as MailCategory)
+      return undefined as T
+    case 'summarize_thread':
+      requireUnlocked()
+      return mockSummarizeThread(str(args.id)) as T
+
+    // ── (i) TODO: invitations -- `docs/plans/mail.md` phase 6 ─────────────
+
+    case 'respond_to_invite':
+      requireUnlocked()
+      mockRespondToInvite(
+        str(args.messageId),
+        args.response as 'accepted' | 'tentative' | 'declined',
+      )
       return undefined as T
 
     case 'list_drafts':
       requireUnlocked()
-      return mockListDrafts() as T
+      return mockListDrafts(str(args.account)) as T
     case 'new_draft':
       requireUnlocked()
       return mockNewDraft(
@@ -4492,20 +4523,27 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       mockDiscardDraft(str(args.id))
       return undefined as T
-    case 'send_draft':
+    case 'send_draft': {
       requireUnlocked()
-      mockSendDraft(str(args.id), Number(args.delaySeconds ?? 8))
-      return undefined as T
+      // `sendAt` (send later) wins over `delaySeconds` (undo send), the same
+      // precedence `send_draft` in Rust gives them; neither given falls back
+      // to the undo-send window's own default.
+      const sendAt = args.sendAt ? new Date(str(args.sendAt)) : null
+      const delaySeconds = sendAt
+        ? Math.max(1, Math.round((sendAt.getTime() - Date.now()) / 1000))
+        : Number(args.delaySeconds ?? 8)
+      return mockSendDraft(str(args.id), delaySeconds) as T
+    }
     case 'undo_send':
       requireUnlocked()
-      mockUndoSend(str(args.draftId))
-      return undefined as T
+      return mockUndoSend(str(args.draftId)) as T
 
     case 'allow_remote_images': {
       requireUnlocked()
-      // A one-off grant for one message is the mail view's own affair -- see
-      // `mockAllowRemoteImages`; a sender or domain joins the standing list.
-      if (args.messageId) mockAllowRemoteImages(str(args.messageId), Boolean(args.forever))
+      // A one-off grant for one message is the mail view's own affair; a
+      // sender or domain joins the standing list. Exactly one of the three
+      // is set, per the real command's own contract.
+      if (args.messageId) mockAllowRemoteImagesOnce(str(args.messageId))
       if (args.sender) mockRemoteImageSettings.senders.push(str(args.sender))
       if (args.domain) mockRemoteImageSettings.domains.push(str(args.domain))
       return undefined as T
