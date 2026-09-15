@@ -15,7 +15,9 @@ use std::sync::{Arc, Mutex};
 
 use everyday_core::account::{Account, Provider};
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
-use everyday_core::mail::{Address, Mailbox, MailboxRole, Message, MessageFlags, OpState};
+use everyday_core::mail::{
+    Address, Mailbox, MailboxRole, Message, MessageFlags, OpKind, OpState, Origin,
+};
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::IngestMessage;
 use everyday_mail::compose::Built;
@@ -455,6 +457,87 @@ async fn unsnoozing_early_clears_it_with_no_outbox_op() {
     let due =
         vault.due_ops(account, Timestamp::now() + SignedDuration::from_secs(3_600), 10).unwrap();
     assert_eq!(due.len(), 1);
+}
+
+// ---- Gmail label rows are never selectable mailboxes -----------------------
+
+/// The regression for "Gmail label rows are treated as selectable
+/// mailboxes": a thread whose message lives in All Mail and is also filed
+/// under the `\Inbox` label and a user label ("Work") must, on archive and
+/// mark-read, only ever touch All Mail. Neither label mailbox is ever
+/// `SELECT`ed, and neither is stored to as if it named a real mailbox.
+#[tokio::test]
+async fn gmail_archive_and_mark_read_never_touch_a_label_mailbox() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let all_mail = seed_mailbox(&svc, account, "[Gmail]/All Mail", MailboxRole::All);
+    let inbox_label = seed_mailbox(&svc, account, "\\Inbox", MailboxRole::Inbox);
+    let work_label = seed_mailbox(&svc, account, "Work", MailboxRole::Other);
+
+    let vault = svc.get().unwrap();
+    let thread_id = ThreadId::new();
+    let message_id = MailMessageId::new();
+    let message = Message {
+        id: message_id,
+        account_id: account,
+        thread_id,
+        message_id_header: format!("<{message_id}@example.com>"),
+        date: Timestamp::now(),
+        from: Address::bare("sender@example.com"),
+        to: vec![Address::bare("me@example.com")],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        reply_to: Vec::new(),
+        subject: "A labelled message".into(),
+        snippet: String::new(),
+        flags: MessageFlags::default(),
+        labels: vec!["Work".into()],
+        has_attachments: false,
+        size: 128,
+        category: None,
+        pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
+        gmail: None,
+        invite: None,
+    };
+    // One physical message, filed under three mailbox rows at once -- All
+    // Mail, where it lives, and the two label memberships a real Gmail sync
+    // would also record. The label rows' own `uid`s are deliberately
+    // different from All Mail's so a test that wrongly acted on one fails
+    // loudly rather than by coincidence agreeing.
+    vault
+        .ingest_mail(
+            account,
+            vec![
+                IngestMessage { message: message.clone(), mailbox: all_mail, uid: 42 },
+                IngestMessage { message: message.clone(), mailbox: inbox_label, uid: 1 },
+                IngestMessage { message, mailbox: work_label, uid: 1 },
+            ],
+        )
+        .unwrap();
+
+    vault.apply_thread_ops(&[thread_id], OpKind::MarkRead, Origin::Person).unwrap();
+    vault.apply_thread_ops(&[thread_id], OpKind::Archive, Origin::Person).unwrap();
+
+    let mut session = FakeSession {
+        capabilities: Capabilities { gmail: true, ..Default::default() },
+        ..Default::default()
+    };
+    let sender = FakeSender;
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.attempted, 2, "{report:?}");
+    assert_eq!(report.done, 2, "{report:?}");
+    assert_eq!(report.failed, 0, "{report:?}");
+
+    assert!(
+        session.calls.iter().any(|c| c.contains("select [Gmail]/All Mail")),
+        "All Mail must be selected: {:?}",
+        session.calls
+    );
+    assert!(
+        !session.calls.iter().any(|c| c.contains("select \\Inbox") || c.contains("select Work")),
+        "a label mailbox must never be selected: {:?}",
+        session.calls
+    );
 }
 
 // ---- backoff: the first retry waits thirty seconds, not sixty --------------
