@@ -1884,6 +1884,8 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "blake3",
+ "calcard",
+ "chrono",
  "css-inline",
  "everyday-core",
  "futures",

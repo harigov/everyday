@@ -126,6 +126,25 @@ oauth2 = { version = "=5.0.0", default-features = false, features = ["timing-res
 oauth2-reqwest = "=0.1.0-alpha.3"
 reqwest = { version = "0.13", default-features = false, features = ["default-tls", "http2"] }
 
+# `invite.rs`'s iCalendar reader and writer: the same crate
+# `everyday-service::accountcal::caldav` already parses `VEVENT`/`VTIMEZONE`
+# with, pinned to the same version for the same reason that crate's own
+# Cargo.toml comment gives -- one recurrence engine in the tree, not a second
+# one from the `rrule` crate that could disagree with it near a DST boundary.
+# `invite.rs` does not expand recurrences itself (an invitation banner names
+# a pattern, "FREQ=WEEKLY...", rather than a list of occurrences -- see
+# `Invite::recurrence`'s own docs), but it reuses `ICalendar::expand_dates`
+# for one occurrence's start and end because that is also where `VTIMEZONE`
+# and Windows `TZID`s (Outlook/Exchange) get resolved, and hand-rolling a
+# second resolver for exactly the boundary `caldav::to_jiff` already exists
+# for would be the risk this comment in that module warns about, just in a
+# second crate. `jmap`, its default feature, is switched off on the same
+# terms as there: this crate never converts to JSCalendar either.
+calcard = { version = "=0.3.13", default-features = false }
+# The boundary `invite::to_jiff` is -- see that function's own docs, the twin
+# of `caldav::to_jiff`'s.
+chrono = "0.4"
+
 [dev-dependencies]
 proptest = "=1.11.0"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "test-util", "time"] }
