@@ -68,6 +68,7 @@ pub mod tokens;
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use everyday_core::Vault;
 use everyday_core::account::{Account, Provider};
@@ -273,6 +274,34 @@ pub(crate) async fn missing_from_full_resync(
     .await
 }
 
+/// `Retry-After`, read as a plain count of seconds -- the only form Google
+/// and Graph are ever seen to send it in on the responses this crate
+/// retries (429s and rate-limited 403s), never the HTTP-date form the
+/// header also allows.
+pub(crate) fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let raw = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    let secs: u64 = raw.trim().parse().ok()?;
+    Some(Duration::from_secs(secs))
+}
+
+/// A short, capped backoff between retries of one rate-limited HTTP call,
+/// used when the server names no `Retry-After` of its own.
+///
+/// Deliberately much shorter than the supervisor's own task-restart backoff
+/// (`crate::supervisor`'s `BACKOFF_BASE`/`BACKOFF_CAP`, minutes wide): that
+/// one waits out a whole task being restarted; this waits out a single
+/// request inside one sync that is still in progress, and a provider's rate
+/// limit typically clears in well under a second. No jitter, for the same
+/// reason: jitter earns its keep when many accounts might retry in the same
+/// instant and stampede a server together, which is the supervisor's
+/// situation, not one calendar's one in-flight request.
+pub(crate) fn short_backoff(attempt: u32) -> Duration {
+    const BASE: Duration = Duration::from_millis(200);
+    const CAP: Duration = Duration::from_secs(2);
+    let exponent = attempt.saturating_sub(1).min(4);
+    BASE.saturating_mul(1u32 << exponent).min(CAP)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,6 +385,77 @@ mod tests {
             !missing.contains(&outside_window.id),
             "an event outside the synced window must not be reported as a deletion, per the \
              module doc's 'restricted to window'"
+        );
+    }
+
+    // ---- finding 2: only a credential problem moves the account ---------
+
+    #[tokio::test]
+    async fn a_forbidden_result_moves_the_account_to_needs_sign_in() {
+        let (vault, _dir) = test_vault();
+        let mut account = Account::new(Provider::Google, "person@example.com");
+        account.status = AccountStatus::Ok;
+        vault.save_account(&account).unwrap();
+
+        let result: CommandResult<()> = Err(CommandError::new(codes::FORBIDDEN, "bad credential"));
+        note_if_credential_is_bad(&vault, &account, &result).await;
+
+        let reloaded = vault.account(account.id).unwrap();
+        assert!(
+            matches!(reloaded.status, AccountStatus::NeedsSignIn { .. }),
+            "a 401-shaped FORBIDDEN must move the account to NeedsSignIn: {:?}",
+            reloaded.status
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rate_limited_or_ordinary_failure_leaves_the_account_exactly_as_it_was() {
+        let (vault, _dir) = test_vault();
+        for code in [codes::RATE_LIMITED, codes::NETWORK] {
+            let mut account = Account::new(Provider::Google, "person@example.com");
+            account.status = AccountStatus::Ok;
+            vault.save_account(&account).unwrap();
+
+            let result: CommandResult<()> = Err(CommandError::new(code, "try again later"));
+            note_if_credential_is_bad(&vault, &account, &result).await;
+
+            let reloaded = vault.account(account.id).unwrap();
+            assert_eq!(
+                reloaded.status,
+                AccountStatus::Ok,
+                "{code} must never be read as a credential problem"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_calendar_level_failure_touches_only_that_calendar_not_the_account() {
+        // What a Graph 403 on one calendar -- an ordinary, non-FORBIDDEN
+        // failure -- does end to end: `record_failure` is `sync`'s own
+        // handler for exactly this, called whenever a result's code is not
+        // `FORBIDDEN` (see `sync`'s own body, just above in this file).
+        let (vault, _dir) = test_vault();
+        let mut account = Account::new(Provider::Microsoft, "person@example.com");
+        account.status = AccountStatus::Ok;
+        vault.save_account(&account).unwrap();
+        let calendar = Calendar::from_account(
+            account.id,
+            account.provider,
+            AccountCalendarSource::Graph,
+            "cal-1",
+            "Work",
+        );
+        vault.save_calendar(&calendar).unwrap();
+
+        record_failure(&vault, calendar.id, "Microsoft Graph refused this request").await;
+
+        let reloaded_account = vault.account(account.id).unwrap();
+        assert_eq!(reloaded_account.status, AccountStatus::Ok, "the account must be untouched");
+        let reloaded_calendar = vault.calendar(calendar.id).unwrap();
+        assert_eq!(
+            reloaded_calendar.last_error.as_deref(),
+            Some("Microsoft Graph refused this request"),
+            "the calendar itself must carry the failure"
         );
     }
 }

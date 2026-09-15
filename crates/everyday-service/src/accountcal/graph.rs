@@ -40,6 +40,19 @@
 //! comes back, [`super::missing_from_full_resync`] finds whatever this vault
 //! already had in the synced window that the fresh list did not re-mention,
 //! and removes it.
+//!
+//! # 403 is not a bad credential; 429 and 503 are retried
+//!
+//! Graph spends 403 on a calendar this account cannot read, not on a
+//! rejected token -- that is what 401 means. So only a 401 is
+//! [`codes::FORBIDDEN`] here, the code that moves the account to
+//! `NeedsSignIn` (`mod.rs::note_if_credential_is_bad`); a 403 sets this
+//! calendar's own `last_error` and leaves the account alone, the same as a
+//! timeout would. 429 (Graph's own rate limit) and 503 (a transient outage)
+//! are retried with a short backoff, honouring `Retry-After` when Graph
+//! sends one -- see [`get_json_full_url`], which shares its retry loop and
+//! backoff with `google.rs`'s own (`super::retry_after_delay`,
+//! `super::short_backoff`).
 
 use std::sync::Arc;
 
@@ -51,9 +64,10 @@ use everyday_core::calendar::{
 };
 use everyday_core::id::CalendarId;
 use serde::Deserialize;
+use tokio::time::sleep;
 
 use super::tokens::{self, Credential, Resource};
-use super::{RemoteCalendar, deterministic_event_id, sync_window};
+use super::{RemoteCalendar, deterministic_event_id, retry_after_delay, short_backoff, sync_window};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
 use crate::service::{Service, blocking};
@@ -63,6 +77,11 @@ const API: &str = "https://graph.microsoft.com/v1.0";
 /// `remote_id` so [`sync`] can tell "read this one with delta" from "read
 /// this one with a windowed poll" without a second field on the record.
 const PRIMARY: &str = "primary";
+/// How many times one request retries a 429 or a 503 before [`sync`] gives
+/// up for this poll and lets the next scheduled one try again -- the same
+/// number, for the same reason, as `google.rs`'s own
+/// `MAX_RATE_LIMIT_ATTEMPTS`.
+const MAX_RETRY_ATTEMPTS: u32 = 4;
 
 #[derive(Deserialize)]
 struct CalendarListResponse {
@@ -182,7 +201,7 @@ async fn sync_with_base(
     blocking(move || Ok(vault.sync_account_calendar(id, &upsert, &remove_ids, cursor)?)).await
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct DeltaPage {
     #[serde(default)]
     value: Vec<GraphEvent>,
@@ -192,7 +211,7 @@ struct DeltaPage {
     delta_link: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct GraphEvent {
     id: String,
     #[serde(default)]
@@ -217,13 +236,13 @@ struct GraphEvent {
     removed: Option<serde_json::Value>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct GraphLocation {
     #[serde(rename = "displayName", default)]
     display_name: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct GraphWhen {
     #[serde(rename = "dateTime")]
     date_time: String,
@@ -231,13 +250,13 @@ struct GraphWhen {
     time_zone: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct GraphAttendeeWrap {
     #[serde(rename = "emailAddress")]
     email_address: GraphEmailAddress,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct GraphEmailAddress {
     #[serde(default)]
     name: String,
@@ -426,44 +445,82 @@ async fn get_json<T: serde::de::DeserializeOwned>(url: &str, token: &str) -> Com
     get_json_full_url(url, token).await
 }
 
+/// A GET with a bearer token and the `outlook.timezone` preference header,
+/// retrying a 429 or a 503 with a short backoff before giving up -- see the
+/// module doc's "403 is not a bad credential; 429 and 503 are retried".
 async fn get_json_full_url<T: serde::de::DeserializeOwned>(
     url: &str,
     token: &str,
 ) -> CommandResult<T> {
-    let response = http::client()?
-        .get(url)
-        .bearer_auth(token)
-        // What makes `GraphWhen::date_time` a plain UTC instant rather than
-        // a Windows-zoned local time -- see the module doc.
-        .header("Prefer", "outlook.timezone=\"UTC\"")
-        .send()
-        .await
-        .map_err(|e| {
-            CommandError::new(codes::NETWORK, format!("could not reach Microsoft Graph: {e}"))
-        })?;
-    if response.status().as_u16() == 401 || response.status().as_u16() == 403 {
-        return Err(CommandError::new(
-            codes::FORBIDDEN,
-            "Microsoft Graph refused this account's credential",
-        ));
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let response = http::client()?
+            .get(url)
+            .bearer_auth(token)
+            // What makes `GraphWhen::date_time` a plain UTC instant rather
+            // than a Windows-zoned local time -- see the module doc.
+            .header("Prefer", "outlook.timezone=\"UTC\"")
+            .send()
+            .await
+            .map_err(|e| {
+                CommandError::new(codes::NETWORK, format!("could not reach Microsoft Graph: {e}"))
+            })?;
+        let status = response.status().as_u16();
+        if status == 401 {
+            return Err(CommandError::new(
+                codes::FORBIDDEN,
+                "Microsoft Graph refused this account's credential",
+            ));
+        }
+        if status == 403 {
+            // This account can reach Graph fine; this calendar specifically
+            // cannot be read. Not a credential problem -- see the module
+            // doc -- so it must not move the account to `NeedsSignIn`.
+            return Err(CommandError::new(
+                codes::NETWORK,
+                "Microsoft Graph refused this request: this account cannot read that calendar"
+                    .to_string(),
+            ));
+        }
+        if status == 429 || status == 503 {
+            if attempt >= MAX_RETRY_ATTEMPTS {
+                return Err(CommandError::new(
+                    codes::RATE_LIMITED,
+                    format!(
+                        "Microsoft Graph answered {status} too many times in a row; it will be \
+                         tried again on the next sync"
+                    ),
+                ));
+            }
+            let retry_after = retry_after_delay(response.headers());
+            sleep(retry_after.unwrap_or_else(|| short_backoff(attempt))).await;
+            continue;
+        }
+        if status == 410 {
+            // Graph's own token-expiry signal for a delta link, same idea as
+            // Google's: the caller has to start over. Surfaced as `CONFLICT`
+            // for the same reason `google.rs` uses it, though today only a
+            // primary-calendar delta sync can produce this -- a windowed poll
+            // never presents a token Graph could reject.
+            return Err(CommandError::new(
+                codes::CONFLICT,
+                "Microsoft Graph's delta link has expired",
+            ));
+        }
+        if !response.status().is_success() {
+            return Err(CommandError::new(
+                codes::NETWORK,
+                format!("Microsoft Graph answered {status}"),
+            ));
+        }
+        return response.json().await.map_err(|e| {
+            CommandError::new(
+                codes::NETWORK,
+                format!("could not read Microsoft Graph's answer: {e}"),
+            )
+        });
     }
-    if response.status().as_u16() == 410 {
-        // Graph's own token-expiry signal for a delta link, same idea as
-        // Google's: the caller has to start over. Surfaced as `CONFLICT`
-        // for the same reason `google.rs` uses it, though today only a
-        // primary-calendar delta sync can produce this -- a windowed poll
-        // never presents a token Graph could reject.
-        return Err(CommandError::new(codes::CONFLICT, "Microsoft Graph's delta link has expired"));
-    }
-    if !response.status().is_success() {
-        return Err(CommandError::new(
-            codes::NETWORK,
-            format!("Microsoft Graph answered {}", response.status()),
-        ));
-    }
-    response.json().await.map_err(|e| {
-        CommandError::new(codes::NETWORK, format!("could not read Microsoft Graph's answer: {e}"))
-    })
 }
 
 #[cfg(test)]
@@ -581,6 +638,114 @@ mod tests {
             delta_link.as_deref().is_some_and(|link| link.ends_with("/delta-resume-token")),
             "the final page's deltaLink is what a later sync resumes from: {delta_link:?}"
         );
+    }
+
+    // ---- finding 2: 403 is not a bad credential; 429 and 503 are retried --
+
+    async fn mock_status_then_ok(
+        first_status: axum::http::StatusCode,
+        retry_after: Option<&'static str>,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicU32>) {
+        use axum::Json;
+        use axum::response::IntoResponse;
+        use axum::routing::get;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let calls = std::sync::Arc::new(AtomicU32::new(0));
+        let calls_for_route = calls.clone();
+        let app = axum::Router::new().route(
+            "/x",
+            get(move || {
+                let calls_for_route = calls_for_route.clone();
+                async move {
+                    let call = calls_for_route.fetch_add(1, Ordering::SeqCst);
+                    if call == 0 {
+                        let mut resp = first_status.into_response();
+                        if let Some(ra) = retry_after {
+                            resp.headers_mut().insert(
+                                axum::http::header::RETRY_AFTER,
+                                axum::http::HeaderValue::from_static(ra),
+                            );
+                        }
+                        resp
+                    } else {
+                        Json(serde_json::json!({"value": []})).into_response()
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        (format!("http://127.0.0.1:{port}/x"), calls)
+    }
+
+    #[tokio::test]
+    async fn a_429_is_retried_honouring_retry_after_and_then_succeeds() {
+        let (url, calls) =
+            mock_status_then_ok(axum::http::StatusCode::TOO_MANY_REQUESTS, Some("0")).await;
+        let page: DeltaPage = get_json_full_url(&url, "tok").await.expect("retried, then succeeded");
+        assert!(page.value.is_empty());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2, "one retry, then success");
+    }
+
+    #[tokio::test]
+    async fn a_503_is_also_retried_the_same_way() {
+        let (url, calls) =
+            mock_status_then_ok(axum::http::StatusCode::SERVICE_UNAVAILABLE, Some("0")).await;
+        let _: DeltaPage = get_json_full_url(&url, "tok").await.expect("retried, then succeeded");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_403_sets_this_calendars_failure_not_the_accounts_credential() {
+        use axum::response::IntoResponse;
+        use axum::routing::get;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let calls = std::sync::Arc::new(AtomicU32::new(0));
+        let calls_for_route = calls.clone();
+        let app = axum::Router::new().route(
+            "/x",
+            get(move || {
+                calls_for_route.fetch_add(1, Ordering::SeqCst);
+                async { axum::http::StatusCode::FORBIDDEN.into_response() }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("http://127.0.0.1:{port}/x");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+
+        let err = get_json_full_url::<DeltaPage>(&url, "tok").await.unwrap_err();
+        assert_ne!(
+            err.code,
+            codes::FORBIDDEN,
+            "a calendar this account cannot read must not look like a bad credential"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "not a rate limit, so never retried");
+    }
+
+    #[tokio::test]
+    async fn a_401_is_still_reported_as_forbidden() {
+        use axum::response::IntoResponse;
+        use axum::routing::get;
+
+        let app = axum::Router::new()
+            .route("/x", get(|| async { axum::http::StatusCode::UNAUTHORIZED.into_response() }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("http://127.0.0.1:{port}/x");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+
+        let err = get_json_full_url::<DeltaPage>(&url, "tok").await.unwrap_err();
+        assert_eq!(err.code, codes::FORBIDDEN);
     }
 
     // ---- finding 1: a full delta after a 410 must compute its own

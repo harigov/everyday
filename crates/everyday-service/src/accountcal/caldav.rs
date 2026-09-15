@@ -143,18 +143,28 @@ fn base_uri(account: &Account) -> CommandResult<Uri> {
 
 /// Turn a `libdav` error into a [`CommandError`], recognising the one shape
 /// worth telling apart from every other kind of "the request failed": a 401
-/// or 403 means the credential itself is no good, which is what moves the
-/// account to `NeedsSignIn` rather than just leaving a complaint on the
-/// calendar (see `mod.rs`'s `sync`, which reads [`CommandError::code`] to
-/// make that same distinction for every source).
+/// means the credential itself is no good, which is what moves the account
+/// to `NeedsSignIn` rather than just leaving a complaint on the calendar
+/// (see `mod.rs`'s `sync`, which reads [`CommandError::code`] to make that
+/// same distinction for every source).
+///
+/// A 403 is deliberately *not* included here, even though CalDAV servers
+/// hand it out for something that looks similar at first glance -- a
+/// collection this credential cannot read. The difference that matters:
+/// Basic and Bearer auth on a CalDAV request either work or they do not, and
+/// a 403 on one calendar of an account whose other calendars answer fine
+/// means the credential is *not* the problem, only this collection's own
+/// permissions are. Treating it as `FORBIDDEN` would move the whole account
+/// to `NeedsSignIn` over a single calendar it was never going to be able to
+/// read regardless of signing in again -- so a 403 falls through to the
+/// ordinary `NETWORK` branch below, which `mod.rs::sync` records on the
+/// calendar itself and leaves the account alone.
 fn describe<E: std::fmt::Display>(e: WebDavError<E>) -> CommandError {
     match &e {
-        WebDavError::BadStatusCode(status) if status.as_u16() == 401 || status.as_u16() == 403 => {
-            CommandError::new(
-                codes::FORBIDDEN,
-                "the CalDAV server refused this account's credential",
-            )
-        }
+        WebDavError::BadStatusCode(status) if status.as_u16() == 401 => CommandError::new(
+            codes::FORBIDDEN,
+            "the CalDAV server refused this account's credential",
+        ),
         _ => CommandError::new(
             codes::NETWORK,
             format!("the CalDAV server could not be reached: {e}"),
@@ -857,5 +867,24 @@ mod tests {
             events_from_ics("not a calendar", CalendarId::new(), "/cal/x.ics", "UTC", window);
         assert!(events.is_empty());
         assert_eq!(skipped, 0);
+    }
+
+    // ---- finding 2: a 403 is not a bad credential --------------------------
+
+    #[test]
+    fn describe_reports_a_401_as_forbidden_but_a_403_as_an_ordinary_failure() {
+        let unauthorized = describe(WebDavError::<std::io::Error>::BadStatusCode(
+            http::StatusCode::UNAUTHORIZED,
+        ));
+        assert_eq!(unauthorized.code, codes::FORBIDDEN);
+
+        let forbidden_calendar = describe(WebDavError::<std::io::Error>::BadStatusCode(
+            http::StatusCode::FORBIDDEN,
+        ));
+        assert_ne!(
+            forbidden_calendar.code,
+            codes::FORBIDDEN,
+            "a calendar this credential cannot read must not look like a bad credential"
+        );
     }
 }

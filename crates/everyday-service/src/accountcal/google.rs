@@ -30,6 +30,24 @@
 //! [`sync`] closes that gap with [`super::missing_from_full_resync`]: after
 //! any windowed list, whatever this vault already had for the calendar
 //! inside that window that the fresh list did not re-mention is gone.
+//!
+//! # 403 is not always a bad credential
+//!
+//! Google spends the same status, 403, on two very different situations --
+//! see <https://developers.google.com/calendar/api/guides/errors>.
+//! `rateLimitExceeded`, `userRateLimitExceeded` and `quotaExceeded` mean
+//! "you are asking too fast", the same as a 429 everywhere else, and
+//! [`get_bytes`] retries those with a short backoff, honouring `Retry-After`
+//! when Google sends one, before giving up and asking the next scheduled
+//! poll to try again. Every other 403 reason (`accessNotConfigured`,
+//! `insufficientPermissions`, and the rest) means this account can reach
+//! Google fine but the calendar itself refused the request -- not a
+//! credential problem, so it must not move the account to `NeedsSignIn` the
+//! way a 401 does. Only a 401 -- the token itself rejected -- is
+//! [`codes::FORBIDDEN`] here; everything else a 403 can mean is
+//! [`codes::NETWORK`] or [`codes::RATE_LIMITED`], both of which `mod.rs`'s
+//! `sync` reads as an ordinary failure to record on the calendar, leaving
+//! the account alone.
 
 use std::sync::Arc;
 
@@ -41,14 +59,22 @@ use everyday_core::calendar::{
 };
 use everyday_core::id::CalendarId;
 use serde::Deserialize;
+use tokio::time::sleep;
 
 use super::tokens::{self, Credential, Resource};
-use super::{RemoteCalendar, deterministic_event_id, sync_window};
+use super::{RemoteCalendar, deterministic_event_id, retry_after_delay, short_backoff, sync_window};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
 use crate::service::{Service, blocking};
 
 const API: &str = "https://www.googleapis.com/calendar/v3";
+
+/// How many times one request retries a rate-limited 403 before [`sync`]
+/// gives up for this poll and lets the next one -- a minute or an hour away,
+/// per the calendar's own `refresh_minutes` -- try again. Generous enough
+/// that a brief burst clears inside one sync; small enough that a sustained
+/// limit does not hold up a background poll for minutes.
+const MAX_RATE_LIMIT_ATTEMPTS: u32 = 4;
 
 #[derive(Deserialize)]
 struct CalendarListResponse {
@@ -281,25 +307,8 @@ async fn list_events(
         if let Some(pt) = &page_token {
             url.push_str(&format!("&pageToken={pt}"));
         }
-        let response = http::client()?.get(&url).bearer_auth(token).send().await.map_err(|e| {
-            CommandError::new(codes::NETWORK, format!("could not reach Google Calendar: {e}"))
-        })?;
-        if response.status().as_u16() == 410 {
-            return Err(CommandError::new(codes::CONFLICT, "Google's sync token has expired"));
-        }
-        if response.status().as_u16() == 401 || response.status().as_u16() == 403 {
-            return Err(CommandError::new(
-                codes::FORBIDDEN,
-                "Google refused this account's credential",
-            ));
-        }
-        if !response.status().is_success() {
-            return Err(CommandError::new(
-                codes::NETWORK,
-                format!("Google Calendar answered {}", response.status()),
-            ));
-        }
-        let page: EventsResponse = response.json().await.map_err(|e| {
+        let bytes = get_bytes(&url, token).await?;
+        let page: EventsResponse = serde_json::from_slice(&bytes).map_err(|e| {
             CommandError::new(codes::NETWORK, format!("could not read Google's answer: {e}"))
         })?;
         items.extend(page.items);
@@ -393,23 +402,91 @@ async fn bearer(
 }
 
 async fn get_json<T: serde::de::DeserializeOwned>(url: &str, token: &str) -> CommandResult<T> {
-    let response = http::client()?.get(url).bearer_auth(token).send().await.map_err(|e| {
-        CommandError::new(codes::NETWORK, format!("could not reach Google Calendar: {e}"))
-    })?;
-    if response.status().as_u16() == 401 || response.status().as_u16() == 403 {
-        return Err(CommandError::new(
-            codes::FORBIDDEN,
-            "Google refused this account's credential",
-        ));
-    }
-    if !response.status().is_success() {
-        return Err(CommandError::new(
-            codes::NETWORK,
-            format!("Google Calendar answered {}", response.status()),
-        ));
-    }
-    response.json().await.map_err(|e| {
+    let bytes = get_bytes(url, token).await?;
+    serde_json::from_slice(&bytes).map_err(|e| {
         CommandError::new(codes::NETWORK, format!("could not read Google's answer: {e}"))
+    })
+}
+
+/// A GET with a bearer token, retrying a rate-limited 403 with a short
+/// backoff before giving up -- see the module doc's "403 is not always a bad
+/// credential".
+async fn get_bytes(url: &str, token: &str) -> CommandResult<Vec<u8>> {
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let response = http::client()?.get(url).bearer_auth(token).send().await.map_err(|e| {
+            CommandError::new(codes::NETWORK, format!("could not reach Google Calendar: {e}"))
+        })?;
+        let status = response.status().as_u16();
+        if status == 401 {
+            return Err(CommandError::new(
+                codes::FORBIDDEN,
+                "Google refused this account's credential",
+            ));
+        }
+        if status == 403 {
+            let retry_after = retry_after_delay(response.headers());
+            let body = response.bytes().await.unwrap_or_default();
+            if is_rate_limit_reason(&body) {
+                if attempt >= MAX_RATE_LIMIT_ATTEMPTS {
+                    return Err(CommandError::new(
+                        codes::RATE_LIMITED,
+                        "Google Calendar is rate-limiting this account; it will be tried again \
+                         on the next sync",
+                    ));
+                }
+                sleep(retry_after.unwrap_or_else(|| short_backoff(attempt))).await;
+                continue;
+            }
+            // A 403 for any other reason: this account's credential is
+            // fine, but this calendar specifically refused the request.
+            return Err(CommandError::new(
+                codes::NETWORK,
+                format!(
+                    "Google Calendar refused this request: {}",
+                    String::from_utf8_lossy(&body)
+                ),
+            ));
+        }
+        if status == 410 {
+            return Err(CommandError::new(codes::CONFLICT, "Google's sync token has expired"));
+        }
+        if !response.status().is_success() {
+            return Err(CommandError::new(
+                codes::NETWORK,
+                format!("Google Calendar answered {status}"),
+            ));
+        }
+        return response.bytes().await.map(|b| b.to_vec()).map_err(|e| {
+            CommandError::new(codes::NETWORK, format!("could not read Google's answer: {e}"))
+        });
+    }
+}
+
+/// Does a Google error body name one of the three reasons that mean "you are
+/// asking too fast"? A body that does not parse, or names none of the three,
+/// reads as "no" -- safer to treat a reason this module does not recognise
+/// as an ordinary failure than to retry something that will never succeed.
+fn is_rate_limit_reason(body: &[u8]) -> bool {
+    #[derive(Default, Deserialize)]
+    struct Body {
+        #[serde(default)]
+        error: ErrorDetail,
+    }
+    #[derive(Default, Deserialize)]
+    struct ErrorDetail {
+        #[serde(default)]
+        errors: Vec<ErrorReason>,
+    }
+    #[derive(Deserialize)]
+    struct ErrorReason {
+        #[serde(default)]
+        reason: String,
+    }
+    let Ok(parsed) = serde_json::from_slice::<Body>(body) else { return false };
+    parsed.error.errors.iter().any(|e| {
+        matches!(e.reason.as_str(), "rateLimitExceeded" | "userRateLimitExceeded" | "quotaExceeded")
     })
 }
 
@@ -655,5 +732,91 @@ mod tests {
              Google never said it was cancelled"
         );
         assert_eq!(after_second[0].uid, "evt-a");
+    }
+
+    // ---- finding 2: 403 is not always a bad credential --------------------
+
+    fn google_error_body(reason: &str) -> serde_json::Value {
+        serde_json::json!({
+            "error": { "errors": [{ "domain": "usageLimits", "reason": reason }] }
+        })
+    }
+
+    /// A route that always answers 403 with `reason`, counting how many
+    /// times it was asked.
+    async fn mock_always_403(reason: &'static str) -> (String, std::sync::Arc<AtomicU32>) {
+        let calls = std::sync::Arc::new(AtomicU32::new(0));
+        let calls_for_route = calls.clone();
+        let app = axum::Router::new().route(
+            "/x",
+            get(move || {
+                calls_for_route.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    (
+                        axum::http::StatusCode::FORBIDDEN,
+                        [(axum::http::header::RETRY_AFTER, "0")],
+                        Json(google_error_body(reason)),
+                    )
+                        .into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        (format!("http://127.0.0.1:{port}/x"), calls)
+    }
+
+    #[tokio::test]
+    async fn a_rate_limited_403_is_retried_and_never_reported_as_forbidden() {
+        let (url, calls) = mock_always_403("rateLimitExceeded").await;
+        let err = get_bytes(&url, "tok").await.unwrap_err();
+        assert_eq!(
+            err.code,
+            codes::RATE_LIMITED,
+            "a rate limit must never be the credential-is-bad code, or the account would be \
+             wrongly marked needing sign-in"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            MAX_RATE_LIMIT_ATTEMPTS,
+            "it must have actually retried, honouring the mock's Retry-After: 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_403_for_any_other_reason_is_an_ordinary_failure_not_a_credential_one() {
+        let (url, calls) = mock_always_403("insufficientPermissions").await;
+        let err = get_bytes(&url, "tok").await.unwrap_err();
+        assert_eq!(
+            err.code,
+            codes::NETWORK,
+            "a calendar this account cannot read is not a bad credential"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "not a rate limit, so never retried");
+    }
+
+    #[tokio::test]
+    async fn a_401_is_still_reported_as_forbidden() {
+        let calls = std::sync::Arc::new(AtomicU32::new(0));
+        let calls_for_route = calls.clone();
+        let app = axum::Router::new().route(
+            "/x",
+            get(move || {
+                calls_for_route.fetch_add(1, Ordering::SeqCst);
+                async { axum::http::StatusCode::UNAUTHORIZED }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("http://127.0.0.1:{port}/x");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let err = get_bytes(&url, "tok").await.unwrap_err();
+        assert_eq!(err.code, codes::FORBIDDEN);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "a bad credential is never retried");
     }
 }
