@@ -18,6 +18,7 @@
 // is adding a line here.
 
 import { onChange, onLockState, onPalette } from './api'
+import { accounts } from './accounts.svelte'
 import { calendar } from './calendar.svelte'
 import { library } from './library.svelte'
 import { assistant } from './assistant.svelte'
@@ -57,6 +58,7 @@ const COALESCE_MS = 250
  * always decline, and a target with nothing registered always does.
  */
 export const RELOAD = {
+  accounts: () => accounts.refresh(),
   journals: () => app.refreshJournals(),
   entries: () => app.queueListRefresh(),
   todo: () => todo.refresh(),
@@ -145,10 +147,10 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   conversation: null,
   memory: null,
   settings: 'status',
-  // A mailbox provider signed in to. No reload target yet -- Settings →
-  // Accounts, the first reader of this, arrives in a later change; until
-  // then the event exists so a save is not silently invisible on the wire.
-  account: null,
+  // A mailbox provider signed in to. Settings → Accounts registered an
+  // `apply` for this target (see `accounts.svelte.ts`), so most changes are
+  // patched in place; a batch wider than one record falls back to this.
+  account: 'accounts',
 }
 
 /**
