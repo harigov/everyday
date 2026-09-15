@@ -14,6 +14,7 @@ import type {
   AgentMailAccess,
   AuthMethod,
   Endpoint,
+  MailAi,
   MailProvider,
   OAuthPreset,
   Services,
@@ -52,6 +53,33 @@ export const NO_AGENT_ACCESS: AgentMailAccess = {
   archive: false,
   send: false,
 }
+
+/**
+ * (p) TODO: every switch off -- what an account with no `mailAi` of its own
+ * (every account this build has not saved one for) reads as. See
+ * `types.ts`'s own TODO(p) on `MailAi` for the contract this defaults for.
+ */
+export const DEFAULT_MAIL_AI: MailAi = { categorize: false, autoDraft: false, summaries: false }
+
+/** The three Superhuman-layer switches, in the order the settings section
+ *  draws them. */
+export const MAIL_AI_SWITCHES: { key: keyof MailAi; label: string; hint: string }[] = [
+  {
+    key: 'categorize',
+    label: 'Categorise',
+    hint: 'Sort new mail into Important, Other, Newsletters and Notifications.',
+  },
+  {
+    key: 'autoDraft',
+    label: 'Draft ahead',
+    hint: 'Write a reply in your voice, waiting for you when you open a thread that looks like it wants one.',
+  },
+  {
+    key: 'summaries',
+    label: 'Summarise',
+    hint: 'Offer a short summary of a long thread, on request.',
+  },
+]
 
 /** The six things a caller can be let do, in the order the grid draws them. */
 export const PERMISSIONS: { key: keyof AgentMailAccess; label: string }[] = [

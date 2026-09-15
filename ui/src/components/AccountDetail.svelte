@@ -16,7 +16,13 @@
   import { api } from '../lib/api'
   import { accounts, beginAccountSignIn, type OAuthSignInHandle } from '../lib/accounts.svelte'
   import { humanBytes } from '../lib/format'
-  import { PROVIDER_LABELS, providerLabel, statusLabel } from '../lib/accounts'
+  import {
+    DEFAULT_MAIL_AI,
+    MAIL_AI_SWITCHES,
+    PROVIDER_LABELS,
+    providerLabel,
+    statusLabel,
+  } from '../lib/accounts'
   import { errorMessage } from '../lib/errors'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import { openExternal } from '../lib/open-external'
@@ -26,6 +32,7 @@
     AgentCallerKind,
     AgentMailAccess,
     Identity,
+    MailAi,
     RemoteCalendarInfo,
   } from '../lib/types'
   import AgentAccessGrid from './AgentAccessGrid.svelte'
@@ -173,6 +180,31 @@
   function removeIdentity(index: number) {
     if (!draft) return
     draft.identities = draft.identities.filter((_, i) => i !== index)
+  }
+
+  // ── (p) TODO: the Superhuman layer's three switches ───────────────────
+  //
+  // Applies immediately, the same as the agent-access grid above and for
+  // the same reason: a switch in Settings → Accounts is one call, not a
+  // form waiting on Save. Disabled until the account's mail is acknowledged
+  // for the assistant -- reusing `AgentAccessGrid`'s own acknowledgement
+  // checkbox above, since categorising, drafting and summarising all run
+  // through the same configured model that checkbox already gates.
+
+  let mailAiSaving = $state(false)
+
+  async function setMailAi(patch: Partial<MailAi>) {
+    if (!original) return
+    mailAiSaving = true
+    try {
+      const mailAi = { ...(original.mailAi ?? DEFAULT_MAIL_AI), ...patch }
+      await api.saveAccount($state.snapshot({ ...original, mailAi }))
+      await accounts.refresh()
+    } catch (e) {
+      notice = errorMessage(e)
+    } finally {
+      mailAiSaving = false
+    }
   }
 
   // ── Signing in again ─────────────────────────────────────────────────
@@ -519,6 +551,31 @@
     </section>
 
     <section>
+      <span class="eyebrow">Mail assistant</span>
+      <p class="hint">
+        Categorising, drafting ahead and summarising all run in the background, through the model
+        configured for the assistant -- not as something you ask for in chat. Off until the "I
+        understand" checkbox above is ticked, since they read this account's mail the same way the
+        assistant's own tools do.
+      </p>
+      {#each MAIL_AI_SWITCHES as sw (sw.key)}
+        {@const acknowledged = original.assistantProviderAcknowledged === providerName}
+        <label class="mailai-row" class:disabled={!acknowledged}>
+          <input
+            type="checkbox"
+            checked={original.mailAi?.[sw.key] ?? false}
+            disabled={!acknowledged || mailAiSaving}
+            onchange={(e) => void setMailAi({ [sw.key]: e.currentTarget.checked })}
+          />
+          <span class="mailai-text">
+            <span class="mailai-label">{sw.label}</span>
+            <span class="mailai-hint">{sw.hint}</span>
+          </span>
+        </label>
+      {/each}
+    </section>
+
+    <section>
       <span class="eyebrow">Remove</span>
       <p class="hint">
         Removes this account and deletes the local copy of its mail. Nothing changes on the server
@@ -734,5 +791,38 @@
     background: var(--bg-sunken);
     padding: 0.4rem 0.5rem;
     border-radius: 4px;
+  }
+
+  .mailai-row {
+    display: flex;
+    gap: var(--sp-2);
+    align-items: flex-start;
+    padding: var(--sp-1) 0;
+    cursor: pointer;
+  }
+  .mailai-row.disabled {
+    cursor: not-allowed;
+  }
+  .mailai-row input {
+    flex: none;
+    margin-top: 3px;
+    accent-color: var(--accent);
+  }
+  .mailai-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .mailai-label {
+    font-size: var(--text-sm);
+    color: var(--fg);
+  }
+  .mailai-row.disabled .mailai-label {
+    color: var(--fg-faint);
+  }
+  .mailai-hint {
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+    line-height: var(--leading-normal);
   }
 </style>

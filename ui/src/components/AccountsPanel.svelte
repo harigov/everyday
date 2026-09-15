@@ -9,10 +9,12 @@
 
   import { accounts } from '../lib/accounts.svelte'
   import { PROVIDER_LABELS, statusLabel } from '../lib/accounts'
+  import * as mailApi from '../lib/mail-api'
+  import { errorMessage } from '../lib/errors'
   import { app } from '../lib/state.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
-  import type { AccountId, AccountView } from '../lib/types'
+  import type { AccountId, AccountView, RemoteImageSettings } from '../lib/types'
   import AddAccount from './AddAccount.svelte'
   import AccountDetail from './AccountDetail.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
@@ -26,6 +28,45 @@
   let pendingDelete = $state<AccountView | null>(null)
 
   const writable = $derived(app.status?.writable !== false)
+
+  // ── Remote images ────────────────────────────────────────────────────
+  //
+  // The standing allow-list `allow_remote_images {sender|domain}` writes to,
+  // read back here so a person can see, and undo, what they let load
+  // without having to remember which message it was on. Vault-wide, like
+  // the command itself -- not a per-account list, since a sender is a
+  // sender whichever inbox it turned up in.
+
+  let remoteImages = $state<RemoteImageSettings | null>(null)
+  let remoteImagesError = $state<string | null>(null)
+
+  async function loadRemoteImages() {
+    try {
+      remoteImages = await mailApi.listRemoteImageAllowances()
+    } catch (e) {
+      remoteImagesError = errorMessage(e)
+    }
+  }
+  $effect(() => {
+    if (app.supportsMail) void loadRemoteImages()
+  })
+
+  async function revokeSender(sender: string) {
+    try {
+      await mailApi.revokeRemoteImageAllowance({ sender })
+      await loadRemoteImages()
+    } catch (e) {
+      remoteImagesError = errorMessage(e)
+    }
+  }
+  async function revokeDomain(domain: string) {
+    try {
+      await mailApi.revokeRemoteImageAllowance({ domain })
+      await loadRemoteImages()
+    } catch (e) {
+      remoteImagesError = errorMessage(e)
+    }
+  }
 
   function providerLabel(account: AccountView): string {
     return accounts.preset(account.provider)?.label ?? PROVIDER_LABELS[account.provider]
@@ -117,6 +158,39 @@
   </div>
 </section>
 
+{#if app.supportsMail}
+  <section>
+    <span class="eyebrow">Remote images</span>
+    <p class="hint">
+      Every sender and domain a "Always from sender" or "Always from this domain" click has ever let
+      load a remote image, across every account. Revoking one hides that sender's images again, the
+      same as before they were ever shown.
+    </p>
+    {#if remoteImagesError}
+      <p class="hint error">{remoteImagesError}</p>
+    {:else if remoteImages && remoteImages.senders.length === 0 && remoteImages.domains.length === 0}
+      <p class="hint">Nothing has been allowed yet.</p>
+    {:else if remoteImages}
+      <ul class="rows">
+        {#each remoteImages.senders as sender (sender)}
+          <li class="row remoteimg-row">
+            <span class="address">{sender}</span>
+            <span class="provider">Sender</span>
+            <button class="btn" onclick={() => void revokeSender(sender)}>Revoke</button>
+          </li>
+        {/each}
+        {#each remoteImages.domains as domain (domain)}
+          <li class="row remoteimg-row">
+            <span class="address">{domain}</span>
+            <span class="provider">Domain</span>
+            <button class="btn" onclick={() => void revokeDomain(domain)}>Revoke</button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+{/if}
+
 {#if adding}
   <AddAccount onclose={() => (adding = false)} />
 {/if}
@@ -162,6 +236,21 @@
   }
   .row:hover {
     background: var(--bg-hover);
+  }
+
+  .remoteimg-row {
+    cursor: default;
+    gap: var(--sp-3);
+  }
+  .remoteimg-row .address {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .remoteimg-row .provider {
+    flex: none;
   }
 
   .main {
