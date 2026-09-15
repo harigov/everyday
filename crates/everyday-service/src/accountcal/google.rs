@@ -16,6 +16,20 @@
 //! CalDAV's `sync-token`) is what makes a resync incremental; a `410 Gone`
 //! on it means "start over", handled by [`sync`] falling back to a bounded
 //! `timeMin`/`timeMax` list the same width as [`super::sync_window`].
+//!
+//! # A full resync has to compute its own deletions
+//!
+//! Google only ever reports a cancelled event (`status: "cancelled"`)
+//! inside an *incremental* page -- one fetched with `syncToken`. A plain,
+//! windowed `timeMin`/`timeMax` list, which is what both a first sync and
+//! the 410 fallback fall back to, never sets `showDeleted` and so never
+//! mentions a cancelled event at all: it simply is not in the list. Reading
+//! that silence as "nothing was deleted" is the bug this module used to
+//! have -- an event deleted while this vault's `syncToken` was stale would
+//! stay in the local store forever, because nothing ever told it to leave.
+//! [`sync`] closes that gap with [`super::missing_from_full_resync`]: after
+//! any windowed list, whatever this vault already had for the calendar
+//! inside that window that the fresh list did not re-mention is gone.
 
 use std::sync::Arc;
 
@@ -137,35 +151,58 @@ pub async fn sync(
     account: &Account,
     calendar: &Calendar,
 ) -> CommandResult<SyncReport> {
+    sync_with_base(svc, vault, account, calendar, API).await
+}
+
+/// [`sync`]'s own body, over `base` rather than the hardcoded [`API`] --
+/// split out so a test can point the whole conversation (events, and the
+/// diff a full resync now has to compute) at a mock server, the same way
+/// [`list_events`] already lets its own tests choose `base`.
+async fn sync_with_base(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account: &Account,
+    calendar: &Calendar,
+    base: &str,
+) -> CommandResult<SyncReport> {
     let CalendarOrigin::Account { remote_id, .. } = &calendar.origin else {
         return Err(CommandError::new(codes::INVALID, "not an account calendar"));
     };
     let token = bearer(svc, vault, account).await?;
     let encoded = urlencoding_light(remote_id);
 
-    let (events, next_token, full_resync) = match &calendar.account_sync.token {
+    let (events, next_token, full_resync_window) = match &calendar.account_sync.token {
         Some(sync_token) => {
-            match list_events(API, &encoded, &token, IncrementalOrFull::Incremental(sync_token))
+            match list_events(base, &encoded, &token, IncrementalOrFull::Incremental(sync_token))
                 .await
             {
-                Ok(pages) => (pages.0, pages.1, false),
+                Ok(pages) => (pages.0, pages.1, None),
                 Err(e) if e.code == codes::CONFLICT => {
                     // Google's 410 Gone: the token is too old. Start over with a
                     // bounded window, same as a first sync.
-                    let (from, to) = sync_window();
-                    let pages =
-                        list_events(API, &encoded, &token, IncrementalOrFull::Windowed(from, to))
-                            .await?;
-                    (pages.0, pages.1, true)
+                    let window = sync_window();
+                    let pages = list_events(
+                        base,
+                        &encoded,
+                        &token,
+                        IncrementalOrFull::Windowed(window.0, window.1),
+                    )
+                    .await?;
+                    (pages.0, pages.1, Some(window))
                 }
                 Err(e) => return Err(e),
             }
         }
         None => {
-            let (from, to) = sync_window();
-            let pages =
-                list_events(API, &encoded, &token, IncrementalOrFull::Windowed(from, to)).await?;
-            (pages.0, pages.1, true)
+            let window = sync_window();
+            let pages = list_events(
+                base,
+                &encoded,
+                &token,
+                IncrementalOrFull::Windowed(window.0, window.1),
+            )
+            .await?;
+            (pages.0, pages.1, Some(window))
         }
     };
 
@@ -183,11 +220,22 @@ pub async fn sync(
         }
     }
 
+    // A full, windowed list never mentions a cancelled event at all -- see
+    // the module doc's "A full resync has to compute its own deletions".
+    // Whatever this vault already had in the window that the fresh list did
+    // not just re-list is gone.
+    if let Some(window) = full_resync_window {
+        let kept: std::collections::HashSet<_> =
+            upsert.iter().map(|e| e.id).chain(remove_ids.iter().copied()).collect();
+        let stale = super::missing_from_full_resync(vault, calendar.id, window, &kept).await?;
+        remove_ids.extend(stale);
+    }
+
     let mut etags = calendar.account_sync.etags.clone();
-    if full_resync {
+    if full_resync_window.is_some() {
         etags.clear();
     }
-    let cursor = AccountSyncCursor { token: next_token, etags };
+    let cursor = AccountSyncCursor { token: next_token, etags, ..Default::default() };
 
     let vault = vault.clone();
     let id = calendar.id;
@@ -456,5 +504,156 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, codes::CONFLICT);
+    }
+
+    // ---- finding 1: a full resync after a 410 must compute its own
+    // deletions --------------------------------------------------------
+
+    /// A vault and a service around it, in a directory nobody has to clean
+    /// up -- the same shape `tests/support/vault.rs` builds for the
+    /// integration tests, reproduced here (rather than shared with it)
+    /// because that module is only reachable from `tests/*.rs`, not from a
+    /// unit test compiled into this crate itself.
+    fn test_vault() -> (Arc<Service>, Arc<Vault>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = everyday_core::VaultConfig {
+            name: "Test".into(),
+            backend: "sqlite".into(),
+            settings: Default::default(),
+            password: None,
+            kdf: everyday_core::crypto::KdfParams::insecure_fast(),
+            auto_lock_seconds: 900,
+            forget_key_seconds: 0,
+        };
+        let vault = everyday_vault::create(dir.path(), config).unwrap();
+        let svc = Arc::new(Service::new());
+        let vault = svc.set(vault);
+        (svc, vault, dir)
+    }
+
+    #[tokio::test]
+    async fn a_full_resync_after_a_410_removes_an_event_the_fresh_list_no_longer_names() {
+        use everyday_core::account::{Account, AccountSecret, AuthMethod, Provider};
+        use everyday_core::store::calendars::EventQuery;
+
+        let windowed_calls = std::sync::Arc::new(AtomicU32::new(0));
+        let calls_for_route = windowed_calls.clone();
+        // "Tomorrow", not a fixed date, so this test is not hostage to
+        // whenever it happens to run: `sync_window` reaches a year back and
+        // two years forward from today, and tomorrow is always inside that.
+        let start = (jiff::Timestamp::now() + jiff::SignedDuration::from_hours(24)).to_string();
+        let end = (jiff::Timestamp::now() + jiff::SignedDuration::from_hours(25)).to_string();
+
+        let app = axum::Router::new()
+            .route(
+                "/token",
+                axum::routing::post(|| async {
+                    Json(serde_json::json!({
+                        "access_token": "access-1",
+                        "token_type": "Bearer",
+                        "expires_in": 3600,
+                    }))
+                }),
+            )
+            .route(
+                "/calendars/cal-1/events",
+                get(move |Query(params): Query<HashMap<String, String>>| {
+                    let calls_for_route = calls_for_route.clone();
+                    let start = start.clone();
+                    let end = end.clone();
+                    async move {
+                        if params.contains_key("syncToken") {
+                            // The stored sync-token has gone stale.
+                            return axum::http::StatusCode::GONE.into_response();
+                        }
+                        let call = calls_for_route.fetch_add(1, Ordering::SeqCst);
+                        if call == 0 {
+                            // The first, genuine full sync: both events exist.
+                            Json(serde_json::json!({
+                                "items": [
+                                    {"id": "evt-a", "status": "confirmed", "summary": "Keeps",
+                                     "start": {"dateTime": start}, "end": {"dateTime": end}},
+                                    {"id": "evt-b", "status": "confirmed", "summary": "Deleted while stale",
+                                     "start": {"dateTime": start}, "end": {"dateTime": end}},
+                                ],
+                                "nextSyncToken": "sync-1",
+                            }))
+                            .into_response()
+                        } else {
+                            // The 410 fallback's own windowed list: evt-b is
+                            // simply absent -- exactly how a deletion looks
+                            // with no `syncToken` in play, and the shape
+                            // that used to be read as "nothing changed".
+                            Json(serde_json::json!({
+                                "items": [
+                                    {"id": "evt-a", "status": "confirmed", "summary": "Keeps",
+                                     "start": {"dateTime": start}, "end": {"dateTime": end}},
+                                ],
+                                "nextSyncToken": "sync-2",
+                            }))
+                            .into_response()
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+
+        let (svc, vault, _dir) = test_vault();
+        let mut account = Account::new(Provider::Google, "person@example.com");
+        account.services.calendar = true;
+        account.auth = AuthMethod::OAuth {
+            client_id: "test-client".into(),
+            auth_url: "https://example.test/auth".into(),
+            token_url: format!("{base}/token"),
+            scopes: vec!["https://www.googleapis.com/auth/calendar.readonly".into()],
+        };
+        vault.save_account(&account).unwrap();
+        vault
+            .save_account_secret(
+                account.id,
+                &AccountSecret { refresh_token: Some("refresh-1".into()), ..Default::default() },
+            )
+            .unwrap();
+
+        let calendar = Calendar::from_account(
+            account.id,
+            account.provider,
+            AccountCalendarSource::Google,
+            "cal-1",
+            "Work",
+        );
+        vault.save_calendar(&calendar).unwrap();
+
+        sync_with_base(&svc, &vault, &account, &calendar, &base).await.expect("first sync");
+        let after_first = vault
+            .events(&EventQuery { calendar_id: Some(calendar.id), ..Default::default() })
+            .unwrap();
+        assert_eq!(after_first.len(), 2, "both events land on a genuine first sync");
+
+        let calendar = vault.calendar(calendar.id).unwrap();
+        assert_eq!(
+            calendar.account_sync.token.as_deref(),
+            Some("sync-1"),
+            "the first sync's own token is what the second sync tries incrementally"
+        );
+
+        sync_with_base(&svc, &vault, &account, &calendar, &base)
+            .await
+            .expect("second sync, after the 410 fallback");
+        let after_second = vault
+            .events(&EventQuery { calendar_id: Some(calendar.id), ..Default::default() })
+            .unwrap();
+        assert_eq!(
+            after_second.len(),
+            1,
+            "evt-b must be gone once the fresh full list stopped naming it, even though \
+             Google never said it was cancelled"
+        );
+        assert_eq!(after_second[0].uid, "evt-a");
     }
 }

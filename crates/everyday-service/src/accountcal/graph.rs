@@ -27,6 +27,19 @@
 //! by a proxy), [`everyday_core::ics::resolve_tzid`] is the same table
 //! `everyday-core`'s own feed parser uses to turn `"Pacific Standard Time"`
 //! into `"America/Los_Angeles"`.
+//!
+//! # A full delta has to compute its own deletions too
+//!
+//! `@removed` only ever describes what changed *since the token Graph was
+//! given*. A delta started fresh -- `since: None`, on a first sync or after
+//! the 410 [`sync`] falls back to on an expired `deltaLink` -- has no such
+//! token and so reports no `@removed` at all, even for an event deleted
+//! while this vault's old link was going stale. [`sync`] treats that case
+//! (and a non-primary calendar's windowed poll, which has no delta of its
+//! own at all) the same way `google.rs` treats its own 410: after the list
+//! comes back, [`super::missing_from_full_resync`] finds whatever this vault
+//! already had in the synced window that the fresh list did not re-mention,
+//! and removes it.
 
 use std::sync::Arc;
 
@@ -97,22 +110,49 @@ pub async fn sync(
     account: &Account,
     calendar: &Calendar,
 ) -> CommandResult<SyncReport> {
+    sync_with_base(svc, vault, account, calendar, API).await
+}
+
+/// [`sync`]'s own body, over `base` rather than the hardcoded [`API`] -- see
+/// `google.rs`'s `sync_with_base` for why this split exists.
+async fn sync_with_base(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account: &Account,
+    calendar: &Calendar,
+    base: &str,
+) -> CommandResult<SyncReport> {
     let CalendarOrigin::Account { remote_id, .. } = &calendar.origin else {
         return Err(CommandError::new(codes::INVALID, "not an account calendar"));
     };
     let token = graph_bearer(svc, vault, account).await?;
 
-    let (upsert_raw, removed_raw, next_link) = if remote_id == PRIMARY {
-        match delta_sync(&token, calendar.account_sync.token.as_deref()).await {
-            Ok(page) => page,
+    // `full_resync_window` is `Some` exactly when this sync's list cannot be
+    // trusted to have mentioned a deletion on its own -- a primary
+    // calendar's delta with no earlier token to resume from (a first sync,
+    // or the 410 fallback), and a non-primary calendar's windowed poll,
+    // which never has a delta at all. See the module doc.
+    let (upsert_raw, removed_raw, next_link, full_resync_window) = if remote_id == PRIMARY {
+        let since = calendar.account_sync.token.as_deref();
+        match delta_sync(base, &token, since).await {
+            Ok(page) => {
+                let window = if since.is_none() { Some(sync_window()) } else { None };
+                (page.0, page.1, page.2, window)
+            }
             // Graph's 410: the delta link is too old to resume from. Start
             // a fresh delta over the sync window, the same fallback
             // `google.rs` takes on its own 410.
-            Err(e) if e.code == codes::CONFLICT => delta_sync(&token, None).await?,
+            Err(e) if e.code == codes::CONFLICT => {
+                let window = sync_window();
+                let page = delta_sync(base, &token, None).await?;
+                (page.0, page.1, page.2, Some(window))
+            }
             Err(e) => return Err(e),
         }
     } else {
-        windowed_sync(&token, remote_id).await?
+        let window = sync_window();
+        let page = windowed_sync(base, &token, remote_id).await?;
+        (page.0, page.1, page.2, Some(window))
     };
 
     let mut upsert = Vec::new();
@@ -126,30 +166,17 @@ pub async fn sync(
         }
     }
 
-    // A windowed poll of a non-primary calendar has no delta to tell it what
-    // vanished, so it is diffed like a feed: anything this vault already had
-    // for the calendar that the fresh window no longer lists is gone.
-    if remote_id != PRIMARY {
-        let existing = {
-            let vault = vault.clone();
-            let id = calendar.id;
-            blocking(move || {
-                Ok(vault.events(&everyday_core::store::calendars::EventQuery {
-                    calendar_id: Some(id),
-                    ..Default::default()
-                })?)
-            })
-            .await?
-        };
-        let fresh_ids: std::collections::HashSet<_> = upsert.iter().map(|e| e.id).collect();
-        for stored in existing {
-            if !fresh_ids.contains(&stored.id) {
-                remove_ids.push(stored.id);
-            }
-        }
+    // A full list -- a fresh delta with nothing to resume from, or a
+    // non-primary calendar's plain windowed poll -- never speaks for a
+    // deletion on its own; see the module doc.
+    if let Some(window) = full_resync_window {
+        let kept: std::collections::HashSet<_> =
+            upsert.iter().map(|e| e.id).chain(remove_ids.iter().copied()).collect();
+        let stale = super::missing_from_full_resync(vault, calendar.id, window, &kept).await?;
+        remove_ids.extend(stale);
     }
 
-    let cursor = AccountSyncCursor { token: next_link, etags: Default::default() };
+    let cursor = AccountSyncCursor { token: next_link, ..Default::default() };
     let vault = vault.clone();
     let id = calendar.id;
     blocking(move || Ok(vault.sync_account_calendar(id, &upsert, &remove_ids, cursor)?)).await
@@ -234,7 +261,14 @@ impl GraphAttendeeWrap {
 /// fresh delta over [`super::sync_window`]; `Some(link)` on every later one,
 /// which resumes from exactly where the last sync left off and needs no
 /// window at all -- delta already knows what it has told this vault before.
+///
+/// `base` is [`API`] in production and a mock server's own address under
+/// test -- see this module's tests -- so `since: None`'s own request, the
+/// paging loop and the `@removed` handling can all be checked without
+/// reaching Graph at all. Ignored when `since` already names a full
+/// `@odata.nextLink`/`deltaLink`, which is already an absolute URL.
 async fn delta_sync(
+    base: &str,
     token: &str,
     since: Option<&str>,
 ) -> CommandResult<(Vec<GraphEvent>, Vec<String>, Option<String>)> {
@@ -243,7 +277,7 @@ async fn delta_sync(
         None => {
             let (from, to) = sync_window();
             format!(
-                "{API}/me/calendarView/delta?startDateTime={}&endDateTime={}",
+                "{base}/me/calendarView/delta?startDateTime={}&endDateTime={}",
                 rfc3339_start(from),
                 rfc3339_start(to)
             )
@@ -278,15 +312,17 @@ async fn delta_sync(
 
 /// A plain, windowed `calendarView` for a calendar that is not the primary
 /// one. No delta and nothing to page beyond what a single bounded window
-/// returns; [`sync`] diffs the result against what this vault already had,
-/// the same way a feed's whole-calendar replace does.
+/// returns; [`sync`] diffs the result against what this vault already had
+/// inside that window, through [`super::missing_from_full_resync`], the same
+/// way a feed's whole-calendar replace does.
 async fn windowed_sync(
+    base: &str,
     token: &str,
     calendar_remote_id: &str,
 ) -> CommandResult<(Vec<GraphEvent>, Vec<String>, Option<String>)> {
     let (from, to) = sync_window();
     let url = format!(
-        "{API}/me/calendars/{calendar_remote_id}/calendarView?startDateTime={}&endDateTime={}",
+        "{base}/me/calendars/{calendar_remote_id}/calendarView?startDateTime={}&endDateTime={}",
         rfc3339_start(from),
         rfc3339_start(to)
     );
@@ -530,8 +566,10 @@ mod tests {
     #[tokio::test]
     async fn delta_paging_collects_every_page_and_treats_removed_as_deletions() {
         let first_page = mock_delta_pages().await;
+        // `since` already names a full `@odata.nextLink` here, so `base` is
+        // never consulted -- see `delta_sync`'s own doc.
         let (items, removed, delta_link) =
-            delta_sync("token-does-not-matter-here", Some(&first_page))
+            delta_sync("unused-base", "token-does-not-matter-here", Some(&first_page))
                 .await
                 .expect("the mock server answers both pages");
 
@@ -543,5 +581,162 @@ mod tests {
             delta_link.as_deref().is_some_and(|link| link.ends_with("/delta-resume-token")),
             "the final page's deltaLink is what a later sync resumes from: {delta_link:?}"
         );
+    }
+
+    // ---- finding 1: a full delta after a 410 must compute its own
+    // deletions, for the primary calendar too --------------------------
+
+    fn test_vault() -> (Arc<Service>, Arc<Vault>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = everyday_core::VaultConfig {
+            name: "Test".into(),
+            backend: "sqlite".into(),
+            settings: Default::default(),
+            password: None,
+            kdf: everyday_core::crypto::KdfParams::insecure_fast(),
+            auto_lock_seconds: 900,
+            forget_key_seconds: 0,
+        };
+        let vault = everyday_vault::create(dir.path(), config).unwrap();
+        let svc = Arc::new(Service::new());
+        let vault = svc.set(vault);
+        (svc, vault, dir)
+    }
+
+    #[tokio::test]
+    async fn a_full_delta_after_a_410_removes_an_event_the_fresh_list_no_longer_names() {
+        use axum::Json;
+        use axum::extract::Query;
+        use axum::response::IntoResponse;
+        use axum::routing::get;
+        use everyday_core::account::{Account, AccountSecret, AuthMethod, Provider};
+        use everyday_core::store::calendars::EventQuery;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let windowed_calls = std::sync::Arc::new(AtomicU32::new(0));
+        let calls_for_route = windowed_calls.clone();
+        let start = "2026-09-15T09:00:00.0000000".to_string();
+        let end = "2026-09-15T09:30:00.0000000".to_string();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let base_for_route = base.clone();
+
+        let app = axum::Router::new()
+            .route(
+                "/token",
+                axum::routing::post(|| async {
+                    Json(serde_json::json!({
+                        "access_token": "access-1",
+                        "token_type": "Bearer",
+                        "expires_in": 3600,
+                    }))
+                }),
+            )
+            .route(
+                "/me/calendarView/delta",
+                get(move |Query(_params): Query<std::collections::HashMap<String, String>>| {
+                    let calls_for_route = calls_for_route.clone();
+                    let start = start.clone();
+                    let end = end.clone();
+                    let base_for_route = base_for_route.clone();
+                    async move {
+                        let call = calls_for_route.fetch_add(1, Ordering::SeqCst);
+                        if call == 0 {
+                            // The first, genuine full delta: both events
+                            // exist, and its own deltaLink becomes "stale".
+                            let delta_link = format!("{base_for_route}/stale-delta");
+                            Json(serde_json::json!({
+                                "value": [
+                                    {"id": "evt-a", "subject": "Keeps",
+                                     "start": {"dateTime": start, "timeZone": "UTC"},
+                                     "end": {"dateTime": end, "timeZone": "UTC"},
+                                     "isAllDay": false, "showAs": "busy"},
+                                    {"id": "evt-b", "subject": "Deleted while stale",
+                                     "start": {"dateTime": start, "timeZone": "UTC"},
+                                     "end": {"dateTime": end, "timeZone": "UTC"},
+                                     "isAllDay": false, "showAs": "busy"},
+                                ],
+                                "@odata.deltaLink": delta_link,
+                            }))
+                            .into_response()
+                        } else {
+                            // The 410 fallback's own fresh, windowed delta:
+                            // evt-b is simply absent.
+                            Json(serde_json::json!({
+                                "value": [
+                                    {"id": "evt-a", "subject": "Keeps",
+                                     "start": {"dateTime": start, "timeZone": "UTC"},
+                                     "end": {"dateTime": end, "timeZone": "UTC"},
+                                     "isAllDay": false, "showAs": "busy"},
+                                ],
+                                "@odata.deltaLink": "http://unused/fresh-delta",
+                            }))
+                            .into_response()
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/stale-delta",
+                get(|| async { axum::http::StatusCode::GONE.into_response() }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+
+        let (svc, vault, _dir) = test_vault();
+        let mut account = Account::new(Provider::Microsoft, "person@example.com");
+        account.services.calendar = true;
+        account.auth = AuthMethod::OAuth {
+            client_id: "test-client".into(),
+            auth_url: "https://example.test/auth".into(),
+            token_url: format!("{base}/token"),
+            scopes: vec!["Calendars.Read".into()],
+        };
+        vault.save_account(&account).unwrap();
+        vault
+            .save_account_secret(
+                account.id,
+                &AccountSecret { refresh_token: Some("refresh-1".into()), ..Default::default() },
+            )
+            .unwrap();
+
+        let calendar = Calendar::from_account(
+            account.id,
+            account.provider,
+            AccountCalendarSource::Graph,
+            PRIMARY,
+            "Calendar",
+        );
+        vault.save_calendar(&calendar).unwrap();
+
+        sync_with_base(&svc, &vault, &account, &calendar, &base).await.expect("first sync");
+        let after_first = vault
+            .events(&EventQuery { calendar_id: Some(calendar.id), ..Default::default() })
+            .unwrap();
+        assert_eq!(after_first.len(), 2, "both events land on a genuine first sync");
+
+        let calendar = vault.calendar(calendar.id).unwrap();
+        assert!(
+            calendar.account_sync.token.as_deref().is_some_and(|t| t.ends_with("/stale-delta")),
+            "the first sync's own deltaLink is what the second sync tries to resume from: {:?}",
+            calendar.account_sync.token
+        );
+
+        sync_with_base(&svc, &vault, &account, &calendar, &base)
+            .await
+            .expect("second sync, after the 410 fallback");
+        let after_second = vault
+            .events(&EventQuery { calendar_id: Some(calendar.id), ..Default::default() })
+            .unwrap();
+        assert_eq!(
+            after_second.len(),
+            1,
+            "evt-b must be gone once the fresh full delta stopped naming it, even though \
+             Graph reported no @removed at all"
+        );
+        assert_eq!(after_second[0].uid, "evt-a");
     }
 }

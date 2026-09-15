@@ -227,4 +227,30 @@ async fn discovers_and_syncs_a_real_caldav_server_incrementally() {
         4,
         "occurrences nothing touched must not have been refetched or duplicated"
     );
+
+    // A third sync, after deleting the whole recurring resource -- what
+    // finding 1's "check whether CalDAV has the same gap" asks for. Neither
+    // sync above ever obtained an RFC 6578 sync-token (Radicale's own
+    // `<d:sync-token>` is only asked for once one is already on record, and
+    // this calendar's cursor never got one from `etag_diff`), so every sync
+    // in this file, this one included, already goes through the etag-diff
+    // path -- which compares the *full* current listing against the *full*
+    // remembered one on every single run, not a delta since some token.
+    // That is why CalDAV has no version of findings 1's Google/Graph bug:
+    // there is no "full resync that only speaks for what it just listed"
+    // here, because every resync already speaks for the whole collection.
+    let after_second_calendar = vault.calendar(calendar.id).expect("reload before the third sync");
+    fixture.delete(&format!("{cal_path}recurring.ics")).await;
+    caldav::sync(&svc, &vault, &account, &after_second_calendar).await.expect("third sync");
+
+    let after_third: Vec<_> = vault
+        .events(&EventQuery { calendar_id: Some(calendar.id), ..Default::default() })
+        .expect("list_events");
+    assert!(
+        !after_third.iter().any(|e| e.title == "Weekly recurring"),
+        "every occurrence of a deleted resource must be gone, not only the ones an incremental \
+         diff would have known to look for: {:?}",
+        after_third.iter().map(|e| &e.title).collect::<Vec<_>>()
+    );
+    assert_eq!(after_third.len(), 2, "the renamed single meeting and the added one remain");
 }

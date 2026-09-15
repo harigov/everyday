@@ -337,7 +337,7 @@ pub async fn sync(
     for (href, etag) in fresh_etags {
         etags.insert(href, etag);
     }
-    let cursor = AccountSyncCursor { token: new_token, etags };
+    let cursor = AccountSyncCursor { token: new_token, etags, ..Default::default() };
 
     let vault_for_write = vault.clone();
     let id = calendar.id;

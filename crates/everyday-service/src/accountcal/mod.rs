@@ -66,12 +66,14 @@ pub mod google;
 pub mod graph;
 pub mod tokens;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use everyday_core::Vault;
 use everyday_core::account::{Account, Provider};
 use everyday_core::calendar::{AccountCalendarSource, Calendar, CalendarOrigin, SyncReport};
-use everyday_core::id::CalendarId;
+use everyday_core::id::{CalendarId, EventId};
+use everyday_core::store::calendars::EventQuery;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CommandError, CommandResult, codes};
@@ -233,4 +235,127 @@ pub(crate) fn deterministic_event_id(
 /// one thing everywhere in the calendar app. See [`crate::feeds::sync_window`].
 pub(crate) fn sync_window() -> (jiff::civil::Date, jiff::civil::Date) {
     crate::feeds::sync_window(everyday_core::model::today_local())
+}
+
+/// Every event this vault already stored for `calendar_id`, inside
+/// `window`, that `kept` does not name -- the deletions a *full* (tokenless)
+/// resync has to compute for itself.
+///
+/// Google's `events.list` without a `syncToken` never returns a cancelled
+/// item at all (`showDeleted` only has an effect on an incremental page),
+/// and Graph's `calendarView/delta` only reports `"@removed"` entries
+/// relative to the token it was given -- `None`, on a first sync or after a
+/// 410, reports none. Both providers' *incremental* sync tells this crate
+/// directly what vanished; only the full, window-bounded fallback needs
+/// this -- read back what the window used to hold, throw away everything
+/// the fresh list still names, and whatever is left is gone. Restricted to
+/// `window` rather than every event this vault has for the calendar, so an
+/// event an earlier *incremental* sync wrote from outside today's window
+/// (Google's own sync is not itself window-bounded) is left alone: a full
+/// resync only speaks for the days it actually asked about.
+pub(crate) async fn missing_from_full_resync(
+    vault: &Arc<Vault>,
+    calendar_id: CalendarId,
+    window: (jiff::civil::Date, jiff::civil::Date),
+    kept: &HashSet<EventId>,
+) -> CommandResult<Vec<EventId>> {
+    let vault = vault.clone();
+    let kept = kept.clone();
+    blocking(move || {
+        let existing = vault.events(&EventQuery {
+            calendar_id: Some(calendar_id),
+            from: Some(window.0),
+            to: Some(window.1),
+            ..Default::default()
+        })?;
+        Ok(existing.into_iter().filter(|e| !kept.contains(&e.id)).map(|e| e.id).collect())
+    })
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use everyday_core::account::{Account, AccountStatus, Provider};
+    use everyday_core::calendar::{Calendar, Event, EventStatus};
+
+    /// A vault and a service around it, in a directory nobody has to clean
+    /// up -- see `google.rs`'s own `test_vault` for why this is
+    /// reproduced here rather than shared with `tests/support/vault.rs`.
+    fn test_vault() -> (Arc<Vault>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = everyday_core::VaultConfig {
+            name: "Test".into(),
+            backend: "sqlite".into(),
+            settings: Default::default(),
+            password: None,
+            kdf: everyday_core::crypto::KdfParams::insecure_fast(),
+            auto_lock_seconds: 900,
+            forget_key_seconds: 0,
+        };
+        let vault = Arc::new(everyday_vault::create(dir.path(), config).unwrap());
+        (vault, dir)
+    }
+
+    fn bare_event(calendar_id: CalendarId, uid: &str, day: jiff::civil::Date) -> Event {
+        Event {
+            id: EventId::new(),
+            calendar_id,
+            uid: uid.to_string(),
+            title: "Untitled".into(),
+            description: String::new(),
+            location: String::new(),
+            start: jiff::Timestamp::now(),
+            end: jiff::Timestamp::now(),
+            local_date: day,
+            end_date: day,
+            tz: "UTC".into(),
+            all_day: true,
+            status: EventStatus::Confirmed,
+            organizer: String::new(),
+            attendees: Vec::new(),
+            url: String::new(),
+            busy: true,
+            updated_at: jiff::Timestamp::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_from_full_resync_only_reports_events_inside_the_window_that_were_not_kept() {
+        let (vault, _dir) = test_vault();
+        let mut account = Account::new(Provider::Google, "person@example.com");
+        account.status = AccountStatus::Ok;
+        vault.save_account(&account).unwrap();
+        let calendar = Calendar::from_account(
+            account.id,
+            account.provider,
+            AccountCalendarSource::Google,
+            "cal-1",
+            "Work",
+        );
+        vault.save_calendar(&calendar).unwrap();
+
+        let window = (jiff::civil::date(2026, 1, 1), jiff::civil::date(2026, 12, 31));
+        let inside_kept = bare_event(calendar.id, "kept", jiff::civil::date(2026, 6, 1));
+        let inside_stale = bare_event(calendar.id, "stale", jiff::civil::date(2026, 6, 2));
+        let outside_window = bare_event(calendar.id, "far-future", jiff::civil::date(2028, 1, 1));
+        vault
+            .sync_account_calendar(
+                calendar.id,
+                &[inside_kept.clone(), inside_stale.clone(), outside_window.clone()],
+                &[],
+                Default::default(),
+            )
+            .unwrap();
+
+        let kept: HashSet<_> = [inside_kept.id].into_iter().collect();
+        let missing = missing_from_full_resync(&vault, calendar.id, window, &kept).await.unwrap();
+
+        assert_eq!(missing, vec![inside_stale.id], "only the in-window, un-kept event is reported");
+        assert!(
+            !missing.contains(&outside_window.id),
+            "an event outside the synced window must not be reported as a deletion, per the \
+             module doc's 'restricted to window'"
+        );
+    }
 }
