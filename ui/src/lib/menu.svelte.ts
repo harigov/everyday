@@ -52,6 +52,19 @@ class MenuState {
     this.#opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
   }
 
+  /**
+   * Open a menu at a fixed point, with no row and no event behind it --
+   * what a keyboard shortcut with nothing to right-click needs (`v` for
+   * "move to…" in `shortcuts.svelte.ts`), instead of building a synthetic
+   * `MouseEvent` just so {@link show} has one to read a position out of.
+   */
+  showAt(x: number, y: number, items: MenuItem[]) {
+    if (items.length === 0) return
+    this.items = items
+    this.at = { x, y }
+    this.#opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  }
+
   /** Close, returning focus where it was if the keyboard opened this. */
   close(restoreFocus = true) {
     if (!this.at) return

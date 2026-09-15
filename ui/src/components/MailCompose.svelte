@@ -21,10 +21,9 @@
   import { Autosave } from '../lib/autosave'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import * as mailApi from '../lib/mail-api'
-  import type { Draft } from '../lib/mail-api'
   import { mail } from '../lib/mail.svelte'
   import { toLocalInputValue } from '../lib/format'
-  import type { MailAddress } from '../lib/types'
+  import type { Draft, MailAddress } from '../lib/types'
   import Icon from './Icon.svelte'
 
   let { draft, onclose }: { draft: Draft; onclose: () => void } = $props()
@@ -126,18 +125,17 @@
 
   async function onFiles(files: FileList | null) {
     if (!files) return
+    // The same blob-upload path notes and journal entries use --
+    // `api.putBlob` -- producing the real `DraftAttachment` shape
+    // (`types.ts`) rather than the richer `Attachment` those two domains
+    // carry: a draft's attachment is a blob, a filename and a MIME type,
+    // nothing else, because `mail-builder` is what turns it into a MIME
+    // part on the way out.
     for (const file of Array.from(files)) {
       const blob = await api.putBlob(new Uint8Array(await file.arrayBuffer()))
       working.attachments = [
         ...working.attachments,
-        {
-          blob,
-          kind: file.type.startsWith('image/') ? 'image' : 'file',
-          mime: file.type || 'application/octet-stream',
-          filename: file.name,
-          byteLen: file.size,
-          caption: '',
-        },
+        { blob, filename: file.name, mimeType: file.type || 'application/octet-stream' },
       ]
     }
     touch()
@@ -206,8 +204,10 @@
 <div class="sheet compose" role="dialog" aria-modal="true" aria-label="Compose" use:trapFocus>
   <div class="head">
     <h2>{working.subject || 'New message'}</h2>
-    {#if working.origin === 'assistant'}
-      <span class="assistant-mark"><Icon name="sparkle" size={12} /> Drafted by the assistant</span>
+    {#if working.origin.type === 'assistant'}
+      <span class="assistant-mark"
+        ><Icon name="sparkle" size={12} /> Drafted by the assistant — review before sending</span
+      >
     {/if}
     <button class="close" aria-label="Close" onclick={discard}
       ><Icon name="close" size={15} /></button

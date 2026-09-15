@@ -615,7 +615,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     label: 'Label…',
     group: 'Mail',
     when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
-    run: () => promptLabel(),
+    run: () => openLabelPicker(),
   },
   {
     keys: 'v',
@@ -672,6 +672,41 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Mail',
     when: () => anywhere() && inApp('mail')(),
     run: () => void selectMailboxByRole('sent'),
+  },
+  // (p) TODO: the split inbox's own two, checked against every other
+  // binding above before being added. `Tab` and `Shift+Tab` are free in
+  // this table -- nothing else in Mail, or anywhere else, claims them -- and
+  // gating them to the inbox with nothing open means they never fight the
+  // browser's own Tab-to-next-focusable-element while a dialog (the
+  // compose sheet, a picker) is on screen: `anywhere()` is already false
+  // whenever `dialogOpen()` is, and the thread list has no text field of
+  // its own for a reader to expect to Tab out of. Opening a thread hands
+  // Tab back to the browser, since there is a reply box and its own
+  // buttons worth tabbing through there.
+  {
+    keys: 'Tab',
+    label: 'Next category',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !mail.openThread,
+    run: () => mail.stepCategory(1),
+  },
+  {
+    keys: 'shift+Tab',
+    label: 'Previous category',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !mail.openThread,
+    run: () => mail.stepCategory(-1),
+  },
+  // (p) TODO: `z` for Summarise -- `s`/`u`/`i`/`h`/`l`/`v`/`r`/`w`/`f`/`e`/
+  // `o`/`j`/`k`/`#` are already Mail's own (see the departures noted at the
+  // top of this section) and every one of those letters is taken elsewhere
+  // in the table too; `z` is free everywhere.
+  {
+    keys: 'z',
+    label: 'Summarise',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.openThread,
+    run: () => void mail.summarizeOpenThread(),
   },
 
   // ── Quick actions ───────────────────────────────────────────────────
@@ -1043,28 +1078,23 @@ function selectMailboxByName(name: string) {
 }
 
 /**
- * `l`: ask for a label and apply it.
- *
- * A plain prompt rather than a picker of existing labels: the mock has
- * nothing resembling Gmail's "create or choose" affordance yet, and a
- * dialog built only to wrap one text field would be a second `ConfirmDialog`
- * wearing a different name. Worth revisiting once real accounts have real
- * label lists to offer.
+ * `l`: open the label picker (`MailLabelPicker.svelte`), the same way `h`
+ * opens the snooze one -- a store field a component with no keyboard
+ * handler of its own can still react to. Replaces the `window.prompt` this
+ * app used to fall back to; see that component's own doc for why it is
+ * still a text field rather than a list of existing labels.
  */
-function promptLabel() {
+function openLabelPicker() {
   const id = mail.selectedThread
-  if (!id) return
-  const label = window.prompt('Label this thread as:')?.trim()
-  if (label) void mail.label(id, label)
+  if (id) mail.wantsLabel = id
 }
 
 /**
- * `v`: move to another mailbox, offered as a menu built the same way a
- * row's right-click menu is -- but with no row to click, since this is the
- * keyboard's own path to it. `menu.show` only reads `preventDefault`,
- * `stopPropagation`, `target` and the pointer position off the event it is
- * given, all of which a constructed one answers safely without ever being
- * dispatched.
+ * `v`: move to another mailbox, offered as a menu -- but with no row to
+ * click, since this is the keyboard's own path to it. `menu.showAt` opens
+ * one at a fixed point with no event behind it at all, which is the proper
+ * picker in place of the synthetic `MouseEvent` this app used to build just
+ * to give `menu.show` something to read a position out of.
  */
 function moveMenu() {
   const id = mail.selectedThread
@@ -1076,13 +1106,7 @@ function moveMenu() {
     label: box.remoteName,
     run: () => void mail.moveTo(id, box.id),
   }))
-  const centre = new MouseEvent('contextmenu', {
-    clientX: window.innerWidth / 2,
-    clientY: window.innerHeight / 2,
-    bubbles: false,
-    cancelable: true,
-  })
-  menu.show(centre, items)
+  menu.showAt(window.innerWidth / 2, window.innerHeight / 2, items)
 }
 
 /**

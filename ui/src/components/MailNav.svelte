@@ -18,6 +18,23 @@
   void accounts.load()
   void mail.start()
 
+  // Refreshed whenever the account list itself changes -- a sign-in
+  // finishing, a status moving to "needs sign-in" -- and, while any account
+  // is mid-sync, again every two seconds: a self-scheduling effect rather
+  // than a bare `setInterval`, so it stops polling the moment nothing is
+  // syncing instead of ticking forever in the background. See
+  // `mail.svelte.ts`'s `refreshSyncStatus`/`syncNow`.
+  $effect(() => {
+    void accounts.list
+    void mail.refreshSyncStatus()
+  })
+  $effect(() => {
+    const active = mail.syncStatus.some((s) => s.phase !== 'idle' && s.phase !== 'idling')
+    if (!active) return
+    const timer = setTimeout(() => void mail.refreshSyncStatus(), 2000)
+    return () => clearTimeout(timer)
+  })
+
   const ROLE_ORDER: MailboxRole[] = ['inbox', 'drafts', 'sent', 'archive', 'spam', 'trash']
   const ROLE_ICON: Partial<Record<MailboxRole, IconName>> = {
     inbox: 'inbox',
@@ -82,6 +99,15 @@
 
   const mailAccounts = $derived(accounts.list.filter((a) => a.services.mail))
 
+  /** Phase names as a person reads them, not as the enum spells them --
+   *  mirrors `MailSyncPhase` in `types.ts`. */
+  const PHASE_LABEL: Record<string, string> = {
+    connecting: 'Connecting',
+    headers: 'Fetching headers',
+    bodies: 'Fetching messages',
+    attachments: 'Fetching attachments',
+  }
+
   function statusLine(accountId: string): { text: string; error: boolean } | null {
     const status = mail.syncStatus.find((s) => s.accountId === accountId)
     const account = accounts.account(accountId)
@@ -91,12 +117,14 @@
     if (account?.status.type === 'error') {
       return { text: account.status.message, error: true }
     }
-    if (status?.error) return { text: status.error, error: true }
-    if (status?.progress) {
-      return {
-        text: `Syncing ${status.progress.done.toLocaleString()} / ${status.progress.total.toLocaleString()}`,
-        error: false,
-      }
+    if (status?.lastError) return { text: status.lastError, error: true }
+    const label = status ? PHASE_LABEL[status.phase] : undefined
+    if (label) {
+      const progress =
+        status!.total > 0
+          ? ` ${status!.done.toLocaleString()}/${status!.total.toLocaleString()}`
+          : ''
+      return { text: `${label}${progress}…`, error: false }
     }
     return null
   }
@@ -131,6 +159,14 @@
   {#each mailAccounts as account (account.id)}
     <div class="head">
       <span class="eyebrow">{account.displayName || account.address}</span>
+      <button
+        class="sync-now"
+        title="Sync now"
+        aria-label="Sync now"
+        onclick={() => void mail.syncNow(account.id)}
+      >
+        <Icon name="refresh" size={12} />
+      </button>
     </div>
     {#each rowsFor(account.id) as row (row.id)}
       <button class="row" class:sel={row.sel} onclick={row.onclick}>
@@ -193,14 +229,40 @@
   }
 
   .head {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
     padding: var(--sp-5) var(--sp-2) var(--sp-1);
   }
   .eyebrow {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: var(--text-xs);
     font-weight: 650;
     letter-spacing: 0.02em;
     text-transform: uppercase;
     color: var(--fg-faint);
+  }
+  .sync-now {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    border-radius: var(--radius-sm);
+    color: var(--fg-faint);
+    opacity: 0;
+  }
+  .head:hover .sync-now,
+  .sync-now:focus-visible {
+    opacity: 1;
+  }
+  .sync-now:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
   }
 
   .row {
