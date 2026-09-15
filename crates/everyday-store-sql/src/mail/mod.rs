@@ -14,12 +14,12 @@ mod write;
 use everyday_core::error::Result;
 use everyday_core::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use everyday_core::mail::{
-    Body, ContactBook, Draft, Invite, Mailbox, Message, MessageFlags, Op, RemoteImageSettings,
-    Thread,
+    Body, CategoryRules, ContactBook, Draft, Invite, Mailbox, Message, MessageFlags, Op,
+    RemoteImageSettings, Thread,
 };
 use everyday_core::store::mail::{
-    IngestMessage, MailStore, ThreadFilter, ThreadPage, body_aad, contacts_aad, draft_aad,
-    mailbox_aad, message_aad, op_aad, remote_image_settings_aad, thread_aad,
+    IngestMessage, MailStore, ThreadFilter, ThreadPage, body_aad, category_rules_aad, contacts_aad,
+    draft_aad, mailbox_aad, message_aad, op_aad, remote_image_settings_aad, thread_aad,
 };
 use jiff::Timestamp;
 
@@ -449,6 +449,14 @@ impl MailStore for SqlStore {
         write::set_message_invite(self, id, invite)
     }
 
+    fn set_message_category(
+        &self,
+        id: MailMessageId,
+        category: everyday_core::mail::Category,
+    ) -> Result<()> {
+        write::set_message_category(self, id, category)
+    }
+
     fn hide_thread_from_mailbox(&self, thread: ThreadId, mailbox: MailboxId) -> Result<()> {
         write::hide_thread_from_mailbox(self, thread, mailbox)
     }
@@ -562,5 +570,32 @@ impl MailStore for SqlStore {
             &vals![data],
         )?;
         Ok(())
+    }
+
+    // ---- categorisation -------------------------------------------------
+
+    fn category_rules(&self, account: AccountId) -> Result<CategoryRules> {
+        let sealed = self.read().sealed(
+            "SELECT data FROM mail_category_rules WHERE account_id = ?1",
+            &vals![account.to_string()],
+        )?;
+        match sealed {
+            Some(sealed) => self.unseal(&category_rules_aad(account), &sealed),
+            None => Ok(CategoryRules::default()),
+        }
+    }
+
+    fn put_category_rules(&self, account: AccountId, rules: &CategoryRules) -> Result<()> {
+        let data = self.seal(&category_rules_aad(account), rules)?;
+        self.write().execute(
+            "INSERT INTO mail_category_rules (account_id, data) VALUES (?1, ?2)
+             ON CONFLICT (account_id) DO UPDATE SET data = ?2",
+            &vals![account.to_string(), data],
+        )?;
+        Ok(())
+    }
+
+    fn recategorize(&self, account: AccountId, rules: &CategoryRules) -> Result<u32> {
+        write::recategorize(self, account, rules)
     }
 }

@@ -72,6 +72,17 @@ pub struct HeaderIngest {
     /// bytes are already in the pack store and whose body has already been
     /// indexed.
     pub is_new: bool,
+    /// The four raw signals `crate::mailsync::passes::sync_headers` hands to
+    /// `everyday_core::mail::categorize::categorize` right after this
+    /// returns -- read once, here, from the same [`mime::parse`] this
+    /// function already ran, rather than asking that pass to parse the
+    /// header bytes a second time. `None` for exactly the headers a message
+    /// did not carry, which `categorize` already treats as "no opinion" on
+    /// that signal.
+    pub list_id: Option<String>,
+    pub list_unsubscribe: Option<String>,
+    pub precedence: Option<String>,
+    pub auto_submitted: Option<String>,
 }
 
 /// A [`PackRef`] that names nothing yet: what a freshly ingested message's
@@ -128,7 +139,14 @@ pub fn resolve_header(
             existing.gmail = gmail;
             threads.remember(id, existing.thread_id);
             threads.seen_by_message_id.insert(id.clone(), existing.clone());
-            return Ok(HeaderIngest { message: existing, is_new: false });
+            return Ok(HeaderIngest {
+                message: existing,
+                is_new: false,
+                list_id: parsed.list_id,
+                list_unsubscribe: parsed.list_unsubscribe,
+                precedence: parsed.precedence,
+                auto_submitted: parsed.auto_submitted,
+            });
         }
     }
 
@@ -170,7 +188,14 @@ pub fn resolve_header(
         invite: None,
     };
     threads.seen_by_message_id.insert(message.message_id_header.clone(), message.clone());
-    Ok(HeaderIngest { message, is_new: true })
+    Ok(HeaderIngest {
+        message,
+        is_new: true,
+        list_id: parsed.list_id,
+        list_unsubscribe: parsed.list_unsubscribe,
+        precedence: parsed.precedence,
+        auto_submitted: parsed.auto_submitted,
+    })
 }
 
 fn to_address(a: &MimeAddress) -> MailAddress {

@@ -1035,6 +1035,19 @@ fn v9(d: Dialect) -> Vec<String> {
                  data        {blob} NOT NULL
              )"
         ),
+        // Phase 7's split inbox: one row per account of
+        // `everyday_core::mail::CategoryRules`, the sealed corrections that
+        // outrank the rules `everyday_core::mail::categorize` runs at sync.
+        // Keyed by `account_id` rather than a singleton `id = 1` row, unlike
+        // the two tables just above -- a correction on one mailbox says
+        // nothing about another, so each account gets its own row rather
+        // than sharing the vault-wide list contacts and remote images do.
+        format!(
+            "CREATE TABLE IF NOT EXISTS mail_category_rules (
+                 account_id  TEXT PRIMARY KEY NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
     ]
 }
 

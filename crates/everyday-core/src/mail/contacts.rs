@@ -61,6 +61,17 @@ impl ContactBook {
         self.bump(address, name, false);
     }
 
+    /// Has this vault's owner ever sent a message naming `address` in `To`
+    /// or `Cc`? What `crate::mail::categorize` reads as its "a real
+    /// correspondent" signal — received-from alone does not count, on the
+    /// same reasoning [`MailContact::sent_to`]'s own docs give: someone who
+    /// writes to you a lot but you never reply to is not yet a person this
+    /// vault's owner has decided matters.
+    pub fn has_sent_to(&self, address: &str) -> bool {
+        let key = address.trim().to_ascii_lowercase();
+        self.contacts.iter().any(|c| c.address == key && c.sent_to > 0)
+    }
+
     fn bump(&mut self, address: &str, name: &str, sent: bool) {
         let address = address.trim();
         if address.is_empty() {

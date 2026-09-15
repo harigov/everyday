@@ -97,6 +97,7 @@ import {
   mockMarkUnread,
   mockMoveToMailbox,
   mockNewDraft,
+  mockRecategorizeMail,
   mockRespondToInvite,
   mockSaveDraft,
   mockSearchMail,
@@ -1587,6 +1588,7 @@ const accounts: AccountView[] = [
       send: false,
     },
     assistantProviderAcknowledged: null,
+    mailAi: { categorize: false, autoDraft: false, summaries: false },
     attachmentCapBytes: 25_000_000,
     status: { type: 'ok' },
     lastSyncedAt: iso(1),
@@ -1597,7 +1599,6 @@ const accounts: AccountView[] = [
     // (p) TODO: unacknowledged, so the "Mail assistant" section in
     // `AccountDetail.svelte` has an account to demonstrate the disabled,
     // explained state on -- every switch off, per `MailAi`'s own default.
-    mailAi: { categorize: false, autoDraft: false, summaries: false },
   },
 ]
 
@@ -4487,7 +4488,7 @@ export const mockInvoke = async <T>(
       mockUnsnooze(strArray(args.threads))
       return undefined as T
 
-    // ── (p) TODO: the Superhuman layer -- `docs/plans/mail.md` phase 7 ────
+    // ── The Superhuman layer -- `docs/plans/mail.md` phase 7 ──────────────
 
     case 'set_thread_category':
       requireUnlocked()
@@ -4497,7 +4498,7 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       return mockSummarizeThread(str(args.id)) as T
 
-    // ── (i) TODO: invitations -- `docs/plans/mail.md` phase 6 ─────────────
+    // ── Invitations -- `docs/plans/mail.md` phase 6 ───────────────────────
 
     case 'respond_to_invite':
       requireUnlocked()
@@ -4507,6 +4508,10 @@ export const mockInvoke = async <T>(
         args.comment == null ? undefined : str(args.comment),
       )
       return undefined as T
+
+    case 'recategorize_mail':
+      requireUnlocked()
+      return mockRecategorizeMail(args.account as string | null | undefined) as T
 
     case 'list_drafts':
       requireUnlocked()

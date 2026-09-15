@@ -43,7 +43,7 @@
 use crate::error::Result;
 use crate::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use crate::mail::{
-    Body, Category, ContactBook, Draft, Invite, Mailbox, Message, MessageFlags, Op,
+    Body, Category, CategoryRules, ContactBook, Draft, Invite, Mailbox, Message, MessageFlags, Op,
     RemoteImageSettings, Thread,
 };
 use jiff::Timestamp;
@@ -396,6 +396,17 @@ pub trait MailStore: Send + Sync {
     /// failed `Archive`, `Trash` or `Move` op hid.
     fn restore_thread_mailboxes(&self, thread: ThreadId) -> Result<()>;
 
+    /// Set message `id`'s own category directly -- what the model-assisted
+    /// categorisation pass writes once it has an answer for a message the
+    /// rules could only call `Other`, on the same optimistic-write terms
+    /// [`MailStore::set_message_flags`] already keeps. Recomputes the
+    /// thread it belongs to, so the answer reaches `thread.category`
+    /// immediately. Deliberately narrower than
+    /// [`MailStore::recategorize`]: this never touches
+    /// [`crate::mail::CategoryRules`], because a model's one-off answer is
+    /// not a standing correction the way a person's own is.
+    fn set_message_category(&self, id: MailMessageId, category: Category) -> Result<()>;
+
     /// Set (or clear, with `None`) `thread`'s own `snoozed_until` -- the
     /// optimistic write behind [`crate::mail::OpKind::Snooze`], and also
     /// what the minute scheduler calls with `None` once a snooze's moment
@@ -448,6 +459,38 @@ pub trait MailStore: Send + Sync {
     fn contacts(&self) -> Result<ContactBook>;
 
     fn put_contacts(&self, book: &ContactBook) -> Result<()>;
+
+    // ---- categorisation -------------------------------------------------
+
+    /// `account`'s sealed corrections — see [`crate::mail::categorize`].
+    /// [`CategoryRules::default`] (nobody has corrected anything yet) when
+    /// nothing has been saved, on the same reasoning
+    /// [`MailStore::remote_image_settings`] answers a real, empty default.
+    fn category_rules(&self, account: AccountId) -> Result<CategoryRules>;
+
+    fn put_category_rules(&self, account: AccountId, rules: &CategoryRules) -> Result<()>;
+
+    /// Re-run [`crate::mail::categorize::categorize`] over every message of
+    /// `account`, `rules` first, and write back every one whose answer
+    /// changed — recomputing each touched thread's own aggregate category
+    /// alongside it. Returns how many messages changed.
+    ///
+    /// What `recategorize_mail`'s one-off backfill calls directly, and what
+    /// `set_thread_category` calls right after saving a new correction, so
+    /// that correction reaches "that sender's existing threads" — the plan's
+    /// own words — through the one mechanism rather than two. A full decrypt
+    /// of every message in the account, on the same accepted terms
+    /// [`MailStore::message_by_message_id_header`]'s own docs give a
+    /// full-account scan: rare, deliberate, and never on a sync's hot path.
+    ///
+    /// Only the signals a stored [`Message`] still carries — its sender, its
+    /// Gmail labels, and the contact book — are available here; the raw
+    /// `List-Id`/`Precedence` headers a fresh sync sees are not kept on the
+    /// row, so a message once ingested is re-categorised on sender, label
+    /// and correction alone. See `crate::mail::categorize`'s own docs on
+    /// [`crate::mail::categorize::CategorizeInput`] for why that is an
+    /// accepted gap rather than a missing feature.
+    fn recategorize(&self, account: AccountId, rules: &CategoryRules) -> Result<u32>;
 }
 
 // ---- associated data --------------------------------------------------
@@ -469,6 +512,13 @@ pub fn thread_aad(id: ThreadId) -> Vec<u8> {
 /// `entries.summary` has with `entries.data`.
 pub fn body_aad(id: MailMessageId) -> Vec<u8> {
     format!("everyday.mail_body.v1:{id}").into_bytes()
+}
+
+/// One account's row of [`crate::mail::CategoryRules`] -- per-account,
+/// unlike [`remote_image_settings_aad`] and [`contacts_aad`], because a
+/// correction on one mailbox says nothing about another.
+pub fn category_rules_aad(account: AccountId) -> Vec<u8> {
+    format!("everyday.mail_category_rules.v1:{account}").into_bytes()
 }
 
 pub fn draft_aad(id: DraftId) -> Vec<u8> {

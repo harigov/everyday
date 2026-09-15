@@ -50,6 +50,7 @@ pub mod feeds;
 pub mod http;
 pub mod idempotency;
 pub mod llm;
+pub mod mailai;
 pub mod mailsync;
 pub mod mailview;
 pub mod outbox;

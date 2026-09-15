@@ -1248,22 +1248,20 @@ export interface AgentMailAccess {
 
 export type AgentCallerKind = 'assistant' | 'mcp'
 
-export type AccountStatus =
-  { type: 'ok' } | { type: 'needsSignIn'; reason: string } | { type: 'error'; message: string }
-
 /**
- * The Superhuman-layer switches for one account: categorising, drafting
- * ahead, and summarising, each off until turned on. TODO(p): the split-inbox
- * contract; mirrors the `MailAi` the "Superhuman layer" agent is landing on
- * `Account` (`docs/plans/mail.md` phase 7). Absent on an account this build
- * has not saved one for yet, which reads as every switch off -- see
- * `accounts.ts`'s `DEFAULT_MAIL_AI`.
+ * The service-side, model-assisted mail features from phase 7 of
+ * `docs/plans/mail.md`: categorisation, auto-drafts, summaries. All three
+ * start `false`, and each also needs `Account.assistantProviderAcknowledged`
+ * to name the configured provider before it runs at all.
  */
 export interface MailAi {
   categorize: boolean
   autoDraft: boolean
   summaries: boolean
 }
+
+export type AccountStatus =
+  { type: 'ok' } | { type: 'needsSignIn'; reason: string } | { type: 'error'; message: string }
 
 export interface Account {
   id: AccountId
@@ -1279,13 +1277,18 @@ export interface Account {
   assistantAccess: AgentMailAccess
   mcpAccess: AgentMailAccess
   assistantProviderAcknowledged?: string | null
+  /** Optional here, not because the wire ever omits it -- a saved account's
+   *  answer always carries it, `#[serde(default)]` on the Rust side -- but
+   *  because a freshly-built `Account` literal (`AddAccount.svelte`, before
+   *  the first save) is exactly the "default" case `#[serde(default)]`
+   *  exists for, and an optional field lets that literal skip it rather
+   *  than spell out all three `false`s by hand. */
+  mailAi?: MailAi
   attachmentCapBytes?: number | null
   status: AccountStatus
   lastSyncedAt?: string | null
   createdAt: string
   updatedAt: string
-  /** TODO(p): see [[MailAi]]. */
-  mailAi?: MailAi | null
 }
 
 /**
@@ -1482,6 +1485,18 @@ export interface SearchMailResult {
 export interface ThreadDetail {
   thread: Thread
   messages: MailMessage[]
+}
+
+/** `summarize_thread`'s answer. `summary` is empty when there was nothing
+ *  worth saying, or when the thread had no text to read at all. */
+export interface ThreadSummary {
+  summary: string
+}
+
+/** `recategorize_mail`'s answer: how many messages' category actually
+ *  changed. */
+export interface RecategorizeResult {
+  changed: number
 }
 
 /** The standing, per-sender/per-domain allow-list a remote image is checked

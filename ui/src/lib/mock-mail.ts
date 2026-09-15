@@ -581,13 +581,22 @@ export function mockUnsnooze(ids: ThreadId[]): void {
   for (const id of ids) thread(id).snoozedUntil = null
 }
 
-// ── (p) TODO: the split inbox's category rules ─────────────────────────
-//
-// `set_thread_category` is the Superhuman-layer agent's command -- see
-// `mail-api.ts`'s own TODO(p).
+// ── The split inbox's category rules and summaries (phase 7) ───────────
 
 export function mockSetThreadCategory(ids: ThreadId[], category: MailCategory): void {
   for (const id of ids) thread(id).category = category
+}
+
+export function mockRecategorizeMail(account?: AccountId | null): { changed: number } {
+  let changed = 0
+  for (const t of seed.threads) {
+    if (account && t.accountId !== account) continue
+    if (t.category == null) {
+      t.category = 'other'
+      changed++
+    }
+  }
+  return { changed }
 }
 
 export function mockSummarizeThread(id: ThreadId): { summary: string } {

@@ -62,6 +62,7 @@ import type {
   LogId,
   LogQuery,
   MailAddress,
+  MailCategory,
   MailMessageId,
   MailProviderInfo,
   MailSyncProgress,
@@ -92,6 +93,7 @@ import type {
   Reading,
   ReadingId,
   ReadingQuery,
+  RecategorizeResult,
   RemoteCalendarInfo,
   RemoteImageSettings,
   Role,
@@ -123,6 +125,7 @@ import type {
   ThreadFilter,
   ThreadId,
   ThreadPage,
+  ThreadSummary,
   TimeBlock,
   ToolInfo,
   Tracker,
@@ -340,6 +343,7 @@ export interface Commands {
   readExport: { args: { handle: string; offset: number }; result: ExportChunk }
   readImport: { args: { handle: string }; result: ArchiveManifest }
   rebuildMailIndex: { args: { id?: AccountId }; result: void }
+  recategorizeMail: { args: { account?: AccountId | null }; result: RecategorizeResult }
   respondToInvite: {
     args: { messageId: MailMessageId; response: string; comment?: string | null }
     result: void
@@ -417,6 +421,7 @@ export interface Commands {
   }
   setItemStatus: { args: { id: ItemId; status: ItemStatus; log: boolean }; result: Item }
   setQuickJob: { args: { name: string; on: boolean }; result: QuickJobRow[] }
+  setThreadCategory: { args: { threads: ThreadId[]; category: MailCategory }; result: void }
   snooze: { args: { threads: ThreadId[]; until: string }; result: Op[] }
   star: { args: { threads: ThreadId[] }; result: Op[] }
   startExport: { args: { parts?: string[]; media?: boolean }; result: ExportHandle }
@@ -425,6 +430,7 @@ export interface Commands {
   subscribeAccountCalendar: { args: { account: AccountId; remoteId: string }; result: CalendarInfo }
   subscribeCalendar: { args: { name: string; url: string; color: string }; result: CalendarInfo }
   suggestAddresses: { args: { prefix: string; limit?: number | null }; result: MailAddress[] }
+  summarizeThread: { args: { id: ThreadId }; result: ThreadSummary }
   syncAccount: { args: { id: AccountId }; result: void }
   syncCalendar: { args: { id: CalendarId }; result: SyncReport }
   syncDueCalendars: { args: { force: boolean }; result: SyncReport[] }
@@ -583,6 +589,7 @@ export const COMMAND_NAMES = {
   readExport: 'read_export',
   readImport: 'read_import',
   rebuildMailIndex: 'rebuild_mail_index',
+  recategorizeMail: 'recategorize_mail',
   respondToInvite: 'respond_to_invite',
   revokeRemoteImageAllowance: 'revoke_remote_image_allowance',
   routineTemplates: 'routine_templates',
@@ -628,6 +635,7 @@ export const COMMAND_NAMES = {
   setItemProgress: 'set_item_progress',
   setItemStatus: 'set_item_status',
   setQuickJob: 'set_quick_job',
+  setThreadCategory: 'set_thread_category',
   snooze: 'snooze',
   star: 'star',
   startExport: 'start_export',
@@ -636,6 +644,7 @@ export const COMMAND_NAMES = {
   subscribeAccountCalendar: 'subscribe_account_calendar',
   subscribeCalendar: 'subscribe_calendar',
   suggestAddresses: 'suggest_addresses',
+  summarizeThread: 'summarize_thread',
   syncAccount: 'sync_account',
   syncCalendar: 'sync_calendar',
   syncDueCalendars: 'sync_due_calendars',
@@ -804,6 +813,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'read_export',
   'read_import',
   'rebuild_mail_index',
+  'recategorize_mail',
   'respond_to_invite',
   'revoke_remote_image_allowance',
   'routine_templates',
@@ -848,6 +858,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_item_progress',
   'set_item_status',
   'set_quick_job',
+  'set_thread_category',
   'snooze',
   'star',
   'start_export',
@@ -856,6 +867,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'subscribe_account_calendar',
   'subscribe_calendar',
   'suggest_addresses',
+  'summarize_thread',
   'sync_account',
   'sync_calendar',
   'sync_due_calendars',
@@ -931,6 +943,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'new_draft',
   'poll_auto_lock',
   'rebuild_mail_index',
+  'recategorize_mail',
   'respond_to_invite',
   'revoke_remote_image_allowance',
   'run_import',
@@ -972,6 +985,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_item_progress',
   'set_item_status',
   'set_quick_job',
+  'set_thread_category',
   'snooze',
   'star',
   'subscribe_account_calendar',
@@ -1065,6 +1079,7 @@ export const CHANGE_KINDS = {
   set_item_progress: 'item',
   set_item_status: 'item',
   set_quick_job: 'settings',
+  set_thread_category: 'thread',
   snooze: 'thread',
   star: 'thread',
   subscribe_account_calendar: 'calendar',

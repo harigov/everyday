@@ -63,6 +63,15 @@ impl ContactIndex {
         state.dirty = true;
     }
 
+    /// Has this vault's owner ever sent a message naming `address`? What
+    /// `crate::mailsync::passes::sync_headers` reads for
+    /// `everyday_core::mail::categorize`'s "a real correspondent" signal, in
+    /// memory rather than through a fresh decrypt of the sealed book on
+    /// every message a first sync ingests.
+    pub fn has_sent_to(&self, address: &str) -> bool {
+        self.lock().book.has_sent_to(address)
+    }
+
     /// Write the book back if anything has changed since the last time
     /// this was called. Called once per sync pass (`passes::sync_once`)
     /// and once per successful send, rather than on every single

@@ -28,9 +28,10 @@ use crate::signin::SignIns;
 use crate::supervisor::Supervisor;
 use crate::token_cache::TokenCache;
 use crate::transfers::Transfers;
-use everyday_core::id::{AccountId, DraftId};
+use everyday_core::id::{AccountId, DraftId, ThreadId};
 use everyday_core::mail::Origin;
 use everyday_core::mail::RateLimitState;
+use everyday_core::mail::TokenBucket;
 use everyday_core::mail::rate_limit::RateLimitRefusal;
 use everyday_core::{BlobId, CalendarId, Vault};
 use jiff::{SignedDuration, Timestamp};
@@ -154,6 +155,24 @@ pub struct Service {
     /// says so, and [`Service::check_mail_rate_limit`] returns before ever
     /// touching this map for either.
     mail_rate_limits: Mutex<HashMap<String, RateLimitState>>,
+    /// Paces `everyday_service::mailai`'s background model-assisted
+    /// categorisation pass: at most a handful of threads sent to the quick
+    /// model per rolling minute, across every account, per the plan's own
+    /// words ("at most N threads per minute"). Session state, on the same
+    /// terms every other mail limiter here is -- a restart simply starts a
+    /// fresh minute's budget.
+    mail_categorize_budget: Mutex<TokenBucket>,
+    /// As [`Service::mail_categorize_budget`], for the auto-draft
+    /// background pass.
+    mail_autodraft_budget: Mutex<TokenBucket>,
+    /// `summarize_thread`'s cache: a thread's summary, keyed by how many
+    /// messages it had when it was written. A thread that has grown since
+    /// -- a new message landed -- misses the cache and is summarised again;
+    /// one that has not is answered instantly. In memory, not the vault:
+    /// losing it on a restart costs one re-summarise, never data nothing
+    /// else remembers, the same trade `mail_notify` and the rest of this
+    /// session state already make.
+    mail_summary_cache: Mutex<HashMap<ThreadId, (u32, String)>>,
 }
 
 impl Default for Service {
@@ -183,7 +202,48 @@ impl Service {
             mail_notify: Mutex::new(HashMap::new()),
             mail_draft_debounce: Mutex::new(HashMap::new()),
             mail_rate_limits: Mutex::new(HashMap::new()),
+            mail_categorize_budget: Mutex::new(TokenBucket::new(
+                Self::MAIL_CATEGORIZE_PER_MINUTE,
+                f64::from(Self::MAIL_CATEGORIZE_PER_MINUTE) / 60.0,
+                Timestamp::now(),
+            )),
+            mail_autodraft_budget: Mutex::new(TokenBucket::new(
+                Self::MAIL_AUTODRAFT_PER_MINUTE,
+                f64::from(Self::MAIL_AUTODRAFT_PER_MINUTE) / 60.0,
+                Timestamp::now(),
+            )),
+            mail_summary_cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// How many threads `everyday_service::mailai`'s categorisation pass may
+    /// send to the quick model per rolling minute, across every account.
+    pub const MAIL_CATEGORIZE_PER_MINUTE: u32 = 20;
+    /// As above, for the auto-draft pass -- lower, because a draft is a
+    /// bigger request than a label and a wrong one costs more to notice.
+    pub const MAIL_AUTODRAFT_PER_MINUTE: u32 = 5;
+
+    /// Take up to `want` tokens from the categorisation budget, right now,
+    /// and say how many were actually available -- never more than `want`,
+    /// and `0` when the budget is empty. What bounds one tick's batch size.
+    pub fn mail_categorize_take(&self, want: u32) -> u32 {
+        take_tokens(&self.mail_categorize_budget, want)
+    }
+
+    pub fn mail_autodraft_take(&self, want: u32) -> u32 {
+        take_tokens(&self.mail_autodraft_budget, want)
+    }
+
+    /// `thread`'s cached summary, if one exists and `message_count` still
+    /// matches what it was written against -- see
+    /// [`Service::mail_summary_cache`]'s own docs.
+    pub fn mail_summary_cached(&self, thread: ThreadId, message_count: u32) -> Option<String> {
+        let cache = self.mail_summary_cache.lock().unwrap();
+        cache.get(&thread).filter(|(n, _)| *n == message_count).map(|(_, s)| s.clone())
+    }
+
+    pub fn mail_summary_cache_put(&self, thread: ThreadId, message_count: u32, summary: String) {
+        self.mail_summary_cache.lock().unwrap().insert(thread, (message_count, summary));
     }
 
     /// OAuth sign-ins this session is driving, or has already finished
@@ -517,6 +577,7 @@ impl Service {
         self.mail_notify.lock().unwrap().clear();
         self.mail_draft_debounce.lock().unwrap().clear();
         self.mail_rate_limits.lock().unwrap().clear();
+        self.mail_summary_cache.lock().unwrap().clear();
         let previous = self.vault.write().unwrap().take();
         if let Some(vault) = &previous {
             // Drop the key and the decrypted index now rather than whenever the
@@ -850,6 +911,19 @@ impl Drop for RunClaim {
     fn drop(&mut self) {
         self.service.claimed_runs.write().unwrap().remove(&self.id);
     }
+}
+
+/// Take up to `want` tokens from `bucket`, one at a time, and say how many
+/// were actually there -- what [`Service::mail_categorize_take`] and
+/// [`Service::mail_autodraft_take`] both are.
+fn take_tokens(bucket: &Mutex<TokenBucket>, want: u32) -> u32 {
+    let mut bucket = bucket.lock().unwrap();
+    let now = Timestamp::now();
+    let mut taken = 0u32;
+    while taken < want && bucket.try_take(now) {
+        taken += 1;
+    }
+    taken
 }
 
 #[cfg(test)]
