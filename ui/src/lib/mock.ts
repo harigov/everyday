@@ -23,7 +23,9 @@ import type {
   CalendarEvent,
   CalendarInfo,
   BalanceReport,
+  Draft,
   MailProviderInfo,
+  ThreadFilter,
   EventQuery,
   Goal,
   GoalActivity,
@@ -79,6 +81,7 @@ import type {
 import { TASK_STATUSES, VaultError, goalIsOpen, isAhead, isOpen, priorityRank } from './types'
 import type { AgentEvent, AgentMessage, AgentSettings, Conversation, Memory } from './types'
 import { DEFAULT_COLORS } from './colors'
+import * as mockMail from './mock-mail'
 
 const PASSWORD = 'everyday'
 
@@ -4202,6 +4205,109 @@ export const mockInvoke = async <T>(
       account.status = { type: 'ok' }
       return undefined as T
     }
+
+    // ── Mail ─────────────────────────────────────────────────────────
+    //
+    // The seed and the behaviour both live in `mock-mail.ts` -- see that
+    // file's own header for why. Every case here does the same two things
+    // every real write command does: call into the seed, then let the
+    // command's own return value be whatever that call answers.
+
+    case 'list_mailboxes':
+      requireUnlocked()
+      return mockMail.listMailboxes(str(args.account)) as T
+
+    case 'list_threads':
+      requireUnlocked()
+      return mockMail.listThreads(
+        str(args.mailbox),
+        args.filter as ThreadFilter | undefined,
+        (args.limit as number | undefined) ?? 50,
+      ) as T
+
+    case 'get_thread':
+      requireUnlocked()
+      return mockMail.getThread(str(args.id)) as T
+
+    case 'mark_read':
+      requireUnlocked()
+      return mockMail.markRead(args.threads as string[]) as T
+
+    case 'mark_unread':
+      requireUnlocked()
+      return mockMail.markUnread(args.threads as string[]) as T
+
+    case 'star':
+      requireUnlocked()
+      return mockMail.star(args.threads as string[]) as T
+
+    case 'unstar':
+      requireUnlocked()
+      return mockMail.unstar(args.threads as string[]) as T
+
+    case 'archive':
+      requireUnlocked()
+      return mockMail.archive(args.threads as string[]) as T
+
+    case 'trash':
+      requireUnlocked()
+      return mockMail.trash(args.threads as string[]) as T
+
+    case 'move_to_mailbox':
+      requireUnlocked()
+      return mockMail.moveToMailbox(args.threads as string[], str(args.to)) as T
+
+    case 'label':
+      requireUnlocked()
+      return mockMail.label(args.threads as string[], str(args.label)) as T
+
+    case 'unlabel':
+      requireUnlocked()
+      return mockMail.unlabel(args.threads as string[], str(args.label)) as T
+
+    case 'snooze':
+      requireUnlocked()
+      return mockMail.snooze(args.threads as string[], str(args.until)) as T
+
+    case 'unsnooze':
+      requireUnlocked()
+      mockMail.unsnooze(args.threads as string[])
+      return undefined as T
+
+    case 'new_draft':
+      requireUnlocked()
+      return mockMail.newDraft(
+        str(args.account),
+        args.inReplyTo as string | null | undefined,
+        args.forwardOf as string | null | undefined,
+        args.replyAll as boolean | null | undefined,
+      ) as T
+
+    case 'save_draft':
+      requireUnlocked()
+      mockMail.saveDraft(args.draft as Draft)
+      return undefined as T
+
+    case 'discard_draft':
+      requireUnlocked()
+      mockMail.discardDraft(str(args.id))
+      return undefined as T
+
+    case 'send_draft':
+      requireUnlocked()
+      return mockMail.sendDraft(
+        str(args.id),
+        args.delaySeconds as number | null | undefined,
+        args.sendAt as string | null | undefined,
+      ) as T
+
+    case 'undo_send':
+      requireUnlocked()
+      return mockMail.undoSend(str(args.draftId)) as T
+
+    case 'list_drafts':
+      requireUnlocked()
+      return mockMail.listDrafts(str(args.account)) as T
 
     default:
       throw new VaultError('unknown', `no mock for command ${cmd}`)
