@@ -44,8 +44,8 @@ use std::sync::Arc;
 use everyday_core::Vault;
 use everyday_core::crypto::{AeadCipher, Cipher};
 use everyday_core::error::Result;
-use everyday_core::id::AccountId;
-use everyday_core::packstore::{FilePackStore, PackRef, PackStore};
+use everyday_core::id::{AccountId, PackId};
+use everyday_core::packstore::{CompactionResult, FilePackStore, PackRef, PackStore};
 use everyday_mailindex::MailIndex;
 
 use crate::mailsync::status::StatusRegistry;
@@ -182,8 +182,12 @@ impl PackStore for VaultPacks {
         self.0.with_mail_packs(|p| p.delete_account(account))
     }
 
-    fn compact(&self, account: &str) -> Result<Vec<(PackRef, PackRef)>> {
-        self.0.with_mail_packs(|p| p.compact(account))
+    fn compact(&self, account: &str, referenced: &[PackId]) -> Result<CompactionResult> {
+        self.0.with_mail_packs(|p| p.compact(account, referenced))
+    }
+
+    fn drop_packs(&self, account: &str, packs: &[PackId]) -> Result<()> {
+        self.0.with_mail_packs(|p| p.drop_packs(account, packs))
     }
 }
 

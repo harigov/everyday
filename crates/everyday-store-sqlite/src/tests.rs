@@ -11,7 +11,7 @@ use super::{DB_FILENAME, MEDIA_DIRNAME, SqliteStore};
 use everyday_core::calendar::Event;
 use everyday_core::crypto::{AeadCipher, Cipher, NullCipher, SecretKey};
 use everyday_core::id::{AccountId, MailMessageId, ThreadId};
-use everyday_core::mail::{Address, Mailbox, MailboxRole, Message, MessageFlags};
+use everyday_core::mail::{Address, CategorySource, Mailbox, MailboxRole, Message, MessageFlags};
 use everyday_core::model::Entry;
 use everyday_core::note::Note;
 use everyday_core::packstore::{PackRef, PackStore, run_pack_store_suite};
@@ -1105,6 +1105,20 @@ fn the_table_backed_pack_store_passes_the_shared_conformance_suite() {
 }
 
 #[test]
+fn deleting_an_account_leaves_no_row_in_any_account_keyed_mail_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    everyday_store_sql::accounts::run_account_delete_cascade_regression(&store);
+}
+
+#[test]
+fn recategorize_does_not_clobber_a_concurrent_flag_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    everyday_store_sql::mail::run_recategorize_staleness_regression(&store);
+}
+
+#[test]
 fn the_database_file_contains_no_readable_mail_text() {
     // What the mail tables promise, checked the way every other domain's
     // promise is: write a subject, a sender's name and a label nobody
@@ -1140,6 +1154,7 @@ fn the_database_file_contains_no_readable_mail_text() {
         has_attachments: false,
         size: 42,
         category: None,
+        category_source: CategorySource::Rules,
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,

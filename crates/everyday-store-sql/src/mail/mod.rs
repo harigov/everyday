@@ -11,11 +11,16 @@
 mod threads;
 mod write;
 
+#[cfg(any(test, feature = "testing"))]
+pub use write::run_recategorize_staleness_regression;
+
 use everyday_core::error::Result;
-use everyday_core::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
+use everyday_core::id::{
+    AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, PackId, ThreadId,
+};
 use everyday_core::mail::{
-    Body, CategoryRules, ContactBook, Draft, Invite, Mailbox, Message, MessageFlags, Op, OpTarget,
-    RemoteImageSettings, Thread,
+    Body, Category, CategoryMatch, CategoryRules, ContactBook, Draft, Invite, Mailbox, Message,
+    MessageFlags, Op, OpTarget, RemoteImageSettings, Thread,
 };
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::{
@@ -576,6 +581,24 @@ impl MailStore for SqlStore {
         Ok(out)
     }
 
+    fn referenced_pack_ids(&self, account: AccountId) -> Result<Vec<PackId>> {
+        let rows = self.read().query(
+            "SELECT DISTINCT pack_id FROM mail_messages WHERE account_id = ?1",
+            &vals![account.to_string()],
+        )?;
+        rows.into_iter()
+            .map(|r| {
+                r.text(0)?.parse().map_err(|e: <PackId as std::str::FromStr>::Err| {
+                    everyday_core::error::Error::Invalid(e.to_string())
+                })
+            })
+            .collect()
+    }
+
+    fn remap_packs(&self, account: AccountId, remap: &[(PackRef, PackRef)]) -> Result<()> {
+        write::remap_packs(self, account, remap)
+    }
+
     // ---- remote-image permissions --------------------------------------------
     //
     // Hand-written rather than through `Record`/`upsert`, on exactly
@@ -647,5 +670,14 @@ impl MailStore for SqlStore {
 
     fn recategorize(&self, account: AccountId, rules: &CategoryRules) -> Result<u32> {
         write::recategorize(self, account, rules)
+    }
+
+    fn correct_category(
+        &self,
+        account: AccountId,
+        target: CategoryMatch,
+        category: Category,
+    ) -> Result<u32> {
+        write::correct_category(self, account, target, category)
     }
 }

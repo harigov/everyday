@@ -29,6 +29,12 @@ rustls-platform-verifier = "0.7"
 
 [dev-dependencies]
 everyday-core = { workspace = true, features = ["testing"] }
+# Feature-unified with the plain dependency above for this crate's own
+# builds; only the `tests/conformance.rs` binary actually needs it, for
+# `everyday_store_sql::accounts::run_account_delete_cascade_regression` --
+# see that function's own docs, and `everyday-store-sql`'s `testing` feature
+# doc, for why it is gated at all.
+everyday-store-sql = { workspace = true, features = ["testing"] }
 tempfile = "3"
 
 [[test]]

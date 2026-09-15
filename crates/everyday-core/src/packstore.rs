@@ -150,18 +150,106 @@ pub trait PackStore: Send + Sync {
 
     /// Rewrite every pack of `account`'s that is at least a third dead,
     /// dropping what [`PackStore::mark_dead`] marked and keeping everything
-    /// else.
+    /// else -- and, first, reclaim any pack already left behind by a
+    /// previous call that never finished being cleaned up.
     ///
-    /// The new pack is written and made durable in full before the old one
-    /// is removed, so a crash mid-compaction leaves either the untouched
-    /// original pack or the finished replacement -- never a gap where
-    /// neither is readable. Returns the old reference and the new one for
-    /// every message that moved, in no particular order, so a caller can
-    /// update whatever else was pointing at the old address (a `messages`
-    /// row's `pack_id`, `pack_offset` and `pack_len`, once that table
-    /// exists). A pack under the third-dead threshold is left exactly where
-    /// it is and contributes nothing to the result.
-    fn compact(&self, account: &str) -> Result<Vec<(PackRef, PackRef)>>;
+    /// # A two-step contract, not a one-step promise
+    ///
+    /// This method **never deletes anything**. Earlier, it deleted each old
+    /// pack the moment its replacement was written -- which is safe against
+    /// a crash *inside* one pack's rewrite (the old file is still there
+    /// until the new one is fully durable), but not against a crash *after*
+    /// `compact` returns and before the caller has finished persisting the
+    /// remap somewhere else that also names the old address (a `messages`
+    /// row's `pack_id`/`pack_offset`/`pack_len`, most of all). That second
+    /// window used to lose mail for good: the old pack was already gone,
+    /// and nothing durable yet pointed at the new one.
+    ///
+    /// The fix splits the work three ways, and the whole point is that
+    /// nothing here ever deletes a pack a live reference might still name:
+    ///
+    /// 1. `compact` writes every replacement pack, durably, and returns the
+    ///    remap plus the list of packs it made obsolete. It touches no old
+    ///    pack at all.
+    /// 2. The caller commits that remap -- durably, in one transaction --
+    ///    to whatever else pointed at the old addresses.
+    /// 3. Only then does the caller call [`PackStore::drop_packs`] on the
+    ///    obsolete list from step 1.
+    ///
+    /// A crash between 1 and 2 leaves every message still reachable at its
+    /// old, untouched address -- `compact` changed nothing durable yet. A
+    /// crash between 2 and 3 leaves the old packs sitting on disk,
+    /// unreferenced by anything any more; the *next* `compact` call reclaims
+    /// them as part of its own first step, below, so nothing is lost and
+    /// nothing but disk space is wasted in between.
+    ///
+    /// # Orphan sweep, first
+    ///
+    /// Before rewriting anything, `compact` deletes every pack `account`
+    /// has that is not named in `referenced` -- built by the caller from
+    /// the store's own referenced-pack query (see
+    /// [`crate::store::mail::MailStore::referenced_pack_ids`]) immediately
+    /// beforehand. Such a pack can only be one left over from an earlier
+    /// call that crashed between steps 2 and 3 above, or a replacement from
+    /// a call that crashed between 1 and 2 and was therefore never
+    /// referenced by anything at all -- either way, nothing durable names
+    /// it, so deleting it outright, with no remap needed, is safe. Every
+    /// pack this sweep removes is folded into the returned
+    /// [`CompactionResult::obsolete`] too, so a caller has one list to hand
+    /// [`PackStore::drop_packs`] -- redundant for these (they are already
+    /// gone) but harmless, since deleting an already-deleted pack is not an
+    /// error.
+    ///
+    /// Callers must only pass a `referenced` list built while nothing is
+    /// concurrently appending new packs for `account` -- true of every
+    /// caller today, which reaches this through the one writer the vault's
+    /// own write claim already promises (the same "existing write claim"
+    /// [`FilePackStore`]'s own lock is a safety net for, not a throughput
+    /// design, per its own docs).
+    ///
+    /// # Partial failure
+    ///
+    /// A pack that fails to compact -- most likely a corrupt frame -- is
+    /// skipped and left exactly as it was, rather than aborting the whole
+    /// call: every other pack in `account`, including ones already
+    /// rewritten earlier in the same call, still compacts and is still
+    /// included in the result. A skipped pack's messages remain fully
+    /// readable at their old, untouched addresses; nothing about them is
+    /// lost, only the space they would have reclaimed.
+    ///
+    /// A pack under the third-dead threshold is left exactly where it is
+    /// and contributes nothing to the result. `referenced` empty is not
+    /// special-cased -- every existing pack fails the "named in
+    /// `referenced`" test and is swept as an orphan, which is exactly
+    /// correct for an account with no messages left at all.
+    fn compact(&self, account: &str, referenced: &[PackId]) -> Result<CompactionResult>;
+
+    /// Delete every pack named in `packs`, outright -- the second half of
+    /// [`PackStore::compact`]'s two-step contract; see that method's own
+    /// docs for when this may be called. Deleting a pack that does not
+    /// exist -- already gone, or never did -- is not an error, so a caller
+    /// need not track what it has already asked for.
+    fn drop_packs(&self, account: &str, packs: &[PackId]) -> Result<()>;
+}
+
+/// What one [`PackStore::compact`] call accomplished: the remap for every
+/// message that moved, and every pack now safe to
+/// [`PackStore::drop_packs`] -- but *only* once the caller has durably
+/// committed `remap` to whatever else named the old addresses. See
+/// [`PackStore::compact`]'s own docs for the whole of this contract.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CompactionResult {
+    pub remap: Vec<(PackRef, PackRef)>,
+    pub obsolete: Vec<PackId>,
+}
+
+impl CompactionResult {
+    /// Nothing moved and nothing is obsolete -- what a `referenced` sweep
+    /// that finds no orphans, over packs all under the dead threshold,
+    /// answers with.
+    pub fn is_empty(&self) -> bool {
+        self.remap.is_empty() && self.obsolete.is_empty()
+    }
 }
 
 /// Associated data binding a sealed frame to the one pack and offset it was
@@ -347,85 +435,160 @@ impl PackStore for FilePackStore {
         Ok(())
     }
 
-    fn compact(&self, account: &str) -> Result<Vec<(PackRef, PackRef)>> {
+    fn compact(&self, account: &str, referenced: &[PackId]) -> Result<CompactionResult> {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.account_dir(account);
-        let mut remap = Vec::new();
+        let referenced: BTreeSet<PackId> = referenced.iter().copied().collect();
+        let mut result = CompactionResult::default();
 
         for pack in Self::list_packs(&dir)? {
-            let path = dir.join(format!("{pack}.pack"));
-            let dead_path = dir.join(format!("{pack}.dead"));
-            let valid_len = recover_valid_len(&path)?;
-            let dead = read_dead_offsets(&dead_path)?;
-
-            let mut file = File::open(&path).map_err(|e| Error::io(&path, e))?;
-            let mut pos = 0u64;
-            let mut total = 0u64;
-            let mut live: Vec<(u64, u32)> = Vec::new();
-            while pos + FRAME_PREFIX_LEN <= valid_len {
-                file.seek(SeekFrom::Start(pos)).map_err(|e| Error::io(&path, e))?;
-                let mut len_buf = [0u8; FRAME_PREFIX_LEN as usize];
-                file.read_exact(&mut len_buf).map_err(|e| Error::io(&path, e))?;
-                let len = u32::from_le_bytes(len_buf);
-                let frame_offset = pos + FRAME_PREFIX_LEN;
-                total += 1;
-                if !dead.contains(&frame_offset) {
-                    live.push((frame_offset, len));
-                }
-                pos = frame_offset + len as u64;
-            }
-            if total == 0 || (total - live.len() as u64) * 3 < total {
-                // Fewer than a third dead (or nothing in the pack at all):
-                // leave it exactly where it is.
+            if !referenced.contains(&pack) {
+                // Nothing durable names this pack any more -- either a
+                // replacement from a call that crashed before its remap was
+                // committed, or an old pack from a call that crashed after
+                // committing but before `drop_packs` ran. Either way it is
+                // safe to reclaim outright: see `compact`'s own docs on the
+                // orphan sweep.
+                result.obsolete.push(pack);
                 continue;
             }
-
-            let new_pack = PackId::new();
-            let mut rewritten = Vec::new();
-            let mut new_offset = 0u64;
-            let mut this_pack_remap = Vec::with_capacity(live.len());
-            for (offset, len) in live {
-                file.seek(SeekFrom::Start(offset)).map_err(|e| Error::io(&path, e))?;
-                let mut sealed = vec![0u8; len as usize];
-                file.read_exact(&mut sealed).map_err(|e| Error::io(&path, e))?;
-                let plain = self.cipher.open(&pack_aad(pack, offset), &sealed)?;
-
-                let new_frame_offset = new_offset + FRAME_PREFIX_LEN;
-                let resealed = self.cipher.seal(&pack_aad(new_pack, new_frame_offset), &plain)?;
-                let new_len = resealed.len() as u32;
-                rewritten.extend_from_slice(&new_len.to_le_bytes());
-                rewritten.extend_from_slice(&resealed);
-                new_offset = new_frame_offset + new_len as u64;
-
-                this_pack_remap.push((
-                    PackRef { account: account.to_string(), pack, offset, len },
-                    PackRef {
-                        account: account.to_string(),
-                        pack: new_pack,
-                        offset: new_frame_offset,
-                        len: new_len,
-                    },
-                ));
+            match compact_one_pack(&self.cipher, &dir, account, pack) {
+                Ok(Some((_new_pack, pack_remap))) => {
+                    // `_new_pack` (named only for `compact_one_pack`'s own
+                    // return shape) is brand new and, by definition, not
+                    // yet in `referenced` -- nothing has committed a
+                    // reference to it yet, that being exactly what the
+                    // caller does next. It is never treated as an orphan by
+                    // *this* call: `list_packs`, above, was already read
+                    // before this pack existed, so this loop never reaches
+                    // it at all.
+                    result.remap.extend(pack_remap);
+                    result.obsolete.push(pack);
+                }
+                Ok(None) => {
+                    // Fewer than a third dead (or nothing in the pack at
+                    // all): leave it exactly where it is.
+                }
+                Err(e) => {
+                    // A corrupt frame, most likely. This one pack is left
+                    // untouched -- its messages are still fully readable at
+                    // their existing addresses -- and every other pack in
+                    // this account, including ones already compacted
+                    // earlier in this same call, is unaffected: `result` so
+                    // far is not discarded, and the loop carries on.
+                    tracing::warn!(
+                        account,
+                        pack = %pack,
+                        error = %e,
+                        "skipping a pack that failed to compact"
+                    );
+                }
             }
-
-            // The new pack is written and fsynced -- by `write_atomic` -- in
-            // full before the old one is touched at all. A crash here still
-            // leaves a reader with a complete, correct pack to find: either
-            // this one has not appeared yet and the old one is exactly as it
-            // was, or it has and every ref in `this_pack_remap` already
-            // resolves against it.
-            let new_path = dir.join(format!("{new_pack}.pack"));
-            fsutil::write_atomic(&new_path, &rewritten, &fsutil::unique_tag())?;
-
-            drop(file);
-            std::fs::remove_file(&path).map_err(|e| Error::io(&path, e))?;
-            let _ = std::fs::remove_file(&dead_path);
-            fsutil::sync_dir(&dir);
-
-            remap.extend(this_pack_remap);
         }
-        Ok(remap)
+        Ok(result)
     }
+
+    fn drop_packs(&self, account: &str, packs: &[PackId]) -> Result<()> {
+        if packs.is_empty() {
+            return Ok(());
+        }
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = self.account_dir(account);
+        for pack in packs {
+            let path = dir.join(format!("{pack}.pack"));
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(Error::io(&path, e)),
+            }
+            // The dead-offset marker beside it, if any -- a pack that was
+            // never compacted (a pure orphan sweep target) never had one.
+            let _ = std::fs::remove_file(dir.join(format!("{pack}.dead")));
+        }
+        fsutil::sync_dir(&dir);
+        Ok(())
+    }
+}
+
+/// What [`compact_one_pack`] found: the fresh pack it wrote, and the remap
+/// from every old address in `pack` to its new one there.
+type PackCompaction = (PackId, Vec<(PackRef, PackRef)>);
+
+/// The compaction of one pack, in isolation: read its live frames, reseal
+/// each into a fresh pack, and write that pack durably. Returns `Ok(None)`
+/// for a pack under the dead threshold (left alone, not an error), and
+/// `Err` for one this could not read cleanly -- a corrupt frame, most often
+/// -- which [`FilePackStore::compact`] catches and skips rather than
+/// letting fail the whole call. Never deletes the old pack; that is
+/// [`FilePackStore::drop_packs`]'s job, once the caller has committed the
+/// remap this returns.
+fn compact_one_pack(
+    cipher: &Arc<dyn Cipher>,
+    dir: &Path,
+    account: &str,
+    pack: PackId,
+) -> Result<Option<PackCompaction>> {
+    let path = dir.join(format!("{pack}.pack"));
+    let dead_path = dir.join(format!("{pack}.dead"));
+    let valid_len = recover_valid_len(&path)?;
+    let dead = read_dead_offsets(&dead_path)?;
+
+    let mut file = File::open(&path).map_err(|e| Error::io(&path, e))?;
+    let mut pos = 0u64;
+    let mut total = 0u64;
+    let mut live: Vec<(u64, u32)> = Vec::new();
+    while pos + FRAME_PREFIX_LEN <= valid_len {
+        file.seek(SeekFrom::Start(pos)).map_err(|e| Error::io(&path, e))?;
+        let mut len_buf = [0u8; FRAME_PREFIX_LEN as usize];
+        file.read_exact(&mut len_buf).map_err(|e| Error::io(&path, e))?;
+        let len = u32::from_le_bytes(len_buf);
+        let frame_offset = pos + FRAME_PREFIX_LEN;
+        total += 1;
+        if !dead.contains(&frame_offset) {
+            live.push((frame_offset, len));
+        }
+        pos = frame_offset + len as u64;
+    }
+    if total == 0 || (total - live.len() as u64) * 3 < total {
+        return Ok(None);
+    }
+
+    let new_pack = PackId::new();
+    let mut rewritten = Vec::new();
+    let mut new_offset = 0u64;
+    let mut pack_remap = Vec::with_capacity(live.len());
+    for (offset, len) in live {
+        file.seek(SeekFrom::Start(offset)).map_err(|e| Error::io(&path, e))?;
+        let mut sealed = vec![0u8; len as usize];
+        file.read_exact(&mut sealed).map_err(|e| Error::io(&path, e))?;
+        let plain = cipher.open(&pack_aad(pack, offset), &sealed)?;
+
+        let new_frame_offset = new_offset + FRAME_PREFIX_LEN;
+        let resealed = cipher.seal(&pack_aad(new_pack, new_frame_offset), &plain)?;
+        let new_len = resealed.len() as u32;
+        rewritten.extend_from_slice(&new_len.to_le_bytes());
+        rewritten.extend_from_slice(&resealed);
+        new_offset = new_frame_offset + new_len as u64;
+
+        pack_remap.push((
+            PackRef { account: account.to_string(), pack, offset, len },
+            PackRef {
+                account: account.to_string(),
+                pack: new_pack,
+                offset: new_frame_offset,
+                len: new_len,
+            },
+        ));
+    }
+
+    // Durable -- via `write_atomic` -- before this returns, and the old
+    // pack is never touched here at all: see `PackStore::compact`'s own
+    // docs for why deleting it is now a separate, later step.
+    let new_path = dir.join(format!("{new_pack}.pack"));
+    fsutil::write_atomic(&new_path, &rewritten, &fsutil::unique_tag())?;
+    fsutil::sync_dir(dir);
+
+    Ok(Some((new_pack, pack_remap)))
 }
 
 /// Walk `path`'s frames from the start, and truncate away anything after the
@@ -523,7 +686,13 @@ pub fn run_pack_store_suite(store: &dyn PackStore, account: &str) {
         assert_eq!(&store.read(r).unwrap(), m);
     }
     store.mark_dead(&refs).unwrap();
-    assert!(store.compact(account).unwrap().is_empty(), "nothing live left to remap");
+    // Nothing left alive at all: an empty `referenced` list is a genuine
+    // input here, not a placeholder, and the orphan sweep it drives is
+    // exactly what reclaims this pack -- see [`PackStore::compact`]'s own
+    // docs on the two-step contract this suite exercises throughout.
+    let result = store.compact(account, &[]).unwrap();
+    assert!(result.remap.is_empty(), "nothing live left to remap");
+    store.drop_packs(account, &result.obsolete).unwrap();
 
     let bodies: Vec<Vec<u8>> = (0..1000).map(|i| format!("message {i}").into_bytes()).collect();
     let borrowed: Vec<&[u8]> = bodies.iter().map(|b| b.as_slice()).collect();
@@ -535,22 +704,36 @@ pub fn run_pack_store_suite(store: &dyn PackStore, account: &str) {
 
     // A third or more dead triggers a rewrite; the rest survive it, at a
     // reference [`PackStore::read`] can still open, holding exactly what was
-    // written.
+    // written. `referenced` names every pack `refs` actually lives in, so
+    // the orphan sweep does not pre-empt the rewrite this step means to
+    // exercise.
     let (dead, live) = refs.split_at(400);
     let live_bodies = &bodies[400..];
     store.mark_dead(dead).unwrap();
-    let remap: std::collections::HashMap<PackRef, PackRef> =
-        store.compact(account).unwrap().into_iter().collect();
+    let referenced: Vec<PackId> = refs.iter().map(|r| r.pack).collect();
+    let result = store.compact(account, &referenced).unwrap();
+    let remap: std::collections::HashMap<PackRef, PackRef> = result.remap.into_iter().collect();
+    let mut current_refs = Vec::with_capacity(live.len());
     for (old, body) in live.iter().zip(live_bodies) {
-        let r = remap.get(old).unwrap_or(old);
-        assert_eq!(&store.read(r).unwrap(), body);
+        let r = remap.get(old).cloned().unwrap_or_else(|| old.clone());
+        assert_eq!(&store.read(&r).unwrap(), body);
+        current_refs.push(r);
     }
     for old in dead {
         assert!(!remap.contains_key(old), "a dead message must not be remapped as though live");
     }
+    // The caller's own commit, simulated: whatever pointed at the old
+    // addresses now points at the new ones, so the packs `compact` named
+    // obsolete are safe to reclaim.
+    store.drop_packs(account, &result.obsolete).unwrap();
 
-    store.mark_dead(live).unwrap();
-    let _ = store.compact(account);
+    // Every remaining message is dead too, now at its post-compaction
+    // address: one last sweep, nothing referenced at all, reclaims
+    // everything this suite created, leaving `account` exactly as this
+    // function's own docs promise.
+    store.mark_dead(&current_refs).unwrap();
+    let result = store.compact(account, &[]).unwrap();
+    store.drop_packs(account, &result.obsolete).unwrap();
 
     eprintln!("--- pack store suite passed ---");
 }
@@ -651,19 +834,24 @@ mod tests {
         let live: Vec<PackRef> = refs[4..].to_vec();
         s.mark_dead(&dead).unwrap();
 
-        let remap = s.compact("acc-1").unwrap();
-        assert_eq!(remap.len(), live.len(), "only the live messages should move");
+        let referenced: Vec<PackId> = refs.iter().map(|r| r.pack).collect();
+        let result = s.compact("acc-1", &referenced).unwrap();
+        assert_eq!(result.remap.len(), live.len(), "only the live messages should move");
 
-        let remap: std::collections::HashMap<PackRef, PackRef> = remap.into_iter().collect();
+        let remap: std::collections::HashMap<PackRef, PackRef> = result.remap.into_iter().collect();
         for old in &live {
             let new = remap.get(old).expect("every live ref should be remapped");
             assert_ne!(new.pack, old.pack, "compaction must write a fresh pack");
             assert_eq!(s.read(new).unwrap(), b"x", "the message itself must survive the move");
+            // Not dropped yet: the old address must still resolve too, since
+            // `compact` itself never deletes -- see its own docs.
+            assert_eq!(s.read(old).unwrap(), b"x", "the old address survives until `drop_packs`");
         }
 
-        // The old pack is gone; reading the stale ref must fail cleanly
-        // rather than silently returning something from whatever replaced
-        // it on disk.
+        // Only once the caller's own commit is simulated -- by calling
+        // `drop_packs` on what `compact` named obsolete -- does the old
+        // address stop resolving.
+        s.drop_packs("acc-1", &result.obsolete).unwrap();
         assert!(s.read(&dead[0]).is_err());
     }
 
@@ -676,10 +864,148 @@ mod tests {
 
         // Two of nine is under a third: nothing should move.
         s.mark_dead(&refs[..2]).unwrap();
-        let remap = s.compact("acc-1").unwrap();
-        assert!(remap.is_empty());
+        let referenced: Vec<PackId> = refs.iter().map(|r| r.pack).collect();
+        let result = s.compact("acc-1", &referenced).unwrap();
+        assert!(result.is_empty());
         for r in &refs[2..] {
             assert_eq!(s.read(r).unwrap(), b"x");
+        }
+    }
+
+    /// Regression for "pack compaction can permanently lose mail": a corrupt
+    /// frame in one pack used to abort `compact` outright with `?`, throwing
+    /// away the remap it had already built for every pack processed earlier
+    /// in the same call -- which, combined with the old per-pack delete,
+    /// could mean an already-deleted pack with no surviving remap at all.
+    /// The fix makes a per-pack failure skip that pack and keep going; this
+    /// pins both halves down: the failure is contained, and everything
+    /// before it survives.
+    #[test]
+    fn an_error_on_the_second_pack_keeps_the_first_packs_messages_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), true);
+
+        // Pack 1: a filler big enough to force the next `append_batch` to
+        // rotate, plus three small live-to-be messages sharing it.
+        let big = vec![0u8; (PACK_ROTATE_BYTES as usize) + 1];
+        let pack1 = s
+            .append_batch(
+                "acc-1",
+                &[big.as_slice(), b"p1-a".as_slice(), b"p1-b".as_slice(), b"p1-c".as_slice()],
+            )
+            .unwrap();
+        // Pack 2: a fresh pack, rotated into because pack 1 is now over the
+        // size limit.
+        let pack2 = s
+            .append_batch("acc-1", &[b"p2-a".as_slice(), b"p2-b".as_slice(), b"p2-c".as_slice()])
+            .unwrap();
+        assert_ne!(pack1[0].pack, pack2[0].pack, "the filler must have forced a rotation");
+
+        // Pack 1: mark the filler and one small message dead (2 of 4, over a
+        // third) so it is eligible to compact cleanly.
+        s.mark_dead(&[pack1[0].clone(), pack1[1].clone()]).unwrap();
+        let pack1_live = [pack1[2].clone(), pack1[3].clone()];
+
+        // Pack 2: mark one of three dead (over a third, so it is eligible
+        // too), then corrupt one of the *live* ones so decrypting it during
+        // compaction fails.
+        s.mark_dead(&[pack2[0].clone()]).unwrap();
+        let corrupt_path = s.account_dir("acc-1").join(format!("{}.pack", pack2[1].pack));
+        let mut bytes = std::fs::read(&corrupt_path).unwrap();
+        let at = pack2[1].offset as usize;
+        bytes[at] ^= 0xff;
+        std::fs::write(&corrupt_path, bytes).unwrap();
+
+        let referenced: Vec<PackId> = [pack1[0].pack, pack2[0].pack].to_vec();
+        let result = s.compact("acc-1", &referenced).unwrap();
+
+        // Pack 1 compacted cleanly, and is readable at either address, on
+        // the same terms `compaction_keeps_live_messages_and_remaps_their_refs`
+        // checks.
+        let remap: std::collections::HashMap<PackRef, PackRef> = result.remap.into_iter().collect();
+        for (old, body) in pack1_live.iter().zip([b"p1-b".as_slice(), b"p1-c".as_slice()]) {
+            let new = remap.get(old).expect("pack 1's live messages must have been remapped");
+            assert_ne!(new.pack, pack1[0].pack);
+            assert_eq!(s.read(new).unwrap(), body);
+            assert_eq!(s.read(old).unwrap(), body);
+        }
+        assert!(result.obsolete.contains(&pack1[0].pack), "pack 1 must be marked obsolete");
+
+        // Pack 2 was skipped whole, corrupted frame and all: nothing in it
+        // moved, and its still-good messages are exactly where they always
+        // were.
+        assert!(!result.obsolete.contains(&pack2[0].pack), "a failed pack must not be obsoleted");
+        assert_eq!(s.read(&pack2[2]).unwrap(), b"p2-c", "an untouched live message still reads");
+        assert!(s.read(&pack2[1]).is_err(), "the corrupted frame is still corrupted, as before");
+    }
+
+    /// Regression for "pack compaction can permanently lose mail": a crash
+    /// between `compact` returning and the caller committing its remap used
+    /// to be unrecoverable, because the old pack had already been deleted by
+    /// `compact` itself. The fix makes `compact` delete nothing at all --
+    /// this proves that holds even across a reopen, standing in for a
+    /// restarted process.
+    #[test]
+    fn a_crash_between_compact_and_the_ref_commit_loses_nothing_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), true);
+        let refs =
+            s.append_batch("acc-1", &(0..9).map(|_| b"x".as_slice()).collect::<Vec<_>>()).unwrap();
+        s.mark_dead(&refs[..4]).unwrap();
+        let live = &refs[4..];
+
+        let referenced: Vec<PackId> = refs.iter().map(|r| r.pack).collect();
+        let result = s.compact("acc-1", &referenced).unwrap();
+        assert!(!result.remap.is_empty(), "the test needs compaction to have actually run");
+
+        // No `remap_packs` commit, and no `drop_packs` -- exactly the crash
+        // window this fix closes. "Reopening" stands in for a restarted
+        // process finding the vault exactly as the crash left it.
+        let reopened = store(dir.path(), true);
+        let remap: std::collections::HashMap<PackRef, PackRef> = result.remap.into_iter().collect();
+        for old in live {
+            assert_eq!(reopened.read(old).unwrap(), b"x", "the old address must still resolve");
+            let new = remap.get(old).expect("every live ref should be remapped");
+            assert_eq!(reopened.read(new).unwrap(), b"x", "the new address must resolve too");
+        }
+    }
+
+    /// Regression for "pack compaction can permanently lose mail": the
+    /// orphan sweep half of the fix. A pack `compact` made obsolete, left
+    /// undeleted by a crash before `drop_packs` ran, must be reclaimed the
+    /// next time `compact` runs once the caller can prove -- via
+    /// `referenced` -- that nothing points at it any more.
+    #[test]
+    fn orphan_sweep_reclaims_a_pack_left_behind_by_an_earlier_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), true);
+        let refs =
+            s.append_batch("acc-1", &(0..9).map(|_| b"x".as_slice()).collect::<Vec<_>>()).unwrap();
+        s.mark_dead(&refs[..4]).unwrap();
+        let live = &refs[4..];
+
+        let referenced: Vec<PackId> = refs.iter().map(|r| r.pack).collect();
+        let first = s.compact("acc-1", &referenced).unwrap();
+        let remap: std::collections::HashMap<PackRef, PackRef> = first.remap.into_iter().collect();
+        // Deliberately no `drop_packs` here -- the old pack is left behind,
+        // exactly as a crash after the (simulated) remap commit would leave
+        // it.
+
+        // The next compaction pass, run as though the caller has by now
+        // durably committed the remap: `referenced` names only the new
+        // addresses, not the old pack `first` made obsolete.
+        let new_referenced: Vec<PackId> = live.iter().map(|old| remap[old].pack).collect();
+        let second = s.compact("acc-1", &new_referenced).unwrap();
+        assert!(
+            second.obsolete.contains(&first.obsolete[0]),
+            "the leftover pack from the earlier, uncommitted-and-undropped compaction \
+             must be swept as an orphan"
+        );
+
+        s.drop_packs("acc-1", &second.obsolete).unwrap();
+        for old in live {
+            assert!(s.read(old).is_err(), "the orphaned old address must finally be gone");
+            assert_eq!(s.read(&remap[old]).unwrap(), b"x", "the live address is untouched");
         }
     }
 

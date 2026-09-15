@@ -411,6 +411,7 @@ fn categorize_new_message(
         ever_written_to: contacts.is_some_and(|c| c.has_sent_to(&resolved.message.from.email)),
     };
     resolved.message.category = Some(categorize::categorize(&input, rules));
+    resolved.message.category_source = everyday_core::mail::CategorySource::Rules;
 }
 
 /// Diff and apply Gmail's own label set for `uids` in `mailbox`, which must

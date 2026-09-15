@@ -464,8 +464,10 @@ pub trait MailStore: Send + Sync {
     /// rules could only call `Other`, on the same optimistic-write terms
     /// [`MailStore::set_message_flags`] already keeps. Recomputes the
     /// thread it belongs to, so the answer reaches `thread.category`
-    /// immediately. Deliberately narrower than
-    /// [`MailStore::recategorize`]: this never touches
+    /// immediately, and writes [`crate::mail::CategorySource::Model`]
+    /// alongside it, which is what keeps a later [`MailStore::recategorize`]
+    /// backfill from ever overwriting this answer. Deliberately narrower
+    /// than [`MailStore::recategorize`]: this never touches
     /// [`crate::mail::CategoryRules`], because a model's one-off answer is
     /// not a standing correction the way a person's own is.
     fn set_message_category(&self, id: MailMessageId, category: Category) -> Result<()>;
@@ -515,6 +517,41 @@ pub trait MailStore: Send + Sync {
     /// treats as live. See `crate::mail::PartRef::blob`.
     fn attachment_blob_refs(&self) -> Result<Vec<BlobId>>;
 
+    /// Every pack id `account`'s messages currently point at, deduplicated
+    /// -- the "store's referenced-pack query" a
+    /// [`crate::packstore::PackStore::compact`] caller reads before every
+    /// call, so that call's own orphan sweep can tell an old pack nothing
+    /// references any more (safe to reclaim) from one still holding live
+    /// mail (not). See that method's own docs for the whole of the contract
+    /// this feeds.
+    fn referenced_pack_ids(&self, account: AccountId) -> Result<Vec<crate::id::PackId>>;
+
+    /// Rewrite the pack address of every message a
+    /// [`crate::packstore::PackStore::compact`] call moved, in one
+    /// transaction -- the "commit" half of that method's own two-step
+    /// contract; see its docs for the whole of it. For each `(old, new)`
+    /// pair, whichever `mail_messages` row currently names `old`'s exact
+    /// pack, offset and length is updated to `new`'s instead; a row that no
+    /// longer matches `old` -- the message was deleted by a concurrent
+    /// removal between `compact` returning and this call running -- is left
+    /// alone, since there is nothing left for the remap to reach.
+    ///
+    /// # The calling contract this exists to make possible
+    ///
+    /// A caller of `PackStore::compact` must call this, and see it return
+    /// `Ok`, before it calls `PackStore::drop_packs` on the same result's
+    /// obsolete packs, and must not let anything else it does not control
+    /// run in between (a concurrent `compact` on the same account, most of
+    /// all -- the vault's single-writer invariant is what every caller
+    /// today relies on to rule that out). Concretely: `compact`, then
+    /// `remap_packs`, then `drop_packs`. No caller of `PackStore::compact`
+    /// exists in this codebase yet -- see that method's own module for
+    /// where one is expected to be wired in -- so this method, and the
+    /// contract it documents, exist ahead of anything calling either, the
+    /// same way `everyday_core::packstore` itself was built a phase ahead
+    /// of the mail domain it now serves.
+    fn remap_packs(&self, account: AccountId, remap: &[(PackRef, PackRef)]) -> Result<()>;
+
     // ---- remote-image permissions --------------------------------------------
 
     /// The standing allow-list -- senders and domains someone has said yes
@@ -548,15 +585,23 @@ pub trait MailStore: Send + Sync {
     fn put_category_rules(&self, account: AccountId, rules: &CategoryRules) -> Result<()>;
 
     /// Re-run [`crate::mail::categorize::categorize`] over every message of
-    /// `account`, `rules` first, and write back every one whose answer
-    /// changed — recomputing each touched thread's own aggregate category
-    /// alongside it. Returns how many messages changed.
+    /// `account` whose category is still `None`, or whose
+    /// [`crate::mail::CategorySource`] is [`crate::mail::CategorySource::Rules`],
+    /// against `rules` — recomputing each touched thread's own aggregate
+    /// category alongside it, and writing
+    /// [`crate::mail::CategorySource::Rules`] back for whichever it
+    /// changed. Returns how many messages changed.
     ///
-    /// What `recategorize_mail`'s one-off backfill calls directly, and what
-    /// `set_thread_category` calls right after saving a new correction, so
-    /// that correction reaches "that sender's existing threads" — the plan's
-    /// own words — through the one mechanism rather than two. A full decrypt
-    /// of every message in the account, on the same accepted terms
+    /// What `recategorize_mail`'s one-off backfill calls: a full sweep of
+    /// the account, but a deliberately *narrow* one — a message whose
+    /// category a model already answered, or a person already corrected by
+    /// name (through [`MailStore::set_message_category`] or
+    /// [`MailStore::correct_category`] respectively), is never one of the
+    /// messages this call is allowed to touch, however much `rules` would
+    /// now disagree with it. Only a rules-only answer, including no answer
+    /// at all, is ever fair game — see [`crate::mail::CategorySource`]'s own
+    /// docs for why that ranking exists. A full decrypt of every message in
+    /// the account, on the same accepted terms
     /// [`MailStore::message_by_message_id_header`]'s own docs give a
     /// full-account scan: rare, deliberate, and never on a sync's hot path.
     ///
@@ -568,6 +613,36 @@ pub trait MailStore: Send + Sync {
     /// [`crate::mail::categorize::CategorizeInput`] for why that is an
     /// accepted gap rather than a missing feature.
     fn recategorize(&self, account: AccountId, rules: &CategoryRules) -> Result<u32>;
+
+    /// Apply one person's standing correction — every message of
+    /// `account`'s whose sender matches `target` (see
+    /// [`crate::mail::CategoryMatch`]) is set to `category`, and
+    /// [`crate::mail::CategorySource::Person`] is written alongside it,
+    /// recomputing each touched thread's own aggregate category too.
+    /// Returns how many messages changed.
+    ///
+    /// Deliberately narrower than [`MailStore::recategorize`], and in the
+    /// opposite direction: this never consults [`crate::mail::CategoryRules`]
+    /// to decide who is eligible, and it overrides *any* existing category
+    /// — a model's own answer included — for a message matching `target`,
+    /// because naming one sender or domain by hand is exactly the
+    /// deliberate, narrow act that should outrank whatever answered before
+    /// it. What it must never do is reach a message whose sender does not
+    /// match `target` at all — the bug this exists to fix let one
+    /// correction reshuffle every category in the account, including
+    /// messages from senders the correction never named.
+    ///
+    /// What [`Vault::correct_mail_category`](crate::Vault::correct_mail_category)
+    /// calls, once its own caller has already saved the correction itself
+    /// via [`MailStore::put_category_rules`] — this method only sweeps the
+    /// account; recording the standing rule for *future* mail is a separate
+    /// step its caller is responsible for.
+    fn correct_category(
+        &self,
+        account: AccountId,
+        target: crate::mail::CategoryMatch,
+        category: Category,
+    ) -> Result<u32>;
 }
 
 // ---- associated data --------------------------------------------------

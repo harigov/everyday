@@ -12,7 +12,9 @@ mod support;
 
 use everyday_core::account::{Account, Provider};
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
-use everyday_core::mail::{Address, Draft, Mailbox, MailboxRole, Message, MessageFlags};
+use everyday_core::mail::{
+    Address, CategorySource, Draft, Mailbox, MailboxRole, Message, MessageFlags,
+};
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::IngestMessage;
 use everyday_service::ctx::Ctx;
@@ -66,6 +68,7 @@ fn seed_thread(
         has_attachments: false,
         size: 128,
         category: None,
+        category_source: CategorySource::Rules,
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,

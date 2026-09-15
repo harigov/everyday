@@ -247,6 +247,34 @@ impl Category {
     }
 }
 
+/// Where a message's own [`Message::category`] answer last came from —
+/// what tells a full-account backfill which messages are still fair game
+/// to re-run the rules engine over, and which are a settled answer nothing
+/// should silently replace.
+///
+/// Three writers, three sources: `everyday-service`'s sync ingest (and
+/// `MailStore::recategorize`'s own backfill sweep) write [`Self::Rules`];
+/// the model-assisted second pass, through
+/// [`crate::store::mail::MailStore::set_message_category`], writes
+/// [`Self::Model`]; and a person's own standing correction, through
+/// `MailStore::correct_category`, writes [`Self::Person`]. Ranked in that
+/// order for anything that reads them back — a rules answer is the one a
+/// fresh backfill may always overwrite, a model's or a person's own is not.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CategorySource {
+    /// `crate::mail::categorize::categorize`'s own answer. The default for
+    /// a message sealed before this field existed, too: every category any
+    /// such row carries was, by construction, a rules answer — neither of
+    /// the other two sources existed yet to have written one instead.
+    #[default]
+    Rules,
+    /// The model-assisted second pass's one-off answer.
+    Model,
+    /// A person's own correction, swept over the sender or domain it named.
+    Person,
+}
+
 /// One fetched message: its headers, its flags, and a pointer to where its
 /// raw bytes live in the pack store. Never the body — see [`Body`], sealed
 /// and stored apart, so opening a thread list never has to decrypt the text
@@ -286,6 +314,11 @@ pub struct Message {
     pub size: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<Category>,
+    /// Where `category` last came from — `#[serde(default)]` so a message
+    /// sealed before this field existed decodes as [`CategorySource::Rules`],
+    /// which is exactly what it must have been; see that type's own docs.
+    #[serde(default)]
+    pub category_source: CategorySource,
     pub pack: PackRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gmail: Option<GmailMeta>,
