@@ -14,11 +14,11 @@ mod write;
 use everyday_core::error::Result;
 use everyday_core::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use everyday_core::mail::{
-    Body, Draft, Mailbox, Message, MessageFlags, Op, RemoteImageSettings, Thread,
+    Body, ContactBook, Draft, Mailbox, Message, MessageFlags, Op, RemoteImageSettings, Thread,
 };
 use everyday_core::store::mail::{
-    IngestMessage, MailStore, ThreadFilter, ThreadPage, body_aad, draft_aad, mailbox_aad,
-    message_aad, op_aad, remote_image_settings_aad, thread_aad,
+    IngestMessage, MailStore, ThreadFilter, ThreadPage, body_aad, contacts_aad, draft_aad,
+    mailbox_aad, message_aad, op_aad, remote_image_settings_aad, thread_aad,
 };
 use jiff::Timestamp;
 
@@ -533,6 +533,26 @@ impl MailStore for SqlStore {
         let data = self.seal(&remote_image_settings_aad(), settings)?;
         self.write().execute(
             "INSERT INTO mail_remote_image_settings (id, data) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET data = ?1",
+            &vals![data],
+        )?;
+        Ok(())
+    }
+
+    // ---- the contact index ----------------------------------------------------
+
+    fn contacts(&self) -> Result<ContactBook> {
+        let sealed = self.read().sealed("SELECT data FROM mail_contacts WHERE id = 1", &[])?;
+        match sealed {
+            Some(sealed) => self.unseal(&contacts_aad(), &sealed),
+            None => Ok(ContactBook::default()),
+        }
+    }
+
+    fn put_contacts(&self, book: &ContactBook) -> Result<()> {
+        let data = self.seal(&contacts_aad(), book)?;
+        self.write().execute(
+            "INSERT INTO mail_contacts (id, data) VALUES (1, ?1)
              ON CONFLICT (id) DO UPDATE SET data = ?1",
             &vals![data],
         )?;

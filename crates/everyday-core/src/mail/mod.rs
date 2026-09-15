@@ -30,10 +30,12 @@
 //! which columns each table leaves in the clear; this module only defines
 //! the shapes that get sealed.
 
+pub mod contacts;
 pub mod outbox;
 pub mod rate_limit;
 pub mod records;
 
+pub use contacts::{ContactBook, MailContact};
 pub use outbox::{RETRY_BACKOFF, apply_optimistic, backoff_for_attempt, revert, undo_send_delay};
 pub use rate_limit::{RateLimitState, TokenBucket};
 pub use records::*;

@@ -120,7 +120,7 @@ where
         let mut ctx = ExecContext { session, sender, lookups: &lookups };
         match execute(&op, &mut ctx).await {
             Ok(executed) => {
-                on_success(&vault, &op, executed).await?;
+                on_success(svc, &vault, &op, executed).await?;
                 op.transition_to(OpState::Done)?;
                 persist_op(&vault, &op).await?;
                 report.done += 1;
@@ -156,9 +156,12 @@ async fn persist_op(vault: &Arc<everyday_core::Vault>, op: &Op) -> CommandResult
 }
 
 /// What a successfully executed op does beyond marking itself `Done`:
-/// `Send` marks the draft sent, `AppendDraft` remembers where the fresh
-/// copy landed.
+/// `Send` marks the draft sent and, since the contact index only ever
+/// learns "sent to" from a `Sent`-role mailbox the sync engine may not get
+/// to for a while, records its recipients right away too. `AppendDraft`
+/// remembers where the fresh copy landed.
 async fn on_success(
+    svc: &Arc<Service>,
     vault: &Arc<everyday_core::Vault>,
     op: &Op,
     executed: Executed,
@@ -169,15 +172,22 @@ async fn on_success(
             let OpTarget::Draft(id) = op.target else {
                 return Ok(()); // guarded by `everyday_mail::outbox::send`'s own contract
             };
-            let vault = vault.clone();
-            blocking(move || {
-                let mut draft = vault.draft(id)?;
+            let vault_for_draft = vault.clone();
+            let draft = blocking(move || {
+                let mut draft = vault_for_draft.draft(id)?;
                 draft.state = everyday_core::mail::DraftState::Sent;
                 draft.updated_at = Timestamp::now();
-                vault.save_draft(&draft)?;
-                Ok(())
+                vault_for_draft.save_draft(&draft)?;
+                Ok(draft)
             })
-            .await
+            .await?;
+            if let Some(contacts) = svc.mail_contacts() {
+                for addr in draft.to.iter().chain(draft.cc.iter()) {
+                    contacts.record_sent_to(&addr.email, &addr.name);
+                }
+                contacts.persist_if_dirty(vault);
+            }
+            Ok(())
         }
         Executed::Appended { uid: Some(uid) } => {
             let OpTarget::Draft(id) = op.target else { return Ok(()) };

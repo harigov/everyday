@@ -477,6 +477,7 @@ impl TestEnv {
             attachment_cap_bytes: None,
             index_commit: passes::CommitPacer::new(),
             unread_cache: None,
+            contacts: None,
         }
     }
 
@@ -1153,6 +1154,65 @@ fn service_test_env() -> (Arc<crate::service::Service>, Arc<Vault>, AccountId, t
     (svc, vault_arc, account_id, dir)
 }
 
+/// The contact index learns from ingest: a `Sent` message's recipients
+/// count as "sent to", and everyone else's `From` counts as "received
+/// from" -- see `passes::sync_headers`'s own wiring.
+#[tokio::test]
+async fn a_sync_pass_teaches_the_contact_index_from_sent_and_received_mail() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let server = plain_server();
+    {
+        let mut s = server.lock().unwrap();
+        s.append(
+            "INBOX",
+            raw_message(
+                "from-alice@example.com",
+                None,
+                "Alice <alice@example.com>",
+                "Hello",
+                "01 Jan 2024 10:00:00 +0000",
+                "hi",
+            ),
+            flags_seen(),
+            None,
+        );
+        let sent_to_bob = b"Message-ID: <to-bob@example.com>\r\n\
+From: me@example.com\r\n\
+To: Bob <bob@example.com>\r\n\
+Subject: Re: plans\r\n\
+Date: 01 Jan 2024 10:05:00 +0000\r\n\
+Content-Type: text/plain\r\n\r\nsounds good\r\n"
+            .to_vec();
+        s.append("Sent", sent_to_bob, flags_seen(), None);
+    }
+    let mut session = FakeMailSession::new(server);
+    let statuses = svc.mail_statuses().unwrap();
+    let ctx = SyncContext {
+        vault: &vault,
+        account_id,
+        packs: svc.packs().unwrap(),
+        index: svc.mail_index().unwrap(),
+        statuses: &statuses,
+        attachment_cap_bytes: None,
+        index_commit: passes::CommitPacer::new(),
+        unread_cache: svc.mail_unread_cache(),
+        contacts: svc.mail_contacts(),
+    };
+    let mut labels = LabelMailboxes::new(&vault, account_id);
+    let mut threads = ThreadIndex::new();
+    passes::sync_once(&ctx, &mut session, &mut labels, &mut threads).await.unwrap();
+
+    let index = svc.mail_contacts().unwrap();
+    let suggestions = index.suggest("", 10);
+    let by_email: HashMap<&str, &everyday_core::mail::Address> =
+        suggestions.iter().map(|a| (a.email.as_str(), a)).collect();
+    assert!(
+        by_email.contains_key("alice@example.com"),
+        "received-from must be learned: {suggestions:?}"
+    );
+    assert!(by_email.contains_key("bob@example.com"), "sent-to must be learned: {suggestions:?}");
+}
+
 #[tokio::test]
 async fn draining_an_archive_moves_the_message_on_the_server_and_completes_the_op() {
     let (svc, vault, account_id, _dir) = service_test_env();
@@ -1185,6 +1245,7 @@ async fn draining_an_archive_moves_the_message_on_the_server_and_completes_the_o
         attachment_cap_bytes: None,
         index_commit: passes::CommitPacer::new(),
         unread_cache: svc.mail_unread_cache(),
+        contacts: svc.mail_contacts(),
     };
     let mut labels = LabelMailboxes::new(&vault, account_id);
     let mut threads = ThreadIndex::new();
@@ -1241,6 +1302,7 @@ async fn draining_a_send_appends_the_sent_copy_and_marks_the_draft_sent() {
         attachment_cap_bytes: None,
         index_commit: passes::CommitPacer::new(),
         unread_cache: svc.mail_unread_cache(),
+        contacts: svc.mail_contacts(),
     };
     let mut labels = LabelMailboxes::new(&vault, account_id);
     let mut threads = ThreadIndex::new();

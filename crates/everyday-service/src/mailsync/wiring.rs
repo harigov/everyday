@@ -69,6 +69,7 @@ pub struct MailState {
     pub(crate) index: Arc<dyn everyday_core::MailSearch>,
     pub(crate) statuses: StatusRegistry,
     pub(crate) unread_cache: Arc<crate::mailsync::unread_cache::UnreadCache>,
+    pub(crate) contacts: Arc<crate::mailsync::contacts::ContactIndex>,
 }
 
 /// Open mail's storage against `vault`, and start its account tasks if this
@@ -102,6 +103,9 @@ pub(crate) fn open(svc: &Arc<Service>, vault: &Arc<Vault>) {
         index,
         statuses: StatusRegistry::new(),
         unread_cache: Arc::new(crate::mailsync::unread_cache::UnreadCache::new()),
+        // One small sealed row, read once here -- see `ContactIndex`'s own
+        // docs on why this is not a scan of every message on unlock.
+        contacts: Arc::new(crate::mailsync::contacts::ContactIndex::load(vault)),
     }));
 
     if vault.is_writable() {

@@ -162,6 +162,7 @@ where
         attachment_cap_bytes: account.attachment_cap_bytes,
         index_commit: passes::CommitPacer::new(),
         unread_cache: svc.mail_unread_cache(),
+        contacts: svc.mail_contacts(),
     };
     let mut labels = LabelMailboxes::new(&vault, account_id);
     let mut threads = ThreadIndex::new();

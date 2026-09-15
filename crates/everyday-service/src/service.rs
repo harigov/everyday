@@ -226,6 +226,12 @@ impl Service {
         self.mail.read().unwrap().as_ref().map(|m| m.unread_cache.clone())
     }
 
+    /// The contact index `suggest_addresses` reads, if the vault is
+    /// unlocked -- see `mailsync::contacts`'s module docs.
+    pub fn mail_contacts(&self) -> Option<Arc<crate::mailsync::contacts::ContactIndex>> {
+        self.mail.read().unwrap().as_ref().map(|m| m.contacts.clone())
+    }
+
     /// `account`'s unread count per mailbox, through the cache
     /// [`Service::mail_unread_cache`] answers -- what a future
     /// `unread_counts` command, and the assistant's own mail tools, should

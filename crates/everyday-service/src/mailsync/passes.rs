@@ -88,6 +88,10 @@ pub struct SyncContext<'a> {
     /// (most tests in [`super::tests`]) simply never sees a stale read,
     /// because nothing here ever cached one for them either.
     pub unread_cache: Option<Arc<crate::mailsync::unread_cache::UnreadCache>>,
+    /// Updated by [`sync_headers`] as it ingests, and persisted once at the
+    /// end of [`sync_once`] -- see `crate::mailsync::contacts`'s module
+    /// docs. `None` on the same terms `unread_cache` is.
+    pub contacts: Option<Arc<crate::mailsync::contacts::ContactIndex>>,
 }
 
 /// Paces how often [`bodies_pass`] commits the search index, per the plan's
@@ -168,6 +172,9 @@ pub async fn sync_once<S: MailSession>(
         bodies_pass(ctx, session, mailbox).await?;
     }
     let _ = ctx.index.commit();
+    if let Some(contacts) = &ctx.contacts {
+        contacts.persist_if_dirty(ctx.vault);
+    }
     Ok(mailboxes)
 }
 
@@ -273,6 +280,30 @@ pub async fn sync_headers<S: MailSession>(
                 mailbox: mailbox.row.id,
                 uid: header.uid,
             });
+            // The contact index: only for a message this account has never
+            // stored before, so a steady-state resync (or a `UIDVALIDITY`
+            // reset's rematch) never double-counts one it has already
+            // learned from. `Sent` is the plain-IMAP case; Gmail never
+            // selects a folder called Sent at all (everything physically
+            // lives in All Mail -- see `discovery`'s own docs), so its own
+            // `\Sent` label is the same signal there.
+            if resolved.is_new
+                && let Some(contacts) = &ctx.contacts
+            {
+                let msg = &resolved.message;
+                let is_sent = mailbox.row.role == MailboxRole::Sent
+                    || header
+                        .gmail
+                        .as_ref()
+                        .is_some_and(|g| g.labels.iter().any(|l| l == "\\Sent"));
+                if is_sent {
+                    for addr in msg.to.iter().chain(msg.cc.iter()) {
+                        contacts.record_sent_to(&addr.email, &addr.name);
+                    }
+                } else {
+                    contacts.record_received_from(&msg.from.email, &msg.from.name);
+                }
+            }
             // The Gmail folder rule: All Mail carries every physical
             // message, and its own `X-GM-LABELS` is where `\Inbox` and
             // every user label come from -- see `crate::mailsync::discovery`.

@@ -43,7 +43,8 @@
 use crate::error::Result;
 use crate::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use crate::mail::{
-    Body, Category, Draft, Mailbox, Message, MessageFlags, Op, RemoteImageSettings, Thread,
+    Body, Category, ContactBook, Draft, Mailbox, Message, MessageFlags, Op, RemoteImageSettings,
+    Thread,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -426,6 +427,17 @@ pub trait MailStore: Send + Sync {
     fn remote_image_settings(&self) -> Result<RemoteImageSettings>;
 
     fn put_remote_image_settings(&self, settings: &RemoteImageSettings) -> Result<()>;
+
+    // ---- the contact index --------------------------------------------------
+
+    /// The whole sealed contact book -- see [`crate::mail::ContactBook`]'s
+    /// own docs for why this is one small row rather than a query over
+    /// every message. `ContactBook::default()` (nobody written to or heard
+    /// from yet) when nothing has been saved, on the same reasoning
+    /// [`MailStore::remote_image_settings`] answers a real, empty default.
+    fn contacts(&self) -> Result<ContactBook>;
+
+    fn put_contacts(&self, book: &ContactBook) -> Result<()>;
 }
 
 // ---- associated data --------------------------------------------------
@@ -462,6 +474,12 @@ pub fn op_aad(id: OpId) -> Vec<u8> {
 /// id, because there is exactly one of these per vault.
 pub fn remote_image_settings_aad() -> Vec<u8> {
     b"everyday.mail_remote_image_settings.v1".to_vec()
+}
+
+/// The one row of [`crate::mail::ContactBook`], sealed on the same terms
+/// [`remote_image_settings_aad`] is.
+pub fn contacts_aad() -> Vec<u8> {
+    b"everyday.mail_contacts.v1".to_vec()
 }
 
 #[cfg(test)]

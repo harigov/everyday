@@ -19,8 +19,8 @@ use super::session::{Domain, pick_domain};
 use crate::error::{Error, Result};
 use crate::id::{AccountId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use crate::mail::{
-    Body, Category, Draft, DraftState, Mailbox, MailboxRole, Message, MessageFlags, Op, OpKind,
-    OpState, OpTarget, Origin, RemoteImageSettings, Thread, apply_optimistic,
+    Body, Category, ContactBook, Draft, DraftState, Mailbox, MailboxRole, Message, MessageFlags,
+    Op, OpKind, OpState, OpTarget, Origin, RemoteImageSettings, Thread, apply_optimistic,
 };
 use crate::packstore::PackStore;
 use crate::store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
@@ -261,6 +261,17 @@ impl Vault {
     pub fn save_remote_image_settings(&self, settings: &RemoteImageSettings) -> Result<()> {
         self.writable()?;
         self.with_mail(|m| m.put_remote_image_settings(settings))
+    }
+
+    /// The sealed contact index -- see
+    /// [`crate::store::mail::MailStore::contacts`].
+    pub fn mail_contacts(&self) -> Result<ContactBook> {
+        self.with_mail(|m| m.contacts())
+    }
+
+    pub fn save_mail_contacts(&self, book: &ContactBook) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.put_contacts(book))
     }
 
     // ---- releasing a snooze -----------------------------------------------

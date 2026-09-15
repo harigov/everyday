@@ -1025,6 +1025,16 @@ fn v9(d: Dialect) -> Vec<String> {
                  data        {blob} NOT NULL
              )"
         ),
+        // The contact index -- `everyday_core::mail::ContactBook` -- a
+        // one-row singleton on the same shape as the table just above, for
+        // the same reason: `suggest_addresses` reads one small sealed row
+        // rather than a query over every message ever ingested.
+        format!(
+            "CREATE TABLE IF NOT EXISTS mail_contacts (
+                 id          {int} PRIMARY KEY CHECK (id = 1),
+                 data        {blob} NOT NULL
+             )"
+        ),
     ]
 }
 

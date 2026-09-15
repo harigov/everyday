@@ -64,6 +64,7 @@
 //! `everyday_mail::imap::ImapSession`; each test in [`tests`], for its own
 //! fake).
 
+pub mod contacts;
 pub mod credential;
 pub mod discovery;
 pub mod ingest;
