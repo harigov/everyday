@@ -186,6 +186,18 @@ pub trait MailSearch: Send + Sync {
     /// caller does not have to know which.
     fn delete(&self, message_ids: &[MessageKey]) -> Result<()>;
 
+    /// Remove every document belonging to `account` from the index — what
+    /// deleting the account itself calls, so a search run after the account
+    /// is gone never turns up a hit for it. A whole-account term delete
+    /// rather than `delete` handed every message key that account ever had:
+    /// the vault's own rows are gone by the time this runs (see
+    /// `everyday_core::store::accounts::AccountStore::delete_account`'s own
+    /// cascade), so there is nowhere left to read those keys back from, and
+    /// none is needed — every document already carries its own account,
+    /// stored as one un-tokenised term precisely so it can be matched, and
+    /// deleted, whole. Like `delete`, not visible until the next `commit`.
+    fn delete_account(&self, account: &str) -> Result<()>;
+
     /// Make every `index` and `delete` call since the last commit visible to
     /// new searches.
     fn commit(&self) -> Result<()>;

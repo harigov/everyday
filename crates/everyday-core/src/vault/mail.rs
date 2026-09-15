@@ -22,7 +22,7 @@ use crate::mail::{
     Body, Category, ContactBook, Draft, DraftState, Mailbox, MailboxRole, Message, MessageFlags,
     Op, OpKind, OpState, OpTarget, Origin, RemoteImageSettings, Thread, apply_optimistic,
 };
-use crate::packstore::PackStore;
+use crate::packstore::{PackRef, PackStore};
 use crate::store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
 use jiff::Timestamp;
 
@@ -61,7 +61,12 @@ impl Vault {
         self.with_mail(|m| m.put_mailbox(mailbox))
     }
 
-    pub fn delete_mailbox(&self, id: MailboxId) -> Result<()> {
+    /// See [`crate::store::mail::MailStore::delete_mailbox`] for what the
+    /// returned pairs are and why: whoever calls this is expected to tell
+    /// the pack store and the search index to forget each one, the same way
+    /// `everyday_service::mailsync::passes` already does for
+    /// [`Vault::remove_mail_uids`]'s own pairs.
+    pub fn delete_mailbox(&self, id: MailboxId) -> Result<Vec<(MailMessageId, PackRef)>> {
         self.writable()?;
         self.with_mail(|m| m.delete_mailbox(id))
     }
@@ -95,7 +100,17 @@ impl Vault {
         self.with_mail(|m| m.update_labels(mailbox, uid, labels))
     }
 
-    pub fn remove_mail_uids(&self, mailbox: MailboxId, uids: &[u32]) -> Result<()> {
+    /// See [`crate::store::mail::MailStore::remove_uids`] for what the
+    /// returned pairs are: every message this removal made genuinely dead,
+    /// paired with the pack address it was stored under. The caller is
+    /// expected to mark each one dead in the pack store and drop it from
+    /// the search index -- see `everyday_service::mailsync::passes`'s own
+    /// callers of this method for where that actually happens.
+    pub fn remove_mail_uids(
+        &self,
+        mailbox: MailboxId,
+        uids: &[u32],
+    ) -> Result<Vec<(MailMessageId, PackRef)>> {
         self.writable()?;
         self.with_mail(|m| m.remove_uids(mailbox, uids))
     }

@@ -20,8 +20,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use everyday_core::error::{Error, Result};
-use everyday_core::id::{AccountId, MailMessageId, MailboxId, ThreadId};
+use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
 use everyday_core::mail::{Address, Message, MessageFlags, Thread};
+use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::{IngestMessage, message_aad, thread_aad};
 
 use crate::conn::{Sql, SqlExt, Value};
@@ -342,14 +343,19 @@ pub(super) fn merge_threads(store: &SqlStore, keep: ThreadId, others: &[ThreadId
 }
 
 /// See [`everyday_core::store::mail::MailStore::remove_uids`].
-pub(super) fn remove_uids(store: &SqlStore, mailbox: MailboxId, uids: &[u32]) -> Result<()> {
+pub(super) fn remove_uids(
+    store: &SqlStore,
+    mailbox: MailboxId,
+    uids: &[u32],
+) -> Result<Vec<(MailMessageId, PackRef)>> {
     if uids.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let mut conn = store.write();
     let mut tx = conn.begin()?;
-    remove_uids_tx(store, tx.as_mut(), mailbox, uids)?;
-    tx.commit()
+    let removed = remove_uids_tx(store, tx.as_mut(), mailbox, uids)?;
+    tx.commit()?;
+    Ok(removed)
 }
 
 /// The shared body of [`remove_uids`], [`reset_mailbox`] and
@@ -357,20 +363,27 @@ pub(super) fn remove_uids(store: &SqlStore, mailbox: MailboxId, uids: &[u32]) ->
 /// any message that no mailbox names any more (body included), and
 /// recompute every thread touched.
 ///
-/// The two statements that name every uid in `uids` are chunked to
-/// [`IN_CHUNK`] items at a time -- `uids` alone can be tens of thousands
-/// long (a mailbox holding that many messages, or [`delete_mailbox`]
-/// handing this every uid it ever tracked), and one placeholder per item
-/// past either backend's own limit is exactly what used to make this fail;
-/// see [`IN_CHUNK`]'s own docs.
+/// Every `IN (...)` this builds is chunked to [`IN_CHUNK`] items at a time
+/// -- `uids` alone can be tens of thousands long (a mailbox holding that
+/// many messages, or `delete_mailbox` handing this every uid it ever
+/// tracked), and one placeholder per item past either backend's own limit
+/// is exactly what used to make this fail; see [`IN_CHUNK`]'s own docs.
+///
+/// Returns every message that became genuinely dead -- no mailbox names it
+/// any more -- paired with the pack address it was stored under, read back
+/// before the row naming it is deleted (afterwards, nothing else remembers
+/// it). A message still filed under a *different* mailbox (a Gmail label
+/// the removal did not touch) is not dead, and is not in the result: see
+/// [`everyday_core::store::mail::MailStore::remove_uids`]'s own docs for why
+/// only "no mailbox left at all" counts.
 fn remove_uids_tx(
     store: &SqlStore,
     tx: &mut dyn Sql,
     mailbox: MailboxId,
     uids: &[u32],
-) -> Result<()> {
+) -> Result<Vec<(MailMessageId, PackRef)>> {
     if uids.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let mailbox_s = mailbox.to_string();
 
@@ -399,28 +412,83 @@ fn remove_uids_tx(
             &args,
         )?;
     }
+    if touched.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // A message stays alive as long as *any* mailbox still names it -- one
+    // Gmail label removed while another still holds the same physical
+    // message is not what "dead" means here. Batch the check, again in
+    // chunks, rather than one `COUNT(*)` round trip per touched message:
+    // the common case is a mailbox holding tens of thousands of messages
+    // that share no other mailbox at all, and that case must not cost tens
+    // of thousands of round trips just because it used to cost one
+    // over-wide `IN (...)` instead.
+    let touched_ids: Vec<String> = touched.iter().map(|(id, _)| id.clone()).collect();
+    let mut still_has_a_mailbox: BTreeSet<String> = BTreeSet::new();
+    for chunk in touched_ids.chunks(IN_CHUNK) {
+        let holes = placeholders(1, chunk.len());
+        let args: Vec<Value> = chunk.iter().cloned().map(Value::Text).collect();
+        let rows = tx.query(
+            &format!(
+                "SELECT DISTINCT message_id FROM message_mailboxes WHERE message_id IN ({holes})"
+            ),
+            &args,
+        )?;
+        for row in rows {
+            still_has_a_mailbox.insert(row.text(0)?);
+        }
+    }
 
     let mut orphan_threads: BTreeSet<ThreadId> = BTreeSet::new();
+    let mut orphan_ids: Vec<String> = Vec::new();
     for (message_id, thread_id) in &touched {
-        let remaining = tx.scalar_i64(
-            "SELECT COUNT(*) FROM message_mailboxes WHERE message_id = ?1",
-            &vals![message_id.clone()],
-        )?;
-        if remaining == 0 {
-            // No mailbox holds this message any more: it, and its body, are
-            // gone -- an `EXPUNGE`d message, or the last Gmail label
-            // removed.
-            tx.execute("DELETE FROM bodies WHERE message_id = ?1", &vals![message_id.clone()])?;
-            tx.execute("DELETE FROM mail_messages WHERE id = ?1", &vals![message_id.clone()])?;
-        }
         if let Ok(tid) = thread_id.parse::<ThreadId>() {
             orphan_threads.insert(tid);
         }
+        if !still_has_a_mailbox.contains(message_id) {
+            orphan_ids.push(message_id.clone());
+        }
     }
+
+    // Read each dead message's pack address before deleting its row --
+    // `mail_messages` is the only place that address lives, so this is the
+    // last moment it can be read at all.
+    let mut removed = Vec::with_capacity(orphan_ids.len());
+    for chunk in orphan_ids.chunks(IN_CHUNK) {
+        let holes = placeholders(1, chunk.len());
+        let args: Vec<Value> = chunk.iter().cloned().map(Value::Text).collect();
+        let rows = tx.query(
+            &format!(
+                "SELECT id, account_id, pack_id, pack_offset, pack_len FROM mail_messages \
+                 WHERE id IN ({holes})"
+            ),
+            &args,
+        )?;
+        for row in rows {
+            let id: MailMessageId =
+                row.text(0)?.parse().map_err(|e: <MailMessageId as std::str::FromStr>::Err| {
+                    Error::Invalid(e.to_string())
+                })?;
+            let account = row.text(1)?;
+            let pack: PackId = row
+                .text(2)?
+                .parse()
+                .map_err(|e: <PackId as std::str::FromStr>::Err| Error::Invalid(e.to_string()))?;
+            let offset = row.i64(3)? as u64;
+            let len = row.i64(4)? as u32;
+            removed.push((id, PackRef { account, pack, offset, len }));
+        }
+        // No mailbox holds this message any more: it, and its body, are
+        // gone -- an `EXPUNGE`d message, or the last Gmail label removed.
+        tx.execute(&format!("DELETE FROM bodies WHERE message_id IN ({holes})"), &args)?;
+        tx.execute(&format!("DELETE FROM mail_messages WHERE id IN ({holes})"), &args)?;
+    }
+
     for thread_id in orphan_threads {
         recompute_thread(store, tx, thread_id, &[])?;
     }
-    Ok(())
+    Ok(removed)
 }
 
 /// See [`everyday_core::store::mail::MailStore::reset_mailbox`].
@@ -472,7 +540,10 @@ pub(super) fn reset_mailbox(store: &SqlStore, mailbox: MailboxId) -> Result<()> 
 /// to do here. [`remove_uids_tx`], which this hands the whole list to, is
 /// what chunks the uids themselves once it builds its own `IN (...)`
 /// clauses over them.
-pub(super) fn delete_mailbox(store: &SqlStore, id: MailboxId) -> Result<()> {
+pub(super) fn delete_mailbox(
+    store: &SqlStore,
+    id: MailboxId,
+) -> Result<Vec<(MailMessageId, PackRef)>> {
     let mut conn = store.write();
     let mut tx = conn.begin()?;
     let uids: Vec<u32> = tx
@@ -480,10 +551,11 @@ pub(super) fn delete_mailbox(store: &SqlStore, id: MailboxId) -> Result<()> {
         .into_iter()
         .map(|r| Ok(r.i64(0)? as u32))
         .collect::<Result<_>>()?;
-    remove_uids_tx(store, tx.as_mut(), id, &uids)?;
+    let removed = remove_uids_tx(store, tx.as_mut(), id, &uids)?;
     tx.execute("DELETE FROM thread_mailboxes WHERE mailbox_id = ?1", &vals![id.to_string()])?;
     tx.execute("DELETE FROM mailboxes WHERE id = ?1", &vals![id.to_string()])?;
-    tx.commit()
+    tx.commit()?;
+    Ok(removed)
 }
 
 /// Recompute [`Thread`] `thread_id`'s own aggregates and every

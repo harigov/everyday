@@ -16,6 +16,7 @@ use everyday_core::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, Op
 use everyday_core::mail::{
     Body, ContactBook, Draft, Mailbox, Message, MessageFlags, Op, RemoteImageSettings, Thread,
 };
+use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::{
     IngestMessage, MailStore, ThreadFilter, ThreadPage, body_aad, contacts_aad, draft_aad,
     mailbox_aad, message_aad, op_aad, remote_image_settings_aad, thread_aad,
@@ -169,7 +170,7 @@ impl MailStore for SqlStore {
         self.upsert(mailbox)
     }
 
-    fn delete_mailbox(&self, id: MailboxId) -> Result<()> {
+    fn delete_mailbox(&self, id: MailboxId) -> Result<Vec<(MailMessageId, PackRef)>> {
         write::delete_mailbox(self, id)
     }
 
@@ -189,7 +190,11 @@ impl MailStore for SqlStore {
         write::update_labels(self, mailbox, uid, labels)
     }
 
-    fn remove_uids(&self, mailbox: MailboxId, uids: &[u32]) -> Result<()> {
+    fn remove_uids(
+        &self,
+        mailbox: MailboxId,
+        uids: &[u32],
+    ) -> Result<Vec<(MailMessageId, PackRef)>> {
         write::remove_uids(self, mailbox, uids)
     }
 

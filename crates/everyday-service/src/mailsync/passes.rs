@@ -32,9 +32,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use everyday_core::id::{AccountId, MailboxId};
+use everyday_core::id::{AccountId, MailMessageId, MailboxId};
 use everyday_core::mail::{Body, MailboxRole, Message, PartRef};
-use everyday_core::packstore::PackStore;
+use everyday_core::packstore::{PackRef, PackStore};
 use everyday_core::store::mail::IngestMessage;
 use everyday_core::{MailDoc, MailSearch, Vault};
 use everyday_mail::mime::Disposition;
@@ -221,7 +221,9 @@ pub async fn sync_headers<S: MailSession>(
 
     if !changes.vanished.is_empty() {
         let uids: Vec<Uid> = changes.vanished.iter().collect();
-        let _ = ctx.vault.remove_mail_uids(mailbox.row.id, &uids);
+        if let Ok(removed) = ctx.vault.remove_mail_uids(mailbox.row.id, &uids) {
+            reap_dead_messages(ctx, &removed);
+        }
     }
     for &(uid, flags, _modseq) in &changes.flag_changes {
         let _ = ctx.vault.update_message_flags(mailbox.row.id, uid, ingest::mail_flags(flags));
@@ -418,9 +420,11 @@ async fn refresh_gmail_labels<S: MailSession>(
         }
 
         let _ = ctx.vault.update_message_labels(mailbox.row.id, header.uid, gmail.labels.clone());
-        for removed in old.difference(&new) {
-            let label_row = labels.resolve(ctx.vault, removed);
-            let _ = ctx.vault.remove_mail_uids(label_row.id, &[header.uid]);
+        for removed_label in old.difference(&new) {
+            let label_row = labels.resolve(ctx.vault, removed_label);
+            if let Ok(removed) = ctx.vault.remove_mail_uids(label_row.id, &[header.uid]) {
+                reap_dead_messages(ctx, &removed);
+            }
         }
         for added in new.difference(&old) {
             let label_row = labels.resolve(ctx.vault, added);
@@ -435,6 +439,38 @@ async fn refresh_gmail_labels<S: MailSession>(
         }
     }
     Ok(())
+}
+
+/// What [`sync_headers`] and [`refresh_gmail_labels`] both call once
+/// [`everyday_core::Vault::remove_mail_uids`] has told them which messages
+/// just became genuinely dead -- no mailbox names them any more, not merely
+/// the one this pass just touched (see that method's own docs). Marks each
+/// one's pack frame dead, so [`PackStore::compact`] can reclaim it later,
+/// and drops it from the search index.
+///
+/// Does not commit the index itself: [`sync_once`] already commits it
+/// unconditionally once at the end of every pass (see that function's own
+/// docs), which is what makes this deletion visible to a search without a
+/// second commit here.
+///
+/// Best-effort, on the same terms every other write in these two passes
+/// already is (see the `let _ =` beside every other vault call around this
+/// one): a pack or index update that fails leaves an orphaned frame or a
+/// stale hit behind, not a wrong answer to any read the vault's own
+/// rows -- already updated by the `remove_mail_uids` call this follows --
+/// disagree with.
+fn reap_dead_messages(ctx: &SyncContext<'_>, removed: &[(MailMessageId, PackRef)]) {
+    if removed.is_empty() {
+        return;
+    }
+    let refs: Vec<PackRef> = removed.iter().map(|(_, r)| r.clone()).collect();
+    if let Err(e) = ctx.packs.mark_dead(&refs) {
+        tracing::warn!(error = %e, "could not mark a removed message's pack frame dead");
+    }
+    let keys: Vec<String> = removed.iter().map(|(id, _)| id.to_string()).collect();
+    if let Err(e) = ctx.index.delete(&keys) {
+        tracing::warn!(error = %e, "could not remove a message from the search index");
+    }
 }
 
 /// Fetch raw bytes for every message in `mailbox` still carrying
