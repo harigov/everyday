@@ -23,6 +23,7 @@ import { registerApply, singleId, type ChangeWithIds } from './live-apply'
 import {
   applyInviteResponse,
   applyRowPatch,
+  mailboxHasTabs,
   mergeSearchPage,
   removeRow,
   restoreRow,
@@ -197,6 +198,10 @@ class MailState {
     this.selectedMailbox = id
     this.selectedThread = null
     this.openThread = null
+    // Finding 1: only the inbox has tabs to have set this from, so a
+    // category chosen there must not go on filtering a mailbox with no tab
+    // strip to clear it from.
+    if (!mailboxHasTabs(this.mailboxes.find((m) => m.id === id))) this.category = null
     await this.refresh()
   }
 
@@ -224,9 +229,13 @@ class MailState {
     const generation = ++this.#generation
     this.loading = true
     try {
+      // Finding 1: a category filter only means anything for the inbox's
+      // own tabs -- sent elsewhere, it silently narrowed a mailbox with no
+      // tab strip to have set it from.
+      const category = mailboxHasTabs(this.mailbox) ? this.category : null
       const page = await mailApi.listThreads(
         this.selectedMailbox,
-        this.category ? { category: this.category } : undefined,
+        category ? { category } : undefined,
         null,
         PAGE,
       )

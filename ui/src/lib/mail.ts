@@ -5,6 +5,7 @@
 import { friendlyDate, timeOfDay } from './format'
 import { isoDate } from './time'
 import type {
+  Mailbox,
   MailAddress,
   MailCategory,
   MailInvite,
@@ -278,6 +279,15 @@ export function stepCategoryTab(current: MailCategory | null, step: 1 | -1): Mai
   const at = order.indexOf(current)
   const next = ((((at < 0 ? 0 : at) + step) % order.length) + order.length) % order.length
   return order[next]!
+}
+
+/** Does this mailbox draw the split-inbox category tabs -- only the inbox
+ *  does, per `MailView.svelte`'s own `showTabs` -- and so is a category
+ *  filter ever meaningful to send for it. A mailbox with no tabs showing a
+ *  category anyway is finding 1: the filter leaking into Sent, Archive, a
+ *  label, wherever there is no tab strip to have set it from. */
+export function mailboxHasTabs(mailbox: Pick<Mailbox, 'role'> | null | undefined): boolean {
+  return mailbox?.role === 'inbox'
 }
 
 // ── (i) Invitations ─────────────────────────────────────────────────

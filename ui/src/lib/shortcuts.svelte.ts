@@ -33,6 +33,7 @@ import { agent } from './agent.svelte'
 import { calendar } from './calendar.svelte'
 import { SEQUENCE_MS, chordOf, isTyping, match, type Binding } from './keys'
 import { library } from './library.svelte'
+import { mailboxHasTabs } from './mail'
 import { mail } from './mail.svelte'
 import { menu } from './menu.svelte'
 import { notes } from './notes.svelte'
@@ -144,12 +145,20 @@ function oneSweep<T>(sweep: () => T): T {
 }
 
 /** Anywhere past the lock screen, with no dialog over the window. */
-/** Focus is on something Enter already activates. */
+/**
+ * Focus is on something Enter already activates -- or something a reader is
+ * typing into.
+ *
+ * `INPUT`/`TEXTAREA`/`SELECT` joined `BUTTON`/`A`/`SUMMARY` here for finding
+ * 1: `Tab`/`Shift+Tab` (the mail category tabs) used to fire with the
+ * caret in the mail search field, stealing the tab the field needed to move
+ * on from rather than stepping a category.
+ */
 function focusIsControl(): boolean {
   const el = document.activeElement as HTMLElement | null
   if (!el || el === document.body) return false
   return (
-    /^(BUTTON|A|SUMMARY)$/.test(el.tagName) ||
+    /^(BUTTON|A|SUMMARY|INPUT|TEXTAREA|SELECT)$/.test(el.tagName) ||
     el.getAttribute('role') === 'button' ||
     el.getAttribute('role') === 'tab'
   )
@@ -701,14 +710,29 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     keys: 'Tab',
     label: 'Next category',
     group: 'Mail',
-    when: () => anywhere() && inApp('mail')() && !mail.openThread,
+    // Finding 1: tabs only ever show for the inbox (`MailView.svelte`'s own
+    // `showTabs`), so this must not fire in a mailbox with no tab strip on
+    // screen to be stepping -- and must leave Tab to whatever has focus
+    // once that focus is a control or a field, `focusIsControl` now covers
+    // both.
+    when: () =>
+      anywhere() &&
+      inApp('mail')() &&
+      mailboxHasTabs(mail.mailbox) &&
+      !mail.openThread &&
+      !focusIsControl(),
     run: () => mail.stepCategory(1),
   },
   {
     keys: 'shift+Tab',
     label: 'Previous category',
     group: 'Mail',
-    when: () => anywhere() && inApp('mail')() && !mail.openThread,
+    when: () =>
+      anywhere() &&
+      inApp('mail')() &&
+      mailboxHasTabs(mail.mailbox) &&
+      !mail.openThread &&
+      !focusIsControl(),
     run: () => mail.stepCategory(-1),
   },
   // (p) TODO: `z` for Summarise -- `s`/`u`/`i`/`h`/`l`/`v`/`r`/`w`/`f`/`e`/

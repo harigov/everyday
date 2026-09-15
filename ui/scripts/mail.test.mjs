@@ -26,6 +26,7 @@ const {
   remoteImagesAllowed,
   originPhrase,
   recentActionLine,
+  mailboxHasTabs,
 } = mailLib
 
 function person(name, email) {
@@ -301,6 +302,14 @@ assert.equal(
   null,
   "a person's own successful action needs no line",
 )
+
+// ── Finding 1: the category filter belongs to the inbox alone ───────────
+
+assert.equal(mailboxHasTabs({ role: 'inbox' }), true)
+assert.equal(mailboxHasTabs({ role: 'sent' }), false)
+assert.equal(mailboxHasTabs({ role: 'archive' }), false)
+assert.equal(mailboxHasTabs(null), false, 'no mailbox selected yet: no tabs to have set from')
+assert.equal(mailboxHasTabs(undefined), false)
 
 await close()
 console.log('mail: all checks passed')
