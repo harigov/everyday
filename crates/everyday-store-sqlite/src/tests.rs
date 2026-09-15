@@ -11,7 +11,7 @@ use super::{DB_FILENAME, MEDIA_DIRNAME, SqliteStore};
 use everyday_core::calendar::Event;
 use everyday_core::crypto::{AeadCipher, Cipher, NullCipher, SecretKey};
 use everyday_core::id::{AccountId, MailMessageId, ThreadId};
-use everyday_core::mail::{Address, Mailbox, MailboxRole, Message, MessageFlags};
+use everyday_core::mail::{Address, CategorySource, Mailbox, MailboxRole, Message, MessageFlags};
 use everyday_core::model::Entry;
 use everyday_core::note::Note;
 use everyday_core::packstore::{PackRef, PackStore, run_pack_store_suite};
@@ -1147,6 +1147,7 @@ fn the_database_file_contains_no_readable_mail_text() {
         has_attachments: false,
         size: 42,
         category: None,
+        category_source: CategorySource::Rules,
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,

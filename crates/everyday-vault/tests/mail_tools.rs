@@ -25,8 +25,8 @@ use everyday_core::account::{Account, AgentCaller, AgentMailAccess, Provider};
 use everyday_core::agent::tools::{self, Caller, ToolContext};
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
 use everyday_core::mail::{
-    Address, AttendeeResponse, Body, Invite, InviteAttendee, InviteMethod, Mailbox, MailboxRole,
-    Message, MessageFlags, Origin,
+    Address, AttendeeResponse, Body, CategorySource, Invite, InviteAttendee, InviteMethod, Mailbox,
+    MailboxRole, Message, MessageFlags, Origin,
 };
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::IngestMessage;
@@ -107,6 +107,7 @@ fn ingest_eml(
         has_attachments: false,
         size: raw.len() as u64,
         category: None,
+        category_source: CategorySource::Rules,
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
@@ -499,6 +500,7 @@ fn seed_invite_message(
         has_attachments: false,
         size: 128,
         category: None,
+        category_source: CategorySource::Rules,
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: Some(invite),

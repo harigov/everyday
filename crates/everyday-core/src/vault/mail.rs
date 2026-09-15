@@ -19,9 +19,9 @@ use super::session::{Domain, pick_domain};
 use crate::error::{Error, Result};
 use crate::id::{AccountId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use crate::mail::{
-    Body, Category, CategoryRules, ContactBook, Draft, DraftState, Mailbox, MailboxRole, Message,
-    MessageFlags, Op, OpKind, OpState, OpTarget, Origin, RemoteImageSettings, Thread,
-    apply_optimistic,
+    Body, Category, CategoryMatch, CategoryRules, ContactBook, Draft, DraftState, Mailbox,
+    MailboxRole, Message, MessageFlags, Op, OpKind, OpState, OpTarget, Origin, RemoteImageSettings,
+    Thread, apply_optimistic,
 };
 use crate::packstore::{PackRef, PackStore};
 use crate::store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
@@ -334,10 +334,11 @@ impl Vault {
         self.with_mail(|m| m.put_category_rules(account, rules))
     }
 
-    /// Record a sender-address correction for `account` and sweep every
-    /// message of `account`'s through it — see
-    /// [`crate::store::mail::MailStore::recategorize`] for what "sweep"
-    /// costs and why it is accepted here. Returns how many messages
+    /// Record a sender-address correction for `account` and sweep only the
+    /// messages it names through it — see
+    /// [`crate::store::mail::MailStore::correct_category`] for what "sweep"
+    /// costs, why it is accepted here, and why it reaches only `sender`'s
+    /// own mail rather than the whole account. Returns how many messages
     /// changed, for a caller that wants to say so.
     pub fn correct_mail_category(
         &self,
@@ -350,7 +351,7 @@ impl Vault {
             let mut rules = m.category_rules(account)?;
             rules.set_sender(sender, category);
             m.put_category_rules(account, &rules)?;
-            m.recategorize(account, &rules)
+            m.correct_category(account, CategoryMatch::Sender(sender.to_string()), category)
         })
     }
 

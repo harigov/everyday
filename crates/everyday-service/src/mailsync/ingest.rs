@@ -57,7 +57,9 @@ use std::collections::HashMap;
 
 use everyday_core::Vault;
 use everyday_core::id::{AccountId, MailMessageId, PackId, ThreadId};
-use everyday_core::mail::{Address as MailAddress, GmailMeta, Message, MessageFlags};
+use everyday_core::mail::{
+    Address as MailAddress, CategorySource, GmailMeta, Message, MessageFlags,
+};
 use everyday_core::packstore::PackRef;
 use everyday_mail::mime::{self, Address as MimeAddress};
 use everyday_mail::session::{Flags, RemoteHeader};
@@ -193,6 +195,13 @@ pub fn resolve_header(
         has_attachments: false,
         size: u64::from(header.size),
         category: None,
+        // Not yet categorised -- `passes::categorize_new_message` fills
+        // `category` in from the rules engine right after this returns, and
+        // writes `Rules` there too; `Rules` is the correct placeholder even
+        // for the moment in between, since a `None` category is already
+        // rules-eligible for a future backfill regardless of what this field
+        // says.
+        category_source: CategorySource::Rules,
         pack: pending_pack_ref(account_id),
         gmail,
         // Filled in by `passes::process_body` once the bodies pass has the

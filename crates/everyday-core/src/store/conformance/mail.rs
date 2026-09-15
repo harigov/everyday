@@ -8,8 +8,8 @@
 use super::*;
 use crate::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
 use crate::mail::{
-    Address, AttendeeResponse, Body, Draft, Invite, InviteMethod, Mailbox, MailboxRole, Message,
-    MessageFlags, Op, OpKind, OpState, OpTarget, Origin, PartRef,
+    Address, AttendeeResponse, Body, CategorySource, Draft, Invite, InviteMethod, Mailbox,
+    MailboxRole, Message, MessageFlags, Op, OpKind, OpState, OpTarget, Origin, PartRef,
 };
 use crate::packstore::PackRef as MailPackRef;
 use crate::store::mail::{IngestMessage, MailStore, ThreadFilter};
@@ -36,6 +36,8 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     pending_bodies_finds_only_unfetched_messages_newest_first(store);
     account_delete_cascades_every_mail_row(store);
     category_rules_and_recategorize_round_trip(store);
+    correction_reaches_only_the_named_sender(store);
+    a_model_set_category_survives_the_backfill(store);
     removing_forty_thousand_uids_does_not_hit_the_parameter_limit(store);
     deleting_a_mailbox_with_forty_thousand_messages_does_not_hit_the_parameter_limit(store);
     archiving_survives_a_later_flag_change(store);
@@ -94,6 +96,7 @@ fn message(
         has_attachments: false,
         size: 128,
         category: None,
+        category_source: CategorySource::Rules,
         pack: MailPackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
@@ -656,7 +659,7 @@ fn account_delete_cascades_every_mail_row(store: &dyn JournalStore) {
 /// a message the rules alone got wrong and leaves alone one it already had
 /// right.
 fn category_rules_and_recategorize_round_trip(store: &dyn JournalStore) {
-    use crate::mail::{Category, CategoryRules};
+    use crate::mail::{Category, CategoryMatch, CategoryRules};
 
     let m = mail_store(store);
     let account = AccountId::new();
@@ -688,11 +691,21 @@ fn category_rules_and_recategorize_round_trip(store: &dyn JournalStore) {
         "a model's answer is not a standing correction"
     );
 
-    // A person's correction: saved, and swept over the account's mail.
+    // A person's correction: saved, and swept over the account's mail --
+    // through `correct_category`, not `recategorize`, since a correction is
+    // scoped to the sender it names; see
+    // [`correction_reaches_only_the_named_sender`] for that scoping proven
+    // directly.
     let mut rules = m.category_rules(account).unwrap();
     rules.set_sender("weekly@example.com", Category::Important);
     m.put_category_rules(account, &rules).unwrap();
-    let changed = m.recategorize(account, &rules).unwrap();
+    let changed = m
+        .correct_category(
+            account,
+            CategoryMatch::Sender("weekly@example.com".into()),
+            Category::Important,
+        )
+        .unwrap();
     assert_eq!(changed, 1, "the one message from the corrected sender");
     assert_eq!(m.get_message(msg.id).unwrap().category, Some(Category::Important));
     assert_eq!(
@@ -701,8 +714,102 @@ fn category_rules_and_recategorize_round_trip(store: &dyn JournalStore) {
         "the saved correction round-trips through its sealed row"
     );
 
-    // Recategorizing again is idempotent: nothing left to change.
-    assert_eq!(m.recategorize(account, &rules).unwrap(), 0);
+    // A person's correction is not a rules answer -- `recategorize`'s
+    // backfill must leave it exactly alone, on the same terms
+    // [`a_model_set_category_survives_the_backfill`] checks for a model's.
+    assert_eq!(
+        m.recategorize(account, &rules).unwrap(),
+        0,
+        "a person's own correction is not fair game for the rules backfill"
+    );
+}
+
+/// Regression for "one sender correction reshuffles the whole account": a
+/// correction on one sender must never reach a different sender's mail,
+/// however much the bare rules engine (fed no `List-Id`, since a stored
+/// [`Message`] keeps none -- see [`MailStore::recategorize`]'s own docs)
+/// would have disagreed with what that other message already carried.
+fn correction_reaches_only_the_named_sender(store: &dyn JournalStore) {
+    use crate::mail::{Category, CategoryMatch};
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    // Sender B: a newsletter, exactly as a fresh sync's `List-Id` header
+    // would have categorised it -- a signal `correct_category`'s own sweep
+    // never sees again, since a stored `Message` keeps no raw headers.
+    let thread_b = ThreadId::new();
+    let mut msg_b = message(account, thread_b, "Weekly digest", "b@example.com", Timestamp::now());
+    msg_b.category = Some(Category::Newsletter);
+    m.ingest(account, vec![IngestMessage { message: msg_b.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+
+    // Sender A: uncategorised, the one this correction actually names.
+    let thread_a = ThreadId::new();
+    let msg_a = message(account, thread_a, "Hello", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg_a.clone(), mailbox: mailbox.id, uid: 2 }])
+        .unwrap();
+
+    let changed = m
+        .correct_category(
+            account,
+            CategoryMatch::Sender("a@example.com".into()),
+            Category::Important,
+        )
+        .unwrap();
+    assert_eq!(changed, 1, "only sender A's message should have moved");
+    assert_eq!(m.get_message(msg_a.id).unwrap().category, Some(Category::Important));
+
+    // Sender B, never named by the correction, is untouched -- not
+    // reshuffled by a bare rules engine that, robbed of the `List-Id` it
+    // once had, would otherwise have disagreed with `Newsletter`.
+    assert_eq!(
+        m.get_message(msg_b.id).unwrap().category,
+        Some(Category::Newsletter),
+        "a correction on sender A must never reach sender B's mail"
+    );
+
+    cleanup_account(store, account);
+}
+
+/// Regression for "one sender correction reshuffles the whole account":
+/// `recategorize`'s explicit full backfill must never override a model's
+/// own answer, however much `rules` now disagrees with it.
+fn a_model_set_category_survives_the_backfill(store: &dyn JournalStore) {
+    use crate::mail::{Category, CategoryRules};
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "Hello", "model@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+
+    // The model's own one-off answer.
+    m.set_message_category(msg.id, Category::Important).unwrap();
+    assert_eq!(m.get_message(msg.id).unwrap().category, Some(Category::Important));
+
+    // A correction on this very sender, pointing the *other* way -- the
+    // backfill's own `rules` now flatly disagrees with the model's answer,
+    // and must still not act on it.
+    let mut rules = CategoryRules::default();
+    rules.set_sender("model@example.com", Category::Notification);
+    m.put_category_rules(account, &rules).unwrap();
+
+    let changed = m.recategorize(account, &rules).unwrap();
+    assert_eq!(changed, 0, "a model-set category is never the backfill's to touch");
+    assert_eq!(
+        m.get_message(msg.id).unwrap().category,
+        Some(Category::Important),
+        "the model's own answer must survive recategorize_mail's backfill"
+    );
+
+    cleanup_account(store, account);
 }
 
 /// Regression for "removing a large number of UIDs hits the parameter

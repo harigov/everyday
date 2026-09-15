@@ -17,7 +17,8 @@ use everyday_core::account::{Account, Provider};
 use everyday_core::agent::LLMModelConfig;
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
 use everyday_core::mail::{
-    Address, Body, Category, DraftState, Mailbox, MailboxRole, Message, MessageFlags, Origin,
+    Address, Body, Category, CategorySource, DraftState, Mailbox, MailboxRole, Message,
+    MessageFlags, Origin,
 };
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::IngestMessage;
@@ -166,6 +167,7 @@ fn seed_message(
         has_attachments: false,
         size: 128,
         category,
+        category_source: CategorySource::Rules,
         invite: None,
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 1 },
         gmail: None,

@@ -187,7 +187,7 @@ pub fn revert(undo: MessageUndo, message: &mut super::records::Message) {
 mod tests {
     use super::*;
     use crate::id::{AccountId, MailMessageId, MailboxId, ThreadId};
-    use crate::mail::records::{Address, Message, OpTarget, Origin};
+    use crate::mail::records::{Address, CategorySource, Message, OpTarget, Origin};
     use crate::packstore::PackRef;
     use jiff::Timestamp;
 
@@ -210,6 +210,7 @@ mod tests {
             has_attachments: false,
             size: 0,
             category: None,
+            category_source: CategorySource::Rules,
             pack: PackRef {
                 account: "acc".into(),
                 pack: crate::id::PackId::new(),

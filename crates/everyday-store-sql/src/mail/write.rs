@@ -22,7 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
 use everyday_core::mail::{
-    Address, Category, CategoryRules, Invite, Message, MessageFlags, Thread,
+    Address, Category, CategoryMatch, CategoryRules, CategorySource, Invite, Message, MessageFlags,
+    Thread,
     categorize::{self, CategorizeInput},
 };
 use everyday_core::packstore::PackRef;
@@ -260,6 +261,12 @@ pub(super) fn set_message_category(
     };
     let thread_id = message.thread_id;
     message.category = Some(category);
+    // A model's own one-off answer -- the one write path, besides ingest
+    // and a person's correction, that ever sets a category, so this is the
+    // one place `CategorySource::Model` is ever written. What later tells
+    // `recategorize`'s backfill this message is no longer its rules-only
+    // answer to overwrite -- see that type's own docs.
+    message.category_source = CategorySource::Model;
     let sealed = store.seal(&message_aad(id), &message)?;
     let (sql, args) = upsert_stmt(&message, sealed);
     tx.execute(&sql, &args)?;
@@ -902,27 +909,86 @@ fn recompute_thread_mailboxes(tx: &mut dyn Sql, thread_id: ThreadId) -> Result<(
 /// A full decrypt of every message `account` has, on the accepted terms that
 /// function's own docs give -- the same trade
 /// [`everyday_core::store::mail::MailStore::message_by_message_id_header`]
-/// already makes for a full-account scan.
+/// already makes for a full-account scan. Only messages the rules engine is
+/// still allowed to speak for -- see [`sweep_categories`] -- are ever
+/// written back.
 pub(super) fn recategorize(
     store: &SqlStore,
     account: AccountId,
     rules: &CategoryRules,
 ) -> Result<u32> {
-    recategorize_with_hook(store, account, rules, || {})
+    // `MailStore::contacts` is a trait method, brought into scope by the
+    // `use` above -- the contact book is vault-wide, so it is read once
+    // rather than once per batch.
+    let contacts = store.contacts()?;
+    sweep_categories(
+        store,
+        account,
+        |message| message.category.is_none() || message.category_source == CategorySource::Rules,
+        |message| {
+            let input = CategorizeInput {
+                from: &message.from.email,
+                // Neither of these two headers survives on a stored
+                // `Message` -- see this function's own trait docs -- so a
+                // message that would have read as a newsletter purely on a
+                // `List-Id`/`List-Unsubscribe` header it arrived with, and
+                // was never corrected or model-answered since, is the one
+                // accepted gap in re-running the rules from storage alone.
+                list_id: None,
+                list_unsubscribe: None,
+                precedence: None,
+                auto_submitted: None,
+                gmail_labels: &message.labels,
+                ever_written_to: contacts.has_sent_to(&message.from.email),
+            };
+            (categorize::categorize(&input, rules), CategorySource::Rules)
+        },
+    )
 }
 
-/// [`recategorize`], with one extra seam: `after_scan` runs once, right
-/// after the id scan below and before the first batch's write transaction
-/// opens -- exactly the window whose staleness this fix closes. Every
-/// production caller goes through [`recategorize`], which supplies a
-/// no-op; only this crate's own regression coverage
-/// (`run_recategorize_staleness_regression`) calls this directly, with a
-/// hook that makes a real, committed, concurrent write through the
-/// ordinary [`MailStore`] surface.
+/// See [`everyday_core::store::mail::MailStore::correct_category`].
+pub(super) fn correct_category(
+    store: &SqlStore,
+    account: AccountId,
+    target: CategoryMatch,
+    category: Category,
+) -> Result<u32> {
+    sweep_categories(
+        store,
+        account,
+        |message| matches_target(&target, &message.from.email),
+        |_message| (category, CategorySource::Person),
+    )
+}
+
+/// Whether `email` is the one address or domain `target` names -- an exact
+/// match, case-insensitively, for [`CategoryMatch::Sender`], or the domain
+/// half of `email` for [`CategoryMatch::Domain`]. Mirrors
+/// [`CategoryRules::for_sender`]'s own matching, but as a yes/no scope test
+/// rather than a category lookup: what keeps [`correct_category`]'s sweep to
+/// the one sender or domain a correction actually named, rather than every
+/// message in the account -- the bug this whole module change exists to fix.
+fn matches_target(target: &CategoryMatch, email: &str) -> bool {
+    let email = email.trim().to_ascii_lowercase();
+    match target {
+        CategoryMatch::Sender(s) => s.eq_ignore_ascii_case(&email),
+        CategoryMatch::Domain(d) => {
+            email.rsplit_once('@').is_some_and(|(_, domain)| domain.eq_ignore_ascii_case(d))
+        }
+    }
+}
+
+/// Shared body of [`recategorize`] and [`correct_category`]: scan every
+/// message id of `account`'s, then, batch by batch, decide and (if
+/// `resolve` disagrees with what is already there) rewrite each one
+/// `eligible` accepts. Batched at [`INGEST_BATCH_ROWS`] rows per
+/// transaction, the same size `ingest` itself batches at, so a large
+/// mailbox's sweep never holds the vault's single writer for the length of
+/// the whole account. Returns how many messages changed.
 ///
 /// # Why every message is re-read inside its own batch transaction
 ///
-/// The id scan below is not itself a transaction, and does not need to be:
+/// The id scan above is not itself a transaction, and does not need to be:
 /// all it decides is which messages exist, which is safe to let drift
 /// slightly stale (a message ingested a moment later simply is not swept
 /// this time, exactly as `ingest` racing this call already has to tolerate
@@ -934,21 +1000,39 @@ pub(super) fn recategorize(
 /// sync landing in that window was silently reverted by this sweep's own,
 /// now-stale, whole-record upsert.
 ///
-/// The fix is [`message_by_id`]: every message this sweep even considers is
-/// read fresh, from inside its own batch's write transaction, immediately
-/// before it is written -- the same targeted read-modify-write
-/// [`set_message_category`] already does for one message at a time. Only
-/// `category` is ever changed on the fresh copy this reads back.
-fn recategorize_with_hook(
+/// The fix is [`message_by_id`]: every message `eligible` and `resolve` are
+/// even asked about is read fresh, from inside its own batch's write
+/// transaction, immediately before either function runs -- the same
+/// targeted read-modify-write [`set_message_category`] already does for one
+/// message at a time. `eligible` and `resolve` see, and this writes back,
+/// whatever the row actually holds at that moment, with only `category` and
+/// `category_source` ever changed on it.
+fn sweep_categories(
     store: &SqlStore,
     account: AccountId,
-    rules: &CategoryRules,
+    eligible: impl Fn(&Message) -> bool,
+    resolve: impl Fn(&Message) -> (Category, CategorySource),
+) -> Result<u32> {
+    sweep_categories_with_hook(store, account, eligible, resolve, || {})
+}
+
+/// [`sweep_categories`], with one extra seam: `after_scan` runs once, right
+/// after the id scan below and before the first batch's write transaction
+/// opens -- exactly the window whose staleness this whole module was fixed
+/// for. Every production caller goes through [`sweep_categories`], which
+/// supplies a no-op; only this crate's own regression coverage
+/// (`run_recategorize_staleness_regression`) calls this directly, with a
+/// hook that makes a real, committed, concurrent write through the
+/// ordinary [`MailStore`] surface -- see that function's own docs for why a
+/// hook, rather than a real second thread, is what proves the fix
+/// deterministically.
+fn sweep_categories_with_hook(
+    store: &SqlStore,
+    account: AccountId,
+    eligible: impl Fn(&Message) -> bool,
+    resolve: impl Fn(&Message) -> (Category, CategorySource),
     after_scan: impl FnOnce(),
 ) -> Result<u32> {
-    // `MailStore::contacts` is a trait method, brought into scope by the
-    // `use` above -- the contact book is vault-wide, so it is read once
-    // rather than once per batch.
-    let contacts = store.contacts()?;
     let ids: Vec<String> = store
         .read()
         .query("SELECT id FROM mail_messages WHERE account_id = ?1", &vals![account.to_string()])?
@@ -963,9 +1047,10 @@ fn recategorize_with_hook(
         let mut conn = store.write();
         let mut tx = conn.begin()?;
         for id in batch {
-            let mid: MailMessageId = id
-                .parse()
-                .map_err(|e: <MailMessageId as std::str::FromStr>::Err| Error::Invalid(e.to_string()))?;
+            let mid: MailMessageId =
+                id.parse().map_err(|e: <MailMessageId as std::str::FromStr>::Err| {
+                    Error::Invalid(e.to_string())
+                })?;
             // Fresh, from inside this transaction -- see this function's
             // own docs on why. `None` means a concurrent removal took the
             // message between the id scan and this batch: nothing left to
@@ -973,18 +1058,13 @@ fn recategorize_with_hook(
             let Some(mut message) = message_by_id(store, tx.as_mut(), mid)? else {
                 continue;
             };
-            let input = CategorizeInput {
-                from: &message.from.email,
-                list_id: None,
-                list_unsubscribe: None,
-                precedence: None,
-                auto_submitted: None,
-                gmail_labels: &message.labels,
-                ever_written_to: contacts.has_sent_to(&message.from.email),
-            };
-            let category = categorize::categorize(&input, rules);
-            if message.category != Some(category) {
+            if !eligible(&message) {
+                continue;
+            }
+            let (category, source) = resolve(&message);
+            if message.category != Some(category) || message.category_source != source {
                 message.category = Some(category);
+                message.category_source = source;
                 let sealed = store.seal(&message_aad(mid), &message)?;
                 let (sql, args) = upsert_stmt(&message, sealed);
                 tx.execute(&sql, &args)?;
@@ -1064,18 +1144,18 @@ pub(super) fn remap_packs(
 /// # Why a hook, not two real threads
 ///
 /// The bug this pins down only ever showed up under real concurrency: a
-/// flag change landing after [`recategorize_with_hook`]'s own id scan but
-/// before the affected message's batch transaction ran. Reproducing that
-/// with two genuine OS threads would mean racing against however long one
-/// batch takes to process -- a window of microseconds once a sweep is down
-/// to a single message, far too narrow to hit reliably from outside. A
-/// hook run at the exact seam removes the timing question entirely: the
-/// concurrent write happens, for certain, in the one place that matters,
-/// every time this runs.
+/// flag change landing after [`sweep_categories`]'s own id scan but before
+/// the affected message's batch transaction ran. Reproducing that with two
+/// genuine OS threads would mean racing against however long one batch
+/// takes to process -- a window of microseconds once a sweep is down to a
+/// single message, far too narrow to hit reliably from outside. A hook run
+/// at the exact seam removes the timing question entirely: the concurrent
+/// write happens, for certain, in the one place that matters, every time
+/// this runs.
 #[cfg(any(test, feature = "testing"))]
 pub fn run_recategorize_staleness_regression(store: &SqlStore) {
     use everyday_core::account::{Account, Provider};
-    use everyday_core::mail::{CategoryRules, Mailbox, MailboxRole};
+    use everyday_core::mail::{Mailbox, MailboxRole};
     use everyday_core::store::accounts::AccountStore;
 
     eprintln!("--- recategorize staleness regression ---");
@@ -1106,6 +1186,7 @@ pub fn run_recategorize_staleness_regression(store: &SqlStore) {
         has_attachments: false,
         size: 3,
         category: None,
+        category_source: CategorySource::Rules,
         pack: PackRef { account: account_id.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
@@ -1118,11 +1199,15 @@ pub fn run_recategorize_staleness_regression(store: &SqlStore) {
     // function's own docs on why a hook, not a real race, is what proves
     // this deterministically.
     let starred = MessageFlags { flagged: true, ..MessageFlags::default() };
-    let mut rules = CategoryRules::default();
-    rules.set_sender("someone@example.com", Category::Important);
-    let changed = recategorize_with_hook(store, account_id, &rules, || {
-        store.set_message_flags(message_id, starred).unwrap();
-    })
+    let changed = sweep_categories_with_hook(
+        store,
+        account_id,
+        |_message| true,
+        |_message| (Category::Important, CategorySource::Rules),
+        || {
+            store.set_message_flags(message_id, starred).unwrap();
+        },
+    )
     .unwrap();
     assert_eq!(changed, 1, "the one message must have been swept");
 

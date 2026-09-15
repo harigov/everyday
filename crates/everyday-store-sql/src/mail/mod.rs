@@ -19,8 +19,8 @@ use everyday_core::id::{
     AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, PackId, ThreadId,
 };
 use everyday_core::mail::{
-    Body, CategoryRules, ContactBook, Draft, Invite, Mailbox, Message, MessageFlags, Op, OpTarget,
-    RemoteImageSettings, Thread,
+    Body, Category, CategoryMatch, CategoryRules, ContactBook, Draft, Invite, Mailbox, Message,
+    MessageFlags, Op, OpTarget, RemoteImageSettings, Thread,
 };
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::{
@@ -662,5 +662,14 @@ impl MailStore for SqlStore {
 
     fn recategorize(&self, account: AccountId, rules: &CategoryRules) -> Result<u32> {
         write::recategorize(self, account, rules)
+    }
+
+    fn correct_category(
+        &self,
+        account: AccountId,
+        target: CategoryMatch,
+        category: Category,
+    ) -> Result<u32> {
+        write::correct_category(self, account, target, category)
     }
 }

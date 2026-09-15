@@ -840,7 +840,7 @@ mod mail_route_tests {
     use everyday_core::VaultConfig;
     use everyday_core::id::{AccountId, PackId, ThreadId};
     use everyday_core::mail::{
-        Address, Body, Mailbox, MailboxRole, Message, MessageFlags, RemoteImage,
+        Address, Body, CategorySource, Mailbox, MailboxRole, Message, MessageFlags, RemoteImage,
     };
     use everyday_core::packstore::PackRef;
     use everyday_core::store::mail::IngestMessage;
@@ -880,6 +880,7 @@ mod mail_route_tests {
             has_attachments: false,
             size: 0,
             category: None,
+            category_source: CategorySource::Rules,
             invite: None,
             pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
             gmail: None,

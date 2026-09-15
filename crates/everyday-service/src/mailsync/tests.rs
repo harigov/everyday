@@ -1986,6 +1986,15 @@ async fn a_correction_outranks_the_rules_and_reaches_existing_and_future_mail() 
 /// category (as it would be, ingested before this build knew a rule that
 /// now applies) is put right by asking for it again, with no correction
 /// involved at all.
+///
+/// The rule is saved directly, through `save_category_rules` alone rather
+/// than `correct_mail_category`'s own sweep, so the message's category is
+/// genuinely stale -- still whatever the rules said at ingest -- until the
+/// backfill below asks again. `set_mail_message_category` is deliberately
+/// not how this test creates staleness any more: that call writes through
+/// as a model's own answer (see `everyday_core::mail::CategorySource`), and
+/// a model's answer is exactly what `recategorize_mail_never_overrides_a_models_own_answer`,
+/// just below, checks the backfill must never touch.
 #[tokio::test]
 async fn recategorize_mail_backfills_a_stale_category() {
     let env = TestEnv::new();
@@ -2011,14 +2020,53 @@ async fn recategorize_mail_backfills_a_stale_category() {
         .unwrap()
         .unwrap();
     assert_eq!(msg.category, Some(Category::Notification), "the rules already got this right");
-    env.vault.set_mail_message_category(msg.id, Category::Other).unwrap();
-    let regressed = env.vault.mail_message(msg.id).unwrap();
-    assert_eq!(regressed.category, Some(Category::Other));
+
+    let mut rules = env.vault.category_rules(env.account_id).unwrap();
+    rules.set_sender("noreply@service.example.com", Category::Important);
+    env.vault.save_category_rules(env.account_id, &rules).unwrap();
 
     let changed = env.vault.recategorize_mail(env.account_id).unwrap();
     assert_eq!(changed, 1);
     let fixed = env.vault.mail_message(msg.id).unwrap();
-    assert_eq!(fixed.category, Some(Category::Notification));
+    assert_eq!(fixed.category, Some(Category::Important));
+}
+
+/// Regression: `recategorize_mail`'s backfill must never override a
+/// model's own answer -- see `everyday_core::mail::CategorySource`'s own
+/// docs on the ranking that makes this true. Before the fix, a category
+/// set through `set_mail_message_category` left no trace of where it came
+/// from, so the very next backfill blindly reasserted whatever the rules
+/// engine said instead, discarding the model's answer.
+#[tokio::test]
+async fn recategorize_mail_never_overrides_a_models_own_answer() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    {
+        let mut s = server.lock().unwrap();
+        let raw = raw_message(
+            "old-2@example.com",
+            None,
+            "noreply@service.example.com",
+            "Receipt",
+            "01 Jan 2024 09:00:00 +0000",
+            "hi",
+        );
+        s.append("INBOX", raw, flags_seen(), None);
+    }
+    let mut session = FakeMailSession::new(server);
+    env.sync(&mut session).await;
+
+    let msg = env
+        .vault
+        .message_by_message_id_header(env.account_id, "old-2@example.com")
+        .unwrap()
+        .unwrap();
+    env.vault.set_mail_message_category(msg.id, Category::Other).unwrap();
+
+    let changed = env.vault.recategorize_mail(env.account_id).unwrap();
+    assert_eq!(changed, 0, "a model's own answer is never the backfill's to touch");
+    let after = env.vault.mail_message(msg.id).unwrap();
+    assert_eq!(after.category, Some(Category::Other));
 }
 
 /// As [`settle`], but for a wait measured in real seconds rather than a

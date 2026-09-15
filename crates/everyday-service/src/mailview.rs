@@ -760,7 +760,7 @@ mod tests {
     use super::*;
     use everyday_core::id::AccountId;
     use everyday_core::mail::{
-        Address, Mailbox, MailboxRole, Message, MessageFlags, PartRef, RemoteImage,
+        Address, CategorySource, Mailbox, MailboxRole, Message, MessageFlags, PartRef, RemoteImage,
     };
     use everyday_core::packstore::PackRef;
     use everyday_core::store::mail::IngestMessage;
@@ -801,6 +801,7 @@ mod tests {
             has_attachments: false,
             size: 0,
             category: None,
+            category_source: CategorySource::Rules,
             pack: PackRef {
                 account: account.to_string(),
                 pack: everyday_core::id::PackId::new(),

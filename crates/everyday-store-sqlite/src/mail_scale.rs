@@ -20,7 +20,7 @@
 use super::SqliteStore;
 use everyday_core::crypto::{AeadCipher, Cipher, SecretKey};
 use everyday_core::id::{AccountId, PackId, ThreadId};
-use everyday_core::mail::{Address, Mailbox, MailboxRole, Message, MessageFlags};
+use everyday_core::mail::{Address, CategorySource, Mailbox, MailboxRole, Message, MessageFlags};
 use everyday_core::packstore::PackRef;
 use everyday_core::store::StoreContext;
 use everyday_core::store::mail::{IngestMessage, MailStore, ThreadFilter};
@@ -51,6 +51,7 @@ fn synthetic_message(account: AccountId, i: usize, base: jiff::Timestamp) -> Mes
         has_attachments: false,
         size: 2_000,
         category: None,
+        category_source: CategorySource::Rules,
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,

@@ -671,7 +671,7 @@ mod tests {
     use super::*;
     use everyday_core::account::Provider;
     use everyday_core::id::{MailMessageId, ThreadId};
-    use everyday_core::mail::MessageFlags;
+    use everyday_core::mail::{CategorySource, MessageFlags};
     use everyday_core::packstore::PackRef;
 
     fn account() -> Account {
@@ -697,6 +697,7 @@ mod tests {
             has_attachments: false,
             size: 0,
             category: None,
+            category_source: CategorySource::Rules,
             invite: None,
             pack: PackRef {
                 account: "a".into(),
