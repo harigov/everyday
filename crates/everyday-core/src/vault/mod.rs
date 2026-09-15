@@ -34,6 +34,7 @@ mod header;
 mod journal;
 mod library;
 mod lifecycle;
+mod mail;
 mod maintenance;
 mod notes;
 mod profile;

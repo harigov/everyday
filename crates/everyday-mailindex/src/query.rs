@@ -30,7 +30,7 @@
 use std::ops::Bound;
 
 use everyday_core::{
-    Clause, DateBound, MailQuery, Op, QueryGroup, RelUnit, SearchCursor, TextMatch,
+    Clause, DateBound, MailQuery, QueryGroup, QueryOp as Op, RelUnit, SearchCursor, TextMatch,
 };
 use jiff::civil::Date;
 use jiff::tz::TimeZone;

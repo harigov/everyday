@@ -10,11 +10,14 @@
 use super::{DB_FILENAME, MEDIA_DIRNAME, SqliteStore};
 use everyday_core::calendar::Event;
 use everyday_core::crypto::{AeadCipher, Cipher, NullCipher, SecretKey};
+use everyday_core::id::{AccountId, MailMessageId, ThreadId};
+use everyday_core::mail::{Address, Mailbox, MailboxRole, Message, MessageFlags};
 use everyday_core::model::Entry;
 use everyday_core::note::Note;
-use everyday_core::packstore::{PackStore, run_pack_store_suite};
+use everyday_core::packstore::{PackRef, PackStore, run_pack_store_suite};
 use everyday_core::store::calendars::{CalendarStore, EventQuery};
 use everyday_core::store::conformance;
+use everyday_core::store::mail::{IngestMessage, MailStore, ThreadFilter};
 use everyday_core::store::notes::NoteStore;
 use everyday_core::store::purpose::PurposeStore;
 use everyday_core::store::secrets::SecretStore;
@@ -23,7 +26,7 @@ use everyday_core::store::trackers::{ReadingQuery, TrackerStore};
 use everyday_core::store::{EntryQuery, JournalStore, SortOrder, StoreContext};
 use everyday_core::task::{Project, Task, TimeBlock};
 use everyday_core::tracker::{Aggregate, Reading, Tracker, TrackerKind};
-use everyday_core::{RichDoc, model::Journal};
+use everyday_core::{PackId, RichDoc, model::Journal};
 use everyday_store_sql::packs::TablePacks;
 use everyday_store_sql::schema::SCHEMA_VERSION;
 use std::path::Path;
@@ -1099,4 +1102,84 @@ fn the_table_backed_pack_store_passes_the_shared_conformance_suite() {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
     run_pack_store_suite(&TablePacks::new(&store), "acc-conformance");
+}
+
+#[test]
+fn the_database_file_contains_no_readable_mail_text() {
+    // What the mail tables promise, checked the way every other domain's
+    // promise is: write a subject, a sender's name and a label nobody
+    // should see, then grep the raw file for them. What is deliberately
+    // readable is the thread's clear `unread` and `last_date_us` columns --
+    // the plan's own words -- so this also checks that at least one of them
+    // survives the round trip in the clear, or the test would be trivially
+    // satisfied by a backend that sealed everything and broke the inbox.
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "A folder name nobody should see", MailboxRole::Inbox);
+    store.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let message_id = MailMessageId::new();
+    let message = Message {
+        id: message_id,
+        account_id: account,
+        thread_id,
+        message_id_header: "<secretmsgid@example.com>".into(),
+        date: jiff::Timestamp::now(),
+        from: Address::new("A sender name nobody should see", "sender@example.com"),
+        to: vec![Address::bare("recipient@example.com")],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        reply_to: Vec::new(),
+        subject: "A subject line nobody should see".into(),
+        snippet: "a snippet nobody should see".into(),
+        flags: MessageFlags::default(),
+        labels: vec!["A label name nobody should see".into()],
+        has_attachments: false,
+        size: 42,
+        category: None,
+        pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
+        gmail: None,
+    };
+    store.ingest(account, vec![IngestMessage { message, mailbox: mailbox.id, uid: 1 }]).unwrap();
+    store.flush().unwrap();
+
+    let bytes = std::fs::read(dir.path().join(DB_FILENAME)).unwrap();
+    for needle in [
+        b"A folder name nobody should see".as_slice(),
+        b"A sender name nobody should see",
+        b"sender@example.com",
+        b"recipient@example.com",
+        b"A subject line nobody should see",
+        b"a snippet nobody should see",
+        b"A label name nobody should see",
+        b"secretmsgid@example.com",
+    ] {
+        assert!(
+            !bytes.windows(needle.len()).any(|w| w == needle),
+            "found {:?} in the database file",
+            String::from_utf8_lossy(needle)
+        );
+    }
+
+    // What *is* readable: a thread's `unread` and `last_date_us` clear
+    // columns, checked directly against the raw file's `thread_mailboxes`
+    // row rather than through the store, the same way
+    // `the_database_file_contains_no_readable_note_text` checks `pinned`.
+    let conn = raw(dir.path());
+    let unread: i64 = conn
+        .query_row(
+            "SELECT unread FROM thread_mailboxes WHERE thread_id = ?1 AND mailbox_id = ?2",
+            rusqlite::params![thread_id.to_string(), mailbox.id.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(unread, 1, "a fresh message's unread count is meant to be readable");
+
+    // And the store's own read path agrees with what was just written.
+    let page = store.list_threads(mailbox.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert_eq!(page.threads.len(), 1);
+    assert_eq!(page.threads[0].subject, "A subject line nobody should see");
 }

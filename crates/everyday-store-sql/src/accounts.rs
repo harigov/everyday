@@ -69,12 +69,50 @@ impl AccountStore for SqlStore {
         // account's own row goes last so a reader racing this transaction
         // never sees an account with no secret and no pointers, only an
         // account that still fully exists or one that is fully gone.
+        //
+        // Mail joins the cascade here rather than in its own store's
+        // `delete_account` -- there is no such method; `AccountStore` is the
+        // one place this trait promises the whole cascade happens, per its
+        // own module docs, and every mail table names `account_id` in the
+        // clear, which is what lets each of the eight statements below run
+        // as a plain indexed delete rather than a join back into `accounts`.
+        // Deleted inside-out -- bodies and `message_mailboxes` before the
+        // messages they point at, `thread_mailboxes` before the threads --
+        // so that no statement's subquery ever reads a row a later statement
+        // in the same transaction has already removed.
+        let account = vals![id.to_string()];
         let mut conn = self.write();
         let mut tx = conn.begin()?;
+        tx.execute(
+            "DELETE FROM bodies WHERE message_id IN
+                 (SELECT id FROM mail_messages WHERE account_id = ?1)",
+            &account,
+        )?;
+        tx.execute(
+            "DELETE FROM message_mailboxes WHERE message_id IN
+                 (SELECT id FROM mail_messages WHERE account_id = ?1)",
+            &account,
+        )?;
+        tx.execute(
+            "DELETE FROM thread_mailboxes WHERE thread_id IN
+                 (SELECT id FROM threads WHERE account_id = ?1)",
+            &account,
+        )?;
+        tx.execute("DELETE FROM mail_messages WHERE account_id = ?1", &account)?;
+        tx.execute("DELETE FROM threads WHERE account_id = ?1", &account)?;
+        tx.execute("DELETE FROM mailboxes WHERE account_id = ?1", &account)?;
+        tx.execute("DELETE FROM drafts WHERE account_id = ?1", &account)?;
+        tx.execute("DELETE FROM ops WHERE account_id = ?1", &account)?;
+        // `mail_packs` is the Postgres-only, table-backed home for raw
+        // messages -- see `everyday_core::packstore` and `crate::packs`. A
+        // SQLite vault has no rows here to delete; the statement is simply a
+        // no-op on that backend, exactly as `blobs` would be for a vault
+        // whose media live in files instead.
+        tx.execute("DELETE FROM mail_packs WHERE account_id = ?1", &account)?;
         let owner = vals![ACCOUNT_SECRET_OWNER_KIND, id.to_string()];
         tx.execute("DELETE FROM record_secrets WHERE owner_kind = ?1 AND owner_id = ?2", &owner)?;
-        tx.execute("DELETE FROM account_calendars WHERE account_id = ?1", &vals![id.to_string()])?;
-        tx.execute("DELETE FROM accounts WHERE id = ?1", &vals![id.to_string()])?;
+        tx.execute("DELETE FROM account_calendars WHERE account_id = ?1", &account)?;
+        tx.execute("DELETE FROM accounts WHERE id = ?1", &account)?;
         tx.commit()
     }
 }

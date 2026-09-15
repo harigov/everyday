@@ -804,6 +804,34 @@ fn v8(d: Dialect) -> Vec<String> {
 /// `"account"`, exactly like every other per-record credential this step
 /// introduced.
 ///
+/// Phase 2 (and the draft/outbox records of phase 3) add the rest of this
+/// step: `mailboxes`, `mail_messages`, `message_mailboxes`, `threads`,
+/// `thread_mailboxes`, `bodies`, `drafts` and `ops` -- eight tables, all in
+/// the one migration this domain gets, per this function's own rule that a
+/// domain arrives once rather than a fresh version per phase. `messages` was
+/// not free to reuse -- version 6 already named the assistant's conversation
+/// turns that -- so the mail table is `mail_messages` throughout.
+///
+/// The sync cursors the plan's schema section lists separately
+/// (`uidvalidity`, the highest uid, `highestmodseq`) live on `mailboxes`
+/// itself, as the plan allows: a mailbox is already the one row per folder a
+/// sync task reads before it opens a connection, so a second table naming
+/// the same three numbers by the same primary key would only be a join
+/// nothing needs.
+///
+/// What stays in the clear is exactly what an index is built from --
+/// `everyday-store-sql`'s own module docs carry the full table, and
+/// `everyday_core::store::mail`'s carry the reasoning. In one line each:
+/// a mailbox's role and cursors (a folder called "Sent" is not a secret, and
+/// a sync task has to read them before it has decrypted anything); a
+/// message's thread, date, packed flags, size, category and pack address;
+/// `message_mailboxes`' uid, which is the address a `FETCH` or a `STORE`
+/// actually names; a thread's own aggregates and, in `thread_mailboxes`, its
+/// per-mailbox view of the same three numbers; a draft's account, state,
+/// `in_reply_to` and origin *kind*; an op's account, state, origin kind and
+/// `not_before`. Every subject, every address, every label's and every
+/// folder's actual name, every body and every op's `target` stay sealed.
+///
 /// `account_calendars` is a pointer table in the shape `purposes` pioneered:
 /// a calendar's own row stays wherever `calendars` puts it, and this says
 /// only which account it came from, so that deleting an account can find
@@ -814,7 +842,8 @@ fn v8(d: Dialect) -> Vec<String> {
 /// delete_account` promises today to clear it, and a promise about a table
 /// that does not exist yet is not a promise this crate can keep.
 fn v9(d: Dialect) -> Vec<String> {
-    let (blob, int) = (d.blob(), d.int());
+    let (blob, int, boolean) = (d.blob(), d.int(), d.boolean());
+    let f = d.bool_default(false);
     vec![
         format!(
             "CREATE TABLE IF NOT EXISTS record_secrets (
@@ -854,6 +883,137 @@ fn v9(d: Dialect) -> Vec<String> {
         "CREATE INDEX IF NOT EXISTS account_calendars_by_account \
          ON account_calendars (account_id)"
             .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS mailboxes (
+                 id             TEXT    PRIMARY KEY NOT NULL,
+                 account_id     TEXT    NOT NULL,
+                 role           TEXT    NOT NULL,
+                 uidvalidity    {int} NOT NULL DEFAULT 0,
+                 uidnext        {int} NOT NULL DEFAULT 0,
+                 highest_modseq {int} NOT NULL DEFAULT 0,
+                 data           {blob} NOT NULL
+             )"
+        ),
+        // Every mailbox of one account -- what `list_mailboxes` reads, and
+        // what an account's cascade deletes by.
+        "CREATE INDEX IF NOT EXISTS mailboxes_by_account ON mailboxes (account_id)".into(),
+        // Named `mail_messages`, not `messages` -- version 6 already claimed
+        // that name for the assistant's conversation turns, and `IF NOT
+        // EXISTS` would otherwise silently keep *that* table's shape here,
+        // leaving every column below unrecognised.
+        format!(
+            "CREATE TABLE IF NOT EXISTS mail_messages (
+                 id               TEXT    PRIMARY KEY NOT NULL,
+                 account_id       TEXT    NOT NULL,
+                 thread_id        TEXT    NOT NULL,
+                 date_us          {int} NOT NULL,
+                 flags            {int} NOT NULL DEFAULT 0,
+                 has_attachments  {boolean} NOT NULL DEFAULT {f},
+                 size             {int} NOT NULL DEFAULT 0,
+                 category         TEXT,
+                 pack_id          TEXT    NOT NULL,
+                 pack_offset      {int} NOT NULL,
+                 pack_len         {int} NOT NULL,
+                 data             {blob} NOT NULL
+             )"
+        ),
+        // One thread's messages, oldest first -- what `thread` reads, and
+        // what every aggregate recompute (ingest, a flag change, a removal)
+        // scans to recount a thread without decrypting it.
+        "CREATE INDEX IF NOT EXISTS mail_messages_by_thread ON mail_messages (thread_id, date_us)"
+            .into(),
+        // What an account's cascade deletes by, and what
+        // `attachment_blob_refs` would otherwise have to join `mailboxes`
+        // to find.
+        "CREATE INDEX IF NOT EXISTS mail_messages_by_account ON mail_messages (account_id)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS message_mailboxes (
+                 message_id  TEXT NOT NULL,
+                 mailbox_id  TEXT NOT NULL,
+                 uid         {int} NOT NULL,
+                 PRIMARY KEY (message_id, mailbox_id)
+             )"
+        ),
+        // The uid is the address a `FETCH`, a `STORE` or a `UID SEARCH` diff
+        // actually names -- `message_by_uid`, `update_flags`,
+        // `update_labels`, `remove_uids` and `uid_set` all read through this.
+        "CREATE INDEX IF NOT EXISTS message_mailboxes_by_mailbox \
+         ON message_mailboxes (mailbox_id, uid)"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS threads (
+                 id                TEXT    PRIMARY KEY NOT NULL,
+                 account_id        TEXT    NOT NULL,
+                 last_date_us      {int} NOT NULL,
+                 unread            {int} NOT NULL DEFAULT 0,
+                 category          TEXT,
+                 snoozed_until_us  {int},
+                 data              {blob} NOT NULL
+             )"
+        ),
+        // `threads_in_category` and the account cascade both read one
+        // account's threads, newest first; not named in the plan's own
+        // index list, which only names the mailbox-scoped read, but a query
+        // this trait exposes needs one covering index or it is a full scan
+        // of every thread in the vault.
+        "CREATE INDEX IF NOT EXISTS threads_by_account \
+         ON threads (account_id, last_date_us DESC, id)"
+            .into(),
+        // The snooze scheduler's own question: what wakes, and when.
+        "CREATE INDEX IF NOT EXISTS threads_by_snoozed ON threads (snoozed_until_us)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS thread_mailboxes (
+                 thread_id     TEXT NOT NULL,
+                 mailbox_id    TEXT NOT NULL,
+                 last_date_us  {int} NOT NULL,
+                 unread        {int} NOT NULL DEFAULT 0,
+                 PRIMARY KEY (thread_id, mailbox_id)
+             )"
+        ),
+        // The one index the plan names by hand: what an inbox actually
+        // pages over, keyset-paged by `(mailbox_id, last_date_us DESC,
+        // thread_id)`.
+        "CREATE INDEX IF NOT EXISTS thread_mailboxes_by_mailbox \
+         ON thread_mailboxes (mailbox_id, last_date_us DESC, thread_id)"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS bodies (
+                 message_id  TEXT PRIMARY KEY NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS drafts (
+                 id           TEXT    PRIMARY KEY NOT NULL,
+                 account_id   TEXT    NOT NULL,
+                 in_reply_to  TEXT,
+                 state        TEXT    NOT NULL,
+                 origin       TEXT    NOT NULL,
+                 updated_us   {int} NOT NULL,
+                 data         {blob} NOT NULL
+             )"
+        ),
+        // The compose list and the "what is this in reply to" lookup.
+        "CREATE INDEX IF NOT EXISTS drafts_by_account \
+         ON drafts (account_id, state, updated_us)"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS ops (
+                 id             TEXT    PRIMARY KEY NOT NULL,
+                 account_id     TEXT    NOT NULL,
+                 state          TEXT    NOT NULL,
+                 origin         TEXT    NOT NULL,
+                 not_before_us  {int} NOT NULL,
+                 data           {blob} NOT NULL
+             )"
+        ),
+        // The drain loop's own query: one account's pending ops, due first.
+        "CREATE INDEX IF NOT EXISTS ops_by_account_state \
+         ON ops (account_id, state, not_before_us)"
+            .into(),
+        // "What did the assistant do" -- every op of one origin kind, in
+        // order.
+        "CREATE INDEX IF NOT EXISTS ops_by_origin ON ops (origin, not_before_us)".into(),
     ]
 }
 

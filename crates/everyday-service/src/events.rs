@@ -150,6 +150,15 @@ pub enum Kind {
     Goal,
     /// A mailbox provider signed in to. See `everyday_core::account`.
     Account,
+    /// A folder or a Gmail label, synced from an account. See
+    /// `everyday_core::mail`.
+    Mailbox,
+    /// A conversation of mail messages -- not to be confused with
+    /// [`Kind::Conversation`], the assistant's own.
+    Thread,
+    /// A message being written -- by a person, by the assistant, or by the
+    /// auto-draft pass phase 7 adds.
+    Draft,
     Conversation,
     /// The assistant's standing work.
     Routine,

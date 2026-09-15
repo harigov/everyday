@@ -77,6 +77,15 @@ pub enum Scope {
     /// catalogues themselves -- those read `assistant_access` and
     /// `mcp_access` off the account they are already scoped to, not this.
     Accounts,
+    /// Mail: mailboxes, threads and the messages in them.
+    ///
+    /// Its own scope, not a corner of `Journals`: mail is the one domain
+    /// whose contents are written by strangers, and a client that could
+    /// read it has no business inheriting that from a broader grant it
+    /// asked for a diary. Never what the assistant's or MCP's mail tools
+    /// check -- phase 5 reads `assistant_access` and `mcp_access` off the
+    /// account a call already names, not this.
+    Mail,
     Agent,
     /// Spending the quick model: the small extractions in
     /// [`everyday_core::quick`].
@@ -130,6 +139,7 @@ impl Scope {
             Scope::Trackers => "trackers",
             Scope::Purpose => "purpose",
             Scope::Accounts => "accounts",
+            Scope::Mail => "mail",
             Scope::Agent => "agent",
             Scope::Quick => "quick",
             Scope::Web => "web",
@@ -152,6 +162,7 @@ impl Scope {
         Scope::Trackers,
         Scope::Purpose,
         Scope::Accounts,
+        Scope::Mail,
         Scope::Agent,
         Scope::Quick,
         Scope::Web,

@@ -85,6 +85,7 @@ pub mod ics;
 pub mod id;
 pub mod library;
 pub mod lockfile;
+pub mod mail;
 pub mod mailsearch;
 pub mod media;
 pub mod model;
@@ -116,17 +117,23 @@ pub use blobstore::FileBlobStore;
 pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatus, SyncReport};
 pub use error::{Error, Result};
 pub use id::{
-    AccountId, BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, GoalId, ItemId,
-    JournalId, KindId, LogId, MemoryId, MessageId, NoteId, ProjectId, ReadingId, RoleId, RoutineId,
-    RoutineRunId, TaskId, TrackerId,
+    AccountId, BlobId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId,
+    ItemId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NoteId, OpId,
+    PackId, ProjectId, ReadingId, RoleId, RoutineId, RoutineRunId, TaskId, ThreadId, TrackerId,
 };
 pub use library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,
     LogEntry, LogEvent, Progress, Verbs,
 };
+pub use mail::{
+    Address as MailAddress, Body as MailBody, Category as MailCategory, Draft as MailDraft,
+    DraftState as MailDraftState, GmailMeta, Mailbox, MailboxRole, Message as MailMessage,
+    MessageFlags, Op as MailOp, OpKind as MailOpKind, OpState as MailOpState,
+    OpTarget as MailOpTarget, Origin as MailOrigin, PartRef as MailPartRef, Thread as MailThread,
+};
 pub use mailsearch::{
-    Clause, DateBound, Hit, MailDoc, MailQuery, MailSearch, MessageKey, Op, QueryGroup, RelUnit,
-    SearchCursor, SearchPage, TextMatch, ThreadKey,
+    Clause, DateBound, Hit, MailDoc, MailQuery, MailSearch, MessageKey, Op as QueryOp, QueryGroup,
+    RelUnit, SearchCursor, SearchPage, TextMatch, ThreadKey,
 };
 pub use model::{Attachment, Entry, EntrySummary, Journal, Location, MediaKind, Weather};
 pub use note::{Note, NoteSummary};
@@ -141,6 +148,7 @@ pub use store::accounts::AccountStore;
 pub use store::agent::{AgentStore, ConversationQuery};
 pub use store::calendars::{CalendarStore, EventQuery};
 pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
+pub use store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
 pub use store::notes::{NoteQuery, NoteSort, NoteStore};
 pub use store::purpose::{GoalQuery, PurposeStore, PurposeWindow};
 pub use store::routines::RunQuery;

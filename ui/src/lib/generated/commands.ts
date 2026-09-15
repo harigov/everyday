@@ -60,6 +60,8 @@ import type {
   LogId,
   LogQuery,
   MailProviderInfo,
+  Mailbox,
+  MailboxId,
   Memory,
   MemoryId,
   Note,
@@ -108,6 +110,10 @@ import type {
   TaskStats,
   TaskStatus,
   Template,
+  ThreadDetail,
+  ThreadFilter,
+  ThreadId,
+  ThreadPage,
   TimeBlock,
   ToolInfo,
   Tracker,
@@ -176,6 +182,7 @@ export interface Commands {
   getNote: { args: { id: NoteId }; result: Note }
   getRun: { args: { id: RoutineRunId }; result: RoutineRun }
   getTask: { args: { id: TaskId }; result: Task }
+  getThread: { args: { id: ThreadId }; result: ThreadDetail }
   goalActivity: { args: { id: GoalId }; result: GoalActivity }
   importCalendar: {
     args: { name: string; label: string; color: string; ics: string }
@@ -197,6 +204,7 @@ export interface Commands {
   listJournals: { args: Record<string, never>; result: Journal[] }
   listKinds: { args: Record<string, never>; result: KindInfo[] }
   listLogs: { args: { query: LogQuery }; result: LogEntry[] }
+  listMailboxes: { args: { account: AccountId }; result: Mailbox[] }
   listMemories: { args: Record<string, never>; result: Memory[] }
   listNotes: { args: { query?: NoteQuery }; result: NoteSummary[] }
   listParts: { args: Record<string, never>; result: PartInfo[] }
@@ -207,6 +215,15 @@ export interface Commands {
   listRuns: { args: { query?: RunQuery }; result: RoutineRun[] }
   listTags: { args: Record<string, never>; result: string[] }
   listTasks: { args: { query: TaskQuery }; result: Task[] }
+  listThreads: {
+    args: {
+      mailbox: MailboxId
+      filter?: ThreadFilter
+      cursor?: string | null
+      limit?: number | null
+    }
+    result: ThreadPage
+  }
   listTools: { args: Record<string, never>; result: ToolInfo[] }
   listTrackers: { args: Record<string, never>; result: Tracker[] }
   lock: { args: Record<string, never>; result: VaultStatus }
@@ -407,6 +424,7 @@ export const COMMAND_NAMES = {
   getNote: 'get_note',
   getRun: 'get_run',
   getTask: 'get_task',
+  getThread: 'get_thread',
   goalActivity: 'goal_activity',
   importCalendar: 'import_calendar',
   libraryStats: 'library_stats',
@@ -422,6 +440,7 @@ export const COMMAND_NAMES = {
   listJournals: 'list_journals',
   listKinds: 'list_kinds',
   listLogs: 'list_logs',
+  listMailboxes: 'list_mailboxes',
   listMemories: 'list_memories',
   listNotes: 'list_notes',
   listParts: 'list_parts',
@@ -432,6 +451,7 @@ export const COMMAND_NAMES = {
   listRuns: 'list_runs',
   listTags: 'list_tags',
   listTasks: 'list_tasks',
+  listThreads: 'list_threads',
   listTools: 'list_tools',
   listTrackers: 'list_trackers',
   lock: 'lock',
@@ -596,6 +616,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'get_note',
   'get_run',
   'get_task',
+  'get_thread',
   'goal_activity',
   'import_calendar',
   'library_stats',
@@ -611,6 +632,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_journals',
   'list_kinds',
   'list_logs',
+  'list_mailboxes',
   'list_memories',
   'list_notes',
   'list_parts',
@@ -621,6 +643,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_runs',
   'list_tags',
   'list_tasks',
+  'list_threads',
   'list_tools',
   'list_trackers',
   'lock',
