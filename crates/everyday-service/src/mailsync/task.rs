@@ -37,6 +37,28 @@
 //! `select!`s race a sleep to exactly that instant alongside their other
 //! arms -- `None`, when nothing is pending, is a branch that simply never
 //! wins.
+//!
+//! # Cancelling `IDLE` without losing the connection
+//!
+//! [`MailSession::idle`] takes the session's own connection out for as long
+//! as the call lasts and only hands it back once the call itself returns --
+//! see [`everyday_mail::imap::ImapSession::idle`]'s own docs. Racing the
+//! call in a `tokio::select!` the way an earlier version of this loop did
+//! is exactly wrong, then: the instant any other arm wins, the idle future
+//! is dropped mid-flight, and with it the connection `session_mut` would
+//! need for the very next drain -- every op due right after an `IDLE` wake
+//! (which is most of them, since a nudge or an outbox notification is what
+//! wakes this loop) failed with a non-retryable "mid-IDLE" error and was
+//! reverted. [`wait_for_wake`] is this loop's one race of everything that
+//! should end an `IDLE` early; rather than racing it *against* the call,
+//! the loop below sends on a wake channel `session.idle` is watching and
+//! then awaits the call through to its own clean return, exactly the way
+//! this same loop already asks `idle` to stop for the supervisor's own
+//! `stop` signal. As defence in depth, a session found missing between
+//! drains -- which this fix means should no longer actually happen --
+//! reads as [`MailError::Network`] (retryable) rather than
+//! [`MailError::Protocol`] (permanent); see
+//! [`everyday_mail::imap::ImapSession::session_mut`]'s own docs.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -269,41 +291,77 @@ where
                 )
             });
         if !can_idle {
-            tokio::select! {
-                () = tokio::time::sleep(POLL_INTERVAL) => continue,
-                _ = stop.changed() => return Ok(Outcome::Done),
-                _ = nudged.changed() => continue,
-                () = outbox_notify.notified() => continue,
-                () = sleep_until_due(next_wake) => continue,
+            match wait_for_wake(&mut stop, &mut nudged, &outbox_notify, next_wake).await {
+                Wake::Stop => return Ok(Outcome::Done),
+                Wake::Nudge | Wake::OutboxNotify | Wake::Due | Wake::Poll => continue,
             }
         }
 
-        // A throwaway stop channel: `MailSession::idle` wants its own
-        // `Receiver<()>`, and the supervisor's is a `Receiver<bool>`. Never
-        // sent to -- the `select!` below is what actually races the
-        // supervisor's stop signal (and a `sync_account` nudge, and an
-        // outbox notification) against the idle call, dropping the latter
-        // (and, with it, the connection) if any of them wins, which is an
-        // entirely ordinary way for an IMAP session to end.
-        let (_never_tx, never_rx) = watch::channel(());
-        tokio::select! {
-            _ = stop.changed() => return Ok(Outcome::Done),
-            _ = nudged.changed() => continue,
-            () = outbox_notify.notified() => continue,
-            () = sleep_until_due(next_wake) => continue,
-            outcome = tokio::time::timeout(POLL_INTERVAL, session.idle(never_rx)) => {
-                match outcome {
-                    Ok(Ok(IdleEvent::Activity | IdleEvent::Stopped)) => continue,
-                    Ok(Err(e)) => {
-                        statuses.set_error(account_id, e.to_string());
-                        return Err(e.to_string().into());
-                    }
-                    // The poll cadence elapsed with nothing reported: sweep
-                    // every mailbox anyway.
-                    Err(_elapsed) => continue,
-                }
+        // `IDLE`, watching a wake channel this loop turn owns for exactly
+        // as long as the call lasts. `session.idle` sends `DONE` and hands
+        // the session back the moment `wake_rx` changes -- see
+        // `MailSession::idle`'s own docs -- so every reason this task has
+        // to stop waiting (the supervisor's `stop`, a nudge, an outbox
+        // notification, a due op's deadline, or simply `POLL_INTERVAL`
+        // elapsing) ends the `IDLE` the same clean way, never by dropping
+        // the call outright the way racing it in a bare `select!` used to.
+        // Racing the call *itself* below is only ever won by `idle`
+        // finishing on its own account (real activity, or its own internal
+        // re-issue reporting an error) -- every other winner sends on
+        // `wake_tx` and then awaits `idle_call` through to completion
+        // rather than abandoning it.
+        let (wake_tx, wake_rx) = watch::channel(());
+        let idle_call = session.idle(wake_rx);
+        tokio::pin!(idle_call);
+        let (outcome, wake) = tokio::select! {
+            outcome = &mut idle_call => (outcome, None),
+            wake = wait_for_wake(&mut stop, &mut nudged, &outbox_notify, next_wake) => {
+                let _ = wake_tx.send(());
+                (idle_call.await, Some(wake))
+            }
+        };
+        if matches!(wake, Some(Wake::Stop)) {
+            return Ok(Outcome::Done);
+        }
+        match outcome {
+            Ok(IdleEvent::Activity | IdleEvent::Stopped) => continue,
+            Err(e) => {
+                statuses.set_error(account_id, e.to_string());
+                return Err(e.to_string().into());
             }
         }
+    }
+}
+
+/// Every reason this task's own `select!`s stop waiting, named so
+/// [`wait_for_wake`]'s callers can tell them apart without repeating the
+/// five-armed race themselves.
+enum Wake {
+    Stop,
+    Nudge,
+    OutboxNotify,
+    Due,
+    Poll,
+}
+
+/// Race the supervisor's stop signal, a `sync_account` nudge, an outbox
+/// notification, a due-but-not-yet op's deadline, and [`POLL_INTERVAL`]
+/// itself, and report whichever fires first. The one place both of this
+/// task's `select!`s -- the no-`IDLE` poll sleep and the `IDLE` call's own
+/// wake channel -- build their race from, so the five arms are written
+/// once.
+async fn wait_for_wake(
+    stop: &mut watch::Receiver<bool>,
+    nudged: &mut watch::Receiver<()>,
+    outbox_notify: &tokio::sync::Notify,
+    next_wake: Option<Duration>,
+) -> Wake {
+    tokio::select! {
+        _ = stop.changed() => Wake::Stop,
+        _ = nudged.changed() => Wake::Nudge,
+        () = outbox_notify.notified() => Wake::OutboxNotify,
+        () = sleep_until_due(next_wake) => Wake::Due,
+        () = tokio::time::sleep(POLL_INTERVAL) => Wake::Poll,
     }
 }
 

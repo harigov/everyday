@@ -133,8 +133,11 @@ const IDLE_REISSUE: Duration = Duration::from_secs(25 * 60);
 /// [`async_imap::Session::idle`] takes the session *by value* and hands it
 /// back on [`async_imap::extensions::idle::Handle::done`] — see
 /// [`ImapSession::idle`]. Every other method takes it out with
-/// [`ImapSession::session_mut`] and never sees it missing, because nothing
-/// else in this type gives it up.
+/// [`ImapSession::session_mut`] and, in the ordinary run of things, never
+/// sees it missing, because nothing else in this type gives it up and
+/// [`ImapSession::idle`] itself only ever returns once the session is back
+/// — see that method's own docs on why the caller feeding it a wake signal,
+/// rather than racing the call outright, is what makes that promise good.
 pub struct ImapSession {
     session: Option<ImapLibSession<TlsStream>>,
     capabilities: Capabilities,
@@ -150,16 +153,26 @@ pub struct ImapSession {
 }
 
 impl ImapSession {
+    /// [`MailError::Network`], not [`MailError::Protocol`] — defence in
+    /// depth, not the expected path. A caller that always lets
+    /// [`ImapSession::idle`] finish before doing anything else should never
+    /// actually see this: a missing session here means some future bug
+    /// elsewhere gave up on the call early, and the closest honest answer
+    /// this crate has for that is "no connection is available right now" —
+    /// the same shape a dropped socket already reports — so the drain loop
+    /// retries with backoff (see `is_retryable`) rather than permanently
+    /// failing an op and reversing a person's own action over what is, from
+    /// here, indistinguishable from an ordinary reconnect.
+    fn missing_session() -> MailError {
+        MailError::Network("no IMAP connection is available right now".into())
+    }
+
     fn session_mut(&mut self) -> Result<&mut ImapLibSession<TlsStream>> {
-        self.session.as_mut().ok_or_else(|| {
-            MailError::Protocol("the session is mid-IDLE and was not returned".into())
-        })
+        self.session.as_mut().ok_or_else(Self::missing_session)
     }
 
     fn take_session(&mut self) -> Result<ImapLibSession<TlsStream>> {
-        self.session.take().ok_or_else(|| {
-            MailError::Protocol("the session is mid-IDLE and was not returned".into())
-        })
+        self.session.take().ok_or_else(Self::missing_session)
     }
 
     async fn fetch_raw_batch(&mut self, batch: &UidSet) -> Result<Vec<(Uid, Vec<u8>)>> {
@@ -417,18 +430,20 @@ impl MailSession for ImapSession {
             return Ok(());
         }
 
-        // No MOVE: copy, mark the originals deleted, then expunge exactly
-        // this set. `UID EXPUNGE` (RFC 4315, UIDPLUS) only removes the UIDs
-        // named. Without UIDPLUS the only expunge there is removes *every*
-        // `\Deleted` message in the mailbox -- including ones another client
-        // marked and has not yet expunged, which would be deleting mail
-        // nobody asked this app to delete. So on such a server the originals
-        // are left marked `\Deleted` and not expunged: every client hides
-        // them, the next expunge by whoever owns that decision removes them,
-        // and nothing is lost that someone did not choose to lose.
-        let uidplus = self.capabilities.uidplus;
+        // No MOVE: copy, then delete the originals -- see `Self::delete`'s
+        // own docs for exactly how that leaves a server without UIDPLUS.
         let session = self.session_mut()?;
         session.uid_copy(&set, mailbox).await.map_err(classify)?;
+        self.delete(uids).await
+    }
+
+    async fn delete(&mut self, uids: &UidSet) -> Result<()> {
+        if uids.is_empty() {
+            return Ok(());
+        }
+        let set = uids.to_imap();
+        let uidplus = self.capabilities.uidplus;
+        let session = self.session_mut()?;
         run_fetch_command(
             session,
             &format!("UID STORE {set} +FLAGS.SILENT (\\Deleted)"),
@@ -1053,6 +1068,30 @@ fn classify_auth(err: ImapLibError) -> MailError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The regression for "cancelling IDLE loses the IMAP connection"'s
+    /// defence-in-depth half: a session found missing (this test's own
+    /// stand-in for the moment [`ImapSession::idle`] used to be cancelled
+    /// mid-flight, dropping the connection with it) must read as
+    /// [`MailError::Network`] -- retryable -- never
+    /// [`MailError::Protocol`], which the drain loop treats as permanent
+    /// and reverses the person's own action over.
+    #[test]
+    fn a_missing_session_is_retryable_not_a_permanent_protocol_error() {
+        let mut session = ImapSession {
+            session: None,
+            capabilities: Capabilities::default(),
+            special_use: false,
+            selected: None,
+        };
+        let err = session.session_mut().unwrap_err();
+        assert!(matches!(err, MailError::Network(_)), "{err:?}");
+        assert!(crate::outbox::is_retryable(&err));
+
+        let err = session.take_session().unwrap_err();
+        assert!(matches!(err, MailError::Network(_)), "{err:?}");
+        assert!(crate::outbox::is_retryable(&err));
+    }
 
     #[test]
     fn enable_condstore_is_sent_only_when_both_are_advertised() {

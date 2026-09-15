@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use everyday_core::account::{Account, Provider};
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
 use everyday_core::mail::{
-    Address, CategorySource, Mailbox, MailboxRole, Message, MessageFlags, OpState, Origin,
+    Address, CategorySource, Mailbox, MailboxRole, Message, MessageFlags, OpKind, OpState, Origin,
 };
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::IngestMessage;
@@ -120,6 +120,24 @@ fn seed_message(svc: &Arc<Service>, account: AccountId, mailbox: MailboxId, uid:
 #[derive(Default)]
 struct FakeSession {
     capabilities: Capabilities,
+    /// One-shot failure, consumed the first time any call below checks it --
+    /// what lets a test drive `drain_outbox` into its retryable branch
+    /// without a real socket to disconnect.
+    fail_next: Option<MailError>,
+    selected: Option<String>,
+    /// Every call this fake was asked to make, in order -- what a test
+    /// checks to prove something (a label mailbox, a Sent copy) was never
+    /// touched, not only that the right thing was.
+    calls: Vec<String>,
+}
+
+impl FakeSession {
+    fn take_failure(&mut self) -> SessionResult<()> {
+        match self.fail_next.take() {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
+    }
 }
 
 #[allow(async_fn_in_trait)]
@@ -127,7 +145,10 @@ impl MailSession for FakeSession {
     async fn mailboxes(&mut self) -> SessionResult<Vec<RemoteMailbox>> {
         Ok(Vec::new())
     }
-    async fn select(&mut self, _mailbox: &str) -> SessionResult<MailboxState> {
+    async fn select(&mut self, mailbox: &str) -> SessionResult<MailboxState> {
+        self.take_failure()?;
+        self.selected = Some(mailbox.to_string());
+        self.calls.push(format!("select {mailbox}"));
         Ok(MailboxState::default())
     }
     async fn changes_since(&mut self, _c: &SyncCursor, _k: &UidSet) -> SessionResult<Changes> {
@@ -139,23 +160,42 @@ impl MailSession for FakeSession {
     async fn raw(&mut self, _uids: &UidSet) -> SessionResult<RawStream<'_>> {
         Ok(Box::pin(futures::stream::empty::<SessionResult<(Uid, Vec<u8>)>>()))
     }
-    async fn store_flags(
-        &mut self,
-        _uids: &UidSet,
-        _add: Flags,
-        _remove: Flags,
-    ) -> SessionResult<()> {
+    async fn store_flags(&mut self, uids: &UidSet, add: Flags, remove: Flags) -> SessionResult<()> {
+        self.calls.push(format!(
+            "store_flags {} on {:?} +{add:?} -{remove:?}",
+            uids.to_imap(),
+            self.selected
+        ));
         Ok(())
     }
-    async fn move_to(&mut self, _uids: &UidSet, _mailbox: &str) -> SessionResult<()> {
+    async fn store_gmail_labels(
+        &mut self,
+        uids: &UidSet,
+        add: &[String],
+        remove: &[String],
+    ) -> SessionResult<()> {
+        self.calls.push(format!(
+            "store_gmail_labels {} on {:?} +{add:?} -{remove:?}",
+            uids.to_imap(),
+            self.selected
+        ));
+        Ok(())
+    }
+    async fn move_to(&mut self, uids: &UidSet, mailbox: &str) -> SessionResult<()> {
+        self.calls.push(format!("move_to {} on {:?} -> {mailbox}", uids.to_imap(), self.selected));
+        Ok(())
+    }
+    async fn delete(&mut self, uids: &UidSet) -> SessionResult<()> {
+        self.calls.push(format!("delete {} on {:?}", uids.to_imap(), self.selected));
         Ok(())
     }
     async fn append(
         &mut self,
-        _mailbox: &str,
+        mailbox: &str,
         _raw: &[u8],
-        _flags: Flags,
+        flags: Flags,
     ) -> SessionResult<Option<Uid>> {
+        self.calls.push(format!("append to {mailbox} ({flags:?})"));
         Ok(Some(1))
     }
     async fn search_message_id(
@@ -458,4 +498,243 @@ async fn unsnoozing_early_clears_it_with_no_outbox_op() {
     let due =
         vault.due_ops(account, Timestamp::now() + SignedDuration::from_secs(3_600), 10).unwrap();
     assert_eq!(due.len(), 1);
+}
+
+// ---- Gmail label rows are never selectable mailboxes -----------------------
+
+/// The regression for "Gmail label rows are treated as selectable
+/// mailboxes": a thread whose message lives in All Mail and is also filed
+/// under the `\Inbox` label and a user label ("Work") must, on archive and
+/// mark-read, only ever touch All Mail. Neither label mailbox is ever
+/// `SELECT`ed, and neither is stored to as if it named a real mailbox.
+#[tokio::test]
+async fn gmail_archive_and_mark_read_never_touch_a_label_mailbox() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let all_mail = seed_mailbox(&svc, account, "[Gmail]/All Mail", MailboxRole::All);
+    let inbox_label = seed_mailbox(&svc, account, "\\Inbox", MailboxRole::Inbox);
+    let work_label = seed_mailbox(&svc, account, "Work", MailboxRole::Other);
+
+    let vault = svc.get().unwrap();
+    let thread_id = ThreadId::new();
+    let message_id = MailMessageId::new();
+    let message = Message {
+        id: message_id,
+        account_id: account,
+        thread_id,
+        message_id_header: format!("<{message_id}@example.com>"),
+        date: Timestamp::now(),
+        from: Address::bare("sender@example.com"),
+        to: vec![Address::bare("me@example.com")],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        reply_to: Vec::new(),
+        subject: "A labelled message".into(),
+        snippet: String::new(),
+        flags: MessageFlags::default(),
+        labels: vec!["Work".into()],
+        has_attachments: false,
+        size: 128,
+        category: None,
+        category_source: CategorySource::Rules,
+        pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
+        gmail: None,
+        invite: None,
+    };
+    // One physical message, filed under three mailbox rows at once -- All
+    // Mail, where it lives, and the two label memberships a real Gmail sync
+    // would also record. The label rows' own `uid`s are deliberately
+    // different from All Mail's so a test that wrongly acted on one fails
+    // loudly rather than by coincidence agreeing.
+    vault
+        .ingest_mail(
+            account,
+            vec![
+                IngestMessage { message: message.clone(), mailbox: all_mail, uid: 42 },
+                IngestMessage { message: message.clone(), mailbox: inbox_label, uid: 1 },
+                IngestMessage { message, mailbox: work_label, uid: 1 },
+            ],
+        )
+        .unwrap();
+
+    vault.apply_thread_ops(&[thread_id], OpKind::MarkRead, Origin::Person).unwrap();
+    vault.apply_thread_ops(&[thread_id], OpKind::Archive, Origin::Person).unwrap();
+
+    let mut session = FakeSession {
+        capabilities: Capabilities { gmail: true, ..Default::default() },
+        ..Default::default()
+    };
+    let sender = FakeSender;
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.attempted, 2, "{report:?}");
+    assert_eq!(report.done, 2, "{report:?}");
+    assert_eq!(report.failed, 0, "{report:?}");
+
+    assert!(
+        session.calls.iter().any(|c| c.contains("select [Gmail]/All Mail")),
+        "All Mail must be selected: {:?}",
+        session.calls
+    );
+    assert!(
+        !session.calls.iter().any(|c| c.contains("select \\Inbox") || c.contains("select Work")),
+        "a label mailbox must never be selected: {:?}",
+        session.calls
+    );
+}
+
+// ---- backoff: the first retry waits thirty seconds, not sixty --------------
+
+/// The regression for the backoff off-by-one: `attempts` must be read by
+/// [`everyday_core::mail::backoff_for_attempt`] *before* it is incremented,
+/// so a first-ever retryable failure waits the schedule's first entry
+/// (thirty seconds), not its second (a minute).
+#[tokio::test]
+async fn a_first_retry_backs_off_thirty_seconds_not_sixty() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let inbox = seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+    seed_mailbox(&svc, account, "Archive", MailboxRole::Archive);
+    let thread = seed_message(&svc, account, inbox, 1);
+
+    let ops = call(&svc, "archive", json!({ "threads": [thread] })).await;
+    let op_id: everyday_core::id::OpId =
+        ops.as_array().unwrap()[0]["id"].as_str().unwrap().parse().unwrap();
+
+    let mut session = FakeSession {
+        fail_next: Some(MailError::Network("connection reset".into())),
+        ..Default::default()
+    };
+    let sender = FakeSender;
+    let before = Timestamp::now();
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.retried, 1, "{report:?}");
+
+    let vault = svc.get().unwrap();
+    let op = vault.op(op_id).unwrap();
+    assert_eq!(op.attempts, 1);
+    let waited = before.duration_until(op.not_before);
+    assert!(
+        waited >= SignedDuration::from_secs(25) && waited < SignedDuration::from_secs(45),
+        "the first retry must back off about thirty seconds, not sixty: waited {waited:?}"
+    );
+}
+
+// ---- a draft's server copy: preserved by autosave, removed by send/discard -
+
+/// The regression for "draft server copies leak" (b): an ordinary autosave
+/// must never erase the server-owned fields -- `serverCopy` chief among
+/// them -- that the last `AppendDraft` recorded, even though the client's
+/// own copy of the draft never learns them and so resends without them.
+#[tokio::test]
+async fn saving_a_draft_again_does_not_erase_its_recorded_server_copy() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    seed_mailbox(&svc, account, "Drafts", MailboxRole::Drafts);
+
+    let draft = call(&svc, "new_draft", json!({ "account": account })).await;
+    let draft_id: everyday_core::id::DraftId = draft["id"].as_str().unwrap().parse().unwrap();
+    call(&svc, "save_draft", json!({ "draft": draft.clone() })).await;
+
+    let mut session = FakeSession::default();
+    let sender = FakeSender;
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.done, 1, "the AppendDraft must have run: {report:?}");
+
+    let vault = svc.get().unwrap();
+    let after_append = vault.draft(draft_id).unwrap();
+    assert!(after_append.server_copy.is_some(), "AppendDraft must have recorded a server copy");
+
+    // The client's own next autosave: it never learnt where the append
+    // landed, so its JSON carries no `serverCopy` at all -- exactly the
+    // stale write that used to overwrite the vault's own record of it.
+    let mut stale = draft;
+    stale["subject"] = json!("Edited a little more");
+    assert!(stale.get("serverCopy").is_none(), "a client never sends this back");
+    call(&svc, "save_draft", json!({ "draft": stale })).await;
+
+    let after_second_save = vault.draft(draft_id).unwrap();
+    assert_eq!(
+        after_second_save.server_copy, after_append.server_copy,
+        "an ordinary autosave must not erase the server-owned server_copy field"
+    );
+    assert_eq!(
+        after_second_save.subject, "Edited a little more",
+        "the edit itself must still land"
+    );
+}
+
+/// (a), the send half: once a queued send actually reaches the server, the
+/// draft's own stale copy in Drafts must be deleted.
+#[tokio::test]
+async fn sending_a_draft_removes_its_server_copy() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    seed_mailbox(&svc, account, "Drafts", MailboxRole::Drafts);
+    seed_mailbox(&svc, account, "Sent", MailboxRole::Sent);
+
+    let mut draft = call(&svc, "new_draft", json!({ "account": account })).await;
+    draft["to"] = json!([{ "name": "", "email": "bob@example.com" }]);
+    draft["subject"] = json!("Hello");
+    call(&svc, "save_draft", json!({ "draft": draft.clone() })).await;
+    let draft_id: everyday_core::id::DraftId = draft["id"].as_str().unwrap().parse().unwrap();
+
+    let mut session = FakeSession::default();
+    let sender = FakeSender;
+    // The AppendDraft first, giving the draft its own server copy to leak.
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.done, 1, "{report:?}");
+    assert!(vault_draft(&svc, draft_id).server_copy.is_some());
+
+    call(&svc, "send_draft", json!({ "id": draft_id })).await;
+    let vault = svc.get().unwrap();
+    let mut op = vault
+        .due_ops(account, Timestamp::now() + SignedDuration::from_secs(3_600), 10)
+        .unwrap()
+        .into_iter()
+        .find(|o| o.state != OpState::Done)
+        .expect("the Send op");
+    op.not_before = Timestamp::now() - SignedDuration::from_secs(1);
+    vault.update_op(&op).unwrap();
+
+    let report2 = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report2.done, 1, "the Send must have run: {report2:?}");
+
+    assert!(
+        session.calls.iter().any(|c| c.contains("delete")),
+        "the stale Drafts copy must be deleted after sending: {:?}",
+        session.calls
+    );
+}
+
+/// (a), the discard half: discarding a draft that had a server copy
+/// enqueues its removal, and draining the outbox actually removes it.
+#[tokio::test]
+async fn discarding_a_draft_removes_its_server_copy() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    seed_mailbox(&svc, account, "Drafts", MailboxRole::Drafts);
+
+    let draft = call(&svc, "new_draft", json!({ "account": account })).await;
+    let draft_id: everyday_core::id::DraftId = draft["id"].as_str().unwrap().parse().unwrap();
+    call(&svc, "save_draft", json!({ "draft": draft.clone() })).await;
+
+    let mut session = FakeSession::default();
+    let sender = FakeSender;
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.done, 1, "the AppendDraft must have run: {report:?}");
+    assert!(vault_draft(&svc, draft_id).server_copy.is_some());
+
+    call(&svc, "discard_draft", json!({ "id": draft_id })).await;
+
+    let report2 = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report2.done, 1, "the DiscardDraft op must have run: {report2:?}");
+    assert!(
+        session.calls.iter().any(|c| c.contains("delete")),
+        "discarding must delete the server copy: {:?}",
+        session.calls
+    );
+}
+
+fn vault_draft(svc: &Arc<Service>, id: everyday_core::id::DraftId) -> everyday_core::mail::Draft {
+    svc.get().unwrap().draft(id).unwrap()
 }

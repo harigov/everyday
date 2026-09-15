@@ -169,9 +169,17 @@ where
                 // in an already-open session. See `crate::mailsync::sender`
                 // for the one retry-with-a-fresh-token this crate allows
                 // itself before ever surfacing `Auth` at all.
+                //
+                // `backoff_for_attempt` is read *before* `attempts` is
+                // bumped -- it is documented as 0-indexed ("the first
+                // retry, after attempt 0 failed, waits `RETRY_BACKOFF[0]`"),
+                // so reading it after incrementing would make the very
+                // first retry wait the *second* schedule entry (a minute)
+                // instead of the first (thirty seconds), and every later
+                // retry one step further out than the schedule promises.
+                let backoff = everyday_core::mail::backoff_for_attempt(op.attempts);
                 op.attempts += 1;
                 op.last_error = Some(reason.clone());
-                let backoff = everyday_core::mail::backoff_for_attempt(op.attempts);
                 op.not_before = Timestamp::now() + backoff;
                 op.transition_to(OpState::Pending)?;
                 persist_op(&vault, &op).await?;
@@ -179,9 +187,11 @@ where
                 report.retried += 1;
             }
             Err(err) if is_retryable(&err) => {
+                // See the `Auth` arm above for why the backoff is read
+                // before `attempts` is bumped.
+                let backoff = everyday_core::mail::backoff_for_attempt(op.attempts);
                 op.attempts += 1;
                 op.last_error = Some(err.to_string());
-                let backoff = everyday_core::mail::backoff_for_attempt(op.attempts);
                 op.not_before = Timestamp::now() + backoff;
                 op.transition_to(OpState::Pending)?;
                 persist_op(&vault, &op).await?;
@@ -510,17 +520,55 @@ impl VaultLookups {
         self.svc.require()
     }
 
+    /// Every `(mailbox, uid)` `id` is filed under, turned into
+    /// [`Located`]s -- except, on a Gmail account, the ones that are really
+    /// a label membership rather than a place the message physically lives.
+    ///
+    /// `docs/plans/mail.md`'s Gmail folder rule means `\Inbox` and every
+    /// user label reach the vault as [`everyday_core::mail::Mailbox`] rows
+    /// of their own (see
+    /// `crate::mailsync::discovery`'s own module docs) so that
+    /// `message_mailboxes` can name a thread's presence under them the same
+    /// way it names presence in a real folder -- but a label was never
+    /// `SELECT`able, and the uid paired with it is All Mail's, not a uid in
+    /// some mailbox named after the label. Handing either straight to
+    /// [`everyday_mail::outbox::execute`] is what let it `SELECT` a label
+    /// by name (a permanent failure on `\Inbox`, since no such mailbox
+    /// exists to select) or store flags by an All Mail uid against whatever
+    /// real mailbox happened to share the label's name. So on Gmail this
+    /// filters down to exactly the five real, synced mailboxes
+    /// (`crate::mailsync::discovery::GMAIL_SYNCED_ROLES`) before anything
+    /// downstream ever sees a [`Located`] -- a label membership never
+    /// becomes one. Every mailbox is real on a non-Gmail account, so
+    /// nothing is filtered there.
     fn locations_of(&self, id: MailMessageId) -> everyday_mail::session::Result<Vec<Located>> {
         let vault = self.vault().map_err(lookup_err)?;
         let pairs = vault.mail_message_locations(id).map_err(vault_err)?;
-        pairs
-            .into_iter()
-            .map(|(mailbox, uid)| {
-                let name = vault.mailbox(mailbox).map_err(vault_err)?.remote_name;
-                Ok(Located { mailbox: name, uid })
-            })
-            .collect()
+        let mut out = Vec::with_capacity(pairs.len());
+        for (mailbox, uid) in pairs {
+            let mailbox = vault.mailbox(mailbox).map_err(vault_err)?;
+            if self.gmail && !is_gmail_selectable(mailbox.role) {
+                continue;
+            }
+            out.push(Located { mailbox: mailbox.remote_name, uid });
+        }
+        Ok(out)
     }
+}
+
+/// Is `role` one of Gmail's five genuinely `SELECT`able mailboxes -- see
+/// [`VaultLookups::locations_of`]'s own docs. `\Inbox` ([`MailboxRole::Inbox`])
+/// and every user label ([`MailboxRole::Other`]) are excluded on purpose:
+/// both are label memberships on Gmail, never folders.
+fn is_gmail_selectable(role: MailboxRole) -> bool {
+    matches!(
+        role,
+        MailboxRole::All
+            | MailboxRole::Sent
+            | MailboxRole::Drafts
+            | MailboxRole::Spam
+            | MailboxRole::Trash
+    )
 }
 
 impl Lookups for VaultLookups {

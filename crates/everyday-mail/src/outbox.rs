@@ -235,6 +235,7 @@ pub async fn execute<S: MailSession, T: Sender, L: Lookups>(
         OpKind::Snooze { .. } => Ok(Executed::Ok),
         OpKind::Send => send(op, ctx).await,
         OpKind::AppendDraft => append_draft(op, ctx).await,
+        OpKind::DiscardDraft => discard_draft_op(op, ctx).await.map(|()| Executed::Ok),
     }
 }
 
@@ -249,6 +250,36 @@ async fn locations<S: MailSession, T: Sender, L: Lookups>(
         OpTarget::Message(id) => ctx.lookups.message_locations(id),
         OpTarget::Draft(_) => Err(MailError::Protocol("this op kind cannot target a draft".into())),
     }
+}
+
+/// The locations an archive, trash or move acts on: every place the
+/// thread's messages live except Sent, Drafts and the destination itself.
+///
+/// Not "every location", because a thread's reply sitting in Sent, or a
+/// draft's own copy, must never be relocated just because the conversation
+/// was archived, and a move from a mailbox to itself is refused by some
+/// servers. And not "only the Inbox" either, because moving an archived
+/// thread back to the Inbox, or trashing it from Archive or a custom folder,
+/// is an ordinary thing to ask -- restricting to one source mailbox made
+/// both silently do nothing. On Gmail, where Sent and Drafts are labels over
+/// the one All Mail copy, the exclusion is of those folders' own selected
+/// copies, which is exactly what keeps a sent reply's Sent entry in place.
+async fn locations_to_relocate<S: MailSession, T: Sender, L: Lookups>(
+    op: &Op,
+    ctx: &ExecContext<'_, S, T, L>,
+    destination: &str,
+) -> Result<Vec<Located>> {
+    let sent = ctx.lookups.special_use(MailboxRole::Sent)?;
+    let drafts = ctx.lookups.special_use(MailboxRole::Drafts)?;
+    Ok(locations(op, ctx)
+        .await?
+        .into_iter()
+        .filter(|loc| {
+            loc.mailbox != destination
+                && sent.as_deref() != Some(loc.mailbox.as_str())
+                && drafts.as_deref() != Some(loc.mailbox.as_str())
+        })
+        .collect())
 }
 
 /// Group a target's locations by mailbox — every [`MailSession`] verb that
@@ -318,13 +349,18 @@ async fn label_op<S: MailSession, T: Sender, L: Lookups>(
 /// mailbox, created ahead of time by whatever registers the account (this
 /// crate never creates a mailbox itself); [`MailError::Unsupported`] when
 /// this account has never been seen to have one.
+///
+/// Only [`locations_to_relocate`]'s locations are touched — see its own
+/// docs for why a thread's other locations (a reply in Sent, say) must
+/// never be moved or relabelled just because archiving one copy of the
+/// thread happened to enqueue an op against the whole thing.
 async fn archive<S: MailSession, T: Sender, L: Lookups>(
     op: &Op,
     ctx: &mut ExecContext<'_, S, T, L>,
 ) -> Result<()> {
-    let locs = locations(op, ctx).await?;
     if ctx.lookups.is_gmail() {
         let inbox_label = [String::from("\\Inbox")];
+        let locs = locations_to_relocate(op, ctx, "").await?;
         for (mailbox, uids) in group_by_mailbox(locs) {
             ctx.session.select(&mailbox).await?;
             ctx.session.store_gmail_labels(&uids, &[], &inbox_label).await?;
@@ -334,7 +370,7 @@ async fn archive<S: MailSession, T: Sender, L: Lookups>(
     let Some(dest) = ctx.lookups.special_use(MailboxRole::Archive)? else {
         return Err(MailError::Unsupported("an Archive mailbox"));
     };
-    for (mailbox, uids) in group_by_mailbox(locs) {
+    for (mailbox, uids) in group_by_mailbox(locations_to_relocate(op, ctx, &dest).await?) {
         ctx.session.select(&mailbox).await?;
         ctx.session.move_to(&uids, &dest).await?;
     }
@@ -343,7 +379,9 @@ async fn archive<S: MailSession, T: Sender, L: Lookups>(
 
 /// A `MOVE` into the account's Trash mailbox — the same shape on Gmail and
 /// off it, because Gmail's own Trash is a real mailbox (unlike Inbox), so
-/// there is no label-only branch here the way [`archive`] needs one.
+/// there is no label-only branch here the way [`archive`] needs one. See
+/// [`locations_to_relocate`]'s own docs for why only the source mailbox's
+/// copy moves.
 async fn trash<S: MailSession, T: Sender, L: Lookups>(
     op: &Op,
     ctx: &mut ExecContext<'_, S, T, L>,
@@ -351,20 +389,23 @@ async fn trash<S: MailSession, T: Sender, L: Lookups>(
     let Some(dest) = ctx.lookups.special_use(MailboxRole::Trash)? else {
         return Err(MailError::Unsupported("a Trash mailbox"));
     };
-    for (mailbox, uids) in group_by_mailbox(locations(op, ctx).await?) {
+    for (mailbox, uids) in group_by_mailbox(locations_to_relocate(op, ctx, &dest).await?) {
         ctx.session.select(&mailbox).await?;
         ctx.session.move_to(&uids, &dest).await?;
     }
     Ok(())
 }
 
+/// See [`locations_to_relocate`]'s own docs for why only the source
+/// mailbox's copy moves -- the same reasoning [`archive`] and [`trash`]
+/// already lean on.
 async fn move_op<S: MailSession, T: Sender, L: Lookups>(
     op: &Op,
     ctx: &mut ExecContext<'_, S, T, L>,
     to: MailboxId,
 ) -> Result<()> {
     let dest = ctx.lookups.mailbox_name(to)?;
-    for (mailbox, uids) in group_by_mailbox(locations(op, ctx).await?) {
+    for (mailbox, uids) in group_by_mailbox(locations_to_relocate(op, ctx, &dest).await?) {
         ctx.session.select(&mailbox).await?;
         ctx.session.move_to(&uids, &dest).await?;
     }
@@ -464,6 +505,29 @@ fn address(a: &CoreAddress) -> compose::Address {
 /// failure appending to Sent, or even finding out where Sent is, is caught
 /// rather than propagated, and carried back as a note on the success value
 /// instead -- see [`Executed::Sent`].
+///
+/// # A `Network` error does not mean the message was never sent
+///
+/// `ctx.sender.send` can fail with [`MailError::Network`] *after* the
+/// server has already accepted the message -- a socket that drops between
+/// `DATA`'s final `.` and the `250` reply looks, from here, identical to
+/// one that drops before the server ever saw a byte of it, and neither
+/// `lettre` (see `crate::smtp::classify`'s own docs) nor this crate can
+/// tell the two apart. The drain loop's only answer to a retryable error is
+/// "try again", which would resend a message that already arrived. So
+/// every retry of a `Send` whose draft already carries a stamped
+/// `message_id` -- meaning some earlier attempt got at least as far as
+/// minting one, which only happens right before this function's own call to
+/// `ctx.sender.send` -- asks the server first, through
+/// [`already_delivered`], the same question
+/// `crates/everyday-service/src/outbox.rs`'s crash-recovery path already
+/// asks for the same reason. A message a server that does not save its own
+/// Sent copy (see [`crate::smtp::needs_sent_append`]) has not yet had this
+/// crate's own `AppendDraft`-equivalent append cannot be found this way --
+/// the search comes back empty either way, and this crate resends rather
+/// than risk silently dropping a message nobody confirmed reached anywhere.
+/// A duplicate is the smaller mistake, on the same reasoning
+/// [`already_delivered`]'s own docs give.
 async fn send<S: MailSession, T: Sender, L: Lookups>(
     op: &Op,
     ctx: &mut ExecContext<'_, S, T, L>,
@@ -472,15 +536,31 @@ async fn send<S: MailSession, T: Sender, L: Lookups>(
         return Err(MailError::Protocol("a Send op must target a draft".into()));
     };
     let mut draft = ctx.lookups.draft(id)?;
+    let is_retry = draft.message_id.is_some();
     if draft.message_id.is_none() {
         let minted = compose::generate_message_id(&ctx.lookups.message_id_domain());
         ctx.lookups.set_draft_message_id(id, &minted)?;
         draft.message_id = Some(minted);
     }
+    let message_id = draft.message_id.clone().expect("just ensured Some above");
+
+    if is_retry && already_delivered(ctx, &message_id).await {
+        remove_drafts_server_copy(ctx, id).await;
+        return Ok(Executed::Sent { message_id, sent_append_error: None });
+    }
+
     let mut out = outgoing(&draft, ctx).await?;
-    out.message_id = draft.message_id.clone();
+    out.message_id = Some(message_id);
     let built = compose::build(&out).map_err(|e| MailError::Protocol(e.to_string()))?;
     ctx.sender.send(&built).await?;
+
+    // The send itself succeeded, so a draft's own stale copy in Drafts --
+    // if this crate ever `AppendDraft`ed one -- is done, and telling the
+    // server so is best-effort on the same reasoning `append_sent_copy`
+    // already gets: nothing about a failure to tidy up after a message that
+    // has already gone out should turn into a retry (which would resend it)
+    // or a reversal (which would tell the person it never sent).
+    remove_drafts_server_copy(ctx, id).await;
 
     let sent_append_error = match append_sent_copy(ctx, &built).await {
         Ok(()) => None,
@@ -496,6 +576,26 @@ async fn send<S: MailSession, T: Sender, L: Lookups>(
     Ok(Executed::Sent { message_id: built.message_id, sent_append_error })
 }
 
+/// Whether `message_id` is already on the server -- asked directly, via
+/// [`MailSession::search_message_id`], because the one thing a `Network`
+/// error genuinely cannot say is whether the server's response this crate
+/// never saw was actually an acceptance. Looked for in Sent, or All Mail on
+/// Gmail -- see [`crate::smtp::needs_sent_append`] and
+/// `crates/everyday-service/src/outbox.rs`'s `already_sent`, the
+/// crash-recovery counterpart of this exact question.
+///
+/// `false` on any lookup failure, or when nothing is found: the
+/// conservative answer sends again rather than risking a message that
+/// reached nowhere being treated as delivered.
+async fn already_delivered<S: MailSession, T: Sender, L: Lookups>(
+    ctx: &mut ExecContext<'_, S, T, L>,
+    message_id: &str,
+) -> bool {
+    let role = if ctx.lookups.is_gmail() { MailboxRole::All } else { MailboxRole::Sent };
+    let Ok(Some(mailbox)) = ctx.lookups.special_use(role) else { return false };
+    matches!(ctx.session.search_message_id(&mailbox, message_id).await, Ok(Some(_)))
+}
+
 /// The half of [`send`] that can fail without the send itself having
 /// failed -- split out so `send` can catch exactly this and nothing else.
 async fn append_sent_copy<S: MailSession, T: Sender, L: Lookups>(
@@ -508,6 +608,51 @@ async fn append_sent_copy<S: MailSession, T: Sender, L: Lookups>(
         ctx.session.append(&sent, &built.raw, Flags::SEEN).await?;
     }
     Ok(())
+}
+
+/// Delete `id`'s own last `AppendDraft` copy from Drafts, if it ever had
+/// one -- what both a successful [`send`] and [`discard_draft_op`] leave
+/// behind otherwise. Best-effort: see [`send`]'s own docs on why a failure
+/// here must never turn into a retry or a reversal of an action that has
+/// already, genuinely, happened.
+async fn remove_drafts_server_copy<S: MailSession, T: Sender, L: Lookups>(
+    ctx: &mut ExecContext<'_, S, T, L>,
+    id: DraftId,
+) {
+    let Ok(Some(copy)) = ctx.lookups.draft_server_copy(id) else { return };
+    if let Err(e) = delete_located(ctx, &copy).await {
+        tracing::warn!(error = %e, draft = %id, "could not remove a draft's stale server copy");
+    }
+}
+
+/// `SELECT` `located`'s own mailbox and delete it -- the one place both
+/// [`remove_drafts_server_copy`] and [`discard_draft_op`] reach for
+/// [`MailSession::delete`] from.
+async fn delete_located<S: MailSession, T: Sender, L: Lookups>(
+    ctx: &mut ExecContext<'_, S, T, L>,
+    located: &Located,
+) -> Result<()> {
+    ctx.session.select(&located.mailbox).await?;
+    ctx.session.delete(&UidSet::single(located.uid)).await
+}
+
+/// [`OpKind::DiscardDraft`]'s whole job: delete a discarded draft's own
+/// server copy, if it still has one. [`everyday_core::Vault::discard_draft`]
+/// only ever enqueues this op when [`Draft::server_copy`] was `Some` at the
+/// moment of discarding, but a second discard racing the first (a stale
+/// compose window, a double click) could still find it already gone by the
+/// time this runs -- treated the same as success, not an error, since the
+/// end state either way is exactly what was asked for: nothing left on the
+/// server.
+async fn discard_draft_op<S: MailSession, T: Sender, L: Lookups>(
+    op: &Op,
+    ctx: &mut ExecContext<'_, S, T, L>,
+) -> Result<()> {
+    let OpTarget::Draft(id) = op.target else {
+        return Err(MailError::Protocol("a DiscardDraft op must target a draft".into()));
+    };
+    let Some(copy) = ctx.lookups.draft_server_copy(id)? else { return Ok(()) };
+    delete_located(ctx, &copy).await
 }
 
 /// `APPEND` a fresh copy of the draft to the account's Drafts mailbox,
@@ -570,6 +715,10 @@ mod tests {
         calls: Vec<String>,
         appended: Vec<(String, Vec<u8>)>,
         fail_next: Option<MailError>,
+        /// What [`FakeSession::search_message_id`] answers, keyed by the
+        /// bare id a test seeded -- standing in for a message a previous
+        /// attempt (or another client entirely) already put on the server.
+        found_message_ids: HashMap<String, Uid>,
     }
 
     impl FakeSession {
@@ -644,6 +793,17 @@ mod tests {
             Ok(())
         }
 
+        async fn delete(&mut self, uids: &UidSet) -> Result<()> {
+            self.take()?;
+            self.calls.push(format!(
+                "delete {} on {:?} (uidplus={})",
+                uids.to_imap(),
+                self.selected,
+                self.capabilities.uidplus
+            ));
+            Ok(())
+        }
+
         async fn append(&mut self, mailbox: &str, raw: &[u8], flags: Flags) -> Result<Option<Uid>> {
             self.take()?;
             self.calls.push(format!("append to {mailbox} ({flags:?})"));
@@ -654,12 +814,10 @@ mod tests {
         async fn search_message_id(
             &mut self,
             _mailbox: &str,
-            _message_id: &str,
+            message_id: &str,
         ) -> Result<Option<Uid>> {
-            // Never exercised by this module's own tests -- `execute` never
-            // calls it; only the recovery path in `everyday-service`'s
-            // `outbox.rs` does, against its own fake session.
-            Ok(None)
+            self.calls.push(format!("search_message_id {message_id}"));
+            Ok(self.found_message_ids.get(message_id).copied())
         }
 
         async fn idle(&mut self, _stop: tokio::sync::watch::Receiver<()>) -> Result<IdleEvent> {
@@ -879,7 +1037,8 @@ mod tests {
         let account = AccountId::new();
         let thread = ThreadId::new();
         let lookups = FakeLookups::new(true)
-            .with_thread(thread, vec![Located { mailbox: "[Gmail]/All Mail".into(), uid: 3 }]);
+            .with_thread(thread, vec![Located { mailbox: "[Gmail]/All Mail".into(), uid: 3 }])
+            .with_special_use(MailboxRole::All, "[Gmail]/All Mail");
         let mut session = FakeSession::gmail();
         let sender = FakeSender::default();
         let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
@@ -904,6 +1063,7 @@ mod tests {
         let thread = ThreadId::new();
         let lookups = FakeLookups::new(false)
             .with_thread(thread, vec![Located { mailbox: "INBOX".into(), uid: 5 }])
+            .with_special_use(MailboxRole::Inbox, "INBOX")
             .with_special_use(MailboxRole::Archive, "Archive");
         let mut session = FakeSession::default();
         let sender = FakeSender::default();
@@ -918,7 +1078,8 @@ mod tests {
         let account = AccountId::new();
         let thread = ThreadId::new();
         let lookups = FakeLookups::new(false)
-            .with_thread(thread, vec![Located { mailbox: "INBOX".into(), uid: 5 }]);
+            .with_thread(thread, vec![Located { mailbox: "INBOX".into(), uid: 5 }])
+            .with_special_use(MailboxRole::Inbox, "INBOX");
         let mut session = FakeSession::default();
         let sender = FakeSender::default();
         let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
@@ -928,6 +1089,82 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, MailError::Unsupported(_)));
         assert!(!is_retryable(&err));
+    }
+
+    /// The regression for "archive and trash move the user's own sent
+    /// replies": a thread with a message in the Inbox and the person's own
+    /// reply already sitting in Sent must only move the Inbox copy.
+    /// Archiving never touches Sent, and never issues a pointless move from
+    /// a mailbox to itself.
+    #[tokio::test]
+    async fn archiving_a_thread_leaves_its_sent_reply_in_sent() {
+        let account = AccountId::new();
+        let thread = ThreadId::new();
+        let lookups = FakeLookups::new(false)
+            .with_thread(
+                thread,
+                vec![
+                    Located { mailbox: "INBOX".into(), uid: 5 },
+                    Located { mailbox: "Sent".into(), uid: 11 },
+                ],
+            )
+            .with_special_use(MailboxRole::Inbox, "INBOX")
+            .with_special_use(MailboxRole::Sent, "Sent")
+            .with_special_use(MailboxRole::Archive, "Archive");
+        let mut session = FakeSession::default();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        execute(&op(account, OpKind::Archive, OpTarget::Thread(thread)), &mut ctx).await.unwrap();
+
+        assert!(session.calls.iter().any(|c| c.contains("move_to 5 -> Archive")));
+        assert!(
+            !session.calls.iter().any(|c| c.contains("Sent")),
+            "the Sent copy must never be selected or moved: {:?}",
+            session.calls
+        );
+    }
+
+    /// Archiving a thread whose only location is already Archive itself
+    /// (nothing left in the Inbox) must not issue a move from Archive to
+    /// Archive -- there is nothing to do, so nothing is done.
+    #[tokio::test]
+    async fn archiving_an_already_archived_thread_issues_no_move() {
+        let account = AccountId::new();
+        let thread = ThreadId::new();
+        let lookups = FakeLookups::new(false)
+            .with_thread(thread, vec![Located { mailbox: "Archive".into(), uid: 5 }])
+            .with_special_use(MailboxRole::Inbox, "INBOX")
+            .with_special_use(MailboxRole::Archive, "Archive");
+        let mut session = FakeSession::default();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        execute(&op(account, OpKind::Archive, OpTarget::Thread(thread)), &mut ctx).await.unwrap();
+        assert!(session.calls.is_empty(), "{:?}", session.calls);
+    }
+
+    /// Trashing a thread from Archive moves the Archive copy: the source is
+    /// wherever the thread is, not only the Inbox.
+    #[tokio::test]
+    async fn trashing_an_archived_thread_moves_it_out_of_archive() {
+        let account = AccountId::new();
+        let thread = ThreadId::new();
+        let lookups = FakeLookups::new(false)
+            .with_thread(thread, vec![Located { mailbox: "Archive".into(), uid: 5 }])
+            .with_special_use(MailboxRole::Inbox, "INBOX")
+            .with_special_use(MailboxRole::Archive, "Archive")
+            .with_special_use(MailboxRole::Trash, "Trash");
+        let mut session = FakeSession::default();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        execute(&op(account, OpKind::Trash, OpTarget::Thread(thread)), &mut ctx).await.unwrap();
+        assert!(
+            session.calls.iter().any(|c| c.contains("move_to 5 -> Trash")),
+            "{:?}",
+            session.calls
+        );
     }
 
     // ---- label / unlabel: Gmail-only ---------------------------------------
@@ -974,6 +1211,7 @@ mod tests {
         let thread = ThreadId::new();
         let lookups = FakeLookups::new(false)
             .with_thread(thread, vec![Located { mailbox: "INBOX".into(), uid: 2 }])
+            .with_special_use(MailboxRole::Inbox, "INBOX")
             .with_special_use(MailboxRole::Trash, "Trash");
         let mut session = FakeSession::default();
         let sender = FakeSender::default();
@@ -989,7 +1227,8 @@ mod tests {
         let thread = ThreadId::new();
         let dest = MailboxId::new();
         let mut lookups = FakeLookups::new(false)
-            .with_thread(thread, vec![Located { mailbox: "INBOX".into(), uid: 4 }]);
+            .with_thread(thread, vec![Located { mailbox: "INBOX".into(), uid: 4 }])
+            .with_special_use(MailboxRole::Inbox, "INBOX");
         lookups.mailbox_names.insert(dest, "Projects".to_string());
         let mut session = FakeSession::default();
         let sender = FakeSender::default();
@@ -1144,6 +1383,89 @@ Original body.\r\n"
         assert!(!is_retryable(&err));
     }
 
+    /// The regression for "draft server copies leak": once a `Send` has
+    /// actually reached the server, the draft's own last `AppendDraft` copy
+    /// in Drafts must be removed, not left to sit there forever.
+    #[tokio::test]
+    async fn sending_a_draft_deletes_its_own_stale_drafts_copy() {
+        let account = AccountId::new();
+        let draft = simple_draft(account);
+        let id = draft.id;
+        let mut lookups = FakeLookups::new(false)
+            .with_draft(draft)
+            .with_special_use(MailboxRole::Sent, "Sent")
+            .with_special_use(MailboxRole::Drafts, "Drafts");
+        lookups.server_copies.insert(id, Located { mailbox: "Drafts".into(), uid: 7 });
+        let mut session = FakeSession::default();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        execute(&op(account, OpKind::Send, OpTarget::Draft(id)), &mut ctx).await.unwrap();
+
+        assert!(
+            session.calls.iter().any(|c| c.contains("select Drafts")),
+            "must select Drafts to remove the stale copy: {:?}",
+            session.calls
+        );
+        assert!(
+            session.calls.iter().any(|c| c.contains("delete 7")),
+            "must delete the draft's own server copy after sending: {:?}",
+            session.calls
+        );
+    }
+
+    /// The regression for the double-send risk a `Network` error after SMTP
+    /// `DATA` opens up: a retried `Send` whose draft's `message_id` is
+    /// already on the server must be recognised as delivered, not sent a
+    /// second time.
+    #[tokio::test]
+    async fn a_retried_send_already_on_the_server_is_not_sent_twice() {
+        let account = AccountId::new();
+        let mut draft = simple_draft(account);
+        draft.message_id = Some("already-there@example.com".into());
+        let id = draft.id;
+        let lookups =
+            FakeLookups::new(false).with_draft(draft).with_special_use(MailboxRole::Sent, "Sent");
+        let mut session = FakeSession::default();
+        session.found_message_ids.insert("already-there@example.com".into(), 3);
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        let outcome =
+            execute(&op(account, OpKind::Send, OpTarget::Draft(id)), &mut ctx).await.unwrap();
+        match outcome {
+            Executed::Sent { message_id, sent_append_error } => {
+                assert_eq!(message_id, "already-there@example.com");
+                assert_eq!(sent_append_error, None);
+            }
+            other => panic!("expected Sent, got {other:?}"),
+        }
+        assert!(sender.sent.lock().unwrap().is_empty(), "must not have been sent a second time");
+    }
+
+    /// The other half: a draft's very first `Send` attempt has never
+    /// reached the server before, so there is nothing yet for
+    /// `already_delivered` to usefully ask about.
+    #[tokio::test]
+    async fn a_first_send_never_checks_whether_it_already_arrived() {
+        let account = AccountId::new();
+        let draft = simple_draft(account);
+        let id = draft.id;
+        let lookups =
+            FakeLookups::new(false).with_draft(draft).with_special_use(MailboxRole::Sent, "Sent");
+        let mut session = FakeSession::default();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        execute(&op(account, OpKind::Send, OpTarget::Draft(id)), &mut ctx).await.unwrap();
+        assert!(
+            !session.calls.iter().any(|c| c.contains("search_message_id")),
+            "a first attempt has nothing to check: {:?}",
+            session.calls
+        );
+        assert_eq!(sender.sent.lock().unwrap().len(), 1);
+    }
+
     // ---- append draft: coalescing the previous server copy ------------------
 
     #[tokio::test]
@@ -1185,6 +1507,43 @@ Original body.\r\n"
         execute(&op(account, OpKind::AppendDraft, OpTarget::Draft(id)), &mut ctx).await.unwrap();
         assert!(!session.calls.iter().any(|c| c.contains("\\Deleted")));
         assert_eq!(session.appended.len(), 1);
+    }
+
+    // ---- discard draft: deleting its server copy -----------------------------
+
+    /// The other half of "draft server copies leak": discarding a draft
+    /// that had reached the server at least once must remove that copy too.
+    #[tokio::test]
+    async fn discarding_a_draft_deletes_its_server_copy() {
+        let account = AccountId::new();
+        let draft = simple_draft(account);
+        let id = draft.id;
+        let mut lookups = FakeLookups::new(false).with_draft(draft);
+        lookups.server_copies.insert(id, Located { mailbox: "Drafts".into(), uid: 9 });
+        let mut session = FakeSession::default();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        let outcome = execute(&op(account, OpKind::DiscardDraft, OpTarget::Draft(id)), &mut ctx)
+            .await
+            .unwrap();
+        assert_eq!(outcome, Executed::Ok);
+        assert!(session.calls.iter().any(|c| c.contains("select Drafts")));
+        assert!(session.calls.iter().any(|c| c.contains("delete 9")));
+    }
+
+    #[tokio::test]
+    async fn discarding_a_draft_with_no_server_copy_touches_the_server_not_at_all() {
+        let account = AccountId::new();
+        let draft = simple_draft(account);
+        let id = draft.id;
+        let lookups = FakeLookups::new(false).with_draft(draft);
+        let mut session = FakeSession::default();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        execute(&op(account, OpKind::DiscardDraft, OpTarget::Draft(id)), &mut ctx).await.unwrap();
+        assert!(session.calls.is_empty(), "{:?}", session.calls);
     }
 
     // ---- retryability ---------------------------------------------------
