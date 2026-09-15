@@ -46,9 +46,10 @@
 //! create here are yours and stay here; they do not appear on your work
 //! calendar. See `docs` on [`Calendar`] for what the interface says about it.
 
-use crate::id::{CalendarId, EventId, RoleId};
+use crate::id::{AccountId, CalendarId, EventId, RoleId};
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Which service a feed came from.
 ///
@@ -108,6 +109,91 @@ impl CalendarProvider {
             CalendarProvider::Other
         }
     }
+
+    /// Which of the three named providers an *account* calendar is shown
+    /// under, from the account's own [`crate::account::Provider`] rather
+    /// than from a guess at a URL.
+    ///
+    /// iCloud, Fastmail, Yahoo and Custom all read the same way -- CalDAV,
+    /// with nothing about the wire that says which of the four it is -- so
+    /// only Google and Microsoft (whose calendars are read over their own
+    /// APIs, not a generic protocol) earn a name of their own here; the rest
+    /// fall to `Other`, exactly like an unrecognised feed.
+    pub fn from_account(provider: crate::account::Provider) -> Self {
+        use crate::account::Provider;
+        match provider {
+            Provider::Google => CalendarProvider::Google,
+            Provider::Microsoft => CalendarProvider::Outlook,
+            Provider::ICloud => CalendarProvider::Apple,
+            Provider::Fastmail | Provider::Yahoo | Provider::Custom => CalendarProvider::Other,
+        }
+    }
+}
+
+/// Which protocol an account calendar is read over.
+///
+/// Presentation and dispatch only: `everyday-service::accountcal` reads this
+/// to decide which adapter a sync belongs to, the same way
+/// [`CalendarProvider`] decides which name and icon the interface draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AccountCalendarSource {
+    /// iCloud, Fastmail, Custom, and Google's own CalDAV endpoint.
+    CalDav,
+    /// Google Calendar's REST API, used instead of CalDAV where discovery
+    /// over CalDAV is awkward -- see `accountcal::google`'s module doc for
+    /// which of the two this application chose and why.
+    Google,
+    /// Microsoft Graph.
+    Graph,
+}
+
+impl AccountCalendarSource {
+    pub const ALL: [AccountCalendarSource; 3] = [
+        AccountCalendarSource::CalDav,
+        AccountCalendarSource::Google,
+        AccountCalendarSource::Graph,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AccountCalendarSource::CalDav => "calDav",
+            AccountCalendarSource::Google => "google",
+            AccountCalendarSource::Graph => "graph",
+        }
+    }
+}
+
+/// What an account calendar's sync remembers between runs, so a later sync
+/// can ask the server for only what changed rather than everything again.
+///
+/// Held on the calendar record itself, sealed with the rest of it: a CalDAV
+/// sync-token or a Google/Graph delta token is nearly as sensitive as a
+/// feed's URL — whichever provider issued it can often be replayed to
+/// enumerate a good deal of the calendar's shape — so it lives beside the
+/// origin rather than in a clear column.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSyncCursor {
+    /// RFC 6578's `sync-token` for CalDAV, or Google's or Graph's own delta
+    /// token. `None` until the first successful sync, and cleared by a
+    /// provider's own "start over" signal — a sync-token the server no
+    /// longer recognises, or Google's 410 Gone — which is what triggers the
+    /// etag-diff or full-list fallback the plan calls for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// CalDAV's fallback when the server does not advertise sync-collection,
+    /// or has just invalidated the token above: every resource href this
+    /// vault last saw, and the etag it had then. A later sync fetches the
+    /// current etags, keeps anything unchanged, and multigets only the rest.
+    #[serde(default)]
+    pub etags: BTreeMap<String, String>,
+}
+
+impl AccountSyncCursor {
+    pub fn is_empty(&self) -> bool {
+        self.token.is_none() && self.etags.is_empty()
+    }
 }
 
 /// Where a calendar's events come from.
@@ -121,13 +207,45 @@ pub enum CalendarOrigin {
     /// so the interface can say where the events came from; the file is not
     /// watched and not re-read.
     File { label: String },
+    /// One of an account's own calendars, read over CalDAV or the
+    /// provider's API rather than a subscription URL.
+    ///
+    /// `remote_id` and `remote_name` are the server's own identifiers for
+    /// the calendar -- an href for CalDAV, a calendar id for Google or
+    /// Graph. Neither is a secret the way a feed's URL is (the credential
+    /// that actually reaches the server lives on the account, not here), so
+    /// there is nothing about carrying them in the clear that this sealed
+    /// record needs to hide -- they simply travel sealed with everything
+    /// else, because the whole record is.
+    Account {
+        account_id: AccountId,
+        remote_id: String,
+        remote_name: String,
+        source: AccountCalendarSource,
+    },
 }
 
 impl CalendarOrigin {
     pub fn url(&self) -> Option<&str> {
         match self {
             CalendarOrigin::Url { url } => Some(url),
-            CalendarOrigin::File { .. } => None,
+            CalendarOrigin::File { .. } | CalendarOrigin::Account { .. } => None,
+        }
+    }
+
+    /// Is this origin one a background sync can ever refetch? A file has
+    /// nothing to refetch from; a subscription URL and an account calendar
+    /// both do, over different transports.
+    pub fn is_syncable(&self) -> bool {
+        !matches!(self, CalendarOrigin::File { .. })
+    }
+
+    /// The account this calendar belongs to, for the cascade that removes
+    /// it when the account is deleted.
+    pub fn account_id(&self) -> Option<AccountId> {
+        match self {
+            CalendarOrigin::Account { account_id, .. } => Some(*account_id),
+            CalendarOrigin::Url { .. } | CalendarOrigin::File { .. } => None,
         }
     }
 }
@@ -171,6 +289,12 @@ pub struct Calendar {
     /// attributes a year of somebody else's claims on your time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role_id: Option<RoleId>,
+    /// Sync state for an account calendar: a sync-token, or the etags an
+    /// etag-diff fallback compares against. Always empty for a `Url` or
+    /// `File` origin, which have no such state to remember. `#[serde(default)]`
+    /// so a calendar sealed before this field existed still deserialises.
+    #[serde(default)]
+    pub account_sync: AccountSyncCursor,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -208,6 +332,7 @@ impl Calendar {
             last_synced_at: None,
             last_error: None,
             role_id: None,
+            account_sync: AccountSyncCursor::default(),
             created_at: now,
             updated_at: now,
         }
@@ -227,6 +352,45 @@ impl Calendar {
             last_synced_at: None,
             last_error: None,
             role_id: None,
+            account_sync: AccountSyncCursor::default(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// One of an account's own calendars, discovered rather than pasted in.
+    ///
+    /// `account_provider` picks the [`CalendarProvider`] it is shown under;
+    /// `remote_id` and `remote_name` are the server's own identifiers, kept
+    /// so a later sync knows which calendar to ask for and
+    /// `list_account_calendars` can tell which of the account's calendars
+    /// this vault already has.
+    pub fn from_account(
+        account_id: AccountId,
+        account_provider: crate::account::Provider,
+        source: AccountCalendarSource,
+        remote_id: impl Into<String>,
+        remote_name: impl Into<String>,
+    ) -> Self {
+        let now = Timestamp::now();
+        let remote_name = remote_name.into();
+        Self {
+            id: CalendarId::new(),
+            name: remote_name.clone(),
+            color: DEFAULT_CALENDAR_COLORS[0].to_string(),
+            origin: CalendarOrigin::Account {
+                account_id,
+                remote_id: remote_id.into(),
+                remote_name,
+                source,
+            },
+            provider: CalendarProvider::from_account(account_provider),
+            visible: true,
+            refresh_minutes: DEFAULT_REFRESH_MINUTES,
+            last_synced_at: None,
+            last_error: None,
+            role_id: None,
+            account_sync: AccountSyncCursor::default(),
             created_at: now,
             updated_at: now,
         }
@@ -247,17 +411,25 @@ impl Calendar {
     /// contents parsed into a calendar, which is a file-disclosure bug
     /// wearing the same hat.
     pub fn fetch_url(&self) -> crate::Result<String> {
-        let CalendarOrigin::Url { url } = &self.origin else {
-            return Err(crate::Error::Invalid(
+        match &self.origin {
+            CalendarOrigin::Url { url } => normalize_feed_url(url),
+            CalendarOrigin::File { .. } => Err(crate::Error::Invalid(
                 "this calendar was imported from a file and has no address to refetch".into(),
-            ));
-        };
-        normalize_feed_url(url)
+            )),
+            CalendarOrigin::Account { .. } => Err(crate::Error::Invalid(
+                "this calendar is read from a signed-in account, which has no feed address to \
+                 refetch"
+                    .into(),
+            )),
+        }
     }
 
-    /// Is this feed due a refetch, as of `now`?
+    /// Is this calendar due a refresh, as of `now`? True for both a
+    /// subscription URL, which `feeds.rs` refetches, and an account
+    /// calendar, which `accountcal` syncs on the same cadence -- a file has
+    /// nowhere to refresh from and is never due.
     pub fn is_due(&self, now: Timestamp) -> bool {
-        if self.refresh_minutes == 0 || self.origin.url().is_none() {
+        if self.refresh_minutes == 0 || !self.origin.is_syncable() {
             return false;
         }
         match self.last_synced_at {
@@ -523,6 +695,74 @@ mod tests {
         assert!(cal.last_error.as_deref().unwrap().contains("404"));
         cal.mark_synced();
         assert_eq!(cal.last_error, None, "a good sync clears the complaint");
+    }
+
+    #[test]
+    fn an_account_calendar_takes_its_provider_from_the_account_not_a_url_guess() {
+        use crate::account::Provider;
+        let cal = Calendar::from_account(
+            AccountId::new(),
+            Provider::ICloud,
+            AccountCalendarSource::CalDav,
+            "https://caldav.icloud.com/1234/calendars/home/",
+            "Home",
+        );
+        assert_eq!(cal.provider, CalendarProvider::Apple);
+        assert_eq!(cal.name, "Home");
+        assert!(cal.origin.account_id().is_some());
+        assert!(cal.origin.url().is_none(), "an account calendar has no feed address");
+
+        for (provider, expected) in [
+            (Provider::Google, CalendarProvider::Google),
+            (Provider::Microsoft, CalendarProvider::Outlook),
+            (Provider::ICloud, CalendarProvider::Apple),
+            (Provider::Fastmail, CalendarProvider::Other),
+            (Provider::Yahoo, CalendarProvider::Other),
+            (Provider::Custom, CalendarProvider::Other),
+        ] {
+            assert_eq!(CalendarProvider::from_account(provider), expected, "{provider:?}");
+        }
+    }
+
+    #[test]
+    fn an_account_calendar_is_due_like_a_feed_but_has_no_address_to_refetch() {
+        let mut cal = Calendar::from_account(
+            AccountId::new(),
+            crate::account::Provider::Google,
+            AccountCalendarSource::Google,
+            "primary",
+            "Work",
+        );
+        let now = Timestamp::now();
+        assert!(cal.is_due(now), "never synced, so due immediately -- same as a feed");
+        assert!(cal.fetch_url().is_err(), "there is no feed address; accountcal syncs it instead");
+
+        cal.mark_synced();
+        assert!(!cal.is_due(now));
+        assert!(cal.is_due(now + jiff::SignedDuration::from_mins(61)));
+
+        cal.refresh_minutes = 0;
+        assert!(!cal.is_due(now + jiff::SignedDuration::from_hours(48)), "manual means manual");
+    }
+
+    #[test]
+    fn a_calendar_sealed_before_account_sync_existed_still_deserialises() {
+        // The whole point of `#[serde(default)]` on `account_sync`: a
+        // calendar written by yesterday's binary has no such field in its
+        // sealed JSON at all.
+        let without_field = serde_json::json!({
+            "id": CalendarId::new(),
+            "name": "Old",
+            "color": "#000000",
+            "origin": { "type": "url", "url": "https://example.com/a.ics" },
+            "provider": "other",
+            "visible": true,
+            "refreshMinutes": 60,
+            "createdAt": Timestamp::now().to_string(),
+            "updatedAt": Timestamp::now().to_string(),
+        });
+        let cal: Calendar = serde_json::from_value(without_field).unwrap();
+        assert!(cal.account_sync.is_empty());
     }
 
     #[test]

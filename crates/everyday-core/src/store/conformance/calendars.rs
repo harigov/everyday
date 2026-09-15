@@ -16,6 +16,7 @@ pub fn run_calendar_suite(store: &dyn CalendarStore) {
     missing_calendar_records_are_not_found(store);
     events_round_trip_every_field(store);
     replacing_events_is_total_and_scoped_to_one_calendar(store);
+    upserting_events_touches_only_what_was_named(store);
     listing_events_filters_by_window_and_text(store);
     deleting_a_calendar_takes_its_events_with_it(store);
     unicode_survives_a_calendar_round_trip(store);
@@ -162,6 +163,44 @@ fn replacing_events_is_total_and_scoped_to_one_calendar(store: &dyn CalendarStor
 
     store.delete_calendar(mine.id).expect("delete_calendar");
     store.delete_calendar(theirs.id).expect("delete_calendar");
+}
+
+/// [`CalendarStore::upsert_events`] is what an account calendar's
+/// incremental sync writes through -- see that method's own doc for why it
+/// exists beside [`CalendarStore::replace_events`] rather than instead of
+/// it. Three events go in; one is deleted by id, one is upserted in place
+/// (same id, changed title), and one is left alone -- exactly the shape a
+/// real sync produces, and the assertion is that the untouched row really
+/// was untouched, not merely that the final set looks right.
+fn upserting_events_touches_only_what_was_named(store: &dyn CalendarStore) {
+    let cal = seeded_calendar(store, "incremental");
+    let kept = sample_event(cal.id, "kept", date(2026, 5, 1), date(2026, 5, 1));
+    let changed = sample_event(cal.id, "changed", date(2026, 5, 2), date(2026, 5, 2));
+    let removed = sample_event(cal.id, "removed", date(2026, 5, 3), date(2026, 5, 3));
+    store
+        .upsert_events(cal.id, &[kept.clone(), changed.clone(), removed.clone()], &[])
+        .expect("seed via upsert_events");
+    assert_eq!(store.count_events(cal.id).unwrap(), 3);
+
+    let mut renamed = changed.clone();
+    renamed.title = "renamed".to_string();
+    store.upsert_events(cal.id, &[renamed.clone()], &[removed.id]).expect("upsert_events");
+
+    assert_eq!(store.count_events(cal.id).unwrap(), 2, "one removed, one upserted in place");
+    let rows = store
+        .list_events(&EventQuery { calendar_id: Some(cal.id), ..Default::default() })
+        .expect("list_events");
+    assert!(
+        rows.iter().any(|e| e.id == kept.id && e.title == kept.title),
+        "untouched row must survive exactly as it was"
+    );
+    assert!(
+        rows.iter().any(|e| e.id == changed.id && e.title == "renamed"),
+        "the upsert must land under the same id"
+    );
+    assert!(!rows.iter().any(|e| e.id == removed.id), "the removed id must be gone");
+
+    store.delete_calendar(cal.id).expect("delete_calendar");
 }
 
 fn listing_events_filters_by_window_and_text(store: &dyn CalendarStore) {

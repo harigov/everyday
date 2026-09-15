@@ -7,6 +7,7 @@
   // day is the cheapest possible answer to "is there anything on then".
 
   import { calendar } from '../lib/calendar.svelte'
+  import { accounts } from '../lib/accounts.svelte'
   import { addMonths, daysFrom, monthGrid, startOfWeek, todayIso } from '../lib/time'
   import { monthYear, relativeTime, weekdayNarrow } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
@@ -15,7 +16,14 @@
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import AddCalendar from './AddCalendar.svelte'
-  import type { CalendarInfo } from '../lib/types'
+  import type { AccountId, CalendarInfo } from '../lib/types'
+
+  // Account calendars need the account list for the address each group is
+  // labelled with -- loaded here rather than assumed already loaded, since
+  // the calendar app can be the first thing opened in a session and
+  // Settings → Accounts, the tab that otherwise loads it, may never have
+  // been.
+  void accounts.load()
 
   let adding = $state(false)
   let pendingDelete = $state<CalendarInfo | null>(null)
@@ -63,7 +71,33 @@
     if (doomed) await calendar.unsubscribe(doomed.id)
   }
 
-  const anySubscribed = $derived(calendar.calendars.some((c) => c.origin.type === 'url'))
+  // A calendar with somewhere to refetch from -- a feed's URL, or an
+  // account -- as opposed to a `.ics` file, which has nowhere to.
+  const anySubscribed = $derived(calendar.calendars.some((c) => c.origin.type !== 'file'))
+
+  /** Feeds and imported files: the flat list, exactly as before phase 6. */
+  const plainCalendars = $derived(calendar.calendars.filter((c) => c.origin.type !== 'account'))
+
+  /**
+   * Account calendars, grouped by the account they came from and labelled
+   * with its address -- "which mailbox is this a calendar of" is the
+   * question a flat list cannot answer once there is more than one signed-in
+   * account with calendar switched on.
+   */
+  const accountGroups = $derived.by(() => {
+    const groups = new Map<AccountId, { address: string; calendars: CalendarInfo[] }>()
+    for (const cal of calendar.calendars) {
+      if (cal.origin.type !== 'account') continue
+      const accountId = cal.origin.accountId
+      const group = groups.get(accountId) ?? {
+        address: accounts.account(accountId)?.address ?? 'Account',
+        calendars: [],
+      }
+      group.calendars.push(cal)
+      groups.set(accountId, group)
+    }
+    return [...groups.values()]
+  })
 
   /**
    * What a right-click on a subscribed calendar offers.
@@ -82,7 +116,7 @@
         icon: cal.visible ? 'hidden' : 'calendar',
         run: () => calendar.toggleVisible(cal.id),
       },
-      cal.origin.type === 'url' && {
+      cal.origin.type !== 'file' && {
         label: 'Refresh now',
         icon: 'refresh',
         disabled: calendar.syncing,
@@ -125,7 +159,6 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
 <nav class="scroll nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
   <!-- ── The small month ─────────────────────────────────────────────── -->
   <div class="minihead">
@@ -189,7 +222,7 @@
     </div>
   </div>
 
-  {#each calendar.calendars as cal (cal.id)}
+  {#snippet calendarRow(cal: CalendarInfo)}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="row"
@@ -216,7 +249,7 @@
           {cal.events === 1 ? 'event' : 'events'}
         </span>
       </button>
-      {#if cal.origin.type === 'url'}
+      {#if cal.origin.type !== 'file'}
         <button
           class="mini-action"
           title="Refresh this calendar"
@@ -227,6 +260,20 @@
         </button>
       {/if}
     </div>
+  {/snippet}
+
+  {#each plainCalendars as cal (cal.id)}
+    {@render calendarRow(cal)}
+  {/each}
+
+  {#each accountGroups as group (group.address)}
+    <!-- The address, not the account's display name: it is the thing that
+         actually tells two Google accounts apart, and it is what
+         `AccountDetail` and the add-account sheet both call an account by. -->
+    <span class="eyebrow account-group">{group.address}</span>
+    {#each group.calendars as cal (cal.id)}
+      {@render calendarRow(cal)}
+    {/each}
   {/each}
 
   {#if calendar.calendars.length === 0}
@@ -371,6 +418,15 @@
     align-items: center;
     justify-content: space-between;
     padding: var(--sp-5) var(--sp-2) var(--sp-2);
+  }
+  /* One per account with calendar calendars on it -- a lighter touch than
+     `.head`'s, since it is a sub-grouping rather than a new section. */
+  .account-group {
+    display: block;
+    padding: var(--sp-3) var(--sp-2) var(--sp-1);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .headtools {
     display: flex;

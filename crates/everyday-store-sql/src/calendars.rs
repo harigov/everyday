@@ -6,7 +6,7 @@
 //! neither does the name of the calendar it points at. What stays clear is
 //! only what an index needs: which calendar, which days, and when.
 
-use everyday_core::calendar::{Calendar, Event};
+use everyday_core::calendar::{Calendar, CalendarOrigin, Event};
 use everyday_core::error::Result;
 use everyday_core::id::{CalendarId, EventId};
 use everyday_core::store::calendars::{CalendarStore, EventQuery, calendar_aad, event_aad};
@@ -96,6 +96,22 @@ impl CalendarStore for SqlStore {
         // meetings are not each yours to file.
         let purpose = c.role_id.map(|id| everyday_core::purpose::Purpose::Role { id });
         set_purpose(tx.as_mut(), RecordKind::Calendar, &c.id.to_string(), purpose.as_ref())?;
+        // `account_calendars` is the pointer table `AccountStore::delete_account`
+        // reads to find every calendar one account is behind -- see
+        // `schema.rs`'s doc on it. Written here, in the same transaction as
+        // the calendar itself, so the pointer can never exist without the
+        // row it names or outlive a calendar that changed origin.
+        match &c.origin {
+            CalendarOrigin::Account { account_id, .. } => tx.execute(
+                "INSERT INTO account_calendars (calendar_id, account_id) VALUES (?1, ?2)
+                 ON CONFLICT (calendar_id) DO UPDATE SET account_id = ?2",
+                &vals![c.id.to_string(), account_id.to_string()],
+            )?,
+            CalendarOrigin::Url { .. } | CalendarOrigin::File { .. } => tx.execute(
+                "DELETE FROM account_calendars WHERE calendar_id = ?1",
+                &vals![c.id.to_string()],
+            )?,
+        };
         tx.commit()
     }
 
@@ -108,6 +124,7 @@ impl CalendarStore for SqlStore {
         let mut tx = conn.begin()?;
         tx.execute("DELETE FROM events WHERE calendar_id = ?1", &vals![id.to_string()])?;
         tx.execute("DELETE FROM calendars WHERE id = ?1", &vals![id.to_string()])?;
+        tx.execute("DELETE FROM account_calendars WHERE calendar_id = ?1", &vals![id.to_string()])?;
         forget_purposes(tx.as_mut(), RecordKind::Calendar, &[id.to_string()])?;
         tx.commit()
     }
@@ -198,6 +215,47 @@ impl CalendarStore for SqlStore {
             // cache of what a server said. Built with `upsert_stmt` rather
             // than `SqlStore::upsert`, which owns its own transaction, so the
             // whole sync stays the one transaction the delete opened.
+            let (sql, args) = upsert_stmt(&event, data);
+            tx.execute(&sql, &args)?;
+        }
+        tx.commit()
+    }
+
+    fn upsert_events(
+        &self,
+        calendar: CalendarId,
+        upsert: &[Event],
+        remove: &[EventId],
+    ) -> Result<()> {
+        // Sealed before the write lock is taken, for the same reason
+        // `replace_events` does: an account calendar's changed set can still
+        // be hundreds of occurrences after a recurring meeting moved, and
+        // holding the connection across that many AEAD seals would stall
+        // every other query.
+        let filed: Vec<(Event, Vec<u8>)> = upsert
+            .iter()
+            .map(|e| {
+                if e.calendar_id == calendar {
+                    let data = self.seal(&event_aad(e.id), e)?;
+                    Ok((e.clone(), data))
+                } else {
+                    let mut filed = e.clone();
+                    filed.calendar_id = calendar;
+                    let data = self.seal(&event_aad(filed.id), &filed)?;
+                    Ok((filed, data))
+                }
+            })
+            .collect::<Result<_>>()?;
+
+        let mut conn = self.write();
+        let mut tx = conn.begin()?;
+        for id in remove {
+            tx.execute(
+                "DELETE FROM events WHERE id = ?1 AND calendar_id = ?2",
+                &vals![id.to_string(), calendar.to_string()],
+            )?;
+        }
+        for (event, data) in filed {
             let (sql, args) = upsert_stmt(&event, data);
             tx.execute(&sql, &args)?;
         }

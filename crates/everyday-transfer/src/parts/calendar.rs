@@ -87,9 +87,18 @@ impl Portable for CalendarPart {
             }
             out.records(&file, ics.finish(), events.len() as u64)?;
 
+            // An account calendar has no address a re-import could subscribe
+            // to -- what reaches it is the account's own credential, which
+            // this export never touches -- so it exports the same way a
+            // `.ics` file import would: the events it already fetched,
+            // filed under a label rather than a URL. Reimporting it (here or
+            // into another vault) lands a frozen, read-only copy rather than
+            // a live subscription; re-adding the account and subscribing
+            // again is what restores the live one.
             let (origin, url) = match &calendar.origin {
                 CalendarOrigin::Url { url } => ("url", url.clone()),
                 CalendarOrigin::File { label } => ("file", label.clone()),
+                CalendarOrigin::Account { remote_name, .. } => ("file", remote_name.clone()),
             };
             index.row(&[
                 calendar.name.clone(),

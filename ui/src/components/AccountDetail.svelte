@@ -20,7 +20,14 @@
   import { errorMessage } from '../lib/errors'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import { openExternal } from '../lib/open-external'
-  import type { Account, AccountId, AgentCallerKind, AgentMailAccess, Identity } from '../lib/types'
+  import type {
+    Account,
+    AccountId,
+    AgentCallerKind,
+    AgentMailAccess,
+    Identity,
+    RemoteCalendarInfo,
+  } from '../lib/types'
   import AgentAccessGrid from './AgentAccessGrid.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
@@ -32,6 +39,69 @@
 
   const original = $derived(accounts.account(id))
   const providerName = $derived(providerLabel(agent.settings?.providerConfig.baseUrl ?? null))
+
+  // ── Calendars ────────────────────────────────────────────────────────
+  //
+  // Only meaningful once calendar is actually on for the *saved* record --
+  // `draft.services.calendar` is what a half-finished edit says, and
+  // ticking it here does nothing until Save is pressed and a sync has
+  // somewhere to read from.
+
+  /** An OAuth account signed in before calendar scopes existed needs a
+   *  fresh consent before any of this can work at all. */
+  const calendarScopesMissing = $derived.by(() => {
+    if (!original || original.auth.type !== 'oAuth') return false
+    const needed = accounts.preset(original.provider)?.oauth?.calendarScopes ?? []
+    if (needed.length === 0) return false
+    const have = new Set(original.auth.scopes)
+    return needed.some((s) => !have.has(s))
+  })
+
+  let remoteCalendars = $state<RemoteCalendarInfo[] | null>(null)
+  let remoteLoading = $state(false)
+  let remoteError = $state<string | null>(null)
+  let subscribingRemoteId = $state<string | null>(null)
+
+  async function loadRemoteCalendars() {
+    if (!original) return
+    remoteLoading = true
+    remoteError = null
+    try {
+      remoteCalendars = await api.listAccountCalendars(original.id)
+    } catch (e) {
+      remoteError = errorMessage(e)
+    } finally {
+      remoteLoading = false
+    }
+  }
+
+  // Loaded once calendar is confirmed on and the account can actually reach
+  // it -- not on every keystroke of the draft above.
+  $effect(() => {
+    if (
+      original?.services.calendar &&
+      !calendarScopesMissing &&
+      remoteCalendars === null &&
+      !remoteLoading
+    ) {
+      void loadRemoteCalendars()
+    }
+  })
+
+  async function toggleRemoteCalendar(r: RemoteCalendarInfo) {
+    if (!original || subscribingRemoteId || r.subscribed) return
+    subscribingRemoteId = r.remoteId
+    remoteError = null
+    try {
+      await api.subscribeAccountCalendar(original.id, r.remoteId)
+      const found = remoteCalendars?.find((x) => x.remoteId === r.remoteId)
+      if (found) found.subscribed = true
+    } catch (e) {
+      remoteError = errorMessage(e)
+    } finally {
+      subscribingRemoteId = null
+    }
+  }
 
   interface Draft {
     displayName: string
@@ -114,6 +184,15 @@
   let passwordInput = $state('')
   let signIn = $state<OAuthSignInHandle | null>(null)
   let openedInBrowser = $state(true)
+  /**
+   * Scopes asked for on top of the account's own, for a sign-in triggered
+   * from the calendar section below rather than the "Sign in again" button
+   * -- see the plan's "scopes are asked for when a service is switched on,
+   * not all at once." Cleared by the ordinary `startSignIn`, so a ticket
+   * once raised for calendar access does not silently attach itself to
+   * every later re-sign-in too.
+   */
+  let extraScopes = $state<string[]>([])
 
   async function runOAuthSignIn() {
     if (!original || original.auth.type !== 'oAuth') return
@@ -126,7 +205,7 @@
         clientId: original.auth.clientId,
         clientSecret: clientSecretInput.trim() || undefined,
         // A copy, not the reactive array itself -- see the note on `save()`.
-        scopes: [...original.auth.scopes],
+        scopes: [...new Set([...original.auth.scopes, ...extraScopes])],
         loginHint: original.address,
       })
     } catch (e) {
@@ -151,6 +230,7 @@
 
   function startSignIn() {
     if (!original) return
+    extraScopes = []
     if (original.auth.type === 'oAuth') {
       const preset = accounts.preset(original.provider)
       clientSecretInput = ''
@@ -160,6 +240,17 @@
       passwordInput = ''
       signInPhase = 'waiting'
     }
+  }
+
+  /** "Sign in again to allow calendar access": the same flow, with the
+   *  preset's calendar scopes added to whatever the account already has. */
+  function signInForCalendarAccess() {
+    if (!original || original.auth.type !== 'oAuth') return
+    const preset = accounts.preset(original.provider)
+    extraScopes = preset?.oauth?.calendarScopes ?? []
+    clientSecretInput = ''
+    signInPhase = preset?.needsClientSecret ? 'clientSecret' : 'waiting'
+    if (signInPhase === 'waiting') void runOAuthSignIn()
   }
 
   function cancelSignIn() {
@@ -267,6 +358,47 @@
         </label>
       </div>
     </section>
+
+    {#if original.services.calendar}
+      <section>
+        <span class="eyebrow">Calendars</span>
+        {#if calendarScopesMissing}
+          <p class="hint">This account was signed in before calendar access was requested.</p>
+          <div>
+            <button class="btn" onclick={signInForCalendarAccess}>
+              Sign in again to allow calendar access
+            </button>
+          </div>
+        {:else if remoteLoading}
+          <p class="hint">Looking…</p>
+        {:else if remoteError}
+          <p class="error">{remoteError}</p>
+        {:else if remoteCalendars && remoteCalendars.length === 0}
+          <p class="hint">This account has no calendars to offer.</p>
+        {:else if remoteCalendars}
+          <ul class="remotelist">
+            {#each remoteCalendars as r (r.remoteId)}
+              <li class="remoterow">
+                <span class="remotedot" style="--c: {r.color ?? '#64748b'}" aria-hidden="true"
+                ></span>
+                <span class="remotename">{r.name}</span>
+                {#if r.subscribed}
+                  <span class="hint subscribed">Subscribed</span>
+                {:else}
+                  <button
+                    class="btn"
+                    disabled={subscribingRemoteId === r.remoteId}
+                    onclick={() => toggleRemoteCalendar(r)}
+                  >
+                    {subscribingRemoteId === r.remoteId ? 'Adding…' : 'Add'}
+                  </button>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+    {/if}
 
     <section>
       <span class="eyebrow">Attachments</span>
@@ -546,6 +678,40 @@
   }
   .cap {
     width: 88px;
+  }
+
+  .remotelist {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .remoterow {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-2);
+    border-radius: var(--radius-sm);
+  }
+  .remoterow:hover {
+    background: var(--bg-hover);
+  }
+  .remotedot {
+    width: 10px;
+    height: 10px;
+    flex: none;
+    border-radius: 3px;
+    background: var(--c);
+  }
+  .remotename {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-sm);
+  }
+  .subscribed {
+    margin: 0;
   }
 
   .hint {

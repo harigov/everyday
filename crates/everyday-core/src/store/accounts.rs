@@ -44,14 +44,19 @@ pub trait AccountStore: Send + Sync {
     /// Insert or replace. Implementations must be idempotent.
     fn put_account(&self, account: &Account) -> Result<()>;
 
-    /// Delete the account, its secret, and the pointer rows in
-    /// `account_calendars` that name it. Deleting one that is not there is
-    /// not an error, the same contract every other domain's delete makes.
+    /// Delete the account, its secret, and every calendar and event that
+    /// came from it, found through the pointer rows in `account_calendars`.
+    /// Deleting one that is not there is not an error, the same contract
+    /// every other domain's delete makes.
     ///
-    /// Deliberately does **not** take the calendars themselves, or the
-    /// mailboxes, messages and threads mail's later phases will add under
-    /// this account: those are each a cascade of their own domain's, and
-    /// belong to whichever store owns that domain, not to this one.
+    /// Calendars are taken because [`CalendarOrigin::Account`](crate::calendar::CalendarOrigin::Account)
+    /// makes them exactly as dependent on the account as a feed's events are
+    /// on the feed: read-only, and meaningless once the credential that read
+    /// them is gone. This is a deliberate change from phase 1, when this
+    /// same doc said the opposite -- there was nothing to take yet.
+    /// Mailboxes, messages and threads, which mail's later phases add under
+    /// an account, are each a cascade of their own domain's and belong to
+    /// whichever store owns that domain, not to this one.
     fn delete_account(&self, id: AccountId) -> Result<()>;
 }
 

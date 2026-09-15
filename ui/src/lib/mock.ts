@@ -40,6 +40,7 @@ import type {
   LogEvent,
   LogQuery,
   ProviderInfo,
+  RemoteCalendarInfo,
   RemoteImageSettings,
   Purpose,
   PurposeMinutes,
@@ -1445,6 +1446,53 @@ const calendars: CalendarInfo[] = [
     createdAt: iso(60),
     updatedAt: iso(0),
     events: 0,
+  },
+  // An account calendar (phase 6): read from `acct-fastmail`'s own CalDAV
+  // collection rather than a pasted URL, so `CalendarNav` has something to
+  // group under an account address from the first day.
+  {
+    id: 'c-fastmail-home',
+    name: 'Home',
+    color: '#9333ea',
+    origin: {
+      type: 'account',
+      accountId: 'acct-fastmail',
+      remoteId: '/dav/calendars/user/me@fastmail.com/home/',
+      remoteName: 'Home',
+      source: 'calDav',
+    },
+    provider: 'other',
+    visible: true,
+    refreshMinutes: 60,
+    lastSyncedAt: iso(0),
+    createdAt: iso(10),
+    updatedAt: iso(0),
+    events: 0,
+  },
+]
+
+/**
+ * Every calendar `acct-fastmail` offers over CalDAV, discovery-shaped --
+ * what `list_account_calendars` answers with. `Home` is already subscribed
+ * (it is `c-fastmail-home` above); `Work` is not, so the add-calendar
+ * sheet's "From an account" tab has something left to offer.
+ */
+const fastmailRemoteCalendars: RemoteCalendarInfo[] = [
+  {
+    remoteId: '/dav/calendars/user/me@fastmail.com/home/',
+    name: 'Home',
+    color: '#9333ea',
+    source: 'calDav',
+    subscribed: true,
+    calendarId: 'c-fastmail-home',
+  },
+  {
+    remoteId: '/dav/calendars/user/me@fastmail.com/work/',
+    name: 'Work',
+    color: '#0f766e',
+    source: 'calDav',
+    subscribed: false,
+    calendarId: null,
   },
 ]
 
@@ -3333,6 +3381,48 @@ export const mockInvoke = async <T>(
           hint: 'Any address publishing an iCalendar (.ics) feed \u2014 a team calendar, a fixture list, your country\u2019s public holidays.',
         },
       ] satisfies ProviderInfo[] as T
+
+    case 'list_account_calendars': {
+      requireUnlocked()
+      const accountId = str(args.account)
+      // Only `acct-fastmail` has calendar switched on in this mock's seed
+      // data; every other account offers nothing to discover, the same
+      // honest answer `accountcal::discover` gives for an account whose
+      // calendar service is off.
+      if (accountId !== 'acct-fastmail') return [] as T
+      return fastmailRemoteCalendars as T
+    }
+
+    case 'subscribe_account_calendar': {
+      requireUnlocked()
+      const accountId = str(args.account)
+      const remoteId = str(args.remoteId)
+      const remote = fastmailRemoteCalendars.find((r) => r.remoteId === remoteId)
+      if (!remote) throw new VaultError('not_found', 'that calendar is no longer offered')
+      const added: CalendarInfo = {
+        id: `c-${Math.random().toString(36).slice(2, 8)}`,
+        name: remote.name,
+        color: remote.color ?? DEFAULT_COLORS[calendars.length % DEFAULT_COLORS.length]!,
+        origin: {
+          type: 'account',
+          accountId,
+          remoteId: remote.remoteId,
+          remoteName: remote.name,
+          source: remote.source,
+        },
+        provider: 'other',
+        visible: true,
+        refreshMinutes: 60,
+        lastSyncedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        events: 0,
+      }
+      calendars.push(added)
+      remote.subscribed = true
+      remote.calendarId = added.id
+      return added as T
+    }
 
     // ── The library domain ───────────────────────────────────────────
 

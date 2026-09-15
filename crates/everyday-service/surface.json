@@ -1042,6 +1042,23 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "account",
+          "required": true,
+          "type": "AccountId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_account_calendars",
+      "orScope": null,
+      "returns": "RemoteCalendarInfo[]",
+      "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -3508,6 +3525,31 @@
       "orScope": null,
       "returns": "VaultStatus",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "account",
+          "required": true,
+          "type": "AccountId"
+        },
+        {
+          "name": "remoteId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "calendar",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "subscribe_account_calendar",
+      "orScope": null,
+      "returns": "CalendarInfo",
+      "scope": "calendars",
       "sensitive": false,
       "streams": false
     },

@@ -12,9 +12,9 @@
 
 use super::Vault;
 use super::session::Domain;
-use crate::calendar::{Calendar, Event, SyncReport};
+use crate::calendar::{AccountSyncCursor, Calendar, CalendarOrigin, Event, SyncReport};
 use crate::error::{Error, Result};
-use crate::id::{CalendarId, EventId};
+use crate::id::{AccountId, CalendarId, EventId};
 use crate::store::calendars::{CalendarStore, EventQuery};
 
 impl Vault {
@@ -127,5 +127,55 @@ impl Vault {
         let mut calendar = self.calendar(id)?;
         calendar.mark_failed(why);
         self.with_calendars(|c| c.put_calendar(&calendar))
+    }
+
+    /// Every calendar reading from `account`, whichever source it uses.
+    ///
+    /// A handful of rows per account, so a linear scan of the (already small)
+    /// calendar list is simpler than a second index for a query nothing else
+    /// needs to run often.
+    pub fn account_calendars(&self, account: AccountId) -> Result<Vec<Calendar>> {
+        Ok(self
+            .calendars()?
+            .into_iter()
+            .filter(|c| c.origin.account_id() == Some(account))
+            .collect())
+    }
+
+    /// Apply one account calendar's sync: upsert what changed, delete what
+    /// vanished, and remember the cursor for next time.
+    ///
+    /// The counterpart to [`Vault::sync_calendar_from_ics`] for a calendar
+    /// read from an account rather than a feed -- `accountcal` has already
+    /// done the fetching, the parsing and the diffing by the time this runs,
+    /// so this is purely the write: [`crate::store::calendars::CalendarStore::upsert_events`]
+    /// touches only the rows named, `mark_synced` clears any previous
+    /// failure, and the new cursor is what the next sync reads back to know
+    /// what it can skip.
+    pub fn sync_account_calendar(
+        &self,
+        id: CalendarId,
+        upsert: &[Event],
+        remove: &[EventId],
+        cursor: AccountSyncCursor,
+    ) -> Result<SyncReport> {
+        self.writable()?;
+        let mut calendar = self.calendar(id)?;
+        if !matches!(calendar.origin, CalendarOrigin::Account { .. }) {
+            return Err(Error::Invalid(
+                "sync_account_calendar was asked to sync a calendar that is not an account's"
+                    .into(),
+            ));
+        }
+        self.with_calendars(|c| c.upsert_events(id, upsert, remove))?;
+        calendar.account_sync = cursor;
+        calendar.mark_synced();
+        self.with_calendars(|c| c.put_calendar(&calendar))?;
+        Ok(SyncReport {
+            calendar_id: Some(id),
+            events: upsert.len() as u64,
+            skipped: 0,
+            feed_name: None,
+        })
     }
 }

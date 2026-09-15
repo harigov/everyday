@@ -129,11 +129,34 @@ pub trait CalendarStore: Send + Sync {
 
     /// Swap one calendar's entire set of events for `events`.
     ///
-    /// The only write. See the module docs: a sync that merged would have to
-    /// decide what to do about an event the feed no longer mentions, and
-    /// every answer to that is worse than starting again from what the
-    /// server currently says.
+    /// The only write a *feed* sync makes. See the module docs: a sync that
+    /// merged would have to decide what to do about an event the feed no
+    /// longer mentions, and every answer to that is worse than starting
+    /// again from what the server currently says.
     fn replace_events(&self, calendar: CalendarId, events: &[Event]) -> Result<()>;
+
+    /// Update one calendar's events by what actually changed, rather than
+    /// starting over.
+    ///
+    /// An account calendar's sync (`accountcal`) already knows exactly which
+    /// events changed or vanished — that is what an etag diff or a
+    /// sync-collection REPORT is *for* — so asking it to fall back to
+    /// [`Self::replace_events`] would throw that work away and reseal and
+    /// rewrite every unchanged row on every sync. `upsert` is written or
+    /// replaced by id; `remove` is deleted by id and nothing else is
+    /// touched. Both lists are typically small next to the calendar's total
+    /// size, which is the whole point.
+    ///
+    /// `accountcal` mints each event's id deterministically from the
+    /// calendar and the server's own uid (see its module docs), which is
+    /// what lets it name exactly the right row to update or delete without
+    /// reading the calendar back first.
+    fn upsert_events(
+        &self,
+        calendar: CalendarId,
+        upsert: &[Event],
+        remove: &[EventId],
+    ) -> Result<()>;
 
     /// How many events are held for one calendar. For the line under its
     /// name in the sidebar; must not decrypt anything to answer.

@@ -325,6 +325,37 @@ impl OAuthClient {
             .map_err(OAuthError::from_request)?;
         Ok(tokens_from(response))
     }
+
+    /// [`Self::refresh`], but for a *different* resource than the one this
+    /// client was built to sign in for.
+    ///
+    /// Microsoft's `common`-tenant refresh token is not scoped to one
+    /// resource the way its access tokens are: the same refresh token that
+    /// minted an `outlook.office.com` access token for IMAP can be redeemed
+    /// again, with a different `scope`, for a `graph.microsoft.com` one --
+    /// provided the original consent covered it, which is why the calendar
+    /// scope is asked for up front alongside the mail one (see
+    /// `Provider::Microsoft`'s preset) rather than negotiated here. Plain
+    /// [`Self::refresh`] omits `scope` entirely, which every provider reads
+    /// as "the same resource as before"; this is the one call in this crate
+    /// that asks for something else with the credential already in hand,
+    /// which is what `everyday-service::accountcal::graph` needs and no
+    /// other caller does.
+    pub async fn refresh_for_scopes(
+        &self,
+        refresh_token: &str,
+        scopes: &[String],
+    ) -> Result<Tokens, OAuthError> {
+        let client = self.configured()?;
+        let http = http_client()?;
+        let token = OAuth2RefreshToken::new(refresh_token.to_string());
+        let mut request = client.exchange_refresh_token(&token);
+        for scope in scopes {
+            request = request.add_scope(OAuthScope::new(scope.clone()));
+        }
+        let response = request.request_async(http).await.map_err(OAuthError::from_request)?;
+        Ok(tokens_from(response))
+    }
 }
 
 fn tokens_from(response: BasicTokenResponse) -> Tokens {
@@ -525,6 +556,36 @@ mod tests {
         let sent = provider.requests.lock().unwrap().clone();
         assert_eq!(sent[0].get("grant_type").map(String::as_str), Some("refresh_token"));
         assert_eq!(sent[0].get("refresh_token").map(String::as_str), Some("refresh-1"));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn refresh_for_scopes_asks_for_the_given_scopes_not_the_clients_own() {
+        // `accountcal::graph`'s whole reason for existing: the same refresh
+        // token minting a token for a resource other than the one the
+        // client was built to sign in for, by naming a different scope on
+        // this one call. See this method's own doc.
+        let provider = Arc::new(MockProvider {
+            answers: Mutex::new(vec![Answer::Token(token_body("access-graph", None))]),
+            requests: Mutex::new(Vec::new()),
+        });
+        let (token_url, handle) = start(provider.clone()).await;
+        let c = client(token_url, Some("shh"));
+
+        let tokens = c
+            .refresh_for_scopes(
+                "refresh-1",
+                &["https://graph.microsoft.com/.default".to_string(), "offline_access".to_string()],
+            )
+            .await
+            .unwrap();
+        assert_eq!(tokens.access_token, "access-graph");
+
+        let sent = provider.requests.lock().unwrap().clone();
+        assert_eq!(sent[0].get("grant_type").map(String::as_str), Some("refresh_token"));
+        let scope = sent[0].get("scope").cloned().unwrap_or_default();
+        assert!(scope.contains("https://graph.microsoft.com/.default"));
+        assert!(scope.contains("offline_access"));
         handle.abort();
     }
 

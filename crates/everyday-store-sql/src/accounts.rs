@@ -13,6 +13,21 @@
 //! worth the leak -- a busy vault has a handful of these, not a hundred
 //! thousand -- so `created_us` and `updated_us` exist only because every
 //! table in this crate carries them, not because a query needs them.
+//!
+//! # Calendars are part of the cascade, not a pointer left dangling
+//!
+//! `everyday_core::store::accounts`'s own module doc, written in phase 1
+//! before `CalendarOrigin::Account` existed, says the cascade "deliberately
+//! does not take the calendars themselves" -- that was true when there was
+//! nothing yet to take. Phase 6 changes it: an account calendar's events are
+//! read-only copies of somebody else's data, exactly like a feed's, and a
+//! calendar with no account behind it any more is not a calendar anybody can
+//! still read from, subscribe to again with a saved address, or usefully
+//! keep. So `delete_account` now reads `account_calendars` for the ids it
+//! points at and removes those calendars' events and the calendars
+//! themselves in the same transaction, before dropping the pointer rows and
+//! the account. A calendar record with no account and no events -- the
+//! half-deleted state this exists to avoid -- is never observable.
 
 use everyday_core::account::{ACCOUNT_SECRET_OWNER_KIND, Account};
 use everyday_core::error::Result;
@@ -20,6 +35,7 @@ use everyday_core::id::AccountId;
 use everyday_core::store::accounts::{AccountStore, account_aad};
 
 use crate::conn::{SqlExt, ToValue, Value};
+use crate::purpose::{RecordKind, forget_purposes};
 use crate::record::Record;
 use crate::{SqlStore, to_us, vals};
 
@@ -83,6 +99,21 @@ impl AccountStore for SqlStore {
         let account = vals![id.to_string()];
         let mut conn = self.write();
         let mut tx = conn.begin()?;
+        // Read the ids first, not as a subquery on the deletes below: by the
+        // time the calendar and event rows are gone, `account_calendars`'
+        // own row for each is still there to say whose it was -- this is the
+        // one moment that is still true, and `forget_purposes` needs the ids
+        // as plain strings, which a subquery cannot hand it.
+        let calendar_ids: Vec<String> = tx
+            .query("SELECT calendar_id FROM account_calendars WHERE account_id = ?1", &account)?
+            .into_iter()
+            .map(|row| row.text(0))
+            .collect::<Result<_>>()?;
+        for calendar_id in &calendar_ids {
+            tx.execute("DELETE FROM events WHERE calendar_id = ?1", &vals![calendar_id.as_str()])?;
+            tx.execute("DELETE FROM calendars WHERE id = ?1", &vals![calendar_id.as_str()])?;
+        }
+        forget_purposes(tx.as_mut(), RecordKind::Calendar, &calendar_ids)?;
         tx.execute(
             "DELETE FROM bodies WHERE message_id IN
                  (SELECT id FROM mail_messages WHERE account_id = ?1)",

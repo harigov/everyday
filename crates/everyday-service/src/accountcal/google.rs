@@ -1,0 +1,460 @@
+//! Google Calendar, read over its own REST API rather than CalDAV.
+//!
+//! Google does publish a CalDAV endpoint (`caldav.rs` can reach it -- see
+//! that module's doc on which providers share the one adapter), but its
+//! principal and calendar-home discovery is unusually brittle in practice,
+//! and the API this module uses instead needs none of that: `calendarList`
+//! already enumerates every calendar the account can see, and
+//! `events.list` with `singleEvents=true` hands back every occurrence of a
+//! recurring event *already expanded*, in the account's own time zone, with
+//! no `RRULE` or `VTIMEZONE` for this application to interpret at all. That
+//! is the whole of why the API is the default for a Google account: less
+//! code, run against a stable, documented surface, for a job CalDAV would
+//! need `calcard`'s recurrence engine for anyway.
+//!
+//! `syncToken` (RFC-less, Google's own convention, but the same idea as
+//! CalDAV's `sync-token`) is what makes a resync incremental; a `410 Gone`
+//! on it means "start over", handled by [`sync`] falling back to a bounded
+//! `timeMin`/`timeMax` list the same width as [`super::sync_window`].
+
+use std::sync::Arc;
+
+use everyday_core::Vault;
+use everyday_core::account::Account;
+use everyday_core::calendar::{
+    AccountCalendarSource, AccountSyncCursor, Calendar, CalendarOrigin, Event, EventStatus,
+    SyncReport,
+};
+use everyday_core::id::CalendarId;
+use serde::Deserialize;
+
+use super::tokens::{self, Credential, Resource};
+use super::{RemoteCalendar, deterministic_event_id, sync_window};
+use crate::error::{CommandError, CommandResult, codes};
+use crate::http;
+use crate::service::{Service, blocking};
+
+const API: &str = "https://www.googleapis.com/calendar/v3";
+
+#[derive(Deserialize)]
+struct CalendarListResponse {
+    #[serde(default)]
+    items: Vec<CalendarListItem>,
+}
+
+#[derive(Deserialize)]
+struct CalendarListItem {
+    id: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    #[serde(rename = "summaryOverride")]
+    summary_override: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "backgroundColor")]
+    background_color: Option<String>,
+}
+
+pub async fn discover(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account: &Account,
+) -> CommandResult<Vec<RemoteCalendar>> {
+    let token = bearer(svc, vault, account).await?;
+    let url = format!("{API}/users/me/calendarList");
+    let body: CalendarListResponse = get_json(&url, &token).await?;
+    Ok(body
+        .items
+        .into_iter()
+        .map(|item| RemoteCalendar {
+            remote_id: item.id,
+            name: item.summary_override.filter(|s| !s.is_empty()).unwrap_or(item.summary),
+            color: item.background_color,
+            source: AccountCalendarSource::Google,
+        })
+        .collect())
+}
+
+#[derive(Deserialize)]
+struct EventsResponse {
+    #[serde(default)]
+    items: Vec<GoogleEvent>,
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
+    #[serde(rename = "nextSyncToken")]
+    next_sync_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleEvent {
+    id: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    location: String,
+    start: Option<GoogleWhen>,
+    end: Option<GoogleWhen>,
+    #[serde(default)]
+    transparency: String,
+    organizer: Option<GoogleAttendee>,
+    #[serde(default)]
+    attendees: Vec<GoogleAttendee>,
+    #[serde(rename = "htmlLink")]
+    #[serde(default)]
+    html_link: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleWhen {
+    date: Option<String>,
+    #[serde(rename = "dateTime")]
+    date_time: Option<String>,
+    #[serde(rename = "timeZone")]
+    time_zone: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleAttendee {
+    #[serde(default)]
+    email: String,
+    #[serde(rename = "displayName")]
+    display_name: Option<String>,
+}
+
+impl GoogleAttendee {
+    fn label(&self) -> String {
+        self.display_name.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| self.email.clone())
+    }
+}
+
+pub async fn sync(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account: &Account,
+    calendar: &Calendar,
+) -> CommandResult<SyncReport> {
+    let CalendarOrigin::Account { remote_id, .. } = &calendar.origin else {
+        return Err(CommandError::new(codes::INVALID, "not an account calendar"));
+    };
+    let token = bearer(svc, vault, account).await?;
+    let encoded = urlencoding_light(remote_id);
+
+    let (events, next_token, full_resync) = match &calendar.account_sync.token {
+        Some(sync_token) => {
+            match list_events(API, &encoded, &token, IncrementalOrFull::Incremental(sync_token))
+                .await
+            {
+                Ok(pages) => (pages.0, pages.1, false),
+                Err(e) if e.code == codes::CONFLICT => {
+                    // Google's 410 Gone: the token is too old. Start over with a
+                    // bounded window, same as a first sync.
+                    let (from, to) = sync_window();
+                    let pages =
+                        list_events(API, &encoded, &token, IncrementalOrFull::Windowed(from, to))
+                            .await?;
+                    (pages.0, pages.1, true)
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        None => {
+            let (from, to) = sync_window();
+            let pages =
+                list_events(API, &encoded, &token, IncrementalOrFull::Windowed(from, to)).await?;
+            (pages.0, pages.1, true)
+        }
+    };
+
+    let mut upsert = Vec::new();
+    let mut remove_ids = Vec::new();
+    let default_tz = everyday_core::model::system_tz();
+    for item in events {
+        let id = deterministic_event_id(calendar.id, &item.id);
+        if item.status == "cancelled" {
+            remove_ids.push(id);
+            continue;
+        }
+        if let Some(event) = to_event(calendar.id, &item, &default_tz) {
+            upsert.push(event);
+        }
+    }
+
+    let mut etags = calendar.account_sync.etags.clone();
+    if full_resync {
+        etags.clear();
+    }
+    let cursor = AccountSyncCursor { token: next_token, etags };
+
+    let vault = vault.clone();
+    let id = calendar.id;
+    blocking(move || Ok(vault.sync_account_calendar(id, &upsert, &remove_ids, cursor)?)).await
+}
+
+enum IncrementalOrFull<'a> {
+    Incremental(&'a str),
+    Windowed(jiff::civil::Date, jiff::civil::Date),
+}
+
+/// Page through `events.list` until Google stops handing back a
+/// `nextPageToken`, returning every item across every page and the final
+/// `nextSyncToken`.
+///
+/// `base` is [`API`] in production and a mock server's own address under
+/// test -- see this module's tests -- so the paging loop, the 410 fallback
+/// and the JSON shapes can be checked without reaching Google at all.
+async fn list_events(
+    base: &str,
+    calendar_id: &str,
+    token: &str,
+    mode: IncrementalOrFull<'_>,
+) -> CommandResult<(Vec<GoogleEvent>, Option<String>)> {
+    let mut items = Vec::new();
+    let mut page_token: Option<String> = None;
+    let mut next_sync_token = None;
+    loop {
+        let mut url =
+            format!("{base}/calendars/{calendar_id}/events?singleEvents=true&maxResults=250");
+        match &mode {
+            IncrementalOrFull::Incremental(sync_token) => {
+                url.push_str(&format!("&syncToken={sync_token}"));
+            }
+            IncrementalOrFull::Windowed(from, to) => {
+                url.push_str(&format!(
+                    "&timeMin={}&timeMax={}",
+                    rfc3339_start(*from),
+                    rfc3339_start(*to)
+                ));
+            }
+        }
+        if let Some(pt) = &page_token {
+            url.push_str(&format!("&pageToken={pt}"));
+        }
+        let response = http::client()?.get(&url).bearer_auth(token).send().await.map_err(|e| {
+            CommandError::new(codes::NETWORK, format!("could not reach Google Calendar: {e}"))
+        })?;
+        if response.status().as_u16() == 410 {
+            return Err(CommandError::new(codes::CONFLICT, "Google's sync token has expired"));
+        }
+        if response.status().as_u16() == 401 || response.status().as_u16() == 403 {
+            return Err(CommandError::new(
+                codes::FORBIDDEN,
+                "Google refused this account's credential",
+            ));
+        }
+        if !response.status().is_success() {
+            return Err(CommandError::new(
+                codes::NETWORK,
+                format!("Google Calendar answered {}", response.status()),
+            ));
+        }
+        let page: EventsResponse = response.json().await.map_err(|e| {
+            CommandError::new(codes::NETWORK, format!("could not read Google's answer: {e}"))
+        })?;
+        items.extend(page.items);
+        if page.next_sync_token.is_some() {
+            next_sync_token = page.next_sync_token;
+        }
+        page_token = page.next_page_token;
+        if page_token.is_none() {
+            break;
+        }
+    }
+    Ok((items, next_sync_token))
+}
+
+fn to_event(calendar_id: CalendarId, item: &GoogleEvent, default_tz: &str) -> Option<Event> {
+    let start = item.start.as_ref()?;
+    let end = item.end.as_ref().unwrap_or(start);
+    let all_day = start.date.is_some();
+    let tz = start.time_zone.clone().unwrap_or_else(|| default_tz.to_string());
+
+    let (start_ts, local_date) = if all_day {
+        let d = start.date.as_deref()?;
+        let date = jiff::civil::Date::strptime("%Y-%m-%d", d).ok()?;
+        (date.at(0, 0, 0, 0).to_zoned(zone_or_utc(&tz)).ok()?.timestamp(), date)
+    } else {
+        let dt = start.date_time.as_deref()?;
+        let ts: jiff::Timestamp = dt.parse().ok()?;
+        (ts, ts.to_zoned(zone_or_utc(&tz)).date())
+    };
+    let (end_ts, end_date) = if all_day {
+        let d = end.date.as_deref().unwrap_or(start.date.as_deref()?);
+        let date = jiff::civil::Date::strptime("%Y-%m-%d", d).ok()?;
+        // Google's all-day `end.date` is exclusive, like RFC 5545's.
+        let last = date.yesterday().unwrap_or(date).max(local_date);
+        (last.at(23, 59, 59, 0).to_zoned(zone_or_utc(&tz)).ok()?.timestamp(), last)
+    } else {
+        let dt = end.date_time.as_deref().unwrap_or(start.date_time.as_deref()?);
+        let ts: jiff::Timestamp = dt.parse().ok()?;
+        (ts, ts.to_zoned(zone_or_utc(&tz)).date())
+    };
+
+    Some(Event {
+        id: deterministic_event_id(calendar_id, &item.id),
+        calendar_id,
+        uid: item.id.clone(),
+        title: if item.summary.is_empty() {
+            "(no title)".to_string()
+        } else {
+            item.summary.clone()
+        },
+        description: item.description.clone(),
+        location: item.location.clone(),
+        start: start_ts,
+        end: end_ts.max(start_ts),
+        local_date,
+        end_date: end_date.max(local_date),
+        tz,
+        all_day,
+        status: match item.status.as_str() {
+            "tentative" => EventStatus::Tentative,
+            "cancelled" => EventStatus::Cancelled,
+            _ => EventStatus::Confirmed,
+        },
+        organizer: item.organizer.as_ref().map(GoogleAttendee::label).unwrap_or_default(),
+        attendees: item.attendees.iter().map(GoogleAttendee::label).collect(),
+        url: item.html_link.clone(),
+        busy: item.transparency != "transparent",
+        updated_at: jiff::Timestamp::now(),
+    })
+}
+
+fn zone_or_utc(tz: &str) -> jiff::tz::TimeZone {
+    jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC)
+}
+
+fn rfc3339_start(d: jiff::civil::Date) -> String {
+    format!("{d}T00:00:00Z")
+}
+
+async fn bearer(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account: &Account,
+) -> CommandResult<String> {
+    match tokens::credential(svc, vault, account, Resource::Native).await? {
+        Credential::Bearer(token) => Ok(token),
+        Credential::Basic(_) => {
+            Err(CommandError::new(codes::INVALID, "a Google account must sign in with OAuth"))
+        }
+    }
+}
+
+async fn get_json<T: serde::de::DeserializeOwned>(url: &str, token: &str) -> CommandResult<T> {
+    let response = http::client()?.get(url).bearer_auth(token).send().await.map_err(|e| {
+        CommandError::new(codes::NETWORK, format!("could not reach Google Calendar: {e}"))
+    })?;
+    if response.status().as_u16() == 401 || response.status().as_u16() == 403 {
+        return Err(CommandError::new(
+            codes::FORBIDDEN,
+            "Google refused this account's credential",
+        ));
+    }
+    if !response.status().is_success() {
+        return Err(CommandError::new(
+            codes::NETWORK,
+            format!("Google Calendar answered {}", response.status()),
+        ));
+    }
+    response.json().await.map_err(|e| {
+        CommandError::new(codes::NETWORK, format!("could not read Google's answer: {e}"))
+    })
+}
+
+/// Percent-encode the handful of characters a Google calendar id can
+/// contain that are not already URL-safe -- chiefly `@` in a personal
+/// address used as a calendar id. Not a general-purpose encoder: this
+/// application never puts arbitrary text here, only what `discover` itself
+/// already read back from Google.
+fn urlencoding_light(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
+            out.push(c);
+        } else {
+            for b in c.to_string().as_bytes() {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::Json;
+    use axum::extract::Query;
+    use axum::response::IntoResponse;
+    use axum::routing::get;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// A mock `events.list`: page one always has one event and a
+    /// `nextPageToken`; page two ends the list with a `nextSyncToken`. A
+    /// request naming `syncToken=stale-token` answers 410, the way Google
+    /// does for a token it no longer recognises.
+    async fn mock_events_list() -> (String, std::sync::Arc<AtomicU32>) {
+        let calls = std::sync::Arc::new(AtomicU32::new(0));
+        let calls_for_route = calls.clone();
+        let app = axum::Router::new().route(
+            "/calendars/cal-1/events",
+            get(move |Query(params): Query<HashMap<String, String>>| {
+                calls_for_route.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if params.get("syncToken").map(String::as_str) == Some("stale-token") {
+                        return axum::http::StatusCode::GONE.into_response();
+                    }
+                    if !params.contains_key("pageToken") {
+                        Json(serde_json::json!({
+                            "items": [{"id": "evt-1", "status": "confirmed", "summary": "First",
+                                "start": {"dateTime": "2026-09-14T09:00:00Z"},
+                                "end": {"dateTime": "2026-09-14T09:30:00Z"}}],
+                            "nextPageToken": "page-2",
+                        }))
+                        .into_response()
+                    } else {
+                        Json(serde_json::json!({
+                            "items": [{"id": "evt-2", "status": "cancelled"}],
+                            "nextSyncToken": "fresh-token",
+                        }))
+                        .into_response()
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        (format!("http://127.0.0.1:{port}"), calls)
+    }
+
+    #[tokio::test]
+    async fn paging_collects_every_page_and_hands_back_the_final_sync_token() {
+        let (base, _calls) = mock_events_list().await;
+        let (items, sync_token) =
+            list_events(&base, "cal-1", "tok", IncrementalOrFull::Incremental("first-sync"))
+                .await
+                .expect("both pages answer");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].id, "evt-1");
+        assert_eq!(items[1].id, "evt-2");
+        assert_eq!(items[1].status, "cancelled", "a cancelled item is a deletion, not an event");
+        assert_eq!(sync_token.as_deref(), Some("fresh-token"));
+    }
+
+    #[tokio::test]
+    async fn a_410_on_the_sync_token_is_reported_as_a_conflict_to_fall_back_on() {
+        let (base, _calls) = mock_events_list().await;
+        let err = list_events(&base, "cal-1", "tok", IncrementalOrFull::Incremental("stale-token"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, codes::CONFLICT);
+    }
+}

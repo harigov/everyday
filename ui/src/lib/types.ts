@@ -1022,8 +1022,20 @@ export interface TagCount {
 
 export type CalendarProvider = 'google' | 'outlook' | 'apple' | 'other'
 
+/** Which protocol an account calendar is read over -- see `accountcal`. */
+export type AccountCalendarSource = 'calDav' | 'google' | 'graph'
+
 /** Where a calendar's events come from. */
-export type CalendarOrigin = { type: 'url'; url: string } | { type: 'file'; label: string }
+export type CalendarOrigin =
+  | { type: 'url'; url: string }
+  | { type: 'file'; label: string }
+  | {
+      type: 'account'
+      accountId: AccountId
+      remoteId: string
+      remoteName: string
+      source: AccountCalendarSource
+    }
 
 export interface Calendar {
   id: CalendarId
@@ -1051,6 +1063,20 @@ export interface Calendar {
 /** A calendar plus how many events are held for it. */
 export interface CalendarInfo extends Calendar {
   events: number
+}
+
+/** One calendar an account offers, before anyone subscribes to it. */
+export interface RemoteCalendar {
+  remoteId: string
+  name: string
+  color?: string | null
+  source: AccountCalendarSource
+}
+
+/** A remote calendar, and whether this vault already subscribes to it. */
+export interface RemoteCalendarInfo extends RemoteCalendar {
+  subscribed: boolean
+  calendarId?: CalendarId | null
 }
 
 export type EventStatus = 'confirmed' | 'tentative' | 'cancelled'
