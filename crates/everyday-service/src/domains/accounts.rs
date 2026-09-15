@@ -187,9 +187,16 @@ async fn save_account_password(
 ) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || {
+        let mut account = vault.account(args.id)?;
         let mut secret = vault.account_secret(args.id)?.unwrap_or_default();
         secret.password = Some(args.password);
-        Ok(vault.save_account_secret(args.id, &secret)?)
+        vault.save_account_secret(args.id, &secret)?;
+        // A credential is now stored, which is what `Ok` means for a freshly
+        // signed-in OAuth account too (`attach_oauth_sign_in`), before
+        // anything has synced. The first sync that is refused moves it back.
+        account.status = AccountStatus::Ok;
+        account.updated_at = Timestamp::now();
+        Ok(vault.save_account(&account)?)
     })
     .await
 }

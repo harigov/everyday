@@ -222,13 +222,6 @@
     try {
       await api.saveAccount(draft)
       await api.saveAccountPassword(draft.id, password)
-      // `save_account_password` does not move the status to `Ok` the way
-      // `attach_oauth_sign_in` does for OAuth -- see the note in
-      // `accounts.svelte.ts` -- so this does the equivalent write from
-      // here: a credential is now stored, which is what `Ok` means for
-      // every other freshly signed-in account too, before anything has
-      // actually synced.
-      await api.saveAccount({ ...draft, status: { type: 'ok' } })
       await accounts.refresh()
       onclose()
     } catch (e) {

@@ -1537,7 +1537,7 @@ const MAIL_PROVIDER_PRESETS: MailProviderInfo[] = [
       ],
       calendarScopes: ['Calendars.Read'],
     },
-    needsClientSecret: true,
+    needsClientSecret: false,
     appPasswordHelpUrl: null,
   },
   {
@@ -4136,6 +4136,7 @@ export const mockInvoke = async <T>(
       accountPasswords.set(id, str(args.password))
       account.hasPassword = true
       account.signedIn = true
+      account.status = { type: 'ok' }
       return undefined as T
     }
 

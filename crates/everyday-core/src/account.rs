@@ -151,7 +151,9 @@ impl Provider {
                     // whose mail is read over IMAP. See phase 6.
                     calendar_scopes: vec!["Calendars.Read".into()],
                 }),
-                needs_client_secret: true,
+                // A desktop app registers with Entra ID as a public client, which
+                // has no secret; PKCE is what stands in for one.
+                needs_client_secret: false,
                 app_password_help_url: None,
             },
             Provider::ICloud => Preset {
@@ -643,7 +645,7 @@ mod tests {
     #[test]
     fn google_and_microsoft_need_a_client_secret_and_the_rest_do_not() {
         assert!(Provider::Google.preset().needs_client_secret);
-        assert!(Provider::Microsoft.preset().needs_client_secret);
+        assert!(!Provider::Microsoft.preset().needs_client_secret);
         for p in [Provider::ICloud, Provider::Fastmail, Provider::Yahoo, Provider::Custom] {
             assert!(!p.preset().needs_client_secret, "{p:?} should not ask for a client secret");
         }
