@@ -118,7 +118,12 @@
 //! same one `everyday_core::store` makes between the trait and its five
 //! optional siblings.
 
-mod accounts;
+// `pub` (not `mod accounts;`, private, the way every other single-domain
+// module here stays) for the same reason `mail` and `packs` are already
+// `pub`: `run_account_delete_cascade_regression`, below `testing`/`test`,
+// is a driver's own test-suite entry point, the same shape
+// `run_pack_store_suite` gives `packs`.
+pub mod accounts;
 pub(crate) mod blobs;
 pub mod conn;
 pub mod dialect;

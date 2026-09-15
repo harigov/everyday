@@ -125,6 +125,12 @@ fn the_table_backed_pack_store_passes_the_shared_conformance_suite() {
 }
 
 #[test]
+fn deleting_an_account_leaves_no_row_in_any_account_keyed_mail_table() {
+    let Some(store) = store("conformance_account_cascade", true) else { return };
+    everyday_store_sql::accounts::run_account_delete_cascade_regression(&store);
+}
+
+#[test]
 fn recategorize_does_not_clobber_a_concurrent_flag_change() {
     let Some(store) = store("conformance_recategorize_staleness", true) else { return };
     everyday_store_sql::mail::run_recategorize_staleness_regression(&store);

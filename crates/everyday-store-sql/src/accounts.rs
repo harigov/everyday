@@ -150,10 +150,156 @@ impl AccountStore for SqlStore {
         // no-op on that backend, exactly as `blobs` would be for a vault
         // whose media live in files instead.
         tx.execute("DELETE FROM mail_packs WHERE account_id = ?1", &account)?;
+        // Phase 7's split-inbox corrections -- `everyday_core::mail::CategoryRules`
+        // -- are keyed by `account_id` exactly like every table above, and
+        // were the one mail table this cascade forgot: a deleted account's
+        // corrections used to survive it, ready to reapply to whatever
+        // unrelated account happened to reuse the same sender address later.
+        // `mail_contacts` and `mail_remote_image_settings`, by contrast, are
+        // deliberately *not* here -- see `schema::v9`'s own docs -- because
+        // neither carries an `account_id` at all: both are one-row,
+        // vault-wide singletons, so there is no account-scoped slice of
+        // either for a delete to narrow to.
+        tx.execute("DELETE FROM mail_category_rules WHERE account_id = ?1", &account)?;
         let owner = vals![ACCOUNT_SECRET_OWNER_KIND, id.to_string()];
         tx.execute("DELETE FROM record_secrets WHERE owner_kind = ?1 AND owner_id = ?2", &owner)?;
         tx.execute("DELETE FROM account_calendars WHERE account_id = ?1", &account)?;
         tx.execute("DELETE FROM accounts WHERE id = ?1", &account)?;
         tx.commit()
     }
+}
+
+/// Every mail table this crate's `schema::v9` keys directly by `account_id`
+/// -- named here, by hand, so [`run_account_delete_cascade_regression`] can
+/// check each one is actually empty after a delete, rather than trusting
+/// `delete_account`'s own statement list to be complete. A table added to
+/// the schema later without both a line in that cascade *and* a line here
+/// still fails this test -- it just fails differently (the seeding loop
+/// below asserts a row landed in every table this list names, so an
+/// omission here is caught the moment the list and the schema disagree),
+/// the same day `mail_category_rules` should have been caught four
+/// versions ago.
+///
+/// `mail_contacts` and `mail_remote_image_settings` are deliberately absent
+/// -- see `schema::v9`'s own docs -- both are one-row, vault-wide
+/// singletons with no `account_id` column at all, so there is no
+/// account-scoped slice of either for a cascade, or this test, to narrow
+/// to. `account_calendars` (and the `calendars`/`events` rows it points at)
+/// is calendar territory, already covered by its own delete-cascade
+/// coverage; this list is the mail domain's alone.
+#[cfg(any(test, feature = "testing"))]
+const ACCOUNT_KEYED_MAIL_TABLES: &[&str] = &[
+    "mailboxes",
+    "mail_messages",
+    "threads",
+    "drafts",
+    "ops",
+    "mail_packs",
+    "mail_category_rules",
+];
+
+/// Regression coverage for "deleting an account leaves its category rules
+/// behind" (and, more generally, for any future mail table the cascade
+/// forgets): seed one row for a fresh account in every table
+/// [`ACCOUNT_KEYED_MAIL_TABLES`] names, delete the account, and assert every
+/// one of those tables holds zero rows for it afterward. Enumerating the
+/// tables by name, rather than asserting through the domain traits the way
+/// [`everyday_core::store::conformance::mail::run_mail_suite`] already does,
+/// is the point: a table this list names but the cascade does not clear
+/// fails here even if nothing yet reads it back through a trait method,
+/// exactly the gap that let `mail_category_rules` go unnoticed.
+#[cfg(any(test, feature = "testing"))]
+pub fn run_account_delete_cascade_regression(store: &SqlStore) {
+    use everyday_core::account::Provider;
+    use everyday_core::id::{MailMessageId, PackId, ThreadId};
+    use everyday_core::mail::{
+        Address, Category, CategoryRules, CategorySource, Draft, Mailbox, MailboxRole, Message,
+        MessageFlags, Op, OpKind, OpTarget, Origin,
+    };
+    use everyday_core::packstore::{PackRef, PackStore};
+    use everyday_core::store::mail::{IngestMessage, MailStore};
+
+    eprintln!("--- account delete cascade regression ---");
+
+    let account = Account::new(Provider::Custom, "cascade@example.com");
+    let account_id = account.id;
+    store.put_account(&account).unwrap();
+
+    let mailbox = Mailbox::new(account_id, "INBOX", MailboxRole::Inbox);
+    store.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let message_id = MailMessageId::new();
+    let message = Message {
+        id: message_id,
+        account_id,
+        thread_id,
+        message_id_header: format!("<{message_id}@cascade.example>"),
+        date: jiff::Timestamp::now(),
+        from: Address::bare("someone@example.com"),
+        to: Vec::new(),
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        reply_to: Vec::new(),
+        subject: "cascade regression".into(),
+        snippet: String::new(),
+        flags: MessageFlags::default(),
+        labels: Vec::new(),
+        has_attachments: false,
+        size: 3,
+        category: None,
+        category_source: CategorySource::Rules,
+        pack: PackRef { account: account_id.to_string(), pack: PackId::new(), offset: 0, len: 0 },
+        gmail: None,
+        invite: None,
+    };
+    store.ingest(account_id, vec![IngestMessage { message, mailbox: mailbox.id, uid: 1 }]).unwrap();
+
+    store.put_draft(&Draft::new(account_id, "me@example.com", Origin::Person)).unwrap();
+    store
+        .enqueue_op(&Op::new(
+            account_id,
+            OpKind::Archive,
+            OpTarget::Thread(thread_id),
+            Origin::Person,
+        ))
+        .unwrap();
+    // `SqlStore` answers `PackStore` on every dialect -- see `crate::packs`'
+    // own docs -- so this seeds a real `mail_packs` row even on SQLite,
+    // where nothing in the running app ever calls it (a local vault uses
+    // `FilePackStore` there instead); the table, and the column this
+    // cascade must clear, exist regardless of which backing a vault's
+    // packs actually live in.
+    store.append_batch(&account_id.to_string(), &[b"raw pack bytes".as_slice()]).unwrap();
+    let mut rules = CategoryRules::default();
+    rules.set_sender("someone@example.com", Category::Important);
+    store.put_category_rules(account_id, &rules).unwrap();
+
+    for table in ACCOUNT_KEYED_MAIL_TABLES {
+        let count = store
+            .with_read(|c| {
+                c.scalar_i64(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE account_id = ?1"),
+                    &vals![account_id.to_string()],
+                )
+            })
+            .unwrap();
+        assert!(count > 0, "seeding must have put a row of {account_id}'s in {table}");
+    }
+
+    AccountStore::delete_account(store, account_id).unwrap();
+
+    for table in ACCOUNT_KEYED_MAIL_TABLES {
+        let count = store
+            .with_read(|c| {
+                c.scalar_i64(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE account_id = ?1"),
+                    &vals![account_id.to_string()],
+                )
+            })
+            .unwrap();
+        assert_eq!(count, 0, "{table} must have no rows left for a deleted account");
+    }
+
+    eprintln!("--- account delete cascade regression passed ---");
 }
