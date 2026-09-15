@@ -373,17 +373,28 @@ pub trait MailStore: Send + Sync {
 
     /// Hide `thread` from `mailbox`'s own list -- the optimistic half of
     /// [`crate::mail::OpKind::Archive`], [`crate::mail::OpKind::Trash`] and
-    /// [`crate::mail::OpKind::Move`]: a `thread_mailboxes` row removed, with
-    /// `message_mailboxes` -- the durable mapping the sync engine trusts --
-    /// left exactly as it was, so this is reversible for free by
-    /// [`MailStore::restore_thread_mailboxes`] rather than needing its own
-    /// undo snapshot. A thread with no row for `mailbox` is a no-op.
+    /// [`crate::mail::OpKind::Move`]: the `thread_mailboxes` row for
+    /// `(thread, mailbox)` is deleted, and the pair is durably marked
+    /// hidden so a later flag or label write's recomputation (every one of
+    /// which rebuilds `thread_mailboxes` from `message_mailboxes`) does not
+    /// quietly bring it back before the op has even reached a server.
+    /// `message_mailboxes` itself is left exactly as it was: it is what
+    /// resolves the op against a real `(mailbox, uid)` to act on, so this
+    /// is only ever the client's own record of what it has *asked for*,
+    /// kept apart from what the server has *confirmed* -- Gmail's own
+    /// "archive" (dropping the `\Inbox` label) becomes durably true only
+    /// once that confirmation lands. A thread with no row for `mailbox` is
+    /// still marked hidden, so a flag change immediately after does not
+    /// resurrect it either.
     fn hide_thread_from_mailbox(&self, thread: ThreadId, mailbox: MailboxId) -> Result<()>;
 
-    /// The exact inverse of [`MailStore::hide_thread_from_mailbox`]: recompute
-    /// every `thread_mailboxes` row for `thread` from its current
-    /// `message_mailboxes` rows, restoring whichever ones a permanently
-    /// failed `Archive`, `Trash` or `Move` op hid.
+    /// The exact inverse of [`MailStore::hide_thread_from_mailbox`]: clear
+    /// every hidden marker it left for `thread`, then recompute every
+    /// `thread_mailboxes` row for `thread` from `message_mailboxes` --
+    /// which [`MailStore::hide_thread_from_mailbox`] never touched, so this
+    /// reconstructs exactly the row it hid, uid included, restoring
+    /// whichever ones a permanently failed `Archive`, `Trash` or `Move` op
+    /// hid.
     fn restore_thread_mailboxes(&self, thread: ThreadId) -> Result<()>;
 
     /// Set (or clear, with `None`) `thread`'s own `snoozed_until` -- the

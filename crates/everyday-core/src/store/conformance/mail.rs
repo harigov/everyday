@@ -37,6 +37,8 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     account_delete_cascades_every_mail_row(store);
     removing_forty_thousand_uids_does_not_hit_the_parameter_limit(store);
     deleting_a_mailbox_with_forty_thousand_messages_does_not_hit_the_parameter_limit(store);
+    archiving_survives_a_later_flag_change(store);
+    a_reverted_archive_restores_uid_membership(store);
 
     eprintln!("--- mail suite passed ---");
 }
@@ -640,6 +642,91 @@ fn deleting_a_mailbox_with_forty_thousand_messages_does_not_hit_the_parameter_li
     m.delete_mailbox(mailbox.id).unwrap();
     assert!(m.list_mailboxes(account).unwrap().is_empty());
     assert!(m.thread(thread_id).is_err());
+
+    cleanup_account(store, account);
+}
+
+/// Regression for "archiving a thread doesn't survive a flag change":
+/// [`MailStore::hide_thread_from_mailbox`]'s marker must stop the
+/// per-thread `thread_mailboxes` recompute every ingest, flag and label
+/// write ends in from rebuilding the row it just deleted. `message_mailboxes`
+/// itself must *not* be touched: the outbox executor still needs the
+/// durable `(mailbox, uid)` to resolve the op against once it actually runs
+/// (see `everyday_service::outbox::VaultLookups` and
+/// `everyday_mail::outbox::archive`), which is why this is a marker
+/// suppressing a rebuild, not a second deletion.
+fn archiving_survives_a_later_flag_change(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&inbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "archive me", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: inbox.id, uid: 7 }])
+        .unwrap();
+
+    m.hide_thread_from_mailbox(thread_id, inbox.id).unwrap();
+    assert!(
+        m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap().threads.is_empty(),
+        "archiving hides the thread from the inbox list"
+    );
+    assert!(
+        m.message_by_uid(inbox.id, 7).unwrap().is_some(),
+        "the durable mailbox membership must survive the hide -- the outbox executor \
+         still needs it to resolve where on the server to act"
+    );
+    assert!(
+        m.message_locations(msg.id).unwrap().contains(&(inbox.id, 7)),
+        "and must still be resolvable by (mailbox, uid) for exactly that reason"
+    );
+
+    // Star it -- an ordinary flag change, Gmail's own "archive, then star"
+    // sequence this regression is named for.
+    let mut flags = msg.flags;
+    flags.flagged = true;
+    m.set_message_flags(msg.id, flags).unwrap();
+
+    assert!(
+        m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap().threads.is_empty(),
+        "a later flag change must not bring an archived thread back to the inbox"
+    );
+
+    cleanup_account(store, account);
+}
+
+/// Regression for the same finding's other half: a permanently failed
+/// archive's revert must bring the thread back to the mailbox it was hidden
+/// from -- clearing [`MailStore::hide_thread_from_mailbox`]'s marker and
+/// recomputing from a `message_mailboxes` mapping that was never touched,
+/// so the uid a revert needs is exactly the one still there.
+fn a_reverted_archive_restores_uid_membership(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&inbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "archive then revert", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: inbox.id, uid: 9 }])
+        .unwrap();
+
+    m.hide_thread_from_mailbox(thread_id, inbox.id).unwrap();
+    assert!(
+        m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap().threads.is_empty(),
+        "hidden ahead of the revert"
+    );
+
+    // The outbox's own revert path, on a permanent failure: exactly
+    // `Vault::revert_thread_op`'s `RestoreMailboxes` arm.
+    m.restore_thread_mailboxes(thread_id).unwrap();
+
+    let restored =
+        m.message_by_uid(inbox.id, 9).unwrap().expect("the uid membership must still be there");
+    assert_eq!(restored.id, msg.id);
+    let page = m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert_eq!(page.threads.len(), 1, "the thread must be back in the inbox list");
+    assert_eq!(page.threads[0].id, thread_id);
 
     cleanup_account(store, account);
 }

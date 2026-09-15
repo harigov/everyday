@@ -206,6 +206,32 @@ pub(super) fn set_message_labels(
 }
 
 /// See [`everyday_core::store::mail::MailStore::hide_thread_from_mailbox`].
+///
+/// Deletes `thread`'s row from `mailbox`'s own `thread_mailboxes` list, as
+/// the very first version of this function did, but also records a marker
+/// in `hidden_thread_mailboxes` naming the pair -- the fix for "archiving a
+/// thread doesn't survive a flag change". [`message_mailboxes`] is
+/// deliberately left untouched: it is what the outbox executor's own
+/// `Lookups` resolves an `Archive`, `Trash` or `Move` op against to find
+/// which `(mailbox, uid)` to actually tell the server about (see
+/// `everyday_service::outbox::VaultLookups` and
+/// `everyday_mail::outbox::archive`), so deleting it here -- before the op
+/// has even reached a connection -- would leave the op with nothing to act
+/// on. The marker is what [`recompute_thread_mailboxes`] now consults
+/// before it would otherwise rebuild the very row this call just deleted:
+/// every flag or label write ends there, which is exactly what used to
+/// undo an archive the moment the next star or mark-read ran. Gmail's own
+/// "archive" -- dropping the `\Inbox` label's membership -- becomes durably
+/// true only once the op executes; until then this is the client's honest
+/// picture of what it has *asked for*, kept apart from `message_mailboxes`,
+/// which stays the client's honest picture of what the server has actually
+/// confirmed. When the sync engine later observes the real server-side
+/// move, its own `remove_uids`/`ingest` calls update `message_mailboxes`
+/// for real -- see [`remove_uids_tx`] -- and this marker is left stale but
+/// harmless: with the row it was suppressing already gone for good, there
+/// is nothing left for [`recompute_thread_mailboxes`] to need suppressing.
+/// A thread with no row for `mailbox` is a no-op past the marker insert,
+/// which is itself idempotent.
 pub(super) fn hide_thread_from_mailbox(
     store: &SqlStore,
     thread: ThreadId,
@@ -213,22 +239,34 @@ pub(super) fn hide_thread_from_mailbox(
 ) -> Result<()> {
     let mut conn = store.write();
     let mut tx = conn.begin()?;
+    let (thread_s, mailbox_s) = (thread.to_string(), mailbox.to_string());
+    tx.execute(
+        "INSERT INTO hidden_thread_mailboxes (thread_id, mailbox_id) VALUES (?1, ?2)
+         ON CONFLICT (thread_id, mailbox_id) DO NOTHING",
+        &vals![thread_s.clone(), mailbox_s.clone()],
+    )?;
     tx.execute(
         "DELETE FROM thread_mailboxes WHERE thread_id = ?1 AND mailbox_id = ?2",
-        &vals![thread.to_string(), mailbox.to_string()],
+        &vals![thread_s, mailbox_s],
     )?;
     tx.commit()
 }
 
 /// See [`everyday_core::store::mail::MailStore::restore_thread_mailboxes`].
 ///
-/// Just [`recompute_thread_mailboxes`] in its own transaction:
-/// [`hide_thread_from_mailbox`] never touched `message_mailboxes`, so
-/// recomputing from it reconstructs exactly the row that was hidden, with
-/// no undo snapshot to have kept anywhere.
+/// The exact inverse of [`hide_thread_from_mailbox`]: every marker it left
+/// in `hidden_thread_mailboxes` for `thread` is cleared, and
+/// [`recompute_thread_mailboxes`] rebuilds `thread_mailboxes` from
+/// `message_mailboxes` -- which [`hide_thread_from_mailbox`] never touched
+/// in the first place, so this reconstructs exactly the row that call hid,
+/// uid and all, with no snapshot to have kept anywhere.
 pub(super) fn restore_thread_mailboxes(store: &SqlStore, thread: ThreadId) -> Result<()> {
     let mut conn = store.write();
     let mut tx = conn.begin()?;
+    tx.execute(
+        "DELETE FROM hidden_thread_mailboxes WHERE thread_id = ?1",
+        &vals![thread.to_string()],
+    )?;
     recompute_thread_mailboxes(tx.as_mut(), thread)?;
     tx.commit()
 }
@@ -597,12 +635,22 @@ fn merge_participants(participants: &mut Vec<Address>, hints: &[&Message]) {
 /// mailbox that no longer holds one -- the per-mailbox half of
 /// [`recompute_thread`].
 fn recompute_thread_mailboxes(tx: &mut dyn Sql, thread_id: ThreadId) -> Result<()> {
+    // The `NOT IN` sub-select is what keeps this from rebuilding a row
+    // `hide_thread_from_mailbox` just deleted on purpose:
+    // `message_mailboxes` still names the mailbox (the op has not reached a
+    // server yet, so it must), but `hidden_thread_mailboxes` says the
+    // person -- or the assistant, or a routine -- already asked to have it
+    // hidden. See that function's own docs for the whole design.
     let rows = tx.query(
         "SELECT mm.mailbox_id, COALESCE(SUM(CASE WHEN m.flags & 1 = 0 THEN 1 ELSE 0 END), 0), \
          COALESCE(MAX(m.date_us), 0) \
          FROM message_mailboxes mm JOIN mail_messages m ON m.id = mm.message_id \
-         WHERE m.thread_id = ?1 GROUP BY mm.mailbox_id",
-        &vals![thread_id.to_string()],
+         WHERE m.thread_id = ?1 \
+           AND mm.mailbox_id NOT IN ( \
+             SELECT mailbox_id FROM hidden_thread_mailboxes WHERE thread_id = ?2 \
+           ) \
+         GROUP BY mm.mailbox_id",
+        &vals![thread_id.to_string(), thread_id.to_string()],
     )?;
     let mut live = Vec::with_capacity(rows.len());
     for row in &rows {
