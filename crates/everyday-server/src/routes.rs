@@ -29,6 +29,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use everyday_core::BlobId;
+use everyday_core::id::MailMessageId;
 use everyday_service::ctx::{Caller, Ctx, Scope};
 use everyday_service::error::CommandError;
 use everyday_service::{PROTOCOL, Service};
@@ -119,6 +120,9 @@ pub fn router(server: Arc<Server>, transport: Transport) -> Router {
         .route("/v1/stream/{name}", post(stream))
         .route("/v1/blob", post(put_blob))
         .route("/v1/blob/{id}", get(get_blob))
+        .route("/v1/mail/body/{id}", get(get_mail_body))
+        .route("/v1/mail/part/{message_id}/{identifier}", get(get_mail_part))
+        .route("/v1/mail/img/{token}", get(get_mail_image))
         .route("/v1/events", get(events))
         .layer(axum::extract::DefaultBodyLimit::max(Service::MAX_ATTACHMENT_BYTES))
         .with_state((server, transport))
@@ -476,6 +480,120 @@ async fn get_blob(
     };
     response
         .body(axum::body::Body::from(bytes))
+        .map_err(|e| CommandError::new("internal", e.to_string()).into())
+}
+
+// ---- mail: a rendered body, a part, a remote image -----------------------
+//
+// The same three things `everyday-app/src/protocol.rs`'s `everyday://mail/…`
+// routes answer, over HTTP instead -- both transports call straight into
+// `everyday_service::mailview`, which is where the actual logic (and its
+// tests) live. See that module's docs for why none of this is a JSON
+// command: a rendered body is bytes, not a result `Service::call` returns.
+//
+// Unlike `get_blob`, which is content-addressed and open to anything a
+// paired device can reach, these three check `Scope::Mail` explicitly: a
+// `MailMessageId` is not an opaque hash, and mail is the one domain whose
+// contents are written by strangers -- see `ctx::Scope::Mail`'s own docs.
+
+async fn get_mail_body(
+    State((server, transport)): Ctxt,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Answer<Response> {
+    check_protocol(&headers)?;
+    let ctx = authenticate(&server, transport, &headers)?;
+    ctx.require(Scope::Mail)?;
+    let id =
+        MailMessageId::parse(&id).map_err(|_| CommandError::new("invalid", "not a message id"))?;
+
+    let vault = server.service.require()?;
+    let one_off = server.service.remote_images_allowed_once(id);
+    let allow_remote = everyday_service::mailview::remote_images_allowed(&vault, id, one_off)?;
+    let doc = everyday_service::mailview::body_document(&vault, id, allow_remote)?;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        // A rendered body is decided fresh every time -- whether images are
+        // hidden can change between two requests for the same id -- so it
+        // must never be believed from a cache. See `protocol.rs`'s own
+        // `mail/body` route for the identical header.
+        .header(header::CACHE_CONTROL, "no-store")
+        .header("x-content-type-options", "nosniff")
+        // Read by the interface's `fetch()` of this address -- never by
+        // anything inside the sandboxed frame itself -- to show "images
+        // hidden" without parsing the document. See
+        // `ui/src/lib/mailview.ts`.
+        .header("x-mail-images-hidden", doc.images_hidden.to_string())
+        .body(axum::body::Body::from(doc.html))
+        .map_err(|e| CommandError::new("internal", e.to_string()).into())
+}
+
+async fn get_mail_part(
+    State((server, transport)): Ctxt,
+    Path((message_id, identifier)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Answer<Response> {
+    check_protocol(&headers)?;
+    let ctx = authenticate(&server, transport, &headers)?;
+    ctx.require(Scope::Mail)?;
+    let message_id = MailMessageId::parse(&message_id)
+        .map_err(|_| CommandError::new("invalid", "not a message id"))?;
+
+    let vault = server.service.require()?;
+    let served = everyday_service::mailview::part(&vault, message_id, &identifier)?;
+    mail_bytes_response(served, "private, max-age=31536000, immutable")
+}
+
+#[derive(Deserialize)]
+struct MailImageQuery {
+    /// The message this image belongs to -- `everyday://mail/img/{token}?m={msg}`'s
+    /// own query parameter, named to match.
+    m: String,
+}
+
+async fn get_mail_image(
+    State((server, transport)): Ctxt,
+    Path(token): Path<String>,
+    headers: HeaderMap,
+    Query(q): Query<MailImageQuery>,
+) -> Answer<Response> {
+    check_protocol(&headers)?;
+    let ctx = authenticate(&server, transport, &headers)?;
+    ctx.require(Scope::Mail)?;
+    let message_id =
+        MailMessageId::parse(&q.m).map_err(|_| CommandError::new("invalid", "not a message id"))?;
+
+    let vault = server.service.require()?;
+    let one_off = server.service.remote_images_allowed_once(message_id);
+    let client = everyday_service::http::client()?;
+    let served =
+        everyday_service::mailview::remote_image(&vault, client, message_id, &token, one_off)
+            .await?;
+    // Never cached: a placeholder answered before permission was granted
+    // must not shadow the real picture once it is.
+    mail_bytes_response(served, "no-store")
+}
+
+fn mail_bytes_response(
+    served: everyday_service::mailview::PartResponse,
+    cache_control: &str,
+) -> Answer<Response> {
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, served.content_type)
+        .header(header::CACHE_CONTROL, cache_control)
+        .header("x-content-type-options", "nosniff");
+    if served.attachment {
+        let filename = served.filename.as_deref().unwrap_or("attachment");
+        response = response.header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", filename.replace('"', "'")),
+        );
+    }
+    response
+        .body(axum::body::Body::from(served.bytes))
         .map_err(|e| CommandError::new("internal", e.to_string()).into())
 }
 

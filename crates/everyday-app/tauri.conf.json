@@ -36,7 +36,7 @@
         "style-src": "'self' 'unsafe-inline'",
         "script-src": "'self'",
         "connect-src": "'self' ipc: http://ipc.localhost",
-        "frame-src": "'none'",
+        "frame-src": "'self'",
         "object-src": "'none'"
       },
       "assetProtocol": { "enable": false, "scope": [] }

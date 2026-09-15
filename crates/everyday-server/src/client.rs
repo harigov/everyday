@@ -109,6 +109,24 @@ pub struct RemoteClient {
     blobs: Mutex<BlobCache>,
 }
 
+/// What [`RemoteClient::mail_body`] answers with -- see
+/// [`everyday_service::mailview::BodyDocument`], which this mirrors across
+/// the wire.
+pub struct MailBody {
+    pub html: String,
+    pub images_hidden: bool,
+}
+
+/// What [`RemoteClient::mail_part`] and [`RemoteClient::mail_image`] answer
+/// with -- see [`everyday_service::mailview::PartResponse`], which this
+/// mirrors across the wire.
+pub struct MailBytes {
+    pub content_type: String,
+    pub attachment: bool,
+    pub filename: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
 impl RemoteClient {
     /// Pair with the server a link points at, and connect.
     ///
@@ -262,6 +280,80 @@ impl RemoteClient {
             .to_vec();
         self.blobs.lock().unwrap().put(id, offset, bytes.clone());
         Ok(bytes)
+    }
+
+    /// A rendered message body, and whether it hid remote images -- the
+    /// remote counterpart of [`everyday_service::mailview::BodyDocument`],
+    /// fetched from `/v1/mail/body/{id}` rather than built locally. Read by
+    /// `everyday-app/src/protocol.rs`'s `mail/body` route when this window
+    /// is looking at a vault on another machine.
+    pub async fn mail_body(&self, id: &str) -> CommandResult<MailBody> {
+        let response = self
+            .request(reqwest::Method::GET, &format!("/v1/mail/body/{id}"))
+            .send()
+            .await
+            .map_err(transport)?
+            .error_for_body()
+            .await?;
+        // Read before the body is consumed: `x-mail-images-hidden` is a
+        // header, not part of the HTML, exactly so the interface can learn
+        // it without parsing the document -- see the server route's own
+        // docs for why.
+        let images_hidden = response
+            .headers()
+            .get("x-mail-images-hidden")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v == "true");
+        let html = response.text().await.map_err(transport)?;
+        Ok(MailBody { html, images_hidden })
+    }
+
+    /// One part of a message -- an attachment, or an inline image a `cid:`
+    /// reference points at. The remote counterpart of
+    /// [`everyday_service::mailview::part`].
+    pub async fn mail_part(&self, message_id: &str, identifier: &str) -> CommandResult<MailBytes> {
+        let response = self
+            .request(reqwest::Method::GET, &format!("/v1/mail/part/{message_id}/{identifier}"))
+            .send()
+            .await
+            .map_err(transport)?
+            .error_for_body()
+            .await?;
+        Self::mail_bytes_from(response).await
+    }
+
+    /// A remote image, fetched (or refused, or served from the cache) on
+    /// the machine holding the vault -- never by this process, which is the
+    /// whole point: see `everyday_service::mailview::remote_image`'s docs.
+    pub async fn mail_image(&self, token: &str, message_id: &str) -> CommandResult<MailBytes> {
+        let response = self
+            .request(reqwest::Method::GET, &format!("/v1/mail/img/{token}?m={message_id}"))
+            .send()
+            .await
+            .map_err(transport)?
+            .error_for_body()
+            .await?;
+        Self::mail_bytes_from(response).await
+    }
+
+    async fn mail_bytes_from(response: reqwest::Response) -> CommandResult<MailBytes> {
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        let disposition = response
+            .headers()
+            .get(reqwest::header::CONTENT_DISPOSITION)
+            .and_then(|v| v.to_str().ok());
+        let attachment = disposition.is_some_and(|v| v.starts_with("attachment"));
+        let filename = disposition
+            .and_then(|v| v.split("filename=\"").nth(1))
+            .and_then(|v| v.strip_suffix('"'))
+            .map(str::to_string);
+        let bytes = response.bytes().await.map_err(transport)?.to_vec();
+        Ok(MailBytes { content_type, attachment, filename, bytes })
     }
 
     /// Forget every cached byte. Called when the vault locks, and when this
