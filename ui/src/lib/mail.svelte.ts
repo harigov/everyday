@@ -25,12 +25,14 @@ import {
   applyRowPatch,
   mailboxHasTabs,
   mergeSearchPage,
+  neighbourThread,
   refreshLimit,
   removeRow,
   restoreRow,
   revertRow,
   snoozeChoices,
   stepCategoryTab,
+  visibleThreadList,
 } from './mail'
 import { app, handle, quietly } from './state.svelte'
 import type {
@@ -369,12 +371,17 @@ class MailState {
     this.summary = null
   }
 
-  /** The next and previous thread in list order, for `j`/`k` and prefetch. */
+  /** Whichever list is on screen -- see `visibleThreadList`. */
+  get #shownThreads(): readonly Thread[] {
+    return visibleThreadList(this.searchQuery, this.threads, this.searchResults)
+  }
+
+  /** The next and previous thread in list order, for `j`/`k` and prefetch.
+   *  Finding 3: this used to read `this.threads` even while a search's
+   *  results were what was actually on screen, so `j`/`k` moved through the
+   *  mailbox behind the search rather than through the rows visible. */
   #neighbour(step: 1 | -1): Thread | null {
-    if (!this.selectedThread) return this.threads[0] ?? null
-    const at = this.threads.findIndex((t) => t.id === this.selectedThread)
-    if (at < 0) return this.threads[0] ?? null
-    return this.threads[at + step] ?? null
+    return neighbourThread(this.#shownThreads, this.selectedThread, step)
   }
 
   async moveSelection(step: 1 | -1) {
@@ -392,9 +399,10 @@ class MailState {
    */
   #prefetching = new Set<ThreadId>()
   async #prefetchNeighbours(around: ThreadId) {
-    const at = this.threads.findIndex((t) => t.id === around)
+    const list = this.#shownThreads
+    const at = list.findIndex((t) => t.id === around)
     if (at < 0) return
-    for (const t of [this.threads[at - 1], this.threads[at + 1]]) {
+    for (const t of [list[at - 1], list[at + 1]]) {
       if (!t || this.#prefetching.has(t.id)) continue
       this.#prefetching.add(t.id)
       mailApi

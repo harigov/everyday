@@ -28,6 +28,8 @@ const {
   recentActionLine,
   mailboxHasTabs,
   refreshLimit,
+  visibleThreadList,
+  neighbourThread,
 } = mailLib
 
 function person(name, email) {
@@ -318,6 +320,37 @@ assert.equal(refreshLimit(0, 50), 50, 'never less than one page')
 assert.equal(refreshLimit(30, 50), 50, 'never less than one page')
 assert.equal(refreshLimit(120, 50), 120, 'covers everything already scrolled past')
 assert.equal(refreshLimit(50000, 50), 1000, 'capped well short of the whole mailbox')
+
+// ── Finding 3: `j`/`k` (and prefetch) read whichever list is on screen ──
+
+const mailboxThreads = [thread('th-1'), thread('th-2'), thread('th-3')]
+const results = [thread('th-9'), thread('th-3')]
+
+assert.deepEqual(
+  visibleThreadList('', mailboxThreads, results).map((t) => t.id),
+  ['th-1', 'th-2', 'th-3'],
+  'no search: the mailbox list',
+)
+assert.deepEqual(
+  visibleThreadList('  ', mailboxThreads, results).map((t) => t.id),
+  ['th-1', 'th-2', 'th-3'],
+  'blank search: still the mailbox list',
+)
+assert.deepEqual(
+  visibleThreadList('priya', mailboxThreads, results).map((t) => t.id),
+  ['th-9', 'th-3'],
+  'a live search: its own results',
+)
+
+assert.equal(neighbourThread(mailboxThreads, null, 1).id, 'th-1', 'nothing selected: the first row')
+assert.equal(neighbourThread(mailboxThreads, 'th-1', 1).id, 'th-2')
+assert.equal(neighbourThread(mailboxThreads, 'th-1', -1), null, 'off the top of the list')
+assert.equal(neighbourThread(mailboxThreads, 'th-3', 1), null, 'off the bottom of the list')
+assert.equal(
+  neighbourThread(mailboxThreads, 'not-shown', 1).id,
+  'th-1',
+  'a stale id from a different list falls back to the first row',
+)
 
 await close()
 console.log('mail: all checks passed')

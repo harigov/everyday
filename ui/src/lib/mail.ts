@@ -348,6 +348,37 @@ export function refreshLimit(loadedCount: number, page = 50): number {
   return Math.min(Math.max(page, loadedCount), page * 20)
 }
 
+// ── Whichever list is on screen ──────────────────────────────────────────
+
+/**
+ * The list `j`/`k` and prefetch should both read: search results while a
+ * query is active -- `MailView.svelte`'s own condition for which one it
+ * draws -- the mailbox's own threads otherwise. Finding 3: `#neighbour` read
+ * `threads` unconditionally, so `j`/`k` moved through the mailbox behind a
+ * search rather than through what was on screen.
+ */
+export function visibleThreadList<T>(
+  query: string,
+  threads: readonly T[],
+  searchResults: readonly T[],
+): readonly T[] {
+  return query.trim() ? searchResults : threads
+}
+
+/** The next or previous thread in `list`, `step` positions from
+ *  `selectedId` -- `list[0]` when nothing is selected or the selection is
+ *  not in `list` at all (a stale id left over from switching lists). */
+export function neighbourThread(
+  list: readonly Thread[],
+  selectedId: string | null,
+  step: 1 | -1,
+): Thread | null {
+  if (!selectedId) return list[0] ?? null
+  const at = list.findIndex((t) => t.id === selectedId)
+  if (at < 0) return list[0] ?? null
+  return list[at + step] ?? null
+}
+
 // ── Remote images: allow-list matching ──────────────────────────────
 
 /** Would the standing allow-list let this sender's remote images load --
