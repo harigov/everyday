@@ -474,6 +474,10 @@ pub struct FilePackStore {
     /// safety net against two tasks in the *same* process racing each
     /// other, not a throughput design.
     lock: Mutex<()>,
+    /// [`PACK_ROTATE_BYTES`] everywhere but this crate's own tests, which
+    /// shrink it so that exercising rotation and compaction writes kilobytes
+    /// rather than several 64 MB packs at once into a shared temp directory.
+    rotate_bytes: u64,
 }
 
 impl std::fmt::Debug for FilePackStore {
@@ -491,7 +495,14 @@ impl FilePackStore {
     pub fn open(root: impl Into<PathBuf>, cipher: Arc<dyn Cipher>) -> Result<Self> {
         let root = root.into();
         std::fs::create_dir_all(&root).map_err(|e| Error::io(&root, e))?;
-        Ok(Self { root, cipher, lock: Mutex::new(()) })
+        Ok(Self { root, cipher, lock: Mutex::new(()), rotate_bytes: PACK_ROTATE_BYTES })
+    }
+
+    /// The same store with a smaller rotation threshold, for tests.
+    #[cfg(test)]
+    fn with_rotate_bytes(mut self, bytes: u64) -> Self {
+        self.rotate_bytes = bytes;
+        self
     }
 
     fn account_dir(&self, account: &str) -> PathBuf {
@@ -531,7 +542,7 @@ impl FilePackStore {
         if let Some(pack) = Self::list_packs(dir)?.into_iter().next_back() {
             let path = dir.join(format!("{pack}.pack"));
             let valid_len = recover_valid_len(&path)?;
-            if valid_len < PACK_ROTATE_BYTES {
+            if valid_len < self.rotate_bytes {
                 return Ok((pack, path, valid_len));
             }
         }
@@ -1097,8 +1108,12 @@ mod tests {
         } else {
             Arc::new(NullCipher)
         };
-        FilePackStore::open(dir, cipher).unwrap()
+        FilePackStore::open(dir, cipher).unwrap().with_rotate_bytes(TEST_ROTATE_BYTES)
     }
+
+    /// Small enough that a test filling a pack past rotation writes a few
+    /// kilobytes, not 64 MB per pack.
+    const TEST_ROTATE_BYTES: u64 = 4096;
 
     /// A [`ReferencedSnapshot`] built the honest way for a test that is not
     /// itself trying to prove a stale-snapshot guard: `referenced`, paired
@@ -1249,7 +1264,7 @@ mod tests {
 
         // Pack 1: a filler big enough to force the next `append_batch` to
         // rotate, plus three small live-to-be messages sharing it.
-        let big = vec![0u8; (PACK_ROTATE_BYTES as usize) + 1];
+        let big = vec![0u8; (TEST_ROTATE_BYTES as usize) + 1];
         let pack1 = s
             .append_batch(
                 "acc-1",
@@ -1416,7 +1431,7 @@ mod tests {
 
         // Pre-existing, already-committed mail: a filler forces this into
         // its own pack, which the batch below will rotate away from.
-        let big = vec![0u8; (PACK_ROTATE_BYTES as usize) + 1];
+        let big = vec![0u8; (TEST_ROTATE_BYTES as usize) + 1];
         let settled = s.append_batch("acc-1", &[big.as_slice(), b"settled".as_slice()]).unwrap();
 
         // The racy batch: durably written, but -- in this simulation --
@@ -1458,7 +1473,7 @@ mod tests {
         // A filler pushes this first pack over the rotate threshold
         // immediately, so the next `append_batch` is guaranteed a fresh
         // pack rather than reusing this one.
-        let big = vec![0u8; (PACK_ROTATE_BYTES as usize) + 1];
+        let big = vec![0u8; (TEST_ROTATE_BYTES as usize) + 1];
         let old = s.append_batch("acc-1", &[big.as_slice(), b"old".as_slice()]).unwrap();
         s.mark_dead(&old).unwrap();
         // The mark is taken here -- before the second pack below exists.
@@ -1488,7 +1503,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path(), true);
 
-        let big = vec![0u8; (PACK_ROTATE_BYTES as usize) + 1];
+        let big = vec![0u8; (TEST_ROTATE_BYTES as usize) + 1];
         let pack1 = s
             .append_batch("acc-1", &[big.as_slice(), b"p1-a".as_slice(), b"p1-b".as_slice()])
             .unwrap();
@@ -1553,7 +1568,7 @@ mod tests {
     fn packs_rotate_once_they_reach_the_size_limit() {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path(), true);
-        let big = vec![0u8; (PACK_ROTATE_BYTES as usize) + 1];
+        let big = vec![0u8; (TEST_ROTATE_BYTES as usize) + 1];
 
         let first = s.append_batch("acc-1", &[big.as_slice()]).unwrap();
         let second = s.append_batch("acc-1", &[b"tiny".as_slice()]).unwrap();
