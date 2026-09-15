@@ -457,6 +457,43 @@ async fn unsnoozing_early_clears_it_with_no_outbox_op() {
     assert_eq!(due.len(), 1);
 }
 
+// ---- backoff: the first retry waits thirty seconds, not sixty --------------
+
+/// The regression for the backoff off-by-one: `attempts` must be read by
+/// [`everyday_core::mail::backoff_for_attempt`] *before* it is incremented,
+/// so a first-ever retryable failure waits the schedule's first entry
+/// (thirty seconds), not its second (a minute).
+#[tokio::test]
+async fn a_first_retry_backs_off_thirty_seconds_not_sixty() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let inbox = seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+    seed_mailbox(&svc, account, "Archive", MailboxRole::Archive);
+    let thread = seed_message(&svc, account, inbox, 1);
+
+    let ops = call(&svc, "archive", json!({ "threads": [thread] })).await;
+    let op_id: everyday_core::id::OpId =
+        ops.as_array().unwrap()[0]["id"].as_str().unwrap().parse().unwrap();
+
+    let mut session = FakeSession {
+        fail_next: Some(MailError::Network("connection reset".into())),
+        ..Default::default()
+    };
+    let sender = FakeSender;
+    let before = Timestamp::now();
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.retried, 1, "{report:?}");
+
+    let vault = svc.get().unwrap();
+    let op = vault.op(op_id).unwrap();
+    assert_eq!(op.attempts, 1);
+    let waited = before.duration_until(op.not_before);
+    assert!(
+        waited >= SignedDuration::from_secs(25) && waited < SignedDuration::from_secs(45),
+        "the first retry must back off about thirty seconds, not sixty: waited {waited:?}"
+    );
+}
+
 // ---- a draft's server copy: preserved by autosave, removed by send/discard -
 
 /// The regression for "draft server copies leak" (b): an ordinary autosave

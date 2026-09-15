@@ -169,9 +169,17 @@ where
                 // in an already-open session. See `crate::mailsync::sender`
                 // for the one retry-with-a-fresh-token this crate allows
                 // itself before ever surfacing `Auth` at all.
+                //
+                // `backoff_for_attempt` is read *before* `attempts` is
+                // bumped -- it is documented as 0-indexed ("the first
+                // retry, after attempt 0 failed, waits `RETRY_BACKOFF[0]`"),
+                // so reading it after incrementing would make the very
+                // first retry wait the *second* schedule entry (a minute)
+                // instead of the first (thirty seconds), and every later
+                // retry one step further out than the schedule promises.
+                let backoff = everyday_core::mail::backoff_for_attempt(op.attempts);
                 op.attempts += 1;
                 op.last_error = Some(reason.clone());
-                let backoff = everyday_core::mail::backoff_for_attempt(op.attempts);
                 op.not_before = Timestamp::now() + backoff;
                 op.transition_to(OpState::Pending)?;
                 persist_op(&vault, &op).await?;
@@ -179,9 +187,11 @@ where
                 report.retried += 1;
             }
             Err(err) if is_retryable(&err) => {
+                // See the `Auth` arm above for why the backoff is read
+                // before `attempts` is bumped.
+                let backoff = everyday_core::mail::backoff_for_attempt(op.attempts);
                 op.attempts += 1;
                 op.last_error = Some(err.to_string());
-                let backoff = everyday_core::mail::backoff_for_attempt(op.attempts);
                 op.not_before = Timestamp::now() + backoff;
                 op.transition_to(OpState::Pending)?;
                 persist_op(&vault, &op).await?;
