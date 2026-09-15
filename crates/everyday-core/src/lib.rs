@@ -85,6 +85,7 @@ pub mod ics;
 pub mod id;
 pub mod library;
 pub mod lockfile;
+pub mod mailsearch;
 pub mod media;
 pub mod model;
 pub mod note;
@@ -122,6 +123,10 @@ pub use id::{
 pub use library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,
     LogEntry, LogEvent, Progress, Verbs,
+};
+pub use mailsearch::{
+    Clause, DateBound, Hit, MailDoc, MailQuery, MailSearch, MessageKey, Op, QueryGroup, RelUnit,
+    SearchCursor, SearchPage, TextMatch, ThreadKey,
 };
 pub use model::{Attachment, Entry, EntrySummary, Journal, Location, MediaKind, Weather};
 pub use note::{Note, NoteSummary};

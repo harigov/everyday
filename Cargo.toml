@@ -12,6 +12,7 @@ members = [
     "crates/everyday-server",
     "crates/everyday-cli",
     "crates/everyday-mail",
+    "crates/everyday-mailindex",
     "crates/everyday-app",
 ]
 
@@ -32,6 +33,7 @@ default-members = [
     "crates/everyday-server",
     "crates/everyday-cli",
     "crates/everyday-mail",
+    "crates/everyday-mailindex",
 ]
 
 [workspace.package]
@@ -52,6 +54,7 @@ everyday-mcp = { path = "crates/everyday-mcp" }
 everyday-service = { path = "crates/everyday-service" }
 everyday-server = { path = "crates/everyday-server" }
 everyday-mail = { path = "crates/everyday-mail" }
+everyday-mailindex = { path = "crates/everyday-mailindex" }
 
 tauri = "2"
 tauri-build = "2"

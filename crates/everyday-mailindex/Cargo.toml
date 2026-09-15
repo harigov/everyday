@@ -1,0 +1,30 @@
+[package]
+name = "everyday-mailindex"
+description = "Mail search: tantivy behind a sealed Directory, kept apart so its build cost is paid once"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+everyday-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+jiff.workspace = true
+tracing.workspace = true
+
+# The search engine itself. Pinned exactly, per house rule for a library this
+# large: `rust-version = "1.86"` on 0.26.2, comfortably under the 1.93.1 this
+# tree builds with, and the newest release that does. See `lib.rs` for why
+# tantivy rather than the in-memory index `everyday-core::search` already has.
+tantivy = "=0.26.2"
+
+# Backs `cache.rs`'s decrypted-segment cache. Already in the dependency tree
+# transitively (tantivy uses it internally), so depending on it directly adds
+# no new code to compile -- only a name for what was already being built.
+lru = "=0.16.4"
+
+[dev-dependencies]
+tempfile = "3"
