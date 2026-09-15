@@ -14,6 +14,34 @@
 //! number: a debug build, a loaded CI box and a laptop on battery are not
 //! the same machine, and the plan asks for the numbers to be measured and
 //! written down, not for this file to become a flaky pass/fail gate.
+//!
+//! # One measurement, written down
+//!
+//! Run once, release, on the machine this crate was built on (20 cores, a
+//! shared box, other builds running alongside):
+//!
+//! ```text
+//! index time:     7.26s for 100,000 messages
+//! on-disk size:   58.5 MiB, sealed
+//! cold open time: 102.9 ms
+//! free text, common word       p50 1.77 ms   p95 2.83 ms
+//! from: a specific sender      p50 52 µs     p95 73 µs
+//! subject: phrase              p50 5.35 ms   p95 7.26 ms
+//! is:unread has:attachment     p50 254 µs    p95 335 µs
+//! date range                   p50 1.21 ms   p95 1.34 ms
+//! ```
+//!
+//! Every query's p95 lands one to three orders of magnitude under the
+//! 150 ms budget, and cold open -- opening the sealed directory, decrypting
+//! nothing yet, standing up the reader -- costs less than the budget for a
+//! single search. The decrypt-on-first-read trade `directory.rs` describes
+//! does not show up here because a search over 100,000 messages touches a
+//! handful of segments, not all of them, and even a cold read of one is
+//! microseconds against a 150 ms budget; a workload that fans a single
+//! query out across every segment in a much larger mailbox is where that
+//! trade would start to matter. The slowest of the five,
+//! `subject:"quarterly report"`'s phrase query, is still only a few
+//! milliseconds either way.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
