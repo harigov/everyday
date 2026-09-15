@@ -1988,6 +1988,7 @@ version = "0.1.0"
 dependencies = [
  "directories",
  "everyday-core",
+ "everyday-mail",
  "everyday-store-postgres",
  "everyday-store-sqlite",
  "jiff",
