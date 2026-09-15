@@ -59,6 +59,7 @@ import type {
   LogEvent,
   LogId,
   LogQuery,
+  MailMessageId,
   MailProviderInfo,
   Mailbox,
   MailboxId,
@@ -86,6 +87,7 @@ import type {
   Reading,
   ReadingId,
   ReadingQuery,
+  RemoteImageSettings,
   Role,
   RoleId,
   RoleInfo,
@@ -131,6 +133,10 @@ export interface Commands {
   accountPresets: { args: Record<string, never>; result: MailProviderInfo[] }
   addItem: { args: { kindId: KindId; title: string; lookup: boolean }; result: AddedItem }
   agentSettings: { args: Record<string, never>; result: AgentSettings }
+  allowRemoteImages: {
+    args: { sender?: string | null; domain?: string | null; messageId?: MailMessageId | null }
+    result: void
+  }
   applyMetadata: { args: { id: ItemId; result: SearchResult; overwrite: boolean }; result: Item }
   attachOauthSignIn: {
     args: { id: AccountId; signInId: string; clientSecret?: string }
@@ -214,6 +220,7 @@ export interface Commands {
   listParts: { args: Record<string, never>; result: PartInfo[] }
   listProjects: { args: Record<string, never>; result: Project[] }
   listReadings: { args: { query: ReadingQuery }; result: Reading[] }
+  listRemoteImageAllowances: { args: Record<string, never>; result: RemoteImageSettings }
   listRoles: { args: Record<string, never>; result: RoleInfo[] }
   listRoutines: { args: Record<string, never>; result: RoutineInfo[] }
   listRuns: { args: { query?: RunQuery }; result: RoutineRun[] }
@@ -308,6 +315,10 @@ export interface Commands {
   quickWeekNote: { args: { thisWeek: string; lastWeek?: string }; result: string }
   readExport: { args: { handle: string; offset: number }; result: ExportChunk }
   readImport: { args: { handle: string }; result: ArchiveManifest }
+  revokeRemoteImageAllowance: {
+    args: { sender?: string | null; domain?: string | null }
+    result: void
+  }
   routineTemplates: { args: Record<string, never>; result: Template[] }
   runImport: { args: { handle: string; parts: string[]; mode: string }; result: ImportResult }
   runRoutine: { args: { id: RoutineId }; result: RoutineRun }
@@ -387,6 +398,7 @@ export const COMMAND_NAMES = {
   accountPresets: 'account_presets',
   addItem: 'add_item',
   agentSettings: 'agent_settings',
+  allowRemoteImages: 'allow_remote_images',
   applyMetadata: 'apply_metadata',
   attachOauthSignIn: 'attach_oauth_sign_in',
   awaitOauthSignIn: 'await_oauth_sign_in',
@@ -451,6 +463,7 @@ export const COMMAND_NAMES = {
   listParts: 'list_parts',
   listProjects: 'list_projects',
   listReadings: 'list_readings',
+  listRemoteImageAllowances: 'list_remote_image_allowances',
   listRoles: 'list_roles',
   listRoutines: 'list_routines',
   listRuns: 'list_runs',
@@ -506,6 +519,7 @@ export const COMMAND_NAMES = {
   quickWeekNote: 'quick_week_note',
   readExport: 'read_export',
   readImport: 'read_import',
+  revokeRemoteImageAllowance: 'revoke_remote_image_allowance',
   routineTemplates: 'routine_templates',
   runImport: 'run_import',
   runRoutine: 'run_routine',
@@ -580,6 +594,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'account_presets',
   'add_item',
   'agent_settings',
+  'allow_remote_images',
   'apply_metadata',
   'attach_oauth_sign_in',
   'await_oauth_sign_in',
@@ -644,6 +659,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_parts',
   'list_projects',
   'list_readings',
+  'list_remote_image_allowances',
   'list_roles',
   'list_routines',
   'list_runs',
@@ -699,6 +715,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'quick_week_note',
   'read_export',
   'read_import',
+  'revoke_remote_image_allowance',
   'routine_templates',
   'run_import',
   'run_routine',
@@ -766,6 +783,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
  */
 export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'add_item',
+  'allow_remote_images',
   'apply_metadata',
   'attach_oauth_sign_in',
   'begin_oauth_sign_in',
@@ -801,6 +819,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'mark_runs_seen',
   'merge_trackers',
   'poll_auto_lock',
+  'revoke_remote_image_allowance',
   'run_import',
   'run_routine',
   'run_tool',
@@ -849,6 +868,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
 /** What a listener should reload after a command succeeds. */
 export const CHANGE_KINDS = {
   add_item: 'item',
+  allow_remote_images: 'settings',
   apply_metadata: 'item',
   attach_oauth_sign_in: 'account',
   change_password: 'settings',
@@ -876,6 +896,7 @@ export const CHANGE_KINDS = {
   log_reading: 'reading',
   mark_runs_seen: 'routineRun',
   merge_trackers: 'tracker',
+  revoke_remote_image_allowance: 'settings',
   run_routine: 'routineRun',
   save_account: 'account',
   save_account_password: 'account',
