@@ -61,6 +61,7 @@ import type {
   LogEvent,
   LogId,
   LogQuery,
+  MailAddress,
   MailMessageId,
   MailProviderInfo,
   MailSyncProgress,
@@ -103,6 +104,7 @@ import type {
   RunQuery,
   SearchHit,
   SearchKind,
+  SearchMailResult,
   SearchRequest,
   SearchResult,
   SourceInfo,
@@ -377,6 +379,15 @@ export interface Commands {
     args: { query: string; journalId?: JournalId | null; kind?: SearchKind | null; limit: number }
     result: SearchHit[]
   }
+  searchMail: {
+    args: {
+      query: string
+      accountIds?: AccountId[] | null
+      cursor?: string | null
+      limit?: number | null
+    }
+    result: SearchMailResult
+  }
   searchSources: { args: Record<string, never>; result: SourceInfo[] }
   seedRoles: { args: Record<string, never>; result: number }
   sendDraft: {
@@ -406,6 +417,7 @@ export interface Commands {
   startImport: { args: { name?: string; bytes: number }; result: ImportUpload }
   status: { args: Record<string, never>; result: VaultStatus }
   subscribeCalendar: { args: { name: string; url: string; color: string }; result: CalendarInfo }
+  suggestAddresses: { args: { prefix: string; limit?: number | null }; result: MailAddress[] }
   syncAccount: { args: { id: AccountId }; result: void }
   syncCalendar: { args: { id: CalendarId }; result: SyncReport }
   syncDueCalendars: { args: { force: boolean }; result: SyncReport[] }
@@ -595,6 +607,7 @@ export const COMMAND_NAMES = {
   saveTasks: 'save_tasks',
   saveTracker: 'save_tracker',
   search: 'search',
+  searchMail: 'search_mail',
   searchSources: 'search_sources',
   seedRoles: 'seed_roles',
   sendDraft: 'send_draft',
@@ -612,6 +625,7 @@ export const COMMAND_NAMES = {
   startImport: 'start_import',
   status: 'status',
   subscribeCalendar: 'subscribe_calendar',
+  suggestAddresses: 'suggest_addresses',
   syncAccount: 'sync_account',
   syncCalendar: 'sync_calendar',
   syncDueCalendars: 'sync_due_calendars',
@@ -811,6 +825,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_tasks',
   'save_tracker',
   'search',
+  'search_mail',
   'search_sources',
   'seed_roles',
   'send_draft',
@@ -827,6 +842,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'start_import',
   'status',
   'subscribe_calendar',
+  'suggest_addresses',
   'sync_account',
   'sync_calendar',
   'sync_due_calendars',

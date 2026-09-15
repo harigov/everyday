@@ -1403,6 +1403,15 @@ export interface ThreadPage {
   nextCursor?: string | null
 }
 
+/** `search_mail`'s answer: the same `Thread` shape `list_threads` and
+ *  `get_thread` use, one row per matching thread (first hit only, in the
+ *  index's own ranked order). `next` is opaque, like `ThreadPage.nextCursor`
+ *  -- hand it back as `cursor` for the next page. */
+export interface SearchMailResult {
+  threads: Thread[]
+  next?: string | null
+}
+
 /** A thread and every message in it -- what opening one reads. Bodies are
  * not included. */
 export interface ThreadDetail {
