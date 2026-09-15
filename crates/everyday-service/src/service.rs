@@ -837,3 +837,57 @@ impl Drop for RunClaim {
         self.service.claimed_runs.write().unwrap().remove(&self.id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::supervisor::Outcome;
+    use std::time::Duration;
+
+    /// `Service::close` must stop every supervised task before it drops
+    /// mail's pack store and search index -- see `close`'s own docs on why
+    /// that ordering matters. A task that never notices a stop signal on
+    /// its own (deaf to it, the same fixture `Supervisor`'s own tests use
+    /// for "ignores the signal") proves this: `close` still returns
+    /// promptly, because the supervisor aborts it after its grace period,
+    /// and the task ends up `Stopped` either way.
+    #[tokio::test(start_paused = true)]
+    async fn close_stops_every_supervised_task() {
+        let svc = Arc::new(Service::new());
+        svc.set_supervisor(Arc::new(Supervisor::new(Arc::new(Silent))));
+        svc.supervisor().ensure("deaf", |_stop| {
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                Ok(Outcome::Done)
+            })
+        });
+
+        // `tokio::time::sleep` needs a moment to actually be polled before
+        // its task shows as `Running` -- the same settling every other
+        // supervisor test in this tree does.
+        for _ in 0..50 {
+            if matches!(svc.supervisor().state("deaf"), Some(crate::supervisor::TaskState::Running))
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        // `close` is spawned rather than awaited directly, on the same
+        // reasoning `crate::supervisor`'s own
+        // `stop_all_completes_promptly_even_if_a_task_ignores_the_signal`
+        // test gives: it is itself waiting on a paused `STOP_GRACE` timer,
+        // and nothing advances a paused clock while the only task on the
+        // runtime is the one blocked waiting for it to move.
+        let svc2 = svc.clone();
+        let closing = tokio::spawn(async move { svc2.close().await });
+        tokio::time::advance(crate::supervisor::STOP_GRACE).await;
+        closing.await.expect("close's task panicked");
+
+        assert_eq!(
+            svc.supervisor().state("deaf"),
+            Some(crate::supervisor::TaskState::Stopped),
+            "close must stop a task even one that never notices the signal"
+        );
+    }
+}

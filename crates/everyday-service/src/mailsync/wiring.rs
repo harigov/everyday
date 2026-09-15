@@ -174,6 +174,10 @@ impl PackStore for VaultPacks {
         self.0.with_mail_packs(|p| p.mark_dead(refs))
     }
 
+    fn delete_account(&self, account: &str) -> Result<()> {
+        self.0.with_mail_packs(|p| p.delete_account(account))
+    }
+
     fn compact(&self, account: &str) -> Result<Vec<(PackRef, PackRef)>> {
         self.0.with_mail_packs(|p| p.compact(account))
     }

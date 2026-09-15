@@ -96,7 +96,7 @@ use tokio::task::JoinHandle;
 /// cleanly should do most of that closing *after* it notices the signal but
 /// before it awaits anything slow -- flush what is already in memory first,
 /// finish the network round trip second.
-const STOP_GRACE: Duration = Duration::from_secs(5);
+pub(crate) const STOP_GRACE: Duration = Duration::from_secs(5);
 
 /// The smallest gap between a failed attempt and the next one.
 const BACKOFF_BASE: Duration = Duration::from_secs(1);
