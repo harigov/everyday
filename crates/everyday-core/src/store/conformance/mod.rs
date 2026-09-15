@@ -30,6 +30,7 @@ mod agent;
 mod calendars;
 mod journal;
 mod library;
+mod mail;
 mod notes;
 mod purpose;
 mod routines;
@@ -41,6 +42,7 @@ pub use accounts::run_account_suite;
 pub use agent::run_agent_suite;
 pub use calendars::run_calendar_suite;
 pub use library::run_library_suite;
+pub use mail::run_mail_suite;
 pub use notes::run_note_suite;
 pub use purpose::run_purpose_suite;
 pub use routines::run_routine_suite;
@@ -177,6 +179,22 @@ pub fn run_all(store: &dyn JournalStore) {
     match store.accounts() {
         Some(_) => run_account_suite(store),
         None => eprintln!("backend {name:?} stores no accounts; skipping the account suite"),
+    }
+
+    // And mail, last, on the same terms again. Handed the whole journal
+    // store because the one cascade worth checking -- deleting an account
+    // takes every mail row with it -- reaches into the account store, not
+    // this domain's own, exactly as the account suite's own cascade check
+    // reaches into the secret store.
+    match store.mail() {
+        Some(_) => {
+            run_mail_suite(store);
+            // Not part of the mail suite, because it is a question about the
+            // *journal* store: garbage collection walks every record that can
+            // hold a blob, and a message's attachment is one of them.
+            mail::garbage_collection_learns_about_mail_attachments(store);
+        }
+        None => eprintln!("backend {name:?} stores no mail; skipping the mail suite"),
     }
 
     journal::cleanup(store);
