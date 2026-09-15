@@ -513,6 +513,33 @@ impl Service {
         self.outbox_notify(account).notify_one();
     }
 
+    /// The one place "a mail write just happened for `account`" is said,
+    /// shared by a person's own click (`domains::mail`'s `batch_op` and
+    /// `send_draft`) and an assistant's or MCP's, through
+    /// [`everyday_core::agent::tools::ToolContext::after_mail_write`]
+    /// (wired to this in `agent.rs` and `domains::meta`). Two things,
+    /// always together: [`Service::notify_outbox`], so the write's own
+    /// outbox op (if it enqueued one) is drained the moment it can be
+    /// rather than at the next `IDLE` wake or timer tick, and dropping
+    /// `account`'s cached unread counts, so the next read recomputes them
+    /// rather than answering with what was true before this write.
+    ///
+    /// Invalidating unconditionally, even for a write that could not
+    /// possibly have moved the read/unread line, is the same cheap,
+    /// always-correct choice `domains::mail::batch_op`'s own comment
+    /// already made for exactly that reason: a `match` on what changed,
+    /// kept in step by hand with every mutating mail tool that exists, costs
+    /// more to get right than one avoidable recompute ever does. Called
+    /// from two doors rather than duplicated in each, per the finding that
+    /// added this: a person's write and an agent's write must not be able
+    /// to drift on what "after a mail write" means.
+    pub fn notify_mail_write(&self, account: AccountId) {
+        self.notify_outbox(account);
+        if let Some(cache) = self.mail_unread_cache() {
+            cache.invalidate(account);
+        }
+    }
+
     /// Should this draft append to the server's Drafts folder right now?
     /// `true` no more than once every thirty seconds per draft -- the
     /// coalescing `docs/plans/mail.md`'s phase 3 section asks `save_draft`

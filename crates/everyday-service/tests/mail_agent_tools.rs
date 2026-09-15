@@ -266,3 +266,66 @@ fn the_rate_limit_trips_after_rapid_archives_from_mcp_and_answers_with_something
         assert!(err.message.to_lowercase().contains("mail"), "{err:?}");
     });
 }
+
+// ---- the after-write hook (finding 3) -------------------------------------
+
+/// `archive_thread`, called through `run_tool` exactly the way an MCP
+/// client's own would be, must wake the account's sync task and invalidate
+/// its cached unread counts -- the same two things a person's own archive,
+/// through `domains::mail::batch_op`, already does (`Service::
+/// notify_mail_write`). Before `ToolContext::after_mail_write` existed, the
+/// tools in `agent::tools::mail` wrote straight through the vault and
+/// stopped there, so neither ever happened for an assistant's or MCP's own
+/// write -- an inbox left open elsewhere would not see the archive, nor its
+/// own badge update, until something unrelated happened to refresh either.
+#[test]
+fn a_tool_archive_wakes_the_outbox_and_invalidates_the_unread_cache() {
+    let (svc, _dir) = support::vault::service(None);
+    let mut account = seed_account(&svc);
+    account.mcp_access.archive = true;
+    let vault = svc.get().unwrap();
+    vault.save_account(&account).unwrap();
+    let inbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let thread = seed_thread(&svc, account.id, inbox, 1);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        // Held from before the call, so a `notify_one()` during it leaves a
+        // permit this `.notified()` picks up immediately afterwards --
+        // `tokio::sync::Notify`'s own contract for a waiter that asks for
+        // the handle before the wake happens.
+        let notify = svc.outbox_notify(account.id);
+        let cache = svc.mail_unread_cache().expect("mail is open for this vault");
+        // Prime the cache so there is something for the write to
+        // invalidate -- an empty vault's own real count is fine, since only
+        // whether this answer got thrown away is under test here.
+        let _ = cache.get_or_compute(account.id, || Ok(Vec::new()));
+
+        svc.call(
+            Ctx::local(),
+            "run_tool",
+            json!({
+                "name": "archive_thread",
+                "arguments": { "thread_id": thread.to_string() },
+                "caller": mcp_caller("client-1"),
+            }),
+        )
+        .await
+        .expect("archiving is allowed");
+
+        tokio::time::timeout(std::time::Duration::from_millis(200), notify.notified())
+            .await
+            .expect("archiving through a tool must wake the account's sync task");
+
+        let recomputed = std::sync::atomic::AtomicU32::new(0);
+        let _ = cache.get_or_compute(account.id, || {
+            recomputed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Vec::new())
+        });
+        assert_eq!(
+            recomputed.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "archiving through a tool must invalidate the cached unread counts"
+        );
+    });
+}

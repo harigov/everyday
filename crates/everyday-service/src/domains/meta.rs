@@ -306,6 +306,15 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
         let rate_limit = move |origin: &MailOrigin| -> everyday_core::error::Result<()> {
             svc_for_rl.check_mail_rate_limit(origin, &call_turn).map_err(mail_rate_limit_error)
         };
+        // See `ToolContext::after_mail_write`'s own doc: the one door a
+        // successful mail write here shares with a person's own click
+        // through `domains::mail` -- wakes the account's sync task and
+        // drops its cached unread counts, so a script or MCP archive is
+        // seen exactly as promptly as a person's own.
+        let svc_for_notify = svc.clone();
+        let after_mail_write = move |account: everyday_core::id::AccountId| {
+            svc_for_notify.notify_mail_write(account);
+        };
         // See `agent::run_tool`'s own `invite_responder`: the same closure,
         // built here for the script/MCP path, which has no `Ctx` of its own
         // by the time a tool body runs -- see
@@ -340,6 +349,7 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
             // see `run_tool`'s own doc.
             assistant_provider: None,
             mail_rate_limit: Some(&rate_limit),
+            after_mail_write: Some(&after_mail_write),
             invite_responder: Some(&invite_responder),
         };
         tools::dispatch(&ctx, &args.name, &args.arguments).map_err(CommandError::from)

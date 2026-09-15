@@ -395,6 +395,25 @@ pub struct ToolContext<'a> {
     /// [`crate::mail::Origin::is_rate_limited`](crate::mail::Origin) for why
     /// a person is never checked against it at all.
     pub mail_rate_limit: Option<&'a MailRateLimit<'a>>,
+    /// Called once, with the account touched, after every mail tool's write
+    /// actually lands -- wired to
+    /// `everyday_service::Service::notify_mail_write` by whichever of
+    /// `agent.rs` or `meta.rs` built this context, exactly the way
+    /// [`ToolContext::mail_rate_limit`] already is.
+    ///
+    /// What wakes that account's sync task the moment an assistant or MCP
+    /// write enqueues an outbox op, and invalidates the cached unread
+    /// counts `mail_unread_cache` answers from, the same two things
+    /// `everyday_service::domains::mail`'s own `batch_op` and `send_draft`
+    /// already do for a person's own click. Before this field existed the
+    /// tools in `agent::tools::mail` wrote straight through the vault and
+    /// stopped there, so a person watching the inbox would not see an
+    /// assistant's archive, nor an unread count it changed, until whatever
+    /// unrelated event next happened to refresh either. `None` for the
+    /// vault's owner acting directly (nothing here needs waking on its own
+    /// behalf -- the interface already reacts to its own writes) and for a
+    /// test with nothing wired up.
+    pub after_mail_write: Option<&'a dyn Fn(crate::id::AccountId)>,
     /// The one gate `respond_to_invite` passes an answer through to actually
     /// build and queue the iTIP `REPLY` -- see [`InviteResponder`]. `None`
     /// for the vault's owner acting directly (that path is

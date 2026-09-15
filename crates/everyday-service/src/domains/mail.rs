@@ -241,18 +241,12 @@ async fn batch_op(
     svc.check_mail_rate_limit(&origin, "person")?;
     let vault = svc.require()?;
     let ops = blocking(move || Ok(vault.apply_thread_ops(&threads, kind, origin)?)).await?;
-    let cache = svc.mail_unread_cache();
+    // `Service::notify_mail_write` per account, not a bare `notify_outbox`:
+    // see its own doc for why every mutating mail write, this one and the
+    // assistant's and MCP's alike, goes through the one place that also
+    // invalidates the unread cache, so the two paths cannot drift.
     for account in ops.iter().map(|op| op.account_id).collect::<BTreeSet<_>>() {
-        svc.notify_outbox(account);
-        // Every batch action passes through here, including the five that
-        // cannot move a thread across the read/unread line (star, label,
-        // snooze and their opposites) -- invalidating regardless is the
-        // cheap, always-correct choice `mailsync::unread_cache`'s module
-        // docs describe; the alternative is a `match` on `kind` that has to
-        // be kept in step with `OpKind::is_flag_change` by hand.
-        if let Some(cache) = &cache {
-            cache.invalidate(account);
-        }
+        svc.notify_mail_write(account);
     }
     Ok(ops)
 }
@@ -406,7 +400,7 @@ async fn save_draft(svc: Arc<Service>, _ctx: Ctx, args: SaveDraft) -> CommandRes
     let op =
         blocking(move || Ok(vault.save_draft_and_append(&draft, append, Origin::Person)?)).await?;
     if let Some(op) = op {
-        svc.notify_outbox(op.account_id);
+        svc.notify_mail_write(op.account_id);
     }
     Ok(())
 }
@@ -457,7 +451,7 @@ async fn send_draft(svc: Arc<Service>, _ctx: Ctx, args: SendDraft) -> CommandRes
         Ok(vault.queue_draft_send(args.id, not_before, origin)?)
     })
     .await?;
-    svc.notify_outbox(op.account_id);
+    svc.notify_mail_write(op.account_id);
     Ok(draft)
 }
 
