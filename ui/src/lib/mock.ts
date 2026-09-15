@@ -73,6 +73,7 @@ import type {
   TaskQuery,
   TaskStats,
   TaskStatus,
+  MailCategory,
   ThreadFilter,
   TimeBlock,
   Tracker,
@@ -97,12 +98,15 @@ import {
   mockMarkUnread,
   mockMoveToMailbox,
   mockNewDraft,
+  mockRecategorizeMail,
   mockSaveDraft,
   mockSearchMail,
   mockSendDraft,
+  mockSetThreadCategory,
   mockSnooze,
   mockStar,
   mockSuggestAddresses,
+  mockSummarizeThread,
   mockTrash,
   mockUndoSend,
   mockUnlabel,
@@ -1532,6 +1536,7 @@ const accounts: AccountView[] = [
     },
     mcpAccess: { read: true, draft: true, edit: true, remove: true, archive: true, send: false },
     assistantProviderAcknowledged: null,
+    mailAi: { categorize: false, autoDraft: false, summaries: false },
     attachmentCapBytes: null,
     status: { type: 'ok' },
     lastSyncedAt: iso(0),
@@ -1570,6 +1575,7 @@ const accounts: AccountView[] = [
       send: false,
     },
     assistantProviderAcknowledged: null,
+    mailAi: { categorize: false, autoDraft: false, summaries: false },
     attachmentCapBytes: 25_000_000,
     status: { type: 'ok' },
     lastSyncedAt: iso(1),
@@ -4475,6 +4481,18 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       mockUnsnooze(str(args.id))
       return undefined as T
+
+    // ── Phase 7: categorisation and summaries ──────────────────────
+    case 'set_thread_category':
+      requireUnlocked()
+      mockSetThreadCategory(args.threads as string[], args.category as MailCategory)
+      return undefined as T
+    case 'recategorize_mail':
+      requireUnlocked()
+      return mockRecategorizeMail(args.account as string | null | undefined) as T
+    case 'summarize_thread':
+      requireUnlocked()
+      return mockSummarizeThread(str(args.id)) as T
 
     case 'list_drafts':
       requireUnlocked()

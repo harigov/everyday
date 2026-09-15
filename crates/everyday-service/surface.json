@@ -2489,6 +2489,23 @@
     {
       "args": [
         {
+          "name": "account",
+          "required": false,
+          "type": "AccountId | null"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "recategorize_mail",
+      "orScope": null,
+      "returns": "RecategorizeResult",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "sender",
           "required": false,
           "type": "string | null"
@@ -3468,6 +3485,31 @@
           "type": "ThreadId[]"
         },
         {
+          "name": "category",
+          "required": true,
+          "type": "MailCategory"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_thread_category",
+      "orScope": null,
+      "returns": "void",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "threads",
+          "required": true,
+          "type": "ThreadId[]"
+        },
+        {
           "name": "until",
           "required": true,
           "type": "string"
@@ -3633,6 +3675,23 @@
       "name": "suggest_addresses",
       "orScope": null,
       "returns": "MailAddress[]",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ThreadId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "summarize_thread",
+      "orScope": null,
+      "returns": "ThreadSummary",
       "scope": "mail",
       "sensitive": false,
       "streams": false

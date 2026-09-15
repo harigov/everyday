@@ -486,6 +486,37 @@ export function mockUnsnooze(id: ThreadId): void {
   thread(id).snoozedUntil = null
 }
 
+// ── Phase 7: categorisation and summaries ───────────────────────────
+//
+// The three commands `everyday_service::domains::mail` gained for the split
+// inbox and the assistant's read-only summary -- see
+// `crates/everyday-service/src/domains/mail.rs`. Kept in the real contract's
+// shape (`threads: ThreadId[]`, unlike the older single-`id` actions above)
+// since these were written against the already-regenerated surface rather
+// than the provisional one those predate.
+
+export function mockSetThreadCategory(threads: ThreadId[], category: MailCategory): void {
+  for (const id of threads) thread(id).category = category
+}
+
+export function mockRecategorizeMail(account?: AccountId | null): { changed: number } {
+  let changed = 0
+  for (const t of seed.threads) {
+    if (account && t.accountId !== account) continue
+    if (t.category == null) {
+      t.category = 'other'
+      changed++
+    }
+  }
+  return { changed }
+}
+
+export function mockSummarizeThread(id: ThreadId): { summary: string } {
+  const t = thread(id)
+  const count = [...seed.messages.values()].filter((m) => m.threadId === id).length
+  return { summary: `"${t.subject}" — ${count} message${count === 1 ? '' : 's'}, mocked summary.` }
+}
+
 // ── Drafts and sending ───────────────────────────────────────────────
 
 export function mockListDrafts(): Draft[] {
