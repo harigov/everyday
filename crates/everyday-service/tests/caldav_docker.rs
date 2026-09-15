@@ -114,8 +114,7 @@ const NEW_EVENT: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\
 /// a real recurring standup never has a last occurrence typed into it. The
 /// point of this fixture is that a client has to decide for itself how far
 /// forward to materialise it; the server has no opinion.
-const UNENDING_WEEKLY_EVENT: &str =
-    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nBEGIN:VEVENT\r\n\
+const UNENDING_WEEKLY_EVENT: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nBEGIN:VEVENT\r\n\
     UID:forever@example.com\r\nDTSTART:20260901T100000Z\r\nDTEND:20260901T110000Z\r\n\
     RRULE:FREQ=WEEKLY\r\nSUMMARY:Standing weekly\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
 

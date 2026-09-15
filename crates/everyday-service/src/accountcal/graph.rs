@@ -67,7 +67,9 @@ use serde::Deserialize;
 use tokio::time::sleep;
 
 use super::tokens::{self, Credential, Resource};
-use super::{RemoteCalendar, deterministic_event_id, retry_after_delay, short_backoff, sync_window};
+use super::{
+    RemoteCalendar, deterministic_event_id, retry_after_delay, short_backoff, sync_window,
+};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
 use crate::service::{Service, blocking};
@@ -686,7 +688,8 @@ mod tests {
     async fn a_429_is_retried_honouring_retry_after_and_then_succeeds() {
         let (url, calls) =
             mock_status_then_ok(axum::http::StatusCode::TOO_MANY_REQUESTS, Some("0")).await;
-        let page: DeltaPage = get_json_full_url(&url, "tok").await.expect("retried, then succeeded");
+        let page: DeltaPage =
+            get_json_full_url(&url, "tok").await.expect("retried, then succeeded");
         assert!(page.value.is_empty());
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2, "one retry, then success");
     }
@@ -843,10 +846,7 @@ mod tests {
                     }
                 }),
             )
-            .route(
-                "/stale-delta",
-                get(|| async { axum::http::StatusCode::GONE.into_response() }),
-            );
+            .route("/stale-delta", get(|| async { axum::http::StatusCode::GONE.into_response() }));
         tokio::spawn(async move {
             axum::serve(listener, app).await.ok();
         });

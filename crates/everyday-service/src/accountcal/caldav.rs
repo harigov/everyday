@@ -617,12 +617,15 @@ fn events_from_ics(
     for occurrence in expanded.events {
         let Some(comp) = parsed.components.get(occurrence.comp_id as usize) else { continue };
         let start = to_jiff(occurrence.start);
-        let end = match occurrence.end {
-            calcard::icalendar::dates::TimeOrDelta::Time(t) => to_jiff(t),
-            calcard::icalendar::dates::TimeOrDelta::Delta(d) => {
-                start + jiff::SignedDuration::new(d.num_seconds(), 0)
-            }
+        // `.clone()` rather than matching `occurrence.end` directly: this
+        // value is wanted twice below, once as the instant (`end`) and once
+        // for the *day* it falls on (`end_date`), and `TimeOrDelta` is
+        // `Clone` but not `Copy`.
+        let end_chrono = match occurrence.end.clone() {
+            calcard::icalendar::dates::TimeOrDelta::Time(t) => t,
+            calcard::icalendar::dates::TimeOrDelta::Delta(d) => occurrence.start + d,
         };
+        let end = to_jiff(end_chrono);
         // The *local* day this occurrence falls on, read from calcard's own
         // already-resolved zone (`occurrence.start`'s `Tz`, matched against
         // the event's `TZID` and any embedded `VTIMEZONE`) rather than
@@ -635,6 +638,22 @@ fn events_from_ics(
             continue;
         }
         let all_day = is_all_day(comp);
+        // The last day this occurrence covers -- matching
+        // `everyday_core::ics::materialise`'s own convention exactly, since
+        // that is what a feed event's `end_date` means and the calendar
+        // grid draws both the same way. An all-day `DTEND` is *exclusive*
+        // per RFC 5545 (a one-day event is `DTSTART;VALUE=DATE:20260710` /
+        // `DTEND;VALUE=DATE:20260711`), so the day it actually ends on is
+        // the day before; a timed event simply ends on whatever day its own
+        // end instant falls on in its own zone, which may be the day after
+        // `local_date` for one that crosses midnight. `.max(local_date)`
+        // guards a malformed `DTEND` that is not after `DTSTART`.
+        let end_date_naive = jiff_date_from_naive(end_chrono.date_naive());
+        let end_date = if all_day && end_date_naive > local_date {
+            end_date_naive.yesterday().unwrap_or(end_date_naive)
+        } else {
+            end_date_naive.max(local_date)
+        };
         let event_tz = tzid_of(comp).unwrap_or_else(|| default_tz.to_string());
         out.push(Event {
             id: deterministic_event_id(calendar_id, &format!("{href}#{start}")),
@@ -650,7 +669,7 @@ fn events_from_ics(
             start,
             end: end.max(start),
             local_date,
-            end_date: local_date,
+            end_date,
             tz: event_tz,
             all_day,
             status: status_of(comp),
@@ -681,7 +700,10 @@ fn events_from_ics(
 /// avoid. A month is generous next to the two-year forward reach of the
 /// window itself -- an unending meeting is never more than a month short of
 /// its furthest materialised occurrence.
-fn needs_reexpansion(expanded_through: Option<jiff::civil::Date>, window_end: jiff::civil::Date) -> bool {
+fn needs_reexpansion(
+    expanded_through: Option<jiff::civil::Date>,
+    window_end: jiff::civil::Date,
+) -> bool {
     expanded_through.is_none_or(|through| (window_end - through).get_days() > 31)
 }
 
@@ -692,7 +714,9 @@ fn needs_reexpansion(expanded_through: Option<jiff::civil::Date>, window_end: ji
 fn is_recurring(parsed: &calcard::icalendar::ICalendar) -> bool {
     use calcard::icalendar::ICalendarProperty;
     parsed.components.iter().any(|c| {
-        c.entries.iter().any(|e| matches!(e.name, ICalendarProperty::Rrule | ICalendarProperty::Rdate))
+        c.entries
+            .iter()
+            .any(|e| matches!(e.name, ICalendarProperty::Rrule | ICalendarProperty::Rdate))
     })
 }
 
@@ -948,14 +972,12 @@ mod tests {
 
     #[test]
     fn describe_reports_a_401_as_forbidden_but_a_403_as_an_ordinary_failure() {
-        let unauthorized = describe(WebDavError::<std::io::Error>::BadStatusCode(
-            http::StatusCode::UNAUTHORIZED,
-        ));
+        let unauthorized =
+            describe(WebDavError::<std::io::Error>::BadStatusCode(http::StatusCode::UNAUTHORIZED));
         assert_eq!(unauthorized.code, codes::FORBIDDEN);
 
-        let forbidden_calendar = describe(WebDavError::<std::io::Error>::BadStatusCode(
-            http::StatusCode::FORBIDDEN,
-        ));
+        let forbidden_calendar =
+            describe(WebDavError::<std::io::Error>::BadStatusCode(http::StatusCode::FORBIDDEN));
         assert_ne!(
             forbidden_calendar.code,
             codes::FORBIDDEN,
@@ -979,5 +1001,47 @@ mod tests {
             "thirteen months stale: due for re-expansion"
         );
         assert!(needs_reexpansion(None, window_end), "never expanded at all: also due");
+    }
+
+    // ---- finding 4: an event's end_date must reflect its actual end -------
+
+    #[test]
+    fn a_three_day_all_day_event_covers_all_three_days() {
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nBEGIN:VEVENT\r\n\
+            UID:trip@example.com\r\nDTSTART;VALUE=DATE:20260710\r\nDTEND;VALUE=DATE:20260713\r\n\
+            SUMMARY:Trip\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let window = (jiff::civil::date(2020, 1, 1), jiff::civil::date(2030, 1, 1));
+        let (events, skipped, recurring) =
+            events_from_ics(ics, CalendarId::new(), "/cal/trip.ics", "UTC", window);
+        assert_eq!(skipped, 0);
+        assert!(!recurring);
+        assert_eq!(events.len(), 1);
+        assert!(events[0].all_day);
+        assert_eq!(events[0].local_date, jiff::civil::date(2026, 7, 10));
+        assert_eq!(
+            events[0].end_date,
+            jiff::civil::date(2026, 7, 12),
+            "DTEND is exclusive: 10th, 11th and 12th are the three days covered, not the 13th"
+        );
+    }
+
+    #[test]
+    fn a_timed_event_crossing_midnight_covers_two_days() {
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nBEGIN:VEVENT\r\n\
+            UID:overnight@example.com\r\nDTSTART;TZID=UTC:20260710T230000\r\n\
+            DTEND;TZID=UTC:20260711T010000\r\nSUMMARY:Overnight\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let window = (jiff::civil::date(2020, 1, 1), jiff::civil::date(2030, 1, 1));
+        let (events, skipped, recurring) =
+            events_from_ics(ics, CalendarId::new(), "/cal/overnight.ics", "UTC", window);
+        assert_eq!(skipped, 0);
+        assert!(!recurring);
+        assert_eq!(events.len(), 1);
+        assert!(!events[0].all_day);
+        assert_eq!(events[0].local_date, jiff::civil::date(2026, 7, 10));
+        assert_eq!(
+            events[0].end_date,
+            jiff::civil::date(2026, 7, 11),
+            "a timed event that crosses midnight must cover both days"
+        );
     }
 }

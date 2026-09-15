@@ -62,7 +62,9 @@ use serde::Deserialize;
 use tokio::time::sleep;
 
 use super::tokens::{self, Credential, Resource};
-use super::{RemoteCalendar, deterministic_event_id, retry_after_delay, short_backoff, sync_window};
+use super::{
+    RemoteCalendar, deterministic_event_id, retry_after_delay, short_backoff, sync_window,
+};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
 use crate::service::{Service, blocking};
@@ -443,10 +445,7 @@ async fn get_bytes(url: &str, token: &str) -> CommandResult<Vec<u8>> {
             // fine, but this calendar specifically refused the request.
             return Err(CommandError::new(
                 codes::NETWORK,
-                format!(
-                    "Google Calendar refused this request: {}",
-                    String::from_utf8_lossy(&body)
-                ),
+                format!("Google Calendar refused this request: {}", String::from_utf8_lossy(&body)),
             ));
         }
         if status == 410 {
