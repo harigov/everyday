@@ -335,4 +335,7 @@ mod tests;
 mod keyset_tests;
 
 #[cfg(test)]
+mod mail_scale;
+
+#[cfg(test)]
 mod scale;
