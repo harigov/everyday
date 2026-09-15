@@ -45,6 +45,7 @@ import type {
   LogEvent,
   LogId,
   LogQuery,
+  MailboxId,
   McpStatus,
   Memory,
   MemoryId,
@@ -73,6 +74,8 @@ import type {
   TaskId,
   TaskQuery,
   TaskStatus,
+  ThreadFilter,
+  ThreadId,
   TimeBlock,
   Tracker,
   TrackerId,
@@ -310,6 +313,29 @@ function call<K extends keyof Commands>(
   requestId?: string,
 ): Promise<Commands[K]['result']> {
   return invoke<Commands[K]['result']>(COMMAND_NAMES[name], args, requestId)
+}
+
+/**
+ * Call a command that is not yet in the generated surface, by its wire name.
+ *
+ * `mail-api.ts` is the one caller today: Phase 2-4 of `docs/plans/mail.md`
+ * name a couple of dozen commands that other agents are still landing, and
+ * `gen-api.mjs` cannot generate a typed method for one that does not exist
+ * in `crates/everyday-service/surface.json` yet. This is the untyped escape
+ * hatch `call` above is built from, kept to one call site rather than
+ * reached for anywhere a rename would go unnoticed.
+ *
+ * Mirrors what `call` does for a *known* command: under Tauri it always goes
+ * through the shell's `call`, never by name directly, because a command this
+ * build does not know about is never one of the handful the shell answers
+ * itself. Once `gen-api.mjs` catches up, each call site becomes a one-line
+ * typed method here instead, and this function's job shrinks back to zero.
+ */
+export function callCommand<T = unknown>(
+  name: string,
+  args: Record<string, unknown> = {},
+): Promise<T> {
+  return MOCK ? invoke<T>(name, args) : invoke<T>('call', { name, args, requestId: null })
 }
 
 export const api = {
@@ -984,6 +1010,24 @@ export const api = {
    * means the picker was dismissed.
    */
   openImport: () => invoke<PickedFile | null>('open_import'),
+
+  // ── Mail: mailboxes and threads ───────────────────────────────────────
+  //
+  // Read-only, and already generated -- `list_mailboxes`, `list_threads` and
+  // `get_thread` are in `surface.json`, unlike everything else the Mail app
+  // needs. See `mail-api.ts`, which wraps these three alongside the rest of
+  // Phase 2-4's surface, called by name through `callCommand` until the sync
+  // engine and the write-commands agent land theirs and this file is
+  // regenerated.
+
+  mailboxes: (account: AccountId) => call('listMailboxes', { account }),
+  threads: (
+    mailbox: MailboxId,
+    filter?: ThreadFilter,
+    cursor?: string | null,
+    limit?: number | null,
+  ) => call('listThreads', { mailbox, filter, cursor, limit }),
+  thread: (id: ThreadId) => call('getThread', { id }),
 
   // ── Accounts ───────────────────────────────────────────────────────
   //

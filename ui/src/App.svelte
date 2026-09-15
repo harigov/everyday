@@ -14,6 +14,7 @@
   import { todo } from './lib/todo.svelte'
   import './lib/calendar.svelte'
   import { library } from './lib/library.svelte'
+  import './lib/mail.svelte'
   import { assistant } from './lib/assistant.svelte'
   import { purpose } from './lib/purpose.svelte'
   import { quick } from './lib/quick.svelte'
@@ -33,6 +34,7 @@
   import TodoView from './components/TodoView.svelte'
   import CalendarView from './components/CalendarView.svelte'
   import LibraryView from './components/LibraryView.svelte'
+  import MailView from './components/MailView.svelte'
   import OverviewView from './components/OverviewView.svelte'
   import AssistantView from './components/AssistantView.svelte'
   import LockScreen from './components/LockScreen.svelte'
@@ -126,6 +128,7 @@
     todo: () => todo.accent,
     calendar: () => 'var(--accent)',
     library: () => library.accent,
+    mail: () => 'var(--accent)',
     overview: () => 'var(--accent)',
     assistant: () => 'var(--accent)',
   }
@@ -230,6 +233,8 @@
           <CalendarView />
         {:else if app.section === 'library'}
           <LibraryView />
+        {:else if app.section === 'mail'}
+          <MailView />
         {:else if app.section === 'overview'}
           <OverviewView />
         {:else}

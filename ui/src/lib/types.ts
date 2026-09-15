@@ -694,6 +694,21 @@ export interface Capabilities {
    * conversation vanishes when the window closes.
    */
   agent: boolean
+  /**
+   * Backend implements `accounts::AccountStore`, so a mailbox provider can be
+   * signed in to at all. False hides Settings → Accounts, the Mail app and
+   * the calendar's "other people's calendars".
+   */
+  accounts: boolean
+  /**
+   * Backend implements `mail::MailStore`, so a synced mailbox has somewhere
+   * to keep its mailboxes, messages, threads, bodies, drafts and outbox.
+   *
+   * False hides the Mail app entirely, the way `library` hides the library
+   * app. A backend that carries this in practice carries `accounts` too --
+   * see `app.supportsMail`.
+   */
+  mail: boolean
 }
 
 export interface VaultStatus {
@@ -1354,6 +1369,24 @@ export interface Thread {
   unreadCount: number
   category?: MailCategory | null
   snoozedUntil?: string | null
+  /**
+   * Provisional: the data model in `docs/plans/mail.md` does not give a
+   * thread its own flag, only a message (`MessageFlags.flagged`). The
+   * interface needs one to draw a star on a list row without opening the
+   * thread first, so this is carried here until the write-commands agent
+   * either promotes it to a real aggregate or the list starts computing it
+   * server-side. Optional, and false when absent.
+   */
+  starred?: boolean
+  /** Provisional, for the same reason as `starred`: whether any message in
+   *  the thread carries an attachment, for the list row's paperclip. */
+  hasAttachments?: boolean
+  /** Provisional: the newest message's `snippet`, cached on the thread the
+   *  way Gmail's list does, so the row does not need its own fetch. */
+  snippet?: string
+  /** Provisional: whether the newest draft on this thread has `origin ===
+   *  'assistant'`, for the list row's "drafted by the assistant" mark. */
+  draftedByAssistant?: boolean
 }
 
 /** All three fields ANDed; `null`/absent means "do not filter on this." */

@@ -21,6 +21,7 @@ import { onChange, onLockState, onPalette } from './api'
 import { accounts } from './accounts.svelte'
 import { calendar } from './calendar.svelte'
 import { library } from './library.svelte'
+import { mail } from './mail.svelte'
 import { assistant } from './assistant.svelte'
 import { applierFor, type ChangeWithIds } from './live-apply'
 import { notes } from './notes.svelte'
@@ -67,6 +68,11 @@ export const RELOAD = {
   assistant: () => assistant.refresh(),
   shelves: () => library.refreshKinds(),
   library: () => library.refresh(),
+  // Nothing routes here yet -- see `mail.svelte.ts`'s own note on
+  // `registerApply`. Added now so the target exists the moment a mailbox,
+  // thread or draft `ChangeKind` does, rather than being one more file to
+  // remember to touch alongside the sync engine and the write commands.
+  mail: () => mail.refresh(),
   tracking: () => tracking.refresh(),
   overview: () => overview.refresh(),
   // Roles and goals, which three surfaces now draw: the todo app's goals
