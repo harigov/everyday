@@ -1023,6 +1023,7 @@ fn v9(d: Dialect) -> Vec<String> {
                  state          TEXT    NOT NULL,
                  origin         TEXT    NOT NULL,
                  not_before_us  {int} NOT NULL,
+                 thread_id      TEXT,
                  data           {blob} NOT NULL
              )"
         ),
@@ -1033,6 +1034,16 @@ fn v9(d: Dialect) -> Vec<String> {
         // "What did the assistant do" -- every op of one origin kind, in
         // order.
         "CREATE INDEX IF NOT EXISTS ops_by_origin ON ops (origin, not_before_us)".into(),
+        // A thread's own "recent actions" line: every op whose `OpTarget`
+        // named a thread directly, most recently due first. `thread_id` is
+        // `NULL` for an op targeting a `Draft` (or, if one is ever minted, a
+        // bare `Message`) -- see `everyday-store-sql::mail::mod`'s `Record`
+        // impl for `Op`, which is the one place this column is filled in,
+        // and this crate's own module docs for why it exists at all: an
+        // `OpTarget` is sealed, and version 9 is unreleased, so adding a
+        // clear column to this step rather than reaching for a full
+        // migration is the cheaper and equally correct fix.
+        "CREATE INDEX IF NOT EXISTS ops_by_thread ON ops (thread_id, not_before_us DESC)".into(),
         // The standing remote-image allow-list --
         // `everyday_core::mail::RemoteImageSettings` -- a one-row singleton in
         // the shape `agent_settings` already is: a `CHECK` pins it to one row,

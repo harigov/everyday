@@ -548,6 +548,17 @@ fn safe_slice(s: &str, start: usize, end: usize) -> &str {
 /// view of the same thread for the inbox's own ordering, which can
 /// legitimately differ (a message that landed only in Archive should not
 /// move a thread up the Inbox).
+///
+/// `snippet`, `starred` and `has_attachments` are aggregates on the same
+/// terms: `snippet` is the newest message's own `Message::snippet`, and
+/// `starred`/`has_attachments` are true when *any* message in the thread is
+/// flagged, or carries an attachment. `#[serde(default)]` on all three: a
+/// `Thread` sealed before these existed still decodes, as an empty snippet
+/// and both flags false, which is exactly what "recompute has not run
+/// against this row since these aggregates were added" already means -- the
+/// next write that touches the thread fills them in for real, since
+/// `everyday_store_sql::mail::write::recompute_thread` is the one place all
+/// three are actually computed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Thread {
@@ -563,6 +574,16 @@ pub struct Thread {
     pub category: Option<Category>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snoozed_until: Option<Timestamp>,
+    /// The newest message's `Message::snippet` -- what a thread row shows
+    /// under the subject without opening it.
+    #[serde(default)]
+    pub snippet: String,
+    /// True when any message in the thread carries `\Flagged`.
+    #[serde(default)]
+    pub starred: bool,
+    /// True when any message in the thread has at least one attachment.
+    #[serde(default)]
+    pub has_attachments: bool,
 }
 
 // ---- drafts ---------------------------------------------------------------

@@ -14,7 +14,7 @@ mod write;
 use everyday_core::error::Result;
 use everyday_core::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use everyday_core::mail::{
-    Body, CategoryRules, ContactBook, Draft, Invite, Mailbox, Message, MessageFlags, Op,
+    Body, CategoryRules, ContactBook, Draft, Invite, Mailbox, Message, MessageFlags, Op, OpTarget,
     RemoteImageSettings, Thread,
 };
 use everyday_core::packstore::PackRef;
@@ -148,6 +148,20 @@ impl Record for Op {
             ("state", self.state.as_str().to_value()),
             ("origin", self.origin.kind().to_value()),
             ("not_before_us", to_us(self.not_before).to_value()),
+            // `NULL` for an op whose `OpTarget` is not `Thread` (a `Draft`
+            // today; `Message` is never actually minted -- see
+            // `crate::schema`'s own docs on this column) -- what
+            // `ops_for_thread` reads back to answer "what has recently
+            // happened to this thread", including a failed op, so a thread
+            // can say "Couldn't archive: {error}" beside itself.
+            (
+                "thread_id",
+                match self.target {
+                    OpTarget::Thread(id) => Some(id.to_string()),
+                    OpTarget::Message(_) | OpTarget::Draft(_) => None,
+                }
+                .to_value(),
+            ),
         ]
     }
 }
@@ -357,6 +371,13 @@ impl MailStore for SqlStore {
         let mut sql = "SELECT id, data FROM ops WHERE origin = ?1".to_string();
         self.page(&mut sql, "not_before_us DESC", Some(limit), 0);
         let rows = self.read().records(&sql, &vals![kind])?;
+        self.collect(rows, op_aad)
+    }
+
+    fn ops_for_thread(&self, thread: ThreadId, limit: u32) -> Result<Vec<Op>> {
+        let mut sql = "SELECT id, data FROM ops WHERE thread_id = ?1".to_string();
+        self.page(&mut sql, "not_before_us DESC", Some(limit), 0);
+        let rows = self.read().records(&sql, &vals![thread.to_string()])?;
         self.collect(rows, op_aad)
     }
 

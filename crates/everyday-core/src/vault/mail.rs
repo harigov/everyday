@@ -249,6 +249,11 @@ impl Vault {
         self.with_mail(|m| m.ops_by_origin(kind, limit))
     }
 
+    /// A thread's own "recent actions" -- see [`MailStore::ops_for_thread`].
+    pub fn ops_for_thread(&self, thread: ThreadId, limit: u32) -> Result<Vec<Op>> {
+        self.with_mail(|m| m.ops_for_thread(thread, limit))
+    }
+
     // ---- resolution and reset ------------------------------------------------
 
     /// Every `(mailbox, uid)` pair message `id` is currently filed under --

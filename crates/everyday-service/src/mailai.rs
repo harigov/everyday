@@ -719,6 +719,9 @@ mod tests {
             unread_count: 0,
             category: None,
             snoozed_until: None,
+            snippet: String::new(),
+            starred: false,
+            has_attachments: false,
         }
     }
 

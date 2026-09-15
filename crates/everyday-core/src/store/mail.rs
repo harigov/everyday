@@ -324,6 +324,20 @@ pub trait MailStore: Send + Sync {
     /// client it names, since only the kind is a clear column.
     fn ops_by_origin(&self, kind: &str, limit: u32) -> Result<Vec<Op>>;
 
+    /// The last `limit` ops whose [`crate::mail::OpTarget`] named `thread`
+    /// directly, most recently due first -- including a failed one, so a
+    /// thread's own "recent actions" line can say "Couldn't archive:
+    /// {error}" beside itself, not only what eventually succeeded. What a
+    /// thread's "archived by the assistant"/"moved by an MCP client" marks
+    /// read `origin` off.
+    ///
+    /// An op whose target is a [`DraftId`] (or, if one is ever minted, a bare
+    /// [`MailMessageId`]) never appears here: only a [`ThreadId`] target is
+    /// tracked by the clear column this reads, on the reasoning
+    /// `everyday-store-sql`'s own `Record` impl for [`Op`] gives for leaving
+    /// the other two `None`.
+    fn ops_for_thread(&self, thread: ThreadId, limit: u32) -> Result<Vec<Op>>;
+
     // ---- resolution and reset ------------------------------------------------
 
     /// Every `(mailbox, uid)` pair message `id` is currently filed under --

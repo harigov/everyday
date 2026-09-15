@@ -651,18 +651,24 @@ pub(super) fn recompute_thread(
     let agg = tx.query_opt(
         "SELECT COUNT(*), COALESCE(SUM(CASE WHEN flags & 1 = 0 THEN 1 ELSE 0 END), 0), \
          COALESCE(MAX(date_us), 0), \
-         (SELECT category FROM mail_messages WHERE thread_id = ?1 ORDER BY date_us DESC LIMIT 1) \
+         (SELECT category FROM mail_messages WHERE thread_id = ?1 ORDER BY date_us DESC LIMIT 1), \
+         COALESCE(MAX(CASE WHEN flags & 4 != 0 THEN 1 ELSE 0 END), 0), \
+         COALESCE(MAX(CASE WHEN has_attachments THEN 1 ELSE 0 END), 0), \
+         (SELECT id FROM mail_messages WHERE thread_id = ?1 ORDER BY date_us DESC LIMIT 1) \
          FROM mail_messages WHERE thread_id = ?1",
         &vals![thread_id.to_string()],
     )?;
-    let (count, unread, last_date_us, category) = match &agg {
+    let (count, unread, last_date_us, category, starred, has_attachments, newest_id) = match &agg {
         Some(row) => (
             row.i64(0)?,
             row.i64(1)?,
             row.i64(2)?,
             row.opt_text(3)?.and_then(|c| Category::parse(&c)),
+            row.i64(4)? != 0,
+            row.i64(5)? != 0,
+            row.opt_text(6)?,
         ),
-        None => (0, 0, 0, None),
+        None => (0, 0, 0, None, false, false, None),
     };
 
     if count == 0 {
@@ -690,6 +696,9 @@ pub(super) fn recompute_thread(
     thread.message_count = count as u32;
     thread.unread_count = unread as u32;
     thread.category = category;
+    thread.starred = starred;
+    thread.has_attachments = has_attachments;
+    thread.snippet = newest_snippet(store, tx, hints, newest_id.as_deref())?;
 
     let sealed = store.seal(&thread_aad(thread_id), &thread)?;
     let (sql, args) = upsert_stmt(&thread, sealed);
@@ -727,6 +736,9 @@ fn seed_thread(
             unread_count: 0,
             category: None,
             snoozed_until: None,
+            snippet: String::new(),
+            starred: false,
+            has_attachments: false,
         });
     }
 
@@ -767,7 +779,36 @@ fn seed_thread(
         unread_count: 0,
         category: None,
         snoozed_until: None,
+        snippet: String::new(),
+        starred: false,
+        has_attachments: false,
     })
+}
+
+/// The snippet [`recompute_thread`] writes into [`Thread::snippet`]: the
+/// newest message's own, read from `hints` when it is already in hand (the
+/// caller just wrote it, in this same call -- true of every ingest, which is
+/// also how the body pass's snippet reaches a thread, since `process_body`
+/// sets [`Message::snippet`] and then hands the updated message back through
+/// [`everyday_core::store::mail::MailStore::ingest`] as a hint), or by a
+/// single extra decrypt of the newest message otherwise. Bounded to at most
+/// one decrypt per recompute, whatever the thread's size -- the same
+/// "extend, don't add a second pass" trade [`recompute_thread`]'s own docs
+/// describe.
+fn newest_snippet(
+    store: &SqlStore,
+    tx: &mut dyn Sql,
+    hints: &[&Message],
+    newest_id: Option<&str>,
+) -> Result<String> {
+    let Some(newest_id) = newest_id else { return Ok(String::new()) };
+    if let Some(m) = hints.iter().find(|m| m.id.to_string() == newest_id) {
+        return Ok(m.snippet.clone());
+    }
+    let mid: MailMessageId = newest_id
+        .parse()
+        .map_err(|e: <MailMessageId as std::str::FromStr>::Err| Error::Invalid(e.to_string()))?;
+    Ok(message_by_id(store, tx, mid)?.map(|m| m.snippet).unwrap_or_default())
 }
 
 fn merge_participants(participants: &mut Vec<Address>, hints: &[&Message]) {

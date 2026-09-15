@@ -44,6 +44,10 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     a_reverted_archive_restores_uid_membership(store);
     remove_uids_returns_pack_refs_only_for_genuinely_dead_messages(store);
     deleting_a_mailbox_returns_pack_refs_for_its_dead_messages(store);
+    a_snippet_appears_once_the_body_lands(store);
+    star_then_unstar_updates_the_thread(store);
+    an_attachment_flags_the_thread(store);
+    removing_the_only_starred_message_clears_starred(store);
 
     eprintln!("--- mail suite passed ---");
 }
@@ -1016,6 +1020,114 @@ fn a_landed_archive_leaves_no_marker_behind(store: &dyn JournalStore) {
     // Re-filed later under a new uid, as a person moving it back would.
     m.ingest(account, vec![IngestMessage { message: first, mailbox: inbox.id, uid: 7 }]).unwrap();
     assert_eq!(inbox_threads(m, inbox.id), vec![thread_id]);
+}
+
+/// A message's `snippet` is empty until the body pass sets it -- `message()`
+/// builds one with `snippet: String::new()`, standing in for the headers-only
+/// row `sync_headers` first ingests. Re-ingesting the same message with its
+/// snippet filled in, the way `bodies_pass`'s own `process_body` does once a
+/// body has been parsed, is what `Thread::snippet` must pick up: `ingest`
+/// hands the freshly written `Message` back to `recompute_thread` as a hint,
+/// so this proves the body pass reaches a thread's own row without a second,
+/// dedicated write.
+fn a_snippet_appears_once_the_body_lands(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let mut msg = message(account, thread_id, "Hello", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+    assert_eq!(m.thread(thread_id).unwrap().0.snippet, "", "no body yet");
+
+    msg.snippet = "Just checking in about tomorrow".into();
+    m.ingest(account, vec![IngestMessage { message: msg, mailbox: mailbox.id, uid: 1 }]).unwrap();
+    assert_eq!(m.thread(thread_id).unwrap().0.snippet, "Just checking in about tomorrow");
+
+    cleanup_account(store, account);
+}
+
+/// [`MailStore::set_message_flags`] flagging, then unflagging, a message is
+/// what a star/unstar click does optimistically -- see
+/// `crate::mail::outbox::apply_optimistic`. `Thread::starred` must follow
+/// both moves, immediately, since that is what lets a star show on the row
+/// before the outbox op has reached a server at all.
+fn star_then_unstar_updates_the_thread(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "Star me", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+    assert!(!m.thread(thread_id).unwrap().0.starred, "not starred yet");
+
+    let mut flags = msg.flags;
+    flags.flagged = true;
+    m.set_message_flags(msg.id, flags).unwrap();
+    assert!(m.thread(thread_id).unwrap().0.starred, "starring flags the thread");
+
+    flags.flagged = false;
+    m.set_message_flags(msg.id, flags).unwrap();
+    assert!(!m.thread(thread_id).unwrap().0.starred, "unstarring clears it again");
+
+    cleanup_account(store, account);
+}
+
+/// A message ingested with [`Message::has_attachments`] set is what the body
+/// pass writes once `process_body` has found a part disposed as an
+/// attachment -- `Thread::has_attachments` must mirror it the same way
+/// `Thread::starred` mirrors a flag.
+fn an_attachment_flags_the_thread(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let mut msg = message(account, thread_id, "See attached", "a@example.com", Timestamp::now());
+    msg.has_attachments = true;
+    m.ingest(account, vec![IngestMessage { message: msg, mailbox: mailbox.id, uid: 1 }]).unwrap();
+
+    assert!(m.thread(thread_id).unwrap().0.has_attachments);
+
+    cleanup_account(store, account);
+}
+
+/// Removing the one starred message in a thread must clear
+/// [`Thread::starred`] -- a stale `true` left behind by a removal that never
+/// re-aggregated would show a star nothing in the thread justifies any more.
+fn removing_the_only_starred_message_clears_starred(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let starred = message(account, thread_id, "Starred", "a@example.com", Timestamp::now());
+    let plain = message(account, thread_id, "Plain", "b@example.com", Timestamp::now());
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: starred.clone(), mailbox: mailbox.id, uid: 1 },
+            IngestMessage { message: plain, mailbox: mailbox.id, uid: 2 },
+        ],
+    )
+    .unwrap();
+
+    let mut flags = starred.flags;
+    flags.flagged = true;
+    m.set_message_flags(starred.id, flags).unwrap();
+    assert!(m.thread(thread_id).unwrap().0.starred);
+
+    m.remove_uids(mailbox.id, &[1]).unwrap();
+    assert!(!m.thread(thread_id).unwrap().0.starred, "the only starred message is gone");
+
+    cleanup_account(store, account);
 }
 
 fn inbox_threads(m: &dyn MailStore, mailbox: MailboxId) -> Vec<ThreadId> {
