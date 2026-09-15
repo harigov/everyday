@@ -101,6 +101,48 @@ impl FakeServer {
         }
     }
 
+    /// Simulates a label changed in another client -- Gmail's own MODSEQ
+    /// bumps on a label change too, which is what lets `changes_since`'s
+    /// CONDSTORE diff notice it at all. See `passes::refresh_gmail_labels`.
+    fn set_gmail_labels(&mut self, mailbox: &str, uid: Uid, labels: Vec<String>) {
+        let modseq = self.next_modseq;
+        self.next_modseq += 1;
+        self.set_gmail_labels_at(mailbox, uid, labels, modseq);
+    }
+
+    /// As [`FakeServer::set_gmail_labels`], but the message's `MODSEQ` is
+    /// left exactly where it was -- simulating the case the plan's risk
+    /// table asks for a fallback against: a server that, for whatever
+    /// reason, does not report a label-only change through CONDSTORE at
+    /// all. Only `refresh_gmail_labels`'s unconditional newest-N re-check
+    /// can ever notice a change made this way.
+    fn set_gmail_labels_without_a_modseq_bump(
+        &mut self,
+        mailbox: &str,
+        uid: Uid,
+        labels: Vec<String>,
+    ) {
+        let modseq = self
+            .mailboxes
+            .get(mailbox)
+            .and_then(|m| m.messages.get(&uid))
+            .map(|m| m.modseq)
+            .unwrap_or(0);
+        self.set_gmail_labels_at(mailbox, uid, labels, modseq);
+    }
+
+    fn set_gmail_labels_at(&mut self, mailbox: &str, uid: Uid, labels: Vec<String>, modseq: u64) {
+        if let Some(msg) = self.mailboxes.get_mut(mailbox).and_then(|m| m.messages.get_mut(&uid)) {
+            let gmail = msg.gmail.get_or_insert_with(|| GmailMeta {
+                thrid: u64::from(uid),
+                msgid: u64::from(uid),
+                labels: Vec::new(),
+            });
+            gmail.labels = labels;
+            msg.modseq = modseq;
+        }
+    }
+
     fn remove(&mut self, mailbox: &str, uid: Uid) {
         if let Some(mb) = self.mailboxes.get_mut(mailbox) {
             mb.messages.remove(&uid);
@@ -896,6 +938,116 @@ async fn gmail_labels_put_one_message_in_both_the_inbox_and_a_user_label() {
     assert_eq!(
         inbox_page.threads[0].id, travel_page.threads[0].id,
         "it is the same thread in both, not two copies"
+    );
+}
+
+/// Steady state: a message archived in another client loses `\Inbox`.
+/// `changes_since` reports the modseq bump in `flag_changes`, which is
+/// what `refresh_gmail_labels`'s targeted path reads `X-GM-LABELS` for.
+#[tokio::test]
+async fn archiving_in_another_client_removes_the_message_from_the_inbox_label() {
+    let env = TestEnv::new();
+    let server = gmail_server();
+    let uid;
+    {
+        let mut s = server.lock().unwrap();
+        uid = s.append(
+            "All Mail",
+            raw_message(
+                "archived-elsewhere@example.com",
+                None,
+                "a@example.com",
+                "Will be archived",
+                "01 Jan 2024 10:00:00 +0000",
+                "x",
+            ),
+            flags_seen(),
+            Some(GmailMeta { thrid: 1, msgid: 1, labels: vec!["\\Inbox".into()] }),
+        );
+    }
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+    let inbox_label = env
+        .vault
+        .mailboxes(env.account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == MailboxRole::Inbox)
+        .expect("the inbox label mailbox exists after the first sync");
+    assert_eq!(
+        env.vault
+            .list_threads(inbox_label.id, &ThreadFilter::default(), None, 10)
+            .unwrap()
+            .threads
+            .len(),
+        1,
+        "the message starts in the inbox label's list"
+    );
+
+    // Archived elsewhere: `\Inbox` dropped, `MODSEQ` bumped, exactly what a
+    // real Gmail label change looks like from this side.
+    {
+        let mut s = server.lock().unwrap();
+        s.set_gmail_labels("All Mail", uid, Vec::new());
+    }
+    env.sync(&mut session).await;
+
+    let after = env.vault.list_threads(inbox_label.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert!(after.threads.is_empty(), "the archived message must leave the inbox label's list");
+}
+
+/// The fallback: a label changes with no `MODSEQ` bump at all -- the case
+/// `changes_since` cannot diff by construction. Only the newest-N re-check
+/// notices it.
+#[tokio::test]
+async fn a_label_change_with_no_modseq_bump_is_still_caught_by_the_fallback() {
+    let env = TestEnv::new();
+    let server = gmail_server();
+    let uid;
+    {
+        let mut s = server.lock().unwrap();
+        uid = s.append(
+            "All Mail",
+            raw_message(
+                "silently-relabelled@example.com",
+                None,
+                "a@example.com",
+                "Will be relabelled without a modseq bump",
+                "01 Jan 2024 10:00:00 +0000",
+                "x",
+            ),
+            flags_seen(),
+            Some(GmailMeta { thrid: 2, msgid: 2, labels: vec!["\\Inbox".into()] }),
+        );
+    }
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+    let inbox_label = env
+        .vault
+        .mailboxes(env.account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == MailboxRole::Inbox)
+        .unwrap();
+    assert_eq!(
+        env.vault
+            .list_threads(inbox_label.id, &ThreadFilter::default(), None, 10)
+            .unwrap()
+            .threads
+            .len(),
+        1
+    );
+
+    {
+        let mut s = server.lock().unwrap();
+        s.set_gmail_labels_without_a_modseq_bump("All Mail", uid, Vec::new());
+    }
+    env.sync(&mut session).await;
+
+    let after = env.vault.list_threads(inbox_label.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert!(
+        after.threads.is_empty(),
+        "the newest-N fallback must catch a label change changes_since never reported"
     );
 }
 

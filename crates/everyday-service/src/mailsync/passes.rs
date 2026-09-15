@@ -61,6 +61,11 @@ const HEADER_BATCH_SIZE: usize = 500;
 /// between the fetch and the blocking-pool pass below.
 const BODY_BATCH_SIZE: usize = 100;
 
+/// How many of the newest known uids on Gmail's All Mail
+/// [`refresh_gmail_labels`]'s fallback re-checks every pass, regardless of
+/// what `changes_since` reported moved. See that function's own docs.
+const GMAIL_LABEL_FALLBACK_N: usize = 50;
+
 /// What every pass needs, gathered once by [`crate::mailsync::task::run_account`]
 /// so a test can build the same shape without a live connection.
 pub struct SyncContext<'a> {
@@ -215,6 +220,24 @@ pub async fn sync_headers<S: MailSession>(
         let _ = ctx.vault.update_message_flags(mailbox.row.id, uid, ingest::mail_flags(flags));
     }
 
+    // Gmail labels, on All Mail: see `refresh_gmail_labels`'s own docs for
+    // why a plain flag diff never notices a message archived, or
+    // relabelled, in another client, and for the two mechanisms below.
+    if session.capabilities().gmail && mailbox.row.role == MailboxRole::All {
+        let changed: UidSet = changes.flag_changes.iter().map(|&(uid, _, _)| uid).collect();
+        if !changed.is_empty() {
+            let _ = refresh_gmail_labels(ctx, session, mailbox, &changed, labels).await;
+        }
+
+        let mut newest: Vec<Uid> = known.iter().collect();
+        newest.sort_unstable_by(|a, b| b.cmp(a));
+        newest.truncate(GMAIL_LABEL_FALLBACK_N);
+        let fallback: UidSet = newest.into_iter().filter(|u| !changed.contains(*u)).collect();
+        if !fallback.is_empty() {
+            let _ = refresh_gmail_labels(ctx, session, mailbox, &fallback, labels).await;
+        }
+    }
+
     let new_uids: Vec<Uid> = changes.new_uids.iter().collect();
     let total = new_uids.len() as u64;
     let mut done = 0u64;
@@ -296,6 +319,90 @@ pub async fn sync_headers<S: MailSession>(
         cache.invalidate(ctx.account_id);
     }
 
+    Ok(())
+}
+
+/// Diff and apply Gmail's own label set for `uids` in `mailbox`, which must
+/// be All Mail on a Gmail account.
+///
+/// # Why All Mail needs this and a plain flag diff is not enough
+///
+/// `changes_since`'s `flag_changes` promises to report a change to the five
+/// IMAP flags this crate tracks (`\Seen`, `\Answered`, `\Flagged`,
+/// `\Draft`, `\Deleted`) -- see [`crate::mailsync::ingest::mail_flags`]. A
+/// Gmail label, `\Inbox` most of all, is not one of those flags; losing it
+/// -- a message archived in another client -- changes nothing
+/// `changes_since` was ever asked to diff. Gmail does bump a message's own
+/// `MODSEQ` on a label change the same way it does on a flag change, which
+/// is why `changes_since`'s own CONDSTORE diff already tells this pass
+/// *which* uids moved (in `flag_changes`, whether their IMAP flags actually
+/// differed or not) -- what this function adds is asking those uids what
+/// their labels are now, which `changes_since` has no way to answer on its
+/// own.
+///
+/// # The fallback, and why one exists at all
+///
+/// The plan's own risk table does not promise every server -- or a future
+/// Gmail change -- keeps bumping `MODSEQ` for a label-only change forever.
+/// [`sync_headers`] also calls this, unconditionally, for
+/// [`GMAIL_LABEL_FALLBACK_N`] of the newest known uids on every pass,
+/// whether or not `changes_since` reported anything about them -- a small,
+/// bounded re-check that catches a label change CONDSTORE ever missed
+/// within, at worst, a few poll cycles. "Newest" is approximated by uid,
+/// which is monotonically non-decreasing with arrival on every server this
+/// crate has met; a real per-message date would need a decrypt this pass
+/// is specifically trying to avoid paying for on every wake.
+///
+/// # Why this touches mailbox membership, not only `Message::labels`
+///
+/// `Message::labels` is the informational copy of a message's label set;
+/// what a mailbox's own list actually pages over is `message_mailboxes` --
+/// one row per label, minted the first time a header ingest sees it (see
+/// [`LabelMailboxes`] and `sync_headers`'s own header-ingest loop, which
+/// this mirrors). Calling only [`everyday_core::Vault::update_message_labels`]
+/// would update the field a search or a tool reads without moving the
+/// message out of the Inbox label's own list -- exactly the symptom this
+/// function exists to fix, so it diffs the old label set against the new
+/// one and adds or removes the matching `message_mailboxes` row for each
+/// side of the difference.
+async fn refresh_gmail_labels<S: MailSession>(
+    ctx: &SyncContext<'_>,
+    session: &mut S,
+    mailbox: &SyncedMailbox,
+    uids: &UidSet,
+    labels: &mut LabelMailboxes,
+) -> SessionResult<()> {
+    let headers = session.headers(uids).await?;
+    for header in &headers {
+        let Some(gmail) = &header.gmail else { continue };
+        let Ok(Some(current)) = ctx.vault.message_by_uid(mailbox.row.id, header.uid) else {
+            continue;
+        };
+        let old: std::collections::BTreeSet<&str> =
+            current.labels.iter().map(String::as_str).collect();
+        let new: std::collections::BTreeSet<&str> =
+            gmail.labels.iter().map(String::as_str).collect();
+        if old == new {
+            continue;
+        }
+
+        let _ = ctx.vault.update_message_labels(mailbox.row.id, header.uid, gmail.labels.clone());
+        for removed in old.difference(&new) {
+            let label_row = labels.resolve(ctx.vault, removed);
+            let _ = ctx.vault.remove_mail_uids(label_row.id, &[header.uid]);
+        }
+        for added in new.difference(&old) {
+            let label_row = labels.resolve(ctx.vault, added);
+            let _ = ctx.vault.ingest_mail(
+                ctx.account_id,
+                vec![IngestMessage {
+                    message: current.clone(),
+                    mailbox: label_row.id,
+                    uid: header.uid,
+                }],
+            );
+        }
+    }
     Ok(())
 }
 
