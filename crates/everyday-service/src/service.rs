@@ -154,16 +154,6 @@ pub struct Service {
     /// says so, and [`Service::check_mail_rate_limit`] returns before ever
     /// touching this map for either.
     mail_rate_limits: Mutex<HashMap<String, RateLimitState>>,
-    /// Where this process's own last `AppendDraft` for each draft landed --
-    /// what `crates/everyday-service/src/outbox.rs`'s `Lookups`
-    /// implementation answers `draft_server_copy` with, so the next
-    /// `AppendDraft` deletes the stale copy before writing a fresh one.
-    /// Session state, not a vault fact: the `Draft` record has nowhere to
-    /// carry a server uid without giving every draft a field that means
-    /// nothing until the first append, and losing this on restart only
-    /// costs one extra stale copy in Drafts rather than a wrong deletion --
-    /// see that module's docs for the full trade-off.
-    mail_draft_server_copy: Mutex<HashMap<DraftId, everyday_mail::outbox::Located>>,
 }
 
 impl Default for Service {
@@ -193,7 +183,6 @@ impl Service {
             mail_notify: Mutex::new(HashMap::new()),
             mail_draft_debounce: Mutex::new(HashMap::new()),
             mail_rate_limits: Mutex::new(HashMap::new()),
-            mail_draft_server_copy: Mutex::new(HashMap::new()),
         }
     }
 
@@ -395,20 +384,6 @@ impl Service {
         due
     }
 
-    /// Where this process's own last successful `AppendDraft` for `draft`
-    /// landed, or `None` when there has not been one this session -- what
-    /// the outbox's `Lookups` implementation answers
-    /// `draft_server_copy` with.
-    pub fn draft_server_copy(&self, draft: DraftId) -> Option<everyday_mail::outbox::Located> {
-        self.mail_draft_server_copy.lock().unwrap().get(&draft).cloned()
-    }
-
-    /// Record where an `AppendDraft` just landed, for the next one to find
-    /// with [`Service::draft_server_copy`].
-    pub fn set_draft_server_copy(&self, draft: DraftId, located: everyday_mail::outbox::Located) {
-        self.mail_draft_server_copy.lock().unwrap().insert(draft, located);
-    }
-
     /// The one gate every mail-op enqueue passes through, per the plan's
     /// risk table: *"the assistant floods the outbox... exceeding it is an
     /// error the model reads."* `origin` and `turn` are exactly
@@ -487,7 +462,20 @@ impl Service {
     /// own `Arc`, and the lock goes when that finishes -- which is why the open
     /// that follows must tolerate losing the race and coming up read-only
     /// rather than failing.
-    pub fn close(&self) {
+    ///
+    /// `async`, and stops every one of this session's supervised tasks
+    /// before anything else -- the same ordering [`Service::locked`] keeps,
+    /// and for the same reason: a mail account's sync task writes through
+    /// the pack store and search index [`Service::close_mail`] is about to
+    /// drop, and letting one keep running against storage that has just
+    /// gone out from under it is a bug this ordering exists to make
+    /// impossible rather than a race to get right twice. Matters here even
+    /// though `close` does not itself lock a vault, because a window
+    /// switching to a different vault, or going remote (`everyday-app`'s
+    /// `AppState::connect`), leaves this process holding no vault at all --
+    /// and an account task that outlived that would be writing through
+    /// storage nothing points at any more.
+    pub async fn close(&self) {
         self.transfers.clear();
         self.sign_ins.clear();
         self.token_cache.try_clear();
@@ -496,11 +484,11 @@ impl Service {
         self.claimed_runs.write().unwrap().clear();
         self.running_routine.write().unwrap().take();
         self.remote_image_once.write().unwrap().clear();
+        self.supervisor().stop_all().await;
         self.close_mail();
         self.mail_notify.lock().unwrap().clear();
         self.mail_draft_debounce.lock().unwrap().clear();
         self.mail_rate_limits.lock().unwrap().clear();
-        self.mail_draft_server_copy.lock().unwrap().clear();
         let previous = self.vault.write().unwrap().take();
         if let Some(vault) = &previous {
             // Drop the key and the decrypted index now rather than whenever the

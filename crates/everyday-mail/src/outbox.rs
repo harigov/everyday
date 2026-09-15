@@ -118,9 +118,11 @@ pub trait Lookups {
     /// [`compose::reply_headers`].
     fn parent_raw(&self, id: MailMessageId) -> Result<Vec<u8>>;
 
-    /// One attachment's filename, MIME type and bytes, by the [`BlobId`] a
-    /// [`Draft::attachments`] entry names.
-    fn attachment(&self, blob: BlobId) -> Result<(String, String, Vec<u8>)>;
+    /// One attachment's raw bytes, by the [`BlobId`] a [`Draft::attachments`]
+    /// entry names — the filename and MIME type travel on the entry itself
+    /// (see [`everyday_core::mail::DraftAttachment`]), so this is the one
+    /// thing about it a caller still has to fetch.
+    fn attachment_bytes(&self, blob: BlobId) -> Result<Vec<u8>>;
 
     /// The domain half of the `Message-ID` [`compose::build`] mints for a
     /// freshly sent or appended message — see that function's own docs for
@@ -380,9 +382,14 @@ async fn outgoing<S: MailSession, T: Sender, L: Lookups>(
     };
 
     let mut attachments = Vec::with_capacity(draft.attachments.len());
-    for blob in &draft.attachments {
-        let (filename, content_type, bytes) = ctx.lookups.attachment(*blob)?;
-        attachments.push(OutgoingAttachment { filename, content_type, bytes, inline_cid: None });
+    for a in &draft.attachments {
+        let bytes = ctx.lookups.attachment_bytes(a.blob)?;
+        attachments.push(OutgoingAttachment {
+            filename: a.filename.clone(),
+            content_type: a.mime_type.clone(),
+            bytes,
+            inline_cid: None,
+        });
     }
 
     Ok(Outgoing {
@@ -696,7 +703,7 @@ mod tests {
             self.parents.get(&id).cloned().ok_or_else(|| MailError::Protocol("no parent".into()))
         }
 
-        fn attachment(&self, _blob: BlobId) -> Result<(String, String, Vec<u8>)> {
+        fn attachment_bytes(&self, _blob: BlobId) -> Result<Vec<u8>> {
             Err(MailError::Protocol("no attachments in this fake".into()))
         }
 

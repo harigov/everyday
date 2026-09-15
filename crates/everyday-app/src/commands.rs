@@ -299,7 +299,7 @@ pub async fn create_vault(
     };
     let service = state.service();
     state.disconnect();
-    service.close();
+    service.close().await;
     let created = {
         let path = path.clone();
         blocking(move || {
@@ -322,7 +322,7 @@ pub async fn open_vault(state: State<'_, AppState>, path: PathBuf) -> CommandRes
     // Release the vault we already hold first. Its write lock is this process's,
     // and opening a second vault -- including the same one again -- while still
     // holding it would come up read-only. See `Service::close`.
-    service.close();
+    service.close().await;
     let opened = {
         let path = path.clone();
         blocking(move || everyday_vault::open(&path).map_err(CommandError::from)).await?
@@ -419,7 +419,7 @@ async fn attach(state: &State<'_, AppState>, client: RemoteClient) -> CommandRes
         state.sink().ok_or_else(|| CommandError::new("internal", "the window is not ready yet"))?;
     let connection = client.connection().clone();
     let remote = Remote::start(client, sink);
-    state.connect(remote);
+    state.connect(remote).await;
     let status =
         state.session().as_session().status().await.ok_or_else(|| {
             CommandError::new("network", "that computer did not say what it holds")
