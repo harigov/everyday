@@ -819,6 +819,14 @@ fn v8(d: Dialect) -> Vec<String> {
 /// why this exists apart from `message_mailboxes`, which stays exactly as
 /// it was until the op actually executes.
 ///
+/// Three more singletons-by-shape joined later still, one per later phase,
+/// each additive for the same reason: `mail_remote_image_settings` (phase 2,
+/// the standing remote-image allow-list), `mail_contacts` (phase 4, address
+/// autocomplete), and `mail_category_rules` (phase 7, the split inbox's
+/// per-account corrections). None of the three needed its own schema
+/// version -- a table this step's own rule already allows to arrive whenever
+/// its domain does, not a fresh migration for each.
+///
 /// The sync cursors the plan's schema section lists separately
 /// (`uidvalidity`, the highest uid, `highestmodseq`) live on `mailboxes`
 /// itself, as the plan allows: a mailbox is already the one row per folder a
