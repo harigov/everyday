@@ -1410,6 +1410,17 @@ export interface ThreadDetail {
   messages: MailMessage[]
 }
 
+/** The standing, per-sender/per-domain allow-list a remote image is checked
+ * against -- mirrors `everyday_core::mail::RemoteImageSettings`. The
+ * per-message one-off grant `allowRemoteImages` can also express is
+ * deliberately not part of this: it lives in memory on the side that holds
+ * the vault, for the one session that granted it, and this record never
+ * carries it. */
+export interface RemoteImageSettings {
+  senders: string[]
+  domains: string[]
+}
+
 // ── The command surface, describing itself ─────────────────────────────
 //
 // What `list_commands` answers with. Not used to *call* anything — the

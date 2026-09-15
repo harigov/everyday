@@ -42,7 +42,9 @@
 
 use crate::error::Result;
 use crate::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
-use crate::mail::{Body, Category, Draft, Mailbox, Message, MessageFlags, Op, Thread};
+use crate::mail::{
+    Body, Category, Draft, Mailbox, Message, MessageFlags, Op, RemoteImageSettings, Thread,
+};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -191,6 +193,14 @@ pub trait MailStore: Send + Sync {
     /// keeps opening a thread from paying for every message's text at once.
     fn thread(&self, id: ThreadId) -> Result<(Thread, Vec<Message>)>;
 
+    /// One message by its own id, headers and flags only — never its body.
+    /// What `everyday-service::mailview` reads to find a message's sender
+    /// before it will answer a `remote_image` request for it: a permission
+    /// check needs the `From` address, and a thread view already has a
+    /// `Vec<Message>` in hand for everything else, so this exists only for
+    /// the caller that has nothing but the id.
+    fn get_message(&self, id: MailMessageId) -> Result<Message>;
+
     // ---- bodies ------------------------------------------------------------
 
     fn put_body(&self, body: &Body) -> Result<()>;
@@ -284,6 +294,17 @@ pub trait MailStore: Send + Sync {
     /// [`JournalStore::collect_garbage`](super::JournalStore::collect_garbage)
     /// treats as live. See `crate::mail::PartRef::blob`.
     fn attachment_blob_refs(&self) -> Result<Vec<BlobId>>;
+
+    // ---- remote-image permissions --------------------------------------------
+
+    /// The standing allow-list -- senders and domains someone has said yes
+    /// to for good. `RemoteImageSettings::default()` (nobody allowed yet)
+    /// when nothing has been saved, on the same reasoning
+    /// `AgentStore::settings` returns a real, off default rather than an
+    /// `Option` every caller would have to unwrap the same way.
+    fn remote_image_settings(&self) -> Result<RemoteImageSettings>;
+
+    fn put_remote_image_settings(&self, settings: &RemoteImageSettings) -> Result<()>;
 }
 
 // ---- associated data --------------------------------------------------
@@ -313,6 +334,13 @@ pub fn draft_aad(id: DraftId) -> Vec<u8> {
 
 pub fn op_aad(id: OpId) -> Vec<u8> {
     format!("everyday.op.v1:{id}").into_bytes()
+}
+
+/// The one row of [`RemoteImageSettings`], sealed the way `AgentSettings`'s
+/// singleton row is -- a fixed associated data rather than one keyed by an
+/// id, because there is exactly one of these per vault.
+pub fn remote_image_settings_aad() -> Vec<u8> {
+    b"everyday.mail_remote_image_settings.v1".to_vec()
 }
 
 #[cfg(test)]

@@ -16,7 +16,9 @@ use super::Vault;
 use super::session::Domain;
 use crate::error::Result;
 use crate::id::{AccountId, DraftId, MailMessageId, MailboxId, ThreadId};
-use crate::mail::{Body, Category, Draft, Mailbox, Message, MessageFlags, Op, Thread};
+use crate::mail::{
+    Body, Category, Draft, Mailbox, Message, MessageFlags, Op, RemoteImageSettings, Thread,
+};
 use crate::store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
 use jiff::Timestamp;
 
@@ -112,6 +114,10 @@ impl Vault {
         self.with_mail(|m| m.thread(id))
     }
 
+    pub fn mail_message(&self, id: MailMessageId) -> Result<Message> {
+        self.with_mail(|m| m.get_message(id))
+    }
+
     // ---- bodies ------------------------------------------------------------
 
     pub fn save_body(&self, body: &Body) -> Result<()> {
@@ -189,5 +195,16 @@ impl Vault {
 
     pub fn mail_unread_counts(&self, account: AccountId) -> Result<Vec<(MailboxId, u64)>> {
         self.with_mail(|m| m.unread_counts(account))
+    }
+
+    // ---- remote-image permissions --------------------------------------------
+
+    pub fn remote_image_settings(&self) -> Result<RemoteImageSettings> {
+        self.with_mail(|m| m.remote_image_settings())
+    }
+
+    pub fn save_remote_image_settings(&self, settings: &RemoteImageSettings) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.put_remote_image_settings(settings))
     }
 }

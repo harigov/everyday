@@ -112,6 +112,16 @@ pub struct Service {
     /// secret that was not already handed over by a provider a refresh
     /// token can ask again for.
     token_cache: Arc<TokenCache>,
+    /// Messages a person has said "show images just this once" to.
+    ///
+    /// Deliberately not a vault record: the plan's own words are "a
+    /// per-message one-off allowance kept in memory" (`docs/plans/mail.md`),
+    /// because the whole point of the one-off case is that it does not
+    /// outlive the session that granted it -- reopening the app should ask
+    /// again, exactly as it would for a sender nobody has trusted for good.
+    /// See `mailview::remote_images_allowed`, which reads this before the
+    /// standing allow-list.
+    remote_image_once: RwLock<HashSet<everyday_core::id::MailMessageId>>,
 }
 
 impl Default for Service {
@@ -136,6 +146,7 @@ impl Service {
             running_routine: RwLock::new(None),
             sign_ins: Arc::new(SignIns::new()),
             token_cache: Arc::new(TokenCache::new()),
+            remote_image_once: RwLock::new(HashSet::new()),
         }
     }
 
@@ -258,6 +269,7 @@ impl Service {
         self.reported_routines.write().unwrap().clear();
         self.claimed_runs.write().unwrap().clear();
         self.running_routine.write().unwrap().take();
+        self.remote_image_once.write().unwrap().clear();
         let previous = self.vault.write().unwrap().take();
         if let Some(vault) = &previous {
             // Drop the key and the decrypted index now rather than whenever the
@@ -339,6 +351,19 @@ impl Service {
     /// Note that `id`'s refresh worked, so the next outage is news again.
     pub fn feed_recovered(&self, id: CalendarId) {
         self.reported_feeds.write().unwrap().remove(&id);
+    }
+
+    // ---- mail: remote images ---------------------------------------------
+
+    /// "Show images just this once" for `id`. Session-only -- see
+    /// [`Service::remote_image_once`]'s own docs.
+    pub fn allow_remote_images_once(&self, id: everyday_core::id::MailMessageId) {
+        self.remote_image_once.write().unwrap().insert(id);
+    }
+
+    /// Has `id` already been granted a one-off "show images" this session?
+    pub fn remote_images_allowed_once(&self, id: everyday_core::id::MailMessageId) -> bool {
+        self.remote_image_once.read().unwrap().contains(&id)
     }
 
     // ---- routines --------------------------------------------------------

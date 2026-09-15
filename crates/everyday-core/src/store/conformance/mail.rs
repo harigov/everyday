@@ -381,6 +381,7 @@ fn account_delete_cascades_every_mail_row(store: &dyn JournalStore) {
         quoted_ranges: Vec::new(),
         signature_range: None,
         parts: Vec::new(),
+        remote_images: Vec::new(),
     };
     m.put_body(&body).unwrap();
     let draft = Draft::new(account, "me@example.com", Origin::Person);
@@ -436,6 +437,7 @@ pub(super) fn garbage_collection_learns_about_mail_attachments(store: &dyn Journ
             size: 13,
             blob: Some(attached),
         }],
+        remote_images: Vec::new(),
     };
     m.put_body(&body).unwrap();
 

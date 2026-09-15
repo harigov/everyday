@@ -1014,6 +1014,17 @@ fn v9(d: Dialect) -> Vec<String> {
         // "What did the assistant do" -- every op of one origin kind, in
         // order.
         "CREATE INDEX IF NOT EXISTS ops_by_origin ON ops (origin, not_before_us)".into(),
+        // The standing remote-image allow-list --
+        // `everyday_core::mail::RemoteImageSettings` -- a one-row singleton in
+        // the shape `agent_settings` already is: a `CHECK` pins it to one row,
+        // so a second configuration fails at the database rather than being
+        // read back in whichever order.
+        format!(
+            "CREATE TABLE IF NOT EXISTS mail_remote_image_settings (
+                 id          {int} PRIMARY KEY CHECK (id = 1),
+                 data        {blob} NOT NULL
+             )"
+        ),
     ]
 }
 

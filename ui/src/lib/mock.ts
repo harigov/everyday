@@ -39,6 +39,7 @@ import type {
   LogEvent,
   LogQuery,
   ProviderInfo,
+  RemoteImageSettings,
   Purpose,
   PurposeMinutes,
   Role,
@@ -2374,6 +2375,14 @@ function requireUnlocked() {
 const oauthSignIns = new Map<string, { cancelled: boolean; awaited: boolean }>()
 let oauthSignInCounter = 0
 
+/** The standing remote-image allow-list -- see `allow_remote_images` and its
+ * two siblings, below. The per-message one-off grant those commands can
+ * also express is session state on the real backend
+ * (`Service::remote_image_once`) and has no mock equivalent to persist: it
+ * is accepted and simply not remembered, which is a harmless difference --
+ * nothing in the mock UI reopens a "session" to notice. */
+const mockRemoteImageSettings: RemoteImageSettings = { senders: [], domains: [] }
+
 export const mockInvoke = async <T>(
   cmd: string,
   payload: Record<string, unknown> | Uint8Array = {},
@@ -4337,10 +4346,15 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       mockSyncAccount(str(args.id))
       return undefined as T
-    case 'allow_remote_images':
+    case 'allow_remote_images': {
       requireUnlocked()
-      mockAllowRemoteImages(str(args.messageId), Boolean(args.forever))
+      // A one-off grant for one message is the mail view's own affair -- see
+      // `mockAllowRemoteImages`; a sender or domain joins the standing list.
+      if (args.messageId) mockAllowRemoteImages(str(args.messageId), Boolean(args.forever))
+      if (args.sender) mockRemoteImageSettings.senders.push(str(args.sender))
+      if (args.domain) mockRemoteImageSettings.domains.push(str(args.domain))
       return undefined as T
+    }
 
     case 'search_mail':
       requireUnlocked()
@@ -4348,6 +4362,26 @@ export const mockInvoke = async <T>(
     case 'suggest_addresses':
       requireUnlocked()
       return mockSuggestAddresses(str(args.prefix)) as T
+
+    case 'list_remote_image_allowances': {
+      requireUnlocked()
+      return { ...mockRemoteImageSettings } as T
+    }
+
+    case 'revoke_remote_image_allowance': {
+      requireUnlocked()
+      if (args.sender) {
+        mockRemoteImageSettings.senders = mockRemoteImageSettings.senders.filter(
+          (s) => s !== args.sender,
+        )
+      }
+      if (args.domain) {
+        mockRemoteImageSettings.domains = mockRemoteImageSettings.domains.filter(
+          (d) => d !== args.domain,
+        )
+      }
+      return undefined as T
+    }
 
     default:
       throw new VaultError('unknown', `no mock for command ${cmd}`)

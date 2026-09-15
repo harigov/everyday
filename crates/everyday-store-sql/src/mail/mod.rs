@@ -13,10 +13,12 @@ mod write;
 
 use everyday_core::error::Result;
 use everyday_core::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
-use everyday_core::mail::{Body, Draft, Mailbox, Message, MessageFlags, Op, Thread};
+use everyday_core::mail::{
+    Body, Draft, Mailbox, Message, MessageFlags, Op, RemoteImageSettings, Thread,
+};
 use everyday_core::store::mail::{
     IngestMessage, MailStore, ThreadFilter, ThreadPage, body_aad, draft_aad, mailbox_aad,
-    message_aad, op_aad, thread_aad,
+    message_aad, op_aad, remote_image_settings_aad, thread_aad,
 };
 use jiff::Timestamp;
 
@@ -225,6 +227,10 @@ impl MailStore for SqlStore {
         Ok((thread, messages))
     }
 
+    fn get_message(&self, id: MailMessageId) -> Result<Message> {
+        self.get(id)
+    }
+
     // ---- bodies ------------------------------------------------------------
     //
     // Hand-written rather than through `Record`/`upsert`: that machinery
@@ -394,5 +400,31 @@ impl MailStore for SqlStore {
             out.extend(body.parts.into_iter().filter_map(|p| p.blob));
         }
         Ok(out)
+    }
+
+    // ---- remote-image permissions --------------------------------------------
+    //
+    // Hand-written rather than through `Record`/`upsert`, on exactly
+    // `agent_settings`' own reasoning (`crate::agent::AgentStore::settings`):
+    // a fixed `id = 1` row is not a record with an id of its own, and there
+    // is only ever one of these per vault.
+
+    fn remote_image_settings(&self) -> Result<RemoteImageSettings> {
+        let sealed =
+            self.read().sealed("SELECT data FROM mail_remote_image_settings WHERE id = 1", &[])?;
+        match sealed {
+            Some(sealed) => self.unseal(&remote_image_settings_aad(), &sealed),
+            None => Ok(RemoteImageSettings::default()),
+        }
+    }
+
+    fn put_remote_image_settings(&self, settings: &RemoteImageSettings) -> Result<()> {
+        let data = self.seal(&remote_image_settings_aad(), settings)?;
+        self.write().execute(
+            "INSERT INTO mail_remote_image_settings (id, data) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET data = ?1",
+            &vals![data],
+        )?;
+        Ok(())
     }
 }
