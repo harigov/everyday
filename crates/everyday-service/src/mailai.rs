@@ -156,6 +156,16 @@ pub async fn categorize_tick(service: &Arc<Service>) {
     }
 }
 
+/// One [`categorize_account`] candidate: enough of a thread's newest
+/// message to label it, and the `message_count` [`Thread::ai_categorize_asked_at_count`]
+/// is stamped with once this thread has actually been asked about.
+struct CategorizeCandidate {
+    thread_id: ThreadId,
+    message_id: MailMessageId,
+    message_count: u32,
+    text: String,
+}
+
 async fn categorize_account(
     service: &Arc<Service>,
     vault: &Arc<Vault>,
@@ -166,35 +176,57 @@ async fn categorize_account(
         return Ok(());
     }
     let account_id = account.id;
+    let cursor = service.mail_categorize_cursor(account_id);
     let page = {
         let vault = vault.clone();
+        let cursor = cursor.clone();
         blocking(move || {
-            Ok(vault.threads_in_category(account_id, Category::Other, None, budget)?)
+            Ok(vault.threads_in_category(account_id, Category::Other, cursor.as_deref(), budget)?)
         })
         .await?
     };
+    // Moved on every tick, whether or not this page has anything new to ask
+    // about -- see `Service::mail_categorize_cursor`'s own docs for why that
+    // is what eventually reaches every `Other` thread, not only the newest
+    // page's worth of them.
+    service.set_mail_categorize_cursor(account_id, page.next_cursor.clone());
     if page.threads.is_empty() {
+        return Ok(());
+    }
+
+    // Already asked about, with nothing new since -- see
+    // `Thread::ai_categorize_asked_at_count`'s own docs for the rule this
+    // is. A thread the model called "other" last time it was asked, with no
+    // new message since, is exactly this: skipped, not re-asked, forever,
+    // until a new message actually moves `message_count`.
+    let candidates: Vec<_> = page
+        .threads
+        .into_iter()
+        .filter(|t| t.ai_categorize_asked_at_count != Some(t.message_count))
+        .collect();
+    if candidates.is_empty() {
         return Ok(());
     }
 
     // Sender, subject and snippet only -- never a full body, per the plan's
     // own words for this feature.
-    let mut items: Vec<(ThreadId, MailMessageId, String)> = Vec::new();
-    for thread in &page.threads {
+    let mut items: Vec<CategorizeCandidate> = Vec::new();
+    for thread in &candidates {
         let tid = thread.id;
         let vault = vault.clone();
         let (_thread, messages) = blocking(move || Ok(vault.thread(tid)?)).await?;
         let Some(last) = messages.last() else { continue };
-        items.push((
-            thread.id,
-            last.id,
-            format!(
+        items.push(CategorizeCandidate {
+            thread_id: thread.id,
+            message_id: last.id,
+            message_count: thread.message_count,
+            text: format!(
                 "from: {}\nsubject: {}\nsnippet: {}",
                 display_address(&last.from),
                 excerpt(&thread.subject, 200),
                 excerpt(&last.snippet, 400),
             ),
-        ));
+        });
     }
     if items.is_empty() {
         return Ok(());
@@ -212,7 +244,7 @@ async fn categorize_account(
     let user = items
         .iter()
         .enumerate()
-        .map(|(i, (_, _, text))| format!("{}. {text}", i + 1))
+        .map(|(i, item)| format!("{}. {}", i + 1, item.text))
         .collect::<Vec<_>>()
         .join("\n\n");
     let answer =
@@ -220,26 +252,32 @@ async fn categorize_account(
             .await?;
 
     apply_categorize_answer(vault, &items, answer).await;
+    // Every thread this tick actually asked about is marked as such,
+    // whatever the model said -- including "still other" -- which is what
+    // makes the filter above skip it next tick until a new message arrives.
+    for item in &items {
+        let vault = vault.clone();
+        let (thread_id, message_count) = (item.thread_id, item.message_count);
+        let _ =
+            blocking(move || Ok(vault.set_thread_ai_categorize_asked(thread_id, message_count)?))
+                .await;
+    }
     Ok(())
 }
 
 /// Every entry outside `labels` (a bad index, or a string outside the fixed
 /// list the schema already constrains it to) is silently ignored, per the
 /// plan's own rule: "any output outside the list is ignored."
-async fn apply_categorize_answer(
-    vault: &Arc<Vault>,
-    items: &[(ThreadId, MailMessageId, String)],
-    answer: Value,
-) {
+async fn apply_categorize_answer(vault: &Arc<Vault>, items: &[CategorizeCandidate], answer: Value) {
     let Some(labels) = answer.get("labels").and_then(Value::as_array) else { return };
     for entry in labels {
         let Some(index) = entry.get("index").and_then(Value::as_u64) else { continue };
         let Some(raw) = entry.get("category").and_then(Value::as_str) else { continue };
         let Some(category) = Category::parse(raw) else { continue };
-        let Some(&(_, message_id, _)) = index.checked_sub(1).and_then(|i| items.get(i as usize))
-        else {
+        let Some(item) = index.checked_sub(1).and_then(|i| items.get(i as usize)) else {
             continue;
         };
+        let message_id = item.message_id;
         let vault = vault.clone();
         let _ = blocking(move || Ok(vault.set_mail_message_category(message_id, category)?)).await;
     }
@@ -455,18 +493,25 @@ async fn auto_draft_account(
         return Ok(());
     }
     let account_id = account.id;
+    let cursor = service.mail_autodraft_cursor(account_id);
     let page = {
         let vault = vault.clone();
+        let cursor = cursor.clone();
         blocking(move || {
             Ok(vault.threads_in_category(
                 account_id,
                 Category::Important,
-                None,
+                cursor.as_deref(),
                 AUTO_DRAFT_CANDIDATES,
             )?)
         })
         .await?
     };
+    // As `categorize_account`'s own cursor: moved every tick regardless of
+    // how many of this page's threads turned out to have anything new to
+    // ask about, which is what eventually reaches every `Important` thread
+    // rather than only the newest page's worth.
+    service.set_mail_autodraft_cursor(account_id, page.next_cursor.clone());
 
     let (settings, key) =
         vault.mail_ai_credentials().map_err(|e| CommandError::new(codes::QUICK, e.to_string()))?;
@@ -479,11 +524,30 @@ async fn auto_draft_account(
         if budget == 0 {
             break;
         }
+        // Already asked about, with nothing new since -- see
+        // `Thread::ai_auto_draft_asked_at_count`'s own docs. A thread the
+        // model answered `reply: false` last time, with no new message
+        // since, is exactly this: skipped, not re-asked.
+        if thread_summary.ai_auto_draft_asked_at_count == Some(thread_summary.message_count) {
+            continue;
+        }
         let tid = thread_summary.id;
         let vault2 = vault.clone();
         let (thread, messages) = blocking(move || Ok(vault2.thread(tid)?)).await?;
-        let Some(eligible) = eligible_last_message(account, &thread, &messages) else { continue };
+        let Some(eligible) = eligible_last_message(account, &thread, &messages) else {
+            // Ineligible on the last message's own content -- addressed
+            // elsewhere, or reads like it needs no reply -- which cannot
+            // change without a new message either, so this is marked asked
+            // on the same terms an actual model call would be, rather than
+            // re-run every tick for as long as the thread stays Important.
+            mark_auto_draft_asked(vault, thread.id, thread.message_count).await;
+            continue;
+        };
         if has_existing_draft(vault, account.id, &messages).await? {
+            // Not marked: a person's own draft is what is blocking this,
+            // not anything the model said, and it can go away (discarded)
+            // with no new message arriving at all -- so the next tick must
+            // still be free to look again.
             continue;
         }
 
@@ -510,6 +574,10 @@ async fn auto_draft_account(
         let answer =
             crate::quick::run_prompt(client, &model, AUTO_DRAFT_SYSTEM, &user, auto_draft_schema())
                 .await?;
+        // The model has now been asked about this thread, whatever it
+        // answered -- including `reply: false` -- so the filter above skips
+        // it next tick until a new message moves `message_count` past this.
+        mark_auto_draft_asked(vault, thread.id, thread.message_count).await;
         let should_reply = answer.get("reply").and_then(Value::as_bool).unwrap_or(false);
         if !should_reply {
             continue;
@@ -541,6 +609,16 @@ async fn auto_draft_account(
         }
     }
     Ok(())
+}
+
+/// Stamp [`Thread::ai_auto_draft_asked_at_count`], swallowing a store error
+/// the way [`apply_categorize_answer`]'s own write does -- a thread deleted
+/// out from under this tick is not this pass's problem to report, and the
+/// worst a failed stamp costs is one avoidable re-ask next tick.
+async fn mark_auto_draft_asked(vault: &Arc<Vault>, thread_id: ThreadId, message_count: u32) {
+    let vault = vault.clone();
+    let _ =
+        blocking(move || Ok(vault.set_thread_ai_auto_draft_asked(thread_id, message_count)?)).await;
 }
 
 /// The message this thread should reply to, or `None` if this thread is not
@@ -738,6 +816,8 @@ mod tests {
             snippet: String::new(),
             starred: false,
             has_attachments: false,
+            ai_categorize_asked_at_count: None,
+            ai_auto_draft_asked_at_count: None,
         }
     }
 

@@ -478,6 +478,20 @@ pub trait MailStore: Send + Sync {
     /// is local-only, per the plan's phase 7 section.
     fn set_thread_snoozed_until(&self, thread: ThreadId, until: Option<Timestamp>) -> Result<()>;
 
+    /// Record that `everyday_service::mailai`'s categorisation pass has now
+    /// asked about `thread`, at `message_count` -- see
+    /// [`crate::mail::Thread::ai_categorize_asked_at_count`]. A no-op if
+    /// `thread` has since been deleted (its last message removed between
+    /// the ask and this write), the same tolerance
+    /// [`MailStore::set_thread_snoozed_until`] already has for the same
+    /// race.
+    fn set_thread_ai_categorize_asked(&self, thread: ThreadId, message_count: u32) -> Result<()>;
+
+    /// As [`MailStore::set_thread_ai_categorize_asked`], for the auto-draft
+    /// pass -- see
+    /// [`crate::mail::Thread::ai_auto_draft_asked_at_count`].
+    fn set_thread_ai_auto_draft_asked(&self, thread: ThreadId, message_count: u32) -> Result<()>;
+
     /// Every thread, across every account, whose `snoozed_until` is set and
     /// has passed `now` -- what the minute scheduler reads to decide which
     /// threads return to the inbox this tick. Oldest-due first, capped at

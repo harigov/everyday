@@ -354,6 +354,48 @@ pub(super) fn set_thread_snoozed_until(
     tx.commit()
 }
 
+/// Read-modify-write `thread`'s sealed record through `patch`, on the exact
+/// terms [`set_thread_snoozed_until`] already does: a `thread` with no row
+/// (deleted since whoever is calling this last looked) is a no-op rather
+/// than an error. What
+/// [`everyday_core::store::mail::MailStore::set_thread_ai_categorize_asked`]
+/// and its auto-draft sibling both are, once `patch` names which field.
+fn patch_thread(store: &SqlStore, thread: ThreadId, patch: impl FnOnce(&mut Thread)) -> Result<()> {
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    let Some(row) =
+        tx.query_opt("SELECT data FROM threads WHERE id = ?1", &vals![thread.to_string()])?
+    else {
+        return Ok(());
+    };
+    let mut t: Thread = store.unseal(&thread_aad(thread), &row.bytes(0)?)?;
+    patch(&mut t);
+    let sealed = store.seal(&thread_aad(thread), &t)?;
+    let (sql, args) = upsert_stmt(&t, sealed);
+    tx.execute(&sql, &args)?;
+    tx.commit()
+}
+
+/// See
+/// [`everyday_core::store::mail::MailStore::set_thread_ai_categorize_asked`].
+pub(super) fn set_thread_ai_categorize_asked(
+    store: &SqlStore,
+    thread: ThreadId,
+    message_count: u32,
+) -> Result<()> {
+    patch_thread(store, thread, |t| t.ai_categorize_asked_at_count = Some(message_count))
+}
+
+/// See
+/// [`everyday_core::store::mail::MailStore::set_thread_ai_auto_draft_asked`].
+pub(super) fn set_thread_ai_auto_draft_asked(
+    store: &SqlStore,
+    thread: ThreadId,
+    message_count: u32,
+) -> Result<()> {
+    patch_thread(store, thread, |t| t.ai_auto_draft_asked_at_count = Some(message_count))
+}
+
 /// See [`everyday_core::store::mail::MailStore::merge_threads`].
 ///
 /// Re-seals every message moving out of `others`, not a bare `UPDATE` of
@@ -739,6 +781,8 @@ fn seed_thread(
             snippet: String::new(),
             starred: false,
             has_attachments: false,
+            ai_categorize_asked_at_count: None,
+            ai_auto_draft_asked_at_count: None,
         });
     }
 
@@ -782,6 +826,8 @@ fn seed_thread(
         snippet: String::new(),
         starred: false,
         has_attachments: false,
+        ai_categorize_asked_at_count: None,
+        ai_auto_draft_asked_at_count: None,
     })
 }
 

@@ -244,6 +244,201 @@ async fn categorize_tick_is_a_no_op_when_the_account_has_not_turned_it_on() {
     assert_eq!(unchanged.category, Some(Category::Other), "the switch was off");
 }
 
+/// Point every account's agent settings at a different fake model, in
+/// place -- what the finding-2 tests below use to prove a second tick never
+/// asked at all: if it had, this new model's very different answer would
+/// show up in the result, and it never does.
+///
+/// Re-acknowledges `account` for the new endpoint in the same call:
+/// `LLMProviderConfig::acknowledgement_name` is the endpoint itself (see
+/// its own docs -- "the provider actually configured right now"), so
+/// changing `base_url` without this would make `mail_ai_allowed` refuse
+/// every account all over again, for a reason that has nothing to do with
+/// what these tests are proving.
+fn repoint_model(svc: &Arc<Service>, account: &mut Account, endpoint: &str) {
+    let vault = svc.get().unwrap();
+    let mut settings = vault.agent_settings().unwrap();
+    settings.provider_config.base_url = Some(endpoint.to_string());
+    vault.save_agent_settings(&settings).unwrap();
+    account.assistant_provider_acknowledged = Some(settings.provider_config.acknowledgement_name());
+    vault.save_account(account).unwrap();
+}
+
+/// Finding 2: a thread the model has already labelled "other" must not be
+/// asked again next tick. Proved the same way `repoint_model` is meant to
+/// be used everywhere below: the *second* tick is pointed at a model that
+/// would answer differently, and the thread's category must not move,
+/// because nothing should ever have asked it.
+#[tokio::test]
+async fn categorize_tick_does_not_reask_a_thread_it_already_labelled_other() {
+    let still_other =
+        fake_model(r#"{"labels":[{"index":1,"category":"other"}]}"#.to_string()).await;
+    let (svc, _dir) = env(&still_other.endpoint);
+    let mut account = seed_account(&svc, mail_ai(true, false, false));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let thread_id = ThreadId::new();
+    let msg = seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        1,
+        thread_id,
+        "stranger@example.com",
+        &["me@example.com"],
+        "Hello",
+        "Just checking in.",
+        Some(Category::Other),
+    );
+
+    everyday_service::mailai::categorize_tick(&svc).await;
+    let (thread, _) = svc.get().unwrap().thread(thread_id).unwrap();
+    assert_eq!(thread.ai_categorize_asked_at_count, Some(1), "asked once, and recorded as such");
+    assert_eq!(svc.get().unwrap().mail_message(msg.id).unwrap().category, Some(Category::Other));
+
+    // A model that would say "important" this time, if it were ever asked.
+    let would_promote =
+        fake_model(r#"{"labels":[{"index":1,"category":"important"}]}"#.to_string()).await;
+    repoint_model(&svc, &mut account, &would_promote.endpoint);
+    wait_for_categorize_budget().await;
+
+    everyday_service::mailai::categorize_tick(&svc).await;
+    assert_eq!(
+        svc.get().unwrap().mail_message(msg.id).unwrap().category,
+        Some(Category::Other),
+        "unasked, since nothing about this thread changed"
+    );
+}
+
+/// `Service::mail_categorize_take` spends up to `CATEGORIZE_PAGE` tokens
+/// from a per-*minute* budget on every call, win or not -- fine for the
+/// real minute scheduler it is built for, since a whole minute passes
+/// between ticks there and the bucket is full again regardless, but a
+/// second `categorize_tick` called immediately after the first, as these
+/// tests do, would otherwise find the budget still spent and refuse to
+/// fetch a page at all -- which would make a test pass by doing nothing,
+/// not by proving the fix. Waiting for one token's worth of real refill
+/// (`60 / MAIL_CATEGORIZE_PER_MINUTE` seconds) is the honest way to give
+/// the second tick the one thread's worth of budget these tests need it to
+/// actually have.
+async fn wait_for_categorize_budget() {
+    let seconds = 60.0 / f64::from(Service::MAIL_CATEGORIZE_PER_MINUTE);
+    tokio::time::sleep(std::time::Duration::from_secs_f64(seconds + 0.5)).await;
+}
+
+/// The other half: a new message arriving does move `message_count` past
+/// the marker, so the *next* tick does ask again.
+#[tokio::test]
+async fn categorize_tick_reasks_a_thread_once_a_new_message_arrives() {
+    let still_other =
+        fake_model(r#"{"labels":[{"index":1,"category":"other"}]}"#.to_string()).await;
+    let (svc, _dir) = env(&still_other.endpoint);
+    let mut account = seed_account(&svc, mail_ai(true, false, false));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let thread_id = ThreadId::new();
+    seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        1,
+        thread_id,
+        "stranger@example.com",
+        &["me@example.com"],
+        "Hello",
+        "Just checking in.",
+        Some(Category::Other),
+    );
+    everyday_service::mailai::categorize_tick(&svc).await;
+
+    let would_promote =
+        fake_model(r#"{"labels":[{"index":1,"category":"important"}]}"#.to_string()).await;
+    repoint_model(&svc, &mut account, &would_promote.endpoint);
+    wait_for_categorize_budget().await;
+    let msg2 = seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        2,
+        thread_id,
+        "stranger@example.com",
+        &["me@example.com"],
+        "Hello",
+        "Following up -- still checking in.",
+        Some(Category::Other),
+    );
+
+    everyday_service::mailai::categorize_tick(&svc).await;
+    assert_eq!(
+        svc.get().unwrap().mail_message(msg2.id).unwrap().category,
+        Some(Category::Important),
+        "a new message makes the thread eligible again"
+    );
+}
+
+/// Finding 2's own "walk further back" requirement: once a page's worth of
+/// threads are all already asked, the tick must still move its cursor past
+/// them rather than reading that same, exhausted page forever.
+///
+/// A *second* real tick cannot prove this on its own within one test: the
+/// per-minute budget (`Service::MAIL_CATEGORIZE_PER_MINUTE`) a fresh page
+/// costs is exactly what the first tick just spent, and refilling it for
+/// real would mean this test sleeping for however long that takes. So the
+/// proof is in two parts instead, each independently meaningful: the first
+/// tick's cursor moves at all (proving an exhausted page is not a dead
+/// end), and the cursor it left behind, handed to the very same
+/// `threads_in_category` query `categorize_account` itself calls, does
+/// reach the older thread -- exactly what the *next* tick, whenever its own
+/// budget allows, would see.
+#[tokio::test]
+async fn categorize_tick_walks_past_an_already_asked_page_to_reach_older_threads() {
+    let fake = fake_model(r#"{"labels":[{"index":1,"category":"important"}]}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let account = seed_account(&svc, mail_ai(true, false, false));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let vault = svc.get().unwrap();
+
+    // One page's worth of threads -- exactly `MAIL_CATEGORIZE_PER_MINUTE`,
+    // the cap a fresh per-minute budget hands one tick -- all already
+    // marked asked at their current message count, plus one older thread
+    // left unasked.
+    let page = Service::MAIL_CATEGORIZE_PER_MINUTE;
+    let mut oldest_id = None;
+    for i in 0..=page {
+        let thread_id = ThreadId::new();
+        seed_message(
+            &svc,
+            account.id,
+            mailbox,
+            i + 1,
+            thread_id,
+            "stranger@example.com",
+            &["me@example.com"],
+            "Hello",
+            "Just checking in.",
+            Some(Category::Other),
+        );
+        if i == 0 {
+            // Ingested first, so the oldest -- everything ingested after it
+            // fills the newest page and is marked asked below.
+            oldest_id = Some(thread_id);
+        } else {
+            vault.set_thread_ai_categorize_asked(thread_id, 1).unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let oldest_id = oldest_id.unwrap();
+
+    everyday_service::mailai::categorize_tick(&svc).await;
+    let cursor = svc.mail_categorize_cursor(account.id);
+    assert!(cursor.is_some(), "an exhausted page still advances the cursor, not just a hit page");
+
+    let next_page =
+        vault.threads_in_category(account.id, Category::Other, cursor.as_deref(), page).unwrap();
+    assert!(
+        next_page.threads.iter().any(|t| t.id == oldest_id),
+        "the stored cursor reaches the older, unasked thread"
+    );
+}
+
 // ---- summaries --------------------------------------------------------
 
 #[tokio::test]
@@ -370,6 +565,7 @@ async fn a_cached_summary_never_touches_the_rate_limiter() {
     let cached = everyday_service::mailai::summarize_thread(&svc, msg.thread_id).await.unwrap();
     assert_eq!(cached, summary, "a cache hit needs neither the limiter nor the model");
 }
+
 #[tokio::test]
 async fn summarize_thread_refuses_when_summaries_are_not_switched_on() {
     let fake = fake_model(r#"{"summary":"anything"}"#.to_string()).await;
@@ -489,4 +685,99 @@ async fn auto_draft_is_a_no_op_when_the_account_has_not_turned_it_on() {
     everyday_service::mailai::auto_draft_tick(&svc).await;
 
     assert!(svc.get().unwrap().drafts(account.id).unwrap().is_empty());
+}
+
+/// As [`wait_for_categorize_budget`], for the auto-draft pass's own,
+/// smaller per-minute budget (`Service::MAIL_AUTODRAFT_PER_MINUTE`).
+async fn wait_for_autodraft_budget() {
+    let seconds = 60.0 / f64::from(Service::MAIL_AUTODRAFT_PER_MINUTE);
+    tokio::time::sleep(std::time::Duration::from_secs_f64(seconds + 0.5)).await;
+}
+
+/// Finding 2's auto-draft half: a thread the model has already answered
+/// `reply: false` must not be asked again next tick. Proved the same way
+/// the categorisation tests above are: the second tick is pointed at a
+/// model that would now say yes, and no draft appears, because nothing
+/// should ever have asked it a second time.
+#[tokio::test]
+async fn auto_draft_does_not_reask_a_thread_it_already_answered_reply_false() {
+    let says_no = fake_model(r#"{"reply":false,"body_html":""}"#.to_string()).await;
+    let (svc, _dir) = env(&says_no.endpoint);
+    let mut account = seed_account(&svc, mail_ai(false, false, true));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let thread_id = ThreadId::new();
+    seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        1,
+        thread_id,
+        "friend@example.com",
+        &[account.address.as_str()],
+        "Dinner?",
+        "Are you free Friday for dinner?",
+        Some(Category::Important),
+    );
+
+    everyday_service::mailai::auto_draft_tick(&svc).await;
+    let (thread, _) = svc.get().unwrap().thread(thread_id).unwrap();
+    assert_eq!(thread.ai_auto_draft_asked_at_count, Some(1), "asked once, and recorded as such");
+    assert!(svc.get().unwrap().drafts(account.id).unwrap().is_empty());
+
+    // A model that would now say yes, if it were ever asked again.
+    let would_draft =
+        fake_model(r#"{"reply":true,"body_html":"<p>Sure, Friday works.</p>"}"#.to_string()).await;
+    repoint_model(&svc, &mut account, &would_draft.endpoint);
+    wait_for_autodraft_budget().await;
+
+    everyday_service::mailai::auto_draft_tick(&svc).await;
+    assert!(
+        svc.get().unwrap().drafts(account.id).unwrap().is_empty(),
+        "unasked, since nothing about this thread changed"
+    );
+}
+
+/// The other half: a new message moves `message_count` past the marker, so
+/// the next tick does ask again.
+#[tokio::test]
+async fn auto_draft_reasks_a_thread_once_a_new_message_arrives() {
+    let says_no = fake_model(r#"{"reply":false,"body_html":""}"#.to_string()).await;
+    let (svc, _dir) = env(&says_no.endpoint);
+    let mut account = seed_account(&svc, mail_ai(false, false, true));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let thread_id = ThreadId::new();
+    seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        1,
+        thread_id,
+        "friend@example.com",
+        &[account.address.as_str()],
+        "Dinner?",
+        "Are you free Friday for dinner?",
+        Some(Category::Important),
+    );
+    everyday_service::mailai::auto_draft_tick(&svc).await;
+
+    let would_draft =
+        fake_model(r#"{"reply":true,"body_html":"<p>Sure, Friday works.</p>"}"#.to_string()).await;
+    repoint_model(&svc, &mut account, &would_draft.endpoint);
+    wait_for_autodraft_budget().await;
+    seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        2,
+        thread_id,
+        "friend@example.com",
+        &[account.address.as_str()],
+        "Dinner?",
+        "Still free Friday? Let me know!",
+        Some(Category::Important),
+    );
+
+    everyday_service::mailai::auto_draft_tick(&svc).await;
+    let drafts = svc.get().unwrap().drafts(account.id).unwrap();
+    assert_eq!(drafts.len(), 1, "a new message makes the thread eligible again");
 }

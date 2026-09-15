@@ -511,6 +511,14 @@ impl MailStore for SqlStore {
         write::set_thread_snoozed_until(self, thread, until)
     }
 
+    fn set_thread_ai_categorize_asked(&self, thread: ThreadId, message_count: u32) -> Result<()> {
+        write::set_thread_ai_categorize_asked(self, thread, message_count)
+    }
+
+    fn set_thread_ai_auto_draft_asked(&self, thread: ThreadId, message_count: u32) -> Result<()> {
+        write::set_thread_ai_auto_draft_asked(self, thread, message_count)
+    }
+
     fn due_snoozed_threads(&self, now: Timestamp, limit: u32) -> Result<Vec<ThreadId>> {
         let mut sql = "SELECT id FROM threads WHERE snoozed_until_us IS NOT NULL \
              AND snoozed_until_us <= ?1"

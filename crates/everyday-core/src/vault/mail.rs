@@ -372,6 +372,28 @@ impl Vault {
         self.with_mail(|m| m.set_message_category(id, category))
     }
 
+    /// See
+    /// [`crate::store::mail::MailStore::set_thread_ai_categorize_asked`].
+    pub fn set_thread_ai_categorize_asked(
+        &self,
+        thread: ThreadId,
+        message_count: u32,
+    ) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.set_thread_ai_categorize_asked(thread, message_count))
+    }
+
+    /// See
+    /// [`crate::store::mail::MailStore::set_thread_ai_auto_draft_asked`].
+    pub fn set_thread_ai_auto_draft_asked(
+        &self,
+        thread: ThreadId,
+        message_count: u32,
+    ) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.set_thread_ai_auto_draft_asked(thread, message_count))
+    }
+
     // ---- releasing a snooze -----------------------------------------------
 
     /// Every thread, across every account, whose snooze has passed `now` --

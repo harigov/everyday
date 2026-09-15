@@ -173,6 +173,27 @@ pub struct Service {
     /// else remembers, the same trade `mail_notify` and the rest of this
     /// session state already make.
     mail_summary_cache: Mutex<HashMap<ThreadId, (u32, String)>>,
+    /// Where [`everyday_service::mailai::categorize_tick`]'s next pass over
+    /// an account's `Other` threads should start -- `threads_in_category`'s
+    /// own opaque cursor, or `None` for "start from the newest again."
+    ///
+    /// Without this, a page's worth of already-asked threads (see
+    /// [`everyday_core::mail::Thread::ai_categorize_asked_at_count`]) would
+    /// filter down to nothing every tick once an account has more `Other`
+    /// threads than one page, and nothing past page one would ever be
+    /// reached: the newest page is always the same 25 threads, however many
+    /// of them this tick actually has anything new to ask about. Advancing
+    /// this cursor every tick, whether or not that page yielded a thread
+    /// worth asking, is what walks further back over time -- and
+    /// `None` once a page comes back empty (`next_cursor` itself `None`)
+    /// wraps back to the newest page next time, the same way `threads_in_category`
+    /// wrapping is expected to work for any other keyset-paged reader.
+    /// Session state, not a vault fact, on the same terms every other
+    /// scheduler bookkeeping field here already is.
+    mail_categorize_cursor: Mutex<HashMap<AccountId, String>>,
+    /// As [`Service::mail_categorize_cursor`], for the auto-draft pass over
+    /// `Important` threads.
+    mail_autodraft_cursor: Mutex<HashMap<AccountId, String>>,
 }
 
 impl Default for Service {
@@ -213,6 +234,8 @@ impl Service {
                 Timestamp::now(),
             )),
             mail_summary_cache: Mutex::new(HashMap::new()),
+            mail_categorize_cursor: Mutex::new(HashMap::new()),
+            mail_autodraft_cursor: Mutex::new(HashMap::new()),
         }
     }
 
@@ -232,6 +255,44 @@ impl Service {
 
     pub fn mail_autodraft_take(&self, want: u32) -> u32 {
         take_tokens(&self.mail_autodraft_budget, want)
+    }
+
+    /// Where `account`'s next categorisation pass should page from -- see
+    /// [`Service::mail_categorize_cursor`]'s own docs.
+    pub fn mail_categorize_cursor(&self, account: AccountId) -> Option<String> {
+        self.mail_categorize_cursor.lock().unwrap().get(&account).cloned()
+    }
+
+    /// Remember `cursor` for `account`'s next categorisation pass, or forget
+    /// it (wrapping back to the newest page) when `cursor` is `None`.
+    pub fn set_mail_categorize_cursor(&self, account: AccountId, cursor: Option<String>) {
+        let mut cursors = self.mail_categorize_cursor.lock().unwrap();
+        match cursor {
+            Some(c) => {
+                cursors.insert(account, c);
+            }
+            None => {
+                cursors.remove(&account);
+            }
+        }
+    }
+
+    /// As [`Service::mail_categorize_cursor`], for the auto-draft pass.
+    pub fn mail_autodraft_cursor(&self, account: AccountId) -> Option<String> {
+        self.mail_autodraft_cursor.lock().unwrap().get(&account).cloned()
+    }
+
+    /// As [`Service::set_mail_categorize_cursor`], for the auto-draft pass.
+    pub fn set_mail_autodraft_cursor(&self, account: AccountId, cursor: Option<String>) {
+        let mut cursors = self.mail_autodraft_cursor.lock().unwrap();
+        match cursor {
+            Some(c) => {
+                cursors.insert(account, c);
+            }
+            None => {
+                cursors.remove(&account);
+            }
+        }
     }
 
     /// `thread`'s cached summary, if one exists and `message_count` still
@@ -578,6 +639,8 @@ impl Service {
         self.mail_draft_debounce.lock().unwrap().clear();
         self.mail_rate_limits.lock().unwrap().clear();
         self.mail_summary_cache.lock().unwrap().clear();
+        self.mail_categorize_cursor.lock().unwrap().clear();
+        self.mail_autodraft_cursor.lock().unwrap().clear();
         let previous = self.vault.write().unwrap().take();
         if let Some(vault) = &previous {
             // Drop the key and the decrypted index now rather than whenever the
