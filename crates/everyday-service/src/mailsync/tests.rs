@@ -478,6 +478,7 @@ impl TestEnv {
             index_commit: passes::CommitPacer::new(),
             unread_cache: None,
             contacts: None,
+            identities: Vec::new(),
         }
     }
 
@@ -1197,6 +1198,7 @@ Content-Type: text/plain\r\n\r\nsounds good\r\n"
         index_commit: passes::CommitPacer::new(),
         unread_cache: svc.mail_unread_cache(),
         contacts: svc.mail_contacts(),
+        identities: Vec::new(),
     };
     let mut labels = LabelMailboxes::new(&vault, account_id);
     let mut threads = ThreadIndex::new();
@@ -1246,6 +1248,7 @@ async fn draining_an_archive_moves_the_message_on_the_server_and_completes_the_o
         index_commit: passes::CommitPacer::new(),
         unread_cache: svc.mail_unread_cache(),
         contacts: svc.mail_contacts(),
+        identities: Vec::new(),
     };
     let mut labels = LabelMailboxes::new(&vault, account_id);
     let mut threads = ThreadIndex::new();
@@ -1303,6 +1306,7 @@ async fn draining_a_send_appends_the_sent_copy_and_marks_the_draft_sent() {
         index_commit: passes::CommitPacer::new(),
         unread_cache: svc.mail_unread_cache(),
         contacts: svc.mail_contacts(),
+        identities: Vec::new(),
     };
     let mut labels = LabelMailboxes::new(&vault, account_id);
     let mut threads = ThreadIndex::new();

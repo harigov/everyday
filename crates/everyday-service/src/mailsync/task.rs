@@ -153,6 +153,9 @@ where
         }
     };
 
+    let identities: Vec<String> = std::iter::once(account.address.clone())
+        .chain(account.identities.iter().map(|i| i.address.clone()))
+        .collect();
     let ctx = passes::SyncContext {
         vault: &vault,
         account_id,
@@ -163,6 +166,7 @@ where
         index_commit: passes::CommitPacer::new(),
         unread_cache: svc.mail_unread_cache(),
         contacts: svc.mail_contacts(),
+        identities,
     };
     let mut labels = LabelMailboxes::new(&vault, account_id);
     let mut threads = ThreadIndex::new();
