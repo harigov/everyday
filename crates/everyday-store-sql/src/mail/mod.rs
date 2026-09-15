@@ -227,6 +227,10 @@ impl MailStore for SqlStore {
         Ok((thread, messages))
     }
 
+    fn merge_threads(&self, keep: ThreadId, others: &[ThreadId]) -> Result<()> {
+        write::merge_threads(self, keep, others)
+    }
+
     fn get_message(&self, id: MailMessageId) -> Result<Message> {
         self.get(id)
     }

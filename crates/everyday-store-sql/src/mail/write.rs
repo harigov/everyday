@@ -240,6 +240,55 @@ pub(super) fn set_thread_snoozed_until(
     tx.commit()
 }
 
+/// See [`everyday_core::store::mail::MailStore::merge_threads`].
+///
+/// Re-seals every message moving out of `others`, not a bare `UPDATE` of
+/// the clear `thread_id` column: `Message::thread_id` is also part of the
+/// sealed `data` this row carries (the `Record` impl for `Message`, above,
+/// writes `thread_id` from the in-memory value on every upsert), so a
+/// caller that later decrypts one of these rows -- `thread`,
+/// `message_by_uid`, every reader -- must see the same answer the clear
+/// column does. [`recompute_thread`] for
+/// `keep` and for each of `others` in turn is what then deletes `others`'
+/// own rows: with every message moved away, each recompute counts zero
+/// messages left under that id and takes the "nothing left of this thread
+/// anywhere" branch it already has for an ordinary removal that empties a
+/// thread.
+pub(super) fn merge_threads(store: &SqlStore, keep: ThreadId, others: &[ThreadId]) -> Result<()> {
+    if others.is_empty() {
+        return Ok(());
+    }
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    for &other in others {
+        if other == keep {
+            continue; // never asked to merge a thread into itself
+        }
+        let rows = tx.records(
+            "SELECT id, data FROM mail_messages WHERE thread_id = ?1",
+            &vals![other.to_string()],
+        )?;
+        for (id, data) in rows {
+            let mid: MailMessageId =
+                id.parse().map_err(|e: <MailMessageId as std::str::FromStr>::Err| {
+                    Error::Invalid(e.to_string())
+                })?;
+            let mut message: Message = store.unseal(&message_aad(mid), &data)?;
+            message.thread_id = keep;
+            let sealed = store.seal(&message_aad(mid), &message)?;
+            let (sql, args) = upsert_stmt(&message, sealed);
+            tx.execute(&sql, &args)?;
+        }
+    }
+    recompute_thread(store, tx.as_mut(), keep, &[])?;
+    for &other in others {
+        if other != keep {
+            recompute_thread(store, tx.as_mut(), other, &[])?;
+        }
+    }
+    tx.commit()
+}
+
 /// See [`everyday_core::store::mail::MailStore::remove_uids`].
 pub(super) fn remove_uids(store: &SqlStore, mailbox: MailboxId, uids: &[u32]) -> Result<()> {
     if uids.is_empty() {

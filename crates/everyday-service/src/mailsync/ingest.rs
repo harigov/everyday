@@ -47,9 +47,11 @@
 //!   named, so that a parent arriving after its child (the common case,
 //!   since sync fetches newest UIDs first) still finds it. A message naming
 //!   more than one existing thread is a real `everyday-mail::threading`
-//!   `Merge`; this module keeps the first thread found and leaves the
-//!   others as they are rather than migrating their messages, which is a
-//!   documented simplification -- see the module's own tests.
+//!   `Merge`; this module keeps the lowest-id candidate and migrates every
+//!   other candidate's messages into it, through
+//!   [`everyday_core::Vault::merge_mail_threads`], and redirects this run's
+//!   own memory of the merged-away ids -- see [`ThreadIndex::resolve`] and
+//!   [`ThreadIndex::redirect`].
 
 use std::collections::HashMap;
 
@@ -280,7 +282,22 @@ impl ThreadIndex {
             }
             candidates.sort_by_key(|t| t.0);
             candidates.dedup();
-            candidates.first().copied().unwrap_or_else(ThreadId::new)
+            let kept = candidates.first().copied().unwrap_or_else(ThreadId::new);
+            // A real `Merge`: this message's own chain names more than one
+            // thread this account already has. The lowest id is kept
+            // (arbitrary but stable, so two runs merge the same way) and
+            // every other candidate's messages move into it -- see
+            // `Vault::merge_mail_threads`. Every id this run has already
+            // resolved *to* one of the merged-away threads is repointed at
+            // `kept` too, so a later message in this same sync that
+            // references one of them still lands in the thread its
+            // messages actually moved to.
+            if candidates.len() > 1 {
+                let others: Vec<ThreadId> = candidates.into_iter().filter(|&t| t != kept).collect();
+                let _ = vault.merge_mail_threads(kept, &others);
+                self.redirect(&others, kept);
+            }
+            kept
         };
 
         self.by_message_id.insert(key, thread_id);
@@ -288,6 +305,32 @@ impl ThreadIndex {
             self.by_referenced_id.entry(r.clone()).or_default().push(thread_id);
         }
         thread_id
+    }
+
+    /// Rewrite every id in `from` this run has already recorded to `to` --
+    /// what [`ThreadIndex::resolve`] calls right after a real `Merge`, so
+    /// this run's own memory agrees with what the vault now says. `from`
+    /// is short (candidates a single message's chain named), so a linear
+    /// scan of the maps costs nothing a merge -- already a rare, multi-row
+    /// vault write -- would notice.
+    fn redirect(&mut self, from: &[ThreadId], to: ThreadId) {
+        for tid in self.by_message_id.values_mut() {
+            if from.contains(tid) {
+                *tid = to;
+            }
+        }
+        for tids in self.by_referenced_id.values_mut() {
+            for tid in tids.iter_mut() {
+                if from.contains(tid) {
+                    *tid = to;
+                }
+            }
+        }
+        for tid in self.by_gmail_thrid.values_mut() {
+            if from.contains(tid) {
+                *tid = to;
+            }
+        }
     }
 }
 

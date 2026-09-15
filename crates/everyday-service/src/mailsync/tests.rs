@@ -749,6 +749,107 @@ async fn a_uidvalidity_reset_rematches_without_refetching_raw() {
 }
 
 #[tokio::test]
+async fn a_message_referencing_two_existing_threads_merges_them() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    {
+        let mut s = server.lock().unwrap();
+        s.append(
+            "INBOX",
+            raw_message(
+                "root-a@example.com",
+                None,
+                "a@example.com",
+                "Topic A",
+                "01 Jan 2024 09:00:00 +0000",
+                "start of A",
+            ),
+            flags_seen(),
+            None,
+        );
+        s.append(
+            "INBOX",
+            raw_message(
+                "root-b@example.com",
+                None,
+                "b@example.com",
+                "Topic B",
+                "01 Jan 2024 09:05:00 +0000",
+                "start of B",
+            ),
+            flags_seen(),
+            None,
+        );
+    }
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+
+    let root_a = env
+        .vault
+        .message_by_message_id_header(env.account_id, "root-a@example.com")
+        .unwrap()
+        .expect("root a stored");
+    let root_b = env
+        .vault
+        .message_by_message_id_header(env.account_id, "root-b@example.com")
+        .unwrap()
+        .expect("root b stored");
+    assert_ne!(root_a.thread_id, root_b.thread_id, "two unrelated threads to start");
+
+    // A later message whose `References` names both -- a real client that
+    // merged the two conversations under one, or an unusual reply chain
+    // that the two prior messages themselves never revealed a link between.
+    let merging = b"Message-ID: <merges-both@example.com>\r\n\
+References: <root-a@example.com> <root-b@example.com>\r\n\
+From: c@example.com\r\n\
+To: me@example.com\r\n\
+Subject: Re: Topic A\r\n\
+Date: 01 Jan 2024 09:10:00 +0000\r\n\
+Content-Type: text/plain\r\n\r\nties them together\r\n"
+        .to_vec();
+    {
+        let mut s = server.lock().unwrap();
+        s.append("INBOX", merging, flags_seen(), None);
+    }
+    env.sync(&mut session).await;
+
+    let root_a_after = env
+        .vault
+        .message_by_message_id_header(env.account_id, "root-a@example.com")
+        .unwrap()
+        .expect("root a still stored");
+    let root_b_after = env
+        .vault
+        .message_by_message_id_header(env.account_id, "root-b@example.com")
+        .unwrap()
+        .expect("root b still stored");
+    let merger = env
+        .vault
+        .message_by_message_id_header(env.account_id, "merges-both@example.com")
+        .unwrap()
+        .expect("the merging message stored");
+    assert_eq!(
+        root_a_after.thread_id, root_b_after.thread_id,
+        "the two roots must now share a thread"
+    );
+    assert_eq!(merger.thread_id, root_a_after.thread_id);
+
+    let (thread, messages) = env.vault.thread(root_a_after.thread_id).unwrap();
+    assert_eq!(thread.message_count, 3, "all three messages under the one kept thread");
+    assert_eq!(messages.len(), 3);
+
+    let inbox = env
+        .vault
+        .mailboxes(env.account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == MailboxRole::Inbox)
+        .unwrap();
+    let page = env.vault.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert_eq!(page.threads.len(), 1, "the merged-away thread must no longer appear in the list");
+}
+
+#[tokio::test]
 async fn gmail_labels_put_one_message_in_both_the_inbox_and_a_user_label() {
     let env = TestEnv::new();
     let server = gmail_server();

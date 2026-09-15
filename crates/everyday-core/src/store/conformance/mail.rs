@@ -32,6 +32,7 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     optimistic_writes_and_snooze_round_trip(store);
     draft_round_trips(store);
     a_uidvalidity_reset_forgets_uids_but_keeps_messages(store);
+    merge_threads_migrates_messages_and_deletes_the_others(store);
     pending_bodies_finds_only_unfetched_messages_newest_first(store);
     account_delete_cascades_every_mail_row(store);
 
@@ -433,6 +434,53 @@ fn a_uidvalidity_reset_forgets_uids_but_keeps_messages(store: &dyn JournalStore)
     m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 2 }])
         .unwrap();
     assert_eq!(m.message_by_uid(mailbox.id, 2).unwrap().unwrap().id, msg.id);
+
+    cleanup_account(store, account);
+}
+
+/// [`MailStore::merge_threads`]: every message in the threads being merged
+/// away lands in the kept thread, `thread_mailboxes` follows them, and the
+/// merged-away threads themselves are gone.
+fn merge_threads_migrates_messages_and_deletes_the_others(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let keep = ThreadId::new();
+    let other_a = ThreadId::new();
+    let other_b = ThreadId::new();
+    let msg_keep = message(account, keep, "Kept", "a@example.com", Timestamp::now());
+    let msg_a =
+        message(account, other_a, "Also this conversation", "b@example.com", Timestamp::now());
+    let msg_b = message(account, other_b, "Also this too", "c@example.com", Timestamp::now());
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: msg_keep.clone(), mailbox: mailbox.id, uid: 1 },
+            IngestMessage { message: msg_a.clone(), mailbox: mailbox.id, uid: 2 },
+            IngestMessage { message: msg_b.clone(), mailbox: mailbox.id, uid: 3 },
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        m.list_threads(mailbox.id, &ThreadFilter::default(), None, 10).unwrap().threads.len(),
+        3
+    );
+
+    m.merge_threads(keep, &[other_a, other_b]).unwrap();
+
+    let (thread, messages) = m.thread(keep).unwrap();
+    assert_eq!(thread.message_count, 3, "every message now lives under the kept thread");
+    let ids: Vec<_> = messages.iter().map(|msg| msg.id).collect();
+    assert!(ids.contains(&msg_keep.id) && ids.contains(&msg_a.id) && ids.contains(&msg_b.id));
+
+    assert!(m.thread(other_a).is_err(), "the merged-away thread must be gone");
+    assert!(m.thread(other_b).is_err());
+
+    let page = m.list_threads(mailbox.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert_eq!(page.threads.len(), 1, "thread_mailboxes must follow the merge, not just messages");
+    assert_eq!(page.threads[0].id, keep);
 
     cleanup_account(store, account);
 }

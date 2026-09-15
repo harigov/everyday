@@ -128,6 +128,13 @@ impl Vault {
         self.with_mail(|m| m.thread(id))
     }
 
+    /// Fold `others` into `keep` -- see
+    /// [`crate::store::mail::MailStore::merge_threads`].
+    pub fn merge_mail_threads(&self, keep: ThreadId, others: &[ThreadId]) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.merge_threads(keep, others))
+    }
+
     pub fn mail_message(&self, id: MailMessageId) -> Result<Message> {
         self.with_mail(|m| m.get_message(id))
     }

@@ -193,6 +193,20 @@ pub trait MailStore: Send + Sync {
     /// keeps opening a thread from paying for every message's text at once.
     fn thread(&self, id: ThreadId) -> Result<(Thread, Vec<Message>)>;
 
+    /// Fold `others` into `keep`: every message currently filed under one
+    /// of `others` moves to `keep`, `keep`'s own aggregates and
+    /// `thread_mailboxes` rows are recomputed from the result, and every
+    /// thread in `others` -- left with no messages at all -- is deleted
+    /// along with its own `thread_mailboxes` rows, the same way
+    /// [`MailStore::remove_uids`] already deletes a thread emptied by a
+    /// removal.
+    ///
+    /// What a real threading `Merge` resolves to when a message's
+    /// `References` chain names more than one thread this account already
+    /// has -- two separate conversations turning out, on new evidence, to
+    /// be the same one. `others` empty is a no-op.
+    fn merge_threads(&self, keep: ThreadId, others: &[ThreadId]) -> Result<()>;
+
     /// One message by its own id, headers and flags only — never its body.
     /// What `everyday-service::mailview` reads to find a message's sender
     /// before it will answer a `remote_image` request for it: a permission
