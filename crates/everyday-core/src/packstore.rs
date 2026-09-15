@@ -63,6 +63,59 @@
 //! flushed, so it is kept; anything after it was never durable and is
 //! discarded, the same way a half-written WAL record is discarded by any
 //! database that replays one.
+//!
+//! # Data-safety invariants, stated plainly
+//!
+//! Compaction exists to reclaim space, never to risk a message -- the whole
+//! module is written so that a bug anywhere else in the tree degrades to
+//! "wasted disk space", not "lost mail". Four rules make that true:
+//!
+//! 1. **One writer per account, always.** [`PackStore::append_batch`] and
+//!    [`PackStore::compact`] must never run concurrently for the same
+//!    account -- see "the write claim" below for what enforces this today.
+//!    A pack referenced by a row that has not committed yet must not exist
+//!    from compaction's point of view; the two guards below exist *because*
+//!    this promise, though true of every caller in this codebase, is not
+//!    provable from the trait's types alone.
+//! 2. **Compaction never deletes.** [`PackStore::compact`] only ever reads
+//!    and writes fresh packs; [`PackStore::drop_packs`] is the only method
+//!    that removes a byte, and only once a caller has durably repointed
+//!    everything that named the old address. See "a two-step contract, not
+//!    a one-step promise" on `compact` itself.
+//! 3. **The orphan sweep only ever removes what three separate guards agree
+//!    is unreachable.** A candidate pack must be absent from
+//!    [`ReferencedSnapshot::referenced`], and never carry an id past its
+//!    [`ReferencedSnapshot::high_water`] mark (created after the snapshot
+//!    was taken, so the query could never have known about it). Past that:
+//!    an empty `referenced` list is trusted only once every remaining
+//!    candidate's own `.dead` bookkeeping independently proves it holds no
+//!    live frames, or the whole sweep is refused for that call, not
+//!    narrowed; a *non-empty* `referenced` list is trusted for every
+//!    candidate except the account's single newest pack, which may still be
+//!    open for more appends and so is never swept on absence from the list
+//!    alone. See [`PackStore::compact`]'s own docs for the full reasoning
+//!    behind each.
+//! 4. **A crash at any point recovers on the next call.** Between
+//!    `compact` returning and its caller committing the remap: every old
+//!    address is untouched, so nothing is lost. Between committing the
+//!    remap and calling `drop_packs`: the next `compact` call's orphan
+//!    sweep reclaims the leftover pack itself, because by then it is
+//!    genuinely unreferenced. Nothing here depends on a caller retrying in
+//!    any particular way, only on the next `compact` call eventually
+//!    happening.
+//!
+//! # The write claim
+//!
+//! Every caller in this codebase reaches [`PackStore::compact`] through
+//! exactly one place: `everyday_service::mailsync::task`, between an
+//! account's sync passes, only once that pass's own `append_batch` calls
+//! have all returned and the outbox has drained -- see that module's own
+//! docs for the sequencing. [`FilePackStore`] backs this with its own
+//! coarse lock (below) as a safety net against two tasks in the *same*
+//! process racing each other, not as the throughput design; nothing in this
+//! module can enforce the invariant against a second *process* holding the
+//! vault's write claim, which is why rule 3 above exists as well, not only
+//! rule 1.
 
 use crate::crypto::Cipher;
 use crate::error::{Error, Result};
@@ -74,6 +127,61 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+/// A snapshot of which packs an account's messages currently reference,
+/// paired with a high-water mark that makes it safe for
+/// [`PackStore::compact`]'s orphan sweep to act on even though nothing
+/// durable freezes the moment it was taken.
+///
+/// # Why the pairing, not just the list
+///
+/// `referenced` alone cannot tell an orphan sweep "nothing has ever named
+/// this pack" apart from "a message naming this pack has not committed
+/// yet" -- both look identical: absent from the list. The sweep in
+/// [`PackStore::compact`] resolves the ambiguity by never touching a pack
+/// newer than `high_water`, or the account's current, possibly still-open
+/// pack, regardless of what `referenced` says -- see that method's own
+/// docs for the whole of the guard. `high_water` is what makes that
+/// possible: it is read from the pack store itself, *before* `referenced`
+/// is queried, so any pack created from that instant on is guaranteed to
+/// sort after it.
+///
+/// # Building one
+///
+/// [`crate::store::mail::MailStore::referenced_snapshot`] is the blessed
+/// way: it reads a [`PackStore::high_water_mark`] first and only then
+/// queries [`crate::store::mail::MailStore::referenced_pack_ids`], which is
+/// the ordering this type's whole safety argument depends on.
+/// [`ReferencedSnapshot::new`] is public too -- mainly for tests that need
+/// to construct a deliberately stale or empty snapshot to prove a guard
+/// holds -- but every production caller in this codebase goes through the
+/// trait method instead.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReferencedSnapshot {
+    referenced: BTreeSet<PackId>,
+    high_water: Option<PackId>,
+}
+
+impl ReferencedSnapshot {
+    /// Build a snapshot directly from a reference list and a high-water
+    /// mark. See the type's own docs for why
+    /// [`crate::store::mail::MailStore::referenced_snapshot`] is the
+    /// ordinary way to get one instead.
+    pub fn new(referenced: impl IntoIterator<Item = PackId>, high_water: Option<PackId>) -> Self {
+        Self { referenced: referenced.into_iter().collect(), high_water }
+    }
+
+    /// Every pack id this snapshot says is currently referenced.
+    pub fn referenced(&self) -> &BTreeSet<PackId> {
+        &self.referenced
+    }
+
+    /// The newest pack id that existed when this snapshot's high-water mark
+    /// was captured, or `None` if the account had no packs at all yet.
+    pub fn high_water(&self) -> Option<PackId> {
+        self.high_water
+    }
+}
 
 /// A length-prefixed frame's length field, in bytes.
 const FRAME_PREFIX_LEN: u64 = 4;
@@ -148,10 +256,43 @@ pub trait PackStore: Send + Sync {
     /// is not an error.
     fn delete_account(&self, account: &str) -> Result<()>;
 
+    /// The newest pack id that exists for `account` right now, or `None` if
+    /// it has no packs at all -- read *before*
+    /// [`crate::store::mail::MailStore::referenced_pack_ids`] is queried,
+    /// which is what [`ReferencedSnapshot::high_water`] then protects: any
+    /// pack [`PackStore::append_batch`] creates after this call returns is
+    /// guaranteed to carry an id that sorts after it. Cheap on every
+    /// backend -- a directory listing or a single `MAX`, never a decrypt.
+    fn high_water_mark(&self, account: &str) -> Result<Option<PackId>>;
+
+    /// A decrypt-nothing estimate of whether [`PackStore::compact`] would
+    /// actually do anything useful for `account` right now: some pack is at
+    /// least a third dead by [`PackStore::mark_dead`]'s own bookkeeping, or
+    /// an orphan pack -- one `snapshot` no longer names, left over from an
+    /// earlier call interrupted before [`PackStore::drop_packs`] ran --
+    /// exists and is old enough and settled enough for the orphan sweep to
+    /// reach (see `compact`'s own guards). Reads pack listings, `.dead`
+    /// markers and frame *length* headers only; nothing this walks is ever
+    /// opened with the cipher, so a caller may check this on every
+    /// sync-pass wake without cost.
+    ///
+    /// Always `false` on a row-backed store: [`PackStore::mark_dead`]
+    /// already deletes the row outright there, so nothing is ever left to
+    /// reclaim -- see `everyday_store_sql::packs`'s own module docs.
+    fn compaction_worthwhile(&self, account: &str, snapshot: &ReferencedSnapshot) -> Result<bool>;
+
     /// Rewrite every pack of `account`'s that is at least a third dead,
     /// dropping what [`PackStore::mark_dead`] marked and keeping everything
     /// else -- and, first, reclaim any pack already left behind by a
     /// previous call that never finished being cleaned up.
+    ///
+    /// `should_continue` is polled once between packs -- never mid-rewrite
+    /// of a single one -- so a caller with a large compaction to run on a
+    /// blocking thread can stop promptly when its own stop signal fires
+    /// without ever leaving a pack half-rewritten: whatever `remap` and
+    /// `obsolete` this returns cover only work that is already fully
+    /// durable, on the same terms a full run's result does. Pass `&|| true`
+    /// to never stop early.
     ///
     /// # A two-step contract, not a one-step promise
     ///
@@ -183,29 +324,61 @@ pub trait PackStore: Send + Sync {
     /// them as part of its own first step, below, so nothing is lost and
     /// nothing but disk space is wasted in between.
     ///
-    /// # Orphan sweep, first
+    /// # Orphan sweep, first -- guarded three separate ways
     ///
-    /// Before rewriting anything, `compact` deletes every pack `account`
-    /// has that is not named in `referenced` -- built by the caller from
-    /// the store's own referenced-pack query (see
-    /// [`crate::store::mail::MailStore::referenced_pack_ids`]) immediately
-    /// beforehand. Such a pack can only be one left over from an earlier
-    /// call that crashed between steps 2 and 3 above, or a replacement from
-    /// a call that crashed between 1 and 2 and was therefore never
-    /// referenced by anything at all -- either way, nothing durable names
-    /// it, so deleting it outright, with no remap needed, is safe. Every
-    /// pack this sweep removes is folded into the returned
+    /// Before rewriting anything, `compact` considers deleting every pack
+    /// `account` has that is not named in `snapshot.referenced()`. Three
+    /// independent guards decide whether a given candidate actually goes:
+    ///
+    /// 1. **Never one past the high-water mark.** A pack younger than
+    ///    `snapshot.high_water()` was created after the reference query
+    ///    ran, so that query could never have named it even if it holds
+    ///    nothing but live, freshly committed messages -- see
+    ///    [`ReferencedSnapshot`]'s own docs. Applies to every candidate,
+    ///    unconditionally.
+    /// 2. **An empty `snapshot.referenced()` proves nothing by itself.**
+    ///    The pre-fix behaviour treated every existing pack as an orphan
+    ///    the moment `referenced` came back empty, which made a caller
+    ///    whose query happened to come back empty -- a bug, a bad
+    ///    connection, a wrong account id -- wipe out every message the
+    ///    account had. Now: when `referenced` is empty, every candidate
+    ///    that guard 1 leaves standing must *also* prove, from its own
+    ///    `.dead` bookkeeping alone (no cipher touched), that it holds no
+    ///    live frames at all. If even one candidate fails that proof, the
+    ///    *whole* sweep for this call is refused -- nothing is deleted, not
+    ///    even candidates that did pass -- because an empty list over live
+    ///    data means the input itself is not trusted, not that everything
+    ///    else happens to be orphaned. `snapshot` genuinely reflecting zero
+    ///    live messages -- an emptied account -- still reclaims everything,
+    ///    the same as before: every candidate's `.dead` file lists every
+    ///    frame it has.
+    /// 3. **A *non-empty* `snapshot.referenced()` still never sweeps the
+    ///    account's single newest pack.** [`FilePackStore::current_pack`]
+    ///    reuses that pack for the next `append_batch` until it is full, so
+    ///    its absence from an otherwise-trustworthy `referenced` list is
+    ///    exactly what a message committed moments after the reference
+    ///    query ran, into that same pack, would look like -- the one
+    ///    ambiguity `high_water` alone cannot resolve, since the pack
+    ///    itself already existed when the mark was taken. Guard 2 already
+    ///    covers this when `referenced` is empty (a genuinely dead newest
+    ///    pack proves itself through its own bookkeeping instead), so this
+    ///    guard only adds anything when `referenced` is not.
+    ///
+    /// Every pack this sweep removes is folded into the returned
     /// [`CompactionResult::obsolete`] too, so a caller has one list to hand
     /// [`PackStore::drop_packs`] -- redundant for these (they are already
     /// gone) but harmless, since deleting an already-deleted pack is not an
     /// error.
     ///
-    /// Callers must only pass a `referenced` list built while nothing is
-    /// concurrently appending new packs for `account` -- true of every
-    /// caller today, which reaches this through the one writer the vault's
-    /// own write claim already promises (the same "existing write claim"
-    /// [`FilePackStore`]'s own lock is a safety net for, not a throughput
-    /// design, per its own docs).
+    /// # Callers must serialise with `append_batch`
+    ///
+    /// `snapshot` must be built while nothing is concurrently appending new
+    /// packs for `account` -- true of every caller today, which reaches
+    /// this through the one writer the vault's own write claim already
+    /// promises (the same "existing write claim" [`FilePackStore`]'s own
+    /// lock is a safety net for, not a throughput design, per its own
+    /// docs). The three guards above are what keep a momentary breach of
+    /// that promise from losing anything regardless.
     ///
     /// # Partial failure
     ///
@@ -218,11 +391,13 @@ pub trait PackStore: Send + Sync {
     /// lost, only the space they would have reclaimed.
     ///
     /// A pack under the third-dead threshold is left exactly where it is
-    /// and contributes nothing to the result. `referenced` empty is not
-    /// special-cased -- every existing pack fails the "named in
-    /// `referenced`" test and is swept as an orphan, which is exactly
-    /// correct for an account with no messages left at all.
-    fn compact(&self, account: &str, referenced: &[PackId]) -> Result<CompactionResult>;
+    /// and contributes nothing to the result.
+    fn compact(
+        &self,
+        account: &str,
+        snapshot: &ReferencedSnapshot,
+        should_continue: &dyn Fn() -> bool,
+    ) -> Result<CompactionResult>;
 
     /// Delete every pack named in `packs`, outright -- the second half of
     /// [`PackStore::compact`]'s two-step contract; see that method's own
@@ -241,6 +416,19 @@ pub trait PackStore: Send + Sync {
 pub struct CompactionResult {
     pub remap: Vec<(PackRef, PackRef)>,
     pub obsolete: Vec<PackId>,
+    /// How many packs were actually read and rewritten into a fresh
+    /// replacement -- distinct from `obsolete`'s length, which also counts
+    /// pure orphan-sweep deletes that were never rewritten at all. What the
+    /// account task's summary log line calls "packs rewritten".
+    pub packs_rewritten: usize,
+    /// A best-effort estimate, in bytes, of what this call will free once
+    /// its caller finishes the two-step contract and calls
+    /// [`PackStore::drop_packs`]: for a rewritten pack, the old pack's size
+    /// minus the new one's; for a pure orphan sweep, the whole old pack.
+    /// Never load-bearing -- only ever logged -- so a backend that cannot
+    /// cheaply measure it (a row-backed store, say) may always leave this
+    /// `0`.
+    pub bytes_reclaimed: u64,
 }
 
 impl CompactionResult {
@@ -435,55 +623,130 @@ impl PackStore for FilePackStore {
         Ok(())
     }
 
-    fn compact(&self, account: &str, referenced: &[PackId]) -> Result<CompactionResult> {
+    fn high_water_mark(&self, account: &str) -> Result<Option<PackId>> {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.account_dir(account);
-        let referenced: BTreeSet<PackId> = referenced.iter().copied().collect();
-        let mut result = CompactionResult::default();
+        Ok(Self::list_packs(&dir)?.into_iter().next_back())
+    }
 
-        for pack in Self::list_packs(&dir)? {
-            if !referenced.contains(&pack) {
-                // Nothing durable names this pack any more -- either a
-                // replacement from a call that crashed before its remap was
-                // committed, or an old pack from a call that crashed after
-                // committing but before `drop_packs` ran. Either way it is
-                // safe to reclaim outright: see `compact`'s own docs on the
-                // orphan sweep.
-                result.obsolete.push(pack);
+    fn compaction_worthwhile(&self, account: &str, snapshot: &ReferencedSnapshot) -> Result<bool> {
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = self.account_dir(account);
+        let packs = Self::list_packs(&dir)?;
+        let newest = packs.last().copied();
+
+        for pack in &packs {
+            if !snapshot.referenced().contains(pack) {
+                // An estimate, not a replay of `compact`'s own all-or-
+                // nothing empty-`referenced` pre-scan: this may say
+                // "worthwhile" for a call that turns out to refuse its
+                // whole sweep once it actually checks every candidate.
+                // Harmless -- the caller just attempts a `compact` that
+                // logs a warning and reclaims nothing, rather than skips
+                // it outright.
+                if orphan_sweep_candidate(*pack, newest, snapshot) {
+                    return Ok(true);
+                }
                 continue;
             }
-            match compact_one_pack(&self.cipher, &dir, account, pack) {
-                Ok(Some((_new_pack, pack_remap))) => {
-                    // `_new_pack` (named only for `compact_one_pack`'s own
-                    // return shape) is brand new and, by definition, not
-                    // yet in `referenced` -- nothing has committed a
-                    // reference to it yet, that being exactly what the
-                    // caller does next. It is never treated as an orphan by
-                    // *this* call: `list_packs`, above, was already read
-                    // before this pack existed, so this loop never reaches
-                    // it at all.
-                    result.remap.extend(pack_remap);
-                    result.obsolete.push(pack);
+            let (total, dead_count) = pack_dead_stats(&dir, *pack)?;
+            if total > 0 && dead_count * 3 >= total {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn compact(
+        &self,
+        account: &str,
+        snapshot: &ReferencedSnapshot,
+        should_continue: &dyn Fn() -> bool,
+    ) -> Result<CompactionResult> {
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = self.account_dir(account);
+        let packs = Self::list_packs(&dir)?;
+        let newest = packs.last().copied();
+        let mut result = CompactionResult::default();
+
+        // Guard 2: an empty `referenced` list is only trusted once every
+        // high-water-eligible, unreferenced pack proves -- from its own
+        // `.dead` bookkeeping alone -- that it genuinely holds no live
+        // frames. One that cannot means the whole sweep for this call is
+        // refused; see `PackStore::compact`'s own docs.
+        if snapshot.referenced().is_empty() {
+            for &pack in &packs {
+                if !sweep_eligible(pack, snapshot.high_water()) {
+                    continue;
                 }
-                Ok(None) => {
-                    // Fewer than a third dead (or nothing in the pack at
-                    // all): leave it exactly where it is.
-                }
-                Err(e) => {
-                    // A corrupt frame, most likely. This one pack is left
-                    // untouched -- its messages are still fully readable at
-                    // their existing addresses -- and every other pack in
-                    // this account, including ones already compacted
-                    // earlier in this same call, is unaffected: `result` so
-                    // far is not discarded, and the loop carries on.
+                if !pack_is_fully_dead(&dir, pack)? {
                     tracing::warn!(
                         account,
                         pack = %pack,
-                        error = %e,
-                        "skipping a pack that failed to compact"
+                        "refusing an orphan sweep: `referenced` was empty but a pack \
+                         still holds live frames"
                     );
+                    return Ok(result);
                 }
             }
+        }
+
+        for pack in packs {
+            if !should_continue() {
+                break;
+            }
+            if snapshot.referenced().contains(&pack) {
+                match compact_one_pack(&self.cipher, &dir, account, pack) {
+                    Ok(Some((_new_pack, pack_remap, bytes_reclaimed))) => {
+                        // `_new_pack` (named only for `compact_one_pack`'s
+                        // own return shape) is brand new and, by
+                        // definition, not yet in `snapshot` -- nothing has
+                        // committed a reference to it yet, that being
+                        // exactly what the caller does next. It is never
+                        // treated as an orphan by *this* call: `packs`,
+                        // above, was already read before this pack
+                        // existed, so this loop never reaches it at all.
+                        result.remap.extend(pack_remap);
+                        result.obsolete.push(pack);
+                        result.packs_rewritten += 1;
+                        result.bytes_reclaimed += bytes_reclaimed;
+                    }
+                    Ok(None) => {
+                        // Fewer than a third dead (or nothing in the pack
+                        // at all): leave it exactly where it is.
+                    }
+                    Err(e) => {
+                        // A corrupt frame, most likely. This one pack is
+                        // left untouched -- its messages are still fully
+                        // readable at their existing addresses -- and
+                        // every other pack in this account, including ones
+                        // already compacted earlier in this same call, is
+                        // unaffected: `result` so far is not discarded,
+                        // and the loop carries on.
+                        tracing::warn!(
+                            account,
+                            pack = %pack,
+                            error = %e,
+                            "skipping a pack that failed to compact"
+                        );
+                    }
+                }
+                continue;
+            }
+            if !orphan_sweep_candidate(pack, newest, snapshot) {
+                // Either past the high-water mark, or -- `referenced` being
+                // non-empty -- the account's single newest pack: never
+                // treated as an orphan, no matter what
+                // `snapshot.referenced()` says. See `compact`'s own docs
+                // for both guards.
+                continue;
+            }
+            // Not referenced, and every guard above has cleared it: safe
+            // to reclaim outright.
+            if let Ok(len) = std::fs::metadata(dir.join(format!("{pack}.pack"))) {
+                result.bytes_reclaimed += len.len();
+            }
+            result.obsolete.push(pack);
         }
         Ok(result)
     }
@@ -510,9 +773,50 @@ impl PackStore for FilePackStore {
     }
 }
 
-/// What [`compact_one_pack`] found: the fresh pack it wrote, and the remap
-/// from every old address in `pack` to its new one there.
-type PackCompaction = (PackId, Vec<(PackRef, PackRef)>);
+/// Guard 1 of [`PackStore::compact`]'s orphan sweep, alone: never a pack
+/// younger than `high_water` (created after the snapshot that fed this call
+/// was taken). Applies to every sweep candidate unconditionally, including
+/// the ones [`FilePackStore::compact`]'s own empty-`referenced` pre-scan
+/// checks before trusting an empty list at all.
+fn sweep_eligible(pack: PackId, high_water: Option<PackId>) -> bool {
+    high_water.is_some_and(|hw| pack <= hw)
+}
+
+/// Is `pack` safe for [`FilePackStore::compact`]'s orphan sweep to actually
+/// remove -- guards 1 and 3 from that method's own docs (guard 2, the
+/// empty-`referenced` fully-dead proof, is checked once up front by
+/// `compact`'s own pre-scan, which this assumes already passed if
+/// `snapshot.referenced()` is empty), shared with
+/// [`FilePackStore::compaction_worthwhile`] so the two never disagree.
+/// Assumes `pack` is already known absent from `snapshot.referenced()`.
+fn orphan_sweep_candidate(
+    pack: PackId,
+    newest: Option<PackId>,
+    snapshot: &ReferencedSnapshot,
+) -> bool {
+    if !sweep_eligible(pack, snapshot.high_water()) {
+        return false;
+    }
+    if snapshot.referenced().is_empty() {
+        // Guard 2 already proved this fully dead, or `compact` would have
+        // refused the whole sweep before this was ever reached.
+        return true;
+    }
+    // Guard 3: `referenced` is non-empty and trustworthy for every other
+    // pack, but the account's single newest pack may still be mid-write
+    // into by an `append_batch` whose message rows have not committed yet
+    // -- its absence from the list is exactly what that race looks like,
+    // and nothing here can tell the two apart. Left alone; reconsidered
+    // next call, once a later append has rotated a newer pack in ahead of
+    // it.
+    Some(pack) != newest
+}
+
+/// What [`compact_one_pack`] found: the fresh pack it wrote, the remap from
+/// every old address in `pack` to its new one there, and how many bytes the
+/// rewrite freed (the old pack's valid length minus the new one's, floored
+/// at zero).
+type PackCompaction = (PackId, Vec<(PackRef, PackRef)>, u64);
 
 /// The compaction of one pack, in isolation: read its live frames, reseal
 /// each into a fresh pack, and write that pack durably. Returns `Ok(None)`
@@ -532,27 +836,15 @@ fn compact_one_pack(
     let dead_path = dir.join(format!("{pack}.dead"));
     let valid_len = recover_valid_len(&path)?;
     let dead = read_dead_offsets(&dead_path)?;
-
-    let mut file = File::open(&path).map_err(|e| Error::io(&path, e))?;
-    let mut pos = 0u64;
-    let mut total = 0u64;
-    let mut live: Vec<(u64, u32)> = Vec::new();
-    while pos + FRAME_PREFIX_LEN <= valid_len {
-        file.seek(SeekFrom::Start(pos)).map_err(|e| Error::io(&path, e))?;
-        let mut len_buf = [0u8; FRAME_PREFIX_LEN as usize];
-        file.read_exact(&mut len_buf).map_err(|e| Error::io(&path, e))?;
-        let len = u32::from_le_bytes(len_buf);
-        let frame_offset = pos + FRAME_PREFIX_LEN;
-        total += 1;
-        if !dead.contains(&frame_offset) {
-            live.push((frame_offset, len));
-        }
-        pos = frame_offset + len as u64;
-    }
+    let offsets = frame_offsets(&path, valid_len)?;
+    let total = offsets.len() as u64;
+    let live: Vec<(u64, u32)> =
+        offsets.into_iter().filter(|(offset, _)| !dead.contains(offset)).collect();
     if total == 0 || (total - live.len() as u64) * 3 < total {
         return Ok(None);
     }
 
+    let mut file = File::open(&path).map_err(|e| Error::io(&path, e))?;
     let new_pack = PackId::new();
     let mut rewritten = Vec::new();
     let mut new_offset = 0u64;
@@ -588,7 +880,55 @@ fn compact_one_pack(
     fsutil::write_atomic(&new_path, &rewritten, &fsutil::unique_tag())?;
     fsutil::sync_dir(dir);
 
-    Ok(Some((new_pack, pack_remap)))
+    let bytes_reclaimed = valid_len.saturating_sub(rewritten.len() as u64);
+    Ok(Some((new_pack, pack_remap, bytes_reclaimed)))
+}
+
+/// Every frame offset and length currently in `path`, up to `valid_len`,
+/// from a length-prefix-only walk -- no sealed bytes are ever read or
+/// decrypted. Shared by [`compact_one_pack`]'s own rewrite and by
+/// [`pack_dead_stats`], which every live/dead reasoning about a pack that
+/// must not pay for a decrypt goes through.
+fn frame_offsets(path: &Path, valid_len: u64) -> Result<Vec<(u64, u32)>> {
+    let mut file = File::open(path).map_err(|e| Error::io(path, e))?;
+    let mut offsets = Vec::new();
+    let mut pos = 0u64;
+    while pos + FRAME_PREFIX_LEN <= valid_len {
+        file.seek(SeekFrom::Start(pos)).map_err(|e| Error::io(path, e))?;
+        let mut len_buf = [0u8; FRAME_PREFIX_LEN as usize];
+        file.read_exact(&mut len_buf).map_err(|e| Error::io(path, e))?;
+        let len = u32::from_le_bytes(len_buf);
+        let frame_offset = pos + FRAME_PREFIX_LEN;
+        offsets.push((frame_offset, len));
+        pos = frame_offset + len as u64;
+    }
+    Ok(offsets)
+}
+
+/// `pack`'s total frame count and how many of them `.dead` names -- a
+/// decrypt-nothing summary shared by
+/// [`FilePackStore::compaction_worthwhile`] and [`pack_is_fully_dead`]. A
+/// pack that does not exist (already reclaimed, or never had a frame
+/// written) reads as `(0, 0)`.
+fn pack_dead_stats(dir: &Path, pack: PackId) -> Result<(u64, u64)> {
+    let path = dir.join(format!("{pack}.pack"));
+    let dead_path = dir.join(format!("{pack}.dead"));
+    let valid_len = recover_valid_len(&path)?;
+    let dead = read_dead_offsets(&dead_path)?;
+    let offsets = frame_offsets(&path, valid_len)?;
+    let total = offsets.len() as u64;
+    let dead_count = offsets.iter().filter(|(offset, _)| dead.contains(offset)).count() as u64;
+    Ok((total, dead_count))
+}
+
+/// Does `pack` hold not one live frame, proved from its own `.dead`
+/// bookkeeping alone? What [`FilePackStore::compact`]'s guard on an empty
+/// `referenced` list asks of every sweep-eligible candidate before ever
+/// trusting the list. A pack with zero frames at all answers `true`
+/// trivially -- there is nothing live in it to miss.
+fn pack_is_fully_dead(dir: &Path, pack: PackId) -> Result<bool> {
+    let (total, dead_count) = pack_dead_stats(dir, pack)?;
+    Ok(total == dead_count)
 }
 
 /// Walk `path`'s frames from the start, and truncate away anything after the
@@ -688,9 +1028,13 @@ pub fn run_pack_store_suite(store: &dyn PackStore, account: &str) {
     store.mark_dead(&refs).unwrap();
     // Nothing left alive at all: an empty `referenced` list is a genuine
     // input here, not a placeholder, and the orphan sweep it drives is
-    // exactly what reclaims this pack -- see [`PackStore::compact`]'s own
-    // docs on the two-step contract this suite exercises throughout.
-    let result = store.compact(account, &[]).unwrap();
+    // exactly what reclaims this pack -- every frame in it really is dead,
+    // which is what lets the empty-`referenced` guard trust the sweep. See
+    // [`PackStore::compact`]'s own docs on the two-step contract this suite
+    // exercises throughout.
+    let hw = store.high_water_mark(account).unwrap();
+    let snapshot = ReferencedSnapshot::new([], hw);
+    let result = store.compact(account, &snapshot, &|| true).unwrap();
     assert!(result.remap.is_empty(), "nothing live left to remap");
     store.drop_packs(account, &result.obsolete).unwrap();
 
@@ -711,7 +1055,9 @@ pub fn run_pack_store_suite(store: &dyn PackStore, account: &str) {
     let live_bodies = &bodies[400..];
     store.mark_dead(dead).unwrap();
     let referenced: Vec<PackId> = refs.iter().map(|r| r.pack).collect();
-    let result = store.compact(account, &referenced).unwrap();
+    let hw = store.high_water_mark(account).unwrap();
+    let snapshot = ReferencedSnapshot::new(referenced, hw);
+    let result = store.compact(account, &snapshot, &|| true).unwrap();
     let remap: std::collections::HashMap<PackRef, PackRef> = result.remap.into_iter().collect();
     let mut current_refs = Vec::with_capacity(live.len());
     for (old, body) in live.iter().zip(live_bodies) {
@@ -732,7 +1078,9 @@ pub fn run_pack_store_suite(store: &dyn PackStore, account: &str) {
     // everything this suite created, leaving `account` exactly as this
     // function's own docs promise.
     store.mark_dead(&current_refs).unwrap();
-    let result = store.compact(account, &[]).unwrap();
+    let hw = store.high_water_mark(account).unwrap();
+    let snapshot = ReferencedSnapshot::new([], hw);
+    let result = store.compact(account, &snapshot, &|| true).unwrap();
     store.drop_packs(account, &result.obsolete).unwrap();
 
     eprintln!("--- pack store suite passed ---");
@@ -750,6 +1098,18 @@ mod tests {
             Arc::new(NullCipher)
         };
         FilePackStore::open(dir, cipher).unwrap()
+    }
+
+    /// A [`ReferencedSnapshot`] built the honest way for a test that is not
+    /// itself trying to prove a stale-snapshot guard: `referenced`, paired
+    /// with `store`'s *current* high-water mark for `account`, read fresh
+    /// right now.
+    fn snapshot(
+        store: &FilePackStore,
+        account: &str,
+        referenced: Vec<PackId>,
+    ) -> ReferencedSnapshot {
+        ReferencedSnapshot::new(referenced, store.high_water_mark(account).unwrap())
     }
 
     #[test]
@@ -835,7 +1195,8 @@ mod tests {
         s.mark_dead(&dead).unwrap();
 
         let referenced: Vec<PackId> = refs.iter().map(|r| r.pack).collect();
-        let result = s.compact("acc-1", &referenced).unwrap();
+        let snap = snapshot(&s, "acc-1", referenced);
+        let result = s.compact("acc-1", &snap, &|| true).unwrap();
         assert_eq!(result.remap.len(), live.len(), "only the live messages should move");
 
         let remap: std::collections::HashMap<PackRef, PackRef> = result.remap.into_iter().collect();
@@ -865,7 +1226,8 @@ mod tests {
         // Two of nine is under a third: nothing should move.
         s.mark_dead(&refs[..2]).unwrap();
         let referenced: Vec<PackId> = refs.iter().map(|r| r.pack).collect();
-        let result = s.compact("acc-1", &referenced).unwrap();
+        let snap = snapshot(&s, "acc-1", referenced);
+        let result = s.compact("acc-1", &snap, &|| true).unwrap();
         assert!(result.is_empty());
         for r in &refs[2..] {
             assert_eq!(s.read(r).unwrap(), b"x");
@@ -917,7 +1279,8 @@ mod tests {
         std::fs::write(&corrupt_path, bytes).unwrap();
 
         let referenced: Vec<PackId> = [pack1[0].pack, pack2[0].pack].to_vec();
-        let result = s.compact("acc-1", &referenced).unwrap();
+        let snap = snapshot(&s, "acc-1", referenced);
+        let result = s.compact("acc-1", &snap, &|| true).unwrap();
 
         // Pack 1 compacted cleanly, and is readable at either address, on
         // the same terms `compaction_keeps_live_messages_and_remaps_their_refs`
@@ -955,7 +1318,8 @@ mod tests {
         let live = &refs[4..];
 
         let referenced: Vec<PackId> = refs.iter().map(|r| r.pack).collect();
-        let result = s.compact("acc-1", &referenced).unwrap();
+        let snap = snapshot(&s, "acc-1", referenced);
+        let result = s.compact("acc-1", &snap, &|| true).unwrap();
         assert!(!result.remap.is_empty(), "the test needs compaction to have actually run");
 
         // No `remap_packs` commit, and no `drop_packs` -- exactly the crash
@@ -985,7 +1349,8 @@ mod tests {
         let live = &refs[4..];
 
         let referenced: Vec<PackId> = refs.iter().map(|r| r.pack).collect();
-        let first = s.compact("acc-1", &referenced).unwrap();
+        let snap = snapshot(&s, "acc-1", referenced);
+        let first = s.compact("acc-1", &snap, &|| true).unwrap();
         let remap: std::collections::HashMap<PackRef, PackRef> = first.remap.into_iter().collect();
         // Deliberately no `drop_packs` here -- the old pack is left behind,
         // exactly as a crash after the (simulated) remap commit would leave
@@ -993,9 +1358,13 @@ mod tests {
 
         // The next compaction pass, run as though the caller has by now
         // durably committed the remap: `referenced` names only the new
-        // addresses, not the old pack `first` made obsolete.
+        // addresses, not the old pack `first` made obsolete. The fresh
+        // high-water mark now covers the replacement pack too, which is
+        // also the account's newest -- guard 3 protects *it*, not the
+        // genuinely leftover one this sweep must still reach.
         let new_referenced: Vec<PackId> = live.iter().map(|old| remap[old].pack).collect();
-        let second = s.compact("acc-1", &new_referenced).unwrap();
+        let second_snap = snapshot(&s, "acc-1", new_referenced);
+        let second = s.compact("acc-1", &second_snap, &|| true).unwrap();
         assert!(
             second.obsolete.contains(&first.obsolete[0]),
             "the leftover pack from the earlier, uncommitted-and-undropped compaction \
@@ -1007,6 +1376,140 @@ mod tests {
             assert!(s.read(old).is_err(), "the orphaned old address must finally be gone");
             assert_eq!(s.read(&remap[old]).unwrap(), b"x", "the live address is untouched");
         }
+    }
+
+    /// Regression for "an empty `referenced` list deletes every pack": the
+    /// pre-fix behaviour swept every existing pack the moment `referenced`
+    /// came back empty, with no way to tell a genuinely emptied account
+    /// apart from a caller whose query simply came back wrong. A pack still
+    /// holding live, never-marked-dead frames must refuse the whole sweep.
+    #[test]
+    fn an_empty_referenced_snapshot_over_live_packs_deletes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), true);
+        let refs =
+            s.append_batch("acc-1", &(0..9).map(|_| b"x".as_slice()).collect::<Vec<_>>()).unwrap();
+        // Nothing marked dead at all: every frame is live.
+
+        let hw = s.high_water_mark("acc-1").unwrap();
+        let snap = ReferencedSnapshot::new([], hw);
+        let result = s.compact("acc-1", &snap, &|| true).unwrap();
+        assert!(result.is_empty(), "an empty `referenced` list over live data must sweep nothing");
+        for r in &refs {
+            assert_eq!(s.read(r).unwrap(), b"x", "every message must remain exactly where it was");
+        }
+    }
+
+    /// The race from `packstore`'s own module docs, simulated deterministically
+    /// through the API rather than with threads: a batch is appended (its
+    /// pack durably exists), a snapshot is taken *before* the rows naming
+    /// that pack would commit (so `referenced` omits it, exactly as a
+    /// concurrent reference query would if it ran in that window), and the
+    /// sweep runs on that stale snapshot. The freshly appended pack -- the
+    /// account's newest -- must survive, because `referenced` is otherwise
+    /// non-empty and trustworthy, which is exactly the case guard 3 exists
+    /// for.
+    #[test]
+    fn the_newest_pack_survives_a_sweep_taken_before_its_rows_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), true);
+
+        // Pre-existing, already-committed mail: a filler forces this into
+        // its own pack, which the batch below will rotate away from.
+        let big = vec![0u8; (PACK_ROTATE_BYTES as usize) + 1];
+        let settled = s.append_batch("acc-1", &[big.as_slice(), b"settled".as_slice()]).unwrap();
+
+        // The racy batch: durably written, but -- in this simulation --
+        // its owning rows have not committed yet, so it is deliberately
+        // left out of `referenced` below.
+        let fresh =
+            s.append_batch("acc-1", &[b"fresh-1".as_slice(), b"fresh-2".as_slice()]).unwrap();
+        assert_ne!(settled[0].pack, fresh[0].pack, "the filler must have forced a rotation");
+
+        // `referenced` names only the settled pack -- non-empty, and
+        // otherwise trustworthy -- while the fresh pack's rows are
+        // (simulated as) still in flight.
+        let hw = s.high_water_mark("acc-1").unwrap();
+        let snap = ReferencedSnapshot::new([settled[1].pack], hw);
+        let result = s.compact("acc-1", &snap, &|| true).unwrap();
+        assert!(
+            !result.obsolete.contains(&fresh[0].pack),
+            "the account's newest pack must never be swept on absence from \
+             `referenced` alone"
+        );
+
+        // "Committing the rows" now: every message, old and new, is still
+        // exactly where it was.
+        assert_eq!(s.read(&settled[0]).unwrap(), big);
+        assert_eq!(s.read(&settled[1]).unwrap(), b"settled");
+        assert_eq!(s.read(&fresh[0]).unwrap(), b"fresh-1");
+        assert_eq!(s.read(&fresh[1]).unwrap(), b"fresh-2");
+    }
+
+    /// Guard 1 alone: a pack created strictly after the snapshot's
+    /// high-water mark must never be swept, even under an empty
+    /// `referenced` list that legitimately reclaims an older, fully dead
+    /// pack in the same call.
+    #[test]
+    fn a_pack_newer_than_the_high_water_mark_is_never_swept() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), true);
+
+        // A filler pushes this first pack over the rotate threshold
+        // immediately, so the next `append_batch` is guaranteed a fresh
+        // pack rather than reusing this one.
+        let big = vec![0u8; (PACK_ROTATE_BYTES as usize) + 1];
+        let old = s.append_batch("acc-1", &[big.as_slice(), b"old".as_slice()]).unwrap();
+        s.mark_dead(&old).unwrap();
+        // The mark is taken here -- before the second pack below exists.
+        let hw = s.high_water_mark("acc-1").unwrap();
+
+        let newer = s.append_batch("acc-1", &[b"newer".as_slice()]).unwrap();
+        assert_ne!(old[0].pack, newer[0].pack, "the filler must have forced a rotation");
+
+        // Nothing at all is referenced, but `hw` still lets the genuinely
+        // old, fully dead pack be reclaimed -- proving the guard filters by
+        // age, not by blanket refusal.
+        let snap = ReferencedSnapshot::new([], hw);
+        let result = s.compact("acc-1", &snap, &|| true).unwrap();
+        assert!(result.obsolete.contains(&old[0].pack), "the pack at or before `hw` must be swept");
+        assert!(
+            !result.obsolete.contains(&newer[0].pack),
+            "a pack created after `hw` must never be swept, referenced or not"
+        );
+        assert_eq!(s.read(&newer[0]).unwrap(), b"newer");
+    }
+
+    /// A stop signal honoured between packs, never mid-rewrite: every
+    /// message stays readable however far through the sweep `compact`
+    /// actually got.
+    #[test]
+    fn the_stop_signal_mid_compaction_leaves_every_message_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), true);
+
+        let big = vec![0u8; (PACK_ROTATE_BYTES as usize) + 1];
+        let pack1 = s
+            .append_batch("acc-1", &[big.as_slice(), b"p1-a".as_slice(), b"p1-b".as_slice()])
+            .unwrap();
+        let pack2 = s.append_batch("acc-1", &[b"p2-a".as_slice(), b"p2-b".as_slice()]).unwrap();
+        assert_ne!(pack1[0].pack, pack2[0].pack);
+
+        // Over a third dead in each, so both are eligible to rewrite.
+        s.mark_dead(&[pack1[0].clone()]).unwrap();
+        s.mark_dead(&[pack2[0].clone()]).unwrap();
+
+        let referenced: Vec<PackId> = [pack1[0].pack, pack2[0].pack].to_vec();
+        let snap = snapshot(&s, "acc-1", referenced);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let should_continue = || calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+        let result = s.compact("acc-1", &snap, &should_continue).unwrap();
+        assert_eq!(result.packs_rewritten, 1, "the stop signal must cut the sweep short");
+
+        // Whichever pack was reached, every message -- rewritten or not --
+        // is still readable at its old address; `compact` never deletes.
+        assert_eq!(s.read(&pack1[1]).unwrap(), b"p1-a");
+        assert_eq!(s.read(&pack2[1]).unwrap(), b"p2-b");
     }
 
     #[test]
