@@ -49,6 +49,11 @@ tokio = { version = "1.53.1", features = ["sync", "rt", "time", "macros", "net"]
 futures = "0.3.34"
 rig-core = "0.42"
 rig-agent = "0.42"
+# `suggest_addresses`'s fuzzy match over the contact index -- see
+# `mailsync::contacts`. Pinned exactly, per the plan's rule for a young
+# crate this tree does not vendor; MSRV 1.89.0, comfortably under the
+# 1.93.1 this workspace builds with.
+frizbee = "=0.13.0"
 
 # ── Calendars that sign in (phase 6 of docs/plans/mail.md) ──────────────────
 #

@@ -141,6 +141,13 @@ pub trait PackStore: Send + Sync {
     /// one this store has already forgotten, is not an error.
     fn mark_dead(&self, refs: &[PackRef]) -> Result<()>;
 
+    /// Delete every pack `account` has, whole -- what deleting the account
+    /// itself calls, after its `mailboxes`/`mail_messages`/... rows are
+    /// gone, so nothing is left pointing at bytes this removes. Deleting an
+    /// account that never had any packs (never synced, or already deleted)
+    /// is not an error.
+    fn delete_account(&self, account: &str) -> Result<()>;
+
     /// Rewrite every pack of `account`'s that is at least a third dead,
     /// dropping what [`PackStore::mark_dead`] marked and keeping everything
     /// else.
@@ -325,6 +332,18 @@ impl PackStore for FilePackStore {
             file.write_all(text.as_bytes()).map_err(|e| Error::io(&path, e))?;
             file.sync_all().map_err(|e| Error::io(&path, e))?;
         }
+        Ok(())
+    }
+
+    fn delete_account(&self, account: &str) -> Result<()> {
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = self.account_dir(account);
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(Error::io(&dir, e)),
+        }
+        fsutil::sync_dir(&self.root);
         Ok(())
     }
 

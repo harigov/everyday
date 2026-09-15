@@ -489,6 +489,35 @@ impl DraftState {
     }
 }
 
+/// One file attached to a [`Draft`]: the blob holding its bytes, and the
+/// name and MIME type [`everyday_mail::outbox::execute`]'s `Send` and
+/// `AppendDraft` arms need to build a real MIME part from it, rather than
+/// the placeholder `"attachment"` / `application/octet-stream` a bare
+/// [`BlobId`] would leave them guessing at. Filled in wherever a draft's
+/// attachment is first uploaded — the compose window's own attach command —
+/// so the outbox executor never has to invent either.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftAttachment {
+    pub blob: BlobId,
+    pub filename: String,
+    pub mime_type: String,
+}
+
+/// Where this crate's own last `APPEND` of a [`Draft`] to the account's
+/// Drafts mailbox landed — `mailbox`, the server's own folder name, and
+/// `uid`, `APPENDUID`'s answer for it. Persisted on the draft itself, rather
+/// than kept in memory on the service that ran the append, so that
+/// [`everyday_mail::outbox::execute`]'s `AppendDraft` arm still finds the
+/// stale copy to delete after a restart — see that function's own module
+/// docs for the trade a memory-only version used to make.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftServerCopy {
+    pub mailbox: String,
+    pub uid: u32,
+}
+
 /// A message being written — by the person, by the assistant asked to, or
 /// by the auto-draft pass phase 7 adds. See the plan's data model for why
 /// this is a record with three possible writers rather than compose-box
@@ -513,7 +542,14 @@ pub struct Draft {
     pub subject: String,
     pub body_html: String,
     #[serde(default)]
-    pub attachments: Vec<BlobId>,
+    pub attachments: Vec<DraftAttachment>,
+    /// Where this draft's last `AppendDraft` landed on the server, if it has
+    /// ever had one. `#[serde(default)]` so a draft sealed before this field
+    /// existed still decodes — as `None`, exactly what "never appended yet"
+    /// already means — the same forward-compatibility every field added to
+    /// a sealed record here keeps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_copy: Option<DraftServerCopy>,
     pub origin: Origin,
     pub state: DraftState,
     pub created_at: Timestamp,
@@ -534,6 +570,7 @@ impl Draft {
             subject: String::new(),
             body_html: String::new(),
             attachments: Vec::new(),
+            server_copy: None,
             origin,
             state: DraftState::Editing,
             created_at: now,

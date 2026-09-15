@@ -19,7 +19,7 @@ UI_DIR  := ui
 ARGS ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help setup run dev ui build test test-postgres test-imap test-smtp test-caldav lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
+.PHONY: help setup run dev ui build test test-postgres test-imap test-smtp test-mail test-caldav lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
 
 help: ## Show this help
 	@echo "Every Day -- make <target>"
@@ -194,6 +194,47 @@ test-caldav: ## Run the CalDAV adapter's suite against a throwaway Radicale in D
 	status=$$?; \
 	docker rm -f everyday-caldavtest >/dev/null; \
 	rm -f $$tmp_htpasswd; \
+	exit $$status
+
+# `everyday-service`'s own end-to-end suite
+# (crates/everyday-service/tests/mailsync_dovecot.rs) needs both servers at
+# once -- a real IMAP account to sync, act on and read back from, and a real
+# SMTP relay to send through -- so this starts both throwaway containers
+# together rather than asking for two separate `make` invocations. Same
+# images, same credentials, same ports as `test-imap` and `test-smtp` above;
+# both are removed when either half of the suite finishes.
+test-mail: ## Run the mail sync engine's end-to-end suite against throwaway Dovecot and Mailpit
+	@docker rm -f everyday-imaptest everyday-smtptest >/dev/null 2>&1 || true
+	docker run -d --rm --name everyday-imaptest \
+		-e USER_PASSWORD=testpass \
+		-p 15993:31993 -p 15143:31143 \
+		dovecot/dovecot:latest >/dev/null
+	docker run -d --rm --name everyday-smtptest \
+		-e MP_SMTP_AUTH=everyday:testpass -e MP_SMTP_AUTH_ALLOW_INSECURE=1 \
+		-p 11025:1025 -p 18025:8025 \
+		axllent/mailpit:latest >/dev/null
+	@echo "waiting for Dovecot and Mailpit..."
+	@bash -c 'for i in $$(seq 1 60); do \
+		(exec 3<>/dev/tcp/127.0.0.1/15993) 2>/dev/null && exec 3<&- 3>&- && exit 0; \
+		sleep 1; \
+	done; exit 1'
+	@bash -c 'for i in $$(seq 1 60); do \
+		(exec 3<>/dev/tcp/127.0.0.1/18025) 2>/dev/null && exec 3<&- 3>&- && exit 0; \
+		sleep 1; \
+	done; exit 1'
+	@EVERYDAY_TEST_IMAP=1 \
+		EVERYDAY_TEST_IMAP_HOST=127.0.0.1 \
+		EVERYDAY_TEST_IMAP_TLS_PORT=15993 \
+		EVERYDAY_TEST_IMAP_STARTTLS_PORT=15143 \
+		EVERYDAY_TEST_IMAP_USER=everyday \
+		EVERYDAY_TEST_IMAP_PASS=testpass \
+		EVERYDAY_TEST_SMTP=1 \
+		EVERYDAY_TEST_SMTP_HOST=127.0.0.1 \
+		EVERYDAY_TEST_SMTP_PORT=11025 \
+		EVERYDAY_TEST_SMTP_API=http://127.0.0.1:18025 \
+		cargo test -p everyday-service --test mailsync_dovecot; \
+	status=$$?; \
+	docker rm -f everyday-imaptest everyday-smtptest >/dev/null; \
 	exit $$status
 
 # The pair to reach for: `lint` says what is wrong, `fix` fixes what it can.

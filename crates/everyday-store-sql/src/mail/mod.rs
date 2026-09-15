@@ -14,11 +14,11 @@ mod write;
 use everyday_core::error::Result;
 use everyday_core::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use everyday_core::mail::{
-    Body, Draft, Mailbox, Message, MessageFlags, Op, RemoteImageSettings, Thread,
+    Body, ContactBook, Draft, Mailbox, Message, MessageFlags, Op, RemoteImageSettings, Thread,
 };
 use everyday_core::store::mail::{
-    IngestMessage, MailStore, ThreadFilter, ThreadPage, body_aad, draft_aad, mailbox_aad,
-    message_aad, op_aad, remote_image_settings_aad, thread_aad,
+    IngestMessage, MailStore, ThreadFilter, ThreadPage, body_aad, contacts_aad, draft_aad,
+    mailbox_aad, message_aad, op_aad, remote_image_settings_aad, thread_aad,
 };
 use jiff::Timestamp;
 
@@ -227,6 +227,10 @@ impl MailStore for SqlStore {
         Ok((thread, messages))
     }
 
+    fn merge_threads(&self, keep: ThreadId, others: &[ThreadId]) -> Result<()> {
+        write::merge_threads(self, keep, others)
+    }
+
     fn get_message(&self, id: MailMessageId) -> Result<Message> {
         self.get(id)
     }
@@ -401,6 +405,31 @@ impl MailStore for SqlStore {
         rows.into_iter().map(|r| Ok(r.i64(0)? as u32)).collect()
     }
 
+    fn pending_bodies(&self, mailbox: MailboxId, limit: u32) -> Result<Vec<(Message, u32)>> {
+        // `m.pack_len = 0` is the clear-column sentinel this trait's own
+        // docs name -- see `MailStore::pending_bodies` -- so this is a
+        // query over `mail_messages`' clear columns, exactly like
+        // `uid_set` above, not a decrypt of every row `mailbox` has.
+        let mut sql = "SELECT m.id, mm.uid, m.data FROM mail_messages m
+             JOIN message_mailboxes mm ON mm.message_id = m.id
+             WHERE mm.mailbox_id = ?1 AND m.pack_len = 0"
+            .to_string();
+        self.page(&mut sql, "m.date_us DESC", Some(limit), 0);
+        let rows = self.read().query(&sql, &vals![mailbox.to_string()])?;
+        rows.into_iter()
+            .map(|r| {
+                let mid: MailMessageId = r.text(0)?.parse().map_err(
+                    |e: <MailMessageId as std::str::FromStr>::Err| {
+                        everyday_core::error::Error::Invalid(e.to_string())
+                    },
+                )?;
+                let uid = r.i64(1)? as u32;
+                let message: Message = self.unseal(&message_aad(mid), &r.bytes(2)?)?;
+                Ok((message, uid))
+            })
+            .collect()
+    }
+
     fn reset_mailbox(&self, mailbox: MailboxId) -> Result<()> {
         write::reset_mailbox(self, mailbox)
     }
@@ -504,6 +533,26 @@ impl MailStore for SqlStore {
         let data = self.seal(&remote_image_settings_aad(), settings)?;
         self.write().execute(
             "INSERT INTO mail_remote_image_settings (id, data) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET data = ?1",
+            &vals![data],
+        )?;
+        Ok(())
+    }
+
+    // ---- the contact index ----------------------------------------------------
+
+    fn contacts(&self) -> Result<ContactBook> {
+        let sealed = self.read().sealed("SELECT data FROM mail_contacts WHERE id = 1", &[])?;
+        match sealed {
+            Some(sealed) => self.unseal(&contacts_aad(), &sealed),
+            None => Ok(ContactBook::default()),
+        }
+    }
+
+    fn put_contacts(&self, book: &ContactBook) -> Result<()> {
+        let data = self.seal(&contacts_aad(), book)?;
+        self.write().execute(
+            "INSERT INTO mail_contacts (id, data) VALUES (1, ?1)
              ON CONFLICT (id) DO UPDATE SET data = ?1",
             &vals![data],
         )?;

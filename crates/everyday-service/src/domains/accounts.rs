@@ -146,11 +146,41 @@ async fn get_account(svc: Arc<Service>, _ctx: Ctx, args: AccountRef) -> CommandR
     .await
 }
 
+/// Save `args.account`, then start or stop its sync task to match
+/// `services.mail` immediately -- not on the next unlock. Covers every way
+/// this field can change: switching mail on or off, and any other edit,
+/// since `ensure_account_task`/`stop_account_task` are idempotent on a task
+/// that is already in the state asked for.
 async fn save_account(svc: Arc<Service>, _ctx: Ctx, args: SaveAccount) -> CommandResult<()> {
-    svc.on_vault(move |vault| vault.save_account(&args.account)).await
+    let vault = svc.require()?;
+    let account = args.account;
+    let account_id = account.id;
+    let mail_on = account.services.mail;
+    blocking({
+        let vault = vault.clone();
+        move || Ok(vault.save_account(&account)?)
+    })
+    .await?;
+    if mail_on {
+        crate::mailsync::wiring::ensure_account_task(&svc, &vault, account_id);
+    } else {
+        crate::mailsync::wiring::stop_account_task(&svc, account_id).await;
+    }
+    Ok(())
 }
 
+/// Delete the account: stop its sync task first (a task still writing
+/// through `Vault::delete_account`'s own cascade partway through it is
+/// exactly the ordering `Service::close`'s own docs rule out), delete its
+/// local pack files, then the vault's own rows.
 async fn delete_account(svc: Arc<Service>, _ctx: Ctx, args: AccountRef) -> CommandResult<()> {
+    crate::mailsync::wiring::stop_account_task(&svc, args.id).await;
+    if let Some(packs) = svc.packs() {
+        // Best-effort: a pack store that fails to delete leaves orphaned
+        // files behind, not a wrong answer to any command -- the vault's
+        // own rows, deleted next, are what every reader actually trusts.
+        let _ = packs.delete_account(&args.id.to_string());
+    }
     svc.on_vault(move |vault| vault.delete_account(args.id)).await
 }
 
@@ -186,19 +216,32 @@ async fn save_account_password(
     args: SaveAccountPassword,
 ) -> CommandResult<()> {
     let vault = svc.require()?;
-    blocking(move || {
-        let mut account = vault.account(args.id)?;
-        let mut secret = vault.account_secret(args.id)?.unwrap_or_default();
-        secret.password = Some(args.password);
-        vault.save_account_secret(args.id, &secret)?;
-        // A credential is now stored, which is what `Ok` means for a freshly
-        // signed-in OAuth account too (`attach_oauth_sign_in`), before
-        // anything has synced. The first sync that is refused moves it back.
-        account.status = AccountStatus::Ok;
-        account.updated_at = Timestamp::now();
-        Ok(vault.save_account(&account)?)
+    let account = blocking({
+        let vault = vault.clone();
+        move || {
+            let mut account = vault.account(args.id)?;
+            let mut secret = vault.account_secret(args.id)?.unwrap_or_default();
+            secret.password = Some(args.password);
+            vault.save_account_secret(args.id, &secret)?;
+            // A credential is now stored, which is what `Ok` means for a
+            // freshly signed-in OAuth account too (`attach_oauth_sign_in`),
+            // before anything has synced. The first sync that is refused
+            // moves it back.
+            account.status = AccountStatus::Ok;
+            account.updated_at = Timestamp::now();
+            vault.save_account(&account)?;
+            Ok(account)
+        }
     })
-    .await
+    .await?;
+    // A working credential just landed -- start syncing now rather than
+    // waiting for the next unlock, the same immediacy `save_account` gives
+    // switching `services.mail` on. Idempotent either way: a task already
+    // running is left alone.
+    if account.services.mail {
+        crate::mailsync::wiring::ensure_account_task(&svc, &vault, account.id);
+    }
+    Ok(())
 }
 
 /// Move a finished sign-in's tokens onto an account, sealed.
@@ -218,22 +261,33 @@ async fn attach_oauth_sign_in(
     let tokens = svc.sign_ins().claim_tokens(&args.sign_in_id).ok_or_else(|| {
         CommandError::new(codes::NOT_FOUND, "that sign-in has no tokens waiting to be saved")
     })?;
-    blocking(move || {
-        let mut account = vault.account(args.id)?;
-        let mut secret = vault.account_secret(args.id)?.unwrap_or_default();
-        if tokens.refresh_token.is_some() {
-            secret.refresh_token = tokens.refresh_token.clone();
+    let account = blocking({
+        let vault = vault.clone();
+        move || {
+            let mut account = vault.account(args.id)?;
+            let mut secret = vault.account_secret(args.id)?.unwrap_or_default();
+            if tokens.refresh_token.is_some() {
+                secret.refresh_token = tokens.refresh_token.clone();
+            }
+            secret.access_token = Some((tokens.access_token.clone(), tokens.expires_at));
+            if args.client_secret.is_some() {
+                secret.client_secret = args.client_secret;
+            }
+            vault.save_account_secret(args.id, &secret)?;
+            account.status = AccountStatus::Ok;
+            account.updated_at = Timestamp::now();
+            vault.save_account(&account)?;
+            Ok(account)
         }
-        secret.access_token = Some((tokens.access_token.clone(), tokens.expires_at));
-        if args.client_secret.is_some() {
-            secret.client_secret = args.client_secret;
-        }
-        vault.save_account_secret(args.id, &secret)?;
-        account.status = AccountStatus::Ok;
-        account.updated_at = Timestamp::now();
-        Ok(vault.save_account(&account)?)
     })
-    .await
+    .await?;
+    // See `save_account_password`'s own comment: a working credential just
+    // landed, so this is the other moment a task should start immediately
+    // rather than wait for the next unlock.
+    if account.services.mail {
+        crate::mailsync::wiring::ensure_account_task(&svc, &vault, account.id);
+    }
+    Ok(())
 }
 
 /// Flip one caller's switches on one account.

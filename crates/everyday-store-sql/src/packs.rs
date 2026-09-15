@@ -107,6 +107,11 @@ impl PackStore for TablePacks<'_> {
         tx.commit()
     }
 
+    fn delete_account(&self, account: &str) -> Result<()> {
+        self.0.write().execute("DELETE FROM mail_packs WHERE account_id = ?1", &vals![account])?;
+        Ok(())
+    }
+
     fn compact(&self, _account: &str) -> Result<Vec<(PackRef, PackRef)>> {
         // See the module docs: a row is already its own pack, so there is
         // nothing to rewrite and nothing to remap.
@@ -130,6 +135,10 @@ impl PackStore for SqlStore {
 
     fn mark_dead(&self, refs: &[PackRef]) -> Result<()> {
         TablePacks::new(self).mark_dead(refs)
+    }
+
+    fn delete_account(&self, account: &str) -> Result<()> {
+        TablePacks::new(self).delete_account(account)
     }
 
     fn compact(&self, account: &str) -> Result<Vec<(PackRef, PackRef)>> {

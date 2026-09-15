@@ -183,10 +183,10 @@ impl AppState {
     }
 
     /// Look at a vault on another machine.
-    pub fn connect(&self, remote: Arc<crate::remote::Remote>) {
+    pub async fn connect(&self, remote: Arc<crate::remote::Remote>) {
         // Release the local vault first. Its write lock is this process's, and
         // a window that has gone remote has no business holding one.
-        self.service.close();
+        self.service.close().await;
         *self.session.write().unwrap() = Session::Remote(remote);
     }
 

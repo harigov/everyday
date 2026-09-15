@@ -38,10 +38,19 @@
 //!   generic over [`MailSession`] so the same code runs against
 //!   `everyday-mail::imap::ImapSession` in production and a fake in
 //!   [`tests`].
+//! - [`sender`] -- [`sender::LazySmtpSender`], the `everyday_mail::outbox::Sender`
+//!   one account's task hands to `crate::outbox::drain_outbox`: an SMTP
+//!   connection opened on the first `OpKind::Send`, from the same credential
+//!   resolution as IMAP, and kept pooled after that.
 //! - [`task`] -- [`task::run_account`], the whole of one account's
-//!   supervised task: connect, sync, hold `IDLE`, reconnect, repeat.
+//!   supervised task: connect, sync, drain the outbox, hold `IDLE`,
+//!   reconnect, repeat.
 //! - [`status`] -- what `sync_status` reads: each account's current phase,
 //!   progress and last error, kept in memory and updated as a sync runs.
+//! - [`unread_cache`] -- [`unread_cache::UnreadCache`], caching
+//!   `MailStore::unread_counts` and invalidated by the two writes that can
+//!   change it: the sync engine's own headers pass, and a person's batch
+//!   actions in `crate::domains::mail`.
 //!
 //! # Why generic over `MailSession` rather than boxed
 //!
@@ -55,12 +64,15 @@
 //! `everyday_mail::imap::ImapSession`; each test in [`tests`], for its own
 //! fake).
 
+pub mod contacts;
 pub mod credential;
 pub mod discovery;
 pub mod ingest;
 pub mod passes;
+pub mod sender;
 pub mod status;
 pub mod task;
+pub mod unread_cache;
 pub mod wiring;
 
 #[cfg(test)]

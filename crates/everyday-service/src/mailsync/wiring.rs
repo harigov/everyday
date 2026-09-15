@@ -68,6 +68,8 @@ pub struct MailState {
     pub(crate) packs: Arc<dyn PackStore>,
     pub(crate) index: Arc<dyn everyday_core::MailSearch>,
     pub(crate) statuses: StatusRegistry,
+    pub(crate) unread_cache: Arc<crate::mailsync::unread_cache::UnreadCache>,
+    pub(crate) contacts: Arc<crate::mailsync::contacts::ContactIndex>,
 }
 
 /// Open mail's storage against `vault`, and start its account tasks if this
@@ -96,7 +98,15 @@ pub(crate) fn open(svc: &Arc<Service>, vault: &Arc<Vault>) {
             return;
         }
     };
-    svc.set_mail_state(Some(MailState { packs, index, statuses: StatusRegistry::new() }));
+    svc.set_mail_state(Some(MailState {
+        packs,
+        index,
+        statuses: StatusRegistry::new(),
+        unread_cache: Arc::new(crate::mailsync::unread_cache::UnreadCache::new()),
+        // One small sealed row, read once here -- see `ContactIndex`'s own
+        // docs on why this is not a scan of every message on unlock.
+        contacts: Arc::new(crate::mailsync::contacts::ContactIndex::load(vault)),
+    }));
 
     if vault.is_writable() {
         register_account_tasks(svc, vault);
@@ -166,6 +176,10 @@ impl PackStore for VaultPacks {
 
     fn mark_dead(&self, refs: &[PackRef]) -> Result<()> {
         self.0.with_mail_packs(|p| p.mark_dead(refs))
+    }
+
+    fn delete_account(&self, account: &str) -> Result<()> {
+        self.0.with_mail_packs(|p| p.delete_account(account))
     }
 
     fn compact(&self, account: &str) -> Result<Vec<(PackRef, PackRef)>> {

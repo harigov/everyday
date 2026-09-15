@@ -23,6 +23,10 @@ Reproduced below in full:
   14. oauth2-reqwest — © 2014 Alex Crichton, https://github.com/ramosbugs/oauth2-rs
   15. tantivy — © 2018 by the project authors, as listed in the AUTHORS file, https://github.com/quickwit-oss/tantivy
   16. lru — © 2016 Jerome Froelich, https://github.com/jeromefroe/lru-rs
+  17. libdav — © 2022-2025 Hugo Osvaldo Barrera, https://git.sr.ht/~whynothugo/libdav
+  18. calcard — © Stalwart Labs LLC, https://github.com/stalwartlabs/calcard
+  19. roxmltree — © 2018 Yevhenii Reizner, https://github.com/RazrFalcon/roxmltree
+  20. frizbee — © 2024 Liam Dyer, https://github.com/saghen/frizbee
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
@@ -940,6 +944,36 @@ reader to the tree, only a second caller of the one already there.
 MIT License
 
 Copyright (c) 2018 Yevhenii Reizner
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 20. frizbee
+
+`crates/everyday-service/src/mailsync/contacts.rs` uses `frizbee`
+(https://github.com/saghen/frizbee), MIT licensed, for `suggest_addresses`'s
+typo-tolerant fuzzy match over the contact index. Reproduced below.
+
+MIT License
+
+Copyright (c) 2024 Liam Dyer
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

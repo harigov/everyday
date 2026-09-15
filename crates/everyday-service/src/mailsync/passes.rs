@@ -29,7 +29,8 @@
 //! little left to do.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use everyday_core::id::{AccountId, MailboxId};
 use everyday_core::mail::{Body, MailboxRole, Message, PartRef};
@@ -60,6 +61,11 @@ const HEADER_BATCH_SIZE: usize = 500;
 /// between the fetch and the blocking-pool pass below.
 const BODY_BATCH_SIZE: usize = 100;
 
+/// How many of the newest known uids on Gmail's All Mail
+/// [`refresh_gmail_labels`]'s fallback re-checks every pass, regardless of
+/// what `changes_since` reported moved. See that function's own docs.
+const GMAIL_LABEL_FALLBACK_N: usize = 50;
+
 /// What every pass needs, gathered once by [`crate::mailsync::task::run_account`]
 /// so a test can build the same shape without a live connection.
 pub struct SyncContext<'a> {
@@ -69,6 +75,84 @@ pub struct SyncContext<'a> {
     pub index: Arc<dyn MailSearch>,
     pub statuses: &'a StatusRegistry,
     pub attachment_cap_bytes: Option<u64>,
+    /// Paces [`bodies_pass`]'s calls to [`MailSearch::commit`] -- see
+    /// [`CommitPacer`]. Built once by whoever builds the rest of this
+    /// context and reused across every `sync_once` call for the life of
+    /// the account task, so the cadence's five-second window is a fact
+    /// about the account's sync history as a whole, not reset on every
+    /// wake.
+    pub index_commit: CommitPacer,
+    /// Invalidated by [`sync_headers`] whenever it ingests or applies flag
+    /// changes -- see `crate::mailsync::unread_cache`'s module docs. `None`
+    /// is a valid answer, not a bug: a caller with nothing to invalidate
+    /// (most tests in [`super::tests`]) simply never sees a stale read,
+    /// because nothing here ever cached one for them either.
+    pub unread_cache: Option<Arc<crate::mailsync::unread_cache::UnreadCache>>,
+    /// Updated by [`sync_headers`] as it ingests, and persisted once at the
+    /// end of [`sync_once`] -- see `crate::mailsync::contacts`'s module
+    /// docs. `None` on the same terms `unread_cache` is.
+    pub contacts: Option<Arc<crate::mailsync::contacts::ContactIndex>>,
+}
+
+/// Paces how often [`bodies_pass`] commits the search index, per the plan's
+/// own cadence: "the index... about every 2,000 docs or 5 seconds,
+/// whichever comes first". `sync_once` also commits once, unconditionally,
+/// at the very end of a pass, so nothing indexed is ever left uncommitted
+/// for longer than the shorter of this cadence and one pass's length.
+///
+/// # Why paced at all, rather than "every batch" or "once at the end"
+///
+/// Every batch (what this replaces) is simplest, but it means a tantivy
+/// `commit` -- which fsyncs a new segment -- runs once per
+/// [`BODY_BATCH_SIZE`] messages: for a giant first sync, thousands of small
+/// commits where a few hundred larger ones would do. Once at the end alone
+/// would leave a search box unable to find a message that arrived minutes
+/// ago on a big mailbox, which the plan's own "a search: 150ms for the
+/// first page" budget is measured against a *searchable* index, not one
+/// still waiting for a pass to finish. The 2,000/5s cadence is the balance
+/// the plan already struck; this is that balance, not a new one.
+///
+/// Interior-mutable because [`SyncContext`] is shared, immutably, across
+/// every call [`bodies_pass`] makes for however many mailboxes one pass
+/// touches, and across every pass this account task ever runs.
+pub struct CommitPacer(Mutex<PacerState>);
+
+struct PacerState {
+    docs_since_commit: u64,
+    since: Instant,
+}
+
+/// Docs since the last commit, above which [`CommitPacer::record`] says to
+/// commit regardless of how little time has passed.
+const COMMIT_DOC_THRESHOLD: u64 = 2_000;
+/// Time since the last commit, above which [`CommitPacer::record`] says to
+/// commit regardless of how few docs have landed.
+const COMMIT_TIME_THRESHOLD: Duration = Duration::from_secs(5);
+
+impl CommitPacer {
+    pub fn new() -> Self {
+        Self(Mutex::new(PacerState { docs_since_commit: 0, since: Instant::now() }))
+    }
+
+    /// Note that `added` more docs were just indexed, and say whether the
+    /// caller should commit now.
+    fn record(&self, added: u64) -> bool {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        state.docs_since_commit += added;
+        let due = state.docs_since_commit >= COMMIT_DOC_THRESHOLD
+            || state.since.elapsed() >= COMMIT_TIME_THRESHOLD;
+        if due {
+            state.docs_since_commit = 0;
+            state.since = Instant::now();
+        }
+        due
+    }
+}
+
+impl Default for CommitPacer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Discover `ctx.account_id`'s mailboxes and run [`sync_headers`] then
@@ -88,6 +172,9 @@ pub async fn sync_once<S: MailSession>(
         bodies_pass(ctx, session, mailbox).await?;
     }
     let _ = ctx.index.commit();
+    if let Some(contacts) = &ctx.contacts {
+        contacts.persist_if_dirty(ctx.vault);
+    }
     Ok(mailboxes)
 }
 
@@ -140,6 +227,24 @@ pub async fn sync_headers<S: MailSession>(
         let _ = ctx.vault.update_message_flags(mailbox.row.id, uid, ingest::mail_flags(flags));
     }
 
+    // Gmail labels, on All Mail: see `refresh_gmail_labels`'s own docs for
+    // why a plain flag diff never notices a message archived, or
+    // relabelled, in another client, and for the two mechanisms below.
+    if session.capabilities().gmail && mailbox.row.role == MailboxRole::All {
+        let changed: UidSet = changes.flag_changes.iter().map(|&(uid, _, _)| uid).collect();
+        if !changed.is_empty() {
+            let _ = refresh_gmail_labels(ctx, session, mailbox, &changed, labels).await;
+        }
+
+        let mut newest: Vec<Uid> = known.iter().collect();
+        newest.sort_unstable_by(|a, b| b.cmp(a));
+        newest.truncate(GMAIL_LABEL_FALLBACK_N);
+        let fallback: UidSet = newest.into_iter().filter(|u| !changed.contains(*u)).collect();
+        if !fallback.is_empty() {
+            let _ = refresh_gmail_labels(ctx, session, mailbox, &fallback, labels).await;
+        }
+    }
+
     let new_uids: Vec<Uid> = changes.new_uids.iter().collect();
     let total = new_uids.len() as u64;
     let mut done = 0u64;
@@ -175,6 +280,30 @@ pub async fn sync_headers<S: MailSession>(
                 mailbox: mailbox.row.id,
                 uid: header.uid,
             });
+            // The contact index: only for a message this account has never
+            // stored before, so a steady-state resync (or a `UIDVALIDITY`
+            // reset's rematch) never double-counts one it has already
+            // learned from. `Sent` is the plain-IMAP case; Gmail never
+            // selects a folder called Sent at all (everything physically
+            // lives in All Mail -- see `discovery`'s own docs), so its own
+            // `\Sent` label is the same signal there.
+            if resolved.is_new
+                && let Some(contacts) = &ctx.contacts
+            {
+                let msg = &resolved.message;
+                let is_sent = mailbox.row.role == MailboxRole::Sent
+                    || header
+                        .gmail
+                        .as_ref()
+                        .is_some_and(|g| g.labels.iter().any(|l| l == "\\Sent"));
+                if is_sent {
+                    for addr in msg.to.iter().chain(msg.cc.iter()) {
+                        contacts.record_sent_to(&addr.email, &addr.name);
+                    }
+                } else {
+                    contacts.record_received_from(&msg.from.email, &msg.from.name);
+                }
+            }
             // The Gmail folder rule: All Mail carries every physical
             // message, and its own `X-GM-LABELS` is where `\Inbox` and
             // every user label come from -- see `crate::mailsync::discovery`.
@@ -209,6 +338,102 @@ pub async fn sync_headers<S: MailSession>(
     }
     let _ = ctx.vault.save_mailbox(&mailbox.row);
 
+    // Any of these three can move a thread across the read/unread line --
+    // a new message, a flag another client changed, or one this account no
+    // longer has at all -- so the cached answer to `unread_counts` is
+    // stale the moment any of them is non-empty. See
+    // `crate::mailsync::unread_cache`'s module docs.
+    let changed = !changes.new_uids.is_empty()
+        || !changes.flag_changes.is_empty()
+        || !changes.vanished.is_empty();
+    if changed && let Some(cache) = &ctx.unread_cache {
+        cache.invalidate(ctx.account_id);
+    }
+
+    Ok(())
+}
+
+/// Diff and apply Gmail's own label set for `uids` in `mailbox`, which must
+/// be All Mail on a Gmail account.
+///
+/// # Why All Mail needs this and a plain flag diff is not enough
+///
+/// `changes_since`'s `flag_changes` promises to report a change to the five
+/// IMAP flags this crate tracks (`\Seen`, `\Answered`, `\Flagged`,
+/// `\Draft`, `\Deleted`) -- see [`crate::mailsync::ingest::mail_flags`]. A
+/// Gmail label, `\Inbox` most of all, is not one of those flags; losing it
+/// -- a message archived in another client -- changes nothing
+/// `changes_since` was ever asked to diff. Gmail does bump a message's own
+/// `MODSEQ` on a label change the same way it does on a flag change, which
+/// is why `changes_since`'s own CONDSTORE diff already tells this pass
+/// *which* uids moved (in `flag_changes`, whether their IMAP flags actually
+/// differed or not) -- what this function adds is asking those uids what
+/// their labels are now, which `changes_since` has no way to answer on its
+/// own.
+///
+/// # The fallback, and why one exists at all
+///
+/// The plan's own risk table does not promise every server -- or a future
+/// Gmail change -- keeps bumping `MODSEQ` for a label-only change forever.
+/// [`sync_headers`] also calls this, unconditionally, for
+/// [`GMAIL_LABEL_FALLBACK_N`] of the newest known uids on every pass,
+/// whether or not `changes_since` reported anything about them -- a small,
+/// bounded re-check that catches a label change CONDSTORE ever missed
+/// within, at worst, a few poll cycles. "Newest" is approximated by uid,
+/// which is monotonically non-decreasing with arrival on every server this
+/// crate has met; a real per-message date would need a decrypt this pass
+/// is specifically trying to avoid paying for on every wake.
+///
+/// # Why this touches mailbox membership, not only `Message::labels`
+///
+/// `Message::labels` is the informational copy of a message's label set;
+/// what a mailbox's own list actually pages over is `message_mailboxes` --
+/// one row per label, minted the first time a header ingest sees it (see
+/// [`LabelMailboxes`] and `sync_headers`'s own header-ingest loop, which
+/// this mirrors). Calling only [`everyday_core::Vault::update_message_labels`]
+/// would update the field a search or a tool reads without moving the
+/// message out of the Inbox label's own list -- exactly the symptom this
+/// function exists to fix, so it diffs the old label set against the new
+/// one and adds or removes the matching `message_mailboxes` row for each
+/// side of the difference.
+async fn refresh_gmail_labels<S: MailSession>(
+    ctx: &SyncContext<'_>,
+    session: &mut S,
+    mailbox: &SyncedMailbox,
+    uids: &UidSet,
+    labels: &mut LabelMailboxes,
+) -> SessionResult<()> {
+    let headers = session.headers(uids).await?;
+    for header in &headers {
+        let Some(gmail) = &header.gmail else { continue };
+        let Ok(Some(current)) = ctx.vault.message_by_uid(mailbox.row.id, header.uid) else {
+            continue;
+        };
+        let old: std::collections::BTreeSet<&str> =
+            current.labels.iter().map(String::as_str).collect();
+        let new: std::collections::BTreeSet<&str> =
+            gmail.labels.iter().map(String::as_str).collect();
+        if old == new {
+            continue;
+        }
+
+        let _ = ctx.vault.update_message_labels(mailbox.row.id, header.uid, gmail.labels.clone());
+        for removed in old.difference(&new) {
+            let label_row = labels.resolve(ctx.vault, removed);
+            let _ = ctx.vault.remove_mail_uids(label_row.id, &[header.uid]);
+        }
+        for added in new.difference(&old) {
+            let label_row = labels.resolve(ctx.vault, added);
+            let _ = ctx.vault.ingest_mail(
+                ctx.account_id,
+                vec![IngestMessage {
+                    message: current.clone(),
+                    mailbox: label_row.id,
+                    uid: header.uid,
+                }],
+            );
+        }
+    }
     Ok(())
 }
 
@@ -259,20 +484,33 @@ pub async fn bodies_pass<S: MailSession>(
         let attachment_cap = ctx.attachment_cap_bytes;
         let batch_owned: Vec<(Message, Uid)> = batch.to_vec();
         let docs = tokio::task::spawn_blocking(move || {
-            let mut processed = Vec::with_capacity(batch_owned.len());
-            for (message, uid) in batch_owned {
-                let Some(raw) = raw_by_uid.get(&uid) else { continue };
-                if let Some(one) = process_body(
+            // Every message this batch actually got raw bytes for, in
+            // order -- sealed in *one* `append_batch` call below rather
+            // than one per message, which is the whole reason this batch
+            // exists: `PackStore::append_batch` flushes once per call, so
+            // a hundred separate calls here would cost a hundred `fsync`s
+            // for what one batch of a hundred messages needs only one of.
+            let present: Vec<(Message, Uid, &Vec<u8>)> = batch_owned
+                .iter()
+                .filter_map(|(message, uid)| {
+                    raw_by_uid.get(uid).map(|raw| (message.clone(), *uid, raw))
+                })
+                .collect();
+            let raws: Vec<&[u8]> = present.iter().map(|(_, _, raw)| raw.as_slice()).collect();
+            let Ok(sealed) = packs.append_batch(&account_id.to_string(), &raws) else {
+                return Vec::new();
+            };
+
+            let mut processed = Vec::with_capacity(present.len());
+            for ((message, uid, raw), pack) in present.into_iter().zip(sealed) {
+                processed.push(process_body(
                     vault.as_ref(),
-                    packs.as_ref(),
-                    account_id,
                     uid,
                     message,
                     raw,
+                    pack,
                     attachment_cap,
-                ) {
-                    processed.push(one);
-                }
+                ));
             }
             // One upsert for the whole batch rather than one per message --
             // `everyday-store-sql`'s own `upsert_batched` is what keeps this
@@ -301,14 +539,18 @@ pub async fn bodies_pass<S: MailSession>(
         .await
         .unwrap_or_default();
 
+        let indexed = docs.len() as u64;
         if !docs.is_empty() {
             let _ = ctx.index.index(&docs);
-            // Committed every batch -- simpler than the plan's "every 2,000
-            // docs or every few seconds", and cheap: tantivy's own commit
-            // merges rather than rebuilding, so a batch of at most
-            // `BODY_BATCH_SIZE` messages costs comfortably less than the
-            // budget's 150 ms search itself is measured against.
-            let _ = ctx.index.commit();
+            // Paced rather than committed every batch: about every 2,000
+            // docs or every five seconds, whichever comes first, per the
+            // plan's own cadence -- see `CommitPacer`. `sync_once` commits
+            // once more, unconditionally, at the end of the whole pass, so
+            // nothing indexed here is ever left uncommitted for longer than
+            // that.
+            if ctx.index_commit.record(indexed) {
+                let _ = ctx.index.commit();
+            }
         }
 
         done += batch.len() as u64;
@@ -321,39 +563,41 @@ pub async fn bodies_pass<S: MailSession>(
 
 /// Every message in `mailbox` whose pack is still
 /// [`ingest::pending_pack_ref`]'s sentinel, newest first.
+///
+/// Reads [`Vault::mail_pending_bodies`] -- a query over `mail_messages`'s
+/// clear `pack_len` column -- rather than the shape this used to be: every
+/// uid in the mailbox, decrypted one at a time, just to ask each one
+/// whether it was still pending. A mailbox that is mostly *not* pending
+/// (the ordinary steady state, once a first sync has finished) used to pay
+/// for a full decrypt of every message in it on every single pass; this
+/// pays only for the ones actually still waiting.
 fn pending_messages(vault: &Vault, mailbox_id: MailboxId) -> Vec<(Message, Uid)> {
-    let mut out = Vec::new();
-    let Ok(uids) = vault.mail_uid_set(mailbox_id) else { return out };
-    for uid in uids {
-        if let Ok(Some(message)) = vault.message_by_uid(mailbox_id, uid)
-            && ingest::is_pending(&message.pack)
-        {
-            out.push((message, uid));
-        }
-    }
-    out.sort_by(|a, b| b.0.date.cmp(&a.0.date));
-    out
+    // No mailbox has anywhere near this many messages still pending at
+    // once in practice -- a first sync's headers pass alone is chunked at
+    // `HEADER_BATCH_SIZE` -- so one call already gets everything this pass
+    // needs; `limit` exists on the trait for a caller that wants to bound
+    // one query's cost more tightly than "effectively unlimited".
+    const PENDING_QUERY_LIMIT: u32 = 1_000_000;
+    vault.mail_pending_bodies(mailbox_id, PENDING_QUERY_LIMIT).unwrap_or_default()
 }
 
-/// One message's raw bytes turned into a sealed pack entry and a sanitised
-/// body -- run on the blocking pool by [`bodies_pass`], which collects the
-/// results of a whole batch before writing any of it, so a giant first sync
-/// costs one upsert per batch rather than one per message. `None` only when
-/// the pack store itself refuses the write; a message that fails to *parse*
-/// still gets an (empty) body rather than being skipped, since its raw bytes
-/// are sealed either way and a blank preview is a smaller failure than
-/// refetching for ever.
+/// One message's raw bytes, already sealed by [`bodies_pass`]'s single
+/// batched [`PackStore::append_batch`] call, turned into a sanitised body --
+/// run on the blocking pool, which collects the results of a whole batch
+/// before writing any of it, so a giant first sync costs one upsert per
+/// batch rather than one per message. Infallible: a message that fails to
+/// *parse* still gets an (empty) body rather than being skipped, since its
+/// raw bytes are sealed either way and a blank preview is a smaller failure
+/// than refetching for ever.
 fn process_body(
     vault: &Vault,
-    packs: &dyn PackStore,
-    account_id: AccountId,
     uid: Uid,
     mut message: Message,
     raw: &[u8],
+    pack: everyday_core::packstore::PackRef,
     attachment_cap_bytes: Option<u64>,
-) -> Option<(Message, Uid, Body)> {
-    let sealed = packs.append_batch(&account_id.to_string(), &[raw]).ok()?;
-    message.pack = sealed.into_iter().next()?;
+) -> (Message, Uid, Body) {
+    message.pack = pack;
 
     let mut remote_images = Vec::new();
     let (html_sanitised, plain, parts, has_attachments) = match everyday_mail::mime::parse(raw) {
@@ -429,7 +673,7 @@ fn process_body(
         remote_images,
     };
 
-    Some((message, uid, body))
+    (message, uid, body)
 }
 
 /// A [`MailDoc`] for `message`, filed under `mailbox_id`. Shared by
@@ -462,4 +706,35 @@ pub(crate) fn mail_doc(
 
 fn display_address(a: &everyday_core::mail::Address) -> String {
     if a.name.is_empty() { a.email.clone() } else { format!("{} <{}>", a.name, a.email) }
+}
+
+#[cfg(test)]
+mod pacer_tests {
+    use super::*;
+
+    #[test]
+    fn commits_once_the_doc_threshold_is_reached() {
+        let pacer = CommitPacer::new();
+        assert!(!pacer.record(COMMIT_DOC_THRESHOLD - 1), "not due yet");
+        assert!(pacer.record(1), "crossing the threshold is due");
+        // The counter resets: a further single doc is not due again
+        // immediately.
+        assert!(!pacer.record(1));
+    }
+
+    #[test]
+    fn commits_once_the_time_threshold_is_reached() {
+        let pacer = CommitPacer::new();
+        {
+            let mut state = pacer.0.lock().unwrap();
+            state.since = Instant::now() - COMMIT_TIME_THRESHOLD - Duration::from_millis(1);
+        }
+        assert!(pacer.record(1), "old enough to be due even with almost no docs");
+    }
+
+    #[test]
+    fn a_single_doc_well_within_both_thresholds_is_not_due() {
+        let pacer = CommitPacer::new();
+        assert!(!pacer.record(1));
+    }
 }

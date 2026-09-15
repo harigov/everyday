@@ -10,50 +10,39 @@
 //!
 //! # How the sync agent should call this
 //!
-//! Exactly two triggers, both cheap to get wrong in the same direction --
-//! calling too rarely, which is a slow inbox, not a bug:
+//! Three triggers, all cheap to get wrong in the same direction -- calling
+//! too rarely, which is a slow inbox, not a bug:
 //!
-//! 1. **After every `IDLE` wake.** A `MailSession::idle` return is already
-//!    the sync engine's cue to resync the mailbox; draining the outbox in
-//!    the same breath means an op that has been sitting since the last
-//!    wake goes out immediately rather than waiting for its own timer.
-//! 2. **On a short timer while ops are pending.** [`DrainReport::pending`]
+//! 1. **After connecting**, and **after every `IDLE` wake.** A
+//!    `MailSession::idle` return is already the sync engine's cue to resync
+//!    the mailbox; draining the outbox in the same breath means an op that
+//!    has been sitting since the last wake goes out immediately rather than
+//!    waiting for its own timer. `crate::mailsync::task::run_account_with`
+//!    places its own call to [`drain_outbox`] at the top of its loop, which
+//!    is both of these moments at once: the loop's first turn follows
+//!    connecting directly, and every later turn follows an `IDLE` wake.
+//! 2. **Whenever [`Service::outbox_notify`] fires.** A write command's
+//!    [`Service::notify_outbox`] wakes the very `tokio::select!` an account
+//!    task is almost certainly already blocked in between an `IDLE` and its
+//!    next poll, so undo send's countdown and an archive's confirmation do
+//!    not wait for either trigger above to come around on its own.
+//! 3. **On a short timer while ops are pending.** [`DrainReport::pending`]
 //!    says whether this call's `due_ops` page came back full -- the account
-//!    task should keep calling `drain_outbox` back-to-back for as long as
-//!    it does, then fall back to a slower timer (a few seconds is plenty;
+//!    task keeps calling [`drain_outbox`] back-to-back for as long as it
+//!    does, then falls back to a slower timer (a few seconds is plenty;
 //!    `not_before` is what actually paces retries and undo-send) once it
-//!    comes back short.
+//!    comes back short. See `crate::mailsync::task::drain_until_caught_up`.
 //!
-//! Both triggers are also why [`Service::outbox_notify`] exists: a write
-//! command's [`Service::notify_outbox`] wakes the very `tokio::select!` an
-//! account task is almost certainly already blocked in between an `IDLE`
-//! and its next poll, so undo send's countdown and an archive's
-//! confirmation do not wait for either trigger above to come around on its
-//! own.
+//! # A draft's server copy, and a reply's `References` chain
 //!
-//! # The one thing this file does not solve: a draft's stale server copy
-//!
-//! See [`Service::draft_server_copy`]'s own docs. In short: the `Draft`
-//! record has nowhere to remember where its last `AppendDraft` landed, so
-//! that fact lives in memory on [`Service`] instead, which means a restart
-//! forgets it -- the cost is one extra stale copy left in Drafts until the
-//! next edit, not a wrong deletion, which is the trade-off worth making
-//! rather than growing the schema for a fact that is cheap to be wrong
-//! about.
-//!
-//! # The other thing it approximates: a reply's `References` chain
-//!
-//! [`VaultLookups::parent_raw`] cannot read a message's real raw bytes --
-//! the pack store is wired up by the sync engine's own module, not this
-//! one -- so it synthesises just enough of a header block
-//! (`Message-ID`, `From`, `Date`) from the already-decrypted [`Message`]
-//! row for [`everyday_mail::compose::reply_headers`] to thread `In-Reply-To`
-//! correctly and seed `References` with the immediate parent. A deep
-//! reply chain's earlier ancestors -- which a real client reads from the
-//! parent's own `References` header -- are not reconstructed, since that
-//! header is not stored anywhere in the clear. Once the pack store is
-//! reachable from here this narrows to a real `mime::parse` of genuine
-//! bytes, with no change to `everyday_mail::outbox`'s own contract.
+//! Both used to be approximated here -- a stale server copy remembered only
+//! in this process's memory, and a reply's `In-Reply-To`/`References`
+//! synthesised from a decrypted [`Message`] row rather than read from the
+//! parent's genuine bytes -- and both are now exact: [`Draft::server_copy`]
+//! persists the first, on the draft itself, so a restart still finds the
+//! stale copy to delete; [`VaultLookups::parent_raw`] reads the second
+//! straight out of the pack store `crate::mailsync::wiring` opens, the same
+//! bytes the parent was originally ingested from.
 
 use std::sync::Arc;
 
@@ -62,7 +51,7 @@ use everyday_core::mail::{Draft, MailboxRole, Op, OpKind, OpState, OpTarget};
 use everyday_mail::outbox::{
     ExecContext, Executed, Located, Lookups, Sender, execute, is_retryable,
 };
-use everyday_mail::session::MailSession;
+use everyday_mail::session::{MailError, MailSession};
 use jiff::Timestamp;
 
 use crate::error::{CommandError, CommandResult};
@@ -115,7 +104,12 @@ where
     .await?;
 
     let mut report = DrainReport { pending: ops.len() as u32 == DRAIN_BATCH, ..Default::default() };
-    let lookups = VaultLookups { svc: svc.clone(), account, gmail: session.capabilities().gmail };
+    let lookups = VaultLookups {
+        svc: svc.clone(),
+        account,
+        gmail: session.capabilities().gmail,
+        packs: svc.packs(),
+    };
 
     for mut op in ops {
         report.attempted += 1;
@@ -162,8 +156,10 @@ async fn persist_op(vault: &Arc<everyday_core::Vault>, op: &Op) -> CommandResult
 }
 
 /// What a successfully executed op does beyond marking itself `Done`:
-/// `Send` marks the draft sent, `AppendDraft` remembers where the fresh
-/// copy landed.
+/// `Send` marks the draft sent and, since the contact index only ever
+/// learns "sent to" from a `Sent`-role mailbox the sync engine may not get
+/// to for a while, records its recipients right away too. `AppendDraft`
+/// remembers where the fresh copy landed.
 async fn on_success(
     svc: &Arc<Service>,
     vault: &Arc<everyday_core::Vault>,
@@ -176,15 +172,22 @@ async fn on_success(
             let OpTarget::Draft(id) = op.target else {
                 return Ok(()); // guarded by `everyday_mail::outbox::send`'s own contract
             };
-            let vault = vault.clone();
-            blocking(move || {
-                let mut draft = vault.draft(id)?;
+            let vault_for_draft = vault.clone();
+            let draft = blocking(move || {
+                let mut draft = vault_for_draft.draft(id)?;
                 draft.state = everyday_core::mail::DraftState::Sent;
                 draft.updated_at = Timestamp::now();
-                vault.save_draft(&draft)?;
-                Ok(())
+                vault_for_draft.save_draft(&draft)?;
+                Ok(draft)
             })
-            .await
+            .await?;
+            if let Some(contacts) = svc.mail_contacts() {
+                for addr in draft.to.iter().chain(draft.cc.iter()) {
+                    contacts.record_sent_to(&addr.email, &addr.name);
+                }
+                contacts.persist_if_dirty(vault);
+            }
+            Ok(())
         }
         Executed::Appended { uid: Some(uid) } => {
             let OpTarget::Draft(id) = op.target else { return Ok(()) };
@@ -193,8 +196,21 @@ async fn on_success(
             else {
                 return Ok(()); // nothing to remember without a mailbox name to pair the uid with
             };
-            svc.set_draft_server_copy(id, Located { mailbox: drafts_mailbox, uid });
-            Ok(())
+            let vault = vault.clone();
+            blocking(move || {
+                // Reloaded fresh rather than reusing whatever the caller
+                // holds: `AppendDraft` runs on the account task's own
+                // schedule, entirely separately from a person still typing,
+                // and only `server_copy` is this write's business -- every
+                // other field is whatever the draft's own record already
+                // says.
+                let mut draft = vault.draft(id)?;
+                draft.server_copy =
+                    Some(everyday_core::mail::DraftServerCopy { mailbox: drafts_mailbox, uid });
+                vault.save_draft(&draft)?;
+                Ok(())
+            })
+            .await
         }
         // No `APPENDUID`: this crate cannot name the fresh copy's uid, so
         // the next `AppendDraft` will not find a `draft_server_copy` either
@@ -291,8 +307,8 @@ pub async fn release_due_snoozes(svc: &Arc<Service>) -> CommandResult<usize> {
 }
 
 /// Answers [`everyday_mail::outbox::Lookups`] by reading a vault. See the
-/// module docs for the two places this approximates rather than reaching
-/// into storage this crate does not own.
+/// module docs for where a reply's `References` chain and a draft's server
+/// copy come from.
 struct VaultLookups {
     svc: Arc<Service>,
     account: AccountId,
@@ -300,6 +316,11 @@ struct VaultLookups {
     /// (`MailSession::capabilities`), rather than read from the vault on
     /// every call -- see the trait method's own docs for why.
     gmail: bool,
+    /// Where [`VaultLookups::parent_raw`] reads a reply's parent's genuine
+    /// bytes from. `None` only when the pack store failed to open at all
+    /// (`mailsync::wiring::open`'s own tolerance for that) -- `parent_raw`
+    /// answers `MailError::Protocol` rather than panicking when it is.
+    packs: Option<Arc<dyn everyday_core::packstore::PackStore>>,
 }
 
 impl VaultLookups {
@@ -363,41 +384,29 @@ impl Lookups for VaultLookups {
     }
 
     fn draft_server_copy(&self, id: DraftId) -> everyday_mail::session::Result<Option<Located>> {
-        Ok(self.svc.draft_server_copy(id))
+        let vault = self.vault().map_err(lookup_err)?;
+        let draft = vault.draft(id).map_err(vault_err)?;
+        Ok(draft.server_copy.map(|c| Located { mailbox: c.mailbox, uid: c.uid }))
     }
 
+    /// Reads the parent's genuine raw bytes out of the pack store --
+    /// exactly the bytes it was ingested from, so `mime::parse` ->
+    /// `compose::reply_headers` sees its real `References` header, not a
+    /// reconstruction of just the fields this crate happens to keep in the
+    /// clear.
     fn parent_raw(&self, id: MailMessageId) -> everyday_mail::session::Result<Vec<u8>> {
         let vault = self.vault().map_err(lookup_err)?;
         let m = vault.mail_message(id).map_err(vault_err)?;
-        // See the module docs: enough of a header block for
-        // `mime::parse` -> `compose::reply_headers`/`quote_html` to read
-        // what they actually read (`Message-ID`, `From`, `Date`), not this
-        // message's genuine raw bytes.
-        let date = jiff::fmt::strtime::format("%a, %d %b %Y %H:%M:%S +0000", m.date)
-            .unwrap_or_else(|_| m.date.to_string());
-        let from = if m.from.name.is_empty() {
-            m.from.email.clone()
-        } else {
-            format!("{} <{}>", m.from.name, m.from.email)
-        };
-        let raw = format!(
-            "Message-ID: {}\r\nFrom: {}\r\nDate: {}\r\nSubject: {}\r\n\r\n",
-            m.message_id_header, from, date, m.subject
-        );
-        Ok(raw.into_bytes())
+        let packs = self
+            .packs
+            .as_ref()
+            .ok_or_else(|| MailError::Protocol("the mail pack store is not open".into()))?;
+        packs.read(&m.pack).map_err(|e| MailError::Protocol(e.to_string()))
     }
 
-    fn attachment(
-        &self,
-        blob: BlobId,
-    ) -> everyday_mail::session::Result<(String, String, Vec<u8>)> {
+    fn attachment_bytes(&self, blob: BlobId) -> everyday_mail::session::Result<Vec<u8>> {
         let vault = self.vault().map_err(lookup_err)?;
-        let bytes = vault.blob(blob).map_err(vault_err)?;
-        // The `Draft` record names an attachment only by `BlobId` -- see
-        // `docs/plans/mail.md`'s data model -- with no filename or MIME
-        // type of its own alongside it, so those are placeholders until a
-        // draft-attachment upload command grows one to read instead.
-        Ok(("attachment".to_string(), "application/octet-stream".to_string(), bytes))
+        vault.blob(blob).map_err(vault_err)
     }
 
     fn message_id_domain(&self) -> String {

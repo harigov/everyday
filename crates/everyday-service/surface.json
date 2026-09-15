@@ -3164,6 +3164,38 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "accountIds",
+          "required": false,
+          "type": "AccountId[] | null"
+        },
+        {
+          "name": "cursor",
+          "required": false,
+          "type": "string | null"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "number | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "search_mail",
+      "orScope": null,
+      "returns": "SearchMailResult",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -3580,6 +3612,28 @@
       "orScope": null,
       "returns": "CalendarInfo",
       "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "prefix",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "number | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "suggest_addresses",
+      "orScope": null,
+      "returns": "MailAddress[]",
+      "scope": "mail",
       "sensitive": false,
       "streams": false
     },

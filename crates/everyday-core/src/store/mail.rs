@@ -43,7 +43,8 @@
 use crate::error::Result;
 use crate::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use crate::mail::{
-    Body, Category, Draft, Mailbox, Message, MessageFlags, Op, RemoteImageSettings, Thread,
+    Body, Category, ContactBook, Draft, Mailbox, Message, MessageFlags, Op, RemoteImageSettings,
+    Thread,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -193,6 +194,20 @@ pub trait MailStore: Send + Sync {
     /// keeps opening a thread from paying for every message's text at once.
     fn thread(&self, id: ThreadId) -> Result<(Thread, Vec<Message>)>;
 
+    /// Fold `others` into `keep`: every message currently filed under one
+    /// of `others` moves to `keep`, `keep`'s own aggregates and
+    /// `thread_mailboxes` rows are recomputed from the result, and every
+    /// thread in `others` -- left with no messages at all -- is deleted
+    /// along with its own `thread_mailboxes` rows, the same way
+    /// [`MailStore::remove_uids`] already deletes a thread emptied by a
+    /// removal.
+    ///
+    /// What a real threading `Merge` resolves to when a message's
+    /// `References` chain names more than one thread this account already
+    /// has -- two separate conversations turning out, on new evidence, to
+    /// be the same one. `others` empty is a no-op.
+    fn merge_threads(&self, keep: ThreadId, others: &[ThreadId]) -> Result<()>;
+
     /// One message by its own id, headers and flags only — never its body.
     /// What `everyday-service::mailview` reads to find a message's sender
     /// before it will answer a `remote_image` request for it: a permission
@@ -300,6 +315,23 @@ pub trait MailStore: Send + Sync {
     /// has it) is compared against to find what the server no longer has.
     fn uid_set(&self, mailbox: MailboxId) -> Result<Vec<u32>>;
 
+    /// Every message in `mailbox` whose body has not been fetched yet, with
+    /// its uid *in that mailbox*, newest first, capped at `limit` -- what
+    /// the bodies pass reads instead of walking every uid `mailbox` has and
+    /// decrypting each one to ask.
+    ///
+    /// "Not fetched yet" is `pack_len = 0` -- the sentinel a header ingested
+    /// before its body arrives is stored with (a real sealed pack's length
+    /// is never zero, even for an empty message, because the AEAD overhead
+    /// alone is non-zero; `everyday-service`'s sync engine is the one place
+    /// that writes and reads this sentinel by name, as
+    /// `mailsync::ingest::pending_pack_ref`/`is_pending`) -- so this is a
+    /// query over a clear column, the same terms [`MailStore::uid_set`] and
+    /// [`MailStore::unread_counts`] already run on, not a decrypt of every
+    /// row in the mailbox the way scanning [`MailStore::message_by_uid`]
+    /// one uid at a time would be.
+    fn pending_bodies(&self, mailbox: MailboxId, limit: u32) -> Result<Vec<(Message, u32)>>;
+
     /// Forget every `message_mailboxes` row naming `mailbox`, and reset its
     /// sync cursors to zero, without touching the messages themselves or any
     /// *other* mailbox's membership. What a `UIDVALIDITY` change asks for:
@@ -395,6 +427,17 @@ pub trait MailStore: Send + Sync {
     fn remote_image_settings(&self) -> Result<RemoteImageSettings>;
 
     fn put_remote_image_settings(&self, settings: &RemoteImageSettings) -> Result<()>;
+
+    // ---- the contact index --------------------------------------------------
+
+    /// The whole sealed contact book -- see [`crate::mail::ContactBook`]'s
+    /// own docs for why this is one small row rather than a query over
+    /// every message. `ContactBook::default()` (nobody written to or heard
+    /// from yet) when nothing has been saved, on the same reasoning
+    /// [`MailStore::remote_image_settings`] answers a real, empty default.
+    fn contacts(&self) -> Result<ContactBook>;
+
+    fn put_contacts(&self, book: &ContactBook) -> Result<()>;
 }
 
 // ---- associated data --------------------------------------------------
@@ -431,6 +474,12 @@ pub fn op_aad(id: OpId) -> Vec<u8> {
 /// id, because there is exactly one of these per vault.
 pub fn remote_image_settings_aad() -> Vec<u8> {
     b"everyday.mail_remote_image_settings.v1".to_vec()
+}
+
+/// The one row of [`crate::mail::ContactBook`], sealed on the same terms
+/// [`remote_image_settings_aad`] is.
+pub fn contacts_aad() -> Vec<u8> {
+    b"everyday.mail_contacts.v1".to_vec()
 }
 
 #[cfg(test)]

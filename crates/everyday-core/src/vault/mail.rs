@@ -19,8 +19,8 @@ use super::session::{Domain, pick_domain};
 use crate::error::{Error, Result};
 use crate::id::{AccountId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use crate::mail::{
-    Body, Category, Draft, DraftState, Mailbox, MailboxRole, Message, MessageFlags, Op, OpKind,
-    OpState, OpTarget, Origin, RemoteImageSettings, Thread, apply_optimistic,
+    Body, Category, ContactBook, Draft, DraftState, Mailbox, MailboxRole, Message, MessageFlags,
+    Op, OpKind, OpState, OpTarget, Origin, RemoteImageSettings, Thread, apply_optimistic,
 };
 use crate::packstore::PackStore;
 use crate::store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
@@ -128,6 +128,13 @@ impl Vault {
         self.with_mail(|m| m.thread(id))
     }
 
+    /// Fold `others` into `keep` -- see
+    /// [`crate::store::mail::MailStore::merge_threads`].
+    pub fn merge_mail_threads(&self, keep: ThreadId, others: &[ThreadId]) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.merge_threads(keep, others))
+    }
+
     pub fn mail_message(&self, id: MailMessageId) -> Result<Message> {
         self.with_mail(|m| m.get_message(id))
     }
@@ -223,6 +230,17 @@ impl Vault {
         self.with_mail(|m| m.uid_set(mailbox))
     }
 
+    /// Every message in `mailbox` still waiting for its body, with its uid
+    /// in that mailbox, newest first, capped at `limit` -- see
+    /// [`crate::store::mail::MailStore::pending_bodies`].
+    pub fn mail_pending_bodies(
+        &self,
+        mailbox: MailboxId,
+        limit: u32,
+    ) -> Result<Vec<(Message, u32)>> {
+        self.with_mail(|m| m.pending_bodies(mailbox, limit))
+    }
+
     pub fn reset_mailbox(&self, mailbox: MailboxId) -> Result<()> {
         self.writable()?;
         self.with_mail(|m| m.reset_mailbox(mailbox))
@@ -243,6 +261,17 @@ impl Vault {
     pub fn save_remote_image_settings(&self, settings: &RemoteImageSettings) -> Result<()> {
         self.writable()?;
         self.with_mail(|m| m.put_remote_image_settings(settings))
+    }
+
+    /// The sealed contact index -- see
+    /// [`crate::store::mail::MailStore::contacts`].
+    pub fn mail_contacts(&self) -> Result<ContactBook> {
+        self.with_mail(|m| m.contacts())
+    }
+
+    pub fn save_mail_contacts(&self, book: &ContactBook) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.put_contacts(book))
     }
 
     // ---- releasing a snooze -----------------------------------------------

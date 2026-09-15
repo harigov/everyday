@@ -30,7 +30,7 @@ import type {
   ThreadPage,
 } from './types'
 import { VaultError } from './types'
-import type { Draft, MailSearchHit, SyncStatus } from './mail-api'
+import type { Draft, SyncStatus } from './mail-api'
 
 const GOOGLE: AccountId = 'acct-google'
 const FASTMAIL: AccountId = 'acct-fastmail'
@@ -578,10 +578,16 @@ export function mockSyncAccount(_id: AccountId): void {
 
 // ── Search and address autocomplete ─────────────────────────────────
 
+/**
+ * `search_mail`'s answer is the same `Thread` shape `list_threads` and
+ * `get_thread` use -- see `SearchMailResult` in `./types` -- not a
+ * search-specific hit shape, so this returns `seed.threads` entries
+ * directly rather than projecting them into something narrower.
+ */
 export function mockSearchMail(
   query: string,
   cursor: string | null | undefined,
-): { hits: MailSearchHit[]; nextCursor: string | null } {
+): { threads: Thread[]; next?: string | null } {
   const needle = query.trim().toLowerCase()
   const matches = needle
     ? seed.threads.filter((t) => {
@@ -592,20 +598,8 @@ export function mockSearchMail(
       })
     : []
   const start = cursor ? Number(cursor) : 0
-  const page = matches.slice(start, start + 20)
-  const hits: MailSearchHit[] = page.map((t) => {
-    const last = [...seed.messages.values()]
-      .filter((m) => m.threadId === t.id)
-      .sort((a, b) => b.date.localeCompare(a.date))[0]!
-    return {
-      threadId: t.id,
-      subject: t.subject,
-      from: last.from,
-      snippet: last.snippet,
-      date: t.lastDate,
-    }
-  })
-  return { hits, nextCursor: start + 20 < matches.length ? String(start + 20) : null }
+  const threads = matches.slice(start, start + 20)
+  return { threads, next: start + 20 < matches.length ? String(start + 20) : null }
 }
 
 export function mockSuggestAddresses(prefix: string): MailAddress[] {

@@ -31,10 +31,12 @@
 //! the shapes that get sealed.
 
 pub mod compose;
+pub mod contacts;
 pub mod outbox;
 pub mod rate_limit;
 pub mod records;
 
+pub use contacts::{ContactBook, MailContact};
 pub use outbox::{
     RETRY_BACKOFF, UNDO_SEND_DEFAULT_SECONDS, UNDO_SEND_MAX_SECONDS, UNDO_SEND_MIN_SECONDS,
     apply_optimistic, backoff_for_attempt, revert, undo_send_delay,
