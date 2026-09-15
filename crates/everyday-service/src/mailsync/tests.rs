@@ -369,6 +369,21 @@ impl MailSession for FakeMailSession {
         Ok(Some(server.append(mailbox, raw.to_vec(), flags, None)))
     }
 
+    /// `\Deleted` then an unconditional expunge -- this fake always reports
+    /// `UIDPLUS` (see [`FakeMailSession::capabilities`]), so a real
+    /// `ImapSession` would always take the `UID EXPUNGE` branch too; there
+    /// is no non-UIDPLUS fallback path for this fake to model.
+    async fn delete(&mut self, uids: &UidSet) -> SessionResult<()> {
+        let name = self.selected.clone().expect("select must be called first");
+        let mut server = self.server.lock().unwrap();
+        if let Some(mb) = server.mailboxes.get_mut(&name) {
+            for uid in uids.iter() {
+                mb.messages.remove(&uid);
+            }
+        }
+        Ok(())
+    }
+
     /// `UID SEARCH HEADER Message-ID` stood in for by a linear scan of
     /// `mailbox`'s own messages, comparing each one's parsed `Message-ID`
     /// header -- exactly what the recovery path this fake exists for

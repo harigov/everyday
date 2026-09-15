@@ -433,7 +433,7 @@ impl Vault {
         kind: OpKind,
         origin: Origin,
     ) -> Result<Vec<Op>> {
-        if matches!(kind, OpKind::Send | OpKind::AppendDraft) {
+        if matches!(kind, OpKind::Send | OpKind::AppendDraft | OpKind::DiscardDraft) {
             return Err(Error::Invalid(format!("{kind:?} does not target a thread")));
         }
         self.writable()?;
@@ -570,10 +570,19 @@ impl Vault {
         })
     }
 
-    /// Discard `draft`: [`DraftState::Discarded`], one write, no op --
-    /// there is nothing for the account task to do to a draft that was
-    /// never sent.
-    pub fn discard_draft(&self, draft_id: DraftId) -> Result<Draft> {
+    /// Discard `draft`: [`DraftState::Discarded`], one write, plus an
+    /// [`OpKind::DiscardDraft`] op when the draft ever had a
+    /// [`Draft::server_copy`] -- a copy an earlier `AppendDraft` left on the
+    /// server does not go away just because this process stops thinking
+    /// about the draft locally, so the account task is told to remove it.
+    /// A draft discarded before its first autosave ever reached the server
+    /// has nothing to delete, so no op is enqueued for it. Uses `draft`'s
+    /// own [`Draft::origin`] for the op's, on the same reasoning
+    /// [`Vault::apply_thread_ops`]'s callers already lean on: whoever wrote
+    /// the draft is who this bookkeeping op is done on behalf of, and it
+    /// keeps this method's own signature exactly what every existing caller
+    /// already passes.
+    pub fn discard_draft(&self, draft_id: DraftId) -> Result<(Draft, Option<Op>)> {
         self.writable()?;
         self.write(|u| {
             let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
@@ -581,7 +590,20 @@ impl Vault {
             draft.state = DraftState::Discarded;
             draft.updated_at = Timestamp::now();
             mail.put_draft(&draft)?;
-            Ok(draft)
+            let op = match &draft.server_copy {
+                Some(_) => {
+                    let op = Op::new(
+                        draft.account_id,
+                        OpKind::DiscardDraft,
+                        OpTarget::Draft(draft.id),
+                        draft.origin.clone(),
+                    );
+                    mail.enqueue_op(&op)?;
+                    Some(op)
+                }
+                None => None,
+            };
+            Ok((draft, op))
         })
     }
 }
@@ -608,7 +630,7 @@ fn inverse_of(kind: &OpKind) -> Inverse {
         OpKind::Unlabel { label } => Inverse::Flag(OpKind::Label { label: label.clone() }),
         OpKind::Archive | OpKind::Trash | OpKind::Move { .. } => Inverse::RestoreMailboxes,
         OpKind::Snooze { .. } => Inverse::ClearSnooze,
-        OpKind::Send | OpKind::AppendDraft => Inverse::None,
+        OpKind::Send | OpKind::AppendDraft | OpKind::DiscardDraft => Inverse::None,
     }
 }
 
@@ -639,9 +661,9 @@ fn apply_local_effect(
             mail.set_thread_snoozed_until(thread.id, Some(*until))?;
         }
         // `is_flag_change` above already took MarkRead/MarkUnread/Star/
-        // Unstar/Label/Unlabel; Send and AppendDraft never reach this
-        // function -- `apply_thread_ops` refuses them before its loop even
-        // starts.
+        // Unstar/Label/Unlabel; Send, AppendDraft and DiscardDraft never
+        // reach this function -- `apply_thread_ops` refuses them before its
+        // loop even starts.
         OpKind::MarkRead
         | OpKind::MarkUnread
         | OpKind::Star
@@ -649,7 +671,8 @@ fn apply_local_effect(
         | OpKind::Label { .. }
         | OpKind::Unlabel { .. }
         | OpKind::Send
-        | OpKind::AppendDraft => unreachable!("handled above or refused before this is called"),
+        | OpKind::AppendDraft
+        | OpKind::DiscardDraft => unreachable!("handled above or refused before this is called"),
     }
     Ok(())
 }

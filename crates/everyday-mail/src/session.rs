@@ -652,6 +652,24 @@ pub trait MailSession: Send {
     /// drain means it cannot.
     async fn search_message_id(&mut self, mailbox: &str, message_id: &str) -> Result<Option<Uid>>;
 
+    /// Permanently remove `uids` from the selected mailbox: `STORE
+    /// \Deleted`, then `UID EXPUNGE` (RFC 4315) exactly those uids when
+    /// [`Capabilities::uidplus`] says the server understands it. Without
+    /// `UIDPLUS` the only expunge available removes *every* `\Deleted`
+    /// message in the mailbox, including ones another client marked and has
+    /// not yet expunged itself -- deleting mail nobody asked this app to
+    /// delete -- so on such a server `uids` are left flagged for whichever
+    /// ordinary sync pass reaches this mailbox next to expunge, the same
+    /// trade [`Self::move_to`]'s own fallback already makes and for the
+    /// same reason.
+    ///
+    /// The caller of a `Send` or [`OpKind::DiscardDraft`](everyday_core::mail::OpKind::DiscardDraft)
+    /// op reaches for this to remove a draft's own stale server copy, once
+    /// it is genuinely done with -- see `everyday_mail::outbox`'s "a draft's
+    /// server copy" docs. [`Self::move_to`]'s no-`MOVE` fallback marks and
+    /// expunges the very same way; nothing here is specific to a draft.
+    async fn delete(&mut self, uids: &UidSet) -> Result<()>;
+
     /// Block until something changes in the selected mailbox, or `stop`
     /// fires. Returns [`Err`] only for a connection problem; a clean stop is
     /// [`IdleEvent::Stopped`], not an error.

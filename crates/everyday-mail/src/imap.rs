@@ -417,18 +417,20 @@ impl MailSession for ImapSession {
             return Ok(());
         }
 
-        // No MOVE: copy, mark the originals deleted, then expunge exactly
-        // this set. `UID EXPUNGE` (RFC 4315, UIDPLUS) only removes the UIDs
-        // named. Without UIDPLUS the only expunge there is removes *every*
-        // `\Deleted` message in the mailbox -- including ones another client
-        // marked and has not yet expunged, which would be deleting mail
-        // nobody asked this app to delete. So on such a server the originals
-        // are left marked `\Deleted` and not expunged: every client hides
-        // them, the next expunge by whoever owns that decision removes them,
-        // and nothing is lost that someone did not choose to lose.
-        let uidplus = self.capabilities.uidplus;
+        // No MOVE: copy, then delete the originals -- see `Self::delete`'s
+        // own docs for exactly how that leaves a server without UIDPLUS.
         let session = self.session_mut()?;
         session.uid_copy(&set, mailbox).await.map_err(classify)?;
+        self.delete(uids).await
+    }
+
+    async fn delete(&mut self, uids: &UidSet) -> Result<()> {
+        if uids.is_empty() {
+            return Ok(());
+        }
+        let set = uids.to_imap();
+        let uidplus = self.capabilities.uidplus;
+        let session = self.session_mut()?;
         run_fetch_command(
             session,
             &format!("UID STORE {set} +FLAGS.SILENT (\\Deleted)"),

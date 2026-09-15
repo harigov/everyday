@@ -398,13 +398,49 @@ pub struct SaveDraft {
 /// not appended to the server in the last thirty seconds -- the coalescing
 /// [`Service::draft_append_due`] decides, since that timer is session
 /// state, not a fact the vault write itself can answer.
+///
+/// Only the fields a person can actually edit in the composer come from
+/// `draft` as the client sent it; everything else -- [`Draft::server_copy`],
+/// [`Draft::message_id`], [`Draft::state`] and [`Draft::origin`] -- is this
+/// crate's own bookkeeping, merged in from whatever the vault's own row
+/// already says. The client never learns a fresh `AppendDraft`'s uid (there
+/// is no round trip for it today), so its own copy of `server_copy` is
+/// almost always stale by the time an autosave fires; trusting it wholesale
+/// is what let one autosave silently erase the very uid the last
+/// `AppendDraft` just recorded, orphaning that copy on the server for good
+/// -- see `everyday_mail::outbox`'s "draft server copies leak" docs. A
+/// draft with no existing row yet (its very first save) has nothing to
+/// preserve, so `draft` is used as given.
 async fn save_draft(svc: Arc<Service>, _ctx: Ctx, args: SaveDraft) -> CommandResult<()> {
-    let mut draft = args.draft;
-    draft.updated_at = Timestamp::now();
-    let append = svc.draft_append_due(draft.id, draft.updated_at);
+    let incoming = args.draft;
+    let now = Timestamp::now();
+    let append = svc.draft_append_due(incoming.id, now);
     let vault = svc.require()?;
-    let op =
-        blocking(move || Ok(vault.save_draft_and_append(&draft, append, Origin::Person)?)).await?;
+    let op = blocking(move || {
+        let draft = match vault.draft(incoming.id) {
+            Ok(mut existing) => {
+                existing.identity = incoming.identity;
+                existing.in_reply_to = incoming.in_reply_to;
+                existing.to = incoming.to;
+                existing.cc = incoming.cc;
+                existing.bcc = incoming.bcc;
+                existing.subject = incoming.subject;
+                existing.body_html = incoming.body_html;
+                existing.attachments = incoming.attachments;
+                existing.calendar_part = incoming.calendar_part;
+                existing.updated_at = now;
+                existing
+            }
+            Err(everyday_core::error::Error::NotFound { .. }) => {
+                let mut fresh = incoming;
+                fresh.updated_at = now;
+                fresh
+            }
+            Err(e) => return Err(e.into()),
+        };
+        Ok(vault.save_draft_and_append(&draft, append, Origin::Person)?)
+    })
+    .await?;
     if let Some(op) = op {
         svc.notify_outbox(op.account_id);
     }
@@ -417,13 +453,16 @@ pub struct DraftRef {
     pub id: DraftId,
 }
 
+/// Discard a draft, and wake the account task when doing so left an
+/// [`everyday_core::mail::OpKind::DiscardDraft`] op to drain -- see
+/// [`everyday_core::Vault::discard_draft`]'s own docs for when that is.
 async fn discard_draft(svc: Arc<Service>, _ctx: Ctx, args: DraftRef) -> CommandResult<()> {
     let vault = svc.require()?;
-    blocking(move || {
-        vault.discard_draft(args.id)?;
-        Ok(())
-    })
-    .await
+    let op = blocking(move || Ok(vault.discard_draft(args.id)?.1)).await?;
+    if let Some(op) = op {
+        svc.notify_outbox(op.account_id);
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]

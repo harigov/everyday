@@ -799,12 +799,30 @@ pub enum OpKind {
     Unstar,
     Archive,
     Trash,
-    Move { to: MailboxId },
-    Label { label: String },
-    Unlabel { label: String },
-    Snooze { until: Timestamp },
+    Move {
+        to: MailboxId,
+    },
+    Label {
+        label: String,
+    },
+    Unlabel {
+        label: String,
+    },
+    Snooze {
+        until: Timestamp,
+    },
     Send,
     AppendDraft,
+    /// Remove a discarded draft's own last `AppendDraft` copy from the
+    /// server's Drafts mailbox -- [`Vault::discard_draft`] enqueues this
+    /// only when [`Draft::server_copy`] is `Some`, since a draft discarded
+    /// before its first autosave ever reached the server has nothing to
+    /// delete. See `everyday_service::outbox`'s "a draft's server copy"
+    /// module docs for why this is its own op rather than folded into the
+    /// local-only write [`Vault::discard_draft`] already makes.
+    ///
+    /// [`Vault::discard_draft`]: crate::vault::Vault::discard_draft
+    DiscardDraft,
 }
 
 impl OpKind {
@@ -1162,6 +1180,7 @@ mod tests {
             OpKind::Snooze { until: Timestamp::now() },
             OpKind::Send,
             OpKind::AppendDraft,
+            OpKind::DiscardDraft,
         ];
         for kind in &not_flag_changes {
             assert!(!kind.is_flag_change(), "{kind:?}");
