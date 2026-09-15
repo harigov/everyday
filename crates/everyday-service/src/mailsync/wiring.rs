@@ -45,7 +45,9 @@ use everyday_core::Vault;
 use everyday_core::crypto::{AeadCipher, Cipher};
 use everyday_core::error::Result;
 use everyday_core::id::{AccountId, PackId};
-use everyday_core::packstore::{CompactionResult, FilePackStore, PackRef, PackStore};
+use everyday_core::packstore::{
+    CompactionResult, FilePackStore, PackRef, PackStore, ReferencedSnapshot,
+};
 use everyday_mailindex::MailIndex;
 
 use crate::mailsync::status::StatusRegistry;
@@ -182,8 +184,21 @@ impl PackStore for VaultPacks {
         self.0.with_mail_packs(|p| p.delete_account(account))
     }
 
-    fn compact(&self, account: &str, referenced: &[PackId]) -> Result<CompactionResult> {
-        self.0.with_mail_packs(|p| p.compact(account, referenced))
+    fn high_water_mark(&self, account: &str) -> Result<Option<PackId>> {
+        self.0.with_mail_packs(|p| p.high_water_mark(account))
+    }
+
+    fn compaction_worthwhile(&self, account: &str, snapshot: &ReferencedSnapshot) -> Result<bool> {
+        self.0.with_mail_packs(|p| p.compaction_worthwhile(account, snapshot))
+    }
+
+    fn compact(
+        &self,
+        account: &str,
+        snapshot: &ReferencedSnapshot,
+        should_continue: &dyn Fn() -> bool,
+    ) -> Result<CompactionResult> {
+        self.0.with_mail_packs(|p| p.compact(account, snapshot, should_continue))
     }
 
     fn drop_packs(&self, account: &str, packs: &[PackId]) -> Result<()> {

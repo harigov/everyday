@@ -47,6 +47,27 @@ impl Vault {
         self.with_domain(Domain::Mail, |s| s.mail_packs().map(f))
     }
 
+    /// A [`crate::packstore::ReferencedSnapshot`] safe to hand
+    /// [`PackStore::compact`] for `account` -- see
+    /// [`MailStore::referenced_snapshot`] for how it is built. What
+    /// `everyday_service::mailsync::task` calls before every compaction
+    /// attempt.
+    pub fn mail_referenced_snapshot(
+        &self,
+        packs: &dyn PackStore,
+        account: AccountId,
+    ) -> Result<crate::packstore::ReferencedSnapshot> {
+        self.with_mail(|m| m.referenced_snapshot(packs, account))
+    }
+
+    /// Rewrite the pack address of every message [`PackStore::compact`]
+    /// moved -- see [`MailStore::remap_packs`] for the whole contract this
+    /// is the vault-level entry point for.
+    pub fn remap_packs(&self, account: AccountId, remap: &[(PackRef, PackRef)]) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.remap_packs(account, remap))
+    }
+
     // ---- mailboxes ----------------------------------------------------------
 
     pub fn mailboxes(&self, account: AccountId) -> Result<Vec<Mailbox>> {

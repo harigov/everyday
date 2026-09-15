@@ -518,13 +518,31 @@ pub trait MailStore: Send + Sync {
     fn attachment_blob_refs(&self) -> Result<Vec<BlobId>>;
 
     /// Every pack id `account`'s messages currently point at, deduplicated
-    /// -- the "store's referenced-pack query" a
-    /// [`crate::packstore::PackStore::compact`] caller reads before every
-    /// call, so that call's own orphan sweep can tell an old pack nothing
-    /// references any more (safe to reclaim) from one still holding live
-    /// mail (not). See that method's own docs for the whole of the contract
-    /// this feeds.
+    /// -- the "store's referenced-pack query" half of a
+    /// [`crate::packstore::ReferencedSnapshot`], so a
+    /// [`crate::packstore::PackStore::compact`] call's own orphan sweep can
+    /// tell an old pack nothing references any more (safe to reclaim) from
+    /// one still holding live mail (not). See that method's own docs for
+    /// the whole of the contract this feeds, and
+    /// [`MailStore::referenced_snapshot`] for the ordinary way to reach it.
     fn referenced_pack_ids(&self, account: AccountId) -> Result<Vec<crate::id::PackId>>;
+
+    /// A [`crate::packstore::ReferencedSnapshot`] safe to hand
+    /// [`crate::packstore::PackStore::compact`]: reads `packs`'s own
+    /// [`crate::packstore::PackStore::high_water_mark`] *first*, and only
+    /// then calls [`MailStore::referenced_pack_ids`] -- the ordering
+    /// [`crate::packstore::ReferencedSnapshot`]'s whole safety argument
+    /// depends on, so every caller in this codebase builds a snapshot
+    /// through this method rather than the two pieces by hand.
+    fn referenced_snapshot(
+        &self,
+        packs: &dyn crate::packstore::PackStore,
+        account: AccountId,
+    ) -> Result<crate::packstore::ReferencedSnapshot> {
+        let high_water = packs.high_water_mark(&account.to_string())?;
+        let referenced = self.referenced_pack_ids(account)?;
+        Ok(crate::packstore::ReferencedSnapshot::new(referenced, high_water))
+    }
 
     /// Rewrite the pack address of every message a
     /// [`crate::packstore::PackStore::compact`] call moved, in one
@@ -544,12 +562,9 @@ pub trait MailStore: Send + Sync {
     /// run in between (a concurrent `compact` on the same account, most of
     /// all -- the vault's single-writer invariant is what every caller
     /// today relies on to rule that out). Concretely: `compact`, then
-    /// `remap_packs`, then `drop_packs`. No caller of `PackStore::compact`
-    /// exists in this codebase yet -- see that method's own module for
-    /// where one is expected to be wired in -- so this method, and the
-    /// contract it documents, exist ahead of anything calling either, the
-    /// same way `everyday_core::packstore` itself was built a phase ahead
-    /// of the mail domain it now serves.
+    /// `remap_packs`, then `drop_packs` -- exactly the sequence
+    /// `everyday_service::mailsync::task` runs between an account's sync
+    /// passes; see that module's own docs for where and when.
     fn remap_packs(&self, account: AccountId, remap: &[(PackRef, PackRef)]) -> Result<()>;
 
     // ---- remote-image permissions --------------------------------------------

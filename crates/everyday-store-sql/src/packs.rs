@@ -21,7 +21,7 @@
 
 use everyday_core::error::{Error, Result};
 use everyday_core::id::PackId;
-use everyday_core::packstore::{CompactionResult, PackRef, PackStore};
+use everyday_core::packstore::{CompactionResult, PackRef, PackStore, ReferencedSnapshot};
 
 use crate::conn::SqlExt;
 use crate::{SqlStore, vals};
@@ -112,7 +112,29 @@ impl PackStore for TablePacks<'_> {
         Ok(())
     }
 
-    fn compact(&self, _account: &str, _referenced: &[PackId]) -> Result<CompactionResult> {
+    fn high_water_mark(&self, _account: &str) -> Result<Option<PackId>> {
+        // See the module docs: nothing here groups messages into packs to
+        // have a "newest" one, so there is no meaningful mark -- and, since
+        // `compact` below never sweeps, nothing ever reads this back.
+        Ok(None)
+    }
+
+    fn compaction_worthwhile(
+        &self,
+        _account: &str,
+        _snapshot: &ReferencedSnapshot,
+    ) -> Result<bool> {
+        // `compact` never does anything on this backend -- see the module
+        // docs -- so it is never worth calling.
+        Ok(false)
+    }
+
+    fn compact(
+        &self,
+        _account: &str,
+        _snapshot: &ReferencedSnapshot,
+        _should_continue: &dyn Fn() -> bool,
+    ) -> Result<CompactionResult> {
         // See the module docs: a row is already its own pack, so there is
         // nothing to rewrite, nothing to remap, and -- since `mark_dead`
         // already deletes a dead row outright rather than leaving an orphan
@@ -163,8 +185,21 @@ impl PackStore for SqlStore {
         TablePacks::new(self).delete_account(account)
     }
 
-    fn compact(&self, account: &str, referenced: &[PackId]) -> Result<CompactionResult> {
-        TablePacks::new(self).compact(account, referenced)
+    fn high_water_mark(&self, account: &str) -> Result<Option<PackId>> {
+        TablePacks::new(self).high_water_mark(account)
+    }
+
+    fn compaction_worthwhile(&self, account: &str, snapshot: &ReferencedSnapshot) -> Result<bool> {
+        TablePacks::new(self).compaction_worthwhile(account, snapshot)
+    }
+
+    fn compact(
+        &self,
+        account: &str,
+        snapshot: &ReferencedSnapshot,
+        should_continue: &dyn Fn() -> bool,
+    ) -> Result<CompactionResult> {
+        TablePacks::new(self).compact(account, snapshot, should_continue)
     }
 
     fn drop_packs(&self, account: &str, packs: &[PackId]) -> Result<()> {

@@ -62,7 +62,7 @@
 
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use everyday_core::Vault;
 use everyday_core::account::{Account, EndpointSecurity};
@@ -230,6 +230,12 @@ where
         return Err(e.to_string().into());
     }
 
+    // `None` on every fresh task, which is what gives the first idle moment
+    // after an unlock its one attempt regardless of how recently some
+    // *earlier* task for this account last compacted -- see
+    // `maybe_compact`'s own docs for the whole of the rate limit.
+    let mut last_compaction_attempt: Option<Instant> = None;
+
     loop {
         if *stop.borrow() {
             return Ok(Outcome::Done);
@@ -265,6 +271,12 @@ where
         };
         credential::mark_ok(&vault, &account);
         statuses.set_phase(account_id, Phase::Idling, 0, 0);
+
+        // Between passes, with the bodies pass idle and the outbox already
+        // drained above: see `packstore`'s own module docs for why nowhere
+        // else is safe. Rate-limited internally; see `maybe_compact`'s own
+        // docs.
+        maybe_compact(&vault, &ctx.packs, account_id, &stop, &mut last_compaction_attempt).await;
 
         // Undo-send and send-at are both a `Pending` op whose `not_before`
         // is the only thing standing between it and a drain; so is a
@@ -420,6 +432,119 @@ async fn drain_until_caught_up<S: MailSession, T: everyday_mail::outbox::Sender>
             () = tokio::time::sleep(OUTBOX_RETRY_INTERVAL) => {}
         }
     }
+}
+
+/// How often [`maybe_compact`] is willing to even attempt compaction for
+/// one account -- "at most once an hour", per the plan. Also what gives the
+/// first idle moment after an unlock its one attempt: `last_attempt` starts
+/// `None` on every freshly started task, and [`compaction_due`] treats
+/// `None` as due immediately.
+const COMPACTION_MIN_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// Is it time for [`maybe_compact`] to attempt compaction again, given the
+/// last time it did? A free function, tested directly against synthetic
+/// [`Instant`]s rather than through a real hour of wall-clock time.
+pub(crate) fn compaction_due(last_attempt: Option<Instant>, now: Instant) -> bool {
+    last_attempt.is_none_or(|t| now.saturating_duration_since(t) >= COMPACTION_MIN_INTERVAL)
+}
+
+/// A one-line, content-free summary of one [`compact_account`] call, for
+/// [`maybe_compact`]'s own info-level log line -- bytes reclaimed and packs
+/// rewritten, nothing about what was in them.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct CompactionSummary {
+    pub(crate) bytes_reclaimed: u64,
+    pub(crate) packs_rewritten: usize,
+    pub(crate) packs_reclaimed: usize,
+}
+
+/// Compact `account_id`'s pack store when [`COMPACTION_MIN_INTERVAL`] has
+/// passed since the last attempt and doing so is actually worthwhile --
+/// see [`compact_account`] for the sequence this runs, and `packstore`'s
+/// own module docs for why nowhere but here, between an account's sync
+/// passes, is safe. `last_attempt` is a `run_account_with`-loop-local
+/// variable, stamped every time this runs whether or not it found anything
+/// to do, which is what makes the rate limit "at most once an hour" rather
+/// than "at most once an hour *that finds work*".
+async fn maybe_compact(
+    vault: &Arc<Vault>,
+    packs: &Arc<dyn everyday_core::packstore::PackStore>,
+    account_id: AccountId,
+    stop: &watch::Receiver<bool>,
+    last_attempt: &mut Option<Instant>,
+) {
+    if !compaction_due(*last_attempt, Instant::now()) {
+        return;
+    }
+    *last_attempt = Some(Instant::now());
+
+    match compact_account(vault, packs, account_id, stop).await {
+        Ok(Some(summary)) => {
+            tracing::info!(
+                account = %account_id,
+                bytes_reclaimed = summary.bytes_reclaimed,
+                packs_rewritten = summary.packs_rewritten,
+                packs_reclaimed = summary.packs_reclaimed,
+                "compacted the mail pack store"
+            );
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(account = %account_id, error = %e, "mail pack compaction failed");
+        }
+    }
+}
+
+/// The compaction sequence itself, off the account task's own thread:
+/// snapshot, `compact`, `remap_packs`, `drop_packs`, in that order -- see
+/// [`everyday_core::packstore::PackStore::compact`]'s own two-step contract
+/// for why the order matters and what a crash between any two of these
+/// steps recovers into on the *next* call. Returns `Ok(None)` when
+/// [`PackStore::compaction_worthwhile`] says there is nothing to do, which
+/// is the ordinary case on most wakes -- `everyday-store-sql`'s
+/// `TablePacks` always says so, making this a cheap no-op on Postgres.
+///
+/// Runs entirely on the blocking pool ([`crate::service::blocking`]) so a
+/// large rewrite never stalls this account's async task, and honours
+/// `stop` between packs (never mid-rewrite of one) via `compact`'s own
+/// `should_continue` callback -- a lock taken away mid-compaction still
+/// leaves every message readable, just with fewer packs reclaimed than a
+/// full run would have managed; the next attempt picks up the rest.
+///
+/// Exposed at `pub(crate)` rather than folded into [`maybe_compact`] so a
+/// test can call it directly, bypassing the hourly rate limit that
+/// function alone enforces.
+pub(crate) async fn compact_account(
+    vault: &Arc<Vault>,
+    packs: &Arc<dyn everyday_core::packstore::PackStore>,
+    account_id: AccountId,
+    stop: &watch::Receiver<bool>,
+) -> CommandResult<Option<CompactionSummary>> {
+    let vault = vault.clone();
+    let packs = packs.clone();
+    let stop = stop.clone();
+    crate::service::blocking(move || {
+        let account = account_id.to_string();
+        let snapshot = vault.mail_referenced_snapshot(packs.as_ref(), account_id)?;
+        if !packs.compaction_worthwhile(&account, &snapshot)? {
+            return Ok(None);
+        }
+        let should_continue = || !*stop.borrow();
+        let outcome = packs.compact(&account, &snapshot, &should_continue)?;
+        if outcome.is_empty() {
+            return Ok(Some(CompactionSummary::default()));
+        }
+        // The two-step contract's middle step: durably repoint everything
+        // that named an old address before anything old is ever dropped.
+        vault.remap_packs(account_id, &outcome.remap)?;
+        packs.drop_packs(&account, &outcome.obsolete)?;
+        Ok(Some(CompactionSummary {
+            bytes_reclaimed: outcome.bytes_reclaimed,
+            packs_rewritten: outcome.packs_rewritten,
+            packs_reclaimed: outcome.obsolete.len(),
+        }))
+    })
+    .await
 }
 
 fn unavailable(message: &str) -> TaskError {
