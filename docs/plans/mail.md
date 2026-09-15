@@ -1,9 +1,142 @@
 # Accounts, mail, and calendars that sign in
 
+> **Delivered.** All eight phases are built, tested and on this branch: an
+> account record shared by mail and by calendars, an IMAP/SMTP mail engine
+> that keeps every message offline, a split inbox with categories and
+> auto-drafts, undo send and send later, snooze, search, remote images off
+> by default, Google Calendar and Microsoft Graph accounts read-only beside
+> CalDAV, invitations replied to from mail, and the whole of it reachable by
+> the assistant and by MCP behind the switches the plan proposed. Read this
+> for the reasoning; read the commits for what was actually done. What went
+> differently, each for a reason worth keeping:
+>
+> - **async-imap has no QRESYNC**, as the plan expected, so
+>   `ImapSession::changes_since` (`crates/everyday-mail/src/imap.rs`) gets
+>   the same answer from CONDSTORE plus a `UID SEARCH` diff against the
+>   caller's own known-UID set, entirely behind `MailSession` — an io-imap
+>   adapter could still drop in without the engine noticing.
+> - **Every table the plan named landed in the one unreleased version 9**,
+>   plus several the plan's own schema section never named: `record_secrets`
+>   (generalising the singleton `agent_secret`), `hidden_thread_mailboxes`
+>   (the optimistic-archive marker below), `mail_remote_image_settings`,
+>   `mail_contacts` and `mail_category_rules`. The message table is
+>   `mail_messages`, not `messages` — version 6 had already taken that name
+>   for the assistant's own conversation turns. `ops` carries a `thread_id`
+>   column the plan's schema section did not list, so a thread can show its
+>   own recent actions without decrypting every op in the account.
+> - **The OAuth loopback lives in `everyday-mail`, not `tauri-plugin-oauth`**
+>   — that plugin only exists where Tauri does, and this flow has to run from
+>   the desktop shell, `everyday-server` acting as a remote client's host, and
+>   eventually a CLI with no window at all. `oauth2` (its own `reqwest`
+>   feature switched off) plus `oauth2-reqwest` bridge the PKCE dance onto the
+>   workspace's own reqwest 0.13. The Microsoft preset needs no client secret,
+>   since a desktop client authenticates by PKCE alone.
+> - **The pack store is `FilePackStore` for SQLite and `TablePacks` for
+>   Postgres.** Keys for the local pack store and the local search index are
+>   each a BLAKE3 subkey of the vault key, derived by label
+>   (`crypto::AeadCipher::derive_subkey`), so neither can be substituted for
+>   the other or for an ordinary record. `TablePacks`, on Postgres, has no
+>   separate local store to key apart from the vault's own, so it seals
+>   through the store's main cipher directly rather than a derived one — the
+>   one place this differs from "every store gets its own subkey."
+> - **Search is tantivy behind a sealed `Directory`** in
+>   `everyday-mailindex`, with an LRU, byte-capped cache of decrypted
+>   segments so an immutable segment is decrypted at most once per session.
+>   Results are ordered by date, then message key — a comparator written by
+>   hand, because tantivy's own relevance score plays no part in the
+>   ordering a mail list actually wants.
+> - **Calendars that sign in read Google through the Calendar API, not
+>   CalDAV**, and Microsoft through Graph's `calendarView/delta`; iCloud,
+>   Fastmail, Yahoo and Custom go through `libdav`'s CalDAV. Recurrence comes
+>   from calcard's own `datecalc` module throughout — the `rrule` crate was
+>   never added, so there is one recurrence engine in the tree rather than
+>   two that could disagree near a DST boundary. `libdav`'s transport runs
+>   over `hyper-rustls`, which names the `ring` crypto provider explicitly,
+>   because this binary also links `aws-lc-rs` and an ambient default would
+>   be ambiguous.
+> - **Remote images are fetched by a separate HTTP client** from the app's
+>   ordinary one (`crate::http::public_client`), with its own DNS resolver
+>   and redirect policy refusing any private or loopback address a hop
+>   resolves or redirects to — closing the DNS-rebinding gap a one-time
+>   pre-check would miss. The image URL carries the message id in its path,
+>   `everyday://mail/img/{message_id}/{token}`.
+> - **`trash_thread` is `Write`, not `Destructive`**, because Trash is what
+>   the server keeps and a person can restore — there is no tool that
+>   deletes mail permanently. `send_draft` is gated per account for MCP as
+>   the plan describes, and still queues through the same undo window a
+>   person's own send does, whoever asked for it.
+> - **Unread counts come from a session cache**, invalidated by the same
+>   write paths that would otherwise have to keep a second, incremental
+>   counter column in step with the first — one `HashMap` entry dropped costs
+>   less than a second source of truth that can drift.
+> - **Drafts keep a stable `Message-ID`** across every save, so a `Send`
+>   recovered from `InFlight` after a crash mid-drain asks the server whether
+>   that id already arrived in Sent (or All Mail on Gmail) before it resends,
+>   rather than trusting local state to say what a crash cannot be trusted to
+>   answer.
+> - **Rules-based categories are always on** and send nothing anywhere;
+>   `fastembed` was deferred rather than dropped, left for whoever wants a
+>   semantic signal beyond what senders, list headers and corrections already
+>   give the rules. Auto-draft makes exactly one model call per thread, which
+>   decides both whether to reply and what to say in the same structured
+>   response.
+> - **An archive is optimistic**, through a `hidden_thread_mailboxes` marker
+>   that hides a thread from one mailbox's list without touching
+>   `message_mailboxes`, so the outbox op still has something to act on.
+>   The marker clears itself two ways: new mail landing in the mailbox a
+>   thread was hidden from brings it back, as any mail client does, and the
+>   server-side move landing removes the last membership the marker was
+>   covering for.
+> - **PDF previews were not built**, nor were attachment thumbnails — `image`
+>   and `fast_image_resize` are not dependencies either. An attachment is a
+>   name and a size until it is opened, through the same part URL that opens
+>   any other kind.
+> - **`mail-threading` was not vendored.** The plan proposed evaluating it;
+>   `crates/everyday-mail/src/threading.rs` hand-writes JWZ instead, because
+>   the library threads a whole batch rather than a stream of arriving
+>   messages, and it dates in `chrono` where this crate's threading needed to
+>   stay on `jiff` until the one narrow boundary calcard also uses.
+>
+> **Still open**, gathered from what agents doing this work reported:
+>
+> - A thread-list row cannot show an assistant/MCP origin badge — `Thread`,
+>   what the list reads, carries no `origin`; only `ThreadDetail`'s
+>   `recentActions` does, so the mark is on the open thread and on a draft
+>   being reviewed, never on the row.
+> - Re-categorising an already-stored message cannot use its list headers,
+>   because a stored row keeps no memory of the raw headers it arrived with
+>   — `recategorize_mail` works from what is left: senders, Gmail labels and
+>   the account's own corrections.
+> - `recategorize_mail` emits no change event, by design — a backfill can
+>   touch thousands of threads across every mailbox, and naming each one on
+>   the wire would cost more than the manual refresh it asks for is worth.
+> - Google and Microsoft Graph calendar sync have been tested only against
+>   in-process mocks, the way `accountcal::google` and `accountcal::graph`'s
+>   own unit tests do; CalDAV alone has a real (if throwaway, self-hosted)
+>   server behind it, in `tests/caldav_docker.rs`.
+> - `search_mail` collapses every hit down to the first one per thread, so it
+>   can return fewer than `limit` threads when several hits share one —
+>   there is no top-up loop that re-fetches to fill the page back out.
+> - The contact book is an unbounded `Vec`, bumped and linearly scanned on
+>   every message ingested, with no cap, truncation or eviction.
+> - The speed-budget numbers were measured against 100,000 synthetic
+>   messages generated by a deterministic PRNG, in ignored benchmark tests
+>   (`everyday-mailindex/tests/benchmark.rs`,
+>   `everyday-store-sqlite/src/mail_scale.rs`) — not against a real mailbox
+>   that size.
+> - First-sync "under 10 s" has only been timed against a fake in-process
+>   IMAP server and a throwaway local Dovecot container with a few thousand
+>   messages, never a real provider over a real connection.
+> - The unread cache recomputes a clear-column `SUM` on a cache miss rather
+>   than incrementing or decrementing a stored counter — a deliberate trade
+>   against a second number that could drift, but it means a cold cache
+>   after a large sync briefly costs a full recount.
+
 A plan for an eighth app and the account records underneath it and the
-calendar. Written 14 September 2026 against the tree at `f5c3a82`. Decisions
-in the first section were made in conversation and are settled; the phases
-after it are the proposed order of work and are the part to argue with.
+calendar. Written 14 September 2026 against the tree at `f5c3a82`, delivered
+15 September 2026 against `72a878d`. Decisions in the first section were made
+in conversation and are settled; the phases after it are the proposed order
+of work and are the part to argue with.
 
 ## What this is
 
