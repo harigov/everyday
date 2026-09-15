@@ -524,6 +524,20 @@ fn ammonia_clean(html: &str, scheme: &str) -> String {
 /// spacer or a genuinely tiny icon looks the same to this check, which is
 /// why nothing here is destructive to the *message* -- only the one `<img>`
 /// tag is removed, never anything the pixel might sit next to.
+///
+/// The style-based half of this check used to be a set of substring
+/// searches (`style.contains("opacity:0")`, `style.contains("width:0")`),
+/// which matched `opacity:0.9` and matched `width:0` inside
+/// `border-width:0` or `line-height:0` -- a property this check never
+/// meant to ask about, hit only because its name happens to contain
+/// another property's name. That deleted ordinary images: a fade-in
+/// animation starting at less-than-full opacity, a table cell with a
+/// borderless or tightly-leaded style, both look like a tracking pixel to
+/// a scanner that cannot tell "this text appears somewhere in the style"
+/// from "this property is set to this value". [`crate::css_decl`] parses
+/// the declaration list properly -- split on `;`, then on the first `:` --
+/// so `get("width")` only ever answers `width`'s own value, never
+/// `border-width`'s.
 fn looks_like_tracking_pixel(el: &Element) -> bool {
     let dimension_is_tiny = |attr: &str| {
         el.get_attribute(attr)
@@ -542,28 +556,33 @@ fn looks_like_tracking_pixel(el: &Element) -> bool {
     // before scrubbing -- see `crate::entities`'s module docs -- so an
     // entity-encoded `display&#58;none` cannot hide a tracking pixel from
     // this check any more than it can hide the `url()` scrub.
-    let style = crate::entities::decode_entities(&style).to_ascii_lowercase();
-    let hidden_by_style = [
-        "display:none",
-        "display: none",
-        "visibility:hidden",
-        "visibility: hidden",
-        "opacity:0",
-        "opacity: 0",
-    ];
-    if hidden_by_style.iter().any(|needle| style.contains(needle)) {
+    let style = crate::entities::decode_entities(&style);
+    let declarations = crate::css_decl::Declarations::parse(&style);
+
+    if declarations.get("display") == Some("none") {
         return true;
     }
+    if declarations.get("visibility") == Some("hidden") {
+        return true;
+    }
+    if let Some(opacity) = declarations.get("opacity") {
+        if crate::css_decl::opacity_is_effectively_zero(opacity) {
+            return true;
+        }
+    }
 
-    let width_tiny = style.contains("width:0")
-        || style.contains("width:1px")
-        || style.contains("width: 0")
-        || style.contains("width: 1px");
-    let height_tiny = style.contains("height:0")
-        || style.contains("height:1px")
-        || style.contains("height: 0")
-        || style.contains("height: 1px");
-    width_tiny && height_tiny
+    // A tracking pixel sized entirely through its style rather than its
+    // `width`/`height` attributes: `<=1px` on both axes, the same
+    // threshold the attribute check above applies via its own "0 or 1"
+    // match.
+    let is_tiny = |property: &str| {
+        declarations
+            .get(property)
+            .and_then(crate::css_decl::length_px)
+            .map(|px| (0.0..=1.0).contains(&px))
+            .unwrap_or(false)
+    };
+    is_tiny("width") && is_tiny("height")
 }
 
 /// Rewrites every `srcset` candidate, decoding each URL first for the same
@@ -1023,6 +1042,51 @@ mod tests {
             &rewrite(),
         );
         assert!(out.had_tracking_pixels);
+    }
+
+    // ---- finding 5: the tracking-pixel check matches a property exactly --
+
+    #[test]
+    fn a_near_solid_image_with_opacity_point_nine_is_kept() {
+        let out = sanitize(
+            r#"<img src="https://cdn.example/logo.png" style="opacity:0.9" width="200" height="60">"#,
+            &rewrite(),
+        );
+        assert!(!out.had_tracking_pixels, "{:?}", out);
+        // Proxied, not dropped: it is still an `<img>` with a remote image
+        // recorded for it, just rewritten to the app's own protocol.
+        assert_eq!(out.remote_images.len(), 1);
+        assert!(out.html.contains("everyday://mail/img/"), "{}", out.html);
+    }
+
+    #[test]
+    fn a_borderless_tightly_leaded_image_is_kept() {
+        let out = sanitize(
+            r#"<img src="https://cdn.example/logo.png" style="border-width:0; line-height:0" width="200" height="60">"#,
+            &rewrite(),
+        );
+        assert!(!out.had_tracking_pixels, "{:?}", out);
+        assert_eq!(out.remote_images.len(), 1);
+    }
+
+    #[test]
+    fn an_exact_opacity_zero_pixel_is_still_removed() {
+        let out = sanitize(
+            r#"<img src="https://track.example/open.gif" style="opacity:0" width="200" height="60">"#,
+            &rewrite(),
+        );
+        assert!(out.had_tracking_pixels);
+        assert!(out.remote_images.is_empty());
+    }
+
+    #[test]
+    fn a_pixel_sized_purely_by_style_is_still_removed() {
+        let out = sanitize(
+            r#"<img src="https://track.example/open.gif" style="width:1px;height:1px">"#,
+            &rewrite(),
+        );
+        assert!(out.had_tracking_pixels);
+        assert!(out.remote_images.is_empty());
     }
 
     #[test]

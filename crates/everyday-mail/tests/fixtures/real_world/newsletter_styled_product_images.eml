@@ -1,0 +1,22 @@
+From: "Boutique" <hello@boutique.example>
+To: reader@example.com
+Subject: New arrivals
+Message-ID: <boutique-styled-images-1@boutique.example>
+Date: Wed, 21 Jan 2026 10:30:00 +0000
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html>
+<body>
+<p>New arrivals just landed.</p>
+<img src="https://cdn.boutique.example/hero.jpg" width="600" height="300"
+     style="opacity:0.9" alt="Hero">
+<table>
+<tr><td>
+<img src="https://cdn.boutique.example/product-1.jpg" width="200" height="200"
+     style="border-width:0; line-height:0" alt="Product one">
+</td></tr>
+</table>
+<p><a href="https://boutique.example/new">See the collection</a></p>
+</body>
+</html>

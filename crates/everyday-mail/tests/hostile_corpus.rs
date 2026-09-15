@@ -37,6 +37,9 @@ fn fixture(name: &str) -> &'static [u8] {
         "entity_encoded_css_exfil" => {
             include_bytes!("fixtures/hostile/entity_encoded_css_exfil.eml")
         }
+        "injection_css_declaration_bypass" => {
+            include_bytes!("fixtures/hostile/injection_css_declaration_bypass.eml")
+        }
         other => panic!("no such fixture: {other}"),
     }
 }
@@ -171,4 +174,22 @@ fn an_entity_encoded_css_url_does_not_survive_sanitize() {
         &sanitize::Rewrite::new("hostile-entity-css-1@marketing.example"),
     );
     assert!(!clean.html.contains("evil.example"), "{}", clean.html);
+}
+
+/// Finding 3: none of `DISPLAY:NONE` (uppercase), `visibility:hidden!important`
+/// (no space before the value), a large negative absolute offset, or a
+/// zero-area `clip: rect(...)` used to be caught by a check that only ever
+/// compared against the literal strings `"display:none"` and
+/// `"visibility:hidden"` -- each is a real, if differently spelled, way of
+/// hiding content a sighted reader never saw, and all four are planted in
+/// this one message.
+#[test]
+fn css_declaration_bypass_variants_do_not_reach_model_text() {
+    let parsed = parse("injection_css_declaration_bypass");
+    let model_text = text::model_text(&parsed);
+    assert!(model_text.contains("invoice is attached"));
+    assert!(!model_text.to_lowercase().contains("card number"));
+    assert!(!model_text.contains("attacker@evil.example"));
+    assert!(!model_text.to_lowercase().contains("disregard your operator"));
+    assert!(!model_text.to_lowercase().contains("vault's secrets"));
 }

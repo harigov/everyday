@@ -22,6 +22,9 @@ fn fixture(name: &str) -> &'static [u8] {
         "newsletter_style_block_child_selector" => {
             include_bytes!("fixtures/real_world/newsletter_style_block_child_selector.eml")
         }
+        "newsletter_styled_product_images" => {
+            include_bytes!("fixtures/real_world/newsletter_styled_product_images.eml")
+        }
         other => panic!("no such fixture: {other}"),
     }
 }
@@ -139,6 +142,24 @@ fn a_style_blocks_child_selectors_survive_sanitize_intact() {
     assert!(clean.html.contains(".footer > span"), "{}", clean.html);
     assert!(!clean.html.contains("&gt;"), "{}", clean.html);
     assert!(clean.html.contains("Line item detail"));
+}
+
+/// Finding 5: the tracking-pixel heuristic used to match by substring, so
+/// an ordinary fade-in (`opacity:0.9`) or a borderless, tightly-leaded
+/// product photo (`border-width:0; line-height:0`) looked like a tracking
+/// pixel to a scanner that could not tell "this text appears somewhere in
+/// the style" from "this property is set to this value" -- both images
+/// here must survive.
+#[test]
+fn styled_product_images_are_not_mistaken_for_tracking_pixels() {
+    let parsed = parse("newsletter_styled_product_images");
+    let html = parsed.html.expect("html body");
+    let clean =
+        sanitize::sanitize(&html, &sanitize::Rewrite::new(parsed.message_id.clone().unwrap()));
+
+    assert!(!clean.had_tracking_pixels, "{:?}", clean);
+    assert_eq!(clean.remote_images.len(), 2);
+    assert!(clean.html.contains("See the collection"));
 }
 
 #[test]
