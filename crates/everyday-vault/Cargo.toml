@@ -21,3 +21,8 @@ directories = "6"
 jiff.workspace = true
 serde_json.workspace = true
 tempfile = "3"
+# Test-only: parsing the hostile `.eml` corpus and sanitising it the same
+# way the real sync engine does, so `tests/mail_tools.rs` ingests messages
+# that look like what a mailbox actually hands the vault rather than a
+# hand-built approximation of one.
+everyday-mail.workspace = true
