@@ -1071,7 +1071,7 @@ scripts/                    capped test runner, dev runner, Linux setup
 the same logic back a desktop shell today and a mobile one later, and it is
 why the whole test suite runs on a machine that cannot build a GUI.
 
-`everyday-service` is the middle. Every one of the 172 things a vault
+`everyday-service` is the middle. Every one of the 212 things a vault
 can be asked to do is an entry in one table there, run by name from JSON, and
 the desktop shell registers nine commands rather than 172. That is what
 lets the same command bodies back this window, a server answering three
@@ -1440,7 +1440,7 @@ the vault is unreachable. The connect screen says that too.
 
 ### Adding an app does not mean touching any of this
 
-Every one of the 172 things a vault can be asked to do is an entry in
+Every one of the 212 things a vault can be asked to do is an entry in
 one table in `everyday-service`, and a domain contributes its own slice of it.
 An entry declares the scope it needs, the effect it has and the change it
 emits, so authorisation, live refresh and the generated client are all *data*
@@ -1511,7 +1511,7 @@ service defers it instead, for every caller except the assistant's own.
 ## Letting another agent in
 
 The assistant in the rail is not the only thing that can use this vault's
-verbs. The same catalogue — the sixty-five tools it has, with the same
+verbs. The same catalogue — the sixty-six tools it has, with the same
 descriptions, the same schemas and the same rules — is served over the
 [Model Context Protocol](https://modelcontextprotocol.io), so Claude Code,
 Claude Desktop, an OpenAI agent or anything else that speaks MCP can read a
@@ -2264,7 +2264,7 @@ means. That is a feature, not a detail.
 
 ### The assistant's verbs, without the assistant
 
-The sixty-five tools the assistant can run are also runnable directly, with
+The sixty-six tools the assistant can run are also runnable directly, with
 no model in the loop — `everyday do <tool>`, or `list_tools` and `run_tool`
 over the command surface. A destructive one is refused unless the caller says,
 in that call, that it means it: there is no undo in this application, so a
@@ -2401,7 +2401,7 @@ instead.
 The core, the SQL backend and both its drivers, the vault lifecycle, search,
 the media pipeline, notes, the todo app, the calendar, the library, tracking,
 roles and goals, accounts, mail, calendars that sign in, the assistant's
-routines, and the CLI are implemented and tested — 1,396 tests, plus the
+routines, and the CLI are implemented and tested — 1,404 tests, plus the
 shared backend conformance suite (run against SQLite always and against a
 real Postgres server on demand, and covering all twelve domains)
 and twenty-seven dependency-free interface suites: the quick-add grammar,
@@ -2488,9 +2488,8 @@ table like `purposes` — so the first person to want either can have it without
 undoing any of this.
 
 Not yet built: mobile shells, a map view, task recurrence, writing back to a
-subscribed or account calendar (see above for why not), attachment
-thumbnails and PDF previews (an attachment opens through its own URL
-instead), and importers for Day One's export format.
+subscribed or account calendar (see above for why not), PDF previews
+(a PDF opens through its own URL instead), and importers for Day One's export format.
 
 ## The icon on Linux
 

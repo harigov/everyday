@@ -87,10 +87,10 @@
 >   thread was hidden from brings it back, as any mail client does, and the
 >   server-side move landing removes the last membership the marker was
 >   covering for.
-> - **PDF previews were not built**, nor were attachment thumbnails — `image`
->   and `fast_image_resize` are not dependencies either. An attachment is a
->   name and a size until it is opened, through the same part URL that opens
->   any other kind.
+> - **PDF previews were not built, and thumbnails are not made in Rust.**
+>   `image` and `fast_image_resize` are not dependencies: an image attachment
+>   is shown by the webview itself, scaled down and lazily loaded, through
+>   the same part URL that opens it; a PDF opens through that URL too.
 > - **`mail-threading` was not vendored.** The plan proposed evaluating it;
 >   `crates/everyday-mail/src/threading.rs` hand-writes JWZ instead, because
 >   the library threads a whole batch rather than a stream of arriving
