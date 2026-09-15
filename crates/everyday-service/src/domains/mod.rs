@@ -14,6 +14,7 @@ pub mod calendars;
 pub mod journals;
 pub mod library;
 pub mod mail;
+pub mod mailsearch;
 pub mod mailsync;
 pub mod mailview;
 pub mod meta;
@@ -59,6 +60,7 @@ pub fn catalog() -> &'static [&'static Command] {
             calendars::COMMANDS,
             library::COMMANDS,
             mail::COMMANDS,
+            mailsearch::COMMANDS,
             mailview::COMMANDS,
             mailsync::COMMANDS,
             notes::COMMANDS,
