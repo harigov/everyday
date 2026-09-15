@@ -24,7 +24,9 @@ use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{EventSink, Silent};
 use crate::idempotency::{Claim, Idempotency};
+use crate::signin::SignIns;
 use crate::supervisor::Supervisor;
+use crate::token_cache::TokenCache;
 use crate::transfers::Transfers;
 use everyday_core::{BlobId, CalendarId, Vault};
 use serde_json::Value;
@@ -97,6 +99,19 @@ pub struct Service {
     /// what a run abandoned by a dead process looks like. This is in memory
     /// and therefore cannot lie about the present.
     running_routine: RwLock<Option<String>>,
+    /// OAuth sign-ins in flight, and the tokens a finished one is waiting
+    /// under to be claimed into the vault -- see `signin.rs`'s module doc.
+    /// Session state for the reason `pending` and `transfers` are: it holds
+    /// bearer secrets that must not survive the key that would otherwise
+    /// let them be written down.
+    sign_ins: Arc<SignIns>,
+    /// Cached access tokens, one per account, refreshed on demand. Outlives
+    /// any one sign-in -- it is read every time an account's sync task
+    /// needs a bearer token, not only while signing in -- but is exactly as
+    /// disposable as `sign_ins` for the same reason: nothing in it is a
+    /// secret that was not already handed over by a provider a refresh
+    /// token can ask again for.
+    token_cache: Arc<TokenCache>,
 }
 
 impl Default for Service {
@@ -119,7 +134,20 @@ impl Service {
             reported_routines: RwLock::new(HashSet::new()),
             claimed_runs: RwLock::new(HashSet::new()),
             running_routine: RwLock::new(None),
+            sign_ins: Arc::new(SignIns::new()),
+            token_cache: Arc::new(TokenCache::new()),
         }
+    }
+
+    /// OAuth sign-ins this session is driving, or has already finished
+    /// driving and is holding tokens for -- see `signin.rs`.
+    pub fn sign_ins(&self) -> Arc<SignIns> {
+        self.sign_ins.clone()
+    }
+
+    /// This session's cached access tokens -- see `token_cache.rs`.
+    pub fn token_cache(&self) -> Arc<TokenCache> {
+        self.token_cache.clone()
     }
 
     /// Send what this service has to say somewhere.
@@ -181,6 +209,8 @@ impl Service {
     /// [`Service::unlocked`] starts the same ones again.
     pub async fn locked(&self) {
         self.transfers.clear();
+        self.sign_ins.clear();
+        self.token_cache.clear().await;
         self.supervisor().stop_all().await;
         self.events().lock_state(true);
     }
@@ -222,6 +252,8 @@ impl Service {
     /// rather than failing.
     pub fn close(&self) {
         self.transfers.clear();
+        self.sign_ins.clear();
+        self.token_cache.try_clear();
         self.reported_feeds.write().unwrap().clear();
         self.reported_routines.write().unwrap().clear();
         self.claimed_runs.write().unwrap().clear();

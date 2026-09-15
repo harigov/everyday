@@ -59,6 +59,18 @@ pub enum Scope {
     Calendars,
     Library,
     Trackers,
+    /// A mailbox provider you sign in to -- Google, Microsoft, iCloud,
+    /// Fastmail, or a plain IMAP host -- and how to reach it.
+    ///
+    /// Added with the OAuth half of phase 1 (`docs/plans/mail.md`), ahead of
+    /// the `Account` record and its own `domains/accounts.rs` commands,
+    /// because [`domains::signin`](crate::domains::signin)'s
+    /// `begin_oauth_sign_in` and friends need a scope to declare before
+    /// either lands. If the accounts work adds this independently, the two
+    /// additions are the same one line and collide the way any duplicate
+    /// enum variant does -- keep whichever landed first and delete the
+    /// other; nothing downstream needs to change either way.
+    Accounts,
     /// Roles, goals, and the reports drawn against them.
     ///
     /// Its own scope rather than a corner of another, because a purpose is a
@@ -117,6 +129,7 @@ impl Scope {
             Scope::Calendars => "calendars",
             Scope::Library => "library",
             Scope::Trackers => "trackers",
+            Scope::Accounts => "accounts",
             Scope::Purpose => "purpose",
             Scope::Agent => "agent",
             Scope::Quick => "quick",
@@ -138,6 +151,7 @@ impl Scope {
         Scope::Calendars,
         Scope::Library,
         Scope::Trackers,
+        Scope::Accounts,
         Scope::Purpose,
         Scope::Agent,
         Scope::Quick,

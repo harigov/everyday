@@ -507,6 +507,14 @@ mod tests {
             // stale, so it emits one event per kind an imported app could
             // have moved. See `domains::transfer::kinds_of`.
             "run_import",
+            // OAuth sign-in. Its writes are entirely inside
+            // `crate::signin::SignIns` -- a loopback socket, a background
+            // task, a map of tokens waiting to be claimed -- none of which
+            // is a vault record any list is drawn from. The moment that
+            // changes something a list can show is `save_account`, in the
+            // accounts domain, and that command names its own `change:`.
+            "begin_oauth_sign_in",
+            "cancel_oauth_sign_in",
         ];
         for command in catalog() {
             if command.effect.is_write() && !INVISIBLE.contains(&command.name) {

@@ -72,6 +72,65 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "signInId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "await_oauth_sign_in",
+      "orScope": null,
+      "returns": "AwaitedSignIn",
+      "scope": "accounts",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "authUrl",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "tokenUrl",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "clientId",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "clientSecret",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "scopes",
+          "required": true,
+          "type": "string[]"
+        },
+        {
+          "name": "loginHint",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "begin_oauth_sign_in",
+      "orScope": null,
+      "returns": "BegunSignIn",
+      "scope": "accounts",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -79,6 +138,23 @@
       "orScope": null,
       "returns": "ProviderInfo[]",
       "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "signInId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "cancel_oauth_sign_in",
+      "orScope": null,
+      "returns": "void",
+      "scope": "accounts",
       "sensitive": false,
       "streams": false
     },
