@@ -180,7 +180,10 @@ fn guard_style_urls(html: &str, scheme: &str) -> Result<String, lol_html::errors
         if chunk.last_in_text_node() {
             let whole = std::mem::take(&mut *style_buffer.borrow_mut());
             let guarded = scrub_css(&whole, &mut |url| guard_one_url(url, &scheme_for_block));
-            chunk.replace(&guarded, LolContentType::Text);
+            // `ContentType::Html`, not `Text` -- see `make_style_content_html_safe`'s
+            // own docs for why this has to be paired with that function
+            // rather than writing `guarded` back verbatim.
+            chunk.replace(&make_style_content_html_safe(&guarded), LolContentType::Html);
         } else {
             chunk.remove();
         }
@@ -327,7 +330,21 @@ fn rewrite_dangerous_refs(
                 return Ok(());
             }
             if let Some(src) = el.get_attribute("src") {
-                let replacement = shared.borrow_mut().classify(&src);
+                // Decoded before classification for the same reason the
+                // `style` attribute is, just below: `get_attribute` hands
+                // back the attribute's *source* text, so `?w=600&amp;h=300`
+                // arrives with its `&amp;` still spelled out. Left alone,
+                // that entity-encoded ampersand ends up hashed and stored
+                // as part of the image's `original_url`, and then fetched
+                // by the protocol handler literally -- a server asked for
+                // `?w=600&amp;h=300` either serves nothing at that query or
+                // silently ignores everything after `&amp;h=300` as one
+                // opaque parameter, either way not the image the sender
+                // meant. Decoding once, here, before the URL is ever
+                // hashed or classified, is what keeps the token and the
+                // fetch in agreement with what the link actually says.
+                let decoded = crate::entities::decode_entities(&src);
+                let replacement = shared.borrow_mut().classify(&decoded);
                 el.set_attribute("src", &replacement)?;
             }
             Ok(())
@@ -358,7 +375,9 @@ fn rewrite_dangerous_refs(
         let shared = Rc::clone(shared);
         element!("[background]", move |el| {
             if let Some(background) = el.get_attribute("background") {
-                let replacement = shared.borrow_mut().classify(&background);
+                // See the `src` handler above for why this decodes first.
+                let decoded = crate::entities::decode_entities(&background);
+                let replacement = shared.borrow_mut().classify(&decoded);
                 el.set_attribute("background", &replacement)?;
             }
             Ok(())
@@ -391,7 +410,11 @@ fn rewrite_dangerous_refs(
             if chunk.last_in_text_node() {
                 let whole = std::mem::take(&mut *buffer.borrow_mut());
                 let scrubbed = scrub_css(&whole, &mut |url| shared.borrow_mut().classify(url));
-                chunk.replace(&scrubbed, LolContentType::Text);
+                // See `make_style_content_html_safe`'s own docs: `Html`,
+                // paired with that function, is what keeps `td > p`
+                // surviving this pass without also reopening the door
+                // `Text` closed on `</style` and friends.
+                chunk.replace(&make_style_content_html_safe(&scrubbed), LolContentType::Html);
             } else {
                 chunk.remove();
             }
@@ -501,6 +524,20 @@ fn ammonia_clean(html: &str, scheme: &str) -> String {
 /// spacer or a genuinely tiny icon looks the same to this check, which is
 /// why nothing here is destructive to the *message* -- only the one `<img>`
 /// tag is removed, never anything the pixel might sit next to.
+///
+/// The style-based half of this check used to be a set of substring
+/// searches (`style.contains("opacity:0")`, `style.contains("width:0")`),
+/// which matched `opacity:0.9` and matched `width:0` inside
+/// `border-width:0` or `line-height:0` -- a property this check never
+/// meant to ask about, hit only because its name happens to contain
+/// another property's name. That deleted ordinary images: a fade-in
+/// animation starting at less-than-full opacity, a table cell with a
+/// borderless or tightly-leaded style, both look like a tracking pixel to
+/// a scanner that cannot tell "this text appears somewhere in the style"
+/// from "this property is set to this value". [`crate::css_decl`] parses
+/// the declaration list properly -- split on `;`, then on the first `:` --
+/// so `get("width")` only ever answers `width`'s own value, never
+/// `border-width`'s.
 fn looks_like_tracking_pixel(el: &Element) -> bool {
     let dimension_is_tiny = |attr: &str| {
         el.get_attribute(attr)
@@ -519,30 +556,43 @@ fn looks_like_tracking_pixel(el: &Element) -> bool {
     // before scrubbing -- see `crate::entities`'s module docs -- so an
     // entity-encoded `display&#58;none` cannot hide a tracking pixel from
     // this check any more than it can hide the `url()` scrub.
-    let style = crate::entities::decode_entities(&style).to_ascii_lowercase();
-    let hidden_by_style = [
-        "display:none",
-        "display: none",
-        "visibility:hidden",
-        "visibility: hidden",
-        "opacity:0",
-        "opacity: 0",
-    ];
-    if hidden_by_style.iter().any(|needle| style.contains(needle)) {
+    let style = crate::entities::decode_entities(&style);
+    let declarations = crate::css_decl::Declarations::parse(&style);
+
+    if declarations.get("display") == Some("none") {
         return true;
     }
+    if declarations.get("visibility") == Some("hidden") {
+        return true;
+    }
+    if let Some(opacity) = declarations.get("opacity") {
+        if crate::css_decl::opacity_is_effectively_zero(opacity) {
+            return true;
+        }
+    }
 
-    let width_tiny = style.contains("width:0")
-        || style.contains("width:1px")
-        || style.contains("width: 0")
-        || style.contains("width: 1px");
-    let height_tiny = style.contains("height:0")
-        || style.contains("height:1px")
-        || style.contains("height: 0")
-        || style.contains("height: 1px");
-    width_tiny && height_tiny
+    // A tracking pixel sized entirely through its style rather than its
+    // `width`/`height` attributes: `<=1px` on both axes, the same
+    // threshold the attribute check above applies via its own "0 or 1"
+    // match.
+    let is_tiny = |property: &str| {
+        declarations
+            .get(property)
+            .and_then(crate::css_decl::length_px)
+            .map(|px| (0.0..=1.0).contains(&px))
+            .unwrap_or(false)
+    };
+    is_tiny("width") && is_tiny("height")
 }
 
+/// Rewrites every `srcset` candidate, decoding each URL first for the same
+/// reason the `src`, `background` and `style` handlers all do -- see the
+/// `img_src` handler's own doc in [`rewrite_dangerous_refs`]. Decoding
+/// happens per candidate, after the list is split on `,`, because a decoded
+/// `&amp;` could otherwise be mistaken for punctuation the splitter itself
+/// looks for; nothing in the small entity table this crate decodes spells a
+/// comma or whitespace, but splitting first keeps that true by construction
+/// rather than by checking the table.
 fn rewrite_srcset(value: &str, shared: &Rc<RefCell<Shared>>) -> String {
     value
         .split(',')
@@ -553,9 +603,13 @@ fn rewrite_srcset(value: &str, shared: &Rc<RefCell<Shared>>) -> String {
             }
             Some(match candidate.split_once(char::is_whitespace) {
                 Some((url, descriptor)) => {
-                    format!("{} {}", shared.borrow_mut().classify(url), descriptor.trim())
+                    let decoded = crate::entities::decode_entities(url);
+                    format!("{} {}", shared.borrow_mut().classify(&decoded), descriptor.trim())
                 }
-                None => shared.borrow_mut().classify(candidate),
+                None => {
+                    let decoded = crate::entities::decode_entities(candidate);
+                    shared.borrow_mut().classify(&decoded)
+                }
             })
         })
         .collect::<Vec<_>>()
@@ -633,6 +687,96 @@ fn scrub_css(css: &str, on_url: &mut dyn FnMut(&str) -> String) -> String {
         i += ch.len_utf8();
     }
 
+    out
+}
+
+/// Makes already-`scrub_css`-cleaned CSS safe to write back into a
+/// `<style>` element with `ContentType::Html` rather than `ContentType::Text`.
+///
+/// A `<style>` block is CDATA to a browser, not prose: `lol_html`'s
+/// `ContentType::Text` HTML-escapes `>`, `&` and `<` the way it would for
+/// any other text node, which is exactly right for a paragraph and exactly
+/// wrong for CSS, where `td > p { }` means something specific and
+/// `td &gt; p { }` means nothing to a CSS parser at all -- worse, run
+/// through this same pass a second time (a message re-sanitised, or one
+/// piped through twice by an interface that does not know it already has
+/// been), the `&gt;` becomes `&amp;gt;`, and the child selector is gone for
+/// good. `ContentType::Html` is the fix -- it writes the string back
+/// verbatim, the way the rest of this module's `url()` rewriting already
+/// relies on `<style>` content being read (`text!` hands over raw source
+/// bytes, no entity decoding, because raw text elements are never decoded
+/// by an HTML tokeniser in the first place; see the module docs' note on
+/// why `style_attr`'s decode step and a `<style>` block's lack of one are
+/// both correct for the same reason).
+///
+/// Writing arbitrary bytes back as `Html`, though, hands whatever is in
+/// `css` the power an HTML tokeniser gives literal markup -- so before that
+/// happens, this walks the string once and defuses the three shapes that
+/// matter for a value about to be dropped straight into a raw-text
+/// element's content:
+///
+/// - **`</style`**, matched case-insensitively and tolerant of whitespace
+///   between the `/` and the tag name (`</  STYLE`, `</\tstyle`) the same
+///   way a real tokeniser is when it is hunting for this element's
+///   appropriate end tag. Finding one and leaving it alone is how CSS
+///   text -- attacker-controlled, since it came from a message -- ends the
+///   `<style>` element on its own terms and hands everything after it to
+///   ordinary HTML parsing instead of CSS parsing.
+/// - **`<!--` and `-->`**, because once `</style` above has closed the
+///   element (or a re-parse downstream disagrees with this pass about
+///   where it closes), a stray HTML comment marker is one more way to hide
+///   a `<script>` from a first pass while a second, more lenient one still
+///   finds it.
+/// - **`<script`**, belt and braces: no legitimate CSS value is ever
+///   spelled this way, so there is no fidelity lost by refusing to let it
+///   through regardless of what closed or did not close around it.
+///
+/// Each is *neutralised* rather than deleted, so ordinary CSS that merely
+/// looks similar -- a comment, a stray string -- keeps as much of its
+/// original shape as possible: `</style` gets a zero-width space spliced
+/// between `<` and `/`, invisible to a person reading the rendered page but
+/// fatal to a tokeniser looking for that exact two-character sequence,
+/// while `<!--`/`-->`/`<script` are entity-escaped, the same substitution
+/// `ContentType::Text` would have made for every character rather than
+/// just these.
+fn make_style_content_html_safe(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut i = 0;
+    while i < css.len() {
+        let rest = &css[i..];
+
+        if rest.as_bytes().first() == Some(&b'<') && rest.as_bytes().get(1) == Some(&b'/') {
+            let after_slash = &rest[2..];
+            let trimmed = after_slash.trim_start_matches(|c: char| c.is_whitespace());
+            if trimmed.len() >= 5 && trimmed.as_bytes()[..5].eq_ignore_ascii_case(b"style") {
+                out.push('<');
+                out.push('\u{200b}');
+                out.push('/');
+                i += 2;
+                continue;
+            }
+        }
+
+        if ci_starts_with(rest, "<!--") {
+            out.push_str("&lt;!--");
+            i += "<!--".len();
+            continue;
+        }
+        if ci_starts_with(rest, "-->") {
+            out.push_str("--&gt;");
+            i += "-->".len();
+            continue;
+        }
+        if ci_starts_with(rest, "<script") {
+            out.push_str("&lt;script");
+            i += "<script".len();
+            continue;
+        }
+
+        let ch = rest.chars().next().expect("i < css.len() implies a char here");
+        out.push(ch);
+        i += ch.len_utf8();
+    }
     out
 }
 
@@ -754,6 +898,72 @@ mod tests {
         assert!(!out.html.contains("alert"));
     }
 
+    // ---- finding 2: a `<style>` block survives ContentType::Html safely ---
+
+    #[test]
+    fn a_child_selector_survives_sanitize_byte_for_byte() {
+        let out = sanitize(r#"<style>td > p { color: red; }</style>"#, &rewrite());
+        assert!(out.html.contains("td > p"), "{}", out.html);
+        assert!(!out.html.contains("&gt;"), "{}", out.html);
+    }
+
+    #[test]
+    fn a_child_selector_survives_the_final_guard_pass_too() {
+        // `guard_style_urls` is the second of the two passes that write a
+        // `<style>` block's content back -- see its own module docs -- so
+        // this checks it does not re-introduce the escaping bug on its own.
+        let out = guard_style_urls(r#"<style>td > p { color: red; }</style>"#, "everyday").unwrap();
+        assert!(out.contains("td > p"), "{out}");
+        assert!(!out.contains("&gt;"), "{out}");
+    }
+
+    #[test]
+    fn a_style_close_tag_inside_style_content_cannot_break_out() {
+        // Exercises `make_style_content_html_safe` directly: this is the
+        // string a `<style>` block's content would have to become, by
+        // whatever means, for `</style` inside it to matter -- lol_html's
+        // own raw-text tokenising already stops that string from ever
+        // reaching this function *through* an ordinary crafted email (see
+        // the function's own docs), but the neutralisation is defence in
+        // depth against exactly this shape regardless of how it might
+        // arrive.
+        let made_safe = make_style_content_html_safe("</style><script>alert(1)</script>");
+        let lower = made_safe.to_ascii_lowercase();
+        assert!(!lower.contains("</style"), "{made_safe}");
+        assert!(!lower.contains("<script"), "{made_safe}");
+    }
+
+    #[test]
+    fn whitespace_and_case_do_not_help_a_style_close_tag_survive() {
+        for variant in ["</  style>", "</\tSTYLE>", "</ StYlE>"] {
+            let made_safe = make_style_content_html_safe(variant);
+            assert!(
+                !made_safe.to_ascii_lowercase().contains("</style"),
+                "{variant} -> {made_safe}"
+            );
+        }
+    }
+
+    #[test]
+    fn html_comment_markers_inside_style_text_are_neutralised() {
+        let made_safe = make_style_content_html_safe("<!-- p { color: red; } -->");
+        assert!(!made_safe.contains("<!--"), "{made_safe}");
+        assert!(!made_safe.contains("-->"), "{made_safe}");
+    }
+
+    #[test]
+    fn a_style_block_containing_a_close_tag_and_script_cannot_break_out_end_to_end() {
+        // The end-to-end version of the two unit tests above: even if
+        // something upstream of `make_style_content_html_safe` ever handed
+        // it a chunk containing this text, `sanitize`'s output must not
+        // contain a live `<script` tag or a `</style` sequence that could
+        // end the element early.
+        let out =
+            sanitize(r#"<style>p { color: red; }</style><script>alert(1)</script>"#, &rewrite());
+        assert!(!out.html.to_ascii_lowercase().contains("<script"), "{}", out.html);
+        assert!(!out.html.contains("alert(1)"), "{}", out.html);
+    }
+
     #[test]
     fn an_at_import_is_dropped_from_a_style_block() {
         let out = sanitize(
@@ -834,6 +1044,51 @@ mod tests {
         assert!(out.had_tracking_pixels);
     }
 
+    // ---- finding 5: the tracking-pixel check matches a property exactly --
+
+    #[test]
+    fn a_near_solid_image_with_opacity_point_nine_is_kept() {
+        let out = sanitize(
+            r#"<img src="https://cdn.example/logo.png" style="opacity:0.9" width="200" height="60">"#,
+            &rewrite(),
+        );
+        assert!(!out.had_tracking_pixels, "{:?}", out);
+        // Proxied, not dropped: it is still an `<img>` with a remote image
+        // recorded for it, just rewritten to the app's own protocol.
+        assert_eq!(out.remote_images.len(), 1);
+        assert!(out.html.contains("everyday://mail/img/"), "{}", out.html);
+    }
+
+    #[test]
+    fn a_borderless_tightly_leaded_image_is_kept() {
+        let out = sanitize(
+            r#"<img src="https://cdn.example/logo.png" style="border-width:0; line-height:0" width="200" height="60">"#,
+            &rewrite(),
+        );
+        assert!(!out.had_tracking_pixels, "{:?}", out);
+        assert_eq!(out.remote_images.len(), 1);
+    }
+
+    #[test]
+    fn an_exact_opacity_zero_pixel_is_still_removed() {
+        let out = sanitize(
+            r#"<img src="https://track.example/open.gif" style="opacity:0" width="200" height="60">"#,
+            &rewrite(),
+        );
+        assert!(out.had_tracking_pixels);
+        assert!(out.remote_images.is_empty());
+    }
+
+    #[test]
+    fn a_pixel_sized_purely_by_style_is_still_removed() {
+        let out = sanitize(
+            r#"<img src="https://track.example/open.gif" style="width:1px;height:1px">"#,
+            &rewrite(),
+        );
+        assert!(out.had_tracking_pixels);
+        assert!(out.remote_images.is_empty());
+    }
+
     #[test]
     fn a_normal_remote_image_is_proxied_not_dropped() {
         let out = sanitize(
@@ -909,6 +1164,56 @@ mod tests {
         let out = sanitize(r#"<a href="https://example.com">hi</a>"#, &rewrite());
         assert!(out.html.contains("target=\"_blank\""));
         assert!(out.html.contains("noopener"));
+    }
+
+    // ---- finding 1: an image URL's entities are decoded before proxying ---
+
+    #[test]
+    fn a_named_entity_in_a_src_query_string_is_decoded_before_hashing() {
+        let out = sanitize(r#"<img src="https://cdn.example/p.png?w=600&amp;h=300">"#, &rewrite());
+        assert_eq!(out.remote_images.len(), 1);
+        assert_eq!(out.remote_images[0].original_url, "https://cdn.example/p.png?w=600&h=300");
+    }
+
+    #[test]
+    fn a_numeric_entity_in_a_src_query_string_is_decoded_before_hashing() {
+        let out = sanitize(r#"<img src="https://cdn.example/p.png?w=600&#38;h=300">"#, &rewrite());
+        assert_eq!(out.remote_images.len(), 1);
+        assert_eq!(out.remote_images[0].original_url, "https://cdn.example/p.png?w=600&h=300");
+    }
+
+    #[test]
+    fn the_same_decoded_url_from_either_spelling_shares_one_token() {
+        let named =
+            sanitize(r#"<img src="https://cdn.example/p.png?w=600&amp;h=300">"#, &rewrite());
+        let numeric =
+            sanitize(r#"<img src="https://cdn.example/p.png?w=600&#38;h=300">"#, &rewrite());
+        assert_eq!(named.remote_images[0].token, numeric.remote_images[0].token);
+    }
+
+    #[test]
+    fn a_srcset_candidates_entities_are_decoded_before_hashing() {
+        let out = sanitize(
+            r#"<img src="https://cdn.example/p.png" srcset="https://cdn.example/p.png?w=600&amp;h=300 1x">"#,
+            &rewrite(),
+        );
+        assert!(
+            out.remote_images
+                .iter()
+                .any(|i| i.original_url == "https://cdn.example/p.png?w=600&h=300"),
+            "{:?}",
+            out.remote_images
+        );
+    }
+
+    #[test]
+    fn a_background_attributes_entities_are_decoded_before_hashing() {
+        let out = sanitize(
+            r#"<table background="https://cdn.example/p.png?w=600&amp;h=300"></table>"#,
+            &rewrite(),
+        );
+        assert_eq!(out.remote_images.len(), 1);
+        assert_eq!(out.remote_images[0].original_url, "https://cdn.example/p.png?w=600&h=300");
     }
 
     // ---- entity-encoded CSS cannot bypass the scrubber ---------------------

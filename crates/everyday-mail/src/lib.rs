@@ -39,6 +39,7 @@
 //! is what fills them. See `docs/plans/mail.md`.
 
 pub mod compose;
+mod css_decl;
 mod entities;
 pub mod imap;
 pub mod invite;

@@ -16,6 +16,15 @@ fn fixture(name: &str) -> &'static [u8] {
         "multipart_related_cid_images" => {
             include_bytes!("fixtures/real_world/multipart_related_cid_images.eml")
         }
+        "newsletter_encoded_image_query_string" => {
+            include_bytes!("fixtures/real_world/newsletter_encoded_image_query_string.eml")
+        }
+        "newsletter_style_block_child_selector" => {
+            include_bytes!("fixtures/real_world/newsletter_style_block_child_selector.eml")
+        }
+        "newsletter_styled_product_images" => {
+            include_bytes!("fixtures/real_world/newsletter_styled_product_images.eml")
+        }
         other => panic!("no such fixture: {other}"),
     }
 }
@@ -94,6 +103,63 @@ fn a_newsletters_tracking_pixel_is_dropped_and_its_links_survive() {
     );
     assert!(parsed.list_unsubscribe.is_some());
     assert_eq!(parsed.precedence.as_deref(), Some("bulk"));
+}
+
+/// Finding 1: `lol_html::Element::get_attribute` hands back an attribute's
+/// *source* text, entities and all, so a `src` written the standards-correct
+/// way -- `&amp;` for a literal `&` in a URL's query string -- used to be
+/// hashed and proxied with the `&amp;` still in it, and then fetched
+/// literally, breaking the image for most commercial mail. It has to be
+/// decoded once, before hashing, so the token and the eventual fetch agree
+/// on the same URL the sender actually meant.
+#[test]
+fn an_image_urls_entities_are_decoded_before_it_is_proxied() {
+    let parsed = parse("newsletter_encoded_image_query_string");
+    let html = parsed.html.expect("html body");
+    let clean =
+        sanitize::sanitize(&html, &sanitize::Rewrite::new(parsed.message_id.clone().unwrap()));
+
+    assert_eq!(clean.remote_images.len(), 1);
+    assert_eq!(
+        clean.remote_images[0].original_url,
+        "https://cdn.retailer.example/banner.png?w=600&h=300&fit=crop"
+    );
+    assert!(clean.html.contains("Shop now"));
+}
+
+/// Finding 2: `ContentType::Text` HTML-escaped a `<style>` block's content
+/// on the way back out, twice over across this crate's two rewrite passes,
+/// so a child-combinator selector like `td > p` came out as `td &amp;gt; p`
+/// -- meaningless to a CSS parser, and the newsletter's layout with it.
+#[test]
+fn a_style_blocks_child_selectors_survive_sanitize_intact() {
+    let parsed = parse("newsletter_style_block_child_selector");
+    let html = parsed.html.expect("html body");
+    let clean =
+        sanitize::sanitize(&html, &sanitize::Rewrite::new(parsed.message_id.clone().unwrap()));
+
+    assert!(clean.html.contains("td > p"), "{}", clean.html);
+    assert!(clean.html.contains(".footer > span"), "{}", clean.html);
+    assert!(!clean.html.contains("&gt;"), "{}", clean.html);
+    assert!(clean.html.contains("Line item detail"));
+}
+
+/// Finding 5: the tracking-pixel heuristic used to match by substring, so
+/// an ordinary fade-in (`opacity:0.9`) or a borderless, tightly-leaded
+/// product photo (`border-width:0; line-height:0`) looked like a tracking
+/// pixel to a scanner that could not tell "this text appears somewhere in
+/// the style" from "this property is set to this value" -- both images
+/// here must survive.
+#[test]
+fn styled_product_images_are_not_mistaken_for_tracking_pixels() {
+    let parsed = parse("newsletter_styled_product_images");
+    let html = parsed.html.expect("html body");
+    let clean =
+        sanitize::sanitize(&html, &sanitize::Rewrite::new(parsed.message_id.clone().unwrap()));
+
+    assert!(!clean.had_tracking_pixels, "{:?}", clean);
+    assert_eq!(clean.remote_images.len(), 2);
+    assert!(clean.html.contains("See the collection"));
 }
 
 #[test]
