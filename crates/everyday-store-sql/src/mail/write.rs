@@ -138,6 +138,108 @@ fn message_at(
     Ok(Some((mid, message)))
 }
 
+/// The message named `id`, decrypted, or `None` -- the by-id counterpart of
+/// [`message_at`], for the optimistic writes below that are keyed by a
+/// message id the caller already holds rather than by a `(mailbox, uid)`
+/// pair the sync engine would have to have confirmed first.
+fn message_by_id(store: &SqlStore, tx: &mut dyn Sql, id: MailMessageId) -> Result<Option<Message>> {
+    let Some(row) =
+        tx.query_opt("SELECT data FROM mail_messages WHERE id = ?1", &vals![id.to_string()])?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(store.unseal(&message_aad(id), &row.bytes(0)?)?))
+}
+
+/// See [`everyday_core::store::mail::MailStore::set_message_flags`].
+pub(super) fn set_message_flags(
+    store: &SqlStore,
+    id: MailMessageId,
+    flags: MessageFlags,
+) -> Result<()> {
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    let Some(mut message) = message_by_id(store, tx.as_mut(), id)? else {
+        return Ok(()); // deleted since the caller last looked: nothing to revert
+    };
+    let thread_id = message.thread_id;
+    message.flags = flags;
+    let sealed = store.seal(&message_aad(id), &message)?;
+    let (sql, args) = upsert_stmt(&message, sealed);
+    tx.execute(&sql, &args)?;
+    recompute_thread(store, tx.as_mut(), thread_id, &[])?;
+    tx.commit()
+}
+
+/// See [`everyday_core::store::mail::MailStore::set_message_labels`].
+pub(super) fn set_message_labels(
+    store: &SqlStore,
+    id: MailMessageId,
+    labels: Vec<String>,
+) -> Result<()> {
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    let Some(mut message) = message_by_id(store, tx.as_mut(), id)? else {
+        return Ok(());
+    };
+    let thread_id = message.thread_id;
+    message.labels = labels;
+    let sealed = store.seal(&message_aad(id), &message)?;
+    let (sql, args) = upsert_stmt(&message, sealed);
+    tx.execute(&sql, &args)?;
+    recompute_thread(store, tx.as_mut(), thread_id, &[])?;
+    tx.commit()
+}
+
+/// See [`everyday_core::store::mail::MailStore::hide_thread_from_mailbox`].
+pub(super) fn hide_thread_from_mailbox(
+    store: &SqlStore,
+    thread: ThreadId,
+    mailbox: MailboxId,
+) -> Result<()> {
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    tx.execute(
+        "DELETE FROM thread_mailboxes WHERE thread_id = ?1 AND mailbox_id = ?2",
+        &vals![thread.to_string(), mailbox.to_string()],
+    )?;
+    tx.commit()
+}
+
+/// See [`everyday_core::store::mail::MailStore::restore_thread_mailboxes`].
+///
+/// Just [`recompute_thread_mailboxes`] in its own transaction:
+/// [`hide_thread_from_mailbox`] never touched `message_mailboxes`, so
+/// recomputing from it reconstructs exactly the row that was hidden, with
+/// no undo snapshot to have kept anywhere.
+pub(super) fn restore_thread_mailboxes(store: &SqlStore, thread: ThreadId) -> Result<()> {
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    recompute_thread_mailboxes(tx.as_mut(), thread)?;
+    tx.commit()
+}
+
+/// See [`everyday_core::store::mail::MailStore::set_thread_snoozed_until`].
+pub(super) fn set_thread_snoozed_until(
+    store: &SqlStore,
+    thread: ThreadId,
+    until: Option<jiff::Timestamp>,
+) -> Result<()> {
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    let Some(row) =
+        tx.query_opt("SELECT data FROM threads WHERE id = ?1", &vals![thread.to_string()])?
+    else {
+        return Ok(());
+    };
+    let mut t: Thread = store.unseal(&thread_aad(thread), &row.bytes(0)?)?;
+    t.snoozed_until = until;
+    let sealed = store.seal(&thread_aad(thread), &t)?;
+    let (sql, args) = upsert_stmt(&t, sealed);
+    tx.execute(&sql, &args)?;
+    tx.commit()
+}
+
 /// See [`everyday_core::store::mail::MailStore::remove_uids`].
 pub(super) fn remove_uids(store: &SqlStore, mailbox: MailboxId, uids: &[u32]) -> Result<()> {
     if uids.is_empty() {

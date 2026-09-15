@@ -382,6 +382,30 @@ impl MailSession for ImapSession {
         Ok(())
     }
 
+    async fn store_gmail_labels(
+        &mut self,
+        uids: &UidSet,
+        add: &[String],
+        remove: &[String],
+    ) -> Result<()> {
+        if uids.is_empty() {
+            return Ok(());
+        }
+        let set = uids.to_imap();
+        let session = self.session_mut()?;
+        if !add.is_empty() {
+            let list = gmail_label_list(add);
+            let command = format!("UID STORE {set} +X-GM-LABELS.SILENT {list}");
+            run_fetch_command(session, &command, |_, _| {}).await?;
+        }
+        if !remove.is_empty() {
+            let list = gmail_label_list(remove);
+            let command = format!("UID STORE {set} -X-GM-LABELS.SILENT {list}");
+            run_fetch_command(session, &command, |_, _| {}).await?;
+        }
+        Ok(())
+    }
+
     async fn move_to(&mut self, uids: &UidSet, mailbox: &str) -> Result<()> {
         if uids.is_empty() {
             return Ok(());
@@ -920,6 +944,17 @@ fn name_attribute_to_string(attr: &NameAttribute<'_>) -> String {
 /// by hand rather than through a typed method.
 fn quote_mailbox(name: &str) -> String {
     format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// The parenthesised, space-separated label list an `X-GM-LABELS` `STORE`
+/// sends, e.g. `("\Inbox" "Work")` — Gmail's own system labels (`\Inbox`,
+/// `\Important`, `\Starred`) are atoms with a leading backslash and a
+/// person's own label can contain spaces, so every entry is quoted the same
+/// way [`quote_mailbox`] quotes a mailbox name; a system label's leading
+/// backslash survives that quoting untouched, which is exactly what Gmail's
+/// own `STORE` syntax expects.
+fn gmail_label_list(labels: &[String]) -> String {
+    format!("({})", labels.iter().map(|l| quote_mailbox(l)).collect::<Vec<_>>().join(" "))
 }
 
 /// Mirrors `async_imap::client::Connection::check_status_ok`, which is

@@ -29,6 +29,7 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     flag_change_updates_unread_counts(store);
     removal_shrinks_a_thread_and_deletes_an_empty_one(store);
     op_queue_ordering_and_not_before(store);
+    optimistic_writes_and_snooze_round_trip(store);
     draft_round_trips(store);
     a_uidvalidity_reset_forgets_uids_but_keeps_messages(store);
     account_delete_cascades_every_mail_row(store);
@@ -115,6 +116,7 @@ fn ingest_then_list(store: &dyn JournalStore) {
 
     let found = m.message_by_uid(mailbox.id, 1).unwrap().expect("uid 1 was just ingested");
     assert_eq!(found.id, msg.id);
+    assert_eq!(m.get_message(msg.id).unwrap().id, msg.id);
 
     cleanup_account(store, account);
 }
@@ -292,6 +294,7 @@ fn op_queue_ordering_and_not_before(store: &dyn JournalStore) {
     assert_eq!(due.len(), 2, "the far-future op must not be due yet");
     assert_eq!(due[0].id, due_first.id, "oldest not_before comes first");
     assert_eq!(due[1].id, due_second.id);
+    assert_eq!(m.get_op(due_first.id).unwrap().id, due_first.id);
 
     let assistants = m.ops_by_origin("assistant", 10).unwrap();
     assert!(assistants.iter().any(|o| o.id == not_yet_due.id));
@@ -311,6 +314,69 @@ fn op_queue_ordering_and_not_before(store: &dyn JournalStore) {
     cleanup_account(store, account);
 }
 
+/// The optimistic-write half phase 3 adds: setting a message's flags or
+/// labels directly by id (not by `(mailbox, uid)`, the sync engine's own
+/// vocabulary), hiding and restoring a thread's place in one mailbox, and
+/// the snooze clock the minute scheduler reads.
+fn optimistic_writes_and_snooze_round_trip(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&inbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "optimistic", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: inbox.id, uid: 1 }])
+        .unwrap();
+
+    // Flags and labels, set directly by message id.
+    let mut flags = msg.flags;
+    flags.seen = true;
+    flags.flagged = true;
+    m.set_message_flags(msg.id, flags).unwrap();
+    let (_, messages) = m.thread(thread_id).unwrap();
+    assert!(messages[0].flags.seen && messages[0].flags.flagged);
+
+    m.set_message_labels(msg.id, vec!["Work".into()]).unwrap();
+    let (_, messages) = m.thread(thread_id).unwrap();
+    assert_eq!(messages[0].labels, vec!["Work".to_string()]);
+
+    // A message id this store has never ingested is a no-op, not an error.
+    m.set_message_flags(MailMessageId::new(), MessageFlags::default()).unwrap();
+    m.set_message_labels(MailMessageId::new(), Vec::new()).unwrap();
+
+    // Hiding a thread from a mailbox removes it from that mailbox's list
+    // without touching the durable `message_mailboxes` mapping, so
+    // restoring recomputes exactly what was hidden.
+    let page = m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert_eq!(page.threads.len(), 1);
+    m.hide_thread_from_mailbox(thread_id, inbox.id).unwrap();
+    let page = m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert!(page.threads.is_empty(), "archiving hides the thread from the inbox list");
+    m.restore_thread_mailboxes(thread_id).unwrap();
+    let page = m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert_eq!(page.threads.len(), 1, "restoring brings it back");
+
+    // Snoozing sets `Thread::snoozed_until`, and the thread appears in
+    // `due_snoozed_threads` once that moment has passed.
+    let now = Timestamp::now();
+    m.set_thread_snoozed_until(thread_id, Some(now + SignedDuration::from_secs(1))).unwrap();
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert!(thread.snoozed_until.is_some());
+    assert!(
+        m.due_snoozed_threads(now, 10).unwrap().is_empty(),
+        "not due until its own moment has passed"
+    );
+    let due = m.due_snoozed_threads(now + SignedDuration::from_secs(2), 10).unwrap();
+    assert!(due.contains(&thread_id));
+
+    m.set_thread_snoozed_until(thread_id, None).unwrap();
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert!(thread.snoozed_until.is_none(), "clearing releases the snooze");
+
+    cleanup_account(store, account);
+}
+
 fn draft_round_trips(store: &dyn JournalStore) {
     let m = mail_store(store);
     let account = AccountId::new();
@@ -324,6 +390,7 @@ fn draft_round_trips(store: &dyn JournalStore) {
 
     let listed = m.list_drafts(account).unwrap();
     assert_eq!(listed, vec![draft.clone()]);
+    assert_eq!(m.get_draft(draft.id).unwrap(), draft);
 
     m.delete_draft(draft.id).unwrap();
     assert!(m.list_drafts(account).unwrap().is_empty());
