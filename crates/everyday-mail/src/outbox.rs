@@ -252,6 +252,49 @@ async fn locations<S: MailSession, T: Sender, L: Lookups>(
     }
 }
 
+/// The mailbox a person is really archiving, trashing or moving a thread
+/// *from* -- the Inbox everywhere except Gmail, where `\Inbox` is a label
+/// read off All Mail rather than a folder this crate ever `SELECT`s (see
+/// the module docs' "Gmail's folder rule"), so the equivalent "where this
+/// message's server state actually lives" is All Mail itself.
+///
+/// Today this is always the account's one Inbox-equivalent mailbox, because
+/// nothing in the command surface an [`Op`] is built from yet says which
+/// mailbox a person was actually looking at when they chose the action --
+/// [`archive`], [`trash`] and [`move_op`] all share this one answer rather
+/// than each guessing their own. A `from` mailbox carried on the op itself,
+/// once the command surface has one to give, replaces this with exactly
+/// that mailbox instead.
+async fn source_mailbox<S: MailSession, T: Sender, L: Lookups>(
+    ctx: &ExecContext<'_, S, T, L>,
+) -> Result<Option<String>> {
+    let role = if ctx.lookups.is_gmail() { MailboxRole::All } else { MailboxRole::Inbox };
+    ctx.lookups.special_use(role)
+}
+
+/// [`locations`], restricted to [`source_mailbox`] -- what [`archive`],
+/// [`trash`] and [`move_op`] all resolve their target against instead of
+/// [`locations`] directly. Without this, every other place a thread's
+/// messages happen to live -- a reply already sitting in Sent, a draft's
+/// own copy, the destination mailbox itself on a second archive of an
+/// already-archived thread -- would be swept into the very same move,
+/// which is exactly the bug this function exists to close: archiving a
+/// thread must never also relocate the person's own sent reply, or issue a
+/// pointless move from a mailbox to itself.
+///
+/// `Ok(Vec::new())` when [`source_mailbox`] itself is not yet known (an
+/// account with no Inbox-equivalent mailbox discovered yet) rather than an
+/// error: there is nothing to act on either way, and the two read the same
+/// to every caller here, none of which distinguishes "nothing found" from
+/// "nowhere to look".
+async fn locations_from_source<S: MailSession, T: Sender, L: Lookups>(
+    op: &Op,
+    ctx: &ExecContext<'_, S, T, L>,
+) -> Result<Vec<Located>> {
+    let Some(source) = source_mailbox(ctx).await? else { return Ok(Vec::new()) };
+    Ok(locations(op, ctx).await?.into_iter().filter(|loc| loc.mailbox == source).collect())
+}
+
 /// Group a target's locations by mailbox — every [`MailSession`] verb that
 /// touches a set of uids acts on whichever mailbox is currently `SELECT`ed,
 /// so a target spread across two mailboxes (a Gmail message under two
@@ -319,11 +362,16 @@ async fn label_op<S: MailSession, T: Sender, L: Lookups>(
 /// mailbox, created ahead of time by whatever registers the account (this
 /// crate never creates a mailbox itself); [`MailError::Unsupported`] when
 /// this account has never been seen to have one.
+///
+/// Only [`locations_from_source`]'s locations are touched — see its own
+/// docs for why a thread's other locations (a reply in Sent, say) must
+/// never be moved or relabelled just because archiving one copy of the
+/// thread happened to enqueue an op against the whole thing.
 async fn archive<S: MailSession, T: Sender, L: Lookups>(
     op: &Op,
     ctx: &mut ExecContext<'_, S, T, L>,
 ) -> Result<()> {
-    let locs = locations(op, ctx).await?;
+    let locs = locations_from_source(op, ctx).await?;
     if ctx.lookups.is_gmail() {
         let inbox_label = [String::from("\\Inbox")];
         for (mailbox, uids) in group_by_mailbox(locs) {
@@ -344,7 +392,9 @@ async fn archive<S: MailSession, T: Sender, L: Lookups>(
 
 /// A `MOVE` into the account's Trash mailbox — the same shape on Gmail and
 /// off it, because Gmail's own Trash is a real mailbox (unlike Inbox), so
-/// there is no label-only branch here the way [`archive`] needs one.
+/// there is no label-only branch here the way [`archive`] needs one. See
+/// [`locations_from_source`]'s own docs for why only the source mailbox's
+/// copy moves.
 async fn trash<S: MailSession, T: Sender, L: Lookups>(
     op: &Op,
     ctx: &mut ExecContext<'_, S, T, L>,
@@ -352,20 +402,23 @@ async fn trash<S: MailSession, T: Sender, L: Lookups>(
     let Some(dest) = ctx.lookups.special_use(MailboxRole::Trash)? else {
         return Err(MailError::Unsupported("a Trash mailbox"));
     };
-    for (mailbox, uids) in group_by_mailbox(locations(op, ctx).await?) {
+    for (mailbox, uids) in group_by_mailbox(locations_from_source(op, ctx).await?) {
         ctx.session.select(&mailbox).await?;
         ctx.session.move_to(&uids, &dest).await?;
     }
     Ok(())
 }
 
+/// See [`locations_from_source`]'s own docs for why only the source
+/// mailbox's copy moves -- the same reasoning [`archive`] and [`trash`]
+/// already lean on.
 async fn move_op<S: MailSession, T: Sender, L: Lookups>(
     op: &Op,
     ctx: &mut ExecContext<'_, S, T, L>,
     to: MailboxId,
 ) -> Result<()> {
     let dest = ctx.lookups.mailbox_name(to)?;
-    for (mailbox, uids) in group_by_mailbox(locations(op, ctx).await?) {
+    for (mailbox, uids) in group_by_mailbox(locations_from_source(op, ctx).await?) {
         ctx.session.select(&mailbox).await?;
         ctx.session.move_to(&uids, &dest).await?;
     }
@@ -997,7 +1050,8 @@ mod tests {
         let account = AccountId::new();
         let thread = ThreadId::new();
         let lookups = FakeLookups::new(true)
-            .with_thread(thread, vec![Located { mailbox: "[Gmail]/All Mail".into(), uid: 3 }]);
+            .with_thread(thread, vec![Located { mailbox: "[Gmail]/All Mail".into(), uid: 3 }])
+            .with_special_use(MailboxRole::All, "[Gmail]/All Mail");
         let mut session = FakeSession::gmail();
         let sender = FakeSender::default();
         let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
@@ -1022,6 +1076,7 @@ mod tests {
         let thread = ThreadId::new();
         let lookups = FakeLookups::new(false)
             .with_thread(thread, vec![Located { mailbox: "INBOX".into(), uid: 5 }])
+            .with_special_use(MailboxRole::Inbox, "INBOX")
             .with_special_use(MailboxRole::Archive, "Archive");
         let mut session = FakeSession::default();
         let sender = FakeSender::default();
@@ -1036,7 +1091,8 @@ mod tests {
         let account = AccountId::new();
         let thread = ThreadId::new();
         let lookups = FakeLookups::new(false)
-            .with_thread(thread, vec![Located { mailbox: "INBOX".into(), uid: 5 }]);
+            .with_thread(thread, vec![Located { mailbox: "INBOX".into(), uid: 5 }])
+            .with_special_use(MailboxRole::Inbox, "INBOX");
         let mut session = FakeSession::default();
         let sender = FakeSender::default();
         let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
@@ -1046,6 +1102,58 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, MailError::Unsupported(_)));
         assert!(!is_retryable(&err));
+    }
+
+    /// The regression for "archive and trash move the user's own sent
+    /// replies": a thread with a message in the Inbox and the person's own
+    /// reply already sitting in Sent must only move the Inbox copy.
+    /// Archiving never touches Sent, and never issues a pointless move from
+    /// a mailbox to itself.
+    #[tokio::test]
+    async fn archiving_a_thread_leaves_its_sent_reply_in_sent() {
+        let account = AccountId::new();
+        let thread = ThreadId::new();
+        let lookups = FakeLookups::new(false)
+            .with_thread(
+                thread,
+                vec![
+                    Located { mailbox: "INBOX".into(), uid: 5 },
+                    Located { mailbox: "Sent".into(), uid: 11 },
+                ],
+            )
+            .with_special_use(MailboxRole::Inbox, "INBOX")
+            .with_special_use(MailboxRole::Archive, "Archive");
+        let mut session = FakeSession::default();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        execute(&op(account, OpKind::Archive, OpTarget::Thread(thread)), &mut ctx).await.unwrap();
+
+        assert!(session.calls.iter().any(|c| c.contains("move_to 5 -> Archive")));
+        assert!(
+            !session.calls.iter().any(|c| c.contains("Sent")),
+            "the Sent copy must never be selected or moved: {:?}",
+            session.calls
+        );
+    }
+
+    /// Archiving a thread whose only location is already Archive itself
+    /// (nothing left in the Inbox) must not issue a move from Archive to
+    /// Archive -- there is nothing to do, so nothing is done.
+    #[tokio::test]
+    async fn archiving_an_already_archived_thread_issues_no_move() {
+        let account = AccountId::new();
+        let thread = ThreadId::new();
+        let lookups = FakeLookups::new(false)
+            .with_thread(thread, vec![Located { mailbox: "Archive".into(), uid: 5 }])
+            .with_special_use(MailboxRole::Inbox, "INBOX")
+            .with_special_use(MailboxRole::Archive, "Archive");
+        let mut session = FakeSession::default();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        execute(&op(account, OpKind::Archive, OpTarget::Thread(thread)), &mut ctx).await.unwrap();
+        assert!(session.calls.is_empty(), "{:?}", session.calls);
     }
 
     // ---- label / unlabel: Gmail-only ---------------------------------------
@@ -1092,6 +1200,7 @@ mod tests {
         let thread = ThreadId::new();
         let lookups = FakeLookups::new(false)
             .with_thread(thread, vec![Located { mailbox: "INBOX".into(), uid: 2 }])
+            .with_special_use(MailboxRole::Inbox, "INBOX")
             .with_special_use(MailboxRole::Trash, "Trash");
         let mut session = FakeSession::default();
         let sender = FakeSender::default();
@@ -1107,7 +1216,8 @@ mod tests {
         let thread = ThreadId::new();
         let dest = MailboxId::new();
         let mut lookups = FakeLookups::new(false)
-            .with_thread(thread, vec![Located { mailbox: "INBOX".into(), uid: 4 }]);
+            .with_thread(thread, vec![Located { mailbox: "INBOX".into(), uid: 4 }])
+            .with_special_use(MailboxRole::Inbox, "INBOX");
         lookups.mailbox_names.insert(dest, "Projects".to_string());
         let mut session = FakeSession::default();
         let sender = FakeSender::default();
