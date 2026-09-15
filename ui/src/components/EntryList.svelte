@@ -4,7 +4,7 @@
   import { mediaUrl } from '../lib/api'
   import { menu } from '../lib/menu.svelte'
   import { onOffPref } from '../lib/prefs'
-  import { rovingFocus } from '../lib/roving'
+  import { rovingFocus, type RovingVirtual } from '../lib/roving'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { purposeItems } from '../lib/menus'
   import { toRows, type EntryRow } from '../lib/entry-rows'
@@ -43,6 +43,40 @@
   // `entry-rows.ts` for why a heading is a row of its own kind rather than a
   // nested list.
   const rows = $derived(toRows(app.entries))
+
+  /** `rovingFocus`'s own handle on `VirtualList`, so Home/End/PageUp/
+   *  PageDown can ask it to scroll a row into view before focusing it --
+   *  see `VirtualList.svelte`'s `scrollToIndex` and `roving.ts`'s
+   *  "Virtualized lists". */
+  // A `bind:this` component instance is `any` to typescript-eslint, which
+  // cannot resolve types through a `.svelte` import the way svelte-check
+  // does -- see `TodoView.svelte`'s own note; that checker does verify this.
+  // eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unsafe-assignment
+  let listHandle: ReturnType<typeof VirtualList<EntryRow>> | undefined = $state()
+
+  /** The navigable rows -- headers excluded, a header is never a stop --
+   *  which is what a data index means to `rovingFocus`'s virtualized path. */
+  const navRows = $derived(
+    rows.filter((r): r is Extract<EntryRow, { kind: 'entry' }> => r.kind === 'entry'),
+  )
+
+  /** `undefined` while a search is showing: those results are drawn in full
+   *  by a plain `{#each}`, not `VirtualList`, so the ordinary DOM-only path
+   *  already reaches every row and there is nothing virtualized to adapt. */
+  const virtual = $derived<RovingVirtual | undefined>(
+    app.query.trim() || navRows.length === 0
+      ? undefined
+      : {
+          length: navRows.length,
+          idAt: (i: number) => navRows[i]?.entry.id ?? null,
+          indexOf: (id: string) => navRows.findIndex((r) => r.entry.id === id),
+          scrollToIndex: (i: number) => {
+            const at = rows.indexOf(navRows[i]!)
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            if (at >= 0) listHandle?.scrollToIndex(at)
+          },
+        },
+  )
 
   const heading = $derived(app.showStarredOnly ? 'Starred' : (app.journal?.name ?? 'All entries'))
 
@@ -200,7 +234,7 @@
   <div
     class="scroll rows"
     oncontextmenu={(e) => menu.show(e, listMenu())}
-    use:rovingFocus={app.selectedEntry}
+    use:rovingFocus={{ current: app.selectedEntry, virtual }}
   >
     {#if app.query.trim()}
       {#if app.searching && app.results.length === 0}
@@ -254,7 +288,12 @@
         {/snippet}
       </EmptyState>
     {:else}
-      <VirtualList items={rows} getKey={(r: EntryRow) => r.key} selectedId={app.selectedEntry}>
+      <VirtualList
+        bind:this={listHandle}
+        items={rows}
+        getKey={(r: EntryRow) => r.key}
+        selectedId={app.selectedEntry}
+      >
         {#snippet children(r: EntryRow)}
           {#if r.kind === 'header'}
             <div class="grouphead"><span class="eyebrow">{r.label}</span></div>

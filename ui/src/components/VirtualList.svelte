@@ -141,6 +141,22 @@
       onEndReached()
     }
   }
+
+  /**
+   * Scroll a data index into view -- for `rovingFocus`'s virtualized path
+   * (`lib/roving.ts`'s `RovingVirtual`), which needs a row on screen before
+   * it can focus it, and cannot reach `handle` itself: that is this
+   * component's own, not something a caller holding `bind:this` sees.
+   * `align` defaults to `'nearest'`, the same choice the `selectedId` effect
+   * above already makes, so Home does not additionally re-centre a row that
+   * was already on screen.
+   */
+  export function scrollToIndex(
+    index: number,
+    opts: { align?: 'start' | 'center' | 'end' | 'nearest' } = {},
+  ): void {
+    handle?.scrollToIndex(index, { align: opts.align ?? 'nearest' })
+  }
 </script>
 
 <Virtualizer bind:this={handle} data={items} getKey={keyOf} {itemSize} {shift} onscroll={checkEnd}>
