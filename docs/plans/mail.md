@@ -39,6 +39,30 @@
 >   separate local store to key apart from the vault's own, so it seals
 >   through the store's main cipher directly rather than a derived one — the
 >   one place this differs from "every store gets its own subkey."
+> - **Compaction is wired in and its orphan sweep is now conservative by
+>   construction.** `mailsync::task::maybe_compact` runs it inside an
+>   account's own sync task, between passes, once the bodies pass is idle
+>   and the outbox has drained — never concurrently with `append_batch` for
+>   the same account — rate-limited to once an hour (and so once per unlock,
+>   since the limiter's `last_attempt` starts `None` on every fresh task).
+>   `PackStore::compact` no longer takes a bare `referenced: &[PackId]`: it
+>   takes a `&ReferencedSnapshot`, built only by pairing
+>   `PackStore::high_water_mark` (read *first*) with
+>   `MailStore::referenced_pack_ids` (queried second) through
+>   `MailStore::referenced_snapshot`, so a pack created in the gap between
+>   the two can never be mistaken for an orphan. The sweep additionally
+>   never touches the account's single newest pack on absence from a
+>   non-empty `referenced` alone (it might still be mid-write), and refuses
+>   itself entirely — sweeping nothing — when `referenced` comes back empty
+>   over a pack whose own `.dead` bookkeeping says it still holds a live
+>   frame. `compact` also takes a `should_continue: &dyn Fn() -> bool`,
+>   polled between packs (never mid-rewrite), so the account task's stop
+>   signal cuts a large compaction short without leaving anything
+>   inconsistent. `TablePacks::compact` stays the no-op it already was —
+>   `mark_dead` deletes the row outright there, so `compaction_worthwhile`
+>   is always `false` and the task's step costs nothing on Postgres.
+>   Compaction moves no message id, so the search index needs no part in
+>   any of this.
 > - **Search is tantivy behind a sealed `Directory`** in
 >   `everyday-mailindex`, with an LRU, byte-capped cache of decrypted
 >   segments so an immutable segment is decrypted at most once per session.
