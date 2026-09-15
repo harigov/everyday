@@ -352,5 +352,28 @@ assert.equal(
   'a stale id from a different list falls back to the first row',
 )
 
+// ── Finding 4: a patch or a removal applies to every list a row is in ───
+//
+// `#act`/`#remove` in `mail.svelte.ts` call `applyRowPatch`/`removeRow`
+// once for `threads` and once for `searchResults` -- the same pure
+// functions, so what they do to one array they do identically to the
+// other. This is that identically, made explicit.
+
+const inMailbox = [thread('th-1'), thread('th-2')]
+const inSearch = [thread('th-2')]
+
+const mailboxPatch = applyRowPatch(inMailbox, 'th-2', { starred: true })
+const searchPatch = applyRowPatch(inSearch, 'th-2', { starred: true })
+assert.equal(mailboxPatch.rows[1].starred, true)
+assert.equal(searchPatch.rows[0].starred, true, 'the same star reaches the search row too')
+
+const mailboxRemoval = removeRow(inMailbox, 'th-2')
+const searchRemoval = removeRow(inSearch, 'th-2')
+assert.deepEqual(
+  mailboxRemoval.rows.map((t) => t.id),
+  ['th-1'],
+)
+assert.deepEqual(searchRemoval.rows, [], 'the same removal empties the search results too')
+
 await close()
 console.log('mail: all checks passed')

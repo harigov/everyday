@@ -418,6 +418,13 @@ class MailState {
   // call the command, and on failure put back exactly what was there and
   // say so. `errors.ts`'s `handle` is what says so.
 
+  /**
+   * Patch one row wherever it is showing -- the mailbox's own list and a
+   * search's results both, per finding 4, since either can have the row on
+   * screen at once -- and the open thread's own copy, reverting all three on
+   * failure. Before this, a failed star left the star lit in the reading
+   * pane and a failed action of any kind left a search result stale.
+   */
   async #act(
     id: ThreadId,
     patch: Partial<Thread>,
@@ -425,29 +432,40 @@ class MailState {
   ): Promise<void> {
     const { rows, before } = applyRowPatch(this.threads, id, patch)
     this.threads = rows
-    if (this.openThread?.thread.id === id) {
-      this.openThread = { ...this.openThread, thread: { ...this.openThread.thread, ...patch } }
+    const { rows: searchRows, before: searchBefore } = applyRowPatch(this.searchResults, id, patch)
+    this.searchResults = searchRows
+    const openBefore = this.openThread?.thread.id === id ? this.openThread.thread : null
+    if (openBefore) {
+      this.openThread = { ...this.openThread!, thread: { ...openBefore, ...patch } }
     }
     try {
       await call(id)
       void this.refreshUnreadCounts()
     } catch (e) {
       if (before) this.threads = revertRow(this.threads, id, before)
+      if (searchBefore) this.searchResults = revertRow(this.searchResults, id, searchBefore)
+      if (openBefore && this.openThread?.thread.id === id) {
+        this.openThread = { ...this.openThread, thread: openBefore }
+      }
       await handle(e)
     }
   }
 
   /** Removes the row from the list on screen -- archive, trash, move,
-   *  snooze -- restoring it in place on failure. */
+   *  snooze -- and from a search's results too (finding 4), restoring both
+   *  in place on failure. */
   async #remove(id: ThreadId, call: (id: ThreadId) => Promise<unknown>): Promise<void> {
     const { rows, removed } = removeRow(this.threads, id)
     this.threads = rows
+    const { rows: searchRows, removed: searchRemoved } = removeRow(this.searchResults, id)
+    this.searchResults = searchRows
     if (this.selectedThread === id) this.closeThread()
     try {
       await call(id)
       void this.refreshUnreadCounts()
     } catch (e) {
       if (removed) this.threads = restoreRow(this.threads, removed)
+      if (searchRemoved) this.searchResults = restoreRow(this.searchResults, searchRemoved)
       await handle(e)
     }
   }
