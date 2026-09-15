@@ -405,6 +405,10 @@ async fn outgoing<S: MailSession, T: Sender, L: Lookups>(
         in_reply_to,
         references,
         message_id_domain: ctx.lookups.message_id_domain(),
+        calendar: draft.calendar_part.as_ref().map(|part| compose::OutgoingCalendar {
+            method: part.method.clone(),
+            ics: part.ics.clone(),
+        }),
     })
 }
 

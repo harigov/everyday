@@ -38,6 +38,7 @@ use std::fmt;
 use css_inline::InlineOptions;
 use mail_builder::MessageBuilder;
 use mail_builder::headers::address::Address as MbAddress;
+use mail_builder::headers::content_type::ContentType;
 use rand::RngCore;
 
 use crate::mime::ParsedMessage;
@@ -129,6 +130,25 @@ pub struct Outgoing {
     /// function's docs for why this crate generates its own rather than
     /// letting `mail-builder` fall back to the machine's hostname.
     pub message_id_domain: String,
+    /// An iTIP part to carry alongside `html`/`text` — today, always
+    /// `respond_to_invite`'s `REPLY` built by
+    /// [`crate::invite::build_reply`]. `None` for every ordinary message,
+    /// which is every message but this one kind.
+    pub calendar: Option<OutgoingCalendar>,
+}
+
+/// The one calendar part [`build`] knows how to attach: iTIP bytes and the
+/// `METHOD` they carry, written as `Content-Type: text/calendar;
+/// method=…; charset=utf-8` — the parameter most calendar software
+/// (Google, Outlook, Apple Mail) keys on to offer its own accept/decline UI,
+/// same as the `Content-Disposition: attachment; filename="invite.ics"`
+/// [`build`] gives it so a client with no special handling still shows a
+/// plain `.ics` a person can open.
+#[derive(Debug, Clone)]
+pub struct OutgoingCalendar {
+    /// Upper-case, as iTIP writes it (`"REPLY"`).
+    pub method: String,
+    pub ics: Vec<u8>,
 }
 
 /// What [`build`] hands back: the bytes to send, the id it minted for them,
@@ -221,6 +241,13 @@ pub fn build(outgoing: &Outgoing) -> Result<Built> {
                 attachment.bytes.clone(),
             ),
         };
+    }
+
+    if let Some(calendar) = &outgoing.calendar {
+        let content_type = ContentType::new("text/calendar")
+            .attribute("method", calendar.method.clone())
+            .attribute("charset", "utf-8");
+        builder = builder.attachment(content_type, "invite.ics", calendar.ics.clone());
     }
 
     let raw = builder.write_to_vec()?;
@@ -386,6 +413,7 @@ mod tests {
             in_reply_to: None,
             references: Vec::new(),
             message_id_domain: "example.com".to_string(),
+            calendar: None,
         }
     }
 
@@ -477,6 +505,28 @@ mod tests {
             mime::part_bytes(&built.raw, &attachment.part_id).unwrap(),
             b"pretend-pdf-bytes"
         );
+    }
+
+    #[test]
+    fn a_calendar_reply_is_attached_with_its_method_and_readable_as_a_calendar_part() {
+        let mut outgoing = simple_outgoing();
+        outgoing.calendar = Some(OutgoingCalendar {
+            method: "REPLY".to_string(),
+            ics: b"BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nEND:VCALENDAR\r\n".to_vec(),
+        });
+        let built = build(&outgoing).unwrap();
+        let parsed = mime::parse(&built.raw).unwrap();
+
+        let calendar = parsed.calendar.expect("the calendar part round-trips");
+        assert!(String::from_utf8_lossy(&calendar).contains("METHOD:REPLY"));
+
+        let raw_text = String::from_utf8_lossy(&built.raw);
+        assert!(
+            raw_text.contains("method=REPLY") || raw_text.contains("method=\"REPLY\""),
+            "{raw_text}"
+        );
+        // The ordinary HTML body is still there, alongside the calendar part.
+        assert!(parsed.html.unwrap().contains("Hi Bob."));
     }
 
     #[test]
