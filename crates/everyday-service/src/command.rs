@@ -503,6 +503,13 @@ mod tests {
             // Writes a blob. Invisible until an item references it, and the
             // save that does the referencing announces itself.
             "fetch_image",
+            // Writes a blob and updates one message's own `Body.parts`
+            // entry to name it -- on `fetch_image`'s own reasoning above.
+            // Neither a message nor a thread's clear columns change, so
+            // there is no `Kind` for this to announce; the caller already
+            // has the updated `MailAttachment` back in the command's own
+            // result and patches its copy of the thread directly.
+            "fetch_attachment",
             // Its effect is whatever tool it ran, which announces its own.
             "run_tool",
             // Answers a question a turn is parked on. What follows is the
