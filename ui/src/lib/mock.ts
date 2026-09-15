@@ -70,6 +70,7 @@ import type {
   TaskQuery,
   TaskStats,
   TaskStatus,
+  ThreadFilter,
   TimeBlock,
   Tracker,
   TrackerDay,
@@ -79,6 +80,34 @@ import type {
 import { TASK_STATUSES, VaultError, goalIsOpen, isAhead, isOpen, priorityRank } from './types'
 import type { AgentEvent, AgentMessage, AgentSettings, Conversation, Memory } from './types'
 import { DEFAULT_COLORS } from './colors'
+import type { Draft } from './mail-api'
+import {
+  mockAllowRemoteImages,
+  mockArchive,
+  mockDiscardDraft,
+  mockGetThread,
+  mockLabel,
+  mockListDrafts,
+  mockListMailboxes,
+  mockListThreads,
+  mockMarkRead,
+  mockMarkUnread,
+  mockMoveToMailbox,
+  mockNewDraft,
+  mockSaveDraft,
+  mockSearchMail,
+  mockSendDraft,
+  mockSnooze,
+  mockStar,
+  mockSuggestAddresses,
+  mockSyncAccount,
+  mockSyncStatus,
+  mockTrash,
+  mockUndoSend,
+  mockUnlabel,
+  mockUnsnooze,
+  mockUnstar,
+} from './mock-mail'
 
 const PASSWORD = 'everyday'
 
@@ -2279,6 +2308,8 @@ function status(): VaultStatus {
           notes: true,
           routines: true,
           agent: true,
+          accounts: true,
+          mail: true,
         }
       : undefined,
   }
@@ -4202,6 +4233,121 @@ export const mockInvoke = async <T>(
       account.status = { type: 'ok' }
       return undefined as T
     }
+
+    // ── Mail ────────────────────────────────────────────────────────
+    //
+    // `list_mailboxes`, `list_threads` and `get_thread` are the three real
+    // commands, already in the generated surface -- see `mail-api.ts`.
+    // Everything below answers a name from `docs/plans/mail.md` that is not
+    // in `surface.json` yet; kept in its own section, as the plan asks, so
+    // reconciling this block against agent (a)'s real command table is one
+    // clearly bounded diff rather than a hunt through the whole switch.
+
+    case 'list_mailboxes':
+      requireUnlocked()
+      return mockListMailboxes(str(args.account)) as T
+
+    case 'list_threads':
+      requireUnlocked()
+      return mockListThreads(
+        str(args.mailbox),
+        args.filter as ThreadFilter | undefined,
+        args.cursor as string | null | undefined,
+        args.limit as number | null | undefined,
+      ) as T
+
+    case 'get_thread':
+      requireUnlocked()
+      return mockGetThread(str(args.id)) as T
+
+    case 'mark_read':
+      requireUnlocked()
+      mockMarkRead(str(args.id))
+      return undefined as T
+    case 'mark_unread':
+      requireUnlocked()
+      mockMarkUnread(str(args.id))
+      return undefined as T
+    case 'star':
+      requireUnlocked()
+      mockStar(str(args.id))
+      return undefined as T
+    case 'unstar':
+      requireUnlocked()
+      mockUnstar(str(args.id))
+      return undefined as T
+    case 'archive':
+      requireUnlocked()
+      mockArchive(str(args.id))
+      return undefined as T
+    case 'trash':
+      requireUnlocked()
+      mockTrash(str(args.id))
+      return undefined as T
+    case 'move_to_mailbox':
+      requireUnlocked()
+      mockMoveToMailbox(str(args.id), str(args.mailbox))
+      return undefined as T
+    case 'label':
+      requireUnlocked()
+      mockLabel(str(args.id), str(args.label))
+      return undefined as T
+    case 'unlabel':
+      requireUnlocked()
+      mockUnlabel(str(args.id), str(args.label))
+      return undefined as T
+    case 'snooze':
+      requireUnlocked()
+      mockSnooze(str(args.id), str(args.until))
+      return undefined as T
+    case 'unsnooze':
+      requireUnlocked()
+      mockUnsnooze(str(args.id))
+      return undefined as T
+
+    case 'list_drafts':
+      requireUnlocked()
+      return mockListDrafts() as T
+    case 'new_draft':
+      requireUnlocked()
+      return mockNewDraft(
+        args as { account: string; inReplyTo?: string; forwardOf?: string; replyAll?: boolean },
+      ) as T
+    case 'save_draft':
+      requireUnlocked()
+      mockSaveDraft(args.draft as Draft)
+      return undefined as T
+    case 'discard_draft':
+      requireUnlocked()
+      mockDiscardDraft(str(args.id))
+      return undefined as T
+    case 'send_draft':
+      requireUnlocked()
+      mockSendDraft(str(args.id), Number(args.delaySeconds ?? 8))
+      return undefined as T
+    case 'undo_send':
+      requireUnlocked()
+      mockUndoSend(str(args.draftId))
+      return undefined as T
+
+    case 'sync_status':
+      requireUnlocked()
+      return mockSyncStatus() as T
+    case 'sync_account':
+      requireUnlocked()
+      mockSyncAccount(str(args.id))
+      return undefined as T
+    case 'allow_remote_images':
+      requireUnlocked()
+      mockAllowRemoteImages(str(args.messageId), Boolean(args.forever))
+      return undefined as T
+
+    case 'search_mail':
+      requireUnlocked()
+      return mockSearchMail(str(args.query), args.cursor as string | null | undefined) as T
+    case 'suggest_addresses':
+      requireUnlocked()
+      return mockSuggestAddresses(str(args.prefix)) as T
 
     default:
       throw new VaultError('unknown', `no mock for command ${cmd}`)
