@@ -21,8 +21,8 @@ Reproduced below in full:
   12. lettre — © 2014-2025 Alexis Mousset, Paolo Barbolini and K., https://github.com/lettre/lettre
   13. oauth2 — © 2014 Alex Crichton, https://github.com/ramosbugs/oauth2-rs
   14. oauth2-reqwest — © 2014 Alex Crichton, https://github.com/ramosbugs/oauth2-rs
-  15. tantivy
-  16. lru
+  15. tantivy — © 2018 by the project authors, as listed in the AUTHORS file, https://github.com/quickwit-oss/tantivy
+  16. lru — © 2016 Jerome Froelich, https://github.com/jeromefroe/lru-rs
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
