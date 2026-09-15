@@ -30,6 +30,9 @@ import { isMock } from './api'
 export interface MailBodySource {
   url?: string
   html?: string
+  /** Mock mode only -- see {@link MockMailBody.imagesHidden}. Ignored by
+   *  {@link loadBody} in real mode, which reads the header instead. */
+  imagesHidden?: boolean
 }
 
 /** Mock data for one message's body -- everything `bodyDocument` needs to
@@ -39,6 +42,10 @@ export interface MailBodySource {
 export interface MockMailBody {
   html?: string
   text?: string
+  /** Stands in for the real `X-Mail-Images-Hidden` header -- there is
+   *  nothing to fetch in mock mode, so a caller that wants the "images
+   *  hidden — show / always show" bar to demonstrate says so directly. */
+  imagesHidden?: boolean
 }
 
 /**
@@ -55,7 +62,7 @@ export function bodyDocument(messageId: string, mock: MockMailBody = {}): MailBo
     return { url: `everyday://mail/body/${encodeURIComponent(messageId)}` }
   }
   const inner = mock.html?.trim() ? mock.html : `<pre>${escapeAndLinkify(mock.text ?? '')}</pre>`
-  return { html: mockDocument(inner) }
+  return { html: mockDocument(inner), imagesHidden: mock.imagesHidden ?? false }
 }
 
 /** The `everyday://mail/part/{message}/{identifier}` (or
@@ -84,6 +91,72 @@ function mockDocument(inner: string): string {
     `pre{white-space:pre-wrap;overflow-wrap:break-word;font-family:inherit;margin:0}</style>` +
     `</head><body>${inner}</body></html>`
   )
+}
+
+/** A body, ready for `iframe.srcdoc` -- fetched (real mode) or built (mock
+ *  mode) by {@link loadBody}, below. */
+export interface LoadedMailBody {
+  html: string
+  /** Whether this body has a remote image nobody has been allowed to fetch
+   *  yet -- read from `X-Mail-Images-Hidden` in real mode, since parsing
+   *  the document to find out is exactly what that header exists to avoid.
+   *  Always `false` in mock mode, where nothing is ever proxied. */
+  imagesHidden: boolean
+}
+
+/**
+ * Resolve a {@link MailBodySource} into what `iframe.srcdoc` wants.
+ *
+ * The one `fetch()` in the Mail app that is not the mock's stand-in: real
+ * mode's `url` must be fetched, never assigned straight to `iframe.src`,
+ * because reading the response is the only way to see the
+ * `X-Mail-Images-Hidden` header the transport sets (`mailview.rs`'s own
+ * docs on why that header exists) -- an `<iframe src>` has no hook for a
+ * caller to read its response headers at all. `cache: 'no-store'` matches
+ * the header the transport already sends: whether images are hidden can
+ * change between two requests for the same id, so a cached answer would be
+ * a stale "Show images" bar.
+ */
+export async function loadBody(source: MailBodySource): Promise<LoadedMailBody> {
+  if (source.html !== undefined) {
+    return { html: source.html, imagesHidden: source.imagesHidden ?? false }
+  }
+  const res = await fetch(source.url!, { cache: 'no-store' })
+  if (!res.ok) throw new Error(`could not load message body (${res.status})`)
+  const html = await res.text()
+  return { html, imagesHidden: res.headers.get('x-mail-images-hidden') === 'true' }
+}
+
+/**
+ * Give a plain or unstyled message the app's own dark colours when the
+ * reader is in dark mode, without touching a sender's own styled HTML.
+ *
+ * `mailview.rs`'s `BODY_STYLE` already carries a `@media (prefers-color-scheme:
+ * dark)` block for exactly this -- but that media query answers to the
+ * *operating system's* preference, never to this application's own
+ * light/dark/system switch (`state.svelte.ts`'s `theme`), because the
+ * sandboxed frame's `srcdoc` document is a browsing context of its own and a
+ * page's CSS cannot ask another document to follow a choice made in it.
+ * `color-scheme` as a CSS property does not help either: it changes how form
+ * controls and scrollbars are drawn, not whether the `prefers-color-scheme`
+ * media feature matches.
+ *
+ * So when this application's *own* dark mode is the one in effect, this
+ * duplicates the same colours `mailview.rs` already chose for its dark media
+ * query, unconditionally, into a `<style>` appended just before `</head>`.
+ * That only ever changes the plain `body`/`summary` rules `BASE_STYLE` sets
+ * as defaults -- a sender's own `style=""` or `<style>` block still wins by
+ * ordinary CSS specificity, exactly as it already does under the media
+ * query, so styled HTML mail keeps reading on its own light card the way
+ * Superhuman and Apple Mail both leave it. Only a plain-text message (which
+ * carries no styling of its own beyond the `<pre>` this app wraps it in) or
+ * an unusually bare HTML one actually changes colour.
+ */
+export function applyDarkOverride(html: string, dark: boolean): string {
+  if (!dark) return html
+  const override =
+    '<style>body{color:#eceaf0;background:#17161a}summary{color:#7d7a86}</style></head>'
+  return html.includes('</head>') ? html.replace('</head>', override) : html
 }
 
 function escapeAndLinkify(text: string): string {

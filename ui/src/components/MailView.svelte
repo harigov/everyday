@@ -4,15 +4,17 @@
   // the reading pane beside it -- the journal's `EntryList` + `Editor` shape,
   // folded into one component the way the library and the todo app do.
 
-  import { formatSenders, threadListDate } from '../lib/mail'
+  import { accounts } from '../lib/accounts.svelte'
+  import { CATEGORY_TABS, formatSenders, threadListDate } from '../lib/mail'
   import { mail } from '../lib/mail.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { plural } from '../lib/format'
-  import type { Thread } from '../lib/types'
+  import type { Mailbox, Thread } from '../lib/types'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import MailCompose from './MailCompose.svelte'
+  import MailLabelPicker from './MailLabelPicker.svelte'
   import MailSnoozePicker from './MailSnoozePicker.svelte'
   import MailThread from './MailThread.svelte'
   import VirtualList from './VirtualList.svelte'
@@ -20,6 +22,32 @@
   void mail.start()
 
   const heading = $derived(mail.mailbox?.remoteName ?? 'Mail')
+
+  /** (p) TODO: only the inbox has a split to tab through -- see
+   *  `docs/plans/mail.md`'s "Split inbox". Every other mailbox (Sent,
+   *  Archive, a label) shows everything in it, uncategorised or not. */
+  const showTabs = $derived(mail.mailbox?.role === 'inbox')
+
+  const openAccount = $derived(
+    mail.openThread ? accounts.account(mail.openThread.thread.accountId) : undefined,
+  )
+  /** (p) TODO: `summarize_thread` stays out of reach until the account's
+   *  own `mailAi.summaries` switch is on -- see `mail-api.ts`'s TODO(p). */
+  const canSummarize = $derived(openAccount?.mailAi?.summaries === true)
+
+  function categoryMoveItems(t: Thread): MenuItem[] {
+    return CATEGORY_TABS.map((tab) => ({
+      label: tab.label,
+      checked: t.category === tab.key,
+      run: () => void mail.setCategoryFor(t.id, tab.key),
+    }))
+  }
+
+  function moveMailboxItems(t: Thread): MenuItem[] {
+    return mail.mailboxes
+      .filter((m) => m.accountId === t.accountId && m.role !== 'other')
+      .map((box: Mailbox) => ({ label: box.remoteName, run: () => void mail.moveTo(t.id, box.id) }))
+  }
 
   function rowMenu(t: Thread): MenuItem[] {
     return tidyMenu([
@@ -29,12 +57,11 @@
         icon: 'check',
         run: () => void (t.unreadCount > 0 ? mail.markRead(t.id) : mail.markUnread(t.id)),
       },
-      {
-        label: t.starred ? 'Remove star' : 'Star',
-        icon: 'star',
-        run: () => void mail.toggleStar(t.id),
-      },
+      { label: 'Star', icon: 'star', run: () => void mail.toggleStar(t.id) },
       { label: 'Snooze…', icon: 'clock', run: () => (mail.wantsSnooze = t.id) },
+      { label: 'Label…', icon: 'tag', run: () => (mail.wantsLabel = t.id) },
+      { label: 'Move to…', icon: 'layers', items: moveMailboxItems(t) },
+      { label: 'Move to category', icon: 'inbox', items: categoryMoveItems(t) },
       SEP,
       { label: 'Archive', icon: 'layers', run: () => void mail.archive(t.id) },
       { label: 'Trash', icon: 'trash', danger: true, run: () => void mail.trash(t.id) },
@@ -45,6 +72,12 @@
     const id = mail.wantsSnooze
     mail.wantsSnooze = null
     if (id) void mail.snooze(id, at)
+  }
+
+  function applyLabel(labelName: string) {
+    const id = mail.wantsLabel
+    mail.wantsLabel = null
+    if (id) void mail.label(id, labelName)
   }
 </script>
 
@@ -61,27 +94,69 @@
     </button>
   </div>
 
+  {#if showTabs && !mail.searchQuery.trim()}
+    <!-- (p) TODO: `Tab`/`Shift+Tab` move between these -- see
+         `shortcuts.svelte.ts`'s own note on why that key was free to take. -->
+    <div class="tabs" role="tablist" aria-label="Mail categories">
+      <button
+        class="tab"
+        role="tab"
+        aria-selected={mail.category === null}
+        class:sel={mail.category === null}
+        onclick={() => mail.setCategory(null)}
+      >
+        All
+      </button>
+      {#each CATEGORY_TABS as tab (tab.key)}
+        <button
+          class="tab"
+          role="tab"
+          aria-selected={mail.category === tab.key}
+          class:sel={mail.category === tab.key}
+          onclick={() => mail.setCategory(tab.key)}
+        >
+          {tab.label}
+        </button>
+      {/each}
+    </div>
+  {/if}
+
   {#if mail.searchQuery.trim()}
+    <p class="hint operator-hint">
+      Try <code>from:</code>, <code>to:</code>, <code>subject:</code>, <code>has:attachment</code>,
+      <code>before:</code>, <code>after:</code>, <code>in:</code> or <code>is:unread</code>.
+    </p>
     {#if mail.searching && mail.searchResults.length === 0}
       <p class="hint">Searching…</p>
     {:else if mail.searchResults.length === 0}
       <p class="hint">Nothing matched “{mail.searchQuery}”.</p>
     {:else}
-      {#each mail.searchResults as hit (hit.threadId)}
-        <button class="row" onclick={() => void mail.openThreadById(hit.threadId)}>
+      <!-- `SearchMailResult.threads` is the same `Thread` shape every other
+           row already draws from -- see `types.ts`'s own doc on why a
+           search hit is not a narrower type of its own. -->
+      {#each mail.searchResults as t (t.id)}
+        <button class="row" onclick={() => void mail.openThreadById(t.id)}>
           <span class="dot" aria-hidden="true"></span>
           <div class="body">
             <div class="line1">
-              <span class="from">{hit.from.name || hit.from.email}</span>
-              <span class="date">{threadListDate(hit.date)}</span>
+              <span class="from">{formatSenders(t.participants)}</span>
+              <span class="date">{threadListDate(t.lastDate)}</span>
             </div>
             <div class="line2">
-              <span class="subject">{hit.subject || '(no subject)'}</span>
-              <span class="snippet"> — {hit.snippet}</span>
+              <span class="subject">{t.subject || '(no subject)'}</span>
             </div>
           </div>
         </button>
       {/each}
+      {#if mail.searchCursor}
+        <button
+          class="load-more"
+          disabled={mail.searching}
+          onclick={() => void mail.loadMoreSearchResults()}
+        >
+          {mail.searching ? 'Loading…' : 'Load more'}
+        </button>
+      {/if}
     {/if}
   {:else if mail.loading && mail.threads.length === 0}
     <p class="hint">Loading…</p>
@@ -110,17 +185,10 @@
               <span class="date">{threadListDate(t.lastDate)}</span>
             </div>
             <div class="line2">
+              <!-- No snippet here: `Thread` carries no cached one -- see its
+                   own doc in `types.ts` for why that is a reported gap
+                   rather than a faked field. -->
               <span class="subject">{t.subject || '(no subject)'}</span>
-              {#if t.snippet}<span class="snippet"> — {t.snippet}</span>{/if}
-            </div>
-            <div class="marks">
-              {#if t.starred}<Icon name="star" size={11} filled />
-              {/if}
-              {#if t.hasAttachments}<Icon name="tag" size={11} />
-              {/if}
-              {#if t.draftedByAssistant}<span class="assistant-mark"
-                  ><Icon name="sparkle" size={11} /> Drafted by the assistant</span
-                >{/if}
               {#if t.messageCount > 1}<span class="count">{t.messageCount}</span>{/if}
             </div>
           </div>
@@ -138,7 +206,27 @@
       </button>
       <h1>{mail.openThread.thread.subject || '(no subject)'}</h1>
       <span class="count">{plural(mail.openThread.messages.length, 'message')}</span>
+      {#if canSummarize}
+        <button
+          class="summarize"
+          title="Summarise (Z)"
+          disabled={mail.summarizing}
+          onclick={() => void mail.summarizeOpenThread()}
+        >
+          <Icon name="sparkle" size={13} />
+          {mail.summarizing ? 'Summarising…' : 'Summarise'}
+        </button>
+      {/if}
     </div>
+    {#if mail.summary && mail.summary.threadId === mail.openThread.thread.id}
+      <div class="summary-panel">
+        <Icon name="sparkle" size={14} />
+        <p>{mail.summary.text}</p>
+        <button class="close" aria-label="Dismiss the summary" onclick={() => mail.dismissSummary()}
+          ><Icon name="close" size={13} /></button
+        >
+      </div>
+    {/if}
     <div class="scroll">
       <MailThread messages={mail.openThread.messages} expanded={mail.expanded} />
     </div>
@@ -155,6 +243,10 @@
 
 {#if mail.wantsSnooze}
   <MailSnoozePicker onchoose={snooze} oncancel={() => (mail.wantsSnooze = null)} />
+{/if}
+
+{#if mail.wantsLabel}
+  <MailLabelPicker onchoose={applyLabel} oncancel={() => (mail.wantsLabel = null)} />
 {/if}
 
 {#if mail.sendingUndo}
@@ -209,6 +301,27 @@
     padding: var(--sp-4);
     color: var(--fg-faint);
     font-size: var(--text-sm);
+  }
+  .operator-hint {
+    padding: var(--sp-2) var(--sp-4);
+    font-size: var(--text-xs);
+    line-height: var(--leading-normal);
+  }
+  .operator-hint code {
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--bg-hover);
+    font-size: inherit;
+  }
+  .load-more {
+    width: 100%;
+    padding: var(--sp-3);
+    text-align: center;
+    color: var(--journal-accent, var(--accent));
+    font-size: var(--text-sm);
+  }
+  .load-more:hover {
+    background: var(--bg-hover);
   }
 
   .row {
@@ -269,39 +382,43 @@
     color: var(--fg-faint);
   }
   .subject {
-    flex: none;
-    max-width: 60%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: var(--text-sm);
-    color: var(--fg-muted);
-  }
-  .snippet {
     flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: var(--text-sm);
-    color: var(--fg-faint);
+    color: var(--fg-muted);
   }
-  .marks {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    color: #e0a92b;
-    font-size: var(--text-xs);
-  }
-  .assistant-mark {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    color: var(--journal-accent, var(--accent));
-  }
-  .marks .count {
+  .line2 .count {
+    flex: none;
     margin-left: auto;
+    font-size: var(--text-xs);
     color: var(--fg-faint);
+  }
+
+  .tabs {
+    display: flex;
+    gap: 2px;
+    padding: var(--sp-1) var(--sp-3);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+  }
+  .tab {
+    flex: none;
+    padding: 5px var(--sp-2);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
+    color: var(--fg-faint);
+  }
+  .tab:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .tab.sel {
+    background: var(--bg-active);
+    color: var(--fg);
+    font-weight: 550;
   }
 
   .main {
@@ -344,6 +461,47 @@
   .thread-head .count {
     font-size: var(--text-xs);
     color: var(--fg-faint);
+  }
+  .summarize {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px var(--sp-2);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    color: var(--journal-accent, var(--accent));
+  }
+  .summarize:hover {
+    background: var(--bg-hover);
+  }
+  .summarize:disabled {
+    opacity: 0.6;
+  }
+  .summary-panel {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-4);
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in oklab, var(--accent) 6%, transparent);
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+  }
+  .summary-panel p {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    line-height: var(--leading-normal);
+  }
+  .summary-panel .close {
+    flex: none;
+    display: grid;
+    place-items: center;
+    color: var(--fg-faint);
+  }
+  .summary-panel .close:hover {
+    color: var(--fg);
   }
   .scroll {
     flex: 1;
