@@ -775,6 +775,28 @@
     {
       "args": [
         {
+          "name": "messageId",
+          "required": true,
+          "type": "MailMessageId"
+        },
+        {
+          "name": "index",
+          "required": true,
+          "type": "number"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "fetch_attachment",
+      "orScope": null,
+      "returns": "MailAttachment",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "url",
           "required": true,
           "type": "string"

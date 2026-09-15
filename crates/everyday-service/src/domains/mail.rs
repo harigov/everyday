@@ -73,14 +73,123 @@ pub struct ThreadRef {
     pub id: ThreadId,
 }
 
-/// A thread and every message in it -- what opening one reads. Bodies are
-/// not included; the interface asks for each with `get_body` as it draws
-/// them, once that command exists.
+/// One part of a message, named the way `mailview::part` addresses it --
+/// see [`attachments_for`] for how `index`/`content_id` line up with what
+/// `partUrl(messageId, identifier)` on the interface side actually fetches.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailAttachment {
+    /// This part's position in [`everyday_core::mail::Body::parts`] -- the
+    /// identifier `mailview::part`'s `find_part` falls back to when a part
+    /// carries no `Content-ID`, and so what a plain attachment's chip links
+    /// to via `partUrl`.
+    pub index: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    pub mime_type: String,
+    pub size: u64,
+    /// This part's `Content-ID`, when it has one -- the identifier
+    /// `mailview::part`'s `find_part` prefers, and what an inline `cid:`
+    /// image's `<img src>` addresses by instead of its index.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_id: Option<String>,
+    /// A part referenced by `cid:` from the sanitised HTML -- shown inside
+    /// the body, not as a chip. Approximated from `content_id.is_some()`,
+    /// since [`everyday_core::mail::PartRef`] keeps no `Content-Disposition`
+    /// of its own to read this from directly; see that record's own docs on
+    /// why a `cid` is `None` for "an ordinary attachment" in the first
+    /// place, which is exactly the inverse of this field.
+    pub inline: bool,
+    /// `false` when this part is over the account's attachment cap and has
+    /// not been fetched yet -- what `fetch_attachment` exists to turn `true`.
+    pub available: bool,
+}
+
+/// One message, plus the attachments its stored [`Body`] names -- parts
+/// metadata only, never bytes, so a thread stays cheap to open even when its
+/// messages carry large files. See [`attachments_for`].
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageDetail {
+    #[serde(flatten)]
+    pub message: Message,
+    pub attachments: Vec<MailAttachment>,
+}
+
+/// One of a thread's own recent ops, for the "recent actions" line under the
+/// subject -- "archived by the assistant", "moved by an MCP client",
+/// "Couldn't archive: {error}". A plain projection of [`Op`]'s own fields
+/// (see [`everyday_core::mail::outbox`] for the state machine `state` walks),
+/// not a narrower type: the interface already knows how to read an `OpKind`,
+/// an `Origin` and an `OpState`, so this only adds the one part it does not
+/// otherwise get for free -- which of a thread's own ops these are, oldest
+/// door first.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentAction {
+    pub kind: everyday_core::mail::OpKind,
+    pub origin: Origin,
+    /// When this op last changed state -- a failure's own moment, for one
+    /// still `Failed`, or when it was enqueued, for one still `Pending`.
+    pub at: Timestamp,
+    pub state: everyday_core::mail::OpState,
+}
+
+impl From<&Op> for RecentAction {
+    fn from(op: &Op) -> Self {
+        RecentAction {
+            kind: op.kind.clone(),
+            origin: op.origin.clone(),
+            at: op.updated_at,
+            state: op.state.clone(),
+        }
+    }
+}
+
+/// How many of a thread's most recent ops [`get_thread`] hands back -- enough
+/// for "archived by the assistant, five minutes after a person starred it"
+/// to read as a short history, not so many that a thread with a long outbox
+/// past pays for decrypting it all on every open.
+const RECENT_ACTIONS_LIMIT: u32 = 5;
+
+/// A thread and every message in it -- what opening one reads. Bodies'
+/// *text* is not included; the interface asks for each with `get_body` as it
+/// draws them. Each message's `attachments` and the thread's own
+/// `recent_actions` *are* included, since both are metadata a thread view
+/// wants the instant it opens, not on a second round trip per message.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadDetail {
     pub thread: Thread,
-    pub messages: Vec<Message>,
+    pub messages: Vec<MessageDetail>,
+    pub recent_actions: Vec<RecentAction>,
+}
+
+/// [`Body::parts`] for `message`, turned into what the interface draws a
+/// chip from -- `mailview::part`'s own addressing rules, named rather than
+/// re-derived: a part with a `Content-ID` is fetched by it, everything else
+/// by its position in the list.
+///
+/// A message whose body has not synced yet (`vault.body` finds no row --
+/// still mid first-sync, or a fetch that failed) answers with no attachments
+/// rather than an error: [`Message::has_attachments`] may already say `true`
+/// from the header pass, and a thread view should still open, just without
+/// chips to show yet.
+fn attachments_for(vault: &everyday_core::Vault, message: &Message) -> Vec<MailAttachment> {
+    let Ok(body) = vault.body(message.id) else { return Vec::new() };
+    body.parts
+        .into_iter()
+        .enumerate()
+        .map(|(index, part)| MailAttachment {
+            index,
+            filename: part.filename,
+            mime_type: part.mime_type,
+            size: part.size,
+            inline: part.cid.is_some(),
+            content_id: part.cid,
+            available: part.blob.is_some(),
+        })
+        .collect()
 }
 
 // ---- batch thread actions ------------------------------------------------
@@ -677,11 +786,104 @@ async fn list_threads(
     .await
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchAttachment {
+    pub message_id: MailMessageId,
+    pub index: usize,
+}
+
+/// Fetch one part of `args.message_id` that [`attachments_for`] answered
+/// `available: false` for -- a part over the account's attachment cap, which
+/// `process_body` (`everyday_service::mailsync::passes`) left with no blob at
+/// sync time.
+///
+/// Re-reads the message's raw bytes from the pack store, the same door
+/// [`respond_to_invite`] already opens for a calendar part, re-parses them
+/// with [`mime::parse`] to find the part at `args.index`, and extracts its
+/// bytes with [`mime::part_bytes`] -- exactly the attachment pass the plan
+/// describes, run once, on demand, for the one part somebody actually asked
+/// to see, rather than for every oversized part in the mailbox. The bytes
+/// become a blob, `Body::parts[index].blob` is set to name it, and the
+/// updated [`MailAttachment`] is handed back so the interface can enable the
+/// chip immediately rather than reloading the whole thread.
+///
+/// Refused, honestly, when there is nothing to fetch from: a message whose
+/// raw bytes have not synced yet (`Message::pack` is still
+/// [`crate::mailsync::ingest::pending_pack_ref`]'s sentinel) has no raw
+/// message this command could read a part out of at all -- the gap the
+/// module docs above ask to be named rather than silently retried forever.
+async fn fetch_attachment(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: FetchAttachment,
+) -> CommandResult<MailAttachment> {
+    let vault = svc.require()?;
+    let Some(packs) = svc.packs() else {
+        return Err(CommandError::new(codes::INTERNAL, "the mail pack store is not open"));
+    };
+    blocking(move || {
+        let message = vault.mail_message(args.message_id)?;
+        if crate::mailsync::ingest::is_pending(&message.pack) {
+            return Err(CommandError::new(
+                codes::NOT_FOUND,
+                "this message has not finished syncing yet, so its raw bytes are not stored",
+            ));
+        }
+        let mut body = vault.body(args.message_id)?;
+        if args.index >= body.parts.len() {
+            return Err(CommandError::new(codes::NOT_FOUND, "no such part of this message"));
+        }
+
+        let raw = packs.read(&message.pack)?;
+        let parsed = mime::parse(&raw).map_err(|e| {
+            CommandError::new(
+                codes::INVALID,
+                format!("this message's raw bytes could not be read: {e}"),
+            )
+        })?;
+        let part = parsed.parts.get(args.index).ok_or_else(|| {
+            CommandError::new(codes::NOT_FOUND, "no such part in this message's raw bytes")
+        })?;
+        let bytes = mime::part_bytes(&raw, &part.part_id).map_err(|e| {
+            CommandError::new(codes::INVALID, format!("that part could not be extracted: {e}"))
+        })?;
+
+        let blob = vault.put_blob(&bytes)?;
+        body.parts[args.index].blob = Some(blob);
+        vault.save_body(&body)?;
+
+        let stored = &body.parts[args.index];
+        Ok(MailAttachment {
+            index: args.index,
+            filename: stored.filename.clone(),
+            mime_type: stored.mime_type.clone(),
+            size: stored.size,
+            inline: stored.cid.is_some(),
+            content_id: stored.cid.clone(),
+            available: true,
+        })
+    })
+    .await
+}
+
 async fn get_thread(svc: Arc<Service>, _ctx: Ctx, args: ThreadRef) -> CommandResult<ThreadDetail> {
     let vault = svc.require()?;
     blocking(move || {
         let (thread, messages) = vault.thread(args.id)?;
-        Ok(ThreadDetail { thread, messages })
+        let messages = messages
+            .into_iter()
+            .map(|message| {
+                let attachments = attachments_for(&vault, &message);
+                MessageDetail { message, attachments }
+            })
+            .collect();
+        let recent_actions = vault
+            .ops_for_thread(args.id, RECENT_ACTIONS_LIMIT)?
+            .iter()
+            .map(RecentAction::from)
+            .collect();
+        Ok(ThreadDetail { thread, messages, recent_actions })
     })
     .await
 }
@@ -709,6 +911,12 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: ThreadRef, returns: "ThreadDetail",
         signature: &[("id", "ThreadId", true)],
         run: get_thread,
+    },
+    command! {
+        name: "fetch_attachment", scope: Mail, effect: Write,
+        args: FetchAttachment, returns: "MailAttachment",
+        signature: &[("messageId", "MailMessageId", true), ("index", "number", true)],
+        run: fetch_attachment,
     },
     // ---- batch thread actions --------------------------------------------
     command! {
