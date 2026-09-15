@@ -62,6 +62,8 @@ const KINDS = [
   'memory',
   'settings',
   'account',
+  'thread',
+  'draft',
 ]
 
 for (const kind of KINDS) {

@@ -1377,6 +1377,91 @@ export interface ThreadDetail {
   messages: MailMessage[]
 }
 
+// ── Drafts and the outbox (phase 3) ─────────────────────────────────────
+//
+// Mirrors `everyday_core::mail`'s `Draft`, `Op` and the small enums either
+// carries. Who asked for an `Op` -- a person, the assistant in a named
+// conversation, a routine run, or an MCP client -- is `MailOrigin`, prefixed
+// the way `MailAddress` and `MailCategory` are to keep the word "origin"
+// unambiguous next to every other domain's own use of it.
+
+export type DraftId = string
+export type OpId = string
+
+export type MailOrigin =
+  | { type: 'person' }
+  | { type: 'assistant'; conversation: string }
+  | { type: 'routine'; run: string }
+  | { type: 'mcp'; client: string }
+
+/** Where a [[Draft]] is in its life. `queued` carries the [[Op]] sending it,
+ * so the compose window can show "sending…" and still be the same record if
+ * the send fails and reverts to `editing`. */
+export type DraftState =
+  { type: 'editing' } | { type: 'queued'; op: OpId } | { type: 'sent' } | { type: 'discarded' }
+
+export interface Draft {
+  id: DraftId
+  accountId: AccountId
+  /** Which of the account's identities this is sent as -- an address. */
+  identity: string
+  inReplyTo?: MailMessageId | null
+  to: MailAddress[]
+  cc: MailAddress[]
+  bcc: MailAddress[]
+  subject: string
+  bodyHtml: string
+  attachments: BlobId[]
+  origin: MailOrigin
+  state: DraftState
+  createdAt: string
+  updatedAt: string
+}
+
+/** What an [[Op]] asks the account task to do. */
+export type OpKind =
+  | { type: 'markRead' }
+  | { type: 'markUnread' }
+  | { type: 'star' }
+  | { type: 'unstar' }
+  | { type: 'archive' }
+  | { type: 'trash' }
+  | { type: 'move'; to: MailboxId }
+  | { type: 'label'; label: string }
+  | { type: 'unlabel'; label: string }
+  | { type: 'snooze'; until: string }
+  | { type: 'send' }
+  | { type: 'appendDraft' }
+
+export type OpTarget =
+  | { type: 'thread'; id: ThreadId }
+  | { type: 'message'; id: MailMessageId }
+  | { type: 'draft'; id: DraftId }
+
+export type OpState =
+  | { type: 'pending' }
+  | { type: 'inFlight' }
+  | { type: 'done' }
+  | { type: 'failed'; permanent: boolean; message: string }
+  | { type: 'cancelled' }
+
+/** One entry in the outbox: the local write already happened; this is what
+ * still has to reach the server. See `crate::mail::outbox` for the state
+ * machine and `crates/everyday-mail/src/outbox.rs` for what runs it. */
+export interface Op {
+  id: OpId
+  accountId: AccountId
+  kind: OpKind
+  target: OpTarget
+  notBefore: string
+  attempts: number
+  lastError?: string | null
+  state: OpState
+  origin: MailOrigin
+  createdAt: string
+  updatedAt: string
+}
+
 // ── The command surface, describing itself ─────────────────────────────
 //
 // What `list_commands` answers with. Not used to *call* anything — the

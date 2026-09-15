@@ -151,6 +151,14 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   // `apply` for this target (see `accounts.svelte.ts`), so most changes are
   // patched in place; a batch wider than one record falls back to this.
   account: 'accounts',
+  // A conversation of mail messages, and a message being written. No app
+  // has registered a `ReloadTarget` for mail yet -- the interface is a
+  // later phase's -- so these are `null` on the same terms `conversation`
+  // and `memory` above are: nothing reloads today, and whichever pane
+  // reads a thread or a draft list will name a target for them when it
+  // exists.
+  thread: null,
+  draft: null,
 }
 
 /**
