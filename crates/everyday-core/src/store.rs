@@ -33,6 +33,7 @@ use crate::store::accounts::AccountStore;
 use crate::store::agent::AgentStore;
 use crate::store::calendars::CalendarStore;
 use crate::store::library::LibraryStore;
+use crate::store::mail::MailStore;
 use crate::store::notes::NoteStore;
 use crate::store::purpose::PurposeStore;
 use crate::store::routines::RoutineStore;
@@ -143,6 +144,19 @@ pub struct Capabilities {
     /// is an account that cannot stay signed in.
     #[serde(default)]
     pub accounts: bool,
+    /// Backend implements [`mail::MailStore`], so a synced mailbox has
+    /// somewhere to keep its mailboxes, messages, threads, bodies, drafts
+    /// and outbox.
+    ///
+    /// False hides the Mail app entirely, the way `library` hides the
+    /// library app -- offering to read mail nobody can store would be worse
+    /// than not offering it. Independent of `accounts` and `secrets` in the
+    /// type, though a backend that carries this in practice carries both: a
+    /// mailbox with nowhere to keep the credential it was synced with, or
+    /// the account record naming which mailbox it is, is not a mailbox at
+    /// all.
+    #[serde(default)]
+    pub mail: bool,
 }
 
 /// Per-vault configuration a backend needs and the core knows nothing about.
@@ -522,6 +536,17 @@ pub trait JournalStore: Send + Sync {
         None
     }
 
+    /// Storage for mail, if this backend has any.
+    ///
+    /// Same shape and same reasoning as [`JournalStore::tasks`]. See
+    /// [`mail`](crate::store::mail) for the eight tables it owns, the
+    /// cascade it recomputes on every ingest, flag change and removal, and
+    /// why a thread's own aggregates and its per-mailbox view in
+    /// `thread_mailboxes` are allowed to disagree.
+    fn mail(&self) -> Option<&dyn MailStore> {
+        None
+    }
+
     // ---- the owner ------------------------------------------------------
 
     /// Who this vault belongs to.
@@ -701,13 +726,6 @@ pub trait JournalStore: Send + Sync {
     /// the reference walk says. The cost of keeping an orphan another day is
     /// a few kilobytes; the cost of collecting a live one is an attachment
     /// that is gone for good.
-    ///
-    /// **Not yet mail-aware.** A synced attachment is a blob like any other,
-    /// reachable only through the message that embeds it -- and a `Message`
-    /// does not exist in this crate yet. This walk will need a fourth branch
-    /// once it does, alongside `library` and `notes`, or the first sweep
-    /// after mail lands will delete every attachment nobody had opened in a
-    /// day. Left for phase 2 of the mail plan, which adds the record to walk.
     fn collect_garbage(&self, grace: std::time::Duration) -> Result<u64> {
         let mut live = std::collections::BTreeSet::new();
         for entry in self.all_entries()? {
@@ -732,6 +750,19 @@ pub trait JournalStore: Send + Sync {
                 live.extend(note.body.blob_refs());
                 live.extend(note.attachments.iter().map(|a| a.blob));
             }
+        }
+        // And a synced message's attachments and inline images, each a
+        // `PartRef.blob` inside the `Body` the sync engine's attachment pass
+        // filled in -- see `crate::mail::Body`. Reached through
+        // `MailStore::attachment_blob_refs` rather than by decrypting every
+        // message a mailbox holds: a body's `parts` list is the only place
+        // an attachment's blob id is written down, and this asks for exactly
+        // that column of every body, not the sanitised HTML or text beside
+        // it. Missing this walk would make the first sweep after mail syncs
+        // a hundred thousand messages delete every attachment nobody had
+        // opened in a day.
+        if let Some(mail) = self.mail() {
+            live.extend(mail.attachment_blob_refs()?);
         }
         let mut removed = 0;
         for id in self.list_blobs()? {
@@ -843,6 +874,7 @@ pub mod accounts;
 pub mod agent;
 pub mod calendars;
 pub mod library;
+pub mod mail;
 pub mod notes;
 pub mod purpose;
 pub mod routines;
