@@ -180,7 +180,10 @@ fn guard_style_urls(html: &str, scheme: &str) -> Result<String, lol_html::errors
         if chunk.last_in_text_node() {
             let whole = std::mem::take(&mut *style_buffer.borrow_mut());
             let guarded = scrub_css(&whole, &mut |url| guard_one_url(url, &scheme_for_block));
-            chunk.replace(&guarded, LolContentType::Text);
+            // `ContentType::Html`, not `Text` -- see `make_style_content_html_safe`'s
+            // own docs for why this has to be paired with that function
+            // rather than writing `guarded` back verbatim.
+            chunk.replace(&make_style_content_html_safe(&guarded), LolContentType::Html);
         } else {
             chunk.remove();
         }
@@ -407,7 +410,11 @@ fn rewrite_dangerous_refs(
             if chunk.last_in_text_node() {
                 let whole = std::mem::take(&mut *buffer.borrow_mut());
                 let scrubbed = scrub_css(&whole, &mut |url| shared.borrow_mut().classify(url));
-                chunk.replace(&scrubbed, LolContentType::Text);
+                // See `make_style_content_html_safe`'s own docs: `Html`,
+                // paired with that function, is what keeps `td > p`
+                // surviving this pass without also reopening the door
+                // `Text` closed on `</style` and friends.
+                chunk.replace(&make_style_content_html_safe(&scrubbed), LolContentType::Html);
             } else {
                 chunk.remove();
             }
@@ -664,6 +671,96 @@ fn scrub_css(css: &str, on_url: &mut dyn FnMut(&str) -> String) -> String {
     out
 }
 
+/// Makes already-`scrub_css`-cleaned CSS safe to write back into a
+/// `<style>` element with `ContentType::Html` rather than `ContentType::Text`.
+///
+/// A `<style>` block is CDATA to a browser, not prose: `lol_html`'s
+/// `ContentType::Text` HTML-escapes `>`, `&` and `<` the way it would for
+/// any other text node, which is exactly right for a paragraph and exactly
+/// wrong for CSS, where `td > p { }` means something specific and
+/// `td &gt; p { }` means nothing to a CSS parser at all -- worse, run
+/// through this same pass a second time (a message re-sanitised, or one
+/// piped through twice by an interface that does not know it already has
+/// been), the `&gt;` becomes `&amp;gt;`, and the child selector is gone for
+/// good. `ContentType::Html` is the fix -- it writes the string back
+/// verbatim, the way the rest of this module's `url()` rewriting already
+/// relies on `<style>` content being read (`text!` hands over raw source
+/// bytes, no entity decoding, because raw text elements are never decoded
+/// by an HTML tokeniser in the first place; see the module docs' note on
+/// why `style_attr`'s decode step and a `<style>` block's lack of one are
+/// both correct for the same reason).
+///
+/// Writing arbitrary bytes back as `Html`, though, hands whatever is in
+/// `css` the power an HTML tokeniser gives literal markup -- so before that
+/// happens, this walks the string once and defuses the three shapes that
+/// matter for a value about to be dropped straight into a raw-text
+/// element's content:
+///
+/// - **`</style`**, matched case-insensitively and tolerant of whitespace
+///   between the `/` and the tag name (`</  STYLE`, `</\tstyle`) the same
+///   way a real tokeniser is when it is hunting for this element's
+///   appropriate end tag. Finding one and leaving it alone is how CSS
+///   text -- attacker-controlled, since it came from a message -- ends the
+///   `<style>` element on its own terms and hands everything after it to
+///   ordinary HTML parsing instead of CSS parsing.
+/// - **`<!--` and `-->`**, because once `</style` above has closed the
+///   element (or a re-parse downstream disagrees with this pass about
+///   where it closes), a stray HTML comment marker is one more way to hide
+///   a `<script>` from a first pass while a second, more lenient one still
+///   finds it.
+/// - **`<script`**, belt and braces: no legitimate CSS value is ever
+///   spelled this way, so there is no fidelity lost by refusing to let it
+///   through regardless of what closed or did not close around it.
+///
+/// Each is *neutralised* rather than deleted, so ordinary CSS that merely
+/// looks similar -- a comment, a stray string -- keeps as much of its
+/// original shape as possible: `</style` gets a zero-width space spliced
+/// between `<` and `/`, invisible to a person reading the rendered page but
+/// fatal to a tokeniser looking for that exact two-character sequence,
+/// while `<!--`/`-->`/`<script` are entity-escaped, the same substitution
+/// `ContentType::Text` would have made for every character rather than
+/// just these.
+fn make_style_content_html_safe(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut i = 0;
+    while i < css.len() {
+        let rest = &css[i..];
+
+        if rest.as_bytes().first() == Some(&b'<') && rest.as_bytes().get(1) == Some(&b'/') {
+            let after_slash = &rest[2..];
+            let trimmed = after_slash.trim_start_matches(|c: char| c.is_whitespace());
+            if trimmed.len() >= 5 && trimmed.as_bytes()[..5].eq_ignore_ascii_case(b"style") {
+                out.push('<');
+                out.push('\u{200b}');
+                out.push('/');
+                i += 2;
+                continue;
+            }
+        }
+
+        if ci_starts_with(rest, "<!--") {
+            out.push_str("&lt;!--");
+            i += "<!--".len();
+            continue;
+        }
+        if ci_starts_with(rest, "-->") {
+            out.push_str("--&gt;");
+            i += "-->".len();
+            continue;
+        }
+        if ci_starts_with(rest, "<script") {
+            out.push_str("&lt;script");
+            i += "<script".len();
+            continue;
+        }
+
+        let ch = rest.chars().next().expect("i < css.len() implies a char here");
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 /// `/* ... */` removed, and an unterminated comment taken to the end, as a
 /// browser does.
 fn strip_css_comments(css: &str) -> String {
@@ -780,6 +877,72 @@ mod tests {
         let out = sanitize(r#"<svg onload="alert(1)"><script>alert(2)</script></svg>"#, &rewrite());
         assert!(!out.html.contains("script"));
         assert!(!out.html.contains("alert"));
+    }
+
+    // ---- finding 2: a `<style>` block survives ContentType::Html safely ---
+
+    #[test]
+    fn a_child_selector_survives_sanitize_byte_for_byte() {
+        let out = sanitize(r#"<style>td > p { color: red; }</style>"#, &rewrite());
+        assert!(out.html.contains("td > p"), "{}", out.html);
+        assert!(!out.html.contains("&gt;"), "{}", out.html);
+    }
+
+    #[test]
+    fn a_child_selector_survives_the_final_guard_pass_too() {
+        // `guard_style_urls` is the second of the two passes that write a
+        // `<style>` block's content back -- see its own module docs -- so
+        // this checks it does not re-introduce the escaping bug on its own.
+        let out = guard_style_urls(r#"<style>td > p { color: red; }</style>"#, "everyday").unwrap();
+        assert!(out.contains("td > p"), "{out}");
+        assert!(!out.contains("&gt;"), "{out}");
+    }
+
+    #[test]
+    fn a_style_close_tag_inside_style_content_cannot_break_out() {
+        // Exercises `make_style_content_html_safe` directly: this is the
+        // string a `<style>` block's content would have to become, by
+        // whatever means, for `</style` inside it to matter -- lol_html's
+        // own raw-text tokenising already stops that string from ever
+        // reaching this function *through* an ordinary crafted email (see
+        // the function's own docs), but the neutralisation is defence in
+        // depth against exactly this shape regardless of how it might
+        // arrive.
+        let made_safe = make_style_content_html_safe("</style><script>alert(1)</script>");
+        let lower = made_safe.to_ascii_lowercase();
+        assert!(!lower.contains("</style"), "{made_safe}");
+        assert!(!lower.contains("<script"), "{made_safe}");
+    }
+
+    #[test]
+    fn whitespace_and_case_do_not_help_a_style_close_tag_survive() {
+        for variant in ["</  style>", "</\tSTYLE>", "</ StYlE>"] {
+            let made_safe = make_style_content_html_safe(variant);
+            assert!(
+                !made_safe.to_ascii_lowercase().contains("</style"),
+                "{variant} -> {made_safe}"
+            );
+        }
+    }
+
+    #[test]
+    fn html_comment_markers_inside_style_text_are_neutralised() {
+        let made_safe = make_style_content_html_safe("<!-- p { color: red; } -->");
+        assert!(!made_safe.contains("<!--"), "{made_safe}");
+        assert!(!made_safe.contains("-->"), "{made_safe}");
+    }
+
+    #[test]
+    fn a_style_block_containing_a_close_tag_and_script_cannot_break_out_end_to_end() {
+        // The end-to-end version of the two unit tests above: even if
+        // something upstream of `make_style_content_html_safe` ever handed
+        // it a chunk containing this text, `sanitize`'s output must not
+        // contain a live `<script` tag or a `</style` sequence that could
+        // end the element early.
+        let out =
+            sanitize(r#"<style>p { color: red; }</style><script>alert(1)</script>"#, &rewrite());
+        assert!(!out.html.to_ascii_lowercase().contains("<script"), "{}", out.html);
+        assert!(!out.html.contains("alert(1)"), "{}", out.html);
     }
 
     #[test]

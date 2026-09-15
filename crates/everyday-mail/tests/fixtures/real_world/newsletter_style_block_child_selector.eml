@@ -1,0 +1,21 @@
+From: "Notices" <notices@service.example>
+To: victim@example.com
+Subject: Your statement is ready
+Message-ID: <hostile-style-breakout-1@service.example>
+Date: Mon, 12 Jan 2026 09:16:00 +0000
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html>
+<head>
+<style>
+td > p { color: navy; }
+.footer > span { color: gray; }
+</style>
+</head>
+<body>
+<p>Your statement for January is ready to view.</p>
+<table><tr><td><p>Line item detail</p></td></tr></table>
+<div class="footer"><span>Unsubscribe below.</span></div>
+</body>
+</html>

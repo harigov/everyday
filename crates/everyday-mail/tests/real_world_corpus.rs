@@ -19,6 +19,9 @@ fn fixture(name: &str) -> &'static [u8] {
         "newsletter_encoded_image_query_string" => {
             include_bytes!("fixtures/real_world/newsletter_encoded_image_query_string.eml")
         }
+        "newsletter_style_block_child_selector" => {
+            include_bytes!("fixtures/real_world/newsletter_style_block_child_selector.eml")
+        }
         other => panic!("no such fixture: {other}"),
     }
 }
@@ -119,6 +122,23 @@ fn an_image_urls_entities_are_decoded_before_it_is_proxied() {
         "https://cdn.retailer.example/banner.png?w=600&h=300&fit=crop"
     );
     assert!(clean.html.contains("Shop now"));
+}
+
+/// Finding 2: `ContentType::Text` HTML-escaped a `<style>` block's content
+/// on the way back out, twice over across this crate's two rewrite passes,
+/// so a child-combinator selector like `td > p` came out as `td &amp;gt; p`
+/// -- meaningless to a CSS parser, and the newsletter's layout with it.
+#[test]
+fn a_style_blocks_child_selectors_survive_sanitize_intact() {
+    let parsed = parse("newsletter_style_block_child_selector");
+    let html = parsed.html.expect("html body");
+    let clean =
+        sanitize::sanitize(&html, &sanitize::Rewrite::new(parsed.message_id.clone().unwrap()));
+
+    assert!(clean.html.contains("td > p"), "{}", clean.html);
+    assert!(clean.html.contains(".footer > span"), "{}", clean.html);
+    assert!(!clean.html.contains("&gt;"), "{}", clean.html);
+    assert!(clean.html.contains("Line item detail"));
 }
 
 #[test]
