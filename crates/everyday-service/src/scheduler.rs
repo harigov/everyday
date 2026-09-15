@@ -557,6 +557,7 @@ async fn resume(
     // happens, including a timeout.
     service.set_running_routine(Some(routine.name.clone()));
     let turn = Turn {
+        service: service.clone(),
         vault: vault.clone(),
         pending: service.pending(),
         conversation: conversation.id,
@@ -594,12 +595,17 @@ async fn resume(
     // yesterday's list after the morning brief had written into it: the run
     // appeared in the Assistant app and the note it made appeared nowhere
     // until somebody switched apps.
-    for kind in wrote {
+    for (kind, ids) in wrote {
+        // One or the other, never both -- see `Change`'s own contract.
+        let (id, ids) = match ids.len() {
+            1 => (Some(ids.into_iter().next().expect("len 1")), Vec::new()),
+            _ => (None, ids),
+        };
         service.events().changed(Change {
             kind,
             op: Op::Updated,
-            id: None,
-            ids: Vec::new(),
+            id,
+            ids,
             origin: Some("assistant".to_string()),
         });
     }

@@ -715,6 +715,7 @@ impl Service {
             crate::command::parse("send_message", args)?;
         let vault = self.require()?;
         let turned = crate::agent::run_turn(crate::agent::Turn {
+            service: self.clone(),
             vault,
             pending: self.pending(),
             conversation: args.conversation_id,
@@ -731,12 +732,19 @@ impl Service {
         // the vault directly rather than back through here, so these are writes
         // nothing else on this path can see -- and the list a person asked it
         // to add a task to is open in front of them.
-        for kind in turned.wrote {
+        for (kind, ids) in turned.wrote {
+            // One or the other, never both -- `Change`'s own contract, and
+            // the same split every `command!` row with a `change:` makes
+            // between its `id` and `ids` forms.
+            let (id, ids) = match ids.len() {
+                1 => (Some(ids.into_iter().next().expect("len 1")), Vec::new()),
+                _ => (None, ids),
+            };
             self.events().changed(crate::events::Change {
                 kind,
                 op: crate::events::Op::Updated,
-                id: None,
-                ids: Vec::new(),
+                id,
+                ids,
                 origin: origin.clone(),
             });
         }

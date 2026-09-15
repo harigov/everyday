@@ -158,3 +158,19 @@ pub mod codes {
         CANCELLED,
     ];
 }
+
+/// What a [`ToolContext::mail_rate_limit`](everyday_core::agent::tools::ToolContext::mail_rate_limit)
+/// hook maps [`Service::check_mail_rate_limit`](crate::service::Service::check_mail_rate_limit)'s
+/// own [`CommandResult`] into -- the one place both `agent.rs` and
+/// `domains::meta::run_tool` build that closure, so the mapping is written
+/// once. [`codes::RATE_LIMITED`] survives the trip as
+/// [`everyday_core::error::Error::RateLimited`]; everything else becomes
+/// [`everyday_core::error::Error::Invalid`], which is the honest answer for
+/// a refusal this function does not otherwise expect to see.
+pub fn mail_rate_limit_error(e: CommandError) -> everyday_core::error::Error {
+    if e.code == codes::RATE_LIMITED {
+        everyday_core::error::Error::RateLimited(e.message)
+    } else {
+        everyday_core::error::Error::Invalid(e.message)
+    }
+}

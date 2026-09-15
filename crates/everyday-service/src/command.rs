@@ -161,6 +161,12 @@ pub fn effect_name(effect: Effect) -> &'static str {
         Effect::Read => "read",
         Effect::Write => "write",
         Effect::Destructive => "destructive",
+        // Reaches somebody outside the vault; see `Effect::Outward`'s own
+        // docs in the core. No row in this table declares it -- only the
+        // tool catalogue does -- but `effect_name` is shared with
+        // `domains::meta::list_tools`, which reads a tool's real effect
+        // straight from there.
+        Effect::Outward => "outward",
     }
 }
 
