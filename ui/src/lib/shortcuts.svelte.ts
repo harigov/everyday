@@ -723,6 +723,14 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     run: () => panels.openSettings('profile'),
   },
   {
+    label: 'Accounts',
+    group: 'Everywhere',
+    keywords: ['mail', 'email', 'google', 'microsoft', 'icloud', 'fastmail', 'sign in', 'oauth'],
+    icon: 'inbox',
+    when: () => app.screen === 'main',
+    run: () => panels.openSettings('accounts'),
+  },
+  {
     label: 'Refresh subscribed calendars',
     group: 'Calendar',
     keywords: ['sync', 'feed', 'ics'],

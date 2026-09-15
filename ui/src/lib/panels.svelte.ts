@@ -18,7 +18,7 @@
  * array around for that alone was dead weight the moment it stopped being
  * iterated anywhere.
  */
-export type SettingsTab = 'general' | 'profile' | 'assistant' | 'data' | 'vault'
+export type SettingsTab = 'general' | 'profile' | 'accounts' | 'assistant' | 'data' | 'vault'
 
 class Panels {
   /** Which settings tab is showing, or `null` when the dialog is closed. */

@@ -4187,6 +4187,21 @@ export const mockInvoke = async <T>(
       return undefined as T
     }
 
+    case 'attach_oauth_sign_in': {
+      requireUnlocked()
+      const id = str(args.id)
+      const account = accounts.find((a) => a.id === id)
+      if (!account) throw new VaultError('notFound', 'no such account')
+      // The real command claims tokens `await_oauth_sign_in` produced; the
+      // mock has none to hold, since its "browser" never really visits a
+      // token endpoint. What matters for the interface is the same
+      // afterwards either way: a sign-in is done, and the account is Ok.
+      oauthSignIns.delete(str(args.signInId))
+      account.signedIn = true
+      account.status = { type: 'ok' }
+      return undefined as T
+    }
+
     default:
       throw new VaultError('unknown', `no mock for command ${cmd}`)
   }

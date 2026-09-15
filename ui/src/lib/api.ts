@@ -6,7 +6,11 @@
 // native dependencies. That is what makes the design workable on its own.
 
 import type {
+  Account,
+  AccountId,
+  AgentCallerKind,
   AgentEvent,
+  AgentMailAccess,
   AgentSettings,
   BlockId,
   BlockKind,
@@ -981,6 +985,30 @@ export const api = {
    */
   openImport: () => invoke<PickedFile | null>('open_import'),
 
+  // ── Accounts ───────────────────────────────────────────────────────
+  //
+  // A mailbox provider signed in to -- not owned by the mail app, see
+  // `everyday_core::account`'s module doc. `AccountView` never carries a
+  // secret; `hasPassword` and `signedIn` are the only things this interface
+  // is ever told about one.
+
+  /** Every account this vault knows about, whole -- but never a secret. */
+  accounts: () => call('listAccounts', {}),
+  account: (id: AccountId) => call('getAccount', { id }),
+  /** Create or update an account record. Never the credential -- see below. */
+  saveAccount: (account: Account) => call('saveAccount', { account }),
+  deleteAccount: (id: AccountId) => call('deleteAccount', { id }),
+  /** Host, port, security and OAuth endpoints each well-known provider
+   *  publishes, for the add-account sheet to draw before anybody has typed
+   *  an address. */
+  accountPresets: () => call('accountPresets', {}),
+  /** Store or replace a password-authenticated account's credential. */
+  saveAccountPassword: (id: AccountId, password: string) =>
+    call('saveAccountPassword', { id, password }),
+  /** Flip one caller's -- the assistant's, or MCP's -- switches on one account. */
+  setAgentAccess: (id: AccountId, caller: AgentCallerKind, access: AgentMailAccess) =>
+    call('setAgentAccess', { id, caller, access }),
+
   /**
    * Start an OAuth sign-in: open the answered `url` yourself, with
    * `openExternal` (see `ui/src/lib/open-external.ts`) on the desktop, or by
@@ -1012,6 +1040,13 @@ export const api = {
   awaitOauthSignIn: (signInId: string) => call('awaitOauthSignIn', { signInId }),
   /** Withdraw a sign-in nobody is going to finish. */
   cancelOauthSignIn: (signInId: string) => call('cancelOauthSignIn', { signInId }),
+  /**
+   * Move a finished sign-in's tokens onto an account, sealed. The last step
+   * of the flow above -- see `crates/everyday-service/src/domains/
+   * accounts.rs`'s module doc for the hand-off this closes.
+   */
+  attachOauthSignIn: (id: AccountId, signInId: string, clientSecret?: string) =>
+    call('attachOauthSignIn', { id, signInId, clientSecret }),
 }
 
 /**

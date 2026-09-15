@@ -23,6 +23,7 @@
   import { panels, type SettingsTab } from '../lib/panels.svelte'
   import { app } from '../lib/state.svelte'
   import { tray } from '../lib/tray.svelte'
+  import AccountsPanel from './AccountsPanel.svelte'
   import AgentPanel from './AgentPanel.svelte'
   import DataPanel from './DataPanel.svelte'
   import McpPanel from './McpPanel.svelte'
@@ -79,6 +80,7 @@
     // the six fields, and "You" beside a list of the parts of a life read as
     // a label for one of them.
     { id: 'profile', label: 'About You', icon: 'star' },
+    { id: 'accounts', label: 'Accounts', icon: 'inbox' },
     { id: 'assistant', label: 'Assistant', icon: 'sparkle' },
     { id: 'data', label: 'Data', icon: 'upload' },
     { id: 'vault', label: 'Vault', icon: 'lock' },
@@ -224,6 +226,8 @@
         <AgentPanel />
       {:else if tab === 'profile'}
         <ProfilePanel />
+      {:else if tab === 'accounts'}
+        <AccountsPanel />
       {:else if tab === 'data'}
         <DataPanel />
       {:else if tab === 'general'}

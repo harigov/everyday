@@ -132,6 +132,10 @@ export interface Commands {
   addItem: { args: { kindId: KindId; title: string; lookup: boolean }; result: AddedItem }
   agentSettings: { args: Record<string, never>; result: AgentSettings }
   applyMetadata: { args: { id: ItemId; result: SearchResult; overwrite: boolean }; result: Item }
+  attachOauthSignIn: {
+    args: { id: AccountId; signInId: string; clientSecret?: string }
+    result: void
+  }
   awaitOauthSignIn: { args: { signInId: string }; result: AwaitedSignIn }
   beginOauthSignIn: {
     args: {
@@ -384,6 +388,7 @@ export const COMMAND_NAMES = {
   addItem: 'add_item',
   agentSettings: 'agent_settings',
   applyMetadata: 'apply_metadata',
+  attachOauthSignIn: 'attach_oauth_sign_in',
   awaitOauthSignIn: 'await_oauth_sign_in',
   beginOauthSignIn: 'begin_oauth_sign_in',
   calendarProviders: 'calendar_providers',
@@ -576,6 +581,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'add_item',
   'agent_settings',
   'apply_metadata',
+  'attach_oauth_sign_in',
   'await_oauth_sign_in',
   'begin_oauth_sign_in',
   'calendar_providers',
@@ -761,6 +767,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
 export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'add_item',
   'apply_metadata',
+  'attach_oauth_sign_in',
   'begin_oauth_sign_in',
   'cancel_oauth_sign_in',
   'change_password',
@@ -843,6 +850,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
 export const CHANGE_KINDS = {
   add_item: 'item',
   apply_metadata: 'item',
+  attach_oauth_sign_in: 'account',
   change_password: 'settings',
   clear_agent_key: 'settings',
   delete_account: 'account',
