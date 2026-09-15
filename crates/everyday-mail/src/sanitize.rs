@@ -111,8 +111,8 @@ pub struct Sanitised {
     pub had_tracking_pixels: bool,
 }
 
-/// Sanitises one message body's HTML: rewrite, then allow-list. See the
-/// module docs for why it is these two passes in this order.
+/// Sanitises one message body's HTML: rewrite, then allow-list, then guard.
+/// See the module docs for why it is these passes in this order.
 pub fn sanitize(html: &str, rewrite: &Rewrite) -> Sanitised {
     let shared = Rc::new(RefCell::new(Shared::new(rewrite.clone())));
 
@@ -126,14 +126,94 @@ pub fn sanitize(html: &str, rewrite: &Rewrite) -> Sanitised {
 
     let cleaned = ammonia_clean(&rewritten, &rewrite.scheme);
 
+    // The final wall: see `guard_style_urls`'s own docs for what this
+    // catches that the two passes above should already have caught, and
+    // why it is worth running anyway.
+    let guarded = guard_style_urls(&cleaned, &rewrite.scheme).unwrap_or_else(|_| cleaned.clone());
+
     let shared =
         Rc::try_unwrap(shared).map(RefCell::into_inner).unwrap_or_else(|rc| rc.borrow().clone());
 
     Sanitised {
-        html: cleaned,
+        html: guarded,
         remote_images: shared.remote_images,
         had_tracking_pixels: shared.had_tracking_pixels,
     }
+}
+
+/// The final wall, run once more after ammonia has finished: even though
+/// every `url()` this module's own rewrite pass sees is already turned into
+/// `{scheme}://mail/...` or dropped, a bug anywhere upstream of this line --
+/// a character reference [`crate::entities`]'s small table does not cover,
+/// a CSS construct [`scrub_css`] parses differently from how ammonia
+/// re-serialises it, a property [`ALLOWED_STYLE_PROPERTIES`] was wrong to
+/// let through -- would otherwise reach the frame as a live reference this
+/// module never decided to allow. This pass does not try to be clever about
+/// *why* a `url()` might have survived; it only checks *where* each
+/// surviving one points, against exactly the two destinations a rendered
+/// message is ever allowed to load from: this application's own protocol,
+/// and the handful of inline raster image types [`Shared::classify`]
+/// already lets through unproxied. Anything else -- an `https:` URL that
+/// slipped past the rewrite, a scheme CSS should never have carried to
+/// begin with -- is dropped rather than guessed at, the same conservative
+/// default [`Shared::classify`]'s own "everything else becomes nothing"
+/// applies.
+///
+/// Built on [`scrub_css`] rather than a second scanner: the grammar this
+/// needs to recognise (`@import`, `expression(`, `image-set(`, `url(`) is
+/// identical to the first pass's, so reusing it is less surface for the two
+/// to quietly drift apart than writing the same scan twice.
+fn guard_style_urls(html: &str, scheme: &str) -> Result<String, lol_html::errors::RewritingError> {
+    let scheme_for_attr = scheme.to_string();
+    let style_attr = element!("[style]", move |el| {
+        if let Some(style) = el.get_attribute("style") {
+            let guarded = scrub_css(&style, &mut |url| guard_one_url(url, &scheme_for_attr));
+            el.set_attribute("style", &guarded)?;
+        }
+        Ok(())
+    });
+
+    let scheme_for_block = scheme.to_string();
+    let style_buffer = Rc::new(RefCell::new(String::new()));
+    let style_block = text!("style", move |chunk| {
+        style_buffer.borrow_mut().push_str(chunk.as_str());
+        if chunk.last_in_text_node() {
+            let whole = std::mem::take(&mut *style_buffer.borrow_mut());
+            let guarded = scrub_css(&whole, &mut |url| guard_one_url(url, &scheme_for_block));
+            chunk.replace(&guarded, LolContentType::Text);
+        } else {
+            chunk.remove();
+        }
+        Ok(())
+    });
+
+    let settings = RewriteStrSettings::new()
+        .append_element_content_handler(style_attr)
+        .append_element_content_handler(style_block);
+    rewrite_str(html, settings)
+}
+
+/// `scrub_css`'s `on_url` callback for [`guard_style_urls`]: keeps a `url()`
+/// exactly as written when it already points somewhere this pass allows,
+/// drops it otherwise.
+fn guard_one_url(url: &str, scheme: &str) -> String {
+    if is_safe_css_url(url, scheme) { url.to_string() } else { String::new() }
+}
+
+/// The only two kinds of destination a `url()` surviving to this point is
+/// allowed to name: this application's own protocol (everything
+/// [`Shared::classify`] proxies or points a `cid:` at is written under it),
+/// and an inline raster image -- the same four MIME types
+/// [`Shared::classify`]'s own `INLINE` list carries an image's bytes
+/// without fetching anything.
+fn is_safe_css_url(url: &str, scheme: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    if lower.starts_with(&format!("{scheme}://")) {
+        return true;
+    }
+    const SAFE_DATA_IMAGES: [&str; 4] =
+        ["data:image/png", "data:image/gif", "data:image/jpeg", "data:image/webp"];
+    SAFE_DATA_IMAGES.iter().any(|p| lower.starts_with(p))
 }
 
 #[derive(Debug, Clone)]
@@ -289,7 +369,14 @@ fn rewrite_dangerous_refs(
         let shared = Rc::clone(shared);
         element!("[style]", move |el| {
             if let Some(style) = el.get_attribute("style") {
-                let scrubbed = scrub_css(&style, &mut |url| shared.borrow_mut().classify(url));
+                // `lol_html::Element::get_attribute` hands back the
+                // attribute's source text, character references and all --
+                // decoded once, here, before `scrub_css` ever sees it. See
+                // `crate::entities`'s module docs for why this has to
+                // happen before the scan rather than trusting ammonia's own
+                // decoding downstream.
+                let decoded = crate::entities::decode_entities(&style);
+                let scrubbed = scrub_css(&decoded, &mut |url| shared.borrow_mut().classify(url));
                 el.set_attribute("style", &scrubbed)?;
             }
             Ok(())
@@ -428,7 +515,11 @@ fn looks_like_tracking_pixel(el: &Element) -> bool {
     let Some(style) = el.get_attribute("style") else {
         return false;
     };
-    let style = style.to_ascii_lowercase();
+    // Decoded for the same reason the `style_attr` rewrite handler decodes
+    // before scrubbing -- see `crate::entities`'s module docs -- so an
+    // entity-encoded `display&#58;none` cannot hide a tracking pixel from
+    // this check any more than it can hide the `url()` scrub.
+    let style = crate::entities::decode_entities(&style).to_ascii_lowercase();
     let hidden_by_style = [
         "display:none",
         "display: none",
@@ -818,5 +909,77 @@ mod tests {
         let out = sanitize(r#"<a href="https://example.com">hi</a>"#, &rewrite());
         assert!(out.html.contains("target=\"_blank\""));
         assert!(out.html.contains("noopener"));
+    }
+
+    // ---- entity-encoded CSS cannot bypass the scrubber ---------------------
+
+    #[test]
+    fn decimal_entity_encoded_parens_do_not_survive_scrub() {
+        let out = sanitize(
+            r#"<div style="background:url&#40;https://evil.example/t.gif&#41;">hi</div>"#,
+            &rewrite(),
+        );
+        assert!(!out.html.contains("evil.example"), "{}", out.html);
+    }
+
+    #[test]
+    fn a_hex_entity_encoded_keyword_letter_does_not_survive_scrub() {
+        let out = sanitize(
+            r#"<div style="background: &#x75;rl(https://evil.example/a.png)">hi</div>"#,
+            &rewrite(),
+        );
+        assert!(!out.html.contains("evil.example"), "{}", out.html);
+    }
+
+    #[test]
+    fn mixed_case_hex_entities_do_not_survive_scrub() {
+        let out = sanitize(
+            r#"<div style="background: &#X75;RL(https://evil.example/a.png)">hi</div>"#,
+            &rewrite(),
+        );
+        assert!(!out.html.to_lowercase().contains("evil.example"), "{}", out.html);
+    }
+
+    #[test]
+    fn named_lpar_and_rpar_entities_do_not_survive_scrub() {
+        let out = sanitize(
+            r#"<div style="background:url&lpar;https://evil.example/a.png&rpar;">hi</div>"#,
+            &rewrite(),
+        );
+        assert!(!out.html.contains("evil.example"), "{}", out.html);
+    }
+
+    // ---- the final, post-ammonia wall over style urls -----------------------
+
+    #[test]
+    fn the_final_guard_drops_a_url_that_reached_it_unproxied() {
+        let out = guard_style_urls(
+            r#"<p style="background:url(https://evil.example/a.png)">hi</p>"#,
+            "everyday",
+        )
+        .unwrap();
+        assert!(!out.contains("evil.example"), "{out}");
+    }
+
+    #[test]
+    fn the_final_guard_drops_an_unsafe_url_from_a_style_block_too() {
+        let out = guard_style_urls(
+            r#"<style>p { background: url(https://evil.example/a.png); }</style>"#,
+            "everyday",
+        )
+        .unwrap();
+        assert!(!out.contains("evil.example"), "{out}");
+    }
+
+    #[test]
+    fn the_final_guard_keeps_a_proxied_or_inline_image_url() {
+        let out = guard_style_urls(
+            r#"<p style="background:url(everyday://mail/img/msg/tok)">hi</p>
+               <style>p { background: url(data:image/png;base64,AAAA); }</style>"#,
+            "everyday",
+        )
+        .unwrap();
+        assert!(out.contains("everyday://mail/img/msg/tok"), "{out}");
+        assert!(out.contains("data:image/png"), "{out}");
     }
 }

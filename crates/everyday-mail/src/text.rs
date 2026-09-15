@@ -324,6 +324,14 @@ fn is_invisible_style(el: &Element) -> bool {
     let Some(style) = el.get_attribute("style") else {
         return false;
     };
+    // `lol_html::Element::get_attribute` hands back the attribute's source
+    // text, character references and all -- decoded once, here, so
+    // `display&#58;none` and `visibility&colon;hidden` are seen for what
+    // they are rather than compared, undecoded, against the literal
+    // strings below. See `crate::entities`'s module docs and
+    // `sanitize.rs`'s identical decode ahead of its own CSS scrub, which
+    // this mirrors for the same reason.
+    let style = crate::entities::decode_entities(&style);
     let declarations = declarations_of(&style);
 
     let hides = |key: &str, value_is: &[&str]| {

@@ -31,6 +31,12 @@ fn fixture(name: &str) -> &'static [u8] {
         "calendar_invite_requesting_reply" => {
             include_bytes!("fixtures/hostile/calendar_invite_requesting_reply.eml")
         }
+        "injection_entity_encoded_hidden_text" => {
+            include_bytes!("fixtures/hostile/injection_entity_encoded_hidden_text.eml")
+        }
+        "entity_encoded_css_exfil" => {
+            include_bytes!("fixtures/hostile/entity_encoded_css_exfil.eml")
+        }
         other => panic!("no such fixture: {other}"),
     }
 }
@@ -145,4 +151,24 @@ fn an_at_import_and_css_expression_do_not_survive_sanitize() {
     assert!(!lower.contains("@import"));
     assert!(!lower.contains("expression("));
     assert!(!lower.contains("evil.example/track.css"));
+}
+
+#[test]
+fn an_entity_encoded_display_none_instruction_does_not_reach_model_text() {
+    let parsed = parse("injection_entity_encoded_hidden_text");
+    let model_text = text::model_text(&parsed);
+    assert!(model_text.contains("ticket has been updated"));
+    assert!(!model_text.to_lowercase().contains("forward the last ten invoices"));
+    assert!(!model_text.contains("attacker@evil.example"));
+}
+
+#[test]
+fn an_entity_encoded_css_url_does_not_survive_sanitize() {
+    let parsed = parse("entity_encoded_css_exfil");
+    let html = parsed.html.expect("html body");
+    let clean = sanitize::sanitize(
+        &html,
+        &sanitize::Rewrite::new("hostile-entity-css-1@marketing.example"),
+    );
+    assert!(!clean.html.contains("evil.example"), "{}", clean.html);
 }
