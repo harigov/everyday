@@ -156,6 +156,7 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
                 // keychain can block: a window that has drawn nothing yet
                 // must not be waiting on D-Bus.
                 let at = path.clone();
+                let was_locked = !vault.is_unlocked();
                 let unlocked = blocking(move || {
                     let Some(key) = everyday_vault::autounlock::recall(&at) else {
                         return Ok(());
@@ -166,8 +167,21 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
                     Ok(())
                 })
                 .await;
-                if let Err(e) = unlocked {
-                    tracing::warn!(error = %e, "the key in the keychain did not open the vault");
+                match unlocked {
+                    Ok(()) => {
+                        // `Service::set`, moments ago, saw this vault still
+                        // locked and had nothing of mail's to open; the key
+                        // the keychain just supplied is what makes it usable
+                        // now, so mail's storage and its account tasks start
+                        // here rather than waiting for a lock/unlock cycle
+                        // nothing in this path will ever ask for.
+                        if was_locked {
+                            service.unlocked();
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "the key in the keychain did not open the vault");
+                    }
                 }
             }
             // A vault we cannot open is not fatal: the interface should still
