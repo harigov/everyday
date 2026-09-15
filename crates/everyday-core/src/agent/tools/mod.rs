@@ -92,6 +92,7 @@ macro_rules! tool {
 
 mod journals;
 mod library;
+mod mail;
 mod memory;
 mod notes;
 mod purpose;
@@ -116,6 +117,19 @@ pub enum Effect {
     /// [`AgentSettings::confirm_destructive`](crate::agent::AgentSettings::confirm_destructive),
     /// because there is no undo in this application and no way back.
     Destructive,
+    /// Reaches somebody who is not the vault's owner. `send_draft` is the
+    /// one tool with this effect today: sending removes nothing -- a
+    /// [`Destructive`](Effect::Destructive) call and this one are answering
+    /// different questions -- but it cannot be taken back either, and it
+    /// puts words in front of a stranger rather than only changing a
+    /// record. So it is confirmed in chat unconditionally, independent of
+    /// [`AgentSettings::confirm_destructive`](crate::agent::AgentSettings::confirm_destructive)
+    /// -- there is no setting that sends without asking -- and an
+    /// unattended routine run refuses it outright rather than asking a
+    /// question nobody is there to answer, the same way `create_routine`
+    /// already refuses to make more of itself. See
+    /// `agent::tools::mail`'s module docs for the whole of the reasoning.
+    Outward,
 }
 
 impl Effect {
@@ -141,13 +155,21 @@ pub enum Domain {
     /// The assistant's own standing work.
     Routines,
     Agent,
+    /// Mailboxes, threads, drafts and the outbox -- see `agent::tools::mail`.
+    ///
+    /// Availability here only asks what every other domain asks: does the
+    /// backend store this at all. *Which* mail tools a given caller actually
+    /// sees is a second, caller-shaped question -- whether any account
+    /// permits them -- that [`available`] does not ask and [`available_for`]
+    /// does; see that function and `agent::tools::mail::offered_to`.
+    Mail,
 }
 
 impl Domain {
     /// Every domain there is, in no particular order. Exists so a test that
     /// means "every domain" can say so, rather than enumerating them by hand
     /// and silently going stale the day one is added.
-    pub const ALL: [Domain; 9] = [
+    pub const ALL: [Domain; 10] = [
         Domain::Journals,
         Domain::Notes,
         Domain::Tasks,
@@ -157,6 +179,7 @@ impl Domain {
         Domain::Purpose,
         Domain::Routines,
         Domain::Agent,
+        Domain::Mail,
     ];
 
     fn available(self, vault: &Vault) -> bool {
@@ -171,6 +194,7 @@ impl Domain {
                 Domain::Purpose => vault.supports_purpose(),
                 Domain::Routines => vault.supports_routines(),
                 Domain::Agent => vault.supports_agent(),
+                Domain::Mail => vault.supports_mail() && vault.supports_accounts(),
             }
     }
 
@@ -196,7 +220,18 @@ impl Domain {
             // recursion worth thinking about, and the answer is in
             // `run_create_routine`: an unattended run may not.
             | Domain::Routines
-            | Domain::Agent => Sensitivity::Ordinary,
+            | Domain::Agent
+            // Mail is written by strangers and its tools reach strangers,
+            // which is a real risk -- but it is not the risk `Secret`
+            // exists for. `Secret` is about *disclosure*: a tool that
+            // should never be offered at all, whatever the settings say.
+            // Mail's risk is handled instead, and handled per call: the
+            // per-account switch in `AgentMailAccess`, the assistant's own
+            // acknowledgement gate, `Effect::Outward`'s unconditional
+            // confirmation, and the refusal on an unattended run. Excluding
+            // the whole domain would also remove the thing that makes those
+            // gates worth having -- an assistant that can triage and draft.
+            | Domain::Mail => Sensitivity::Ordinary,
         }
     }
 }
@@ -264,6 +299,33 @@ impl std::fmt::Debug for Tool {
     }
 }
 
+/// Which non-person caller is driving a tool call, if any.
+///
+/// `None` on [`ToolContext::caller`] means the vault's owner is acting
+/// directly -- the interface's own palette, a keyboard shortcut, a script
+/// run through `run_tool` with nothing else set -- and is unrestricted by
+/// anything in [`crate::account::AgentMailAccess`], which exists to gate an
+/// *agent*, not the person whose vault it is. `Some` names which of the two
+/// agents this is, so `agent::tools::mail` -- the one domain that reads it
+/// today -- can read the matching switch off each account and stamp the
+/// matching [`crate::mail::Origin`] on every write it makes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Caller {
+    /// The chat assistant, in a named conversation.
+    Assistant { conversation: ConversationId },
+    /// An external agent over MCP, named by the device id it paired as.
+    /// A plain `String` rather than a typed id: MCP clients are rows in
+    /// `everyday-server`'s own device registry, which this crate does not
+    /// know about.
+    Mcp { client: String },
+}
+
+/// The type behind [`ToolContext::mail_rate_limit`], named so the field
+/// itself does not spell out a function pointer inline -- clippy's own
+/// `type_complexity` lint, and a reader's, agree that a closure type is
+/// worth a name once it has an argument and a `Result` in it.
+pub type MailRateLimit<'a> = dyn Fn(&crate::mail::Origin) -> Result<()> + 'a;
+
 /// Everything a tool needs that is not one of its arguments.
 pub struct ToolContext<'a> {
     pub vault: &'a Vault,
@@ -280,8 +342,36 @@ pub struct ToolContext<'a> {
     ///
     /// One tool reads it: `create_routine`, which refuses. A routine that
     /// makes routines, running every morning, is a way to wake up owning
-    /// forty of them that nobody asked for.
+    /// forty of them that nobody asked for. `send_draft` reads it too, for
+    /// the very same reason.
     pub unattended: bool,
+    /// Who this call is being made on behalf of, if not the vault's owner
+    /// acting directly. See [`Caller`].
+    pub caller: Option<Caller>,
+    /// Mail's search index, if this vault's mail storage opened cleanly this
+    /// session -- `everyday_service::Service::mail_index`'s own view, handed
+    /// down rather than reached for here, since the core has no notion of a
+    /// running service to ask. `None` is read as "nothing to search" by
+    /// `search_mail`, never as an error -- the same tolerance every other
+    /// caller of [`crate::mailsearch::MailSearch::rebuild_needed`] already
+    /// has for a derived structure that can always be rebuilt.
+    pub mail_search: Option<&'a dyn crate::mailsearch::MailSearch>,
+    /// The provider the assistant is actually configured to use right now,
+    /// compared against
+    /// [`crate::account::Account::assistant_provider_acknowledged`] by
+    /// [`crate::agent::LLMProviderConfig::acknowledgement_name`]. `None` for
+    /// every caller but the assistant, since nothing else reads it.
+    pub assistant_provider: Option<String>,
+    /// The one gate a mail write's enqueue passes through before it reaches
+    /// the outbox, wired to
+    /// `everyday_service::Service::check_mail_rate_limit` by whichever of
+    /// `agent.rs` or `meta.rs` built this context. Takes the
+    /// [`crate::mail::Origin`] the write is about to enqueue with. `None`
+    /// for the vault's owner acting directly and for a test that does not
+    /// need one -- see
+    /// [`crate::mail::Origin::is_rate_limited`](crate::mail::Origin) for why
+    /// a person is never checked against it at all.
+    pub mail_rate_limit: Option<&'a MailRateLimit<'a>>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -564,6 +654,7 @@ fn all() -> &'static [Tool] {
             purpose::TOOLS,
             routines::TOOLS,
             memory::TOOLS,
+            mail::TOOLS,
         ]
         .concat()
     })
@@ -580,8 +671,43 @@ pub fn catalog() -> &'static [Tool] {
 }
 
 /// The tools this vault can actually offer, given what its backend stores.
+///
+/// The vault's owner's own view: every domain the backend carries, mail
+/// included with nothing further asked of it. A caller that is an *agent*
+/// rather than the vault's owner wants [`available_for`] instead.
 pub fn available(vault: &Vault) -> Vec<&'static Tool> {
-    all().iter().filter(|t| t.domain.available(vault)).collect()
+    available_for(vault, None, None)
+}
+
+/// As [`available`], filtered further for one caller.
+///
+/// Every domain but [`Domain::Mail`] answers the whole question from the
+/// backend alone, the same as [`available`] -- `caller` and
+/// `assistant_provider` change nothing for them. Mail is different: a tool
+/// no account permits `caller` to use at all is hidden rather than offered
+/// and refused, on the same reasoning
+/// [`Sensitivity::Secret`](Sensitivity::Secret) is hidden rather than
+/// refused -- a model that is never told a tool exists cannot be talked
+/// into calling it. See `agent::tools::mail::offered_to` for exactly what
+/// "permits" means per tool.
+///
+/// `caller: None` reads as the vault's owner acting directly, unrestricted;
+/// `assistant_provider` is only consulted when `caller` is
+/// [`Caller::Assistant`] and is the string
+/// [`crate::agent::LLMProviderConfig::acknowledgement_name`] produces for
+/// whatever is configured right now.
+pub fn available_for(
+    vault: &Vault,
+    caller: Option<&Caller>,
+    assistant_provider: Option<&str>,
+) -> Vec<&'static Tool> {
+    all()
+        .iter()
+        .filter(|t| t.domain.available(vault))
+        .filter(|t| {
+            t.domain != Domain::Mail || mail::offered_to(vault, t.name, caller, assistant_provider)
+        })
+        .collect()
 }
 
 /// Look a tool up by the name the model used.
@@ -673,6 +799,24 @@ mod tests {
                     tool.describe.is_some(),
                     "{} deletes something and has no describe fn, so its confirmation \
                      card would name nothing",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    /// The sibling of the test above, for the fourth effect. `Effect::Outward`
+    /// carries no undo stack either -- the confirmation card is the whole of
+    /// the protection -- and a card that cannot say who a message is about to
+    /// reach asks somebody to approve sending it blind.
+    #[test]
+    fn every_outward_tool_can_name_who_it_reaches() {
+        for tool in catalog() {
+            if tool.effect == Effect::Outward {
+                assert!(
+                    tool.describe.is_some(),
+                    "{} reaches somebody outside the vault and has no describe fn, so its \
+                     confirmation card would name nobody",
                     tool.name
                 );
             }

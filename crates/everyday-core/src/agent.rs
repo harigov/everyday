@@ -189,6 +189,25 @@ impl LLMProviderConfig {
             .unwrap_or_else(|| self.provider.default_base_url())
     }
 
+    /// What `Account::assistant_provider_acknowledged`
+    /// (`crate::account::Account`) is compared against, once a person has
+    /// been told "your mail will be sent to X when you ask about it" and
+    /// said yes for one account.
+    ///
+    /// The endpoint, not [`Provider::label`] -- there is one wire protocol
+    /// (`Provider::OpenAi`'s Chat Completions shape) and several very
+    /// different promises behind it: the real OpenAI API, OpenRouter, and a
+    /// model running on this machine are all reached this way, and "your
+    /// mail will be sent to OpenAI" is not what is actually true the moment
+    /// `base_url` names something else. Comparing the endpoint means
+    /// changing it -- switching from a local model to a hosted one, or from
+    /// one hosted gateway to another -- naturally stops matching whatever
+    /// was acknowledged before, without this crate having to notice the
+    /// change and clear anything by hand.
+    pub fn acknowledgement_name(&self) -> String {
+        self.endpoint().to_string()
+    }
+
     /// Whether this connection needs an API key to be usable.
     pub fn needs_key(&self) -> bool {
         self.provider.needs_key(self.base_url.as_deref())

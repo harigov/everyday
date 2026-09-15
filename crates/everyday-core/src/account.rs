@@ -465,6 +465,21 @@ impl Account {
             AgentCaller::Mcp => self.mcp_access,
         }
     }
+
+    /// Has this account's owner told the assistant it may reach its mail,
+    /// for the LLM provider actually configured right now?
+    ///
+    /// A plain string comparison against
+    /// [`Account::assistant_provider_acknowledged`], on purpose: what
+    /// `provider` names is
+    /// [`crate::agent::LLMProviderConfig::acknowledgement_name`]'s call, not
+    /// this one's, and this method exists precisely so that call is made in
+    /// one place. `provider` empty never matches anything a person could
+    /// have acknowledged, which is what a caller with nothing configured
+    /// yet should get.
+    pub fn assistant_acknowledged_for(&self, provider: &str) -> bool {
+        !provider.is_empty() && self.assistant_provider_acknowledged.as_deref() == Some(provider)
+    }
 }
 
 /// Which of the two callers [`Account::access_for`] is answering for.

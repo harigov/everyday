@@ -37,7 +37,17 @@ pub fn a_tracked(vault: &Vault, tracker: Tracker) -> Tracker {
 pub const TODAY: jiff::civil::Date = jiff::civil::Date::constant(2026, 9, 8);
 
 pub fn ctx(vault: &Vault) -> ToolContext<'_> {
-    ToolContext { vault, today: TODAY, tz: "UTC", conversation: None, unattended: false }
+    ToolContext {
+        vault,
+        today: TODAY,
+        tz: "UTC",
+        conversation: None,
+        unattended: false,
+        caller: None,
+        mail_search: None,
+        assistant_provider: None,
+        mail_rate_limit: None,
+    }
 }
 
 pub fn call(vault: &Vault, tool: &str, args: serde_json::Value) -> serde_json::Value {

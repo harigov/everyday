@@ -51,6 +51,19 @@ pub enum Error {
     #[error("invalid data: {0}")]
     Invalid(String),
 
+    /// A caller has enqueued too many mail ops this turn, or this minute --
+    /// see `everyday_service::Service::check_mail_rate_limit`, the one
+    /// place this is ever constructed. Its own variant rather than another
+    /// [`Error::Invalid`], so the distinct code survives the trip from a
+    /// [`crate::agent::tools::ToolContext::mail_rate_limit`] hook, through
+    /// [`crate::agent::tools::dispatch`], to the command layer that turns
+    /// this into `codes::RATE_LIMITED` rather than `codes::INVALID` --
+    /// which matters to a model reading the refusal exactly as much as a
+    /// person does: "slow down" and "that was wrong" are different things
+    /// to do next.
+    #[error("too many mail actions: {0}")]
+    RateLimited(String),
+
     #[error("io error at {path}: {source}")]
     Io {
         path: PathBuf,
@@ -102,6 +115,10 @@ impl Error {
             Error::VaultInUse { .. } => "vault_in_use",
             Error::Conflict { .. } => "conflict",
             Error::Invalid(_) => "invalid",
+            // Matches `everyday_service::error::codes::RATE_LIMITED`
+            // exactly -- see `Error::RateLimited`'s own doc for why that
+            // has to be true.
+            Error::RateLimited(_) => "rate_limited",
             Error::Io { .. } | Error::RawIo(_) => "io",
             Error::Serde(_) => "serde",
             Error::Backend(_) => "backend",
