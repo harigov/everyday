@@ -37,6 +37,20 @@ use crate::{SqlStore, from_us, placeholders, vals};
 /// writer.
 const INGEST_BATCH_ROWS: usize = 500;
 
+/// The number of `?` placeholders any `IN (...)` this module builds allows
+/// itself, whatever list it is built from.
+///
+/// SQLite refuses a prepared statement with more than 32,766 bound
+/// parameters; Postgres, 65,535. A mailbox -- or a single removal call --
+/// can hold tens of thousands of messages (`docs/plans/mail.md`'s own speed
+/// budget names a hundred thousand), which is well past the smaller of the
+/// two limits if every uid, message id or mailbox id in the list became its
+/// own placeholder in one statement. 500 leaves a wide margin under either
+/// limit while keeping the round-trip count for even the largest mailbox in
+/// the low hundreds, not the tens of thousands a one-row-at-a-time loop
+/// would need.
+const IN_CHUNK: usize = 500;
+
 /// See [`everyday_core::store::mail::MailStore::ingest`].
 pub(super) fn ingest(
     store: &SqlStore,
@@ -304,6 +318,13 @@ pub(super) fn remove_uids(store: &SqlStore, mailbox: MailboxId, uids: &[u32]) ->
 /// [`delete_mailbox`]: drop every named `(mailbox, uid)` membership, delete
 /// any message that no mailbox names any more (body included), and
 /// recompute every thread touched.
+///
+/// The two statements that name every uid in `uids` are chunked to
+/// [`IN_CHUNK`] items at a time -- `uids` alone can be tens of thousands
+/// long (a mailbox holding that many messages, or [`delete_mailbox`]
+/// handing this every uid it ever tracked), and one placeholder per item
+/// past either backend's own limit is exactly what used to make this fail;
+/// see [`IN_CHUNK`]'s own docs.
 fn remove_uids_tx(
     store: &SqlStore,
     tx: &mut dyn Sql,
@@ -313,27 +334,33 @@ fn remove_uids_tx(
     if uids.is_empty() {
         return Ok(());
     }
-    let holes = placeholders(2, uids.len());
-    let mut args = vec![Value::Text(mailbox.to_string())];
-    args.extend(uids.iter().map(|u| Value::Int(i64::from(*u))));
+    let mailbox_s = mailbox.to_string();
 
-    let touched: Vec<(String, String)> = tx
-        .query(
+    // Every `(message_id, thread_id)` pair a removed uid named, gathered
+    // chunk by chunk so the two statements below never bind more than
+    // `IN_CHUNK` uids at once.
+    let mut touched: Vec<(String, String)> = Vec::with_capacity(uids.len());
+    for chunk in uids.chunks(IN_CHUNK) {
+        let holes = placeholders(2, chunk.len());
+        let mut args = vec![Value::Text(mailbox_s.clone())];
+        args.extend(chunk.iter().map(|u| Value::Int(i64::from(*u))));
+
+        let rows = tx.query(
             &format!(
                 "SELECT mm.message_id, m.thread_id FROM message_mailboxes mm
                  JOIN mail_messages m ON m.id = mm.message_id
                  WHERE mm.mailbox_id = ?1 AND mm.uid IN ({holes})"
             ),
             &args,
-        )?
-        .into_iter()
-        .map(|r| Ok((r.text(0)?, r.text(1)?)))
-        .collect::<Result<_>>()?;
-
-    tx.execute(
-        &format!("DELETE FROM message_mailboxes WHERE mailbox_id = ?1 AND uid IN ({holes})"),
-        &args,
-    )?;
+        )?;
+        for row in rows {
+            touched.push((row.text(0)?, row.text(1)?));
+        }
+        tx.execute(
+            &format!("DELETE FROM message_mailboxes WHERE mailbox_id = ?1 AND uid IN ({holes})"),
+            &args,
+        )?;
+    }
 
     let mut orphan_threads: BTreeSet<ThreadId> = BTreeSet::new();
     for (message_id, thread_id) in &touched {
@@ -400,6 +427,13 @@ pub(super) fn reset_mailbox(store: &SqlStore, mailbox: MailboxId) -> Result<()> 
 }
 
 /// See [`everyday_core::store::mail::MailStore::delete_mailbox`].
+///
+/// The `uid` scan below is a plain `WHERE mailbox_id = ?1`, not an
+/// `IN (...)` -- reading every uid a mailbox holds never binds more than
+/// one parameter, however many rows come back, so [`IN_CHUNK`] has nothing
+/// to do here. [`remove_uids_tx`], which this hands the whole list to, is
+/// what chunks the uids themselves once it builds its own `IN (...)`
+/// clauses over them.
 pub(super) fn delete_mailbox(store: &SqlStore, id: MailboxId) -> Result<()> {
     let mut conn = store.write();
     let mut tx = conn.begin()?;
@@ -589,6 +623,15 @@ fn recompute_thread_mailboxes(tx: &mut dyn Sql, thread_id: ThreadId) -> Result<(
             &vals![thread_id.to_string()],
         )?;
     } else {
+        // Not chunked to `IN_CHUNK`, unlike every other `IN (...)` this
+        // module builds: `live` is one row per *mailbox* a single thread's
+        // messages are currently filed under, which even a message under
+        // every Gmail label anyone has ever created stays orders of
+        // magnitude under either backend's parameter limit. It also could
+        // not be chunked correctly if it ever grew that large -- a `NOT IN`
+        // does not decompose across several statements the way an `IN`
+        // does, since each chunk would delete everything the *other*
+        // chunks were about to keep.
         let holes = placeholders(2, live.len());
         let mut args = vec![Value::Text(thread_id.to_string())];
         args.extend(live.into_iter().map(Value::Text));

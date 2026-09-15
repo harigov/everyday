@@ -35,6 +35,8 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     merge_threads_migrates_messages_and_deletes_the_others(store);
     pending_bodies_finds_only_unfetched_messages_newest_first(store);
     account_delete_cascades_every_mail_row(store);
+    removing_forty_thousand_uids_does_not_hit_the_parameter_limit(store);
+    deleting_a_mailbox_with_forty_thousand_messages_does_not_hit_the_parameter_limit(store);
 
     eprintln!("--- mail suite passed ---");
 }
@@ -575,6 +577,71 @@ fn account_delete_cascades_every_mail_row(store: &dyn JournalStore) {
         "the op must not survive"
     );
     assert!(m.attachment_blob_refs().unwrap().is_empty());
+}
+
+/// Regression for "removing a large number of UIDs hits the parameter
+/// limit": before the fix, [`MailStore::remove_uids`] built one
+/// `uid IN (?2, ?3, ...)` with a parameter per uid, which fails past
+/// SQLite's 32,766-parameter limit and Postgres's 65,535 long before
+/// 40,000 uids. One thread for the whole batch, deliberately, so the cost
+/// this test pays is the removal's own chunking, not a hundred thousand
+/// separate `recompute_thread` calls a more realistic (one thread per
+/// message) shape would also exercise -- that shape already has its own,
+/// `#[ignore]`d benchmark in `everyday-store-sqlite::mail_scale`.
+fn removing_forty_thousand_uids_does_not_hit_the_parameter_limit(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    const N: u32 = 40_000;
+    let thread_id = ThreadId::new();
+    let base = Timestamp::now();
+    let ingest: Vec<IngestMessage> = (0..N)
+        .map(|i| {
+            let date = base + SignedDuration::from_micros(i64::from(i));
+            let msg = message(account, thread_id, "bulk", &format!("sender{i}@example.com"), date);
+            IngestMessage { message: msg, mailbox: mailbox.id, uid: i + 1 }
+        })
+        .collect();
+    m.ingest(account, ingest).unwrap();
+    assert_eq!(m.thread(thread_id).unwrap().0.message_count, N);
+
+    let uids: Vec<u32> = (1..=N).collect();
+    m.remove_uids(mailbox.id, &uids).unwrap();
+    assert!(m.thread(thread_id).is_err(), "the thread must be gone with its last message");
+
+    cleanup_account(store, account);
+}
+
+/// The same regression as just above, for [`MailStore::delete_mailbox`]'s
+/// own `uid IN (...)` path through [`MailStore::remove_uids`]'s shared
+/// implementation.
+fn deleting_a_mailbox_with_forty_thousand_messages_does_not_hit_the_parameter_limit(
+    store: &dyn JournalStore,
+) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    const N: u32 = 40_000;
+    let thread_id = ThreadId::new();
+    let base = Timestamp::now();
+    let ingest: Vec<IngestMessage> = (0..N)
+        .map(|i| {
+            let date = base + SignedDuration::from_micros(i64::from(i));
+            let msg = message(account, thread_id, "bulk", &format!("sender{i}@example.com"), date);
+            IngestMessage { message: msg, mailbox: mailbox.id, uid: i + 1 }
+        })
+        .collect();
+    m.ingest(account, ingest).unwrap();
+
+    m.delete_mailbox(mailbox.id).unwrap();
+    assert!(m.list_mailboxes(account).unwrap().is_empty());
+    assert!(m.thread(thread_id).is_err());
+
+    cleanup_account(store, account);
 }
 
 /// Not part of [`run_mail_suite`], for the reason
