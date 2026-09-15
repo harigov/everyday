@@ -25,8 +25,11 @@ tracing.workspace = true
 rand.workspace = true
 # `sign_in_id`, minted fresh per sign-in attempt. Session-only, so a plain
 # `uuid::Uuid` is enough; it is not one of `everyday-core`'s typed ids
-# because it names no vault record.
-uuid.workspace = true
+# because it names no vault record. `v5`, on top of the workspace default,
+# is `accountcal`'s own: a deterministic id for one account calendar's
+# occurrence, derived from the calendar and the source's own uid rather than
+# minted fresh -- see `accountcal::deterministic_event_id`'s doc.
+uuid = { workspace = true, features = ["v5"] }
 # The one network dependency, here rather than in the core on purpose:
 # `everyday-core` has no async runtime, no TLS stack and no ability to open a
 # socket, and the calendar and library features are built so that stays true.
@@ -39,12 +42,84 @@ futures = "0.3.34"
 rig-core = "0.42"
 rig-agent = "0.42"
 
+# ── Calendars that sign in (phase 6 of docs/plans/mail.md) ──────────────────
+#
+# CalDAV over `libdav` -- ISC, and, per the plan's own note on pre-1.0
+# crates, pinned exactly. `libdav` is built on `hyper`/`tower` rather than
+# `reqwest`, and takes any `tower_service::Service<http::Request<String>>`
+# as its transport (`libdav::common::HttpClient`'s blanket impl), so
+# `accountcal::caldav` supplies one: a `hyper-util` legacy client over
+# `hyper-rustls`, wrapped in `tower_http::auth::AddAuthorization` for Basic
+# or Bearer. `hyper`, `http`, `http-body-util`, `hyper-util`, `hyper-rustls`
+# and `tower-http` are *already* in this workspace's dependency graph --
+# `reqwest`'s own `default-tls` feature is built on the same `hyper-rustls`,
+# with the same `aws-lc-rs` crypto provider selected by its feature flags --
+# so this adds no second TLS stack and no second crypto provider *crate*; it
+# reuses exactly what `reqwest` already links. `cargo tree -d` after this
+# change shows no new duplicate of `rustls`, `aws-lc-rs` or any native-TLS
+# crate; see the phase's report for the exact command run.
+#
+# What it does surface, in a *standalone test binary* only, is a
+# process-wide ambiguity `rustls` itself warns about: this tree also links
+# `ring` (via `rustls-platform-verifier`, for IMAP/SMTP), so two crypto
+# providers are compiled in and something has to call
+# `CryptoProvider::install_default()` once before either is used. The real
+# application already does -- `everyday_server::lib`'s startup installs
+# `ring` -- so `everyday-mail`'s own SMTP and this module both find a
+# provider already chosen and never install one themselves. `tests/
+# caldav_docker.rs` is the one binary that never runs that startup path, so
+# it installs the same provider itself; see that file's own note and its dev
+# `rustls` dependency below.
+#
+# `roxmltree` is `libdav`'s own XML reader,
+# added here directly because `accountcal::caldav::sync_collection` hand-rolls
+# the RFC 6578 REPORT `libdav` does not implement (see the plan's "written
+# here rather than depended on") and has to walk the multistatus response
+# itself, the same way `libdav`'s own `PropfindResponse::xml_tree` does.
+libdav = "=0.11.0"
+hyper = { version = "1.11", features = ["client", "http1"] }
+http = "1"
+http-body-util = "0.1"
+hyper-util = { version = "0.1.20", features = ["client-legacy", "http1"] }
+hyper-rustls = "0.27.9"
+tower-http = { version = "0.6", features = ["auth"] }
+tower-service = "0.3"
+roxmltree = "0.21"
+# iCalendar for account calendars: parses VEVENT, VTIMEZONE and RRULE/EXDATE
+# and expands recurrences via its own `datecalc` module
+# (`ICalendar::expand_dates`), which is why the plan's separately-considered
+# `rrule` crate is not also a dependency -- adding it would mean two
+# recurrence engines that could disagree with each other, which is exactly
+# the class of risk the plan's own "two time libraries disagree" row warns
+# about, just doubled. `everyday-core::ics` (jiff, hand-written) still parses
+# every *feed* calendar; this crate's `accountcal` is the only caller of
+# `calcard`, and the boundary where its `chrono` types become `jiff` ones --
+# see `accountcal::caldav::to_jiff` -- is deliberately narrow and is where the
+# plan's "chrono comes in with calcard" decision is kept to. `jmap`, its
+# default feature, pulls in JSCalendar conversion this application never
+# uses, so it is switched off.
+calcard = { version = "=0.3.13", default-features = false }
+chrono = "0.4"
+
 [dev-dependencies]
 base64 = "0.22"
 tempfile = "3"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "test-util", "net", "io-util"] }
 # `signin.rs`'s tests play browser against a real loopback listener and a
 # mock token endpoint; both need a socket. Already in the workspace's lock
-# through `everyday-server` and `everyday-mail`.
+# through `everyday-server` and `everyday-mail`. `accountcal`'s Google and
+# Graph unit tests reuse the same pattern for a mocked JSON API.
 axum = "0.8"
 url = "2"
+# `tests/caldav_docker.rs` seeds its throwaway Radicale over plain HTTP with
+# its own `reqwest::Client`, built before anything in this crate's own
+# `crate::http` module has run. `reqwest` (and this phase's `hyper-rustls`)
+# both need a process-wide `rustls` `CryptoProvider` installed before they
+# build a TLS connector at all -- even for an `http://` request, since the
+# connector is built eagerly -- and the real application gets one for free
+# from `everyday_server::lib`'s own explicit `ring::default_provider().
+# install_default()` at startup. A standalone `cargo test` binary never runs
+# that, so the test installs the same provider itself, the same way; `ring`
+# here is what makes that call available to a dev-only binary that does not
+# depend on `everyday-server`.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }

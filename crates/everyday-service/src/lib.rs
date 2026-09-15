@@ -39,6 +39,7 @@
 //! Those decide what a service *is*, and they belong to whatever owns the
 //! process. A service is handed a vault; it does not go looking for one.
 
+pub mod accountcal;
 pub mod agent;
 pub mod command;
 pub mod ctx;
