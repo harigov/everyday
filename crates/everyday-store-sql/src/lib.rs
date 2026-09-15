@@ -48,6 +48,14 @@
 //! | `record_secrets` (`owner_kind`, `owner_id`) | that some record of that kind holds a credential, never which one or what it is |
 //! | account `created_us`, `updated_us` | how many mailbox providers are signed in to, and roughly when -- never the address, the host, or a single credential |
 //! | `account_calendars` (`calendar_id`, `account_id`) | which calendar came from which account, once phase 6 writes a row here -- never either one's name |
+//! | mailbox `account_id`, `role`, `uidvalidity`, `uidnext`, `highest_modseq` | how many folders and labels a mailbox has, which is the inbox, and where sync last reached -- never a folder's actual name |
+//! | message `account_id`, `thread_id`, `date_us`, `flags`, `has_attachments`, `size`, `category`, pack address | when a message arrived, its read/starred/answered state (packed, see `MessageFlags::bits`), roughly how big it is, and where its raw bytes are -- never a subject, an address or a label |
+//! | `message_mailboxes` (`message_id`, `mailbox_id`, `uid`) | that a message is filed in a mailbox, and at what uid -- the address a `FETCH` or `STORE` actually names |
+//! | thread `account_id`, `last_date_us`, `unread`, `category`, `snoozed_until_us` | how many messages a thread has and how many are unread, never its subject or who is in it |
+//! | `thread_mailboxes` (`thread_id`, `mailbox_id`, `last_date_us`, `unread`) | the same two numbers, per mailbox -- what an inbox actually pages over |
+//! | `bodies` (`message_id`) | that a body exists for a message -- nothing about it; the sanitised HTML, the text and every part's filename are sealed |
+//! | draft `account_id`, `in_reply_to`, `state`, `origin`, `updated_us` | how many messages are being written, which is a reply to which, and by whom (the *kind* of writer only) -- never a word of one |
+//! | op `account_id`, `state`, `origin`, `not_before_us` | that something is queued to reach a server, its outcome, who asked (the *kind* only) and when it may run -- never which thread, message or draft |
 //!
 //! Titles, bodies, tags, locations, attachments and file names are all
 //! sealed. Someone with the database learns *that* you journalled on 14 July
@@ -116,6 +124,7 @@ mod agent;
 mod calendars;
 mod journals;
 mod library;
+pub mod mail;
 mod notes;
 pub mod packs;
 mod pool;
@@ -293,6 +302,7 @@ impl SqlStore {
             agent: true,
             secrets: true,
             accounts: true,
+            mail: true,
         }
     }
 
