@@ -12,7 +12,9 @@ mod threads;
 mod write;
 
 use everyday_core::error::Result;
-use everyday_core::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
+use everyday_core::id::{
+    AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, PackId, ThreadId,
+};
 use everyday_core::mail::{
     Body, CategoryRules, ContactBook, Draft, Invite, Mailbox, Message, MessageFlags, Op, OpTarget,
     RemoteImageSettings, Thread,
@@ -566,6 +568,24 @@ impl MailStore for SqlStore {
             out.extend(body.parts.into_iter().filter_map(|p| p.blob));
         }
         Ok(out)
+    }
+
+    fn referenced_pack_ids(&self, account: AccountId) -> Result<Vec<PackId>> {
+        let rows = self.read().query(
+            "SELECT DISTINCT pack_id FROM mail_messages WHERE account_id = ?1",
+            &vals![account.to_string()],
+        )?;
+        rows.into_iter()
+            .map(|r| {
+                r.text(0)?.parse().map_err(|e: <PackId as std::str::FromStr>::Err| {
+                    everyday_core::error::Error::Invalid(e.to_string())
+                })
+            })
+            .collect()
+    }
+
+    fn remap_packs(&self, account: AccountId, remap: &[(PackRef, PackRef)]) -> Result<()> {
+        write::remap_packs(self, account, remap)
     }
 
     // ---- remote-image permissions --------------------------------------------

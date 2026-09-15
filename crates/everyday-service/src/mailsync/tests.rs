@@ -832,9 +832,15 @@ async fn a_deleted_messages_pack_frame_is_marked_dead_and_dropped_from_search() 
     assert!(hits_after.hits.is_empty(), "a removed message must no longer be searchable");
 
     // `compact` reclaims a pack once a third of it is dead -- trivially
-    // true for a pack holding only this one, now-dead, message.
-    let remap = env.packs.compact(&env.account_id.to_string()).unwrap();
-    assert!(remap.is_empty(), "nothing live was left to remap");
+    // true for a pack holding only this one, now-dead, message. It no
+    // longer deletes anything itself (see `PackStore::compact`'s own
+    // two-step contract), so the test plays the caller's part: nothing else
+    // referenced this account's packs any more once the message above was
+    // removed, so an empty `referenced` list is the honest input, and
+    // `drop_packs` is what actually reclaims the space.
+    let result = env.packs.compact(&env.account_id.to_string(), &[]).unwrap();
+    assert!(result.remap.is_empty(), "nothing live was left to remap");
+    env.packs.drop_packs(&env.account_id.to_string(), &result.obsolete).unwrap();
     assert!(
         env.packs.read(&pack_before).is_err(),
         "the dead frame's pack must actually have been reclaimed"

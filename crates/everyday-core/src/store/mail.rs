@@ -501,6 +501,41 @@ pub trait MailStore: Send + Sync {
     /// treats as live. See `crate::mail::PartRef::blob`.
     fn attachment_blob_refs(&self) -> Result<Vec<BlobId>>;
 
+    /// Every pack id `account`'s messages currently point at, deduplicated
+    /// -- the "store's referenced-pack query" a
+    /// [`crate::packstore::PackStore::compact`] caller reads before every
+    /// call, so that call's own orphan sweep can tell an old pack nothing
+    /// references any more (safe to reclaim) from one still holding live
+    /// mail (not). See that method's own docs for the whole of the contract
+    /// this feeds.
+    fn referenced_pack_ids(&self, account: AccountId) -> Result<Vec<crate::id::PackId>>;
+
+    /// Rewrite the pack address of every message a
+    /// [`crate::packstore::PackStore::compact`] call moved, in one
+    /// transaction -- the "commit" half of that method's own two-step
+    /// contract; see its docs for the whole of it. For each `(old, new)`
+    /// pair, whichever `mail_messages` row currently names `old`'s exact
+    /// pack, offset and length is updated to `new`'s instead; a row that no
+    /// longer matches `old` -- the message was deleted by a concurrent
+    /// removal between `compact` returning and this call running -- is left
+    /// alone, since there is nothing left for the remap to reach.
+    ///
+    /// # The calling contract this exists to make possible
+    ///
+    /// A caller of `PackStore::compact` must call this, and see it return
+    /// `Ok`, before it calls `PackStore::drop_packs` on the same result's
+    /// obsolete packs, and must not let anything else it does not control
+    /// run in between (a concurrent `compact` on the same account, most of
+    /// all -- the vault's single-writer invariant is what every caller
+    /// today relies on to rule that out). Concretely: `compact`, then
+    /// `remap_packs`, then `drop_packs`. No caller of `PackStore::compact`
+    /// exists in this codebase yet -- see that method's own module for
+    /// where one is expected to be wired in -- so this method, and the
+    /// contract it documents, exist ahead of anything calling either, the
+    /// same way `everyday_core::packstore` itself was built a phase ahead
+    /// of the mail domain it now serves.
+    fn remap_packs(&self, account: AccountId, remap: &[(PackRef, PackRef)]) -> Result<()>;
+
     // ---- remote-image permissions --------------------------------------------
 
     /// The standing allow-list -- senders and domains someone has said yes

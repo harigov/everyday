@@ -21,7 +21,7 @@
 
 use everyday_core::error::{Error, Result};
 use everyday_core::id::PackId;
-use everyday_core::packstore::{PackRef, PackStore};
+use everyday_core::packstore::{CompactionResult, PackRef, PackStore};
 
 use crate::conn::SqlExt;
 use crate::{SqlStore, vals};
@@ -112,10 +112,32 @@ impl PackStore for TablePacks<'_> {
         Ok(())
     }
 
-    fn compact(&self, _account: &str) -> Result<Vec<(PackRef, PackRef)>> {
+    fn compact(&self, _account: &str, _referenced: &[PackId]) -> Result<CompactionResult> {
         // See the module docs: a row is already its own pack, so there is
-        // nothing to rewrite and nothing to remap.
-        Ok(Vec::new())
+        // nothing to rewrite, nothing to remap, and -- since `mark_dead`
+        // already deletes a dead row outright rather than leaving an orphan
+        // behind for a later sweep to find -- nothing an orphan sweep would
+        // ever find here either.
+        Ok(CompactionResult::default())
+    }
+
+    fn drop_packs(&self, _account: &str, packs: &[PackId]) -> Result<()> {
+        if packs.is_empty() {
+            return Ok(());
+        }
+        // `compact` never returns anything in `obsolete` on this backend --
+        // see its own docs just above -- so the only way this is ever
+        // called with a non-empty list is a caller replaying a `compact`
+        // result computed against a different [`PackStore`] entirely. Rows
+        // named by an id this table never held are simply not there to
+        // delete, on the same "not an error" terms every other id-keyed
+        // delete in this crate already keeps.
+        let mut conn = self.0.write();
+        let mut tx = conn.begin()?;
+        for pack in packs {
+            tx.execute("DELETE FROM mail_packs WHERE id = ?1", &vals![pack.to_string()])?;
+        }
+        tx.commit()
     }
 }
 
@@ -141,7 +163,11 @@ impl PackStore for SqlStore {
         TablePacks::new(self).delete_account(account)
     }
 
-    fn compact(&self, account: &str) -> Result<Vec<(PackRef, PackRef)>> {
-        TablePacks::new(self).compact(account)
+    fn compact(&self, account: &str, referenced: &[PackId]) -> Result<CompactionResult> {
+        TablePacks::new(self).compact(account, referenced)
+    }
+
+    fn drop_packs(&self, account: &str, packs: &[PackId]) -> Result<()> {
+        TablePacks::new(self).drop_packs(account, packs)
     }
 }

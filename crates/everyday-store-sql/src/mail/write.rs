@@ -961,3 +961,50 @@ pub(super) fn recategorize(
     }
     Ok(changed)
 }
+
+/// See [`everyday_core::store::mail::MailStore::remap_packs`].
+///
+/// One transaction, on the same "all or nothing" terms every other
+/// multi-row write in this module keeps: a caller that sees this return
+/// `Ok` may safely call
+/// [`everyday_core::packstore::PackStore::drop_packs`] on the packs `remap`
+/// moved messages out of, per that method's own two-step contract.
+pub(super) fn remap_packs(
+    store: &SqlStore,
+    account: AccountId,
+    remap: &[(PackRef, PackRef)],
+) -> Result<()> {
+    if remap.is_empty() {
+        return Ok(());
+    }
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    for (old, new) in remap {
+        let row = tx.query_opt(
+            "SELECT id, data FROM mail_messages
+             WHERE account_id = ?1 AND pack_id = ?2 AND pack_offset = ?3 AND pack_len = ?4",
+            &vals![
+                account.to_string(),
+                old.pack.to_string(),
+                old.offset as i64,
+                i64::from(old.len)
+            ],
+        )?;
+        // Not there any more -- the message this pair named was deleted (an
+        // `EXPUNGE`, a removed Gmail label with nowhere else left) between
+        // `compact` returning and this call running. There is nothing left
+        // for the remap to reach; the pack it pointed at is already about
+        // to be dropped along with everything else `compact` obsoleted.
+        let Some(row) = row else { continue };
+        let mid: MailMessageId =
+            row.text(0)?.parse().map_err(|e: <MailMessageId as std::str::FromStr>::Err| {
+                Error::Invalid(e.to_string())
+            })?;
+        let mut message: Message = store.unseal(&message_aad(mid), &row.bytes(1)?)?;
+        message.pack = new.clone();
+        let sealed = store.seal(&message_aad(mid), &message)?;
+        let (sql, args) = upsert_stmt(&message, sealed);
+        tx.execute(&sql, &args)?;
+    }
+    tx.commit()
+}
