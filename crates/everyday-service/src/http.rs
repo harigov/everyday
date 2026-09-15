@@ -1,28 +1,38 @@
 //! The application's one HTTP client, and the two things every caller of it
 //! needs to get right.
 //!
-//! There are exactly two features in Every Day that open a socket —
-//! refreshing a subscribed calendar ([`crate::feeds`]) and looking up what a
-//! book is called ([`crate::websearch`]) — and both do it from here. Sharing
-//! the client is not about connection pooling; it is about the settings
-//! below being decided once. A second `Client::builder()` elsewhere in the
-//! tree would be a second timeout, a second redirect policy and a second
-//! chance to forget the size cap, and the only sign of the mistake would be
-//! a wedged request some months later.
+//! There are exactly three features in Every Day that open a socket —
+//! refreshing a subscribed calendar ([`crate::feeds`]), looking up what a
+//! book is called ([`crate::websearch`]), and fetching a remote image a
+//! message asked to load ([`crate::mailview::remote_image`]) — and all three
+//! do it from here. Sharing the client is not about connection pooling; it
+//! is about the settings below being decided once. A second
+//! `Client::builder()` elsewhere in the tree would be a second timeout, a
+//! second redirect policy and a second chance to forget the size cap, and
+//! the only sign of the mistake would be a wedged request some months later.
 //!
-//! What is *not* shared is the prose. A 404 means "that subscription link
-//! has been revoked" to the calendar and "nothing was found" to a lookup, so
-//! each caller maps status codes itself. See [`crate::feeds::fetch`] and
-//! [`crate::websearch::get`].
+//! What is *not* shared is the prose, or the extra caution one caller needs
+//! that the others do not. A 404 means "that subscription link has been
+//! revoked" to the calendar and "nothing was found" to a lookup, so each
+//! caller maps status codes itself. A remote image is the one address of
+//! the three that a *stranger* chose rather than the person using this
+//! application, so [`crate::mailview`] layers its own SSRF check and a
+//! generic `User-Agent` on top of this client's shared settings rather than
+//! trusting the far end the way a calendar subscription or a search result
+//! is. See [`crate::feeds::fetch`], [`crate::websearch::get`] and
+//! [`crate::mailview::remote_image`].
 //!
 //! # What this is allowed to talk to
 //!
-//! The address the user pasted into a calendar, and the search endpoint
-//! behind a button they pressed. There is no telemetry, no update check, no
-//! crash reporter and no analytics anywhere in this application. The
+//! The address the user pasted into a calendar, the search endpoint behind a
+//! button they pressed, and an image address a message named -- fetched only
+//! once its sender is trusted or the person asks, and only after
+//! [`crate::mailview`]'s own checks. There is no telemetry, no update check,
+//! no crash reporter and no analytics anywhere in this application. The
 //! webview's own network permissions are unchanged and remain none at all —
 //! its content security policy still allows `connect-src 'self' ipc:` — so
-//! nothing it renders can cause a request of its own.
+//! nothing it renders can cause a request of its own; every request this
+//! client makes is one a person, not a webview, chose.
 
 use std::sync::OnceLock;
 use std::time::Duration;

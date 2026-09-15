@@ -55,6 +55,36 @@
     {
       "args": [
         {
+          "name": "sender",
+          "required": false,
+          "type": "string | null"
+        },
+        {
+          "name": "domain",
+          "required": false,
+          "type": "string | null"
+        },
+        {
+          "name": "messageId",
+          "required": false,
+          "type": "MailMessageId | null"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "allow_remote_images",
+      "orScope": null,
+      "returns": "void",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "id",
           "required": true,
           "type": "ItemId"
@@ -1213,6 +1243,17 @@
       "args": [],
       "changes": null,
       "effect": "read",
+      "name": "list_remote_image_allowances",
+      "orScope": null,
+      "returns": "RemoteImageSettings",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
       "name": "list_roles",
       "orScope": null,
       "returns": "RoleInfo[]",
@@ -2226,6 +2267,31 @@
       "orScope": null,
       "returns": "ArchiveManifest",
       "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "sender",
+          "required": false,
+          "type": "string | null"
+        },
+        {
+          "name": "domain",
+          "required": false,
+          "type": "string | null"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "revoke_remote_image_allowance",
+      "orScope": null,
+      "returns": "void",
+      "scope": "mail",
       "sensitive": false,
       "streams": false
     },

@@ -34,7 +34,7 @@ uuid.workspace = true
 # Chunks of an archive cross the wire inside JSON, where bytes cannot go.
 base64 = "0.22"
 reqwest = { version = "0.13", features = ["gzip"] }
-tokio = { version = "1.53.1", features = ["sync", "rt", "time", "macros"] }
+tokio = { version = "1.53.1", features = ["sync", "rt", "time", "macros", "net"] }
 futures = "0.3.34"
 rig-core = "0.42"
 rig-agent = "0.42"
