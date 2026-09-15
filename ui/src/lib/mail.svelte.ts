@@ -16,25 +16,29 @@
 //     and `removeRow`/`restoreRow` are the pure half of that, so the only
 //     thing this file adds is which fields each action touches and what it
 //     calls.
-//
-// `registerApply('mail', …)` is wired below so a single-thread change from
-// another window patches the loaded page in place -- but nothing routes to
-// it yet. `docs/plans/mail.md`'s write commands do not exist in the real
-// backend, so no `ChangeKind` names a thread, a mailbox or a draft for
-// `live.svelte.ts`'s `RELOADS` table to point here. The applier is written
-// and tested against now regardless, so wiring it up later is one line in
-// that table rather than a new store method.
 
 import * as mailApi from './mail-api'
-import type { Draft } from './mail-api'
+import { accounts } from './accounts.svelte'
 import { registerApply, singleId, type ChangeWithIds } from './live-apply'
-import { applyRowPatch, removeRow, restoreRow, revertRow, snoozeChoices } from './mail'
+import {
+  applyInviteResponse,
+  applyRowPatch,
+  mergeSearchPage,
+  removeRow,
+  restoreRow,
+  revertRow,
+  snoozeChoices,
+  stepCategoryTab,
+} from './mail'
 import { app, handle, quietly } from './state.svelte'
 import type {
   AccountId,
+  Draft,
   Mailbox,
   MailboxId,
   MailCategory,
+  MailMessageId,
+  MailSyncProgress,
   Thread,
   ThreadDetail,
   ThreadId,
@@ -61,10 +65,17 @@ class MailState {
    *  -- so the `h` shortcut can open it from `shortcuts.svelte.ts`, which
    *  has no component of its own to reach into. */
   wantsSnooze = $state<ThreadId | null>(null)
-  /** The palette-free reply/reply-all/forward affordance opens the same sheet. */
+  /** The thread the label picker is open for -- the proper picker `l` opens
+   *  in place of a `window.prompt`. */
+  wantsLabel = $state<ThreadId | null>(null)
   searchQuery = $state('')
-  searchResults = $state<mailApi.MailSearchHit[]>([])
+  searchResults = $state<Thread[]>([])
+  searchCursor = $state<string | null>(null)
   searching = $state(false)
+  /** (p) TODO: `summarize_thread`'s answer for the open thread, dismissible --
+   *  see `mail-api.ts`'s own TODO(p) for the contract this waits on. */
+  summary = $state<{ threadId: ThreadId; text: string } | null>(null)
+  summarizing = $state(false)
 
   // ── what has been loaded ──────────────────────────────────────────
 
@@ -80,7 +91,7 @@ class MailState {
    *  one. Approximate at scale -- see the module doc -- fine at a mailbox's
    *  worth of mock data. */
   unreadCounts = $state<Map<MailboxId, number>>(new Map())
-  syncStatus = $state<mailApi.SyncStatus[]>([])
+  syncStatus = $state<MailSyncProgress[]>([])
 
   /** Which load is current, so a slow one cannot land after a newer one. */
   #generation = 0
@@ -100,6 +111,8 @@ class MailState {
     this.expanded = new Set()
     this.composing = null
     this.wantsSnooze = null
+    this.wantsLabel = null
+    this.summary = null
     if (this.#undoTimer) clearInterval(this.#undoTimer)
     this.#undoTimer = null
     this.sendingUndo = null
@@ -170,6 +183,15 @@ class MailState {
     }
   }
 
+  async syncNow(accountId: AccountId) {
+    try {
+      await mailApi.syncAccount(accountId)
+      await this.refreshSyncStatus()
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
   /** The account and mailbox picked in the nav. */
   async selectMailbox(id: MailboxId) {
     this.selectedMailbox = id
@@ -181,6 +203,13 @@ class MailState {
   setCategory(category: MailCategory | null) {
     this.category = category
     void this.refresh()
+  }
+
+  /** `Tab`/`Shift+Tab`: the next or previous category tab -- see
+   *  `mail.ts`'s `stepCategoryTab` for the fixed order (All, then
+   *  `CATEGORY_TABS`). */
+  stepCategory(step: 1 | -1) {
+    this.setCategory(stepCategoryTab(this.category, step))
   }
 
   async selectAccount(id: AccountScope) {
@@ -240,6 +269,7 @@ class MailState {
 
   async openThreadById(id: ThreadId) {
     this.selectedThread = id
+    this.summary = null
     try {
       const detail = await mailApi.getThread(id)
       this.openThread = detail
@@ -249,8 +279,36 @@ class MailState {
       this.expanded = newest ? new Set([newest.id]) : new Set()
       if (detail.thread.unreadCount > 0) void this.markRead(id)
       void this.#prefetchNeighbours(id)
+      void this.#openAutoDraftIfAny(detail)
     } catch (e) {
       await handle(e)
+    }
+  }
+
+  /**
+   * (p) TODO: find the auto-draft phase 7 writes ahead of a reply, and open
+   * it in the compose sheet -- "the reply box opens pre-filled with it and
+   * labelled 'Drafted by the assistant'," per `docs/plans/mail.md`'s
+   * Superhuman layer. An auto-draft is an ordinary `Draft` whose
+   * `origin.type === 'assistant'` and `inReplyTo` names a message in this
+   * thread; there is no dedicated lookup for it, so this is the one place
+   * `list_drafts` is read for something other than the Drafts mailbox.
+   */
+  async #openAutoDraftIfAny(detail: ThreadDetail) {
+    if (this.composing) return
+    try {
+      const drafts = await mailApi.listDrafts(detail.thread.accountId)
+      const ids = new Set(detail.messages.map((m) => m.id))
+      const auto = drafts.find(
+        (d) =>
+          d.origin.type === 'assistant' &&
+          d.state.type === 'editing' &&
+          d.inReplyTo &&
+          ids.has(d.inReplyTo),
+      )
+      if (auto && this.selectedThread === detail.thread.id) this.composing = auto
+    } catch (e) {
+      await quietly(e)
     }
   }
 
@@ -264,6 +322,7 @@ class MailState {
   closeThread() {
     this.selectedThread = null
     this.openThread = null
+    this.summary = null
   }
 
   /** The next and previous thread in list order, for `j`/`k` and prefetch. */
@@ -310,7 +369,7 @@ class MailState {
   async #act(
     id: ThreadId,
     patch: Partial<Thread>,
-    call: (id: ThreadId) => Promise<void>,
+    call: (id: ThreadId) => Promise<unknown>,
   ): Promise<void> {
     const { rows, before } = applyRowPatch(this.threads, id, patch)
     this.threads = rows
@@ -328,7 +387,7 @@ class MailState {
 
   /** Removes the row from the list on screen -- archive, trash, move,
    *  snooze -- restoring it in place on failure. */
-  async #remove(id: ThreadId, call: (id: ThreadId) => Promise<void>): Promise<void> {
+  async #remove(id: ThreadId, call: (id: ThreadId) => Promise<unknown>): Promise<void> {
     const { rows, removed } = removeRow(this.threads, id)
     this.threads = rows
     if (this.selectedThread === id) this.closeThread()
@@ -347,10 +406,20 @@ class MailState {
   markUnread(id: ThreadId) {
     return this.#act(id, { unreadCount: 1 }, mailApi.markUnread)
   }
+  /**
+   * Star, best-effort.
+   *
+   * `Thread` -- the real record, see its own doc in `types.ts` -- carries no
+   * per-thread starred aggregate, only `MessageFlags.flagged` on each
+   * message. So this can only *know* the current state once the thread is
+   * open, from its newest message; from the list, with nothing loaded yet,
+   * it can only ever star, never toggle off. That gap is reported rather
+   * than faked with a client-side flag the backend would not agree with.
+   */
   toggleStar(id: ThreadId) {
-    const t = this.threads.find((x) => x.id === id)
-    const starred = !(t?.starred ?? false)
-    return this.#act(id, { starred }, starred ? mailApi.star : mailApi.unstar)
+    const flagged =
+      this.openThread?.thread.id === id && this.openThread.messages.some((m) => m.flags.flagged)
+    return this.#act(id, {}, flagged ? mailApi.unstar : mailApi.star)
   }
   archive(id: ThreadId) {
     return this.#remove(id, mailApi.archive)
@@ -361,8 +430,8 @@ class MailState {
   moveTo(id: ThreadId, mailbox: MailboxId) {
     return this.#remove(id, (t) => mailApi.moveToMailbox(t, mailbox))
   }
-  label(id: ThreadId, label: string) {
-    return this.#act(id, {}, (t) => mailApi.label(t, label))
+  label(id: ThreadId, labelName: string) {
+    return this.#act(id, {}, (t) => mailApi.label(t, labelName))
   }
   snooze(id: ThreadId, until: Date) {
     return this.#remove(id, (t) => mailApi.snooze(t, until.toISOString()))
@@ -371,11 +440,69 @@ class MailState {
     return this.#act(id, { snoozedUntil: null }, mailApi.unsnooze)
   }
 
+  /** (p) TODO: teaches the split-inbox rules -- see `mail-api.ts`'s own
+   *  TODO(p) for `set_thread_category`'s contract. */
+  setCategoryFor(id: ThreadId, category: MailCategory) {
+    return this.#act(id, { category }, (t) => mailApi.setThreadCategory([t], category))
+  }
+
   /** The snooze picker's fixed choices, for the component to draw. Named
    *  apart from the imported `snoozeChoices` so a reader is never asking
    *  whether this calls itself. */
   snoozeOptions() {
     return snoozeChoices()
+  }
+
+  // ── (i) invitations ──────────────────────────────────────────────
+
+  /** TODO(i): see `mail-api.ts`'s `respondToInvite`. Patches the open
+   *  thread's copy of the message optimistically -- the invite card
+   *  highlights the pressed button before the round trip lands, the same
+   *  optimism every batch action above already has. */
+  async respondToInvite(messageId: MailMessageId, response: 'accepted' | 'tentative' | 'declined') {
+    const before = this.openThread
+    if (before) {
+      this.openThread = {
+        ...before,
+        messages: before.messages.map((m) =>
+          m.id === messageId && m.invite
+            ? { ...m, invite: applyInviteResponse(m.invite, response) }
+            : m,
+        ),
+      }
+    }
+    try {
+      await mailApi.respondToInvite(messageId, response)
+    } catch (e) {
+      if (before) this.openThread = before
+      await handle(e)
+    }
+  }
+
+  // ── (p) summarising a thread ─────────────────────────────────────
+
+  /** TODO(p): `summarize_thread`'s result, shown in a dismissible panel.
+   *  Only offered when the account's `mailAi.summaries` is on -- the caller
+   *  (`MailView.svelte`) checks that before this is ever reachable, and this
+   *  checks it again so a stale keyboard shortcut cannot bypass it. */
+  async summarizeOpenThread() {
+    const detail = this.openThread
+    if (!detail || this.summarizing) return
+    const account = accounts.account(detail.thread.accountId)
+    if (!account?.mailAi?.summaries) return
+    this.summarizing = true
+    try {
+      const { summary } = await mailApi.summarizeThread(detail.thread.id)
+      this.summary = { threadId: detail.thread.id, text: summary }
+    } catch (e) {
+      await handle(e)
+    } finally {
+      this.summarizing = false
+    }
+  }
+
+  dismissSummary() {
+    this.summary = null
   }
 
   // ── compose ──────────────────────────────────────────────────────
@@ -453,6 +580,7 @@ class MailState {
 
   setSearchQuery(q: string) {
     this.searchQuery = q
+    this.searchCursor = null
     if (!q.trim()) {
       this.searchResults = []
       this.searching = false
@@ -464,8 +592,31 @@ class MailState {
 
   async #runSearch(q: string) {
     try {
-      const { hits } = await mailApi.searchMail(q)
-      if (this.searchQuery === q) this.searchResults = hits
+      const result = await mailApi.searchMail(q)
+      if (this.searchQuery === q) {
+        this.searchResults = result.threads
+        this.searchCursor = result.next ?? null
+      }
+    } catch (e) {
+      await quietly(e)
+    } finally {
+      if (this.searchQuery === q) this.searching = false
+    }
+  }
+
+  /** The next keyset page of the current search, appended without
+   *  duplicating a thread a page boundary happens to repeat -- see
+   *  `mail.ts`'s `mergeSearchPage`. */
+  async loadMoreSearchResults() {
+    const q = this.searchQuery
+    if (!q.trim() || !this.searchCursor || this.searching) return
+    this.searching = true
+    try {
+      const result = await mailApi.searchMail(q, null, this.searchCursor)
+      if (this.searchQuery === q) {
+        this.searchResults = mergeSearchPage(this.searchResults, result.threads)
+        this.searchCursor = result.next ?? null
+      }
     } catch (e) {
       await quietly(e)
     } finally {
@@ -476,6 +627,7 @@ class MailState {
   clearSearch() {
     this.searchQuery = ''
     this.searchResults = []
+    this.searchCursor = null
     this.searching = false
   }
 
@@ -486,6 +638,15 @@ class MailState {
     const change = changes[0]!
     const id = singleId(change)
     if (!id) return false
+    if (change.kind === 'draft') {
+      // Nothing in the visible thread list or the sync-status line reads a
+      // draft directly today -- the compose sheet owns its own working copy
+      // and autosaves it, so another window's edit to the *same* draft is
+      // not something this window should clobber mid-keystroke. Handled as
+      // "nothing to do" rather than falling through to `RELOAD.mail`, which
+      // would otherwise reload the thread list for every autosave tick.
+      return true
+    }
     if (change.op === 'deleted') {
       this.threads = this.threads.filter((t) => t.id !== id)
       return true

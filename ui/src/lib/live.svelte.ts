@@ -68,10 +68,8 @@ export const RELOAD = {
   assistant: () => assistant.refresh(),
   shelves: () => library.refreshKinds(),
   library: () => library.refresh(),
-  // Nothing routes here yet -- see `mail.svelte.ts`'s own note on
-  // `registerApply`. Added now so the target exists the moment a mailbox,
-  // thread or draft `ChangeKind` does, rather than being one more file to
-  // remember to touch alongside the sync engine and the write commands.
+  // `thread` and `draft` below route here for anything `mail.svelte.ts`'s
+  // own `registerApply` declines -- a batch wider than one record.
   mail: () => mail.refresh(),
   tracking: () => tracking.refresh(),
   overview: () => overview.refresh(),
@@ -157,14 +155,13 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   // `apply` for this target (see `accounts.svelte.ts`), so most changes are
   // patched in place; a batch wider than one record falls back to this.
   account: 'accounts',
-  // A conversation of mail messages, and a message being written. No app
-  // has registered a `ReloadTarget` for mail yet -- the interface is a
-  // later phase's -- so these are `null` on the same terms `conversation`
-  // and `memory` above are: nothing reloads today, and whichever pane
-  // reads a thread or a draft list will name a target for them when it
-  // exists.
-  thread: null,
-  draft: null,
+  // A conversation of mail messages, and a message being written. The Mail
+  // app's own store registered an `apply` for this target (`mail.svelte.ts`
+  // -- see its `#applyChanges`), so a single thread or draft is patched in
+  // place; a batch wider than one record falls back to this, which reloads
+  // the currently visible page rather than the whole mailbox.
+  thread: 'mail',
+  draft: 'mail',
 }
 
 /**

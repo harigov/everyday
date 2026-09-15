@@ -4,7 +4,7 @@
 
 import { friendlyDate, timeOfDay } from './format'
 import { isoDate } from './time'
-import type { MailAddress } from './types'
+import type { MailAddress, MailCategory, MailInvite, RemoteImageSettings, Thread } from './types'
 
 // ── Sender-list formatting ─────────────────────────────────────────────
 
@@ -172,4 +172,111 @@ export function snoozeChoices(now = new Date()): SnoozeChoice[] {
   out.push({ key: 'nextWeek', label: 'Next week', at: nextWeek })
 
   return out
+}
+
+// ── Sizing a message body without touching what the iframe renders ────
+
+/**
+ * Guess a message's rendered height in pixels, from its HTML *string* --
+ * never by reading the iframe back, which `allow-same-origin` alone would
+ * let happen and which `MailThread.svelte`'s own doc explains why this app
+ * never grants. Strip the tags, count the characters, divide by a plausible
+ * line length at the width the reader actually has. Wrong on the first
+ * paint of anything unusual -- a table, an image not yet loaded -- which is
+ * why the frame's container keeps `overflow-y: auto`: a short guess scrolls
+ * a few pixels further than it needed to rather than clipping the message.
+ */
+export function estimateBodyHeight(bodyHtml: string, widthPx: number): number {
+  const text = bodyHtml
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const charsPerLine = Math.max(20, Math.floor(widthPx / 8.2))
+  const lines = Math.max(3, Math.ceil(text.length / charsPerLine))
+  const blocks = (bodyHtml.match(/<(p|blockquote|div|li)[ >]/gi) ?? []).length
+  const lineHeightPx = 21
+  const blockGapPx = 12
+  return Math.min(2400, lines * lineHeightPx + blocks * blockGapPx + 24)
+}
+
+// ── (p) The split inbox: category tabs ─────────────────────────────────
+//
+// TODO(p): mirrors `Category::ALL`'s order in `everyday_core::mail` --
+// Important, Other, Newsletter, Notification -- which is also the order
+// `MailCategory` in `types.ts` declares its four members in. Written out
+// again here, as a value rather than derived from the type, because a type
+// has no order at runtime for a tab strip to read.
+export const CATEGORY_TABS: { key: MailCategory; label: string }[] = [
+  { key: 'important', label: 'Important' },
+  { key: 'other', label: 'Other' },
+  { key: 'newsletter', label: 'Newsletters' },
+  { key: 'notification', label: 'Notifications' },
+]
+
+/** `Tab`/`Shift+Tab`'s own arithmetic: the tab `step` positions from
+ *  `current`, wrapping -- `null` for "All" (no category filter) wraps in
+ *  alongside the four named ones, at the front. */
+export function stepCategoryTab(current: MailCategory | null, step: 1 | -1): MailCategory | null {
+  const order: (MailCategory | null)[] = [null, ...CATEGORY_TABS.map((t) => t.key)]
+  const at = order.indexOf(current)
+  const next = ((((at < 0 ? 0 : at) + step) % order.length) + order.length) % order.length
+  return order[next]!
+}
+
+// ── (i) Invitations ─────────────────────────────────────────────────
+
+/** Is the current response to `invite` the one `choice` names -- what
+ *  highlights Accept/Maybe/Decline on the invite card. */
+export function isCurrentInviteResponse(
+  invite: MailInvite,
+  choice: 'accepted' | 'tentative' | 'declined',
+): boolean {
+  return invite.myResponse === choice
+}
+
+/** A cancellation is shown plainly -- no Accept/Maybe/Decline, per the
+ *  plan -- because there is nothing left to RSVP to. */
+export function inviteIsCancelled(invite: MailInvite): boolean {
+  return invite.method === 'cancel'
+}
+
+/** The optimistic patch a click on Accept/Maybe/Decline applies before the
+ *  round trip to `respond_to_invite` lands. Pure so the card's highlight
+ *  updates the instant it is pressed, the same optimism every other mail
+ *  action in this app already has. */
+export function applyInviteResponse(
+  invite: MailInvite,
+  response: 'accepted' | 'tentative' | 'declined',
+): MailInvite {
+  return { ...invite, myResponse: response }
+}
+
+// ── Search: keyset paging ───────────────────────────────────────────
+
+/** Append a search page to what is already on screen, without duplicating a
+ *  thread a second page happens to repeat -- the index can return the same
+ *  thread near a page boundary if it is written to between two requests. */
+export function mergeSearchPage(existing: readonly Thread[], page: readonly Thread[]): Thread[] {
+  const seen = new Set(existing.map((t) => t.id))
+  const merged = existing.slice()
+  for (const t of page) {
+    if (seen.has(t.id)) continue
+    seen.add(t.id)
+    merged.push(t)
+  }
+  return merged
+}
+
+// ── Remote images: allow-list matching ──────────────────────────────
+
+/** Would the standing allow-list let this sender's remote images load --
+ *  an exact address, or its domain? Mirrors `mailview::remote_images_allowed`
+ *  in Rust; kept here too so the Settings → Accounts list can say "already
+ *  allowed" without a round trip for every row. */
+export function remoteImagesAllowed(settings: RemoteImageSettings, senderEmail: string): boolean {
+  const email = senderEmail.trim().toLowerCase()
+  if (settings.senders.some((s) => s.trim().toLowerCase() === email)) return true
+  const domain = email.split('@')[1]
+  if (!domain) return false
+  return settings.domains.some((d) => d.trim().toLowerCase() === domain)
 }
