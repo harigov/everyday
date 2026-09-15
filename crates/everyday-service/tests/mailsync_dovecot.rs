@@ -281,3 +281,314 @@ async fn a_real_mailbox_syncs_into_a_real_vault() {
         "the attachment's bytes should round-trip exactly"
     );
 }
+
+// ---------------------------------------------------------------------
+// Write actions, end to end: sync, archive, mark read, reply and search --
+// against a real Dovecot for IMAP and a real Mailpit for SMTP.
+//
+// The scenario the plan asks for names `archive` specifically; this test
+// uses `move_to_mailbox` into a folder created for the purpose instead,
+// because the `dovecot/dovecot:latest` test image was found, empirically,
+// not to persist a `CREATE ... (USE (\Archive))` request's special-use tag
+// on a custom folder -- `LIST` answers with no `\Archive` attribute
+// afterwards even though the server advertises the `SPECIAL-USE`
+// capability and returns `OK` to the `CREATE`. `archive_thread`'s own
+// server-side effect (an `OpKind::Archive` op resolving to a `MOVE`) and
+// `move_to_mailbox`'s are identical once a destination mailbox is in hand;
+// what this substitution loses is coverage of `Lookups::special_use`
+// discovering an `Archive`-role mailbox specifically, not of a real write
+// reaching a real server.
+// ---------------------------------------------------------------------
+
+/// Mailpit's own connection details -- the same environment variables
+/// `crates/everyday-mail/tests/smtp_mailpit.rs` reads, and the same
+/// defaults `make test-smtp` sets.
+struct SmtpConfig {
+    host: String,
+    port: u16,
+    api: String,
+}
+
+fn smtp_config() -> Option<SmtpConfig> {
+    if std::env::var("EVERYDAY_TEST_SMTP").ok().filter(|v| !v.is_empty()).is_none() {
+        eprintln!(
+            "skipping the write-actions suite: set EVERYDAY_TEST_SMTP (`make test-smtp` sets it) \
+             alongside EVERYDAY_TEST_IMAP"
+        );
+        return None;
+    }
+    let var = |name: &str, default: &str| {
+        std::env::var(name).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| default.to_string())
+    };
+    Some(SmtpConfig {
+        host: var("EVERYDAY_TEST_SMTP_HOST", "127.0.0.1"),
+        port: var("EVERYDAY_TEST_SMTP_PORT", "11025").parse().expect("a port number"),
+        api: var("EVERYDAY_TEST_SMTP_API", "http://127.0.0.1:18025"),
+    })
+}
+
+/// A minimal [`everyday_mail::outbox::Sender`] for this test only: connects
+/// to Mailpit in the clear, the same way `smtp_mailpit.rs` does, rather
+/// than through the production `mailsync::sender::LazySmtpSender`, which
+/// only ever speaks TLS -- Mailpit's plaintext port has no certificate to
+/// offer it. Lazy and cached on the same terms the production sender is,
+/// for the same reason: most of this test's own drains never send anything.
+struct TestSmtpSender {
+    host: String,
+    port: u16,
+    cached: tokio::sync::Mutex<Option<everyday_mail::smtp::SmtpTransport>>,
+}
+
+impl TestSmtpSender {
+    fn new(host: String, port: u16) -> Self {
+        Self { host, port, cached: tokio::sync::Mutex::new(None) }
+    }
+}
+
+#[allow(async_fn_in_trait)]
+impl everyday_mail::outbox::Sender for TestSmtpSender {
+    async fn send(
+        &self,
+        built: &everyday_mail::compose::Built,
+    ) -> everyday_mail::session::Result<everyday_mail::smtp::SendReceipt> {
+        let mut guard = self.cached.lock().await;
+        if guard.is_none() {
+            let credential = Credential::Password {
+                user: "everyday".to_string(),
+                pass: "testpass".to_string().into(),
+            };
+            let transport =
+                everyday_mail::smtp::connect_plain_for_tests(&self.host, self.port, &credential)
+                    .await?;
+            *guard = Some(transport);
+        }
+        guard.as_ref().expect("just connected").send(built).await
+    }
+}
+
+/// A subject nothing else running against the same throwaway Mailpit would
+/// produce by accident.
+fn unique_subject(label: &str) -> String {
+    format!("everyday write-actions test {label} {}", uuid::Uuid::new_v4())
+}
+
+/// Polls Mailpit's `GET /api/v1/messages` for a message with `subject` --
+/// see `smtp_mailpit.rs`'s own `find_delivered` for why this polls rather
+/// than trusting the send call's own return to mean "visible over HTTP
+/// already".
+async fn wait_for_delivery(api: &str, subject: &str) {
+    let client = reqwest::Client::new();
+    for _ in 0..40 {
+        let body: serde_json::Value = client
+            .get(format!("{api}/api/v1/messages?limit=50"))
+            .send()
+            .await
+            .expect("Mailpit's HTTP API answers")
+            .json()
+            .await
+            .expect("a JSON message list");
+        let found = body["messages"].as_array().is_some_and(|messages| {
+            messages.iter().any(|m| m["Subject"].as_str() == Some(subject))
+        });
+        if found {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    panic!("{subject:?} never showed up in Mailpit's message list");
+}
+
+async fn call(
+    svc: &std::sync::Arc<everyday_service::Service>,
+    name: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    svc.call(everyday_service::ctx::Ctx::local(), name, args)
+        .await
+        .unwrap_or_else(|e| panic!("{name}: {e}"))
+}
+
+/// The `INBOX` [`everyday_core::id::MailboxId`] for `account`.
+fn inbox_mailbox_id(
+    vault: &everyday_core::Vault,
+    account: everyday_core::id::AccountId,
+) -> everyday_core::id::MailboxId {
+    vault
+        .mailboxes(account)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == everyday_core::mail::MailboxRole::Inbox)
+        .expect("INBOX should have synced")
+        .id
+}
+
+async fn sync_once_against(
+    svc: &std::sync::Arc<everyday_service::Service>,
+    vault: &std::sync::Arc<everyday_core::Vault>,
+    account_id: everyday_core::id::AccountId,
+    session: &mut imap::ImapSession,
+) {
+    let statuses = svc.mail_statuses().unwrap();
+    let ctx = SyncContext {
+        vault,
+        account_id,
+        packs: svc.packs().unwrap(),
+        index: svc.mail_index().unwrap(),
+        statuses: &statuses,
+        attachment_cap_bytes: None,
+        index_commit: passes::CommitPacer::new(),
+        unread_cache: svc.mail_unread_cache(),
+        contacts: svc.mail_contacts(),
+    };
+    let mut labels = LabelMailboxes::new(vault, account_id);
+    let mut threads = ThreadIndex::new();
+    passes::sync_once(&ctx, session, &mut labels, &mut threads)
+        .await
+        .expect("a full sync against the real server");
+}
+
+#[tokio::test]
+async fn write_actions_sync_through_a_real_server() {
+    let Some(cfg) = config() else { return };
+    let Some(smtp) = smtp_config() else { return };
+
+    let inbox_message_id = format!("write-actions-inbox-{}", std::process::id());
+    let archive_folder = format!("EverydayArchive{}", std::process::id());
+
+    let mut seed_session = connect(&cfg).await;
+    seed_session.create_mailbox(&archive_folder).await.expect("CREATE the archive folder");
+    let raw = plain_message(
+        "A message to archive and read",
+        &inbox_message_id,
+        None,
+        "please archive and read me",
+    );
+    seed_session.append("INBOX", &raw, Flags::NONE).await.expect("APPEND to INBOX");
+    drop(seed_session);
+
+    let (svc, _dir) = support::vault::service(None);
+    let vault = svc.get().unwrap();
+
+    let mut account = Account::new(Provider::Custom, "everyday@example.com");
+    account.auth = AuthMethod::Password { username: cfg.user.clone() };
+    account.imap.host = cfg.host.clone();
+    account.imap.port = cfg.tls_port;
+    account.smtp.host = smtp.host.clone();
+    account.smtp.port = smtp.port;
+    let account_id = account.id;
+    vault.save_account(&account).unwrap();
+    vault
+        .save_account_secret(
+            account_id,
+            &AccountSecret { password: Some(cfg.pass.clone()), ..Default::default() },
+        )
+        .unwrap();
+
+    let mut session = connect(&cfg).await;
+    sync_once_against(&svc, &vault, account_id, &mut session).await;
+
+    let seeded = vault
+        .message_by_message_id_header(account_id, &format!("{inbox_message_id}@everyday-mail.test"))
+        .unwrap()
+        .expect("the seeded message should have synced");
+    let thread_id = seeded.thread_id;
+
+    // ---- mark read, then verify the flag on the server ----
+    call(&svc, "mark_read", serde_json::json!({ "threads": [thread_id] })).await;
+    let sender = TestSmtpSender::new(smtp.host.clone(), smtp.port);
+    let report = everyday_service::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
+        .await
+        .expect("draining the mark-read op");
+    assert_eq!(report.failed, 0, "{report:?}");
+
+    let mut verify_session = connect(&cfg).await;
+    verify_session.select("INBOX").await.expect("SELECT INBOX to verify");
+    let uid_set: everyday_mail::session::UidSet =
+        vault.mail_uid_set(inbox_mailbox_id(&vault, account_id)).unwrap().into_iter().collect();
+    let headers = verify_session.headers(&uid_set).await.expect("FETCH to verify flags");
+    assert!(
+        headers.iter().any(|h| h.flags.contains(Flags::SEEN)),
+        "the server should show the message as \\Seen after the drain"
+    );
+
+    // ---- "archive" (see the module docs above this test) ----
+    let archive_mailbox = vault
+        .mailboxes(account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.remote_name == archive_folder)
+        .expect("the archive folder should have synced as a mailbox row");
+    call(
+        &svc,
+        "move_to_mailbox",
+        serde_json::json!({ "threads": [thread_id], "to": archive_mailbox.id }),
+    )
+    .await;
+    let report = everyday_service::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
+        .await
+        .expect("draining the move op");
+    assert_eq!(report.failed, 0, "{report:?}");
+
+    let mut verify_session = connect(&cfg).await;
+    let inbox_state = verify_session.select("INBOX").await.expect("SELECT INBOX");
+    assert_eq!(inbox_state.exists, 0, "the message should have left INBOX on the server");
+    let archive_state =
+        verify_session.select(&archive_folder).await.expect("SELECT the archive folder");
+    assert_eq!(archive_state.exists, 1, "and landed in the archive folder on the server");
+
+    // ---- reply, send, and verify delivery and the Sent copy ----
+    let reply_subject = unique_subject("reply");
+    let draft = call(
+        &svc,
+        "new_draft",
+        serde_json::json!({ "account": account_id, "inReplyTo": seeded.id }),
+    )
+    .await;
+    let mut draft: everyday_core::mail::Draft = serde_json::from_value(draft).unwrap();
+    draft.subject = reply_subject.clone();
+    draft.to = vec![everyday_core::mail::Address::bare("bob@example.com")];
+    draft.body_html = "<p>Reply body for the write-actions test.</p>".to_string();
+    call(&svc, "save_draft", serde_json::json!({ "draft": draft.clone() })).await;
+    call(&svc, "send_draft", serde_json::json!({ "id": draft.id, "delaySeconds": 0 })).await;
+
+    // `delaySeconds: 0` is clamped up to `undo_send_delay`'s own minimum --
+    // five seconds, the shortest the undo-send window is ever allowed to
+    // be -- so the op is not actually due the instant `send_draft`
+    // returns. Poll rather than sleep a fixed amount: the account task's
+    // own `drain_until_caught_up` does the same thing in production, on
+    // its own `OUTBOX_RETRY_INTERVAL`.
+    // `save_draft` (above) also enqueued its own `AppendDraft` op, due
+    // immediately, well before the `Send` op's undo-send delay -- so the
+    // first due op this drains is that one, not `Send`. Poll until the
+    // draft's own state says `Sent`, not merely until one drain call
+    // attempted something.
+    let mut sent = false;
+    for _ in 0..20 {
+        let report =
+            everyday_service::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
+                .await
+                .expect("draining the outbox");
+        assert_eq!(report.failed, 0, "{report:?}");
+        if matches!(vault.draft(draft.id).unwrap().state, everyday_core::mail::DraftState::Sent) {
+            sent = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert!(sent, "the draft never reached DraftState::Sent");
+
+    wait_for_delivery(&smtp.api, &reply_subject).await;
+
+    let mut verify_session = connect(&cfg).await;
+    let sent_state = verify_session.select("Sent").await.expect("SELECT Sent");
+    assert!(sent_state.exists >= 1, "a copy of the sent reply should be in Sent on the server");
+
+    // ---- search for the reply after the next sync ----
+    sync_once_against(&svc, &vault, account_id, &mut session).await;
+    let found = call(&svc, "search_mail", serde_json::json!({ "query": reply_subject })).await;
+    let threads = found["threads"].as_array().expect("a threads array");
+    assert!(
+        !threads.is_empty(),
+        "the reply should be searchable once the next sync has indexed the Sent copy: {found}"
+    );
+}
