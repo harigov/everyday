@@ -2,26 +2,29 @@
 //!
 //! Note the division of labour, which is the same one the rest of the
 //! application makes and is worth spelling out because this is the only
-//! feature that touches a network:
+//! feature that touches a network -- two features, now that phase 6 has
+//! landed:
 //!
-//!   this file      what a URL is, when to fetch it, what to do on a 403
-//!   feeds.rs       turning a URL into bytes -- one of two sockets
+//!   this file      what a URL or an account is, when to fetch it, what to do on a 403
+//!   feeds.rs       turning a URL into bytes -- a subscription's own socket
+//!   accountcal/    turning an account's calendars into bytes -- CalDAV, Google, Graph
 //!   everyday-core  everything that happens to those bytes afterwards
 //!
 //! The last of those is the part with the difficult logic in it -- RFC 5545,
 //! recurrence, time zones -- and it is testable offline precisely because it
 //! never learns that a network exists.
 
+use crate::accountcal::{self, RemoteCalendar};
 use crate::command;
 use crate::ctx::Ctx;
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::events::Notification;
 use crate::feeds;
 use crate::service::{Service, blocking};
-use everyday_core::calendar::{Calendar, CalendarProvider, Event, SyncReport};
+use everyday_core::calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, SyncReport};
 use everyday_core::model::{system_tz, today_local};
 use everyday_core::store::calendars::EventQuery;
-use everyday_core::{CalendarId, EventId, Vault};
+use everyday_core::{AccountId, CalendarId, EventId, Vault};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -174,7 +177,8 @@ async fn sync_calendar(
     args: CalendarRef,
 ) -> CommandResult<SyncReport> {
     let vault = svc.require()?;
-    let report = sync_one(&vault, args.id).await?;
+    let calendar = vault.calendar(args.id)?;
+    let report = sync_dispatch(&svc, &vault, &calendar).await?;
     // A hand-driven refresh that works ends the outage as much as a background
     // one does, so the next failure is news again. Without this, a feed fixed
     // from the sidebar would never notify a second time.
@@ -182,22 +186,26 @@ async fn sync_calendar(
     Ok(report)
 }
 
-/// Fetch every subscription whose refresh interval has elapsed.
+/// Fetch every subscription -- a feed's URL or an account's own calendars --
+/// whose refresh interval has elapsed.
 ///
 /// Polled rather than driven by a timer in here, so that a locked vault is
 /// never fetched into and a window nobody is looking at is never the reason a
 /// laptop wakes its radio. Failures are collected, not raised: one calendar
-/// being down must not stop the other three.
+/// being down must not stop the other three. Only the writable vault holder
+/// syncs -- see the guard below -- which for an account calendar matters as
+/// much as it does for a feed: a read-only replica has no claim to spend an
+/// account's rate limit refreshing something nobody here can store.
 async fn sync_due_calendars(
     svc: Arc<Service>,
     _ctx: Ctx,
     args: SyncDue,
 ) -> CommandResult<Vec<SyncReport>> {
     let vault = svc.require()?;
-    // A read-only vault cannot store what a sync fetches, and `sync_one` would
-    // also try to record the failure on the subscription -- another write.
-    // Fetching feeds over the network to throw the bytes away is not a useful
-    // thing to do on a timer, so the whole pass is skipped.
+    // A read-only vault cannot store what a sync fetches, and a failed sync
+    // would also try to record the failure on the subscription -- another
+    // write. Fetching over the network to throw the bytes away is not a
+    // useful thing to do on a timer, so the whole pass is skipped.
     if !vault.is_writable() {
         return Ok(Vec::new());
     }
@@ -208,13 +216,14 @@ async fn sync_due_calendars(
     let due: Vec<(CalendarId, String)> = vault
         .calendars()?
         .into_iter()
-        .filter(|c| c.origin.url().is_some() && (args.force || c.is_due(now)))
+        .filter(|c| c.origin.is_syncable() && (args.force || c.is_due(now)))
         .map(|c| (c.id, c.name))
         .collect();
 
     let mut out = Vec::new();
     for (id, name) in due {
-        match sync_one(&vault, id).await {
+        let Ok(calendar) = vault.calendar(id) else { continue };
+        match sync_dispatch(&svc, &vault, &calendar).await {
             Ok(report) => {
                 svc.feed_recovered(id);
                 out.push(report);
@@ -250,6 +259,27 @@ async fn sync_due_calendars(
         }
     }
     Ok(out)
+}
+
+/// One calendar's sync, whichever kind of subscription it is.
+///
+/// The split this dispatches over is exactly [`CalendarOrigin`]'s: a `Url`
+/// goes through `feeds.rs`, an `Account` through `accountcal::sync`, and a
+/// `File` is never `is_due`, so it never reaches here at all -- both
+/// [`sync_calendar`] and [`sync_due_calendars`] call this rather than
+/// choosing themselves, so the choice is made in exactly one place.
+async fn sync_dispatch(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    calendar: &Calendar,
+) -> CommandResult<SyncReport> {
+    match &calendar.origin {
+        CalendarOrigin::Url { .. } => sync_one(vault, calendar.id).await,
+        CalendarOrigin::Account { .. } => accountcal::sync(svc, vault, calendar).await,
+        CalendarOrigin::File { .. } => {
+            Err(CommandError::new(codes::INVALID, "a file calendar has nothing to sync"))
+        }
+    }
 }
 
 async fn sync_one(vault: &Arc<Vault>, id: CalendarId) -> CommandResult<SyncReport> {
@@ -370,6 +400,129 @@ async fn add_calendar(
     }
 }
 
+/// One calendar an account offers, and whether this vault already has it.
+///
+/// `calendar_id` is `Some` exactly when `subscribed` is true: the interface
+/// needs it to draw the unsubscribe action against the calendar that is
+/// already here, rather than the remote listing that produced it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteCalendarInfo {
+    #[serde(flatten)]
+    pub remote: RemoteCalendar,
+    pub subscribed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calendar_id: Option<CalendarId>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRef {
+    pub account: AccountId,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscribeAccountCalendar {
+    pub account: AccountId,
+    pub remote_id: String,
+}
+
+/// List the calendars `account` offers, marking which ones this vault
+/// already subscribes to.
+///
+/// Discovery happens every time this is called rather than being cached --
+/// the "add a calendar → from an account" sheet is opened rarely enough
+/// that a fresh CalDAV PROPFIND or an API list is cheap next to the
+/// confusion of showing a calendar the account no longer has, or hiding one
+/// it just gained.
+async fn list_account_calendars(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: AccountRef,
+) -> CommandResult<Vec<RemoteCalendarInfo>> {
+    let vault = svc.require()?;
+    let account_id = args.account;
+    let account = {
+        let vault = vault.clone();
+        blocking(move || Ok(vault.account(account_id)?)).await?
+    };
+    let remotes = accountcal::discover(&svc, &vault, &account).await?;
+    let existing = {
+        let vault = vault.clone();
+        blocking(move || Ok(vault.account_calendars(account_id)?)).await?
+    };
+    Ok(remotes
+        .into_iter()
+        .map(|remote| {
+            let matched = existing.iter().find(|c| match &c.origin {
+                CalendarOrigin::Account { remote_id, .. } => *remote_id == remote.remote_id,
+                _ => false,
+            });
+            RemoteCalendarInfo {
+                remote,
+                subscribed: matched.is_some(),
+                calendar_id: matched.map(|c| c.id),
+            }
+        })
+        .collect())
+}
+
+/// Subscribe to one of an account's calendars and fetch it once, on the same
+/// all-or-nothing terms [`subscribe_calendar`] promises for a feed: a
+/// calendar that fails its first sync is not left behind half-added.
+async fn subscribe_account_calendar(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: SubscribeAccountCalendar,
+) -> CommandResult<CalendarInfo> {
+    let vault = svc.require()?;
+    let account_id = args.account;
+    let account = {
+        let vault = vault.clone();
+        blocking(move || Ok(vault.account(account_id)?)).await?
+    };
+    let remote = accountcal::discover(&svc, &vault, &account)
+        .await?
+        .into_iter()
+        .find(|r| r.remote_id == args.remote_id)
+        .ok_or_else(|| {
+            CommandError::new(
+                codes::NOT_FOUND,
+                "that calendar is no longer offered by this account",
+            )
+        })?;
+
+    let mut calendar = Calendar::from_account(
+        account.id,
+        account.provider,
+        remote.source,
+        remote.remote_id.clone(),
+        remote.name.clone(),
+    );
+    if let Some(color) = remote.color {
+        calendar.color = color;
+    }
+    let id = calendar.id;
+    {
+        let vault = vault.clone();
+        let calendar = calendar.clone();
+        blocking(move || Ok(vault.save_calendar(&calendar)?)).await?;
+    }
+
+    match accountcal::sync(&svc, &vault, &calendar).await {
+        Ok(report) => Ok(CalendarInfo { calendar: vault.calendar(id)?, events: report.events }),
+        Err(e) => {
+            // See `subscribe_calendar`: nothing added is the honest answer
+            // to a first sync that did not work, and undoing the save is
+            // safe because nothing else can have pointed at this calendar
+            // yet.
+            let _ = vault.delete_calendar(id);
+            Err(e)
+        }
+    }
+}
+
 /// The providers the "add a calendar" sheet offers, with where to find the
 /// address for each.
 ///
@@ -394,6 +547,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_calendar", scope: Calendars, effect: Write,
         change: Calendar / Updated,
+        id: |a: &SaveCalendar| Some(a.calendar.id.to_string()),
         args: SaveCalendar, returns: "void",
         signature: &[("calendar", "Calendar", true)],
         run: save_calendar,
@@ -401,6 +555,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_calendar", scope: Calendars, effect: Destructive,
         change: Calendar / Deleted,
+        id: |a: &CalendarRef| Some(a.id.to_string()),
         args: CalendarRef, returns: "void",
         signature: &[("id", "CalendarId", true)],
         run: delete_calendar,
@@ -454,5 +609,18 @@ pub static COMMANDS: &[crate::command::Command] = &[
         name: "calendar_providers", scope: Calendars, effect: Read,
         args: Nothing, returns: "ProviderInfo[]", signature: &[],
         run: calendar_providers,
+    },
+    command! {
+        name: "list_account_calendars", scope: Calendars, effect: Read,
+        args: AccountRef, returns: "RemoteCalendarInfo[]",
+        signature: &[("account", "AccountId", true)],
+        run: list_account_calendars,
+    },
+    command! {
+        name: "subscribe_account_calendar", scope: Calendars, effect: Write,
+        change: Calendar / Created,
+        args: SubscribeAccountCalendar, returns: "CalendarInfo",
+        signature: &[("account", "AccountId", true), ("remoteId", "string", true)],
+        run: subscribe_account_calendar,
     },
 ];

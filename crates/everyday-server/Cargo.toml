@@ -49,3 +49,8 @@ reqwest = { version = "0.13", features = ["json", "stream", "http2"] }
 
 [dev-dependencies]
 tempfile = "3"
+# `routes.rs`'s mail image route test builds its request from a real
+# `sanitize::sanitize` call rather than a hand-assembled path, so the
+# routing it checks is the exact shape the sync engine seals into a body.
+# Test-only: nothing in the shipped server parses a message's HTML itself.
+everyday-mail.workspace = true

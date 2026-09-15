@@ -1,0 +1,180 @@
+[package]
+name = "everyday-mail"
+description = "Every Day's mail: reading, cleaning, threading, and speaking IMAP and SMTP"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+everyday-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+jiff.workspace = true
+tracing.workspace = true
+blake3.workspace = true
+
+# MIME in: RFC 822/2045/2231/2047, every charset, never panics on malformed
+# input (it is fuzzed against exactly that). `full_encoding` pulls in
+# `encoding_rs` for the legacy charsets (Windows-125x, ISO-8859, Shift-JIS...)
+# that Outlook and old newsletters still send; the extra code is small next
+# to the alternative of silently mangling a quarter of the corpus.
+mail-parser = { version = "=0.11.9", default-features = false, features = ["full_encoding"] }
+
+# HTML in, first pass: a streaming rewriter that touches every `src`,
+# `srcset`, `background` and CSS `url()` once, at sync, before the allow-list
+# runs. See `sanitize.rs` for why the two libraries divide the work this way.
+lol_html = "=3.0.1"
+
+# HTML in, second pass: the allow-list that removes anything with behaviour.
+ammonia = "=4.1.4"
+
+# HTML out: the plain-text body and the assistant's `model_text`. `css`
+# is the feature that lets it resolve `display: none` from inline and
+# document styles, which is load-bearing -- see `text.rs`'s module docs on
+# hidden content.
+html2text = { version = "=0.17.1", default-features = false, features = ["css"] }
+
+# HTML out, for the assistant's Markdown prompts later.
+htmd = "=0.5.5"
+zeroize.workspace = true
+
+# The IMAP client. Pinned to the same tokio as everyday-service, since the
+# two run in the same process and a mismatched minor version would mean two
+# copies of the runtime in one binary.
+tokio = { version = "1.53.1", features = ["net", "rt", "macros", "sync", "time", "io-util"] }
+async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
+# The parser async-imap itself is built on. A direct dependency, not just a
+# transitive one, because ImapSession::headers reads a FETCH attribute
+# (X-GM-THRID) that async-imap's typed wrapper never grew an accessor for --
+# see crates/everyday-mail/src/imap.rs's module docs for the whole story.
+imap-proto = "0.16"
+# TLS underneath it, pinned to the same rustls and tokio-rustls as the rest
+# of the tree (see Cargo.lock) so there is one copy of `ring` in the binary,
+# not two built with different feature sets.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# The platform's own trust store, the same choice `everyday-store-postgres`
+# makes for the same reason: one answer to "which certificates does this
+# app trust", rather than a second bundled root list to keep in step with
+# webpki-roots' releases.
+rustls-platform-verifier = "0.7"
+# `Stream` combinators over the fetch and IDLE streams async-imap hands back.
+futures = "0.3"
+
+# MIME out: builds the RFC 5322 bytes `smtp.rs` sends, from the fields
+# `compose.rs`'s `Outgoing` collects. Sibling project to `mail-parser`
+# above, so a message this crate builds and one it reads share the same
+# understanding of what a header means. `gethostname` (the only optional
+# feature) is off -- `compose::build` always mints its own Message-ID from
+# the sender's own domain (see that function's docs), so the fallback that
+# feature exists for never runs here.
+mail-builder = { version = "=1.0.0", default-features = false }
+
+# Inlines a compose message's <style> rules into style="" attributes before
+# it goes out, because most mail clients delete <style> blocks outright.
+# `default-features = false` matters here beyond tidiness: the crate's
+# default features include `http`, which pulls in `reqwest` -- a second
+# HTTP client this workspace does not otherwise have, and one this crate
+# never wants dialling out on a person's behalf anyway. See `compose.rs`'s
+# module docs for how remote loading is also switched off at the
+# `InlineOptions` level, independent of which features are compiled in.
+css-inline = { version = "=0.21.2", default-features = false }
+
+# The SMTP client `smtp.rs` sends through. See that module's docs for the
+# full reasoning behind each feature:
+#   - smtp-transport, pool: the client itself, and its per-account pool.
+#   - tokio1-rustls: the same tokio runtime and rustls major version this
+#     crate already pins for IMAP, not a second async runtime or a second
+#     `native-tls`/`boring` TLS stack.
+#   - rustls-platform-verifier, ring: the same trust store and crypto
+#     provider choice as `imap.rs`'s `tls_config`, rather than a bundled
+#     `webpki-roots` list or an ambiguous default crypto provider.
+#   - hostname: reads the local machine's hostname for the EHLO command's
+#     default, the one place this crate still lets `lettre` decide
+#     something rather than deciding it itself.
+lettre = { version = "=0.11.23", default-features = false, features = [
+    "smtp-transport",
+    "pool",
+    "tokio1-rustls",
+    "rustls-platform-verifier",
+    "ring",
+    "hostname",
+] }
+
+# Sixteen random bytes for a Message-ID -- see `compose::generate_message_id`.
+# Already pinned at the workspace level (`crypto.rs`, `supervisor.rs`); this
+# is only new as a *direct* dependency of this crate.
+rand.workspace = true
+
+# The loopback redirect (`oauth::Loopback`) is a one-shot HTTP listener on
+# `127.0.0.1`, and the sync engine phase 2 lands will want a runtime under
+# it regardless -- this crate depends on tokio, core does not, that is the
+# whole reason it exists. `net` and `io-util` are the listener's own needs;
+# `sync` is the `watch` channel `Loopback::wait` is cancelled through; `rt`
+# and `macros` are what let this crate's own tests be `#[tokio::test]`.
+url = "2"
+# OAuth. `oauth2` without its own `reqwest` feature -- see `oauth.rs`'s
+# module doc for why that feature is refused rather than merely unused --
+# plus `oauth2-reqwest`, the alpha adapter that lets `oauth2`'s
+# `AsyncHttpClient` run over the workspace's reqwest 0.13 instead of the
+# 0.12 the crate's own feature would pull in. Both pinned exactly, per the
+# plan's rule for pre-1.0 dependencies.
+oauth2 = { version = "=5.0.0", default-features = false, features = ["timing-resistant-secret-traits"] }
+oauth2-reqwest = "=0.1.0-alpha.3"
+reqwest = { version = "0.13", default-features = false, features = ["default-tls", "http2"] }
+
+# `invite.rs`'s iCalendar reader and writer: the same crate
+# `everyday-service::accountcal::caldav` already parses `VEVENT`/`VTIMEZONE`
+# with, pinned to the same version for the same reason that crate's own
+# Cargo.toml comment gives -- one recurrence engine in the tree, not a second
+# one from the `rrule` crate that could disagree with it near a DST boundary.
+# `invite.rs` does not expand recurrences itself (an invitation banner names
+# a pattern, "FREQ=WEEKLY...", rather than a list of occurrences -- see
+# `Invite::recurrence`'s own docs), but it reuses `ICalendar::expand_dates`
+# for one occurrence's start and end because that is also where `VTIMEZONE`
+# and Windows `TZID`s (Outlook/Exchange) get resolved, and hand-rolling a
+# second resolver for exactly the boundary `caldav::to_jiff` already exists
+# for would be the risk this comment in that module warns about, just in a
+# second crate. `jmap`, its default feature, is switched off on the same
+# terms as there: this crate never converts to JSCalendar either.
+calcard = { version = "=0.3.13", default-features = false }
+# The boundary `invite::to_jiff` is -- see that function's own docs, the twin
+# of `caldav::to_jiff`'s.
+chrono = "0.4"
+
+[dev-dependencies]
+proptest = "=1.11.0"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "test-util", "time"] }
+# The SMTP integration suite's HTTP client, reading what `make test-smtp`'s
+# throwaway Mailpit container delivered back through its own API -- see
+# `tests/smtp_mailpit.rs`. Dev-only: never linked into a shipped binary.
+# Version 0.13 to match the one `reqwest` already in the tree
+# (`everyday-service`, `everyday-server`, `everyday-cli`) rather than a
+# second, differently-pinned copy -- the same "one of everything" rule
+# `smtp.rs`'s module docs apply to `rustls`.
+reqwest = { version = "0.13", features = ["json"] }
+# One random subject per test run, so `tests/smtp_mailpit.rs` can tell its
+# own messages apart from another test's in Mailpit's one shared inbox.
+uuid.workspace = true
+# The mock token endpoint `oauth.rs`'s tests speak to. Already in the
+# workspace's lock through `everyday-server`, which pins the same `0.8` --
+# a dev-only second user of it costs nothing new there.
+axum = "0.8"
+# Recomputing S256(verifier) in `the_pkce_verifier_matches_the_challenge_in_the_url`
+# without either trusting `oauth2` to have got its own crypto right or
+# reaching into its private module -- `oauth2` depends on the same `sha2`
+# already, so this adds nothing new to the workspace's build.
+sha2 = "0.10"
+base64 = "0.22"
+
+[features]
+# A certificate verifier that trusts anything, for `make test-imap`'s
+# throwaway Dovecot container -- see `Security::InsecureTestTls` in
+# `src/imap.rs`. Off by default: nothing in a normal build, `cargo build`
+# included, enables it. `tests/imap_dovecot.rs` builds without it too --
+# see that file's docs -- so `cargo test -p everyday-mail` always compiles
+# and explains why it did nothing, the same way the Postgres suite does.
+insecure-test-tls = []

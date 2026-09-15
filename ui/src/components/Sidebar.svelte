@@ -11,6 +11,7 @@
   import TodoNav from './TodoNav.svelte'
   import CalendarNav from './CalendarNav.svelte'
   import LibraryNav from './LibraryNav.svelte'
+  import MailNav from './MailNav.svelte'
   import AssistantNav from './AssistantNav.svelte'
   import NotesNav from './NotesNav.svelte'
   import type { Journal } from '../lib/types'
@@ -108,6 +109,8 @@
     <CalendarNav />
   {:else if app.section === 'library'}
     <LibraryNav />
+  {:else if app.section === 'mail'}
+    <MailNav />
   {:else}
     <nav class="scroll nav">
       <button

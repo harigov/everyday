@@ -72,6 +72,7 @@ export const SECTIONS = [
   'todo',
   'calendar',
   'library',
+  'mail',
   'assistant',
   'journal',
 ] as const
@@ -483,6 +484,20 @@ class AppState {
   }
 
   /**
+   * Can this vault run the Mail app?
+   *
+   * `capabilities.mail` is a backend implementing the mail domain, and per
+   * its own doc a backend that carries it carries `accounts` too -- there is
+   * nowhere to keep the credential a synced mailbox needs otherwise. So this
+   * reads as "accounts exist or accounts are supported": once the backend
+   * can hold a mailbox at all, the app is offered, empty inbox and all, so
+   * the first thing anybody sees there can be "add an account".
+   */
+  get supportsMail(): boolean {
+    return this.status?.capabilities?.mail === true
+  }
+
+  /**
    * Is this section available on the vault that is open?
    *
    * A switch over every `Section` rather than a chain of `if`s with a `true`
@@ -507,6 +522,8 @@ class AppState {
         return this.supportsLibrary
       case 'overview':
         return this.supportsOverview
+      case 'mail':
+        return this.supportsMail
       case 'assistant':
         return this.supportsAssistant
     }

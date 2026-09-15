@@ -66,6 +66,26 @@ pub enum Scope {
     /// roles and goals can read the *shape* of somebody's life -- which roles
     /// exist, how much time each takes -- without reading a single entry.
     Purpose,
+    /// Accounts: the mailbox providers this vault has been signed in to.
+    ///
+    /// Its own scope rather than a corner of `Journals`, for a reason
+    /// stronger than most of the others here: an account's own record is not
+    /// sensitive, but the account is the credential mail and the calendar
+    /// both borrow, and a client that could list or edit accounts could
+    /// switch on an external agent's send access for a mailbox it does not
+    /// otherwise touch. Never granted to the mail or calendar tool
+    /// catalogues themselves -- those read `assistant_access` and
+    /// `mcp_access` off the account they are already scoped to, not this.
+    Accounts,
+    /// Mail: mailboxes, threads and the messages in them.
+    ///
+    /// Its own scope, not a corner of `Journals`: mail is the one domain
+    /// whose contents are written by strangers, and a client that could
+    /// read it has no business inheriting that from a broader grant it
+    /// asked for a diary. Never what the assistant's or MCP's mail tools
+    /// check -- phase 5 reads `assistant_access` and `mcp_access` off the
+    /// account a call already names, not this.
+    Mail,
     Agent,
     /// Spending the quick model: the small extractions in
     /// [`everyday_core::quick`].
@@ -118,6 +138,8 @@ impl Scope {
             Scope::Library => "library",
             Scope::Trackers => "trackers",
             Scope::Purpose => "purpose",
+            Scope::Accounts => "accounts",
+            Scope::Mail => "mail",
             Scope::Agent => "agent",
             Scope::Quick => "quick",
             Scope::Web => "web",
@@ -139,6 +161,8 @@ impl Scope {
         Scope::Library,
         Scope::Trackers,
         Scope::Purpose,
+        Scope::Accounts,
+        Scope::Mail,
         Scope::Agent,
         Scope::Quick,
         Scope::Web,

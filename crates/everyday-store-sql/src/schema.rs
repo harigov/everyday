@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -88,7 +88,7 @@ pub fn migrate(
 
 /// Every migration step, in order. Index 0 is version 1.
 pub fn steps(d: Dialect) -> Vec<Vec<String>> {
-    vec![v1(d), v2(d), v3(d), v4(d), v5(d), v6(d), v7(d), v8(d)]
+    vec![v1(d), v2(d), v3(d), v4(d), v5(d), v6(d), v7(d), v8(d), v9(d)]
 }
 
 /// The `blobs` table, for a backend that keeps attachments in the database.
@@ -744,6 +744,348 @@ fn v8(d: Dialect) -> Vec<String> {
             .into(),
         // The count on the app bar, and the list behind it.
         "CREATE INDEX IF NOT EXISTS runs_unseen ON routine_runs (seen, started_us)".into(),
+    ]
+}
+
+/// Version 9: mail's groundwork, laid down ahead of the domain itself.
+///
+/// `docs/plans/mail.md` calls this phase 0 -- "the part of this plan that is
+/// not about mail at all" -- and its schema section says the rule this step
+/// follows: every later phase of that plan adds its tables to this same
+/// step, so a vault passes through one "mail exists now" migration rather
+/// than a fresh version for each phase, the way version 4 folded shelves,
+/// items and the log into a single arrival rather than three. Phase 0 laid
+/// two tables here because two things earlier work needs regardless of
+/// whether mail itself ever ships: a secret store that is not a singleton,
+/// and somewhere for a Postgres vault to put raw messages that is not a row
+/// per attachment-sized blob. Phase 1 -- accounts -- adds two more, on the
+/// same reasoning: an account is not mail either, and the calendar's
+/// "other people's calendars" phase (6) needs it regardless of whether the
+/// mail app it was built alongside ever ships to everyone.
+///
+/// `record_secrets` generalises the singleton `agent_secret` above -- a
+/// credential keyed by *who it belongs to* (`owner_kind`, `owner_id`,
+/// together the primary key) rather than pinned to the one row a `CHECK`
+/// allows. See [`everyday_core::store::secrets`] for the trait. `owner_kind`
+/// and `owner_id` sit in the clear, which is the same trade every other
+/// pointer column in this file makes: a lookup needs *something* to search
+/// on, and what leaks is that some record of that kind holds a credential,
+/// never the credential, and never which record -- the id is a UUID, as
+/// opaque here as `tracker_id` is in `readings`. What actually stops a
+/// secret sealed for one owner opening as another's is not secrecy of the
+/// columns but the associated data `record_secret_aad` builds from them,
+/// which the sealing key checks and a copied row cannot satisfy.
+///
+/// `mail_packs` is the Postgres answer to "where do raw messages live" --
+/// see [`everyday_core::packstore`]. A SQLite vault keeps its packs in files
+/// beside the database instead and never gains a row here, the same choice
+/// `blobs_table` makes for attachments and for the same reason: the database
+/// is on this machine, so a file the filesystem already buffers and syncs is
+/// cheaper than a column WAL-logging the same bytes twice. Unlike
+/// `blobs_table`, this table *is* one of the numbered steps rather than
+/// created on open -- the plan's own schema section lists it there, and
+/// keeping it out would need a second "does this table exist" check
+/// (`blobs_table`'s reason for existing) for a backend split that is
+/// per-*domain* here, not per-driver: every vault, on either database, ends
+/// up with the same tables after this step, and it is only mail's own store
+/// that chooses whether to ever write a row into this particular one. `seq`
+/// is a per-account arrival order, for whenever something later wants packs
+/// back in the order they were written rather than by id; `id` is what a
+/// `PackRef` actually names, and it is what `read` looks a row up by.
+///
+/// `accounts` is the vault-level record of a mailbox provider signed in to
+/// -- see [`everyday_core::account`] and
+/// [`everyday_core::store::accounts`]. It carries nothing in the clear
+/// beyond the two timestamps every table in this file has: unlike a task or
+/// an event, there is no list of accounts large enough, or queried finely
+/// enough, to make a clear column worth what it would leak. Its secret --
+/// the refresh token or password `AuthMethod` needs -- is never in this
+/// table at all; it lives in `record_secrets` above, under owner kind
+/// `"account"`, exactly like every other per-record credential this step
+/// introduced.
+///
+/// Phase 2 (and the draft/outbox records of phase 3) add the rest of this
+/// step: `mailboxes`, `mail_messages`, `message_mailboxes`, `threads`,
+/// `thread_mailboxes`, `bodies`, `drafts` and `ops` -- eight tables, all in
+/// the one migration this domain gets, per this function's own rule that a
+/// domain arrives once rather than a fresh version per phase. `messages` was
+/// not free to reuse -- version 6 already named the assistant's conversation
+/// turns that -- so the mail table is `mail_messages` throughout.
+/// `hidden_thread_mailboxes`, a ninth, joined later still additively: a
+/// marker table, not a mapping of its own, that says which
+/// `(thread, mailbox)` pairs an optimistic archive/trash/move has asked to
+/// have hidden from that mailbox's list ahead of the server confirming it
+/// -- see `everyday-store-sql::mail::write`'s `hide_thread_from_mailbox` for
+/// why this exists apart from `message_mailboxes`, which stays exactly as
+/// it was until the op actually executes.
+///
+/// Three more singletons-by-shape joined later still, one per later phase,
+/// each additive for the same reason: `mail_remote_image_settings` (phase 2,
+/// the standing remote-image allow-list), `mail_contacts` (phase 4, address
+/// autocomplete), and `mail_category_rules` (phase 7, the split inbox's
+/// per-account corrections). None of the three needed its own schema
+/// version -- a table this step's own rule already allows to arrive whenever
+/// its domain does, not a fresh migration for each.
+///
+/// The sync cursors the plan's schema section lists separately
+/// (`uidvalidity`, the highest uid, `highestmodseq`) live on `mailboxes`
+/// itself, as the plan allows: a mailbox is already the one row per folder a
+/// sync task reads before it opens a connection, so a second table naming
+/// the same three numbers by the same primary key would only be a join
+/// nothing needs.
+///
+/// What stays in the clear is exactly what an index is built from --
+/// `everyday-store-sql`'s own module docs carry the full table, and
+/// `everyday_core::store::mail`'s carry the reasoning. In one line each:
+/// a mailbox's role and cursors (a folder called "Sent" is not a secret, and
+/// a sync task has to read them before it has decrypted anything); a
+/// message's thread, date, packed flags, size, category and pack address;
+/// `message_mailboxes`' uid, which is the address a `FETCH` or a `STORE`
+/// actually names; a thread's own aggregates and, in `thread_mailboxes`, its
+/// per-mailbox view of the same three numbers; a draft's account, state,
+/// `in_reply_to` and origin *kind*; an op's account, state, origin kind and
+/// `not_before`. Every subject, every address, every label's and every
+/// folder's actual name, every body and every op's `target` stay sealed.
+///
+/// `account_calendars` is a pointer table in the shape `purposes` pioneered:
+/// a calendar's own row stays wherever `calendars` puts it, and this says
+/// only which account it came from, so that deleting an account can find
+/// every calendar it needs to leave dangling-free without a foreign key the
+/// backend would otherwise have to enforce by hand. It is empty until phase
+/// 6 gives `CalendarOrigin` an `Account` variant to write one from; it
+/// exists now, alongside `accounts` itself, because `AccountStore::
+/// delete_account` promises today to clear it, and a promise about a table
+/// that does not exist yet is not a promise this crate can keep.
+fn v9(d: Dialect) -> Vec<String> {
+    let (blob, int, boolean) = (d.blob(), d.int(), d.boolean());
+    let f = d.bool_default(false);
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS record_secrets (
+                 owner_kind  TEXT NOT NULL,
+                 owner_id    TEXT NOT NULL,
+                 data        {blob} NOT NULL,
+                 PRIMARY KEY (owner_kind, owner_id)
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS mail_packs (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 account_id  TEXT    NOT NULL,
+                 seq         {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        // One account's rows, in the order they arrived -- the only
+        // question this table is asked before the mail domain itself lands
+        // and gives it something to join against.
+        "CREATE INDEX IF NOT EXISTS mail_packs_by_account ON mail_packs (account_id, seq)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS accounts (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE TABLE IF NOT EXISTS account_calendars (
+             calendar_id  TEXT PRIMARY KEY NOT NULL,
+             account_id   TEXT NOT NULL
+         )"
+        .into(),
+        // What `AccountStore::delete_account` reads before it deletes: every
+        // calendar one account is behind.
+        "CREATE INDEX IF NOT EXISTS account_calendars_by_account \
+         ON account_calendars (account_id)"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS mailboxes (
+                 id             TEXT    PRIMARY KEY NOT NULL,
+                 account_id     TEXT    NOT NULL,
+                 role           TEXT    NOT NULL,
+                 uidvalidity    {int} NOT NULL DEFAULT 0,
+                 uidnext        {int} NOT NULL DEFAULT 0,
+                 highest_modseq {int} NOT NULL DEFAULT 0,
+                 data           {blob} NOT NULL
+             )"
+        ),
+        // Every mailbox of one account -- what `list_mailboxes` reads, and
+        // what an account's cascade deletes by.
+        "CREATE INDEX IF NOT EXISTS mailboxes_by_account ON mailboxes (account_id)".into(),
+        // Named `mail_messages`, not `messages` -- version 6 already claimed
+        // that name for the assistant's conversation turns, and `IF NOT
+        // EXISTS` would otherwise silently keep *that* table's shape here,
+        // leaving every column below unrecognised.
+        format!(
+            "CREATE TABLE IF NOT EXISTS mail_messages (
+                 id               TEXT    PRIMARY KEY NOT NULL,
+                 account_id       TEXT    NOT NULL,
+                 thread_id        TEXT    NOT NULL,
+                 date_us          {int} NOT NULL,
+                 flags            {int} NOT NULL DEFAULT 0,
+                 has_attachments  {boolean} NOT NULL DEFAULT {f},
+                 size             {int} NOT NULL DEFAULT 0,
+                 category         TEXT,
+                 pack_id          TEXT    NOT NULL,
+                 pack_offset      {int} NOT NULL,
+                 pack_len         {int} NOT NULL,
+                 data             {blob} NOT NULL
+             )"
+        ),
+        // One thread's messages, oldest first -- what `thread` reads, and
+        // what every aggregate recompute (ingest, a flag change, a removal)
+        // scans to recount a thread without decrypting it.
+        "CREATE INDEX IF NOT EXISTS mail_messages_by_thread ON mail_messages (thread_id, date_us)"
+            .into(),
+        // What an account's cascade deletes by, and what
+        // `attachment_blob_refs` would otherwise have to join `mailboxes`
+        // to find.
+        "CREATE INDEX IF NOT EXISTS mail_messages_by_account ON mail_messages (account_id)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS message_mailboxes (
+                 message_id  TEXT NOT NULL,
+                 mailbox_id  TEXT NOT NULL,
+                 uid         {int} NOT NULL,
+                 PRIMARY KEY (message_id, mailbox_id)
+             )"
+        ),
+        // The uid is the address a `FETCH`, a `STORE` or a `UID SEARCH` diff
+        // actually names -- `message_by_uid`, `update_flags`,
+        // `update_labels`, `remove_uids` and `uid_set` all read through this.
+        "CREATE INDEX IF NOT EXISTS message_mailboxes_by_mailbox \
+         ON message_mailboxes (mailbox_id, uid)"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS threads (
+                 id                TEXT    PRIMARY KEY NOT NULL,
+                 account_id        TEXT    NOT NULL,
+                 last_date_us      {int} NOT NULL,
+                 unread            {int} NOT NULL DEFAULT 0,
+                 category          TEXT,
+                 snoozed_until_us  {int},
+                 data              {blob} NOT NULL
+             )"
+        ),
+        // `threads_in_category` and the account cascade both read one
+        // account's threads, newest first; not named in the plan's own
+        // index list, which only names the mailbox-scoped read, but a query
+        // this trait exposes needs one covering index or it is a full scan
+        // of every thread in the vault.
+        "CREATE INDEX IF NOT EXISTS threads_by_account \
+         ON threads (account_id, last_date_us DESC, id)"
+            .into(),
+        // The snooze scheduler's own question: what wakes, and when.
+        "CREATE INDEX IF NOT EXISTS threads_by_snoozed ON threads (snoozed_until_us)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS thread_mailboxes (
+                 thread_id     TEXT NOT NULL,
+                 mailbox_id    TEXT NOT NULL,
+                 last_date_us  {int} NOT NULL,
+                 unread        {int} NOT NULL DEFAULT 0,
+                 PRIMARY KEY (thread_id, mailbox_id)
+             )"
+        ),
+        // The one index the plan names by hand: what an inbox actually
+        // pages over, keyset-paged by `(mailbox_id, last_date_us DESC,
+        // thread_id)`.
+        "CREATE INDEX IF NOT EXISTS thread_mailboxes_by_mailbox \
+         ON thread_mailboxes (mailbox_id, last_date_us DESC, thread_id)"
+            .into(),
+        // What `hide_thread_from_mailbox` marks before it deletes a
+        // `thread_mailboxes` row, and what `restore_thread_mailboxes`
+        // clears when it recomputes that row back -- see that function's
+        // own docs for the whole design. Not a snapshot of anything: the
+        // durable mapping it stands apart from, `message_mailboxes`, is
+        // never touched by the hide at all.
+        "CREATE TABLE IF NOT EXISTS hidden_thread_mailboxes (
+             thread_id   TEXT NOT NULL,
+             mailbox_id  TEXT NOT NULL,
+             PRIMARY KEY (thread_id, mailbox_id)
+         )"
+        .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS bodies (
+                 message_id  TEXT PRIMARY KEY NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS drafts (
+                 id           TEXT    PRIMARY KEY NOT NULL,
+                 account_id   TEXT    NOT NULL,
+                 in_reply_to  TEXT,
+                 state        TEXT    NOT NULL,
+                 origin       TEXT    NOT NULL,
+                 updated_us   {int} NOT NULL,
+                 data         {blob} NOT NULL
+             )"
+        ),
+        // The compose list and the "what is this in reply to" lookup.
+        "CREATE INDEX IF NOT EXISTS drafts_by_account \
+         ON drafts (account_id, state, updated_us)"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS ops (
+                 id             TEXT    PRIMARY KEY NOT NULL,
+                 account_id     TEXT    NOT NULL,
+                 state          TEXT    NOT NULL,
+                 origin         TEXT    NOT NULL,
+                 not_before_us  {int} NOT NULL,
+                 thread_id      TEXT,
+                 data           {blob} NOT NULL
+             )"
+        ),
+        // The drain loop's own query: one account's pending ops, due first.
+        "CREATE INDEX IF NOT EXISTS ops_by_account_state \
+         ON ops (account_id, state, not_before_us)"
+            .into(),
+        // "What did the assistant do" -- every op of one origin kind, in
+        // order.
+        "CREATE INDEX IF NOT EXISTS ops_by_origin ON ops (origin, not_before_us)".into(),
+        // A thread's own "recent actions" line: every op whose `OpTarget`
+        // named a thread directly, most recently due first. `thread_id` is
+        // `NULL` for an op targeting a `Draft` (or, if one is ever minted, a
+        // bare `Message`) -- see `everyday-store-sql::mail::mod`'s `Record`
+        // impl for `Op`, which is the one place this column is filled in,
+        // and this crate's own module docs for why it exists at all: an
+        // `OpTarget` is sealed, and version 9 is unreleased, so adding a
+        // clear column to this step rather than reaching for a full
+        // migration is the cheaper and equally correct fix.
+        "CREATE INDEX IF NOT EXISTS ops_by_thread ON ops (thread_id, not_before_us DESC)".into(),
+        // The standing remote-image allow-list --
+        // `everyday_core::mail::RemoteImageSettings` -- a one-row singleton in
+        // the shape `agent_settings` already is: a `CHECK` pins it to one row,
+        // so a second configuration fails at the database rather than being
+        // read back in whichever order.
+        format!(
+            "CREATE TABLE IF NOT EXISTS mail_remote_image_settings (
+                 id          {int} PRIMARY KEY CHECK (id = 1),
+                 data        {blob} NOT NULL
+             )"
+        ),
+        // The contact index -- `everyday_core::mail::ContactBook` -- a
+        // one-row singleton on the same shape as the table just above, for
+        // the same reason: `suggest_addresses` reads one small sealed row
+        // rather than a query over every message ever ingested.
+        format!(
+            "CREATE TABLE IF NOT EXISTS mail_contacts (
+                 id          {int} PRIMARY KEY CHECK (id = 1),
+                 data        {blob} NOT NULL
+             )"
+        ),
+        // Phase 7's split inbox: one row per account of
+        // `everyday_core::mail::CategoryRules`, the sealed corrections that
+        // outrank the rules `everyday_core::mail::categorize` runs at sync.
+        // Keyed by `account_id` rather than a singleton `id = 1` row, unlike
+        // the two tables just above -- a correction on one mailbox says
+        // nothing about another, so each account gets its own row rather
+        // than sharing the vault-wide list contacts and remote images do.
+        format!(
+            "CREATE TABLE IF NOT EXISTS mail_category_rules (
+                 account_id  TEXT PRIMARY KEY NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
     ]
 }
 

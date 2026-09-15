@@ -209,6 +209,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_journal", scope: Journals, effect: Write,
         change: Journal / Updated,
+        id: |a: &SaveJournal| Some(a.journal.id.to_string()),
         args: SaveJournal, returns: "void",
         signature: &[("journal", "Journal", true)],
         run: save_journal,
@@ -216,6 +217,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_journal", scope: Journals, effect: Destructive,
         change: Journal / Deleted,
+        id: |a: &JournalRef| Some(a.id.to_string()),
         args: JournalRef, returns: "void",
         signature: &[("id", "JournalId", true)],
         run: delete_journal,
@@ -241,6 +243,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_entry", scope: Journals, effect: Write,
         change: Entry / Updated,
+        id: |a: &SaveEntry| Some(a.entry.id.to_string()),
         args: SaveEntry, returns: "void",
         signature: &[("entry", "Entry", true), ("expect", "string | null", false)],
         run: save_entry,
@@ -248,6 +251,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_entry_force", scope: Journals, effect: Write,
         change: Entry / Updated,
+        id: |a: &ForceEntry| Some(a.entry.id.to_string()),
         args: ForceEntry, returns: "void",
         signature: &[("entry", "Entry", true)],
         run: save_entry_force,
@@ -255,6 +259,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_entry", scope: Journals, effect: Destructive,
         change: Entry / Deleted,
+        id: |a: &EntryRef| Some(a.id.to_string()),
         args: EntryRef, returns: "void",
         signature: &[("id", "EntryId", true)],
         run: delete_entry,

@@ -8,15 +8,21 @@
 //! command name to anything, which is the point -- a central map is exactly the
 //! sort of list the fifth app forgets to update.
 
+pub mod accounts;
 pub mod assistant;
 pub mod calendars;
 pub mod journals;
 pub mod library;
+pub mod mail;
+pub mod mailsearch;
+pub mod mailsync;
+pub mod mailview;
 pub mod meta;
 pub mod notes;
 pub mod purpose;
 pub mod quick;
 pub mod routines;
+pub mod signin;
 pub mod tasks;
 pub mod trackers;
 pub mod transfer;
@@ -48,14 +54,20 @@ pub fn catalog() -> &'static [&'static Command] {
     ALL.get_or_init(|| {
         [
             vault::COMMANDS,
+            accounts::COMMANDS,
             journals::COMMANDS,
             tasks::COMMANDS,
             calendars::COMMANDS,
             library::COMMANDS,
+            mail::COMMANDS,
+            mailsearch::COMMANDS,
+            mailview::COMMANDS,
+            mailsync::COMMANDS,
             notes::COMMANDS,
             trackers::COMMANDS,
             purpose::COMMANDS,
             routines::COMMANDS,
+            signin::COMMANDS,
             transfer::COMMANDS,
             web::COMMANDS,
             assistant::COMMANDS,

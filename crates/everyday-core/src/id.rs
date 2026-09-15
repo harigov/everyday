@@ -134,6 +134,36 @@ typed_id!(ConversationId, "conversation");
 typed_id!(MessageId, "message");
 typed_id!(MemoryId, "memory");
 
+// The mail domain's storage groundwork, laid in phase 0 of the mail plan
+// ahead of the domain itself. A `PackId` names one pack -- a file of raw
+// messages sealed one at a time, or the row a Postgres vault keeps instead --
+// never a message on its own. See `crate::packstore`. `Mailbox`, `Message`
+// and `Thread` ids arrive with the rest of the domain in a later phase.
+typed_id!(PackId, "pack");
+
+// Phase 1 of the mail plan: accounts. An `AccountId` names one mailbox
+// provider you have signed in to -- see `crate::account`. It is a
+// vault-level record, minted before mail or the calendar exist to use it,
+// which is why it arrives on its own here rather than beside `PackId` above.
+typed_id!(AccountId, "account");
+
+// Phase 2 (and the draft/outbox records of phase 3) of the mail plan: the
+// records `crate::mail` holds. `MailboxId` names one folder or Gmail label
+// synced from an account; `MailMessageId` names one message -- called
+// `Mail...` rather than the bare `MessageId` the assistant's own domain
+// already uses above, since the two are never interchangeable and the crate
+// root re-exports both; `ThreadId` names the conversation a message belongs
+// to, by the server's own thread id where one exists and by JWZ threading
+// where it does not; `DraftId` names a message being written, whoever is
+// writing it; `OpId` names one entry in the outbox -- the one place every
+// path to a mail server meets, so that undo, retry and "what did the
+// assistant do" all read the same queue.
+typed_id!(MailboxId, "mailbox");
+typed_id!(MailMessageId, "mail_message");
+typed_id!(ThreadId, "thread");
+typed_id!(DraftId, "draft");
+typed_id!(OpId, "op");
+
 /// Content address of an attachment payload.
 ///
 /// Blobs are content-addressed with BLAKE3 so that the same photo dropped into

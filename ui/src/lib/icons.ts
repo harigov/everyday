@@ -298,4 +298,11 @@ export const ICONS = {
   target:
     '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/>' +
     '<circle cx="12" cy="12" r="1"/>',
+
+  // ── Mail ───────────────────────────────────────────────────────────────
+
+  // An envelope: the body, and the flap drawn as the one diagonal fold every
+  // reader already parses as "this is a letter". Distinct from `inbox`, which
+  // is the tray a thing lands in rather than the thing itself.
+  mail: '<rect width="18" height="14" x="3" y="5" rx="2.5"/>' + '<path d="m4 7 8 6 8-6"/>',
 } as const

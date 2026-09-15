@@ -41,6 +41,23 @@
 // entry is a read from the vault, and a held arrow key would be one per row.
 // Focus moves, the row shows it, and Enter or Space opens -- which is what
 // the buttons already do.
+//
+// # Virtualized lists
+//
+// `VirtualList` draws only the rows near the viewport, so a query for
+// `[data-row]` only ever sees that window -- Home, End, PageUp and PageDown
+// would stop at whichever edge happened to be rendered rather than the
+// list's actual edge, and a row that scrolls into view for the first time
+// would join the tab order at `tabindex="0"` (an element's default) until
+// something got round to correcting it.
+//
+// Pass a `virtual` adapter (`RovingVirtual`) to fix both: the arrow-key
+// arithmetic runs over the *data*'s length rather than what is drawn
+// (`nextRovingIndex`, pure and tested on its own), and reaching a row that
+// is not currently rendered asks the list to scroll it into view first and
+// waits for it to mount before focusing it (`waitForRow`). The tab-index
+// sweep below is unconditional either way -- see `sweep`'s own doc for why
+// that is what stops a newly-drawn row from becoming a stop of its own.
 
 const ROW = '[data-row]'
 
@@ -103,31 +120,164 @@ function stopOf(row: HTMLElement): HTMLElement | null {
   return named ?? controlsOf(row)[0] ?? null
 }
 
+/** A key `nextRovingIndex` and the handler below both move the selection
+ *  for; every other key falls through to whatever else wants it. */
+export type RovingKey =
+  'ArrowDown' | 'ArrowUp' | 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End' | 'PageUp' | 'PageDown'
+
+/**
+ * Pure arithmetic for where a roving-focus key moves the selected index,
+ * clamped to `[0, length)` -- `null` when this key does not move anything
+ * here (a key this action does not claim, or Left/Right on a single-column
+ * list with nothing of its own to step between).
+ *
+ * Shared by the DOM sweep below, over whatever is currently rendered, and
+ * the virtualized path, over the full data set -- see the module doc's
+ * "Virtualized lists" -- so Home means the same row in a hundred-thousand-row
+ * mailbox as it does in a four-row list, which is finding 6.
+ */
+export function nextRovingIndex(
+  current: number,
+  key: string,
+  length: number,
+  opts: { columns?: number; page?: number; withinRow?: boolean } = {},
+): number | null {
+  if (length === 0) return null
+  const columns = opts.columns ?? 1
+  const page = opts.page ?? columns
+  const clamp = (i: number) => Math.max(0, Math.min(i, length - 1))
+  switch (key as RovingKey) {
+    case 'ArrowDown':
+      return clamp(current + columns)
+    case 'ArrowUp':
+      return clamp(current - columns)
+    case 'ArrowRight':
+      return !opts.withinRow && columns > 1 ? clamp(current + 1) : null
+    case 'ArrowLeft':
+      return !opts.withinRow && columns > 1 ? clamp(current - 1) : null
+    case 'Home':
+      return 0
+    case 'End':
+      return length - 1
+    case 'PageDown':
+      return clamp(current + page)
+    case 'PageUp':
+      return clamp(current - page)
+    default:
+      return null
+  }
+}
+
+/**
+ * What a virtualized list hands `rovingFocus` so Home, End, PageUp,
+ * PageDown and the arrows can reason about the whole data set rather than
+ * only the window `VirtualList` currently has drawn. `EntryList.svelte`'s
+ * own use is the reference: `length` and `idAt` over the flattened,
+ * header-and-entry row array with the headers filtered out (a header is
+ * never a stop), `scrollToIndex` a thin forward to the same component's
+ * exported method.
+ */
+export interface RovingVirtual {
+  /** How many navigable rows the data holds -- not just what is drawn. */
+  length: number
+  /** The row id at a data index, `null` past the end. */
+  idAt(index: number): string | null
+  /** The data index `id` is at, or -1. */
+  indexOf(id: string): number
+  /** Ask the list to scroll this index into view. Rendering follows
+   *  asynchronously -- `waitForRow` is what then waits for it. */
+  scrollToIndex(index: number): void
+}
+
+export type RovingParams = string | null | { current: string | null; virtual?: RovingVirtual }
+
+function normalizeParams(params: RovingParams): {
+  current: string | null
+  virtual?: RovingVirtual
+} {
+  return typeof params === 'object' && params !== null ? params : { current: params }
+}
+
+/** Poll for a row to appear -- up to `tries` animation frames -- once
+ *  `virtual.scrollToIndex` has asked the list to draw it. A frame each
+ *  rather than a fixed delay, because "rendered" means "after `virtua`'s own
+ *  effect has run", which is a frame, not a duration. */
+function waitForRow(node: HTMLElement, id: string, tries = 30): Promise<HTMLElement | null> {
+  return new Promise((resolve) => {
+    function attempt(left: number) {
+      const el = node.querySelector<HTMLElement>(`[data-row="${CSS.escape(id)}"]`)
+      if (el || left <= 0) {
+        resolve(el)
+        return
+      }
+      requestAnimationFrame(() => attempt(left - 1))
+    }
+    attempt(tries)
+  })
+}
+
 /**
  * Give `node`'s rows a single tab stop and arrow-key movement.
  *
  * `current` is the id of the selected row, so the stop follows the
- * selection. Pass `null` where there is none and the first row holds it.
+ * selection -- pass a bare id, or `null` where there is none and the first
+ * row holds it. Pass `{ current, virtual }` instead for a list `VirtualList`
+ * backs; see `RovingVirtual` and the module doc's "Virtualized lists".
  */
-export function rovingFocus(node: HTMLElement, current: string | null = null) {
+export function rovingFocus(node: HTMLElement, params: RovingParams = null) {
+  let { current, virtual } = normalizeParams(params)
+
   /** Hand the tab stop to `chosen`'s stop control and take it off every other. */
   function assign(chosen: HTMLElement) {
     const stop = stopOf(chosen)
     for (const control of rowControlsIn(node)) control.tabIndex = control === stop ? 0 : -1
   }
 
-  function place(current: string | null) {
+  /** Whichever control already holds the tab stop -- focus itself, if it is
+   *  on one of this list's controls, otherwise the control `current` names,
+   *  otherwise the first row's. */
+  function stopControl(rows: HTMLElement[]): HTMLElement | null {
+    const active = document.activeElement
+    if (active instanceof HTMLElement && rowControlsIn(node).includes(active)) return active
+    const row = rows.find((el) => el.dataset.row === current) ?? rows[0]
+    return row ? stopOf(row) : null
+  }
+
+  /**
+   * Set `tabindex` on every rendered control, unconditionally -- this used
+   * to bail out whenever focus was already inside the list, on the grounds
+   * that the stop should not move under a reader who has arrowed away from
+   * `current`. That was right about the stop and wrong about the sweep: a
+   * row `VirtualList` draws newly, while the list already has focus, kept
+   * its element's native `tabindex="0"` because nothing ran to correct it,
+   * so Tab visited it -- finding 6. `stopControl` now keeps focus's own
+   * control as the stop without the sweep skipping every other row drawn
+   * since. Run on every DOM mutation (`restack`, below) rather than only at
+   * mount, this is what keeps every row but the one actually focused off
+   * the tab order as it is drawn.
+   */
+  function sweep() {
     const rows = rowsIn(node)
     if (rows.length === 0) return
-    // Not while the list has focus: the stop is wherever the reader has
-    // arrowed to, and moving it under them would send the next Tab
-    // somewhere they did not leave from.
-    if (node.contains(document.activeElement)) return
-    assign(rows.find((el) => el.dataset.row === current) ?? rows[0]!)
+    const stop = stopControl(rows)
+    for (const control of rowControlsIn(node)) control.tabIndex = control === stop ? 0 : -1
   }
 
   function focusRow(rows: HTMLElement[], index: number) {
     const target = rows[Math.max(0, Math.min(index, rows.length - 1))]
+    if (!target) return
+    assign(target)
+    stopOf(target)?.focus()
+  }
+
+  /** The virtualized path: scroll the data index into view, wait for its
+   *  row to mount, then focus it -- `focusRow` above cannot, because the
+   *  row is not in the DOM yet to be found. */
+  async function focusVirtualIndex(index: number) {
+    const id = virtual?.idAt(index)
+    if (!virtual || id === null || id === undefined) return
+    virtual.scrollToIndex(index)
+    const target = await waitForRow(node, id)
     if (!target) return
     assign(target)
     stopOf(target)?.focus()
@@ -182,10 +332,10 @@ export function rovingFocus(node: HTMLElement, current: string | null = null) {
     // answer with a subtask's parent, and every arrow key would move from
     // the wrong place.
     const row = active instanceof HTMLElement ? active.closest<HTMLElement>(ROW) : null
-    const at = row ? rows.indexOf(row) : -1
+    const domAt = row ? rows.indexOf(row) : -1
     // The keys only mean this once focus is on a row. A field above the list
     // -- the search box -- keeps its own use of Home and End.
-    if (at < 0 || !row) return
+    if (domAt < 0 || !row) return
 
     const columns = columnsOf(rows)
     // A row of several controls spends Left and Right on them; a grid of
@@ -196,38 +346,33 @@ export function rovingFocus(node: HTMLElement, current: string | null = null) {
     const lineHeight = row.getBoundingClientRect().height || 1
     const page = Math.max(1, Math.round(node.clientHeight / lineHeight) - 1) * columns
 
-    switch (e.key) {
-      case 'ArrowDown':
-        focusRow(rows, at + columns)
-        break
-      case 'ArrowUp':
-        focusRow(rows, at - columns)
-        break
-      case 'ArrowRight':
-        if (withinRow) focusControl(row, 1)
-        else if (columns > 1) focusRow(rows, at + 1)
-        else return
-        break
-      case 'ArrowLeft':
-        if (withinRow) focusControl(row, -1)
-        else if (columns > 1) focusRow(rows, at - 1)
-        else return
-        break
-      case 'Home':
-        focusRow(rows, 0)
-        break
-      case 'End':
-        focusRow(rows, rows.length - 1)
-        break
-      case 'PageDown':
-        focusRow(rows, at + page)
-        break
-      case 'PageUp':
-        focusRow(rows, at - page)
-        break
-      default:
-        return
+    // Left/Right within a multi-control row step between its controls, not
+    // the selected index -- `nextRovingIndex` knows nothing about controls,
+    // only rows, so this is decided here rather than folded into it.
+    if (withinRow && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
+      focusControl(row, e.key === 'ArrowRight' ? 1 : -1)
+      e.preventDefault()
+      return
     }
+
+    if (virtual) {
+      // Finding 6: the data's own index, not the DOM's -- `domAt` counts
+      // only what `VirtualList` currently has drawn, which is why Home in a
+      // long mailbox used to stop at the top of the rendered window rather
+      // than the top of the mailbox.
+      const id = row.dataset.row
+      const at = id ? virtual.indexOf(id) : -1
+      if (at < 0) return
+      const target = nextRovingIndex(at, e.key, virtual.length, { columns, page, withinRow })
+      if (target === null || target === at) return
+      e.preventDefault()
+      void focusVirtualIndex(target)
+      return
+    }
+
+    const target = nextRovingIndex(domAt, e.key, rows.length, { columns, page, withinRow })
+    if (target === null) return
+    focusRow(rows, target)
     // Only once a key was one of ours: the browser would otherwise scroll
     // the list out from under the row it just moved to.
     e.preventDefault()
@@ -235,25 +380,26 @@ export function rovingFocus(node: HTMLElement, current: string | null = null) {
 
   node.addEventListener('keydown', onKeydown)
 
-  // Re-placed when the rows change, not only when `current` does.
+  // Swept when the rows change, not only when `current` does.
   //
   // The action runs before a keyed `{#each}` has inserted anything, and a
   // list whose store is still loading has no rows at all -- so the first
-  // placement usually happens against an empty list. Re-running on the
+  // sweep usually happens against an empty list. Re-running on the
   // parameter alone was not enough: the journal got away with it because
   // opening the newest entry moves `selectedEntry` off null as the load
   // lands, and the todo list, whose selection stays null until somebody
-  // clicks a task, was left with every one of its controls a tab stop.
+  // clicks a task, was left with every one of its controls a tab stop. A
+  // virtualized list needs this same re-run for a second reason again --
+  // see `sweep`'s own doc.
   //
   // `childList` only. Handing out `tabindex` is an attribute change, and
   // observing those as well would be a loop.
   let queued: number | null = null
-  let latest = current
   const restack = () => {
     if (queued !== null) return
     queued = requestAnimationFrame(() => {
       queued = null
-      place(latest)
+      sweep()
     })
   }
   const observer = new MutationObserver(restack)
@@ -261,9 +407,11 @@ export function rovingFocus(node: HTMLElement, current: string | null = null) {
   restack()
 
   return {
-    update(next: string | null = null) {
-      latest = next
-      place(next)
+    update(next: RovingParams = null) {
+      const normalized = normalizeParams(next)
+      current = normalized.current
+      virtual = normalized.virtual
+      sweep()
     },
     destroy() {
       if (queued !== null) cancelAnimationFrame(queued)

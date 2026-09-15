@@ -27,12 +27,15 @@
 //! content in the process, which is what makes the app-level lock screen
 //! meaningful rather than cosmetic.
 
+mod accounts;
 mod agent;
 mod calendars;
 mod header;
 mod journal;
+mod keys;
 mod library;
 mod lifecycle;
+mod mail;
 mod maintenance;
 mod notes;
 mod profile;

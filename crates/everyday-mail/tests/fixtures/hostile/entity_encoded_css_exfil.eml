@@ -1,0 +1,18 @@
+From: "Newsletter" <news@marketing.example>
+To: victim@example.com
+Subject: Your weekly digest
+Message-ID: <hostile-entity-css-1@marketing.example>
+Date: Mon, 12 Jan 2026 09:14:00 +0000
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html>
+<body>
+<p>Here is this week's roundup of stories.</p>
+<div style="background:url&#40;https://evil.example/track.gif&#41;">
+A styled panel, using an entity-encoded url() to try to reach past the
+scrubber and phone home the moment the message is opened.
+</div>
+<p>See you next week.</p>
+</body>
+</html>

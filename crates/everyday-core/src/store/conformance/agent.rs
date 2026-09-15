@@ -171,7 +171,7 @@ fn messages_come_back_in_the_order_they_were_written(store: &dyn AgentStore) {
     };
     let ask = Message::user(c.id, "add a task to ring the vet");
     let plan = Message::assistant(c.id, String::new()).with_tool_calls(vec![call.clone()]);
-    let result = Message::tool_result(c.id, &call, Ok("added task 3f2a".into()));
+    let result = Message::tool_result(c.id, &call, Ok("added task 3f2a".into()), None);
     let reply = Message::assistant(c.id, "Added it.");
 
     // Written in order, but with timestamps that collide -- which is what
@@ -198,7 +198,7 @@ fn messages_come_back_in_the_order_they_were_written(store: &dyn AgentStore) {
 
     // A failed call is still sent to the model, and must still be drawable
     // as a failure without parsing its prose.
-    let failure = Message::tool_result(c.id, &call, Err("no project by that name".into()));
+    let failure = Message::tool_result(c.id, &call, Err("no project by that name".into()), None);
     store.append_message(&failure).unwrap();
     let back = store.list_messages(c.id).unwrap();
     assert!(back.last().unwrap().failed);

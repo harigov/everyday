@@ -1,0 +1,15 @@
+From: "Weekend Deals" <deals@retailer.example>
+To: reader@example.com
+Subject: This weekend's picks
+Message-ID: <retailer-encoded-image-1@retailer.example>
+Date: Sat, 17 Jan 2026 08:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html>
+<body>
+<p>Here is what's new this weekend.</p>
+<img src="https://cdn.retailer.example/banner.png?w=600&amp;h=300&amp;fit=crop" alt="Banner">
+<p><a href="https://retailer.example/deals">Shop now</a></p>
+</body>
+</html>

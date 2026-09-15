@@ -427,6 +427,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_kind", scope: Library, effect: Write,
         change: Shelf / Updated,
+        id: |a: &SaveKind| Some(a.kind.id.to_string()),
         args: SaveKind, returns: "void",
         signature: &[("kind", "Kind", true)],
         run: save_kind,
@@ -434,6 +435,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_kind", scope: Library, effect: Destructive,
         change: Shelf / Deleted,
+        id: |a: &KindRef| Some(a.id.to_string()),
         args: KindRef, returns: "void",
         signature: &[("id", "KindId", true)],
         run: delete_kind,
@@ -453,6 +455,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_item", scope: Library, effect: Write,
         change: Item / Updated,
+        id: |a: &SaveItem| Some(a.item.id.to_string()),
         args: SaveItem, returns: "void",
         signature: &[("item", "Item", true)],
         run: save_item,
@@ -460,6 +463,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_items", scope: Library, effect: Write,
         change: Item / Updated,
+        ids: |a: &SaveItems| a.items.iter().map(|i| i.id.to_string()).collect(),
         args: SaveItems, returns: "void",
         signature: &[("items", "Item[]", true)],
         run: save_items,
@@ -467,6 +471,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_item", scope: Library, effect: Destructive,
         change: Item / Deleted,
+        id: |a: &ItemRef| Some(a.id.to_string()),
         args: ItemRef, returns: "void",
         signature: &[("id", "ItemId", true)],
         run: delete_item,
@@ -485,6 +490,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "set_item_status", scope: Library, effect: Write,
         change: Item / Updated,
+        id: |a: &SetStatus| Some(a.id.to_string()),
         args: SetStatus, returns: "Item",
         signature: &[("id", "ItemId", true), ("status", "ItemStatus", true), ("log", "boolean", true)],
         run: set_item_status,
@@ -492,6 +498,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "set_item_progress", scope: Library, effect: Write,
         change: Item / Updated,
+        id: |a: &SetProgress| Some(a.id.to_string()),
         args: SetProgress, returns: "Item",
         signature: &[
             ("id", "ItemId", true),
@@ -516,6 +523,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_log", scope: Library, effect: Write,
         change: Log / Updated,
+        id: |a: &SaveLog| Some(a.log.id.to_string()),
         args: SaveLog, returns: "void",
         signature: &[("log", "LogEntry", true)],
         run: save_log,
@@ -523,6 +531,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_log", scope: Library, effect: Destructive,
         change: Log / Deleted,
+        id: |a: &LogRef| Some(a.id.to_string()),
         args: LogRef, returns: "void",
         signature: &[("id", "LogId", true)],
         run: delete_log,

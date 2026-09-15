@@ -156,6 +156,7 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
                 // keychain can block: a window that has drawn nothing yet
                 // must not be waiting on D-Bus.
                 let at = path.clone();
+                let was_locked = !vault.is_unlocked();
                 let unlocked = blocking(move || {
                     let Some(key) = everyday_vault::autounlock::recall(&at) else {
                         return Ok(());
@@ -166,8 +167,21 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
                     Ok(())
                 })
                 .await;
-                if let Err(e) = unlocked {
-                    tracing::warn!(error = %e, "the key in the keychain did not open the vault");
+                match unlocked {
+                    Ok(()) => {
+                        // `Service::set`, moments ago, saw this vault still
+                        // locked and had nothing of mail's to open; the key
+                        // the keychain just supplied is what makes it usable
+                        // now, so mail's storage and its account tasks start
+                        // here rather than waiting for a lock/unlock cycle
+                        // nothing in this path will ever ask for.
+                        if was_locked {
+                            service.unlocked();
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "the key in the keychain did not open the vault");
+                    }
                 }
             }
             // A vault we cannot open is not fatal: the interface should still
@@ -285,7 +299,7 @@ pub async fn create_vault(
     };
     let service = state.service();
     state.disconnect();
-    service.close();
+    service.close().await;
     let created = {
         let path = path.clone();
         blocking(move || {
@@ -308,7 +322,7 @@ pub async fn open_vault(state: State<'_, AppState>, path: PathBuf) -> CommandRes
     // Release the vault we already hold first. Its write lock is this process's,
     // and opening a second vault -- including the same one again -- while still
     // holding it would come up read-only. See `Service::close`.
-    service.close();
+    service.close().await;
     let opened = {
         let path = path.clone();
         blocking(move || everyday_vault::open(&path).map_err(CommandError::from)).await?
@@ -405,7 +419,7 @@ async fn attach(state: &State<'_, AppState>, client: RemoteClient) -> CommandRes
         state.sink().ok_or_else(|| CommandError::new("internal", "the window is not ready yet"))?;
     let connection = client.connection().clone();
     let remote = Remote::start(client, sink);
-    state.connect(remote);
+    state.connect(remote).await;
     let status =
         state.session().as_session().status().await.ok_or_else(|| {
             CommandError::new("network", "that computer did not say what it holds")

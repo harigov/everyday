@@ -39,6 +39,7 @@
 //! Those decide what a service *is*, and they belong to whatever owns the
 //! process. A service is handed a vault; it does not go looking for one.
 
+pub mod accountcal;
 pub mod agent;
 pub mod command;
 pub mod ctx;
@@ -49,9 +50,16 @@ pub mod feeds;
 pub mod http;
 pub mod idempotency;
 pub mod llm;
+pub mod mailai;
+pub mod mailsync;
+pub mod mailview;
+pub mod outbox;
 pub mod quick;
 pub mod scheduler;
 pub mod service;
+pub mod signin;
+pub mod supervisor;
+pub mod token_cache;
 pub mod transfers;
 pub mod websearch;
 

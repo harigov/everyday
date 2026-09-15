@@ -1,6 +1,27 @@
 {
   "tools": [
     {
+      "domain": "mail",
+      "effect": "write",
+      "name": "archive_thread",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "thread_id": {
+            "description": "Id from list_threads or search_mail.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Archive thread"
+    },
+    {
       "domain": "journals",
       "effect": "write",
       "name": "create_entry",
@@ -573,6 +594,89 @@
       "title": "Delete time block"
     },
     {
+      "domain": "mail",
+      "effect": "write",
+      "name": "draft_message",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "description": "Id from list_accounts — which mailbox this is from.",
+            "type": "string"
+          },
+          "bcc": {
+            "description": "Blind carbon-copy email addresses.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "body_html": {
+            "description": "The message, as HTML paragraphs (<p>...</p>).",
+            "type": "string"
+          },
+          "cc": {
+            "description": "Carbon-copy email addresses.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "subject": {
+            "description": "The subject line.",
+            "type": "string"
+          },
+          "to": {
+            "description": "Recipient email addresses.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "account_id",
+          "to",
+          "subject",
+          "body_html"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Draft message"
+    },
+    {
+      "domain": "mail",
+      "effect": "write",
+      "name": "draft_reply",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "body_html": {
+            "description": "Your reply, as HTML paragraphs (<p>...</p>). The original message is quoted underneath automatically — do not repeat it yourself.",
+            "type": "string"
+          },
+          "message_id": {
+            "description": "The message to reply to, from read_thread or search_mail.",
+            "type": "string"
+          },
+          "reply_all": {
+            "description": "Also copy everyone else on the original message. Off by default.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "message_id",
+          "body_html"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Draft reply"
+    },
+    {
       "domain": "agent",
       "effect": "destructive",
       "name": "forget",
@@ -655,6 +759,50 @@
       "scope": "tasks",
       "sensitivity": "ordinary",
       "title": "Get task"
+    },
+    {
+      "domain": "mail",
+      "effect": "write",
+      "name": "label_thread",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "description": "The label to apply.",
+            "type": "string"
+          },
+          "remove": {
+            "description": "True to remove the label instead of applying it.",
+            "type": "boolean"
+          },
+          "thread_id": {
+            "description": "Id from list_threads or search_mail.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "label"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Label thread"
+    },
+    {
+      "domain": "mail",
+      "effect": "read",
+      "name": "list_accounts",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "List accounts"
     },
     {
       "domain": "journals",
@@ -1076,6 +1224,39 @@
       "title": "List tasks"
     },
     {
+      "domain": "mail",
+      "effect": "read",
+      "name": "list_threads",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "description": "Id from list_accounts.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "mailbox": {
+            "description": "Which mailbox: inbox, sent, drafts, archive, trash, spam, all or other. Defaults to inbox.",
+            "type": "string"
+          },
+          "unread_only": {
+            "description": "Only threads with an unread message. Off by default.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "account_id"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "List threads"
+    },
+    {
       "domain": "tasks",
       "effect": "read",
       "name": "list_time_blocks",
@@ -1155,6 +1336,57 @@
       "title": "Log reading"
     },
     {
+      "domain": "mail",
+      "effect": "write",
+      "name": "mark_read",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "read": {
+            "description": "True to mark read, false to mark unread. Defaults to true.",
+            "type": "boolean"
+          },
+          "thread_id": {
+            "description": "Id from list_threads or search_mail.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Mark read"
+    },
+    {
+      "domain": "mail",
+      "effect": "write",
+      "name": "move_thread",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "thread_id": {
+            "description": "Id from list_threads or search_mail.",
+            "type": "string"
+          },
+          "to": {
+            "description": "Which mailbox to move it to: inbox, archive, trash, spam or other.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "to"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Move thread"
+    },
+    {
       "domain": "journals",
       "effect": "read",
       "name": "overview",
@@ -1167,6 +1399,27 @@
       "scope": "journals",
       "sensitivity": "ordinary",
       "title": "Overview"
+    },
+    {
+      "domain": "mail",
+      "effect": "read",
+      "name": "read_thread",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "thread_id": {
+            "description": "Id from list_threads or search_mail.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Read thread"
     },
     {
       "domain": "agent",
@@ -1188,6 +1441,41 @@
       "scope": "agent",
       "sensitivity": "ordinary",
       "title": "Remember"
+    },
+    {
+      "domain": "mail",
+      "effect": "outward",
+      "name": "respond_to_invite",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "comment": {
+            "description": "An optional note to the organiser. Left out of the reply if omitted.",
+            "type": "string"
+          },
+          "message_id": {
+            "description": "The message carrying the calendar invitation, from read_thread or search_mail.",
+            "type": "string"
+          },
+          "response": {
+            "description": "How to answer the organiser.",
+            "enum": [
+              "accepted",
+              "tentative",
+              "declined"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id",
+          "response"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Respond to invite"
     },
     {
       "domain": "routines",
@@ -1240,6 +1528,52 @@
       "title": "Search"
     },
     {
+      "domain": "mail",
+      "effect": "read",
+      "name": "search_mail",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Most results. Defaults to 25 and is never more than 25.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "The same search syntax the mail app's own search box takes: from:, to:, subject:, has:attachment, is:unread, is:starred, before:, after:, in:<mailbox>, label:<name>, \"a quoted phrase\", a leading - to exclude, OR between groups. Free words with no keyword search subject and body.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Search mail"
+    },
+    {
+      "domain": "mail",
+      "effect": "outward",
+      "name": "send_draft",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "draft_id": {
+            "description": "Id of an existing draft from draft_reply, draft_message or update_draft.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "draft_id"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Send draft"
+    },
+    {
       "domain": "purpose",
       "effect": "write",
       "name": "set_purpose",
@@ -1284,6 +1618,32 @@
       "scope": "purpose",
       "sensitivity": "ordinary",
       "title": "Set purpose"
+    },
+    {
+      "domain": "mail",
+      "effect": "write",
+      "name": "snooze_thread",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "thread_id": {
+            "description": "Id from list_threads or search_mail.",
+            "type": "string"
+          },
+          "until": {
+            "description": "When to bring it back, as a timestamp like 2026-09-15T08:00:00Z.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "until"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Snooze thread"
     },
     {
       "domain": "purpose",
@@ -1334,6 +1694,77 @@
       "scope": "trackers",
       "sensitivity": "ordinary",
       "title": "Tracker summary"
+    },
+    {
+      "domain": "mail",
+      "effect": "write",
+      "name": "trash_thread",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "thread_id": {
+            "description": "Id from list_threads or search_mail.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Trash thread"
+    },
+    {
+      "domain": "mail",
+      "effect": "write",
+      "name": "update_draft",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "bcc": {
+            "description": "Replaces bcc entirely. Omit to leave it alone.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "body_html": {
+            "description": "Replaces the body. Omit to leave it alone.",
+            "type": "string"
+          },
+          "cc": {
+            "description": "Replaces cc entirely. Omit to leave it alone.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "draft_id": {
+            "description": "Id from draft_reply, draft_message or list_accounts.",
+            "type": "string"
+          },
+          "subject": {
+            "description": "Replaces the subject. Omit to leave it alone.",
+            "type": "string"
+          },
+          "to": {
+            "description": "Replaces the recipients entirely. Omit to leave them alone.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "draft_id"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Update draft"
     },
     {
       "domain": "journals",

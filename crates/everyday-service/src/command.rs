@@ -45,7 +45,46 @@ use serde_json::Value;
 use std::sync::Arc;
 
 /// What a command's body is, once the macro has wrapped it.
-pub type Handler = fn(Arc<Service>, Ctx, Value) -> BoxFuture<'static, CommandResult<Value>>;
+pub type Handler = fn(Arc<Service>, Ctx, Value) -> BoxFuture<'static, CommandResult<Outcome>>;
+
+/// What a generated `run` function actually answers with, before
+/// [`Command::invoke`] separates the value a caller sees from the id or ids
+/// that go on the [`Change`] it raises.
+///
+/// # Why the id travels this way rather than in the result
+///
+/// The obvious place to look for "what did this write" is the JSON a command
+/// returns, and [`encode`] is right there to read it back out of -- but it is
+/// the wrong place. Every `save_*` and `delete_*` command in the table
+/// answers `void`: the record a save wrote is the one the caller already
+/// had, echoing it back would be wasted bytes on every save in the
+/// application, and a delete has nothing left to echo. What every one of
+/// them *does* have is arguments that already name the record -- a `Save*`
+/// struct wraps the record itself, whose id the core minted before the
+/// client ever saw it; a `*Ref` struct wrapped by a delete is nothing but an
+/// id. So the macro reads the id out of the typed arguments it has already
+/// parsed, immediately before handing them to the command's body, rather
+/// than out of a result that in most cases does not carry it.
+///
+/// This is why `id:` and `ids:` in the [`command!`] table take a function of
+/// `&$args`, not of the result: the args are what a save or a delete
+/// commands actually has an id in hand for, and reading them costs nothing
+/// extra -- the macro's generated `run` already deserialised them once, and
+/// this borrows that same value before moving it into the body.
+///
+/// Declaring `id:` or `ids:` is opt-in per command rather than derived from
+/// the argument type automatically, because automatic derivation would need
+/// either a trait every argument struct in the table implements -- read
+/// commands and batch commands included, for a fact only a handful of them
+/// have -- or a naming convention over field names that a `Save*` struct
+/// would have to keep matching for ever. A two-line closure beside the
+/// command it describes is less machinery than either, and is exactly as
+/// visible in review as the `change:` line right beside it.
+pub struct Outcome {
+    pub value: Value,
+    pub id: Option<String>,
+    pub ids: Vec<String>,
+}
 
 /// One thing a client can ask for.
 pub struct Command {
@@ -122,6 +161,12 @@ pub fn effect_name(effect: Effect) -> &'static str {
         Effect::Read => "read",
         Effect::Write => "write",
         Effect::Destructive => "destructive",
+        // Reaches somebody outside the vault; see `Effect::Outward`'s own
+        // docs in the core. No row in this table declares it -- only the
+        // tool catalogue does -- but `effect_name` is shared with
+        // `domains::meta::list_tools`, which reads a tool's real effect
+        // straight from there.
+        Effect::Outward => "outward",
     }
 }
 
@@ -247,9 +292,9 @@ impl Command {
         }
         let out = (self.run)(svc.clone(), ctx, args).await?;
         if let Some((kind, op)) = self.change {
-            svc.events().changed(Change { kind, op, id: None, origin });
+            svc.events().changed(Change { kind, op, id: out.id, ids: out.ids, origin });
         }
-        Ok(out)
+        Ok(out.value)
     }
 }
 
@@ -287,6 +332,8 @@ macro_rules! command {
         $(or_scope: $or_scope:ident,)?
         effect: $effect:ident,
         $(change: $kind:ident / $op:ident,)?
+        $(id: $idfn:expr,)?
+        $(ids: $idsfn:expr,)?
         $(sensitive: $sensitive:literal,)?
         $(streams: $streams:literal,)?
         args: $args:ty,
@@ -298,12 +345,21 @@ macro_rules! command {
             svc: ::std::sync::Arc<$crate::service::Service>,
             ctx: $crate::ctx::Ctx,
             raw: ::serde_json::Value,
-        ) -> ::futures::future::BoxFuture<'static, $crate::error::CommandResult<::serde_json::Value>>
+        ) -> ::futures::future::BoxFuture<'static, $crate::error::CommandResult<$crate::command::Outcome>>
         {
             ::std::boxed::Box::pin(async move {
                 let args: $args = $crate::command::parse($name, raw)?;
+                // Read before the body consumes `args` -- see `Outcome`'s
+                // doc for why this, rather than the result, is where a
+                // save or a delete's id actually lives.
+                let id = ($crate::command::id_fn!($($idfn)?))(&args);
+                let ids = ($crate::command::ids_fn!($($idsfn)?))(&args);
                 let out = $body(svc, ctx, args).await?;
-                $crate::command::encode(out)
+                ::std::result::Result::Ok($crate::command::Outcome {
+                    value: $crate::command::encode(out)?,
+                    id,
+                    ids,
+                })
             })
         }
         fn check_args(raw: ::serde_json::Value) -> ::std::result::Result<(), ::std::string::String> {
@@ -358,7 +414,33 @@ macro_rules! flag {
     };
 }
 
-pub use crate::{change, flag, or_scope};
+/// A closure that reads the one id out of a command's parsed arguments, or
+/// the default that says there is none -- see [`Outcome`] for why arguments
+/// rather than a result.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! id_fn {
+    () => {
+        |_: &_| -> ::std::option::Option<::std::string::String> { ::std::option::Option::None }
+    };
+    ($f:expr) => {
+        $f
+    };
+}
+
+/// The batch equivalent of [`id_fn!`].
+#[macro_export]
+#[doc(hidden)]
+macro_rules! ids_fn {
+    () => {
+        |_: &_| -> ::std::vec::Vec<::std::string::String> { ::std::vec::Vec::new() }
+    };
+    ($f:expr) => {
+        $f
+    };
+}
+
+pub use crate::{change, flag, id_fn, ids_fn, or_scope};
 
 /// Every command, in the order the domains are listed.
 ///
@@ -421,6 +503,13 @@ mod tests {
             // Writes a blob. Invisible until an item references it, and the
             // save that does the referencing announces itself.
             "fetch_image",
+            // Writes a blob and updates one message's own `Body.parts`
+            // entry to name it -- on `fetch_image`'s own reasoning above.
+            // Neither a message nor a thread's clear columns change, so
+            // there is no `Kind` for this to announce; the caller already
+            // has the updated `MailAttachment` back in the command's own
+            // result and patches its copy of the thread directly.
+            "fetch_attachment",
             // Its effect is whatever tool it ran, which announces its own.
             "run_tool",
             // Answers a question a turn is parked on. What follows is the
@@ -431,6 +520,35 @@ mod tests {
             // stale, so it emits one event per kind an imported app could
             // have moved. See `domains::transfer::kinds_of`.
             "run_import",
+            // OAuth sign-in. Its writes are entirely inside
+            // `crate::signin::SignIns` -- a loopback socket, a background
+            // task, a map of tokens waiting to be claimed -- none of which
+            // is a vault record any list is drawn from. The moment that
+            // changes something a list can show is `save_account`, in the
+            // accounts domain, and that command names its own `change:`.
+            "begin_oauth_sign_in",
+            "cancel_oauth_sign_in",
+            // Mail sync. `sync_account` only starts or nudges a background
+            // task -- see `crate::mailsync::wiring` -- and `rebuild_mail_index`
+            // rewrites the search index, a derived structure no list is
+            // drawn from; neither touches a vault record a `Kind` names.
+            "sync_account",
+            "rebuild_mail_index",
+            // The one-off categorisation backfill: like `run_import`, it can
+            // touch every thread of an account (or every account), and a
+            // single `change:` would name one thread and leave the rest of
+            // the list stale. Unlike `run_import`, there is no small set of
+            // `Kind`s to enumerate instead -- see its own doc comment in
+            // `domains::mail`.
+            "recategorize_mail",
+            // Answers a calendar invitation. `id`/`ids` can only ever read
+            // `RespondToInvite`'s own arguments, which name a message, not
+            // the thread a list actually redraws for -- the thread id is
+            // only known once the handler has loaded the message. So, like
+            // `run_import`, it emits its own `Kind::Thread` by hand once it
+            // has that id, rather than through a `change:` this table could
+            // declare ahead of running.
+            "respond_to_invite",
         ];
         for command in catalog() {
             if command.effect.is_write() && !INVISIBLE.contains(&command.name) {

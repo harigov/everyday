@@ -45,6 +45,7 @@ import {
   todayIso,
 } from './time'
 import type {
+  AccountId,
   BlockKind,
   BlockSubject,
   CalendarEvent,
@@ -1242,6 +1243,15 @@ class CalendarState {
     return this.add(() => api.importCalendar({ name: name.trim(), label, color, ics }))
   }
 
+  /**
+   * Subscribe to one of an account's own calendars, discovered rather than
+   * pasted in. The same all-or-nothing shape as {@link subscribe}: nothing
+   * is left behind if the first sync fails.
+   */
+  async subscribeFromAccount(account: AccountId, remoteId: string): Promise<string | null> {
+    return this.add(() => api.subscribeAccountCalendar(account, remoteId))
+  }
+
   private async add(run: () => Promise<CalendarInfo>): Promise<string | null> {
     this.syncing = true
     try {
@@ -1275,7 +1285,10 @@ class CalendarState {
     if (!app.supportsCalendar || this.syncing) return
     if (app.status?.writable === false) return
     const subscription = this.calendarOf(id)
-    if (!subscription || subscription.origin.type !== 'url') return
+    // A file calendar has nothing to refetch from; a feed and an account
+    // calendar both do, over different transports the backend picks
+    // between on its own.
+    if (!subscription || subscription.origin.type === 'file') return
     this.syncing = true
     try {
       const report = await api.syncCalendar(id)
@@ -1296,7 +1309,7 @@ class CalendarState {
     // Nothing a sync fetches can be stored on a read-only vault, so the
     // background pass would be network traffic for its own sake.
     if (app.status?.writable === false) return
-    if (!this.calendars.some((c) => c.origin.type === 'url')) return
+    if (!this.calendars.some((c) => c.origin.type !== 'file')) return
     this.syncing = true
     try {
       const reports = await api.syncDueCalendars(force)

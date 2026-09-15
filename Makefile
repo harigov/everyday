@@ -19,7 +19,7 @@ UI_DIR  := ui
 ARGS ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help setup run dev ui build test test-postgres lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
+.PHONY: help setup run dev ui build test test-postgres test-imap test-smtp test-mail test-caldav lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
 
 help: ## Show this help
 	@echo "Every Day -- make <target>"
@@ -93,6 +93,148 @@ test-postgres: ## Run the storage suite against a throwaway Postgres in Docker
 		cargo test -p everyday-store-postgres; \
 	status=$$?; \
 	docker rm -f everyday-pgtest >/dev/null; \
+	exit $$status
+
+# The IMAP adapter's suite (crates/everyday-mail/tests/imap_dovecot.rs),
+# against a throwaway Dovecot -- the official image, confined and rootless,
+# which authenticates any username against the one password in
+# USER_PASSWORD and auto-creates that user's mailbox, so nothing here seeds
+# a user database. It supports CONDSTORE, QRESYNC, IDLE, MOVE, UIDPLUS and
+# SPECIAL-USE without extra configuration. `insecure-test-tls` is the
+# feature that makes this crate trust the container's self-signed
+# certificate; see `Security::InsecureTestTls` in `src/imap.rs` for why it
+# exists and why it is never on by default. The container is removed when
+# it stops.
+test-imap: ## Run the IMAP adapter's suite against a throwaway Dovecot in Docker
+	@docker rm -f everyday-imaptest >/dev/null 2>&1 || true
+	docker run -d --rm --name everyday-imaptest \
+		-e USER_PASSWORD=testpass \
+		-p 15993:31993 -p 15143:31143 \
+		dovecot/dovecot:latest >/dev/null
+	@echo "waiting for Dovecot..."
+	@bash -c 'for i in $$(seq 1 60); do \
+		(exec 3<>/dev/tcp/127.0.0.1/15993) 2>/dev/null && exec 3<&- 3>&- && exit 0; \
+		sleep 1; \
+	done; exit 1'
+	@EVERYDAY_TEST_IMAP=1 \
+		EVERYDAY_TEST_IMAP_HOST=127.0.0.1 \
+		EVERYDAY_TEST_IMAP_TLS_PORT=15993 \
+		EVERYDAY_TEST_IMAP_STARTTLS_PORT=15143 \
+		EVERYDAY_TEST_IMAP_USER=everyday \
+		EVERYDAY_TEST_IMAP_PASS=testpass \
+		cargo test -p everyday-mail --features insecure-test-tls --test imap_dovecot; \
+	status=$$?; \
+	docker rm -f everyday-imaptest >/dev/null; \
+	exit $$status
+
+# The SMTP client's suite (crates/everyday-mail/tests/smtp_mailpit.rs),
+# against a throwaway Mailpit -- the official image, which is given exactly
+# one SMTP credential (MP_SMTP_AUTH=everyday:testpass) so the suite can
+# prove both that the right password is accepted and that a wrong one comes
+# back as this crate's own auth error, and exposes an HTTP API the test
+# reads delivered messages back through, so nothing here needs its own
+# IMAP-style server to check what arrived. Auth is exercised in the clear
+# (MP_SMTP_AUTH_ALLOW_INSECURE): this suite is about the SMTP verb sequence
+# and this crate's own error mapping, not about proving
+# `rustls-platform-verifier` again -- `make test-imap` already does that
+# against Dovecot's TLS, and `smtp.rs`'s `connect` uses the identical
+# `tokio1-rustls` configuration. The container is removed when it stops.
+test-smtp: ## Run the SMTP client's suite against a throwaway Mailpit in Docker
+	@docker rm -f everyday-smtptest >/dev/null 2>&1 || true
+	docker run -d --rm --name everyday-smtptest \
+		-e MP_SMTP_AUTH=everyday:testpass -e MP_SMTP_AUTH_ALLOW_INSECURE=1 \
+		-p 11025:1025 -p 18025:8025 \
+		axllent/mailpit:latest >/dev/null
+	@echo "waiting for Mailpit..."
+	@bash -c 'for i in $$(seq 1 60); do \
+		(exec 3<>/dev/tcp/127.0.0.1/18025) 2>/dev/null && exec 3<&- 3>&- && exit 0; \
+		sleep 1; \
+	done; exit 1'
+	@EVERYDAY_TEST_SMTP=1 \
+		EVERYDAY_TEST_SMTP_HOST=127.0.0.1 \
+		EVERYDAY_TEST_SMTP_PORT=11025 \
+		EVERYDAY_TEST_SMTP_API=http://127.0.0.1:18025 \
+		cargo test -p everyday-mail --features insecure-test-tls --test smtp_mailpit; \
+	status=$$?; \
+	docker rm -f everyday-smtptest >/dev/null; \
+	exit $$status
+
+# `accountcal::caldav`'s suite (crates/everyday-service/tests/caldav_docker.rs),
+# against a throwaway Radicale -- Kozea's own image, GPL-3.0 licensed, which
+# is fine for a container this application never links: nothing here ships
+# Radicale, it only talks CalDAV to a copy of it that is deleted when the
+# test ends. Authenticated with a plain htpasswd file (one line, written to a
+# temp file below and never committed) rather than `--auth-type none`,
+# because Basic auth over a real server is exactly the credential path
+# `accountcal::caldav` uses for iCloud, Fastmail and Custom accounts, and a
+# test that skipped it would not be testing that path at all. The test
+# itself seeds the calendar and its events over plain HTTP PUT -- see its own
+# doc for why -- so nothing here does more than start the server and wait for
+# it to answer. The container is removed when it stops.
+test-caldav: ## Run the CalDAV adapter's suite against a throwaway Radicale in Docker
+	@docker rm -f everyday-caldavtest >/dev/null 2>&1 || true
+	@tmp_htpasswd=$$(mktemp); \
+	printf 'everyday:testpass\n' > $$tmp_htpasswd; \
+	docker run -d --rm --name everyday-caldavtest \
+		-v $$tmp_htpasswd:/etc/radicale/users:ro \
+		-p 15232:5232 \
+		kozea/radicale:latest --hosts 0.0.0.0:5232 \
+		--auth-type htpasswd --auth-htpasswd-filename /etc/radicale/users \
+		--auth-htpasswd-encryption plain >/dev/null; \
+	echo "waiting for Radicale..."; \
+	for i in $$(seq 1 60); do \
+		curl -sf -o /dev/null http://127.0.0.1:15232/ && break; \
+		sleep 1; \
+	done; \
+	EVERYDAY_TEST_CALDAV=1 \
+		EVERYDAY_TEST_CALDAV_URL=http://127.0.0.1:15232 \
+		EVERYDAY_TEST_CALDAV_USER=everyday \
+		EVERYDAY_TEST_CALDAV_PASS=testpass \
+		cargo test -p everyday-service --test caldav_docker; \
+	status=$$?; \
+	docker rm -f everyday-caldavtest >/dev/null; \
+	rm -f $$tmp_htpasswd; \
+	exit $$status
+
+# `everyday-service`'s own end-to-end suite
+# (crates/everyday-service/tests/mailsync_dovecot.rs) needs both servers at
+# once -- a real IMAP account to sync, act on and read back from, and a real
+# SMTP relay to send through -- so this starts both throwaway containers
+# together rather than asking for two separate `make` invocations. Same
+# images, same credentials, same ports as `test-imap` and `test-smtp` above;
+# both are removed when either half of the suite finishes.
+test-mail: ## Run the mail sync engine's end-to-end suite against throwaway Dovecot and Mailpit
+	@docker rm -f everyday-imaptest everyday-smtptest >/dev/null 2>&1 || true
+	docker run -d --rm --name everyday-imaptest \
+		-e USER_PASSWORD=testpass \
+		-p 15993:31993 -p 15143:31143 \
+		dovecot/dovecot:latest >/dev/null
+	docker run -d --rm --name everyday-smtptest \
+		-e MP_SMTP_AUTH=everyday:testpass -e MP_SMTP_AUTH_ALLOW_INSECURE=1 \
+		-p 11025:1025 -p 18025:8025 \
+		axllent/mailpit:latest >/dev/null
+	@echo "waiting for Dovecot and Mailpit..."
+	@bash -c 'for i in $$(seq 1 60); do \
+		(exec 3<>/dev/tcp/127.0.0.1/15993) 2>/dev/null && exec 3<&- 3>&- && exit 0; \
+		sleep 1; \
+	done; exit 1'
+	@bash -c 'for i in $$(seq 1 60); do \
+		(exec 3<>/dev/tcp/127.0.0.1/18025) 2>/dev/null && exec 3<&- 3>&- && exit 0; \
+		sleep 1; \
+	done; exit 1'
+	@EVERYDAY_TEST_IMAP=1 \
+		EVERYDAY_TEST_IMAP_HOST=127.0.0.1 \
+		EVERYDAY_TEST_IMAP_TLS_PORT=15993 \
+		EVERYDAY_TEST_IMAP_STARTTLS_PORT=15143 \
+		EVERYDAY_TEST_IMAP_USER=everyday \
+		EVERYDAY_TEST_IMAP_PASS=testpass \
+		EVERYDAY_TEST_SMTP=1 \
+		EVERYDAY_TEST_SMTP_HOST=127.0.0.1 \
+		EVERYDAY_TEST_SMTP_PORT=11025 \
+		EVERYDAY_TEST_SMTP_API=http://127.0.0.1:18025 \
+		cargo test -p everyday-service --test mailsync_dovecot; \
+	status=$$?; \
+	docker rm -f everyday-imaptest everyday-smtptest >/dev/null; \
 	exit $$status
 
 # The pair to reach for: `lint` says what is wrong, `fix` fixes what it can.

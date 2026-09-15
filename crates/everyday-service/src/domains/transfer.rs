@@ -258,7 +258,13 @@ async fn run_import(svc: Arc<Service>, ctx: Ctx, args: RunImport) -> CommandResu
     let origin = ctx.caller.origin().map(str::to_string);
     for report in reports.iter().filter(|r| r.touched() > 0) {
         for kind in kinds_of(&report.part) {
-            let change = Change { kind: *kind, op: Op::Updated, id: None, origin: origin.clone() };
+            let change = Change {
+                kind: *kind,
+                op: Op::Updated,
+                id: None,
+                ids: Vec::new(),
+                origin: origin.clone(),
+            };
             svc.events().changed(change);
         }
     }

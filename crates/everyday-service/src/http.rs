@@ -1,30 +1,41 @@
 //! The application's one HTTP client, and the two things every caller of it
 //! needs to get right.
 //!
-//! There are exactly two features in Every Day that open a socket —
-//! refreshing a subscribed calendar ([`crate::feeds`]) and looking up what a
-//! book is called ([`crate::websearch`]) — and both do it from here. Sharing
-//! the client is not about connection pooling; it is about the settings
-//! below being decided once. A second `Client::builder()` elsewhere in the
-//! tree would be a second timeout, a second redirect policy and a second
-//! chance to forget the size cap, and the only sign of the mistake would be
-//! a wedged request some months later.
+//! There are exactly three features in Every Day that open a socket —
+//! refreshing a subscribed calendar ([`crate::feeds`]), looking up what a
+//! book is called ([`crate::websearch`]), and fetching a remote image a
+//! message asked to load ([`crate::mailview::remote_image`]) — and all three
+//! do it from here. Sharing the client is not about connection pooling; it
+//! is about the settings below being decided once. A second
+//! `Client::builder()` elsewhere in the tree would be a second timeout, a
+//! second redirect policy and a second chance to forget the size cap, and
+//! the only sign of the mistake would be a wedged request some months later.
 //!
-//! What is *not* shared is the prose. A 404 means "that subscription link
-//! has been revoked" to the calendar and "nothing was found" to a lookup, so
-//! each caller maps status codes itself. See [`crate::feeds::fetch`] and
-//! [`crate::websearch::get`].
+//! What is *not* shared is the prose, or the extra caution one caller needs
+//! that the others do not. A 404 means "that subscription link has been
+//! revoked" to the calendar and "nothing was found" to a lookup, so each
+//! caller maps status codes itself. A remote image is the one address of
+//! the three that a *stranger* chose rather than the person using this
+//! application, so [`crate::mailview`] layers its own SSRF check and a
+//! generic `User-Agent` on top of this client's shared settings rather than
+//! trusting the far end the way a calendar subscription or a search result
+//! is. See [`crate::feeds::fetch`], [`crate::websearch::get`] and
+//! [`crate::mailview::remote_image`].
 //!
 //! # What this is allowed to talk to
 //!
-//! The address the user pasted into a calendar, and the search endpoint
-//! behind a button they pressed. There is no telemetry, no update check, no
-//! crash reporter and no analytics anywhere in this application. The
+//! The address the user pasted into a calendar, the search endpoint behind a
+//! button they pressed, and an image address a message named -- fetched only
+//! once its sender is trusted or the person asks, and only after
+//! [`crate::mailview`]'s own checks. There is no telemetry, no update check,
+//! no crash reporter and no analytics anywhere in this application. The
 //! webview's own network permissions are unchanged and remain none at all —
 //! its content security policy still allows `connect-src 'self' ipc:` — so
-//! nothing it renders can cause a request of its own.
+//! nothing it renders can cause a request of its own; every request this
+//! client makes is one a person, not a webview, chose.
 
-use std::sync::OnceLock;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use crate::error::{CommandError, CommandResult, codes};
@@ -66,6 +77,82 @@ pub fn client() -> CommandResult<&'static reqwest::Client> {
         })
         .as_ref()
         .map_err(|e| CommandError::new(codes::NETWORK, format!("could not start the fetcher: {e}")))
+}
+
+/// The client for addresses a stranger chose: a message's remote images.
+///
+/// A check before the request is not enough on its own, for two reasons this
+/// client exists to close. A redirect is a second address the far end picks
+/// after the check has passed, and the shared client follows up to
+/// [`MAX_REDIRECTS`] of them anywhere. And a name resolved once for the check
+/// is resolved again by the connection, so a server answering a public
+/// address the first time and `127.0.0.1` the second (DNS rebinding) walks
+/// straight past it. So here the filter is *inside* the fetch: every name is
+/// resolved by [`PublicOnly`], which drops private answers before a socket
+/// can use them, and every redirect hop whose host is a literal address is
+/// refused by the redirect policy -- the one case a resolver never sees. No
+/// proxy, because a proxy resolves names itself and would be a way around
+/// both.
+pub fn public_client() -> CommandResult<&'static reqwest::Client> {
+    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(FETCH_TIMEOUT)
+                .connect_timeout(CONNECT_TIMEOUT)
+                .no_proxy()
+                .dns_resolver(Arc::new(PublicOnly))
+                .redirect(public_client_redirect_policy())
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(|e| CommandError::new(codes::NETWORK, format!("could not start the fetcher: {e}")))
+}
+
+/// Follow at most [`MAX_REDIRECTS`] hops, only over http(s), and never to a
+/// literal private address -- the hop a resolver never sees.
+fn public_client_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= MAX_REDIRECTS {
+            return attempt.error("too many redirects");
+        }
+        let url = attempt.url();
+        if url.scheme() != "http" && url.scheme() != "https" {
+            return attempt.error("a redirect left http");
+        }
+        let literal = url
+            .host_str()
+            .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
+            .and_then(|h| h.parse::<IpAddr>().ok());
+        if literal.is_some_and(|ip| is_forbidden_address(ip, false)) {
+            return attempt.error("a redirect pointed at a private network");
+        }
+        attempt.follow()
+    })
+}
+
+/// A resolver that answers only with addresses on the open internet.
+///
+/// A name whose every answer is private resolves to an error; a name with a
+/// mix has its private answers removed, so the connection cannot fall back
+/// to one of them.
+struct PublicOnly;
+
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let found: Vec<SocketAddr> = tokio::net::lookup_host((name.as_str(), 0))
+                .await?
+                .filter(|addr| !is_forbidden_address(addr.ip(), false))
+                .collect();
+            if found.is_empty() {
+                return Err("that address points at a private network, or at nothing".into());
+            }
+            let addrs: reqwest::dns::Addrs = Box::new(found.into_iter());
+            Ok(addrs)
+        })
+    }
 }
 
 /// Read a response body, refusing to grow past `max_bytes`.
@@ -128,9 +215,118 @@ pub fn strip_url(message: &str) -> String {
         .join(" ")
 }
 
+/// Loopback, link-local, unspecified, broadcast, RFC 1918 private, and
+/// carrier-grade NAT (RFC 6598) addresses -- everything a residential or
+/// office network hands out to something that is not meant to be reached
+/// from the open internet, plus the addresses that mean "this machine"
+/// rather than any of those. Written against raw octets and segments rather
+/// than the standard library's own `is_private`/`is_unique_local` family:
+/// several of those stabilised well after this application's minimum
+/// supported Rust version (`docs/`'s own note that local `rustc` lags CI),
+/// and the ranges themselves are fixed by the RFCs regardless of which
+/// release of the standard library happens to name them.
+pub(crate) fn is_forbidden_address(ip: IpAddr, allow_loopback: bool) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            let loopback = o[0] == 127;
+            if allow_loopback && loopback {
+                return false;
+            }
+            loopback
+                || o == [0, 0, 0, 0]
+                || o == [255, 255, 255, 255]
+                || o[0] == 10
+                || (o[0] == 172 && (16..=31).contains(&o[1]))
+                || (o[0] == 192 && o[1] == 168)
+                || (o[0] == 169 && o[1] == 254)
+                || (o[0] == 100 && (64..=127).contains(&o[1]))
+        }
+        IpAddr::V6(v6) => {
+            let segments = v6.segments();
+            let loopback = segments == [0, 0, 0, 0, 0, 0, 0, 1];
+            if allow_loopback && loopback {
+                return false;
+            }
+            if loopback || segments == [0; 8] {
+                return true;
+            }
+            if let Some(mapped) = ipv4_mapped(&segments) {
+                return is_forbidden_address(IpAddr::V4(mapped), allow_loopback);
+            }
+            // `fe80::/10`, link-local, and `fc00::/7`, unique local -- the
+            // IPv6 counterparts of `169.254.0.0/16` and the RFC 1918 ranges
+            // above.
+            let seg0 = segments[0];
+            (seg0 & 0xffc0 == 0xfe80) || (seg0 & 0xfe00 == 0xfc00)
+        }
+    }
+}
+
+/// `::ffff:a.b.c.d` unpacked to the `Ipv4Addr` it maps, without
+/// `Ipv6Addr::to_ipv4_mapped` -- see [`is_forbidden_address`]'s docs on
+/// avoiding methods this crate's minimum Rust version might not have yet.
+fn ipv4_mapped(segments: &[u16; 8]) -> Option<std::net::Ipv4Addr> {
+    if segments[0..5] == [0, 0, 0, 0, 0] && segments[5] == 0xffff {
+        let a = (segments[6] >> 8) as u8;
+        let b = (segments[6] & 0xff) as u8;
+        let c = (segments[7] >> 8) as u8;
+        let d = (segments[7] & 0xff) as u8;
+        Some(std::net::Ipv4Addr::new(a, b, c, d))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A server on this machine, answering anything with a redirect to
+    /// `location`, or with a one-byte body when `location` is empty.
+    async fn local_server(location: &'static str) -> u16 {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let reply = if location.is_empty() {
+                    "HTTP/1.1 200 OK\r\ncontent-length: 1\r\n\r\nx".to_string()
+                } else {
+                    format!(
+                        "HTTP/1.1 302 Found\r\nlocation: {location}\r\ncontent-length: 0\r\n\r\n"
+                    )
+                };
+                let _ = socket.write_all(reply.as_bytes()).await;
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn a_name_that_resolves_to_this_machine_is_never_connected_to() {
+        let port = local_server("").await;
+        let client = public_client().unwrap();
+        let err = client.get(format!("http://localhost:{port}/")).send().await;
+        assert!(err.is_err(), "localhost must not resolve through the public client");
+    }
+
+    #[tokio::test]
+    async fn a_redirect_to_a_private_address_is_not_followed() {
+        // The first hop is a literal loopback address the caller's own check
+        // would have refused; here the point is the second hop, which only
+        // the redirect policy sees.
+        let port = local_server("http://10.0.0.1/secret").await;
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(public_client_redirect_policy())
+            .build()
+            .unwrap();
+        let err = client.get(format!("http://127.0.0.1:{port}/")).send().await.unwrap_err();
+        assert!(err.is_redirect(), "expected the redirect to be refused, got {err}");
+    }
 
     #[test]
     fn an_error_message_never_carries_the_address() {

@@ -33,6 +33,9 @@ import { agent } from './agent.svelte'
 import { calendar } from './calendar.svelte'
 import { SEQUENCE_MS, chordOf, isTyping, match, type Binding } from './keys'
 import { library } from './library.svelte'
+import { mailboxHasTabs } from './mail'
+import { mail } from './mail.svelte'
+import { menu } from './menu.svelte'
 import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
 import { panels } from './panels.svelte'
@@ -142,8 +145,51 @@ function oneSweep<T>(sweep: () => T): T {
 }
 
 /** Anywhere past the lock screen, with no dialog over the window. */
+/**
+ * Focus is on something Enter already activates -- or something a reader is
+ * typing into.
+ *
+ * `INPUT`/`TEXTAREA`/`SELECT` joined `BUTTON`/`A`/`SUMMARY` here for finding
+ * 1: `Tab`/`Shift+Tab` (the mail category tabs) used to fire with the
+ * caret in the mail search field, stealing the tab the field needed to move
+ * on from rather than stepping a category.
+ */
+function focusIsControl(): boolean {
+  const el = document.activeElement as HTMLElement | null
+  if (!el || el === document.body) return false
+  return (
+    /^(BUTTON|A|SUMMARY|INPUT|TEXTAREA|SELECT)$/.test(el.tagName) ||
+    el.getAttribute('role') === 'button' ||
+    el.getAttribute('role') === 'tab'
+  )
+}
+
 function anywhere(): boolean {
   return app.screen === 'main' && !dialogOpen()
+}
+
+/**
+ * Dev-only: log how long a Mail shortcut takes from key to redrawn screen.
+ *
+ * Against "The speed budget" in `docs/plans/mail.md` -- 60ms, key to
+ * redrawn screen -- which is measured, not admired, so this measures it.
+ * `performance.now()` is read on either side of the frame the key's own
+ * synchronous `run()` schedules; a `requestAnimationFrame` after `run()`
+ * fires once the browser has actually painted that work, which is the
+ * moment the budget is about, not the moment `run()` returns -- most of
+ * these are optimistic and return before their `await` has gone anywhere.
+ * Eliminated from a release build the same way `MOCK` is: `import.meta.env.DEV`
+ * is a literal Vite substitutes at build time.
+ */
+function timeToPaint(hit: Binding) {
+  if (!import.meta.env.DEV || hit.group !== 'Mail') return
+  const start = performance.now()
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const ms = performance.now() - start
+      console.debug(`[mail] ${hit.keys} "${hit.label}" → paint in ${ms.toFixed(1)}ms`)
+    })
+  })
 }
 
 /** Move the journal's selection by `step` rows through the loaded list. */
@@ -175,6 +221,7 @@ export const GROUPS = [
   'Todo',
   'Calendar',
   'Library',
+  'Mail',
   'Overview',
   'Assistant',
   'Vault',
@@ -247,6 +294,13 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Go to',
     when: () => anywhere() && app.canShow('library'),
     run: () => app.setSection('library'),
+  },
+  {
+    keys: 'g m',
+    label: 'Mail',
+    group: 'Go to',
+    when: () => anywhere() && app.canShow('mail'),
+    run: () => app.setSection('mail'),
   },
   {
     keys: 'g o',
@@ -478,6 +532,221 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     run: () => void library.toggleFavourite(library.selected!),
   },
 
+  // ── Mail ────────────────────────────────────────────────────────────
+  //
+  // Three deliberate departures from `docs/plans/mail.md`'s own wording,
+  // each because the table this file already agreed to collided with it:
+  //
+  // - `Shift+U`/`Shift+I` (mark unread/read) cannot exist in this table at
+  //   all. `chordOf` in `keys.ts` never records Shift on a single printable
+  //   character -- "what is typed is what is matched", so `?` works on every
+  //   layout -- which means a live Shift+U keypress and a live U keypress
+  //   both resolve to the chord `u`, and a binding declared `shift+u` can
+  //   never be reached by an actual key. Bare `u`/`i` are used instead:
+  //   still Gmail's own mnemonic, just without a modifier that cannot survive
+  //   the trip through this file's own matcher.
+  // - `a` for reply-all collides with the global "Everywhere" row that
+  //   toggles the assistant open, declared earlier in this table and so
+  //   always the one `match` picks. Reply-all is `w` here -- arbitrary, kept
+  //   short of a better mnemonic once `a` was gone.
+  // - `g t` for Sent collides with Todo's own `g t`, declared above and
+  //   `when`-gated to nothing narrower than "the backend has tasks", so it
+  //   wins from inside Mail too. Sent is `g u` -- also arbitrary, for the
+  //   same reason.
+  {
+    keys: 'j',
+    label: 'The thread below',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')(),
+    run: () => void mail.moveSelection(1),
+  },
+  {
+    keys: 'k',
+    label: 'The thread above',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')(),
+    run: () => void mail.moveSelection(-1),
+  },
+  {
+    keys: 'Enter',
+    label: 'Open the thread',
+    group: 'Mail',
+    // Not while a button, link or tab has focus: Enter belongs to that
+    // control, and taking it here would re-open the thread instead of
+    // pressing Reply or Show images.
+    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread && !focusIsControl(),
+    run: () => void mail.openThreadById(mail.selectedThread!),
+  },
+  {
+    keys: 'o',
+    label: 'Open the thread',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
+    run: () => void mail.openThreadById(mail.selectedThread!),
+  },
+  {
+    keys: 'Escape',
+    label: 'Back to the list',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.openThread,
+    run: () => mail.closeThread(),
+  },
+  {
+    keys: 'e',
+    label: 'Archive',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
+    run: () => void mail.archive(mail.selectedThread!),
+  },
+  {
+    keys: '#',
+    label: 'Trash',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
+    run: () => void mail.trash(mail.selectedThread!),
+  },
+  {
+    keys: 's',
+    label: 'Star',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
+    run: () => void mail.toggleStar(mail.selectedThread!),
+  },
+  {
+    keys: 'u',
+    label: 'Mark unread',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
+    run: () => void mail.markUnread(mail.selectedThread!),
+  },
+  {
+    keys: 'i',
+    label: 'Mark read',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
+    run: () => void mail.markRead(mail.selectedThread!),
+  },
+  {
+    keys: 'h',
+    label: 'Snooze…',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
+    run: () => (mail.wantsSnooze = mail.selectedThread),
+  },
+  {
+    keys: 'l',
+    label: 'Label…',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
+    run: () => openLabelPicker(),
+  },
+  {
+    keys: 'v',
+    label: 'Move to…',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
+    run: () => moveMenu(),
+  },
+  {
+    keys: 'r',
+    label: 'Reply',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.openThread,
+    run: () => void mail.reply(mail.openThread!.messages.at(-1)!.id, false),
+  },
+  {
+    keys: 'w',
+    label: 'Reply all',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.openThread,
+    run: () => void mail.reply(mail.openThread!.messages.at(-1)!.id, true),
+  },
+  {
+    keys: 'f',
+    label: 'Forward',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.openThread,
+    run: () => void mail.forward(mail.openThread!.messages.at(-1)!.id),
+  },
+  {
+    keys: 'g i',
+    label: 'Inbox',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')(),
+    run: () => void selectMailboxByRole('inbox'),
+  },
+  {
+    keys: 'g s',
+    label: 'Starred',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')(),
+    run: () => void selectMailboxByName('Starred'),
+  },
+  {
+    keys: 'g d',
+    label: 'Drafts',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')(),
+    run: () => void selectMailboxByRole('drafts'),
+  },
+  {
+    keys: 'g u',
+    label: 'Sent',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')(),
+    run: () => void selectMailboxByRole('sent'),
+  },
+  // (p) TODO: the split inbox's own two, checked against every other
+  // binding above before being added. `Tab` and `Shift+Tab` are free in
+  // this table -- nothing else in Mail, or anywhere else, claims them -- and
+  // gating them to the inbox with nothing open means they never fight the
+  // browser's own Tab-to-next-focusable-element while a dialog (the
+  // compose sheet, a picker) is on screen: `anywhere()` is already false
+  // whenever `dialogOpen()` is, and the thread list has no text field of
+  // its own for a reader to expect to Tab out of. Opening a thread hands
+  // Tab back to the browser, since there is a reply box and its own
+  // buttons worth tabbing through there.
+  {
+    keys: 'Tab',
+    label: 'Next category',
+    group: 'Mail',
+    // Finding 1: tabs only ever show for the inbox (`MailView.svelte`'s own
+    // `showTabs`), so this must not fire in a mailbox with no tab strip on
+    // screen to be stepping -- and must leave Tab to whatever has focus
+    // once that focus is a control or a field, `focusIsControl` now covers
+    // both.
+    when: () =>
+      anywhere() &&
+      inApp('mail')() &&
+      mailboxHasTabs(mail.mailbox) &&
+      !mail.openThread &&
+      !focusIsControl(),
+    run: () => mail.stepCategory(1),
+  },
+  {
+    keys: 'shift+Tab',
+    label: 'Previous category',
+    group: 'Mail',
+    when: () =>
+      anywhere() &&
+      inApp('mail')() &&
+      mailboxHasTabs(mail.mailbox) &&
+      !mail.openThread &&
+      !focusIsControl(),
+    run: () => mail.stepCategory(-1),
+  },
+  // (p) TODO: `z` for Summarise -- `s`/`u`/`i`/`h`/`l`/`v`/`r`/`w`/`f`/`e`/
+  // `o`/`j`/`k`/`#` are already Mail's own (see the departures noted at the
+  // top of this section) and every one of those letters is taken elsewhere
+  // in the table too; `z` is free everywhere.
+  {
+    keys: 'z',
+    label: 'Summarise',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.openThread,
+    run: () => void mail.summarizeOpenThread(),
+  },
+
   // ── Quick actions ───────────────────────────────────────────────────
   //
   // The rows the tray offers as well, and the ones that have no shortcut at
@@ -624,6 +893,18 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     },
   },
   {
+    id: 'mail:compose',
+    label: 'Compose a message',
+    group: 'Mail',
+    keywords: ['email', 'new', 'write'],
+    icon: 'plus',
+    tray: true,
+    when: () => app.screen === 'main' && app.supportsMail,
+    run: async () => {
+      if (await app.goTo('mail')) await mail.compose()
+    },
+  },
+  {
     id: 'assistant:runs',
     label: 'What the assistant did',
     group: 'Assistant',
@@ -723,6 +1004,14 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     run: () => panels.openSettings('profile'),
   },
   {
+    label: 'Accounts',
+    group: 'Everywhere',
+    keywords: ['mail', 'email', 'google', 'microsoft', 'icloud', 'fastmail', 'sign in', 'oauth'],
+    icon: 'inbox',
+    when: () => app.screen === 'main',
+    run: () => panels.openSettings('accounts'),
+  },
+  {
     label: 'Refresh subscribed calendars',
     group: 'Calendar',
     keywords: ['sync', 'feed', 'ics'],
@@ -781,6 +1070,7 @@ const CREATE: Record<Section, () => unknown> = {
   todo: () => (todo.showingGoals ? focusNewGoal() : todo.focusCapture()),
   calendar: () => calendar.bookNow(),
   library: () => library.focusCapture(),
+  mail: () => mail.compose(),
   overview: () => (overview.wantsLog = true),
   assistant: () => assistant.draft(),
 }
@@ -809,6 +1099,52 @@ function focusNewGoal() {
 function removeSelectedBlock() {
   const selection = calendar.selection
   if (selection?.kind === 'block') void calendar.removeBlock(selection.id)
+}
+
+/** `g i`/`g d`/`g u`: the first mailbox of this role in the currently
+ *  loaded set, across every account. */
+function selectMailboxByRole(role: 'inbox' | 'drafts' | 'sent') {
+  const box = mail.mailboxes.find((m) => m.role === role)
+  if (box) void mail.selectMailbox(box.id)
+}
+
+/** `g s`: the pseudo-mailbox by name -- see `mock-mail.ts`'s own note on
+ *  why "Starred" is not a real IMAP mailbox yet. */
+function selectMailboxByName(name: string) {
+  const box = mail.mailboxes.find((m) => m.remoteName === name)
+  if (box) void mail.selectMailbox(box.id)
+}
+
+/**
+ * `l`: open the label picker (`MailLabelPicker.svelte`), the same way `h`
+ * opens the snooze one -- a store field a component with no keyboard
+ * handler of its own can still react to. Replaces the `window.prompt` this
+ * app used to fall back to; see that component's own doc for why it is
+ * still a text field rather than a list of existing labels.
+ */
+function openLabelPicker() {
+  const id = mail.selectedThread
+  if (id) mail.wantsLabel = id
+}
+
+/**
+ * `v`: move to another mailbox, offered as a menu -- but with no row to
+ * click, since this is the keyboard's own path to it. `menu.showAt` opens
+ * one at a fixed point with no event behind it at all, which is the proper
+ * picker in place of the synthetic `MouseEvent` this app used to build just
+ * to give `menu.show` something to read a position out of.
+ */
+function moveMenu() {
+  const id = mail.selectedThread
+  if (!id) return
+  const accountId =
+    mail.threads.find((t) => t.id === id)?.accountId ?? mail.openThread?.thread.accountId
+  const boxes = mail.mailboxes.filter((m) => m.accountId === accountId && m.role !== 'other')
+  const items = boxes.map((box) => ({
+    label: box.remoteName,
+    run: () => void mail.moveTo(id, box.id),
+  }))
+  menu.showAt(window.innerWidth / 2, window.innerHeight / 2, items)
 }
 
 /**
@@ -849,6 +1185,7 @@ class Shortcuts {
     if (hit) {
       this.#clear()
       event.preventDefault()
+      timeToPaint(hit)
       hit.run()
       return true
     }

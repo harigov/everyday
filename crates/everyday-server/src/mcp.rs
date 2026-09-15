@@ -50,6 +50,34 @@
 //! listed and then refused. A gate whose refusal explains how to get past it
 //! is not a gate.
 //!
+//! # Outward tools over MCP
+//!
+//! `send_draft` -- the one tool in the catalogue with
+//! [`Effect::Outward`](everyday_core::agent::tools::Effect::Outward) -- is
+//! not covered by `allow_destructive` at all, because it is not the same
+//! risk. A destructive call is refused for *every* MCP client until this
+//! server's own switch says otherwise; a send is refused for a given
+//! *account* until that account's own `mcp_access.send` switch says so, in
+//! Settings → Accounts, one at a time. [`VaultHost::tools`] already leaves
+//! `send_draft` out of the list unless some account has turned that switch
+//! on, and [`VaultHost::call`] is refused per account by the tool itself
+//! (`agent::tools::mail`'s `require_permission`) regardless of what either
+//! switch says here.
+//!
+//! What is genuinely different about MCP is that there is no confirmation
+//! card to show. The chat assistant stops and asks a person in the window;
+//! an MCP client has no such window, and a server that blocked every send
+//! behind a question nobody could ever answer would simply have never
+//! implemented the switch at all. So a send permitted by the account's own
+//! `mcp_access.send` proceeds straight to
+//! [`everyday_core::vault::Vault::queue_draft_send`], which is not the same
+//! as proceeding straight to the network: it still queues through the undo
+//! window (`not_before`, a few seconds to half a minute out) every send
+//! goes through, person or agent, and `send_draft`'s own result says as
+//! much when the caller was MCP. The person who turned that switch on
+//! turned it on knowing what it does; the undo window is what still stands
+//! between that and a send with genuinely no way back.
+//!
 //! # A locked vault offers nothing
 //!
 //! [`VaultHost::tools`] answers `Ok(vec![])` -- not an error -- for a vault
@@ -310,7 +338,15 @@ impl everyday_mcp::Host for VaultHost {
                 return Ok(Vec::new());
             }
 
-            let value = service.call(ctx, "list_tools", Value::Null).await.map_err(host_error)?;
+            // This caller's own identity, minted server-side from the
+            // authenticated bearer token rather than taken from anything on
+            // the wire -- see `mcp_caller` and `everyday_service::domains::
+            // meta::WireCaller`'s own doc. What lets `list_tools` answer
+            // with exactly the mail tools this account's `mcp_access`
+            // switches permit: `send_draft` absent unless some account has
+            // turned MCP send on, per `docs/plans/mail.md`'s phase 5.
+            let args = json!({ "caller": mcp_caller(&ctx) });
+            let value = service.call(ctx, "list_tools", args).await.map_err(host_error)?;
             let tools: Vec<WireTool> = serde_json::from_value(value).map_err(|e| HostError {
                 code: "internal".to_string(),
                 message: format!("list_tools answered with something unexpected: {e}"),
@@ -322,7 +358,11 @@ impl everyday_mcp::Host for VaultHost {
                 // rather than trusted to `run_tool`'s own refusal, because
                 // the whole point is that a destructive tool a model was
                 // never told about is a tool it was never tempted to ask
-                // for confirmation to get around.
+                // for confirmation to get around. `outward` (`send_draft`)
+                // is untouched by this switch: it is gated per account by
+                // `mcp_access.send` instead, which `list_tools` has already
+                // filtered on above -- see the module doc's "Outward tools
+                // over MCP".
                 .filter(|t| allow_destructive || t.effect != "destructive")
                 .map(|t| ToolDef {
                     name: t.name,
@@ -365,18 +405,42 @@ impl everyday_mcp::Host for VaultHost {
                 });
             }
 
+            // `Effect::Outward` (`send_draft`) is answered `true`
+            // unconditionally rather than gated on `allow_destructive`,
+            // which is a different switch about a different risk -- see the
+            // module doc's "Outward tools over MCP". MCP has no
+            // confirmation UI of its own to ask in, so the real gate is the
+            // per-account `mcp_access.send` switch `send_draft` checks for
+            // itself before this ever matters; what setting this to `true`
+            // does is let a *permitted* send reach that check at all,
+            // rather than being refused two layers too early by a generic
+            // "nobody confirmed this" rule meant for a caller that could be
+            // asked.
+            let outward = everyday_core::agent::tools::find(&name)
+                .is_some_and(|t| t.effect == Effect::Outward);
             let args = json!({
                 "name": name,
                 "arguments": arguments,
                 // Never the caller's: see the module doc's "Destructive
                 // tools are absent, not refused". This is the server's own
-                // configuration, not a field `tools/call` accepted from the
-                // wire.
-                "confirmDestructive": allow_destructive,
+                // configuration, or a fact about the tool's own effect, not
+                // a field `tools/call` accepted from the wire.
+                "confirmDestructive": allow_destructive || outward,
+                "caller": mcp_caller(&ctx),
             });
             service.call(ctx, "run_tool", args).await.map_err(host_error)
         }
     }
+}
+
+/// The `caller` field `everyday_service::domains::meta::WireCaller`
+/// deserialises -- minted here, server-side, from the [`Ctx`] this
+/// [`VaultHost`] was built with, which is itself built by
+/// [`crate::auth::Registry::authenticate`] from the request's own bearer
+/// token. Never anything an MCP client's JSON-RPC message could set: the
+/// protocol carries no such field for this to proxy.
+fn mcp_caller(ctx: &Ctx) -> Value {
+    json!({ "type": "mcp", "client": ctx.caller.origin().unwrap_or("mcp") })
 }
 
 // ---- the server and the route -----------------------------------------

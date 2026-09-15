@@ -101,6 +101,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_note", scope: Notes, effect: Write,
         change: Note / Updated,
+        id: |a: &SaveNote| Some(a.note.id.to_string()),
         args: SaveNote, returns: "void",
         signature: &[("note", "Note", true), ("expect", "string | null", false)],
         run: save_note,
@@ -108,6 +109,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "save_note_force", scope: Notes, effect: Write,
         change: Note / Updated,
+        id: |a: &ForceNote| Some(a.note.id.to_string()),
         args: ForceNote, returns: "void",
         signature: &[("note", "Note", true)],
         run: save_note_force,
@@ -115,6 +117,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "delete_note", scope: Notes, effect: Destructive,
         change: Note / Deleted,
+        id: |a: &NoteRef| Some(a.id.to_string()),
         args: NoteRef, returns: "void",
         signature: &[("id", "NoteId", true)],
         run: delete_note,

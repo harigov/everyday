@@ -89,11 +89,32 @@ pub mod codes {
     pub const NOT_AN_IMAGE: &str = "not_an_image";
     pub const PANIC: &str = "panic";
     pub const QUICK: &str = "quick";
+    /// [`Service::check_mail_rate_limit`](crate::service::Service::check_mail_rate_limit)
+    /// refused: this caller has enqueued too many mail ops this turn, or
+    /// this minute.
+    pub const RATE_LIMITED: &str = "rate_limited";
     pub const RETRY: &str = "retry";
     pub const TOO_LARGE: &str = "too_large";
     pub const UNKNOWN_COMMAND: &str = "unknown_command";
     pub const UNKNOWN_TOOL: &str = "unknown_tool";
     pub const UNREADABLE: &str = "unreadable";
+
+    // ---- OAuth sign-in (`domains::signin`, `everyday_mail::oauth`) --------
+    /// The authorization code or refresh token is no longer good. There is
+    /// nothing to retry: the account has to sign in again.
+    pub const INVALID_GRANT: &str = "invalid_grant";
+    /// The client id or client secret is wrong. Shown to the user plainly --
+    /// the fix is theirs, not a retry.
+    pub const INVALID_CLIENT: &str = "invalid_client";
+    /// The provider answered, but not with a token and not with one of the
+    /// two errors above -- an unrecognised error code from the token
+    /// endpoint, or the person declining consent at the authorization
+    /// endpoint.
+    pub const PROVIDER: &str = "provider";
+    /// Nobody came back from the browser inside the sign-in's ten minutes.
+    pub const TIMED_OUT: &str = "timed_out";
+    /// `cancel_oauth_sign_in` was called on this flow before it finished.
+    pub const CANCELLED: &str = "cancelled";
 
     /// Every constant above, for a test to check off against a status map or
     /// a match arm rather than trusting that this list and that one were
@@ -124,10 +145,32 @@ pub mod codes {
         NOT_AN_IMAGE,
         PANIC,
         QUICK,
+        RATE_LIMITED,
         RETRY,
         TOO_LARGE,
         UNKNOWN_COMMAND,
         UNKNOWN_TOOL,
         UNREADABLE,
+        INVALID_GRANT,
+        INVALID_CLIENT,
+        PROVIDER,
+        TIMED_OUT,
+        CANCELLED,
     ];
+}
+
+/// What a [`ToolContext::mail_rate_limit`](everyday_core::agent::tools::ToolContext::mail_rate_limit)
+/// hook maps [`Service::check_mail_rate_limit`](crate::service::Service::check_mail_rate_limit)'s
+/// own [`CommandResult`] into -- the one place both `agent.rs` and
+/// `domains::meta::run_tool` build that closure, so the mapping is written
+/// once. [`codes::RATE_LIMITED`] survives the trip as
+/// [`everyday_core::error::Error::RateLimited`]; everything else becomes
+/// [`everyday_core::error::Error::Invalid`], which is the honest answer for
+/// a refusal this function does not otherwise expect to see.
+pub fn mail_rate_limit_error(e: CommandError) -> everyday_core::error::Error {
+    if e.code == codes::RATE_LIMITED {
+        everyday_core::error::Error::RateLimited(e.message)
+    } else {
+        everyday_core::error::Error::Invalid(e.message)
+    }
 }

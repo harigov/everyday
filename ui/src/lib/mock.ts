@@ -12,6 +12,9 @@
 import type {
   AddedItem,
   QuickJobRow,
+  Account,
+  AccountView,
+  AgentMailAccess,
   BlockKind,
   BlockQuery,
   BlockSubject,
@@ -20,6 +23,9 @@ import type {
   CalendarEvent,
   CalendarInfo,
   BalanceReport,
+  MailAgentOriginKind,
+  MailProviderInfo,
+  MailSyncProgress,
   EventQuery,
   Goal,
   GoalActivity,
@@ -35,6 +41,8 @@ import type {
   LogEvent,
   LogQuery,
   ProviderInfo,
+  RemoteCalendarInfo,
+  RemoteImageSettings,
   Purpose,
   PurposeMinutes,
   Role,
@@ -66,6 +74,7 @@ import type {
   TaskQuery,
   TaskStats,
   TaskStatus,
+  ThreadFilter,
   TimeBlock,
   Tracker,
   TrackerDay,
@@ -75,6 +84,38 @@ import type {
 import { TASK_STATUSES, VaultError, goalIsOpen, isAhead, isOpen, priorityRank } from './types'
 import type { AgentEvent, AgentMessage, AgentSettings, Conversation, Memory } from './types'
 import { DEFAULT_COLORS } from './colors'
+import type { Draft, MailCategory } from './types'
+import {
+  mockAllowRemoteImagesOnce,
+  mockArchive,
+  mockDiscardDraft,
+  mockFetchAttachment,
+  mockGetThread,
+  mockLabel,
+  mockListDrafts,
+  mockListMailboxes,
+  mockListThreads,
+  mockMailActionsByOrigin,
+  mockMarkRead,
+  mockMarkUnread,
+  mockMoveToMailbox,
+  mockNewDraft,
+  mockRecategorizeMail,
+  mockRespondToInvite,
+  mockSaveDraft,
+  mockSearchMail,
+  mockSendDraft,
+  mockSetThreadCategory,
+  mockSnooze,
+  mockStar,
+  mockSuggestAddresses,
+  mockSummarizeThread,
+  mockTrash,
+  mockUndoSend,
+  mockUnlabel,
+  mockUnsnooze,
+  mockUnstar,
+} from './mock-mail'
 
 const PASSWORD = 'everyday'
 
@@ -89,6 +130,14 @@ const PASSWORD = 'everyday'
  */
 function str(v: unknown, fallback = ''): string {
   return typeof v === 'string' ? v : fallback
+}
+
+/** The same narrowing as `str`, for the batch mail commands' own
+ *  `threads: ThreadId[]` -- everything from `mark_read` to `snooze` takes a
+ *  list rather than a single id, per `crates/everyday-service/src/domains
+ *  /mail.rs`. */
+function strArray(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
 }
 
 function iso(daysAgo: number): string {
@@ -1413,7 +1462,243 @@ const calendars: CalendarInfo[] = [
     updatedAt: iso(0),
     events: 0,
   },
+  // An account calendar (phase 6): read from `acct-fastmail`'s own CalDAV
+  // collection rather than a pasted URL, so `CalendarNav` has something to
+  // group under an account address from the first day.
+  {
+    id: 'c-fastmail-home',
+    name: 'Home',
+    color: '#9333ea',
+    origin: {
+      type: 'account',
+      accountId: 'acct-fastmail',
+      remoteId: '/dav/calendars/user/me@fastmail.com/home/',
+      remoteName: 'Home',
+      source: 'calDav',
+    },
+    provider: 'other',
+    visible: true,
+    refreshMinutes: 60,
+    lastSyncedAt: iso(0),
+    createdAt: iso(10),
+    updatedAt: iso(0),
+    events: 0,
+  },
 ]
+
+/**
+ * Every calendar `acct-fastmail` offers over CalDAV, discovery-shaped --
+ * what `list_account_calendars` answers with. `Home` is already subscribed
+ * (it is `c-fastmail-home` above); `Work` is not, so the add-calendar
+ * sheet's "From an account" tab has something left to offer.
+ */
+const fastmailRemoteCalendars: RemoteCalendarInfo[] = [
+  {
+    remoteId: '/dav/calendars/user/me@fastmail.com/home/',
+    name: 'Home',
+    color: '#9333ea',
+    source: 'calDav',
+    subscribed: true,
+    calendarId: 'c-fastmail-home',
+  },
+  {
+    remoteId: '/dav/calendars/user/me@fastmail.com/work/',
+    name: 'Work',
+    color: '#0f766e',
+    source: 'calDav',
+    subscribed: false,
+    calendarId: null,
+  },
+]
+
+// ── Accounts ──────────────────────────────────────────────────────────────
+//
+// Two seeded accounts, deliberately unlike each other: one OAuth, one a
+// password; one with the calendar switched on, one without -- so a
+// Settings → Accounts screen built against this mock has both shapes to
+// draw from the first day, rather than discovering the password case only
+// once somebody adds a Fastmail account by hand.
+
+const accounts: AccountView[] = [
+  {
+    id: 'acct-google',
+    provider: 'google',
+    address: 'me@gmail.com',
+    displayName: 'Personal Gmail',
+    identities: [],
+    imap: { host: 'imap.gmail.com', port: 993, security: 'tls' },
+    smtp: { host: 'smtp.gmail.com', port: 465, security: 'tls' },
+    caldav: null,
+    auth: {
+      type: 'oAuth',
+      clientId: 'demo-app.apps.googleusercontent.com',
+      authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+      scopes: ['https://mail.google.com/'],
+    },
+    services: { mail: true, calendar: false },
+    assistantAccess: {
+      read: true,
+      draft: true,
+      edit: true,
+      remove: true,
+      archive: true,
+      send: false,
+    },
+    mcpAccess: { read: true, draft: true, edit: true, remove: true, archive: true, send: false },
+    assistantProviderAcknowledged: 'OpenAI',
+    attachmentCapBytes: null,
+    status: { type: 'ok' },
+    lastSyncedAt: iso(0),
+    createdAt: iso(120),
+    updatedAt: iso(0),
+    hasPassword: false,
+    signedIn: true,
+    // (p) TODO: the Superhuman-layer agent's `MailAi` -- see `types.ts`'s
+    // own TODO(p). Categorising and summaries on, auto-draft off, so both
+    // halves of the split-inbox walkthrough (tabs with real categories, a
+    // Summarise button) have something to show without every thread
+    // opening straight into a drafted reply.
+    mailAi: { categorize: true, autoDraft: false, summaries: true },
+  },
+  {
+    id: 'acct-fastmail',
+    provider: 'fastmail',
+    address: 'me@fastmail.com',
+    displayName: 'Fastmail',
+    identities: [
+      { name: 'Me', address: 'me@fastmail.com', signatureHtml: '<p>Sent from Fastmail</p>' },
+    ],
+    imap: { host: 'imap.fastmail.com', port: 993, security: 'tls' },
+    smtp: { host: 'smtp.fastmail.com', port: 465, security: 'tls' },
+    caldav: 'https://caldav.fastmail.com',
+    auth: { type: 'password', username: 'me@fastmail.com' },
+    services: { mail: true, calendar: true },
+    assistantAccess: {
+      read: true,
+      draft: true,
+      edit: true,
+      remove: true,
+      archive: true,
+      send: false,
+    },
+    mcpAccess: {
+      read: false,
+      draft: false,
+      edit: false,
+      remove: false,
+      archive: false,
+      send: false,
+    },
+    assistantProviderAcknowledged: null,
+    mailAi: { categorize: false, autoDraft: false, summaries: false },
+    attachmentCapBytes: 25_000_000,
+    status: { type: 'ok' },
+    lastSyncedAt: iso(1),
+    createdAt: iso(200),
+    updatedAt: iso(1),
+    hasPassword: true,
+    signedIn: true,
+    // (p) TODO: unacknowledged, so the "Mail assistant" section in
+    // `AccountDetail.svelte` has an account to demonstrate the disabled,
+    // explained state on -- every switch off, per `MailAi`'s own default.
+  },
+]
+
+/** Mirrors `Provider::preset` in `everyday-core`; see that function for the
+ *  rationale behind each host, port and scope. */
+const MAIL_PROVIDER_PRESETS: MailProviderInfo[] = [
+  {
+    provider: 'google',
+    label: 'Google',
+    imap: { host: 'imap.gmail.com', port: 993, security: 'tls' },
+    smtp: { host: 'smtp.gmail.com', port: 465, security: 'tls' },
+    caldav: null,
+    oauth: {
+      authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+      mailScopes: ['https://mail.google.com/'],
+      calendarScopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+    },
+    needsClientSecret: true,
+    appPasswordHelpUrl: null,
+  },
+  {
+    provider: 'microsoft',
+    label: 'Microsoft 365 / Outlook',
+    imap: { host: 'outlook.office365.com', port: 993, security: 'tls' },
+    smtp: { host: 'smtp.office365.com', port: 587, security: 'startTls' },
+    caldav: null,
+    oauth: {
+      authUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+      tokenUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+      mailScopes: [
+        'https://outlook.office.com/IMAP.AccessAsUser.All',
+        'https://outlook.office.com/SMTP.Send',
+        'offline_access',
+      ],
+      calendarScopes: ['Calendars.Read'],
+    },
+    needsClientSecret: false,
+    appPasswordHelpUrl: null,
+  },
+  {
+    provider: 'iCloud',
+    label: 'iCloud',
+    imap: { host: 'imap.mail.me.com', port: 993, security: 'tls' },
+    smtp: { host: 'smtp.mail.me.com', port: 587, security: 'startTls' },
+    caldav: 'https://caldav.icloud.com',
+    oauth: null,
+    needsClientSecret: false,
+    appPasswordHelpUrl: 'https://support.apple.com/en-us/102654',
+  },
+  {
+    provider: 'fastmail',
+    label: 'Fastmail',
+    imap: { host: 'imap.fastmail.com', port: 993, security: 'tls' },
+    smtp: { host: 'smtp.fastmail.com', port: 465, security: 'tls' },
+    caldav: 'https://caldav.fastmail.com',
+    oauth: null,
+    needsClientSecret: false,
+    appPasswordHelpUrl: 'https://www.fastmail.help/hc/en-us/articles/360058752854',
+  },
+  {
+    provider: 'yahoo',
+    label: 'Yahoo',
+    imap: { host: 'imap.mail.yahoo.com', port: 993, security: 'tls' },
+    smtp: { host: 'smtp.mail.yahoo.com', port: 465, security: 'tls' },
+    caldav: null,
+    oauth: null,
+    needsClientSecret: false,
+    appPasswordHelpUrl: 'https://help.yahoo.com/kb/SLN15241.html',
+  },
+  {
+    provider: 'custom',
+    label: 'Custom (IMAP)',
+    imap: { host: '', port: 993, security: 'tls' },
+    smtp: { host: '', port: 587, security: 'startTls' },
+    caldav: null,
+    oauth: null,
+    needsClientSecret: false,
+    appPasswordHelpUrl: null,
+  },
+]
+
+/** Password secrets the mock has been given, keyed by account id -- what
+ *  `has_password` and `signed_in` are computed from after `save_account_password`. */
+const accountPasswords = new Map<string, string>([['acct-fastmail', 'hunter2-demo']])
+
+/** Each seeded account's sync progress, as `sync_status` reads it back --
+ *  both already settled at rest, the shape an account looks like once its
+ *  first sync is long done. `sync_account` nudges one back through a couple
+ *  of phases before settling again, so a status screen built against this
+ *  mock has something to watch move. */
+const mailSyncProgress = new Map<string, MailSyncProgress>(
+  accounts.map((a) => [
+    a.id,
+    { accountId: a.id, phase: 'idling', done: 0, total: 0, lastError: null },
+  ]),
+)
 
 function eventAt(
   id: string,
@@ -2108,6 +2393,8 @@ function status(): VaultStatus {
           notes: true,
           routines: true,
           agent: true,
+          accounts: true,
+          mail: true,
         }
       : undefined,
   }
@@ -2159,6 +2446,26 @@ function clampReading(tracker: Tracker | undefined, value: number): number {
 function requireUnlocked() {
   if (!unlocked) throw new VaultError('locked', 'vault is locked')
 }
+
+/**
+ * OAuth sign-ins the mock is pretending to drive, keyed by the id
+ * `begin_oauth_sign_in` minted -- the same shape `crate::signin::SignIns`
+ * holds in the real backend, minus the loopback and the token endpoint.
+ * `awaited` is what makes `await_oauth_sign_in` resolve only once: the real
+ * command is idempotent (see its own doc), and a mock that answered
+ * instantly on every call would never show the "waiting for the browser"
+ * state the Accounts screen has to draw.
+ */
+const oauthSignIns = new Map<string, { cancelled: boolean; awaited: boolean }>()
+let oauthSignInCounter = 0
+
+/** The standing remote-image allow-list -- see `allow_remote_images` and its
+ * two siblings, below. The per-message one-off grant those commands can
+ * also express is session state on the real backend
+ * (`Service::remote_image_once`) and has no mock equivalent to persist: it
+ * is accepted and simply not remembered, which is a harmless difference --
+ * nothing in the mock UI reopens a "session" to notice. */
+const mockRemoteImageSettings: RemoteImageSettings = { senders: [], domains: [] }
 
 export const mockInvoke = async <T>(
   cmd: string,
@@ -3100,6 +3407,48 @@ export const mockInvoke = async <T>(
         },
       ] satisfies ProviderInfo[] as T
 
+    case 'list_account_calendars': {
+      requireUnlocked()
+      const accountId = str(args.account)
+      // Only `acct-fastmail` has calendar switched on in this mock's seed
+      // data; every other account offers nothing to discover, the same
+      // honest answer `accountcal::discover` gives for an account whose
+      // calendar service is off.
+      if (accountId !== 'acct-fastmail') return [] as T
+      return fastmailRemoteCalendars as T
+    }
+
+    case 'subscribe_account_calendar': {
+      requireUnlocked()
+      const accountId = str(args.account)
+      const remoteId = str(args.remoteId)
+      const remote = fastmailRemoteCalendars.find((r) => r.remoteId === remoteId)
+      if (!remote) throw new VaultError('not_found', 'that calendar is no longer offered')
+      const added: CalendarInfo = {
+        id: `c-${Math.random().toString(36).slice(2, 8)}`,
+        name: remote.name,
+        color: remote.color ?? DEFAULT_COLORS[calendars.length % DEFAULT_COLORS.length]!,
+        origin: {
+          type: 'account',
+          accountId,
+          remoteId: remote.remoteId,
+          remoteName: remote.name,
+          source: remote.source,
+        },
+        provider: 'other',
+        visible: true,
+        refreshMinutes: 60,
+        lastSyncedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        events: 0,
+      }
+      calendars.push(added)
+      remote.subscribed = true
+      remote.calendarId = added.id
+      return added as T
+    }
+
     // ── The library domain ───────────────────────────────────────────
 
     case 'list_kinds':
@@ -3901,6 +4250,356 @@ export const mockInvoke = async <T>(
       } as T
     }
 
+    // ── Accounts ────────────────────────────────────────────────────
+
+    case 'list_accounts': {
+      requireUnlocked()
+      return structuredClone(accounts) as T
+    }
+
+    case 'get_account': {
+      requireUnlocked()
+      const found = accounts.find((a) => a.id === str(args.id))
+      if (!found) throw new VaultError('notFound', 'no such account')
+      return structuredClone(found) as T
+    }
+
+    case 'save_account': {
+      requireUnlocked()
+      const account = args.account as Account
+      const at = accounts.findIndex((a) => a.id === account.id)
+      const existing = at >= 0 ? accounts[at] : undefined
+      const password = accountPasswords.get(account.id)
+      const view: AccountView = {
+        ...account,
+        hasPassword: password !== undefined,
+        signedIn:
+          account.auth.type === 'password' ? password !== undefined : (existing?.signedIn ?? false),
+      }
+      if (existing) accounts[at] = view
+      else accounts.push(view)
+      return undefined as T
+    }
+
+    case 'delete_account': {
+      requireUnlocked()
+      const id = str(args.id)
+      const at = accounts.findIndex((a) => a.id === id)
+      if (at >= 0) accounts.splice(at, 1)
+      accountPasswords.delete(id)
+      return undefined as T
+    }
+
+    case 'account_presets':
+      requireUnlocked()
+      return structuredClone(MAIL_PROVIDER_PRESETS) as T
+
+    case 'save_account_password': {
+      requireUnlocked()
+      const id = str(args.id)
+      const account = accounts.find((a) => a.id === id)
+      if (!account) throw new VaultError('notFound', 'no such account')
+      accountPasswords.set(id, str(args.password))
+      account.hasPassword = true
+      account.signedIn = true
+      account.status = { type: 'ok' }
+      return undefined as T
+    }
+
+    case 'set_agent_access': {
+      requireUnlocked()
+      const id = str(args.id)
+      const account = accounts.find((a) => a.id === id)
+      if (!account) throw new VaultError('notFound', 'no such account')
+      const access = args.access as AgentMailAccess
+      if (args.caller === 'assistant') account.assistantAccess = access
+      else if (args.caller === 'mcp') account.mcpAccess = access
+      return undefined as T
+    }
+
+    // ── Mail sync ─────────────────────────────────────────────────────
+
+    case 'sync_account': {
+      requireUnlocked()
+      const id = str(args.id)
+      const account = accounts.find((a) => a.id === id)
+      if (!account) throw new VaultError('notFound', 'no such account')
+      // A plausible "just started a pass": headers first, the phase a
+      // caller who force-syncs right after adding an account most wants to
+      // see move -- then settled back to idling, with `lastSyncedAt`
+      // bumped, once this resolves.
+      mailSyncProgress.set(id, {
+        accountId: id,
+        phase: 'headers',
+        done: 0,
+        total: 12,
+        lastError: null,
+      })
+      await sleep(400)
+      mailSyncProgress.set(id, {
+        accountId: id,
+        phase: 'idling',
+        done: 0,
+        total: 0,
+        lastError: null,
+      })
+      account.lastSyncedAt = iso(0)
+      return undefined as T
+    }
+
+    case 'sync_status': {
+      requireUnlocked()
+      return Array.from(mailSyncProgress.values()).map((p) => structuredClone(p)) as T
+    }
+
+    case 'rebuild_mail_index': {
+      requireUnlocked()
+      const id = args.id as string | undefined
+      const ids = id ? [id] : accounts.map((a) => a.id)
+      for (const accountId of ids) {
+        mailSyncProgress.set(accountId, {
+          accountId,
+          phase: 'bodies',
+          done: 0,
+          total: 0,
+          lastError: null,
+        })
+      }
+      await sleep(400)
+      for (const accountId of ids) {
+        mailSyncProgress.set(accountId, {
+          accountId,
+          phase: 'idling',
+          done: 0,
+          total: 0,
+          lastError: null,
+        })
+      }
+      return undefined as T
+    }
+
+    case 'begin_oauth_sign_in': {
+      requireUnlocked()
+      const signInId = `mock-sign-in-${++oauthSignInCounter}`
+      oauthSignIns.set(signInId, { cancelled: false, awaited: false })
+      const clientId = (args.clientId as string | undefined) ?? ''
+      return {
+        signInId,
+        // A page that does not exist -- there is no mock provider to send a
+        // browser to -- but shaped like a real authorization URL, so the
+        // Accounts screen's "open this link" and "or copy it" both have
+        // something real to draw.
+        url: `https://mock-provider.example.test/authorize?client_id=${encodeURIComponent(clientId)}&state=${signInId}`,
+      } as T
+    }
+
+    case 'await_oauth_sign_in': {
+      const signInId = args.signInId as string
+      const flow = oauthSignIns.get(signInId)
+      if (!flow) throw new VaultError('not_found', 'no sign-in is waiting under that id')
+      if (!flow.awaited) {
+        // The one-time delay standing in for "switch to a browser, sign in,
+        // come back" -- see the map's own doc for why this only happens once
+        // per flow.
+        flow.awaited = true
+        await sleep(1200)
+      }
+      if (flow.cancelled) throw new VaultError('cancelled', 'the sign-in was cancelled')
+      return { tokensSavedUnder: signInId } as T
+    }
+
+    case 'cancel_oauth_sign_in': {
+      const signInId = args.signInId as string
+      const flow = oauthSignIns.get(signInId)
+      if (flow) flow.cancelled = true
+      return undefined as T
+    }
+
+    case 'attach_oauth_sign_in': {
+      requireUnlocked()
+      const id = str(args.id)
+      const account = accounts.find((a) => a.id === id)
+      if (!account) throw new VaultError('notFound', 'no such account')
+      // The real command claims tokens `await_oauth_sign_in` produced; the
+      // mock has none to hold, since its "browser" never really visits a
+      // token endpoint. What matters for the interface is the same
+      // afterwards either way: a sign-in is done, and the account is Ok.
+      oauthSignIns.delete(str(args.signInId))
+      account.signedIn = true
+      account.status = { type: 'ok' }
+      return undefined as T
+    }
+
+    // ── Mail ────────────────────────────────────────────────────────
+    //
+    // Reconciled against `crates/everyday-service/src/domains/mail.rs`:
+    // every batch action below takes `threads: ThreadId[]`, not a single
+    // `id`, and answers the `Op[]` it enqueued. Two names are not in
+    // `surface.json` at all -- `respond_to_invite` (i) and
+    // `set_thread_category`/`summarize_thread` (p) -- marked the same way
+    // `mail-api.ts` marks its own stand-ins for them.
+
+    case 'list_mailboxes':
+      requireUnlocked()
+      return mockListMailboxes(str(args.account)) as T
+
+    case 'list_threads':
+      requireUnlocked()
+      return mockListThreads(
+        str(args.mailbox),
+        args.filter as ThreadFilter | undefined,
+        args.cursor as string | null | undefined,
+        args.limit as number | null | undefined,
+      ) as T
+
+    case 'get_thread':
+      requireUnlocked()
+      return mockGetThread(str(args.id)) as T
+
+    case 'fetch_attachment':
+      requireUnlocked()
+      return mockFetchAttachment(str(args.messageId), Number(args.index)) as T
+
+    case 'mark_read':
+      requireUnlocked()
+      return mockMarkRead(strArray(args.threads)) as T
+    case 'mark_unread':
+      requireUnlocked()
+      return mockMarkUnread(strArray(args.threads)) as T
+    case 'star':
+      requireUnlocked()
+      return mockStar(strArray(args.threads)) as T
+    case 'unstar':
+      requireUnlocked()
+      return mockUnstar(strArray(args.threads)) as T
+    case 'archive':
+      requireUnlocked()
+      return mockArchive(strArray(args.threads)) as T
+    case 'trash':
+      requireUnlocked()
+      return mockTrash(strArray(args.threads)) as T
+    case 'move_to_mailbox':
+      requireUnlocked()
+      return mockMoveToMailbox(strArray(args.threads), str(args.to)) as T
+    case 'label':
+      requireUnlocked()
+      return mockLabel(strArray(args.threads), str(args.label)) as T
+    case 'unlabel':
+      requireUnlocked()
+      return mockUnlabel(strArray(args.threads), str(args.label)) as T
+    case 'snooze':
+      requireUnlocked()
+      return mockSnooze(strArray(args.threads), str(args.until)) as T
+    case 'unsnooze':
+      requireUnlocked()
+      mockUnsnooze(strArray(args.threads))
+      return undefined as T
+
+    // ── The Superhuman layer -- `docs/plans/mail.md` phase 7 ──────────────
+
+    case 'set_thread_category':
+      requireUnlocked()
+      mockSetThreadCategory(strArray(args.threads), args.category as MailCategory)
+      return undefined as T
+    case 'summarize_thread':
+      requireUnlocked()
+      return mockSummarizeThread(str(args.id)) as T
+
+    // ── Invitations -- `docs/plans/mail.md` phase 6 ───────────────────────
+
+    case 'respond_to_invite':
+      requireUnlocked()
+      mockRespondToInvite(
+        str(args.messageId),
+        str(args.response),
+        args.comment == null ? undefined : str(args.comment),
+      )
+      return undefined as T
+
+    case 'recategorize_mail':
+      requireUnlocked()
+      return mockRecategorizeMail(args.account as string | null | undefined) as T
+
+    // ── What an agent did with mail -- Settings → Sharing and the
+    //    assistant's own settings ───────────────────────────────────────
+
+    case 'mail_actions_by_origin':
+      requireUnlocked()
+      return mockMailActionsByOrigin(
+        str(args.kind) as MailAgentOriginKind,
+        args.limit as number | null | undefined,
+        args.cursor as string | null | undefined,
+      ) as T
+
+    case 'list_drafts':
+      requireUnlocked()
+      return mockListDrafts(str(args.account)) as T
+    case 'new_draft':
+      requireUnlocked()
+      return mockNewDraft(
+        args as { account: string; inReplyTo?: string; forwardOf?: string; replyAll?: boolean },
+      ) as T
+    case 'save_draft':
+      requireUnlocked()
+      mockSaveDraft(args.draft as Draft)
+      return undefined as T
+    case 'discard_draft':
+      requireUnlocked()
+      mockDiscardDraft(str(args.id))
+      return undefined as T
+    case 'send_draft': {
+      requireUnlocked()
+      // `sendAt` (send later) wins over `delaySeconds` (undo send), the same
+      // precedence `send_draft` in Rust gives them; neither given falls back
+      // to the undo-send window's own default.
+      const sendAt = args.sendAt ? new Date(str(args.sendAt)) : null
+      const delaySeconds = sendAt
+        ? Math.max(1, Math.round((sendAt.getTime() - Date.now()) / 1000))
+        : Number(args.delaySeconds ?? 8)
+      return mockSendDraft(str(args.id), delaySeconds) as T
+    }
+    case 'undo_send':
+      requireUnlocked()
+      return mockUndoSend(str(args.draftId)) as T
+
+    case 'allow_remote_images': {
+      requireUnlocked()
+      // A one-off grant for one message is the mail view's own affair; a
+      // sender or domain joins the standing list. Exactly one of the three
+      // is set, per the real command's own contract.
+      if (args.messageId) mockAllowRemoteImagesOnce(str(args.messageId))
+      if (args.sender) mockRemoteImageSettings.senders.push(str(args.sender))
+      if (args.domain) mockRemoteImageSettings.domains.push(str(args.domain))
+      return undefined as T
+    }
+
+    case 'search_mail':
+      requireUnlocked()
+      return mockSearchMail(str(args.query), args.cursor as string | null | undefined) as T
+    case 'suggest_addresses':
+      requireUnlocked()
+      return mockSuggestAddresses(str(args.prefix)) as T
+
+    case 'list_remote_image_allowances': {
+      requireUnlocked()
+      return { ...mockRemoteImageSettings } as T
+    }
+
+    case 'revoke_remote_image_allowance': {
+      requireUnlocked()
+      if (args.sender) {
+        mockRemoteImageSettings.senders = mockRemoteImageSettings.senders.filter(
+          (s) => s !== args.sender,
+        )
+      }
+      if (args.domain) {
+        mockRemoteImageSettings.domains = mockRemoteImageSettings.domains.filter(
+          (d) => d !== args.domain,
+        )
+      }
+      return undefined as T
+    }
+
     default:
       throw new VaultError('unknown', `no mock for command ${cmd}`)
   }
@@ -4016,6 +4715,7 @@ export async function mockSendMessage(
       name: 'delete_task',
       subject: 'Order the timber',
       arguments: { task_id: '0192f3a1-mock' },
+      kind: 'destructive',
     })
     const approved = await new Promise<boolean>((resolve) => mockPending.set(callId, resolve))
     if (approved) {

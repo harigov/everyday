@@ -18,9 +18,12 @@
 // is adding a line here.
 
 import { onChange, onLockState, onPalette } from './api'
+import { accounts } from './accounts.svelte'
 import { calendar } from './calendar.svelte'
 import { library } from './library.svelte'
+import { mail } from './mail.svelte'
 import { assistant } from './assistant.svelte'
+import { applierFor, type ChangeWithIds } from './live-apply'
 import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
 import { purpose } from './purpose.svelte'
@@ -49,8 +52,14 @@ const COALESCE_MS = 250
  * deduplicating by the function meant comparing two different arrow literals
  * that happened to call the same method. They never matched, so a calendar
  * sync reloaded the grid three times in a row.
+ *
+ * What actually runs for a target is not always this, though: a store that
+ * has called `registerApply` (`live-apply.ts`) gets first refusal, and this
+ * only runs when it declines. Kept here regardless, because a store can
+ * always decline, and a target with nothing registered always does.
  */
 export const RELOAD = {
+  accounts: () => accounts.refresh(),
   journals: () => app.refreshJournals(),
   entries: () => app.queueListRefresh(),
   todo: () => todo.refresh(),
@@ -59,6 +68,9 @@ export const RELOAD = {
   assistant: () => assistant.refresh(),
   shelves: () => library.refreshKinds(),
   library: () => library.refresh(),
+  // `thread` and `draft` below route here for anything `mail.svelte.ts`'s
+  // own `registerApply` declines -- a batch wider than one record.
+  mail: () => mail.refresh(),
   tracking: () => tracking.refresh(),
   overview: () => overview.refresh(),
   // Roles and goals, which three surfaces now draw: the todo app's goals
@@ -139,6 +151,17 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   conversation: null,
   memory: null,
   settings: 'status',
+  // A mailbox provider signed in to. Settings → Accounts registered an
+  // `apply` for this target (see `accounts.svelte.ts`), so most changes are
+  // patched in place; a batch wider than one record falls back to this.
+  account: 'accounts',
+  // A conversation of mail messages, and a message being written. The Mail
+  // app's own store registered an `apply` for this target (`mail.svelte.ts`
+  // -- see its `#applyChanges`), so a single thread or draft is patched in
+  // place; a batch wider than one record falls back to this, which reloads
+  // the currently visible page rather than the whole mailbox.
+  thread: 'mail',
+  draft: 'mail',
 }
 
 /**
@@ -162,8 +185,42 @@ export function targetsFor(kinds: ChangeKind[], overviewShowing = false): Reload
   return [...targets]
 }
 
+/**
+ * What one batch of changes should do to each target `targetsFor` names.
+ *
+ * A target whose store registered an `apply` (`live-apply.ts`) gets the
+ * changes routed to it -- by kind, through `RELOADS` -- and is asked to
+ * patch its own list; if it does (or there is nothing registered), the
+ * target lands in `refreshed` for `RELOAD` to run the old way instead.
+ *
+ * Its own function for the reason `targetsFor` is: a rule about a batch,
+ * testable without a store, a timer, or the backend they both talk to.
+ */
+export function planBatch(
+  changes: ChangeWithIds[],
+  overviewShowing = false,
+): { applied: ReloadTarget[]; refreshed: ReloadTarget[] } {
+  const kinds = changes.map((c) => c.kind)
+  const applied: ReloadTarget[] = []
+  const refreshed: ReloadTarget[] = []
+  for (const target of targetsFor(kinds, overviewShowing)) {
+    const relevant = changes.filter((c) => RELOADS[c.kind] === target)
+    const apply = applierFor(target)
+    if (apply && apply(relevant)) applied.push(target)
+    else refreshed.push(target)
+  }
+  return { applied, refreshed }
+}
+
 class Live {
-  #pending = new Set<ChangeKind>()
+  /**
+   * The changes gathered since the timer armed, in arrival order.
+   *
+   * Whole `ChangeEvent`s now, not just their kinds: `planBatch` has to hand a
+   * store's `apply` the ids it asked for, not merely tell it that something
+   * of its kind happened.
+   */
+  #pendingChanges: ChangeWithIds[] = []
   #timer: ReturnType<typeof setTimeout> | null = null
   #started = false
 
@@ -211,16 +268,18 @@ class Live {
     // another machine is already somebody else's; this covers the case where
     // the vault is in this process and the sink is talking to itself.
     if (change.origin === 'local') return
-    this.#pending.add(change.kind)
+    this.#pendingChanges.push(change)
     if (this.#timer !== null) return
     this.#timer = setTimeout(() => {
       this.#timer = null
-      const kinds = [...this.#pending]
-      this.#pending.clear()
+      const changes = this.#pendingChanges
+      this.#pendingChanges = []
       // Deduplicated by *what would run*, not by the kind: a task and a
       // project both reload the todo app, and doing it twice is a wasted round
-      // trip on a connection that may be a phone's.
-      for (const target of targetsFor(kinds, app.section === 'overview')) {
+      // trip on a connection that may be a phone's. `applied` targets need
+      // nothing further -- their store already patched itself.
+      const { refreshed } = planBatch(changes, app.section === 'overview')
+      for (const target of refreshed) {
         void Promise.resolve(RELOAD[target]()).catch(() => {})
       }
     }, COALESCE_MS)

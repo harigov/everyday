@@ -71,7 +71,7 @@ async fn unlock(svc: Arc<Service>, _ctx: Ctx, args: Unlock) -> CommandResult<Vau
     let vault = svc.require()?;
     let v = vault.clone();
     blocking(move || v.unlock(Some(&args.password)).map_err(CommandError::from)).await?;
-    svc.events().lock_state(false);
+    svc.unlocked();
     Ok(vault.status())
 }
 
@@ -96,7 +96,7 @@ async fn lock(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vau
         Ok(vault.status())
     })
     .await?;
-    svc.locked();
+    svc.locked().await;
     Ok(status)
 }
 
@@ -147,7 +147,7 @@ async fn touch(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<()
 async fn poll_auto_lock(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<bool> {
     let locked = svc.get().is_some_and(|v| v.forget_key_if_idle());
     if locked {
-        svc.locked();
+        svc.locked().await;
     }
     Ok(locked)
 }

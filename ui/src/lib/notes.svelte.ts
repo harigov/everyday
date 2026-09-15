@@ -16,6 +16,7 @@
 
 import { api, newRequestId } from './api'
 import { Autosave } from './autosave'
+import { registerApply, singleId, type ChangeWithIds } from './live-apply'
 import { app, handle, isConflict, isLocked } from './state.svelte'
 import { debounce } from './store/debounce'
 import { DocBinding } from './store/doc-binding'
@@ -128,6 +129,10 @@ class NotesState {
   constructor() {
     app.onLock(() => this.reset())
     app.onFlush(() => this.flush())
+    // `live.svelte.ts`'s opt-in -- see `#applyChanges`. First user of it, so
+    // a change from another window patches this list instead of reloading it
+    // whole.
+    registerApply('notes', (changes) => this.#applyChanges(changes))
   }
 
   reset() {
@@ -192,6 +197,62 @@ class NotesState {
     } catch (e) {
       if (isLocked(e)) return
       await handle(e)
+    }
+  }
+
+  /**
+   * `live.svelte.ts`'s opt-in: patch the list instead of reloading it whole.
+   *
+   * Handles exactly the shape that is common and cheap to get right -- a
+   * single write, created or updated or deleted. Anything wider -- several
+   * ids in one batch, a kind of change this has not been taught -- answers
+   * `false`, and `live` falls back to `refresh()`, which is always correct
+   * if slower.
+   */
+  #applyChanges(changes: ChangeWithIds[]): boolean {
+    if (changes.length !== 1) return false
+    const change = changes[0]!
+    const id = singleId(change)
+    if (!id) return false
+    if (change.op === 'deleted') {
+      this.list = this.list.filter((n) => n.id !== id)
+      return true
+    }
+    if (change.op === 'created' || change.op === 'updated') {
+      // Answered synchronously -- see `Applier` -- with the fetch running
+      // after. `#patchOne` falls back to `refresh()` itself if it fails, so
+      // nothing here has to wait for it to decide.
+      void this.#patchOne(id)
+      return true
+    }
+    return false
+  }
+
+  /** The fetch-and-patch `#applyChanges` starts and does not wait for. */
+  async #patchOne(id: NoteId) {
+    try {
+      const note = await api.note(id)
+      if (this.tag && !note.tags.includes(this.tag)) {
+        // No longer -- or never -- under the tag this list is filtered to.
+        // Drop it if it was showing under an earlier tag; do nothing if it
+        // was never in this list to begin with.
+        this.list = this.list.filter((n) => n.id !== id)
+        return
+      }
+      const summary = summarize(note)
+      const at = this.list.findIndex((n) => n.id === id)
+      // Replaced in place when already shown, so its position in the sort
+      // order is left alone rather than guessed at; inserted at the front
+      // otherwise, which is right for the default "last changed" sort and an
+      // approximation everywhere else that the next real `refresh` corrects.
+      this.list =
+        at >= 0 ? this.list.map((n, i) => (i === at ? summary : n)) : [summary, ...this.list]
+    } catch (e) {
+      if (isLocked(e)) return
+      // Fetching the one row failed in some way patching cannot reason
+      // about -- ask for all of them rather than risk this list disagreeing
+      // with the vault.
+      await this.refresh()
     }
   }
 
@@ -414,3 +475,43 @@ class NotesState {
 }
 
 export const notes = new NotesState()
+
+/**
+ * The list's condensed shape, computed from a record fetched whole.
+ *
+ * Close enough to what the backend computes for `listNotes` that a row
+ * patched in by `#patchOne` looks right -- plain text out of the rich
+ * document for the excerpt and the word count, the first image attachment as
+ * the cover. Not identical by construction, because the alternative is a
+ * backend command that answers with one record's summary, which nothing
+ * needs badly enough yet to justify -- and the mock backend already carries
+ * the same approximation for the same reason (`mock.ts`'s own `summarize`).
+ */
+function summarize(note: Note): NoteSummary {
+  const text = plainText(note.body)
+  return {
+    id: note.id,
+    title: note.title,
+    excerpt: text.slice(0, 240),
+    tags: note.tags,
+    pinned: note.pinned,
+    purpose: note.purpose,
+    wordCount: text.split(/\s+/).filter(Boolean).length,
+    attachmentCount: note.attachments.length,
+    cover: note.attachments.find((a) => a.kind === 'image')?.blob,
+    createdAt: note.createdAt,
+    updatedAt: note.updatedAt,
+  }
+}
+
+/** Every word a rich document holds, media captions included, space-joined. */
+function plainText(node: unknown): string {
+  if (!node || typeof node !== 'object') return ''
+  const n = node as Record<string, unknown>
+  if (n.type === 'text') return typeof n.text === 'string' ? n.text : ''
+  const attrs = n.attrs as Record<string, unknown> | undefined
+  const caption = attrs?.caption
+  const own = n.type === 'media' && typeof caption === 'string' ? caption : ''
+  const kids = Array.isArray(n.content) ? n.content.map(plainText).join(' ') : ''
+  return [own, kids].filter(Boolean).join(' ')
+}

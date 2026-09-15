@@ -18,6 +18,7 @@
   import { notify } from '../lib/notify.svelte'
   import type { McpStatus } from '../lib/types'
   import Icon from './Icon.svelte'
+  import MailActionsList from './MailActionsList.svelte'
 
   // The domains a token can be narrowed to, in `everyday_service::domains::
   // meta::scope_of`'s order, labelled for what each one *grants* rather than
@@ -253,6 +254,8 @@
           </small>
         </span>
       </label>
+
+      <MailActionsList kind="mcp" />
     {/if}
   </section>
 {/if}

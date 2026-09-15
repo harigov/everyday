@@ -54,6 +54,7 @@
     { id: 'todo', label: 'Todo', icon: 'check' },
     { id: 'calendar', label: 'Calendar', icon: 'calendar' },
     { id: 'library', label: 'Library', icon: 'book' },
+    { id: 'mail', label: 'Mail', icon: 'mail' },
     { id: 'journal', label: 'Journal', icon: 'quote' },
   ]
   const shown = $derived(APPS.filter((a) => app.canShow(a.id)))

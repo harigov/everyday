@@ -189,6 +189,25 @@ impl LLMProviderConfig {
             .unwrap_or_else(|| self.provider.default_base_url())
     }
 
+    /// What `Account::assistant_provider_acknowledged`
+    /// (`crate::account::Account`) is compared against, once a person has
+    /// been told "your mail will be sent to X when you ask about it" and
+    /// said yes for one account.
+    ///
+    /// The endpoint, not [`Provider::label`] -- there is one wire protocol
+    /// (`Provider::OpenAi`'s Chat Completions shape) and several very
+    /// different promises behind it: the real OpenAI API, OpenRouter, and a
+    /// model running on this machine are all reached this way, and "your
+    /// mail will be sent to OpenAI" is not what is actually true the moment
+    /// `base_url` names something else. Comparing the endpoint means
+    /// changing it -- switching from a local model to a hosted one, or from
+    /// one hosted gateway to another -- naturally stops matching whatever
+    /// was acknowledged before, without this crate having to notice the
+    /// change and clear anything by hand.
+    pub fn acknowledgement_name(&self) -> String {
+        self.endpoint().to_string()
+    }
+
     /// Whether this connection needs an API key to be usable.
     pub fn needs_key(&self) -> bool {
         self.provider.needs_key(self.base_url.as_deref())
@@ -687,7 +706,25 @@ pub struct Message {
     /// not a test worth writing.
     #[serde(default)]
     pub failed: bool,
+    /// Where a mail tool's own result named the thread it touched -- set
+    /// only on a [`Role::Tool`] message answering a write in
+    /// [`crate::agent::tools::Domain::Mail`], so the transcript can draw a
+    /// link straight to it ("Archived: Plans for Saturday →") without
+    /// re-parsing `content`, which is prose for a person to read, not data
+    /// for a client to scrape. `None` for every other tool, and for a mail
+    /// tool that only read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_link: Option<MailLink>,
     pub created_at: Timestamp,
+}
+
+/// What [`Message::mail_link`] carries: enough to open Mail at the thread a
+/// write actually touched, and to say so before the click.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailLink {
+    pub thread_id: String,
+    pub subject: String,
 }
 
 impl Message {
@@ -708,15 +745,19 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: None,
             failed: false,
+            mail_link: None,
             created_at: Timestamp::now(),
         }
     }
 
-    /// The result of running `call`, successful or not.
+    /// The result of running `call`, successful or not. `mail_link` is
+    /// `Some` only for a successful mail write whose own JSON result named a
+    /// thread -- see [`Message::mail_link`].
     pub fn tool_result(
         conversation_id: ConversationId,
         call: &ToolCall,
         outcome: std::result::Result<String, String>,
+        mail_link: Option<MailLink>,
     ) -> Self {
         let (content, failed) = match outcome {
             Ok(text) => (text, false),
@@ -725,6 +766,7 @@ impl Message {
         Self {
             tool_call_id: Some(call.id.clone()),
             failed,
+            mail_link,
             ..Self::new(conversation_id, Role::Tool, content)
         }
     }
@@ -1354,12 +1396,12 @@ mod tests {
             name: "add_task".into(),
             arguments: serde_json::json!({ "title": "Ring the vet" }),
         };
-        let ok = Message::tool_result(cid, &call, Ok("added".into()));
+        let ok = Message::tool_result(cid, &call, Ok("added".into()), None);
         assert_eq!(ok.tool_call_id.as_deref(), Some("call_abc"));
         assert_eq!(ok.role, Role::Tool);
         assert!(!ok.failed);
 
-        let bad = Message::tool_result(cid, &call, Err("no such project".into()));
+        let bad = Message::tool_result(cid, &call, Err("no such project".into()), None);
         assert!(bad.failed, "a failure must be drawable as one without parsing its prose");
         assert_eq!(bad.content, "no such project");
     }

@@ -108,6 +108,50 @@ pub(crate) fn upsert_stmt<R: Record>(record: &R, sealed: Vec<u8>) -> (String, Ve
     (sql, cols.into_iter().map(|(_, v)| v).collect())
 }
 
+/// A batch of [`upsert_batched`](SqlStore::upsert_batched) closes at four
+/// megabytes of sealed payload, or [`BATCH_MAX_ROWS`], whichever comes
+/// first.
+///
+/// Picked against the sync engine's own words for the shape of a first
+/// sync — "headers for every message, in batches of a few hundred,
+/// committed per batch" — rather than against a measured lock-hold time,
+/// because none exists yet: this is groundwork for the caller that will
+/// measure it. Four megabytes is small enough that even a slow disk commits
+/// it well under the batch cadence a sync engine already works in (a batch
+/// every few hundred milliseconds), and large enough that the row cap below
+/// is almost always what actually closes a batch of ordinary-sized records.
+const BATCH_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// The other half of [`BATCH_MAX_BYTES`]: "a few hundred", named exactly.
+const BATCH_MAX_ROWS: usize = 500;
+
+/// Split sealed rows into batches, closing one whenever the next row would
+/// push it past `max_bytes` or `max_rows` — never splitting a single row
+/// across two batches, so a row bigger than `max_bytes` on its own is still
+/// one batch rather than a reason to fail.
+fn batches_by_size<R>(
+    sealed: Vec<(&R, Vec<u8>)>,
+    max_bytes: usize,
+    max_rows: usize,
+) -> Vec<Vec<(&R, Vec<u8>)>> {
+    let mut batches = Vec::new();
+    let mut current = Vec::new();
+    let mut bytes = 0usize;
+    for row in sealed {
+        let row_bytes = row.1.len();
+        if !current.is_empty() && (bytes + row_bytes > max_bytes || current.len() >= max_rows) {
+            batches.push(std::mem::take(&mut current));
+            bytes = 0;
+        }
+        bytes += row_bytes;
+        current.push(row);
+    }
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    batches
+}
+
 impl SqlStore {
     /// One record by id, or [`Error::NotFound`] naming its kind.
     pub(crate) fn get<R: Record>(&self, id: R::Id) -> Result<R> {
@@ -127,26 +171,69 @@ impl SqlStore {
         self.upsert_many(std::slice::from_ref(record))
     }
 
-    /// Insert or replace many records in one transaction — what a
-    /// re-ordered list, or moving several things to another parent at once,
-    /// actually is. Each record's row is built once from
-    /// [`Record::columns`], and its purpose pointer, for the tables that
-    /// carry one, is written alongside it rather than in a transaction of
-    /// its own.
+    /// Insert or replace many records in one transaction — what a re-ordered
+    /// list, or moving several things to another parent at once, actually
+    /// is. Each record's row is built once from [`Record::columns`], and its
+    /// purpose pointer, for the tables that carry one, is written alongside
+    /// it rather than in a transaction of its own.
+    ///
+    /// All or nothing, whatever the size: a board reorder that half landed
+    /// is a board in an order nobody chose. A write too large to hold the
+    /// writer through is [`upsert_batched`](SqlStore::upsert_batched)'s job,
+    /// and choosing it is the caller saying it can resume.
     pub(crate) fn upsert_many<R: Record>(&self, records: &[R]) -> Result<()> {
         if records.is_empty() {
             return Ok(());
         }
-        // Sealed before the lock is taken: encryption is the expensive part,
-        // and there is no reason to hold the connection through it.
-        let sealed: Vec<(&R, Vec<u8>)> = records
-            .iter()
-            .map(|r| Ok((r, self.seal(&R::aad(r.id()), r)?)))
-            .collect::<Result<_>>()?;
+        let sealed = self.seal_all(records)?;
+        self.write_batch(sealed)
+    }
 
+    /// Insert or replace many records, committing every
+    /// [`BATCH_MAX_BYTES`] or [`BATCH_MAX_ROWS`], whichever comes first.
+    ///
+    /// For a mailbox's first sync — headers "in batches of a few hundred,
+    /// committed per batch" — which would otherwise hold the vault's single
+    /// writer, and so block every other write, for as long as the whole call
+    /// takes. Bytes alone would let a batch of tiny rows grow without limit;
+    /// rows alone would let a handful of enormous bodies hold the lock for
+    /// seconds.
+    ///
+    /// The trade is explicit: a call of several batches is not atomic as a
+    /// whole, and a crash between batches leaves a prefix committed. That is
+    /// safe only because `upsert_stmt` is `ON CONFLICT ... DO UPDATE`, so a
+    /// replay is harmless, and only for a caller that already resumes from a
+    /// cursor of its own. Anything that needs all-or-nothing calls
+    /// [`upsert_many`](SqlStore::upsert_many).
+    ///
+    /// A single record larger than [`BATCH_MAX_BYTES`] is still its own
+    /// batch rather than an error: the cap is a target for how long a batch
+    /// takes to write, not a ceiling this refuses to cross.
+    // First caller is the mail sync engine; until it lands, only the batch
+    // splitter's tests exercise the arithmetic underneath.
+    #[allow(dead_code)]
+    pub(crate) fn upsert_batched<R: Record>(&self, records: &[R]) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let sealed = self.seal_all(records)?;
+        for batch in batches_by_size(sealed, BATCH_MAX_BYTES, BATCH_MAX_ROWS) {
+            self.write_batch(batch)?;
+        }
+        Ok(())
+    }
+
+    /// Sealed before the lock is taken: encryption is the expensive part,
+    /// and there is no reason to hold the connection through it.
+    fn seal_all<'r, R: Record>(&self, records: &'r [R]) -> Result<Vec<(&'r R, Vec<u8>)>> {
+        records.iter().map(|r| Ok((r, self.seal(&R::aad(r.id()), r)?))).collect()
+    }
+
+    /// One transaction on the writer for rows already sealed.
+    fn write_batch<R: Record>(&self, rows: Vec<(&R, Vec<u8>)>) -> Result<()> {
         let mut conn = self.write();
         let mut tx = conn.begin()?;
-        for (record, data) in sealed {
+        for (record, data) in rows {
             let (sql, args) = upsert_stmt(record, data);
             tx.execute(&sql, &args)?;
             if let Some(kind) = R::purpose_kind() {
@@ -219,5 +306,55 @@ impl SqlStore {
             n += 1;
         }
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A row stands in for `(&R, Vec<u8>)` without a real `Record` — the
+    /// splitter only ever looks at `.1.len()`, so a bare byte count is
+    /// enough to check it.
+    fn row(bytes: usize) -> (&'static (), Vec<u8>) {
+        (&(), vec![0u8; bytes])
+    }
+
+    #[test]
+    fn a_batch_closes_on_whichever_cap_it_reaches_first() {
+        // Three rows of 3 MB each: the byte cap (4 MB) closes a batch after
+        // the first row, long before the row cap (500) would.
+        let rows = vec![row(3_000_000), row(3_000_000), row(3_000_000)];
+        let batches = batches_by_size(rows, 4_000_000, 500);
+        assert_eq!(batches.iter().map(Vec::len).collect::<Vec<_>>(), [1, 1, 1]);
+    }
+
+    #[test]
+    fn small_rows_batch_by_count_instead() {
+        let rows: Vec<_> = (0..1_203).map(|_| row(10)).collect();
+        let batches = batches_by_size(rows, 4_000_000, 500);
+        assert_eq!(batches.iter().map(Vec::len).collect::<Vec<_>>(), [500, 500, 203]);
+    }
+
+    #[test]
+    fn one_row_bigger_than_the_cap_is_still_one_batch() {
+        let rows = vec![row(9_000_000)];
+        let batches = batches_by_size(rows, 4_000_000, 500);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), 1, "a single oversized row is not split, or refused");
+    }
+
+    #[test]
+    fn an_empty_input_makes_no_batches() {
+        assert!(batches_by_size(Vec::<(&(), Vec<u8>)>::new(), 4_000_000, 500).is_empty());
+    }
+
+    #[test]
+    fn every_row_lands_in_exactly_one_batch_in_order() {
+        let rows: Vec<_> = (0..777).map(|n| row(n % 5000)).collect();
+        let sizes: Vec<usize> = rows.iter().map(|r| r.1.len()).collect();
+        let batches = batches_by_size(rows, 100_000, 50);
+        let flattened: Vec<usize> = batches.into_iter().flatten().map(|r| r.1.len()).collect();
+        assert_eq!(flattened, sizes, "batching must not reorder or drop a row");
     }
 }

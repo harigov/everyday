@@ -45,6 +45,22 @@
 //! | note `pinned`, `created_us`, `updated_us` | how many notes there are, which are pinned, and when they were touched -- never a title |
 //! | routine `created_us`, `updated_us` | how many standing jobs the assistant has |
 //! | run `routine_id`, `started_us`, `seen` | that a routine ran at seven and that nobody has read the result |
+//! | `record_secrets` (`owner_kind`, `owner_id`) | that some record of that kind holds a credential, never which one or what it is |
+//! | `mail_packs` (`account_id`, `seq`) | Postgres only -- one account's raw messages, in arrival order, never a message's own bytes outside the sealed `data` a `PackRef` addresses |
+//! | account `created_us`, `updated_us` | how many mailbox providers are signed in to, and roughly when -- never the address, the host, or a single credential |
+//! | `account_calendars` (`calendar_id`, `account_id`) | which calendar came from which account -- never either one's name -- written whenever `CalendarOrigin::Account` is saved, and what `delete_account`'s cascade reads to take the calendars with it |
+//! | mailbox `account_id`, `role`, `uidvalidity`, `uidnext`, `highest_modseq` | how many folders and labels a mailbox has, which is the inbox, and where sync last reached -- never a folder's actual name |
+//! | `mail_messages` `account_id`, `thread_id`, `date_us`, `flags`, `has_attachments`, `size`, `category`, pack address | when a message arrived, its read/starred/answered state (packed, see `MessageFlags::bits`), roughly how big it is, and where its raw bytes are -- never a subject, an address or a label. Named `mail_messages` rather than `messages` because version 6 already took that name for the assistant's own conversation turns |
+//! | `message_mailboxes` (`message_id`, `mailbox_id`, `uid`) | that a message is filed in a mailbox, and at what uid -- the address a `FETCH` or `STORE` actually names |
+//! | thread `account_id`, `last_date_us`, `unread`, `category`, `snoozed_until_us` | how many messages a thread has and how many are unread, never its subject or who is in it |
+//! | `thread_mailboxes` (`thread_id`, `mailbox_id`, `last_date_us`, `unread`) | the same two numbers, per mailbox -- what an inbox actually pages over |
+//! | `hidden_thread_mailboxes` (`thread_id`, `mailbox_id`) | which `(thread, mailbox)` pairs an optimistic archive, trash or move has asked to have hidden from that mailbox's list ahead of the server confirming it -- a marker, not a copy of `message_mailboxes`, which is untouched until the op actually runs |
+//! | `bodies` (`message_id`) | that a body exists for a message -- nothing about it; the sanitised HTML, the text and every part's filename are sealed |
+//! | draft `account_id`, `in_reply_to`, `state`, `origin`, `updated_us` | how many messages are being written, which is a reply to which, and by whom (the *kind* of writer only) -- never a word of one |
+//! | op `account_id`, `state`, `origin`, `not_before_us`, `thread_id` | that something is queued to reach a server, its outcome, who asked (the *kind* only), when it may run, and which thread it acts on (so a thread can show its own recent actions) -- never a message, a draft, or the op's own sealed `target` |
+//! | `mail_remote_image_settings` (singleton) | that a standing remote-image allow-list exists -- every sender and domain on it stays sealed |
+//! | `mail_contacts` (singleton) | that a contact index exists, for address autocomplete -- every address and name it has seen stays sealed |
+//! | `mail_category_rules` (`account_id`) | that one account has sealed corrections outranking the rules `categorize` runs at sync -- never what they are |
 //!
 //! Titles, bodies, tags, locations, attachments and file names are all
 //! sealed. Someone with the database learns *that* you journalled on 14 July
@@ -87,6 +103,7 @@
 //!   record.rs      the id/columns/sealed-payload shape every table has,
 //!                  and the get/upsert/delete it buys a table that names it
 //!   dialect.rs     the five places SQLite and Postgres disagree
+//!   keyset.rs      page_after -- keyset paging, beside the offset form
 //!   schema.rs      the tables, and the migrations that reach them
 //!   blobs.rs       attachments, in a table, for a store with no local disk
 //!   journals.rs    impl JournalStore -- journals, entries, blobs
@@ -101,21 +118,31 @@
 //! same one `everyday_core::store` makes between the trait and its five
 //! optional siblings.
 
+// `pub` (not `mod accounts;`, private, the way every other single-domain
+// module here stays) for the same reason `mail` and `packs` are already
+// `pub`: `run_account_delete_cascade_regression`, below `testing`/`test`,
+// is a driver's own test-suite entry point, the same shape
+// `run_pack_store_suite` gives `packs`.
+pub mod accounts;
 pub(crate) mod blobs;
 pub mod conn;
 pub mod dialect;
+pub mod keyset;
 pub mod schema;
 
 mod agent;
 mod calendars;
 mod journals;
 mod library;
+pub mod mail;
 mod notes;
+pub mod packs;
 mod pool;
 mod profile;
 mod purpose;
 mod record;
 mod routines;
+mod secrets;
 mod tasks;
 mod trackers;
 
@@ -283,6 +310,9 @@ impl SqlStore {
             notes: true,
             routines: true,
             agent: true,
+            secrets: true,
+            accounts: true,
+            mail: true,
         }
     }
 

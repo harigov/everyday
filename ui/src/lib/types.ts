@@ -43,6 +43,7 @@ export type GoalId = string
 export type KindId = string
 export type ItemId = string
 export type LogId = string
+export type AccountId = string
 
 /** A ProseMirror document. Opaque to everything but the editor. */
 export type RichDoc = { type: 'doc'; content?: unknown[] }
@@ -693,6 +694,21 @@ export interface Capabilities {
    * conversation vanishes when the window closes.
    */
   agent: boolean
+  /**
+   * Backend implements `accounts::AccountStore`, so a mailbox provider can be
+   * signed in to at all. False hides Settings → Accounts, the Mail app and
+   * the calendar's "other people's calendars".
+   */
+  accounts: boolean
+  /**
+   * Backend implements `mail::MailStore`, so a synced mailbox has somewhere
+   * to keep its mailboxes, messages, threads, bodies, drafts and outbox.
+   *
+   * False hides the Mail app entirely, the way `library` hides the library
+   * app. A backend that carries this in practice carries `accounts` too --
+   * see `app.supportsMail`.
+   */
+  mail: boolean
 }
 
 export interface VaultStatus {
@@ -1006,8 +1022,20 @@ export interface TagCount {
 
 export type CalendarProvider = 'google' | 'outlook' | 'apple' | 'other'
 
+/** Which protocol an account calendar is read over -- see `accountcal`. */
+export type AccountCalendarSource = 'calDav' | 'google' | 'graph'
+
 /** Where a calendar's events come from. */
-export type CalendarOrigin = { type: 'url'; url: string } | { type: 'file'; label: string }
+export type CalendarOrigin =
+  | { type: 'url'; url: string }
+  | { type: 'file'; label: string }
+  | {
+      type: 'account'
+      accountId: AccountId
+      remoteId: string
+      remoteName: string
+      source: AccountCalendarSource
+    }
 
 export interface Calendar {
   id: CalendarId
@@ -1035,6 +1063,20 @@ export interface Calendar {
 /** A calendar plus how many events are held for it. */
 export interface CalendarInfo extends Calendar {
   events: number
+}
+
+/** One calendar an account offers, before anyone subscribes to it. */
+export interface RemoteCalendar {
+  remoteId: string
+  name: string
+  color?: string | null
+  source: AccountCalendarSource
+}
+
+/** A remote calendar, and whether this vault already subscribes to it. */
+export interface RemoteCalendarInfo extends RemoteCalendar {
+  subscribed: boolean
+  calendarId?: CalendarId | null
 }
 
 export type EventStatus = 'confirmed' | 'tentative' | 'cancelled'
@@ -1124,6 +1166,8 @@ export interface ChangeEvent {
   kind: ChangeKind
   op: 'created' | 'updated' | 'deleted'
   id?: string | null
+  /** More than one record, for a batch write -- a board reorder, a sync. */
+  ids?: string[]
   origin?: string | null
 }
 
@@ -1141,6 +1185,507 @@ export interface ChangeEvent {
  * needed to learn where it actually comes from.
  */
 export type { ChangeKind } from './generated/commands'
+
+// ── Accounts ──────────────────────────────────────────────────────────────
+//
+// A mailbox provider signed in to. Not owned by the mail app -- mail and the
+// calendar's "other people's calendars" both borrow the same credential --
+// which is why this sits beside Purpose and the calendar rather than inside
+// either. Mirrors `everyday_core::account`; see that module for why almost
+// nothing here is sensitive and the one thing that is (the credential
+// itself) never crosses the wire at all.
+
+// Named `Mail*` rather than plain `Provider`/`ProviderInfo` -- both names are
+// already taken, by the LLM provider a model is spoken to over and by the
+// calendar's own picker -- and disambiguating here is cheaper than renaming
+// either of those two much older types for a newcomer.
+export const MAIL_PROVIDERS = [
+  'google',
+  'microsoft',
+  'iCloud',
+  'fastmail',
+  'yahoo',
+  'custom',
+] as const
+export type MailProvider = (typeof MAIL_PROVIDERS)[number]
+
+export type EndpointSecurity = 'tls' | 'startTls'
+
+export interface Endpoint {
+  host: string
+  port: number
+  security: EndpointSecurity
+}
+
+export interface Identity {
+  name: string
+  address: string
+  signatureHtml: string
+}
+
+export type AuthMethod =
+  | { type: 'oAuth'; clientId: string; authUrl: string; tokenUrl: string; scopes: string[] }
+  | { type: 'password'; username: string }
+
+export interface Services {
+  mail: boolean
+  calendar: boolean
+}
+
+/**
+ * What the chat assistant, or an MCP client, may do to one account's mail.
+ * Every field but `send` defaults to on -- see `AgentMailAccess::default`
+ * in Rust for why sending is the one action that starts off.
+ */
+export interface AgentMailAccess {
+  read: boolean
+  draft: boolean
+  edit: boolean
+  remove: boolean
+  archive: boolean
+  send: boolean
+}
+
+export type AgentCallerKind = 'assistant' | 'mcp'
+
+/**
+ * The service-side, model-assisted mail features from phase 7 of
+ * `docs/plans/mail.md`: categorisation, auto-drafts, summaries. All three
+ * start `false`, and each also needs `Account.assistantProviderAcknowledged`
+ * to name the configured provider before it runs at all.
+ */
+export interface MailAi {
+  categorize: boolean
+  autoDraft: boolean
+  summaries: boolean
+}
+
+export type AccountStatus =
+  { type: 'ok' } | { type: 'needsSignIn'; reason: string } | { type: 'error'; message: string }
+
+export interface Account {
+  id: AccountId
+  provider: MailProvider
+  address: string
+  displayName: string
+  identities: Identity[]
+  imap: Endpoint
+  smtp: Endpoint
+  caldav?: string | null
+  auth: AuthMethod
+  services: Services
+  assistantAccess: AgentMailAccess
+  mcpAccess: AgentMailAccess
+  assistantProviderAcknowledged?: string | null
+  /** Optional here, not because the wire ever omits it -- a saved account's
+   *  answer always carries it, `#[serde(default)]` on the Rust side -- but
+   *  because a freshly-built `Account` literal (`AddAccount.svelte`, before
+   *  the first save) is exactly the "default" case `#[serde(default)]`
+   *  exists for, and an optional field lets that literal skip it rather
+   *  than spell out all three `false`s by hand. */
+  mailAi?: MailAi
+  attachmentCapBytes?: number | null
+  status: AccountStatus
+  lastSyncedAt?: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+/**
+ * An account, plus what the interface is allowed to know about its secret --
+ * never the secret itself. What `list_accounts` and `get_account` answer
+ * with.
+ */
+export interface AccountView extends Account {
+  hasPassword: boolean
+  signedIn: boolean
+}
+
+export interface OAuthPreset {
+  authUrl: string
+  tokenUrl: string
+  mailScopes: string[]
+  calendarScopes: string[]
+}
+
+/** Host, port, security and OAuth endpoints a well-known provider publishes. */
+export interface Preset {
+  imap: Endpoint
+  smtp: Endpoint
+  caldav?: string | null
+  oauth?: OAuthPreset | null
+  needsClientSecret: boolean
+  appPasswordHelpUrl?: string | null
+}
+
+/** One provider's label and preset, for the add-account picker. */
+export interface MailProviderInfo extends Preset {
+  provider: MailProvider
+  label: string
+}
+
+// ── Mail ──────────────────────────────────────────────────────────────────
+//
+// Mailboxes, threads and the messages in them -- storage only, read-only,
+// for now. Mirrors `everyday_core::mail` and `everyday_core::store::mail`;
+// see those for the two-views-of-a-thread design (a thread's own aggregates
+// versus its per-mailbox row in `thread_mailboxes`) and for which columns
+// stay sealed. `list_mailboxes`, `list_threads` and `get_thread` are the
+// only commands that read any of this so far -- the sync engine, the outbox
+// and the interface that writes to it all arrive later.
+
+export type MailboxId = string
+export type ThreadId = string
+export type MailMessageId = string
+export type PackId = string
+
+export type MailboxRole =
+  'inbox' | 'sent' | 'drafts' | 'archive' | 'trash' | 'spam' | 'all' | 'other'
+
+export interface Mailbox {
+  id: MailboxId
+  accountId: AccountId
+  remoteName: string
+  role: MailboxRole
+  uidvalidity: number
+  uidnext: number
+  highestModseq: number
+}
+
+/** A closed, small set -- see `crate::mail::Category` for why a user-named
+ * category (phase 7) cannot be one of these without leaking its name. */
+export type MailCategory = 'important' | 'other' | 'newsletter' | 'notification'
+
+export interface MailAddress {
+  name: string
+  email: string
+}
+
+export interface MessageFlags {
+  seen: boolean
+  answered: boolean
+  flagged: boolean
+  draft: boolean
+  deleted: boolean
+}
+
+export interface GmailMeta {
+  threadId?: string | null
+  messageId?: string | null
+}
+
+/** Where one message's raw bytes live in the pack store. */
+export interface PackRef {
+  account: string
+  pack: PackId
+  offset: number
+  len: number
+}
+
+/**
+ * A calendar invitation carried by one message -- a `text/calendar` part
+ * parsed at sync. TODO(i): mirrors the contract calendar-invitations-in-mail
+ * agent is landing (`docs/plans/mail.md` phase 6, "Invitations in mail");
+ * `respond_to_invite` is this build's own stand-in for the command that
+ * sends the iMIP reply -- see `mail-api.ts`.
+ */
+export interface MailInvite {
+  uid: string
+  method: 'request' | 'cancel' | 'reply' | 'counter'
+  summary: string
+  start: string
+  end: string
+  allDay: boolean
+  location?: string | null
+  organizer: MailAddress
+  attendees: {
+    address: MailAddress
+    response: 'accepted' | 'tentative' | 'declined' | 'needsAction'
+  }[]
+  /** This vault's own reply, once one has been sent. */
+  myResponse?: 'accepted' | 'tentative' | 'declined' | 'needsAction' | null
+  recurrence?: string | null
+}
+
+export interface MailMessage {
+  id: MailMessageId
+  accountId: AccountId
+  threadId: ThreadId
+  messageIdHeader: string
+  date: string
+  from: MailAddress
+  to: MailAddress[]
+  cc: MailAddress[]
+  bcc: MailAddress[]
+  replyTo: MailAddress[]
+  subject: string
+  snippet: string
+  flags: MessageFlags
+  labels: string[]
+  hasAttachments: boolean
+  size: number
+  category?: MailCategory | null
+  pack: PackRef
+  gmail?: GmailMeta | null
+  /** TODO(i): see [[MailInvite]]. `undefined`/`null` for every message that
+   *  is not an invitation. */
+  invite?: MailInvite | null
+}
+
+/**
+ * A thread, exactly as `everyday_core::mail::Thread` carries it.
+ *
+ * `snippet`, `starred` and `hasAttachments` are aggregates
+ * `everyday_store_sql::mail::write::recompute_thread` keeps in step with the
+ * thread's own messages on every ingest, flag change and removal -- see that
+ * function's own docs. They are what let a list row show a preview line, a
+ * star and a paperclip without opening the thread first.
+ */
+export interface Thread {
+  id: ThreadId
+  accountId: AccountId
+  subject: string
+  participants: MailAddress[]
+  lastDate: string
+  messageCount: number
+  unreadCount: number
+  category?: MailCategory | null
+  snoozedUntil?: string | null
+  /** The newest message's own snippet. */
+  snippet: string
+  /** True when any message in the thread is flagged. */
+  starred: boolean
+  /** True when any message in the thread has at least one attachment. */
+  hasAttachments: boolean
+}
+
+/** All three fields ANDed; `null`/absent means "do not filter on this." */
+export interface ThreadFilter {
+  unread?: boolean | null
+  category?: MailCategory | null
+  snoozed?: boolean | null
+}
+
+/** One keyset-paged page of threads. `nextCursor` is opaque: hand it back as
+ * `cursor` for the next page, and never inspect it. */
+export interface ThreadPage {
+  threads: Thread[]
+  nextCursor?: string | null
+}
+
+/** `search_mail`'s answer: the same `Thread` shape `list_threads` and
+ *  `get_thread` use, one row per matching thread (first hit only, in the
+ *  index's own ranked order). `next` is opaque, like `ThreadPage.nextCursor`
+ *  -- hand it back as `cursor` for the next page. */
+export interface SearchMailResult {
+  threads: Thread[]
+  next?: string | null
+}
+
+/**
+ * One part of a message, named the way `mailview::part`'s `find_part`
+ * addresses it -- `contentId` when the part has one, `index` otherwise.
+ * Exactly the identifier `partUrl(messageId, identifier)` wants.
+ */
+export interface MailAttachment {
+  index: number
+  filename?: string | null
+  mimeType: string
+  size: number
+  contentId?: string | null
+  /** Referenced by `cid:` from the sanitised HTML -- shown inline, not as a
+   *  chip. */
+  inline: boolean
+  /** `false` when this part is over the account's attachment cap and has not
+   *  been fetched yet -- what `fetchAttachment` turns `true`. */
+  available: boolean
+}
+
+/** One message, plus the attachments its body names -- metadata only, never
+ *  bytes. */
+export type MailMessageDetail = MailMessage & { attachments: MailAttachment[] }
+
+/** One of a thread's own recent ops, for the "recent actions" line under the
+ *  subject -- "archived by the assistant", "moved by an MCP client",
+ *  "Couldn't archive: {error}". */
+export interface RecentAction {
+  kind: OpKind
+  origin: MailOrigin
+  at: string
+  state: OpState
+}
+
+/** A thread and every message in it -- what opening one reads. Bodies'
+ *  *text* is not included; each message's `attachments` and the thread's own
+ *  `recentActions` are. */
+export interface ThreadDetail {
+  thread: Thread
+  messages: MailMessageDetail[]
+  recentActions: RecentAction[]
+}
+
+/** `summarize_thread`'s answer. `summary` is empty when there was nothing
+ *  worth saying, or when the thread had no text to read at all. */
+export interface ThreadSummary {
+  summary: string
+}
+
+/** `recategorize_mail`'s answer: how many messages' category actually
+ *  changed. */
+export interface RecategorizeResult {
+  changed: number
+}
+
+/** The standing, per-sender/per-domain allow-list a remote image is checked
+ * against -- mirrors `everyday_core::mail::RemoteImageSettings`. The
+ * per-message one-off grant `allowRemoteImages` can also express is
+ * deliberately not part of this: it lives in memory on the side that holds
+ * the vault, for the one session that granted it, and this record never
+ * carries it. */
+export interface RemoteImageSettings {
+  senders: string[]
+  domains: string[]
+}
+
+/** Which part of the sync an account's task is doing right now. Mirrors
+ * `everyday_service::mailsync::status::Phase`. */
+export type MailSyncPhase = 'idle' | 'connecting' | 'headers' | 'bodies' | 'attachments' | 'idling'
+
+/** One account's sync progress, as `sync_status` reports it. `total` is `0`
+ * when it is not yet known, which reads as "in progress, indeterminate"
+ * rather than "nothing to do". */
+export interface MailSyncProgress {
+  accountId: AccountId
+  phase: MailSyncPhase
+  done: number
+  total: number
+  lastError?: string | null
+}
+
+// ── Drafts and the outbox (phase 3) ─────────────────────────────────────
+//
+// Mirrors `everyday_core::mail`'s `Draft`, `Op` and the small enums either
+// carries. Who asked for an `Op` -- a person, the assistant in a named
+// conversation, a routine run, or an MCP client -- is `MailOrigin`, prefixed
+// the way `MailAddress` and `MailCategory` are to keep the word "origin"
+// unambiguous next to every other domain's own use of it.
+
+export type DraftId = string
+export type OpId = string
+
+export type MailOrigin =
+  | { type: 'person' }
+  | { type: 'assistant'; conversation: string }
+  | { type: 'routine'; run: string }
+  | { type: 'mcp'; client: string }
+
+/** Where a [[Draft]] is in its life. `queued` carries the [[Op]] sending it,
+ * so the compose window can show "sending…" and still be the same record if
+ * the send fails and reverts to `editing`. */
+export type DraftState =
+  { type: 'editing' } | { type: 'queued'; op: OpId } | { type: 'sent' } | { type: 'discarded' }
+
+/** One attachment on a [[Draft]] -- a blob already uploaded through the same
+ *  path notes and journal entries use (`api.putBlob`), plus what a compose
+ *  window needs to draw a chip for it before it has been sent. */
+export interface DraftAttachment {
+  blob: BlobId
+  filename: string
+  mimeType: string
+}
+
+export interface Draft {
+  id: DraftId
+  accountId: AccountId
+  /** Which of the account's identities this is sent as -- an address. */
+  identity: string
+  inReplyTo?: MailMessageId | null
+  to: MailAddress[]
+  cc: MailAddress[]
+  bcc: MailAddress[]
+  subject: string
+  bodyHtml: string
+  attachments: DraftAttachment[]
+  origin: MailOrigin
+  state: DraftState
+  createdAt: string
+  updatedAt: string
+  /**
+   * Who last changed `to`, `cc` or `bcc` without the person seeing it
+   * through compose -- set by the assistant's or MCP's own `update_draft`,
+   * cleared the moment the person saves from compose. `null` (or absent)
+   * means the person's own recipients, unchanged since they last looked.
+   */
+  recipientsChangedBy?: MailOrigin | null
+}
+
+/** What an [[Op]] asks the account task to do. */
+export type OpKind =
+  | { type: 'markRead' }
+  | { type: 'markUnread' }
+  | { type: 'star' }
+  | { type: 'unstar' }
+  | { type: 'archive' }
+  | { type: 'trash' }
+  | { type: 'move'; to: MailboxId }
+  | { type: 'label'; label: string }
+  | { type: 'unlabel'; label: string }
+  | { type: 'snooze'; until: string }
+  | { type: 'send' }
+  | { type: 'appendDraft' }
+
+export type OpTarget =
+  | { type: 'thread'; id: ThreadId }
+  | { type: 'message'; id: MailMessageId }
+  | { type: 'draft'; id: DraftId }
+
+export type OpState =
+  | { type: 'pending' }
+  | { type: 'inFlight' }
+  | { type: 'done' }
+  | { type: 'failed'; permanent: boolean; message: string }
+  | { type: 'cancelled' }
+
+/** One entry in the outbox: the local write already happened; this is what
+ * still has to reach the server. See `crate::mail::outbox` for the state
+ * machine and `crates/everyday-mail/src/outbox.rs` for what runs it. */
+export interface Op {
+  id: OpId
+  accountId: AccountId
+  kind: OpKind
+  target: OpTarget
+  notBefore: string
+  attempts: number
+  lastError?: string | null
+  state: OpState
+  origin: MailOrigin
+  createdAt: string
+  updatedAt: string
+}
+
+/** `mail_actions_by_origin`'s own `kind` argument and each row's own `kind`
+ *  field: which sort of non-person caller this is about. Never `'person'` --
+ *  see `AgentOriginKind` in the Rust command. */
+export type MailAgentOriginKind = 'mcp' | 'assistant' | 'routine'
+
+/** One [[Op]] `mail_actions_by_origin` found for one kind of caller,
+ *  resolved into what a person recognises -- an account's address, a
+ *  thread's subject -- rather than the bare ids [[Op]] itself carries. At
+ *  most one of `client`, `conversation` or `run` is set, matching which
+ *  `kind` this row is. */
+export interface MailActionByOrigin {
+  opId: OpId
+  kind: MailAgentOriginKind
+  state: string
+  at: string
+  account: string
+  threadId?: ThreadId | null
+  subject?: string | null
+  client?: string | null
+  conversation?: string | null
+  run?: string | null
+  lastError?: string | null
+}
 
 // ── The command surface, describing itself ─────────────────────────────
 //
@@ -1788,6 +2333,16 @@ export interface ToolCall {
   arguments: unknown
 }
 
+/** Where a mail tool's own result named the thread it touched -- carried on
+ *  the tool message that answers it, and on the live `toolFinished` event
+ *  before that message is even saved, so the transcript can draw a link
+ *  straight into Mail ("Archived: Plans for Saturday →") without parsing
+ *  `content`, which is prose for a person, not data for a client. */
+export interface MailLink {
+  threadId: ThreadId
+  subject: string
+}
+
 export interface AgentMessage {
   id: MessageId
   conversationId: ConversationId
@@ -1798,6 +2353,9 @@ export interface AgentMessage {
   /** Set on a tool turn whose tool failed, so it can be drawn as one
    *  without the interface parsing its prose. */
   failed: boolean
+  /** See [[MailLink]]. `null` for every message but a successful mail
+   *  write's own tool result. */
+  mailLink?: MailLink | null
   createdAt: string
 }
 
@@ -1824,6 +2382,16 @@ export interface Memory {
 }
 
 /**
+ * Why a `confirmationRequired` event is asking: `'destructive'` removes
+ * something with no undo, `'outward'` reaches somebody who is not the
+ * vault's owner (sending mail), and `'search'` is `web_search` asked about
+ * after mail was read this turn -- see `agent::tools::mail`'s module docs
+ * in the Rust core for the whole of the reasoning behind each.
+ */
+export const CONFIRM_KINDS = ['destructive', 'outward', 'search'] as const
+export type ConfirmKind = (typeof CONFIRM_KINDS)[number]
+
+/**
  * One thing that happened during a turn.
  *
  * Arrives over a channel as the turn runs rather than all at once at the end
@@ -1834,13 +2402,23 @@ export type AgentEvent =
   | { type: 'started'; messageId: MessageId }
   | { type: 'delta'; text: string }
   | { type: 'toolStarted'; callId: string; name: string; arguments: unknown }
-  | { type: 'toolFinished'; callId: string; name: string; ok: boolean; summary: string }
+  | {
+      type: 'toolFinished'
+      callId: string
+      name: string
+      ok: boolean
+      summary: string
+      /** See [[MailLink]]. */
+      mailLink?: MailLink | null
+    }
   | {
       type: 'confirmationRequired'
       callId: string
       name: string
       subject: string
       arguments: unknown
+      /** Why this is being asked -- see `ConfirmKind` below. */
+      kind: ConfirmKind
     }
   | { type: 'finished'; messageId: MessageId }
   | { type: 'failed'; message: string }
@@ -1945,4 +2523,26 @@ export interface PickedFile {
   handle: string
   name: string
   bytes: number
+}
+
+/**
+ * What `beginOAuthSignIn` answers with: open `url` in the system browser (or
+ * show it to copy, in remote/server mode -- see `openExternal` in
+ * `ui/src/lib/open-external.ts`), and remember `signInId` for the two calls
+ * that follow it.
+ */
+export interface BegunSignIn {
+  signInId: string
+  url: string
+}
+
+/**
+ * What `awaitOAuthSignIn` answers with on success: `tokensSavedUnder` is the
+ * same `signInId` again, renamed to say what it now means -- the account
+ * form's `save_account` call is what claims the tokens waiting under it.
+ * Nothing here ever carries a token itself; see
+ * `crates/everyday-service/src/signin.rs`'s module doc.
+ */
+export interface AwaitedSignIn {
+  tokensSavedUnder: string
 }

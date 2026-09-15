@@ -1,0 +1,1247 @@
+//! The mail half of the conformance suite.
+//!
+//! Handed the whole [`JournalStore`], the same as the purpose, tracking and
+//! note suites, because the cascade worth checking -- an account delete
+//! taking every mail row with it -- reaches into a store this domain does
+//! not own.
+
+use super::*;
+use crate::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
+use crate::mail::{
+    Address, AttendeeResponse, Body, CategorySource, Draft, Invite, InviteMethod, Mailbox,
+    MailboxRole, Message, MessageFlags, Op, OpKind, OpState, OpTarget, Origin, PartRef,
+};
+use crate::packstore::PackRef as MailPackRef;
+use crate::store::mail::{IngestMessage, MailStore, ThreadFilter};
+use jiff::{SignedDuration, Timestamp};
+
+/// Everything a backend must do with mail: ingest, the two thread lists,
+/// flag and label changes, removal, the outbox, drafts, a `UIDVALIDITY`
+/// reset, and the one cascade this suite does not own -- an account delete
+/// taking every row above with it.
+pub fn run_mail_suite(store: &dyn JournalStore) {
+    eprintln!("--- mail conformance suite ---");
+
+    mail_starts_empty(store);
+    ingest_then_list(store);
+    threads_span_two_mailboxes(store);
+    keyset_paging_a_thousand_threads_has_no_duplicates_or_gaps(store);
+    flag_change_updates_unread_counts(store);
+    removal_shrinks_a_thread_and_deletes_an_empty_one(store);
+    op_queue_ordering_and_not_before(store);
+    optimistic_writes_and_snooze_round_trip(store);
+    draft_round_trips(store);
+    a_uidvalidity_reset_forgets_uids_but_keeps_messages(store);
+    merge_threads_migrates_messages_and_deletes_the_others(store);
+    pending_bodies_finds_only_unfetched_messages_newest_first(store);
+    account_delete_cascades_every_mail_row(store);
+    category_rules_and_recategorize_round_trip(store);
+    correction_reaches_only_the_named_sender(store);
+    a_model_set_category_survives_the_backfill(store);
+    removing_forty_thousand_uids_does_not_hit_the_parameter_limit(store);
+    deleting_a_mailbox_with_forty_thousand_messages_does_not_hit_the_parameter_limit(store);
+    archiving_survives_a_later_flag_change(store);
+    a_reply_to_an_archived_thread_brings_it_back(store);
+    a_landed_archive_leaves_no_marker_behind(store);
+    a_reverted_archive_restores_uid_membership(store);
+    remove_uids_returns_pack_refs_only_for_genuinely_dead_messages(store);
+    deleting_a_mailbox_returns_pack_refs_for_its_dead_messages(store);
+    a_snippet_appears_once_the_body_lands(store);
+    star_then_unstar_updates_the_thread(store);
+    an_attachment_flags_the_thread(store);
+    removing_the_only_starred_message_clears_starred(store);
+
+    eprintln!("--- mail suite passed ---");
+}
+
+fn mail_store(store: &dyn JournalStore) -> &dyn MailStore {
+    store.mail().expect("the mail suite needs a mail store")
+}
+
+/// Delete everything belonging to `account` -- what every test below uses to
+/// leave the store as it found it, and what
+/// [`account_delete_cascades_every_mail_row`] checks directly rather than
+/// merely relying on for cleanup.
+fn cleanup_account(store: &dyn JournalStore, account: AccountId) {
+    store
+        .accounts()
+        .expect("the mail suite needs an account store, for the cascade it deletes by")
+        .delete_account(account)
+        .expect("cleanup delete_account");
+}
+
+fn message(
+    account: AccountId,
+    thread: ThreadId,
+    subject: &str,
+    from: &str,
+    date: Timestamp,
+) -> Message {
+    let id = MailMessageId::new();
+    Message {
+        id,
+        account_id: account,
+        thread_id: thread,
+        message_id_header: format!("<{id}@conformance.example>"),
+        date,
+        from: Address::bare(from),
+        to: Vec::new(),
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        reply_to: Vec::new(),
+        subject: subject.into(),
+        snippet: String::new(),
+        flags: MessageFlags::default(),
+        labels: Vec::new(),
+        has_attachments: false,
+        size: 128,
+        category: None,
+        category_source: CategorySource::Rules,
+        pack: MailPackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
+        gmail: None,
+        invite: None,
+    }
+}
+
+fn mail_starts_empty(store: &dyn JournalStore) {
+    let account = AccountId::new();
+    assert!(mail_store(store).list_mailboxes(account).unwrap().is_empty());
+    assert!(mail_store(store).list_drafts(account).unwrap().is_empty());
+}
+
+fn ingest_then_list(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "Hello", "sender@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+
+    let page = m.list_threads(mailbox.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert_eq!(page.threads.len(), 1);
+    assert_eq!(page.threads[0].id, thread_id);
+    assert_eq!(page.threads[0].subject, "Hello");
+    assert_eq!(page.threads[0].message_count, 1);
+    assert_eq!(page.threads[0].unread_count, 1, "a fresh message starts unread");
+    assert!(page.threads[0].participants.iter().any(|a| a.email == "sender@example.com"));
+
+    let (thread, messages) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.id, thread_id);
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].id, msg.id);
+
+    let found = m.message_by_uid(mailbox.id, 1).unwrap().expect("uid 1 was just ingested");
+    assert_eq!(found.id, msg.id);
+    assert_eq!(m.get_message(msg.id).unwrap().id, msg.id);
+
+    cleanup_account(store, account);
+}
+
+/// A Gmail label: the same physical message, filed under two mailboxes at
+/// once. One row in `messages`, two in `message_mailboxes`, and the thread
+/// must be reachable -- and correctly counted -- from either mailbox's list.
+fn threads_span_two_mailboxes(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let label = Mailbox::new(account, "Work", MailboxRole::Other);
+    m.put_mailbox(&inbox).unwrap();
+    m.put_mailbox(&label).unwrap();
+
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "Labelled", "a@example.com", Timestamp::now());
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: msg.clone(), mailbox: inbox.id, uid: 1 },
+            IngestMessage { message: msg.clone(), mailbox: label.id, uid: 1 },
+        ],
+    )
+    .unwrap();
+
+    let locations = m.message_locations(msg.id).unwrap();
+    assert_eq!(locations.len(), 2, "one physical message, two mailbox locations");
+    assert!(locations.contains(&(inbox.id, 1)));
+    assert!(locations.contains(&(label.id, 1)));
+
+    let in_inbox = m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap();
+    let in_label = m.list_threads(label.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert_eq!(in_inbox.threads.len(), 1);
+    assert_eq!(in_label.threads.len(), 1);
+    assert_eq!(in_inbox.threads[0].id, thread_id);
+    assert_eq!(in_label.threads[0].id, thread_id);
+
+    let (thread, messages) = m.thread(thread_id).unwrap();
+    assert_eq!(messages.len(), 1, "one physical message, filed under two mailboxes");
+    assert_eq!(thread.message_count, 1);
+
+    cleanup_account(store, account);
+}
+
+fn keyset_paging_a_thousand_threads_has_no_duplicates_or_gaps(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let base = Timestamp::now();
+    let mut ingest = Vec::with_capacity(1000);
+    let mut ids = std::collections::HashSet::new();
+    for i in 0..1000u32 {
+        let thread_id = ThreadId::new();
+        ids.insert(thread_id);
+        let date = base + SignedDuration::from_secs(i64::from(i));
+        let msg = message(account, thread_id, &format!("thread {i}"), "a@example.com", date);
+        ingest.push(IngestMessage { message: msg, mailbox: mailbox.id, uid: i + 1 });
+    }
+    for chunk in ingest.chunks(137) {
+        m.ingest(account, chunk.to_vec()).unwrap();
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page =
+            m.list_threads(mailbox.id, &ThreadFilter::default(), cursor.as_deref(), 47).unwrap();
+        if page.threads.is_empty() {
+            break;
+        }
+        for t in &page.threads {
+            assert!(ids.contains(&t.id), "an unexpected thread id was returned");
+            assert!(seen.insert(t.id), "thread {:?} was returned twice across pages", t.id);
+        }
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(seen.len(), 1000, "every thread must be seen exactly once, with no gap");
+
+    cleanup_account(store, account);
+}
+
+fn flag_change_updates_unread_counts(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "Unread", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 5 }])
+        .unwrap();
+
+    let counts = m.unread_counts(account).unwrap();
+    let unread = |counts: &[(MailboxId, u64)]| {
+        counts.iter().find(|(id, _)| *id == mailbox.id).map(|(_, n)| *n).unwrap()
+    };
+    assert_eq!(unread(&counts), 1);
+
+    let mut flags = msg.flags;
+    flags.seen = true;
+    m.update_flags(mailbox.id, 5, flags).unwrap();
+
+    assert_eq!(unread(&m.unread_counts(account).unwrap()), 0);
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.unread_count, 0);
+
+    // A uid this store never ingested is a no-op, not an error.
+    m.update_flags(mailbox.id, 999, flags).unwrap();
+
+    cleanup_account(store, account);
+}
+
+fn removal_shrinks_a_thread_and_deletes_an_empty_one(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let first = message(account, thread_id, "one", "a@example.com", Timestamp::now());
+    let second = message(account, thread_id, "two", "b@example.com", Timestamp::now());
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: first.clone(), mailbox: mailbox.id, uid: 10 },
+            IngestMessage { message: second.clone(), mailbox: mailbox.id, uid: 11 },
+        ],
+    )
+    .unwrap();
+    assert_eq!(m.thread(thread_id).unwrap().0.message_count, 2);
+
+    m.remove_uids(mailbox.id, &[10]).unwrap();
+    let (thread, messages) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.message_count, 1, "removal shrinks the thread");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].id, second.id);
+
+    m.remove_uids(mailbox.id, &[11]).unwrap();
+    assert!(m.thread(thread_id).is_err(), "a thread with nothing left in it is deleted");
+    assert!(
+        m.list_threads(mailbox.id, &ThreadFilter::default(), None, 10).unwrap().threads.is_empty()
+    );
+
+    // Removing again, and removing an empty set, are both no-ops.
+    m.remove_uids(mailbox.id, &[10, 11]).unwrap();
+    m.remove_uids(mailbox.id, &[]).unwrap();
+
+    cleanup_account(store, account);
+}
+
+fn op_queue_ordering_and_not_before(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let now = Timestamp::now();
+
+    assert_eq!(
+        m.next_pending_op_at(account).unwrap(),
+        None,
+        "an account with no ops has nothing to wake for"
+    );
+    assert!(m.in_flight_ops(account).unwrap().is_empty());
+
+    let due_first =
+        Op::new(account, OpKind::Archive, OpTarget::Thread(ThreadId::new()), Origin::Person)
+            .not_before(now - SignedDuration::from_secs(20));
+    let due_second =
+        Op::new(account, OpKind::Star, OpTarget::Thread(ThreadId::new()), Origin::Person)
+            .not_before(now - SignedDuration::from_secs(5));
+    let not_yet_due = Op::new(
+        account,
+        OpKind::Trash,
+        OpTarget::Thread(ThreadId::new()),
+        Origin::Assistant { conversation: "conv-1".into() },
+    )
+    .not_before(now + SignedDuration::from_secs(1_000));
+    for op in [&due_first, &due_second, &not_yet_due] {
+        m.enqueue_op(op).unwrap();
+    }
+
+    let due = m.due_ops(account, now, 10).unwrap();
+    assert_eq!(due.len(), 2, "the far-future op must not be due yet");
+    assert_eq!(due[0].id, due_first.id, "oldest not_before comes first");
+    assert_eq!(due[1].id, due_second.id);
+    assert_eq!(m.get_op(due_first.id).unwrap().id, due_first.id);
+
+    let assistants = m.ops_by_origin("assistant", 10).unwrap();
+    assert!(assistants.iter().any(|o| o.id == not_yet_due.id));
+    assert!(
+        assistants.iter().all(|o| o.id != due_first.id),
+        "a person's op is not assistant-origin"
+    );
+
+    // The earliest `not_before` among ops still `Pending` -- what the
+    // account task's `select!` sleeps until. The far-future op is included,
+    // since it is the earliest when nothing nearer is due yet. Compared by
+    // microsecond, the precision the clear column actually carries.
+    assert_eq!(
+        m.next_pending_op_at(account).unwrap().map(|t| t.as_microsecond()),
+        Some(due_first.not_before.as_microsecond()),
+        "the earliest not_before, due or not"
+    );
+
+    // Transitioning an op out of `Pending` takes it out of `due_ops` and out
+    // of `next_pending_op_at`, and into `in_flight_ops`.
+    let mut in_flight = due_first.clone();
+    in_flight.transition_to(OpState::InFlight).unwrap();
+    m.update_op(&in_flight).unwrap();
+    let due = m.due_ops(account, now, 10).unwrap();
+    assert_eq!(due.len(), 1, "an in-flight op is no longer pending-due");
+    assert_eq!(due[0].id, due_second.id);
+    assert_eq!(
+        m.next_pending_op_at(account).unwrap().map(|t| t.as_microsecond()),
+        Some(due_second.not_before.as_microsecond()),
+        "the in-flight op no longer counts"
+    );
+    let stranded = m.in_flight_ops(account).unwrap();
+    assert_eq!(stranded.len(), 1);
+    assert_eq!(stranded[0].id, due_first.id);
+
+    cleanup_account(store, account);
+}
+
+/// The optimistic-write half phase 3 adds: setting a message's flags or
+/// labels directly by id (not by `(mailbox, uid)`, the sync engine's own
+/// vocabulary), hiding and restoring a thread's place in one mailbox, and
+/// the snooze clock the minute scheduler reads.
+fn optimistic_writes_and_snooze_round_trip(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&inbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "optimistic", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: inbox.id, uid: 1 }])
+        .unwrap();
+
+    // Flags and labels, set directly by message id.
+    let mut flags = msg.flags;
+    flags.seen = true;
+    flags.flagged = true;
+    m.set_message_flags(msg.id, flags).unwrap();
+    let (_, messages) = m.thread(thread_id).unwrap();
+    assert!(messages[0].flags.seen && messages[0].flags.flagged);
+
+    m.set_message_labels(msg.id, vec!["Work".into()]).unwrap();
+    let (_, messages) = m.thread(thread_id).unwrap();
+    assert_eq!(messages[0].labels, vec!["Work".to_string()]);
+
+    // An invitation, set and cleared directly by message id -- phase 6's
+    // `respond_to_invite` writing back `my_response` without a resync.
+    let invite = Invite {
+        uid: "event@example.com".into(),
+        method: InviteMethod::Request,
+        summary: "Standup".into(),
+        start: Timestamp::now(),
+        end: Timestamp::now() + SignedDuration::from_mins(30),
+        all_day: false,
+        location: None,
+        organizer: Address::bare("organiser@example.com"),
+        attendees: Vec::new(),
+        my_response: None,
+        recurrence: None,
+    };
+    m.set_message_invite(msg.id, Some(invite.clone())).unwrap();
+    let (_, messages) = m.thread(thread_id).unwrap();
+    assert_eq!(messages[0].invite.as_ref().map(|i| &i.uid), Some(&invite.uid));
+
+    let mut answered = invite;
+    answered.my_response = Some(AttendeeResponse::Accepted);
+    m.set_message_invite(msg.id, Some(answered)).unwrap();
+    let (_, messages) = m.thread(thread_id).unwrap();
+    assert_eq!(
+        messages[0].invite.as_ref().and_then(|i| i.my_response),
+        Some(AttendeeResponse::Accepted)
+    );
+
+    m.set_message_invite(msg.id, None).unwrap();
+    let (_, messages) = m.thread(thread_id).unwrap();
+    assert!(messages[0].invite.is_none());
+
+    // A message id this store has never ingested is a no-op, not an error.
+    m.set_message_flags(MailMessageId::new(), MessageFlags::default()).unwrap();
+    m.set_message_labels(MailMessageId::new(), Vec::new()).unwrap();
+    m.set_message_invite(MailMessageId::new(), None).unwrap();
+
+    // Hiding a thread from a mailbox removes it from that mailbox's list
+    // without touching the durable `message_mailboxes` mapping, so
+    // restoring recomputes exactly what was hidden.
+    let page = m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert_eq!(page.threads.len(), 1);
+    m.hide_thread_from_mailbox(thread_id, inbox.id).unwrap();
+    let page = m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert!(page.threads.is_empty(), "archiving hides the thread from the inbox list");
+    m.restore_thread_mailboxes(thread_id).unwrap();
+    let page = m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert_eq!(page.threads.len(), 1, "restoring brings it back");
+
+    // Snoozing sets `Thread::snoozed_until`, and the thread appears in
+    // `due_snoozed_threads` once that moment has passed.
+    let now = Timestamp::now();
+    m.set_thread_snoozed_until(thread_id, Some(now + SignedDuration::from_secs(1))).unwrap();
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert!(thread.snoozed_until.is_some());
+    assert!(
+        m.due_snoozed_threads(now, 10).unwrap().is_empty(),
+        "not due until its own moment has passed"
+    );
+    let due = m.due_snoozed_threads(now + SignedDuration::from_secs(2), 10).unwrap();
+    assert!(due.contains(&thread_id));
+
+    m.set_thread_snoozed_until(thread_id, None).unwrap();
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert!(thread.snoozed_until.is_none(), "clearing releases the snooze");
+
+    cleanup_account(store, account);
+}
+
+fn draft_round_trips(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+
+    let mut draft =
+        Draft::new(account, "me@example.com", Origin::Assistant { conversation: "conv-9".into() });
+    draft.to = vec![Address::new("Someone", "someone@example.com")];
+    draft.subject = "A draft".into();
+    draft.body_html = "<p>Hello</p>".into();
+    m.put_draft(&draft).unwrap();
+
+    let listed = m.list_drafts(account).unwrap();
+    assert_eq!(listed, vec![draft.clone()]);
+    assert_eq!(m.get_draft(draft.id).unwrap(), draft);
+
+    m.delete_draft(draft.id).unwrap();
+    assert!(m.list_drafts(account).unwrap().is_empty());
+    m.delete_draft(draft.id).unwrap(); // deleting again is a no-op
+
+    cleanup_account(store, account);
+}
+
+fn a_uidvalidity_reset_forgets_uids_but_keeps_messages(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "survives a reset", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+    assert!(m.message_by_uid(mailbox.id, 1).unwrap().is_some());
+
+    m.reset_mailbox(mailbox.id).unwrap();
+
+    assert!(m.message_by_uid(mailbox.id, 1).unwrap().is_none(), "the uid mapping is forgotten");
+    assert!(m.uid_set(mailbox.id).unwrap().is_empty());
+
+    // The message itself, and its thread, survive: this is what lets a
+    // rematch by `Message-ID` re-attach it under a fresh uid.
+    let rematched = m
+        .message_by_message_id_header(account, &msg.message_id_header)
+        .unwrap()
+        .expect("a reset must not delete the message it is rematching");
+    assert_eq!(rematched.id, msg.id);
+
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 2 }])
+        .unwrap();
+    assert_eq!(m.message_by_uid(mailbox.id, 2).unwrap().unwrap().id, msg.id);
+
+    cleanup_account(store, account);
+}
+
+/// [`MailStore::merge_threads`]: every message in the threads being merged
+/// away lands in the kept thread, `thread_mailboxes` follows them, and the
+/// merged-away threads themselves are gone.
+fn merge_threads_migrates_messages_and_deletes_the_others(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let keep = ThreadId::new();
+    let other_a = ThreadId::new();
+    let other_b = ThreadId::new();
+    let msg_keep = message(account, keep, "Kept", "a@example.com", Timestamp::now());
+    let msg_a =
+        message(account, other_a, "Also this conversation", "b@example.com", Timestamp::now());
+    let msg_b = message(account, other_b, "Also this too", "c@example.com", Timestamp::now());
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: msg_keep.clone(), mailbox: mailbox.id, uid: 1 },
+            IngestMessage { message: msg_a.clone(), mailbox: mailbox.id, uid: 2 },
+            IngestMessage { message: msg_b.clone(), mailbox: mailbox.id, uid: 3 },
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        m.list_threads(mailbox.id, &ThreadFilter::default(), None, 10).unwrap().threads.len(),
+        3
+    );
+
+    m.merge_threads(keep, &[other_a, other_b]).unwrap();
+
+    let (thread, messages) = m.thread(keep).unwrap();
+    assert_eq!(thread.message_count, 3, "every message now lives under the kept thread");
+    let ids: Vec<_> = messages.iter().map(|msg| msg.id).collect();
+    assert!(ids.contains(&msg_keep.id) && ids.contains(&msg_a.id) && ids.contains(&msg_b.id));
+
+    assert!(m.thread(other_a).is_err(), "the merged-away thread must be gone");
+    assert!(m.thread(other_b).is_err());
+
+    let page = m.list_threads(mailbox.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert_eq!(page.threads.len(), 1, "thread_mailboxes must follow the merge, not just messages");
+    assert_eq!(page.threads[0].id, keep);
+
+    cleanup_account(store, account);
+}
+
+/// [`MailStore::pending_bodies`]: only the messages still carrying the
+/// pending sentinel come back, newest first, and a body already fetched --
+/// `pack.len != 0` -- is excluded even though it is in the same mailbox.
+fn pending_bodies_finds_only_unfetched_messages_newest_first(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let base = Timestamp::now();
+    let older_pending =
+        message(account, ThreadId::new(), "older, still pending", "a@example.com", base);
+    let newer_pending = message(
+        account,
+        ThreadId::new(),
+        "newer, still pending",
+        "a@example.com",
+        base + SignedDuration::from_secs(60),
+    );
+    let mut already_fetched =
+        message(account, ThreadId::new(), "already fetched", "a@example.com", base);
+    already_fetched.pack =
+        MailPackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 128 };
+
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: older_pending.clone(), mailbox: mailbox.id, uid: 1 },
+            IngestMessage { message: newer_pending.clone(), mailbox: mailbox.id, uid: 2 },
+            IngestMessage { message: already_fetched.clone(), mailbox: mailbox.id, uid: 3 },
+        ],
+    )
+    .unwrap();
+
+    let pending = m.pending_bodies(mailbox.id, 10).unwrap();
+    assert_eq!(pending.len(), 2, "the already-fetched message must be excluded");
+    assert_eq!(pending[0].0.id, newer_pending.id, "newest pending first");
+    assert_eq!(pending[0].1, 2, "with its own uid in this mailbox");
+    assert_eq!(pending[1].0.id, older_pending.id);
+    assert_eq!(pending[1].1, 1);
+    assert!(
+        pending.iter().all(|(msg, _)| msg.id != already_fetched.id),
+        "a body that already landed must never be reported pending"
+    );
+
+    let capped = m.pending_bodies(mailbox.id, 1).unwrap();
+    assert_eq!(capped.len(), 1);
+    assert_eq!(capped[0].0.id, newer_pending.id, "limit keeps the newest, not an arbitrary one");
+
+    cleanup_account(store, account);
+}
+
+fn account_delete_cascades_every_mail_row(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "cascade", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+    let body = Body {
+        message_id: msg.id,
+        html_sanitised: "<p>hi</p>".into(),
+        text: "hi".into(),
+        quoted_ranges: Vec::new(),
+        signature_range: None,
+        parts: Vec::new(),
+        remote_images: Vec::new(),
+    };
+    m.put_body(&body).unwrap();
+    let draft = Draft::new(account, "me@example.com", Origin::Person);
+    m.put_draft(&draft).unwrap();
+    let op = Op::new(account, OpKind::Archive, OpTarget::Thread(thread_id), Origin::Person);
+    m.enqueue_op(&op).unwrap();
+
+    store.accounts().unwrap().delete_account(account).unwrap();
+
+    assert!(m.list_mailboxes(account).unwrap().is_empty(), "the mailbox must not survive");
+    assert!(m.thread(thread_id).is_err(), "the thread must not survive");
+    assert!(m.get_body(msg.id).is_err(), "the body must not survive");
+    assert!(m.list_drafts(account).unwrap().is_empty(), "the draft must not survive");
+    assert!(
+        m.due_ops(account, Timestamp::now() + SignedDuration::from_secs(3_600), 10)
+            .unwrap()
+            .is_empty(),
+        "the op must not survive"
+    );
+    assert!(m.attachment_blob_refs().unwrap().is_empty());
+}
+
+/// Phase 7's split inbox: [`MailStore::category_rules`] starts empty,
+/// [`MailStore::set_message_category`] writes through to the thread it
+/// recomputes, and [`MailStore::recategorize`] both applies a correction to
+/// a message the rules alone got wrong and leaves alone one it already had
+/// right.
+fn category_rules_and_recategorize_round_trip(store: &dyn JournalStore) {
+    use crate::mail::{Category, CategoryMatch, CategoryRules};
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    assert_eq!(
+        m.category_rules(account).unwrap(),
+        CategoryRules::default(),
+        "no correction saved yet"
+    );
+
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+    let thread_id = ThreadId::new();
+    let mut msg =
+        message(account, thread_id, "Weekly digest", "weekly@example.com", Timestamp::now());
+    msg.category = Some(Category::Other);
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.category, Some(Category::Other), "a thread mirrors its message's category");
+
+    // A model's one-off answer: `set_message_category`, no correction saved.
+    m.set_message_category(msg.id, Category::Newsletter).unwrap();
+    assert_eq!(m.get_message(msg.id).unwrap().category, Some(Category::Newsletter));
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.category, Some(Category::Newsletter), "the thread follows the message");
+    assert_eq!(
+        m.category_rules(account).unwrap(),
+        CategoryRules::default(),
+        "a model's answer is not a standing correction"
+    );
+
+    // A person's correction: saved, and swept over the account's mail --
+    // through `correct_category`, not `recategorize`, since a correction is
+    // scoped to the sender it names; see
+    // [`correction_reaches_only_the_named_sender`] for that scoping proven
+    // directly.
+    let mut rules = m.category_rules(account).unwrap();
+    rules.set_sender("weekly@example.com", Category::Important);
+    m.put_category_rules(account, &rules).unwrap();
+    let changed = m
+        .correct_category(
+            account,
+            CategoryMatch::Sender("weekly@example.com".into()),
+            Category::Important,
+        )
+        .unwrap();
+    assert_eq!(changed, 1, "the one message from the corrected sender");
+    assert_eq!(m.get_message(msg.id).unwrap().category, Some(Category::Important));
+    assert_eq!(
+        m.category_rules(account).unwrap(),
+        rules,
+        "the saved correction round-trips through its sealed row"
+    );
+
+    // A person's correction is not a rules answer -- `recategorize`'s
+    // backfill must leave it exactly alone, on the same terms
+    // [`a_model_set_category_survives_the_backfill`] checks for a model's.
+    assert_eq!(
+        m.recategorize(account, &rules).unwrap(),
+        0,
+        "a person's own correction is not fair game for the rules backfill"
+    );
+}
+
+/// Regression for "one sender correction reshuffles the whole account": a
+/// correction on one sender must never reach a different sender's mail,
+/// however much the bare rules engine (fed no `List-Id`, since a stored
+/// [`Message`] keeps none -- see [`MailStore::recategorize`]'s own docs)
+/// would have disagreed with what that other message already carried.
+fn correction_reaches_only_the_named_sender(store: &dyn JournalStore) {
+    use crate::mail::{Category, CategoryMatch};
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    // Sender B: a newsletter, exactly as a fresh sync's `List-Id` header
+    // would have categorised it -- a signal `correct_category`'s own sweep
+    // never sees again, since a stored `Message` keeps no raw headers.
+    let thread_b = ThreadId::new();
+    let mut msg_b = message(account, thread_b, "Weekly digest", "b@example.com", Timestamp::now());
+    msg_b.category = Some(Category::Newsletter);
+    m.ingest(account, vec![IngestMessage { message: msg_b.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+
+    // Sender A: uncategorised, the one this correction actually names.
+    let thread_a = ThreadId::new();
+    let msg_a = message(account, thread_a, "Hello", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg_a.clone(), mailbox: mailbox.id, uid: 2 }])
+        .unwrap();
+
+    let changed = m
+        .correct_category(
+            account,
+            CategoryMatch::Sender("a@example.com".into()),
+            Category::Important,
+        )
+        .unwrap();
+    assert_eq!(changed, 1, "only sender A's message should have moved");
+    assert_eq!(m.get_message(msg_a.id).unwrap().category, Some(Category::Important));
+
+    // Sender B, never named by the correction, is untouched -- not
+    // reshuffled by a bare rules engine that, robbed of the `List-Id` it
+    // once had, would otherwise have disagreed with `Newsletter`.
+    assert_eq!(
+        m.get_message(msg_b.id).unwrap().category,
+        Some(Category::Newsletter),
+        "a correction on sender A must never reach sender B's mail"
+    );
+
+    cleanup_account(store, account);
+}
+
+/// Regression for "one sender correction reshuffles the whole account":
+/// `recategorize`'s explicit full backfill must never override a model's
+/// own answer, however much `rules` now disagrees with it.
+fn a_model_set_category_survives_the_backfill(store: &dyn JournalStore) {
+    use crate::mail::{Category, CategoryRules};
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "Hello", "model@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+
+    // The model's own one-off answer.
+    m.set_message_category(msg.id, Category::Important).unwrap();
+    assert_eq!(m.get_message(msg.id).unwrap().category, Some(Category::Important));
+
+    // A correction on this very sender, pointing the *other* way -- the
+    // backfill's own `rules` now flatly disagrees with the model's answer,
+    // and must still not act on it.
+    let mut rules = CategoryRules::default();
+    rules.set_sender("model@example.com", Category::Notification);
+    m.put_category_rules(account, &rules).unwrap();
+
+    let changed = m.recategorize(account, &rules).unwrap();
+    assert_eq!(changed, 0, "a model-set category is never the backfill's to touch");
+    assert_eq!(
+        m.get_message(msg.id).unwrap().category,
+        Some(Category::Important),
+        "the model's own answer must survive recategorize_mail's backfill"
+    );
+
+    cleanup_account(store, account);
+}
+
+/// Regression for "removing a large number of UIDs hits the parameter
+/// limit": before the fix, [`MailStore::remove_uids`] built one
+/// `uid IN (?2, ?3, ...)` with a parameter per uid, which fails past
+/// SQLite's 32,766-parameter limit and Postgres's 65,535 long before
+/// 40,000 uids. One thread for the whole batch, deliberately, so the cost
+/// this test pays is the removal's own chunking, not a hundred thousand
+/// separate `recompute_thread` calls a more realistic (one thread per
+/// message) shape would also exercise -- that shape already has its own,
+/// `#[ignore]`d benchmark in `everyday-store-sqlite::mail_scale`.
+fn removing_forty_thousand_uids_does_not_hit_the_parameter_limit(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    const N: u32 = 40_000;
+    let thread_id = ThreadId::new();
+    let base = Timestamp::now();
+    let ingest: Vec<IngestMessage> = (0..N)
+        .map(|i| {
+            let date = base + SignedDuration::from_micros(i64::from(i));
+            let msg = message(account, thread_id, "bulk", &format!("sender{i}@example.com"), date);
+            IngestMessage { message: msg, mailbox: mailbox.id, uid: i + 1 }
+        })
+        .collect();
+    m.ingest(account, ingest).unwrap();
+    assert_eq!(m.thread(thread_id).unwrap().0.message_count, N);
+
+    let uids: Vec<u32> = (1..=N).collect();
+    let removed = m.remove_uids(mailbox.id, &uids).unwrap();
+    assert_eq!(removed.len(), N as usize, "every message was filed nowhere else");
+    assert!(m.thread(thread_id).is_err(), "the thread must be gone with its last message");
+
+    cleanup_account(store, account);
+}
+
+/// The same regression as just above, for [`MailStore::delete_mailbox`]'s
+/// own `uid IN (...)` path through [`MailStore::remove_uids`]'s shared
+/// implementation.
+fn deleting_a_mailbox_with_forty_thousand_messages_does_not_hit_the_parameter_limit(
+    store: &dyn JournalStore,
+) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    const N: u32 = 40_000;
+    let thread_id = ThreadId::new();
+    let base = Timestamp::now();
+    let ingest: Vec<IngestMessage> = (0..N)
+        .map(|i| {
+            let date = base + SignedDuration::from_micros(i64::from(i));
+            let msg = message(account, thread_id, "bulk", &format!("sender{i}@example.com"), date);
+            IngestMessage { message: msg, mailbox: mailbox.id, uid: i + 1 }
+        })
+        .collect();
+    m.ingest(account, ingest).unwrap();
+
+    let removed = m.delete_mailbox(mailbox.id).unwrap();
+    assert_eq!(removed.len(), N as usize);
+    assert!(m.list_mailboxes(account).unwrap().is_empty());
+    assert!(m.thread(thread_id).is_err());
+
+    cleanup_account(store, account);
+}
+
+/// Regression for "archiving a thread doesn't survive a flag change":
+/// [`MailStore::hide_thread_from_mailbox`]'s marker must stop the
+/// per-thread `thread_mailboxes` recompute every ingest, flag and label
+/// write ends in from rebuilding the row it just deleted. `message_mailboxes`
+/// itself must *not* be touched: the outbox executor still needs the
+/// durable `(mailbox, uid)` to resolve the op against once it actually runs
+/// (see `everyday_service::outbox::VaultLookups` and
+/// `everyday_mail::outbox::archive`), which is why this is a marker
+/// suppressing a rebuild, not a second deletion.
+fn archiving_survives_a_later_flag_change(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&inbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "archive me", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: inbox.id, uid: 7 }])
+        .unwrap();
+
+    m.hide_thread_from_mailbox(thread_id, inbox.id).unwrap();
+    assert!(
+        m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap().threads.is_empty(),
+        "archiving hides the thread from the inbox list"
+    );
+    assert!(
+        m.message_by_uid(inbox.id, 7).unwrap().is_some(),
+        "the durable mailbox membership must survive the hide -- the outbox executor \
+         still needs it to resolve where on the server to act"
+    );
+    assert!(
+        m.message_locations(msg.id).unwrap().contains(&(inbox.id, 7)),
+        "and must still be resolvable by (mailbox, uid) for exactly that reason"
+    );
+
+    // Star it -- an ordinary flag change, Gmail's own "archive, then star"
+    // sequence this regression is named for.
+    let mut flags = msg.flags;
+    flags.flagged = true;
+    m.set_message_flags(msg.id, flags).unwrap();
+
+    assert!(
+        m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap().threads.is_empty(),
+        "a later flag change must not bring an archived thread back to the inbox"
+    );
+
+    cleanup_account(store, account);
+}
+
+/// Regression for the same finding's other half: a permanently failed
+/// archive's revert must bring the thread back to the mailbox it was hidden
+/// from -- clearing [`MailStore::hide_thread_from_mailbox`]'s marker and
+/// recomputing from a `message_mailboxes` mapping that was never touched,
+/// so the uid a revert needs is exactly the one still there.
+fn a_reverted_archive_restores_uid_membership(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&inbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "archive then revert", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: inbox.id, uid: 9 }])
+        .unwrap();
+
+    m.hide_thread_from_mailbox(thread_id, inbox.id).unwrap();
+    assert!(
+        m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap().threads.is_empty(),
+        "hidden ahead of the revert"
+    );
+
+    // The outbox's own revert path, on a permanent failure: exactly
+    // `Vault::revert_thread_op`'s `RestoreMailboxes` arm.
+    m.restore_thread_mailboxes(thread_id).unwrap();
+
+    let restored =
+        m.message_by_uid(inbox.id, 9).unwrap().expect("the uid membership must still be there");
+    assert_eq!(restored.id, msg.id);
+    let page = m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert_eq!(page.threads.len(), 1, "the thread must be back in the inbox list");
+    assert_eq!(page.threads[0].id, thread_id);
+
+    cleanup_account(store, account);
+}
+
+/// Regression for "removed messages are never marked dead in the pack
+/// store": [`MailStore::remove_uids`] must hand back the pack address of
+/// every message it made genuinely dead, and must not hand back one that is
+/// still filed under a different mailbox -- a Gmail label removed while
+/// another still holds the same physical message is not dead.
+fn remove_uids_returns_pack_refs_only_for_genuinely_dead_messages(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let label = Mailbox::new(account, "Work", MailboxRole::Other);
+    m.put_mailbox(&inbox).unwrap();
+    m.put_mailbox(&label).unwrap();
+
+    let mut solo = message(account, ThreadId::new(), "solo", "a@example.com", Timestamp::now());
+    solo.pack =
+        MailPackRef { account: account.to_string(), pack: PackId::new(), offset: 128, len: 512 };
+    let mut shared = message(account, ThreadId::new(), "shared", "b@example.com", Timestamp::now());
+    shared.pack =
+        MailPackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 256 };
+
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: solo.clone(), mailbox: inbox.id, uid: 1 },
+            IngestMessage { message: shared.clone(), mailbox: inbox.id, uid: 2 },
+            IngestMessage { message: shared.clone(), mailbox: label.id, uid: 2 },
+        ],
+    )
+    .unwrap();
+
+    // The shared message loses only one of its two mailboxes: not dead.
+    let removed = m.remove_uids(inbox.id, &[2]).unwrap();
+    assert!(
+        removed.is_empty(),
+        "a message still filed under another mailbox must not be reported dead"
+    );
+    assert!(m.message_by_uid(label.id, 2).unwrap().is_some(), "its other membership must survive");
+
+    // The solo message loses its only mailbox: genuinely dead.
+    let removed = m.remove_uids(inbox.id, &[1]).unwrap();
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0].0, solo.id);
+    assert_eq!(removed[0].1, solo.pack);
+
+    cleanup_account(store, account);
+}
+
+/// [`MailStore::delete_mailbox`] shares [`MailStore::remove_uids`]'s own
+/// "dead" contract -- see the regression just above -- for a mailbox
+/// deleted whole rather than uid by uid.
+fn deleting_a_mailbox_returns_pack_refs_for_its_dead_messages(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let mut msg =
+        message(account, thread_id, "gone with the mailbox", "a@example.com", Timestamp::now());
+    msg.pack =
+        MailPackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 64 };
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+
+    let removed = m.delete_mailbox(mailbox.id).unwrap();
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0].0, msg.id);
+    assert_eq!(removed[0].1, msg.pack);
+    assert!(m.list_mailboxes(account).unwrap().is_empty());
+    assert!(m.thread(thread_id).is_err(), "the thread must not survive its only mailbox going");
+
+    cleanup_account(store, account);
+}
+
+/// Not part of [`run_mail_suite`], for the reason
+/// [`library::garbage_collection_keeps_library_covers`](super::library::garbage_collection_keeps_library_covers)
+/// is not part of the library suite: it is a question about the *journal*
+/// store's [`JournalStore::collect_garbage`], not about mail's own trait.
+/// See [`crate::mail::PartRef::blob`] and `MailStore::attachment_blob_refs`
+/// for the walk this exercises.
+pub(super) fn garbage_collection_learns_about_mail_attachments(store: &dyn JournalStore) {
+    let Some(m) = store.mail() else { return };
+
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "attachment", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+
+    let attached = store.put_blob(b"a photograph nobody has opened yet").unwrap();
+    let orphan = store.put_blob(b"nobody's attachment").unwrap();
+
+    let body = Body {
+        message_id: msg.id,
+        html_sanitised: String::new(),
+        text: "see attached".into(),
+        quoted_ranges: Vec::new(),
+        signature_range: None,
+        parts: vec![PartRef {
+            cid: None,
+            filename: Some("photo.jpg".into()),
+            mime_type: "image/jpeg".into(),
+            size: 13,
+            blob: Some(attached),
+        }],
+        remote_images: Vec::new(),
+    };
+    m.put_body(&body).unwrap();
+
+    let removed = store.collect_garbage(std::time::Duration::ZERO).unwrap();
+    assert_eq!(removed, 1, "exactly the unreferenced blob should be collected");
+    assert!(
+        store.has_blob(attached).unwrap(),
+        "an attachment a body still names is a live reference"
+    );
+    assert!(!store.has_blob(orphan).unwrap());
+
+    // ...and it stops being one when the body goes -- via the account
+    // cascade, the only way a body is removed today.
+    store.accounts().unwrap().delete_account(account).unwrap();
+    assert_eq!(store.collect_garbage(std::time::Duration::ZERO).unwrap(), 1);
+    assert!(!store.has_blob(attached).unwrap(), "an attachment nothing points at is collectable");
+}
+
+/// An archived thread that receives a reply in the Inbox is shown there
+/// again: the hide covered the messages it was asked for, not the
+/// conversation for ever.
+fn a_reply_to_an_archived_thread_brings_it_back(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&inbox).unwrap();
+    let thread_id = ThreadId::new();
+    let first = message(account, thread_id, "Plans", "dana@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: first, mailbox: inbox.id, uid: 1 }]).unwrap();
+    m.hide_thread_from_mailbox(thread_id, inbox.id).unwrap();
+    assert!(inbox_threads(m, inbox.id).is_empty(), "archived");
+
+    let reply = message(account, thread_id, "Re: Plans", "dana@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: reply, mailbox: inbox.id, uid: 2 }]).unwrap();
+    assert_eq!(inbox_threads(m, inbox.id), vec![thread_id], "the reply brings it back");
+}
+
+/// Once sync removes the thread's membership in the mailbox it was hidden
+/// from -- the server move landed -- a later message arriving there is shown,
+/// because no marker is left to hide it.
+fn a_landed_archive_leaves_no_marker_behind(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&inbox).unwrap();
+    let thread_id = ThreadId::new();
+    let first = message(account, thread_id, "Plans", "dana@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: first.clone(), mailbox: inbox.id, uid: 1 }])
+        .unwrap();
+    m.hide_thread_from_mailbox(thread_id, inbox.id).unwrap();
+    // The archive reached the server; sync sees uid 1 vanish from the Inbox.
+    m.remove_uids(inbox.id, &[1]).unwrap();
+    // Re-filed later under a new uid, as a person moving it back would.
+    m.ingest(account, vec![IngestMessage { message: first, mailbox: inbox.id, uid: 7 }]).unwrap();
+    assert_eq!(inbox_threads(m, inbox.id), vec![thread_id]);
+}
+
+/// A message's `snippet` is empty until the body pass sets it -- `message()`
+/// builds one with `snippet: String::new()`, standing in for the headers-only
+/// row `sync_headers` first ingests. Re-ingesting the same message with its
+/// snippet filled in, the way `bodies_pass`'s own `process_body` does once a
+/// body has been parsed, is what `Thread::snippet` must pick up: `ingest`
+/// hands the freshly written `Message` back to `recompute_thread` as a hint,
+/// so this proves the body pass reaches a thread's own row without a second,
+/// dedicated write.
+fn a_snippet_appears_once_the_body_lands(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let mut msg = message(account, thread_id, "Hello", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+    assert_eq!(m.thread(thread_id).unwrap().0.snippet, "", "no body yet");
+
+    msg.snippet = "Just checking in about tomorrow".into();
+    m.ingest(account, vec![IngestMessage { message: msg, mailbox: mailbox.id, uid: 1 }]).unwrap();
+    assert_eq!(m.thread(thread_id).unwrap().0.snippet, "Just checking in about tomorrow");
+
+    cleanup_account(store, account);
+}
+
+/// [`MailStore::set_message_flags`] flagging, then unflagging, a message is
+/// what a star/unstar click does optimistically -- see
+/// `crate::mail::outbox::apply_optimistic`. `Thread::starred` must follow
+/// both moves, immediately, since that is what lets a star show on the row
+/// before the outbox op has reached a server at all.
+fn star_then_unstar_updates_the_thread(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "Star me", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+    assert!(!m.thread(thread_id).unwrap().0.starred, "not starred yet");
+
+    let mut flags = msg.flags;
+    flags.flagged = true;
+    m.set_message_flags(msg.id, flags).unwrap();
+    assert!(m.thread(thread_id).unwrap().0.starred, "starring flags the thread");
+
+    flags.flagged = false;
+    m.set_message_flags(msg.id, flags).unwrap();
+    assert!(!m.thread(thread_id).unwrap().0.starred, "unstarring clears it again");
+
+    cleanup_account(store, account);
+}
+
+/// A message ingested with [`Message::has_attachments`] set is what the body
+/// pass writes once `process_body` has found a part disposed as an
+/// attachment -- `Thread::has_attachments` must mirror it the same way
+/// `Thread::starred` mirrors a flag.
+fn an_attachment_flags_the_thread(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let mut msg = message(account, thread_id, "See attached", "a@example.com", Timestamp::now());
+    msg.has_attachments = true;
+    m.ingest(account, vec![IngestMessage { message: msg, mailbox: mailbox.id, uid: 1 }]).unwrap();
+
+    assert!(m.thread(thread_id).unwrap().0.has_attachments);
+
+    cleanup_account(store, account);
+}
+
+/// Removing the one starred message in a thread must clear
+/// [`Thread::starred`] -- a stale `true` left behind by a removal that never
+/// re-aggregated would show a star nothing in the thread justifies any more.
+fn removing_the_only_starred_message_clears_starred(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let starred = message(account, thread_id, "Starred", "a@example.com", Timestamp::now());
+    let plain = message(account, thread_id, "Plain", "b@example.com", Timestamp::now());
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: starred.clone(), mailbox: mailbox.id, uid: 1 },
+            IngestMessage { message: plain, mailbox: mailbox.id, uid: 2 },
+        ],
+    )
+    .unwrap();
+
+    let mut flags = starred.flags;
+    flags.flagged = true;
+    m.set_message_flags(starred.id, flags).unwrap();
+    assert!(m.thread(thread_id).unwrap().0.starred);
+
+    m.remove_uids(mailbox.id, &[1]).unwrap();
+    assert!(!m.thread(thread_id).unwrap().0.starred, "the only starred message is gone");
+
+    cleanup_account(store, account);
+}
+
+fn inbox_threads(m: &dyn MailStore, mailbox: MailboxId) -> Vec<ThreadId> {
+    m.list_threads(mailbox, &ThreadFilter::default(), None, 50)
+        .unwrap()
+        .threads
+        .into_iter()
+        .map(|t| t.id)
+        .collect()
+}

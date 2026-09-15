@@ -7,11 +7,18 @@
 //   npm --prefix ui run gen:api
 
 import type {
+  Account,
+  AccountId,
+  AccountView,
   AddedItem,
+  AgentCallerKind,
+  AgentMailAccess,
   AgentMessage,
   AgentSettings,
   ArchiveManifest,
+  AwaitedSignIn,
   BalanceReport,
+  BegunSignIn,
   BlockId,
   BlockKind,
   BlockQuery,
@@ -23,6 +30,8 @@ import type {
   Conversation,
   ConversationId,
   ConversationSummary,
+  Draft,
+  DraftId,
   Entry,
   EntryId,
   EntryQuery,
@@ -52,12 +61,22 @@ import type {
   LogEvent,
   LogId,
   LogQuery,
+  MailActionByOrigin,
+  MailAddress,
+  MailAttachment,
+  MailCategory,
+  MailMessageId,
+  MailProviderInfo,
+  MailSyncProgress,
+  Mailbox,
+  MailboxId,
   Memory,
   MemoryId,
   Note,
   NoteId,
   NoteQuery,
   NoteSummary,
+  Op,
   PartInfo,
   Profile,
   Project,
@@ -76,6 +95,9 @@ import type {
   Reading,
   ReadingId,
   ReadingQuery,
+  RecategorizeResult,
+  RemoteCalendarInfo,
+  RemoteImageSettings,
   Role,
   RoleId,
   RoleInfo,
@@ -87,6 +109,7 @@ import type {
   RunQuery,
   SearchHit,
   SearchKind,
+  SearchMailResult,
   SearchRequest,
   SearchResult,
   SourceInfo,
@@ -100,6 +123,11 @@ import type {
   TaskStats,
   TaskStatus,
   Template,
+  ThreadDetail,
+  ThreadFilter,
+  ThreadId,
+  ThreadPage,
+  ThreadSummary,
   TimeBlock,
   ToolInfo,
   Tracker,
@@ -114,15 +142,39 @@ export const PROTOCOL = 1
 
 /** What each command takes and gives back. */
 export interface Commands {
+  accountPresets: { args: Record<string, never>; result: MailProviderInfo[] }
   addItem: { args: { kindId: KindId; title: string; lookup: boolean }; result: AddedItem }
   agentSettings: { args: Record<string, never>; result: AgentSettings }
+  allowRemoteImages: {
+    args: { sender?: string | null; domain?: string | null; messageId?: MailMessageId | null }
+    result: void
+  }
   applyMetadata: { args: { id: ItemId; result: SearchResult; overwrite: boolean }; result: Item }
+  archive: { args: { threads: ThreadId[] }; result: Op[] }
+  attachOauthSignIn: {
+    args: { id: AccountId; signInId: string; clientSecret?: string }
+    result: void
+  }
+  awaitOauthSignIn: { args: { signInId: string }; result: AwaitedSignIn }
+  beginOauthSignIn: {
+    args: {
+      authUrl: string
+      tokenUrl: string
+      clientId: string
+      clientSecret?: string
+      scopes: string[]
+      loginHint?: string
+    }
+    result: BegunSignIn
+  }
   calendarProviders: { args: Record<string, never>; result: ProviderInfo[] }
+  cancelOauthSignIn: { args: { signInId: string }; result: void }
   changePassword: { args: { current: string; next: string }; result: void }
   clearAgentKey: { args: Record<string, never>; result: void }
   collectGarbage: { args: Record<string, never>; result: number }
   confirmToolCall: { args: { callId: string; approved: boolean }; result: boolean }
   conversationMessages: { args: { id: ConversationId }; result: AgentMessage[] }
+  deleteAccount: { args: { id: AccountId }; result: void }
   deleteBlock: { args: { id: BlockId }; result: void }
   deleteCalendar: { args: { id: CalendarId }; result: void }
   deleteConversation: { args: { id: ConversationId }; result: void }
@@ -141,10 +193,13 @@ export interface Commands {
   deleteRun: { args: { id: RoutineRunId }; result: void }
   deleteTask: { args: { id: TaskId }; result: void }
   deleteTracker: { args: { id: TrackerId }; result: number }
+  discardDraft: { args: { id: DraftId }; result: void }
   endExport: { args: { handle: string }; result: void }
   endImport: { args: { handle: string }; result: void }
+  fetchAttachment: { args: { messageId: MailMessageId; index: number }; result: MailAttachment }
   fetchImage: { args: { url: string }; result: string }
   flush: { args: Record<string, never>; result: void }
+  getAccount: { args: { id: AccountId }; result: AccountView }
   getEntry: { args: { id: EntryId }; result: Entry }
   getEvent: { args: { id: EventId }; result: CalendarEvent }
   getGoal: { args: { id: GoalId }; result: Goal }
@@ -152,12 +207,16 @@ export interface Commands {
   getNote: { args: { id: NoteId }; result: Note }
   getRun: { args: { id: RoutineRunId }; result: RoutineRun }
   getTask: { args: { id: TaskId }; result: Task }
+  getThread: { args: { id: ThreadId }; result: ThreadDetail }
   goalActivity: { args: { id: GoalId }; result: GoalActivity }
   importCalendar: {
     args: { name: string; label: string; color: string; ics: string }
     result: CalendarInfo
   }
+  label: { args: { threads: ThreadId[]; label: string }; result: Op[] }
   libraryStats: { args: Record<string, never>; result: LibraryStats }
+  listAccountCalendars: { args: { account: AccountId }; result: RemoteCalendarInfo[] }
+  listAccounts: { args: Record<string, never>; result: AccountView[] }
   listBlocks: { args: { query: BlockQuery }; result: TimeBlock[] }
   listCalendars: { args: Record<string, never>; result: CalendarInfo[] }
   listCommands: { args: Record<string, never>; result: Surface }
@@ -165,6 +224,7 @@ export interface Commands {
     args: { limit?: number | null; includeRuns?: boolean }
     result: ConversationSummary[]
   }
+  listDrafts: { args: { account: AccountId }; result: Draft[] }
   listEntries: { args: { query: EntryQuery }; result: EntrySummary[] }
   listEvents: { args: { query: EventQuery }; result: CalendarEvent[] }
   listGoals: { args: { query: GoalQuery }; result: Goal[] }
@@ -172,16 +232,27 @@ export interface Commands {
   listJournals: { args: Record<string, never>; result: Journal[] }
   listKinds: { args: Record<string, never>; result: KindInfo[] }
   listLogs: { args: { query: LogQuery }; result: LogEntry[] }
+  listMailboxes: { args: { account: AccountId }; result: Mailbox[] }
   listMemories: { args: Record<string, never>; result: Memory[] }
   listNotes: { args: { query?: NoteQuery }; result: NoteSummary[] }
   listParts: { args: Record<string, never>; result: PartInfo[] }
   listProjects: { args: Record<string, never>; result: Project[] }
   listReadings: { args: { query: ReadingQuery }; result: Reading[] }
+  listRemoteImageAllowances: { args: Record<string, never>; result: RemoteImageSettings }
   listRoles: { args: Record<string, never>; result: RoleInfo[] }
   listRoutines: { args: Record<string, never>; result: RoutineInfo[] }
   listRuns: { args: { query?: RunQuery }; result: RoutineRun[] }
   listTags: { args: Record<string, never>; result: string[] }
   listTasks: { args: { query: TaskQuery }; result: Task[] }
+  listThreads: {
+    args: {
+      mailbox: MailboxId
+      filter?: ThreadFilter
+      cursor?: string | null
+      limit?: number | null
+    }
+    result: ThreadPage
+  }
   listTools: { args: Record<string, never>; result: ToolInfo[] }
   listTrackers: { args: Record<string, never>; result: Tracker[] }
   lock: { args: Record<string, never>; result: VaultStatus }
@@ -200,13 +271,29 @@ export interface Commands {
     args: { kindId: KindId; query: string; limit?: number | null }
     result: SearchResult[]
   }
+  mailActionsByOrigin: {
+    args: { kind: string; limit?: number | null; cursor?: string | null }
+    result: MailActionByOrigin[]
+  }
+  markRead: { args: { threads: ThreadId[] }; result: Op[] }
   markRunsSeen: { args: { ids?: RoutineRunId[] }; result: void }
+  markUnread: { args: { threads: ThreadId[] }; result: Op[] }
   mergeTrackers: { args: { from: TrackerId; into: TrackerId }; result: number }
+  moveToMailbox: { args: { threads: ThreadId[]; to: MailboxId }; result: Op[] }
   newBlock: {
     args: { subject: BlockSubject; start: string; minutes: number; kind?: BlockKind | null }
     result: TimeBlock
   }
   newConversation: { args: Record<string, never>; result: Conversation }
+  newDraft: {
+    args: {
+      account: AccountId
+      inReplyTo?: MailMessageId | null
+      forwardOf?: MailMessageId | null
+      replyAll?: boolean | null
+    }
+    result: Draft
+  }
   newEntry: { args: { journalId: JournalId }; result: Entry }
   newGoal: { args: { roleId: RoleId; title: string }; result: Goal }
   newJournal: { args: { name: string }; result: Journal }
@@ -262,6 +349,16 @@ export interface Commands {
   quickWeekNote: { args: { thisWeek: string; lastWeek?: string }; result: string }
   readExport: { args: { handle: string; offset: number }; result: ExportChunk }
   readImport: { args: { handle: string }; result: ArchiveManifest }
+  rebuildMailIndex: { args: { id?: AccountId }; result: void }
+  recategorizeMail: { args: { account?: AccountId | null }; result: RecategorizeResult }
+  respondToInvite: {
+    args: { messageId: MailMessageId; response: string; comment?: string | null }
+    result: void
+  }
+  revokeRemoteImageAllowance: {
+    args: { sender?: string | null; domain?: string | null }
+    result: void
+  }
   routineTemplates: { args: Record<string, never>; result: Template[] }
   runImport: { args: { handle: string; parts: string[]; mode: string }; result: ImportResult }
   runRoutine: { args: { id: RoutineId }; result: RoutineRun }
@@ -269,9 +366,12 @@ export interface Commands {
     args: { name: string; arguments?: unknown; confirmDestructive?: boolean }
     result: unknown
   }
+  saveAccount: { args: { account: Account }; result: void }
+  saveAccountPassword: { args: { id: AccountId; password: string }; result: void }
   saveAgentSettings: { args: { settings: AgentSettings }; result: AgentSettings }
   saveBlock: { args: { block: TimeBlock }; result: void }
   saveCalendar: { args: { calendar: Calendar }; result: void }
+  saveDraft: { args: { draft: Draft }; result: void }
   saveEntry: { args: { entry: Entry; expect?: string | null }; result: void }
   saveEntryForce: { args: { entry: Entry }; result: void }
   saveGoal: { args: { goal: Goal }; result: void }
@@ -296,10 +396,27 @@ export interface Commands {
     args: { query: string; journalId?: JournalId | null; kind?: SearchKind | null; limit: number }
     result: SearchHit[]
   }
+  searchMail: {
+    args: {
+      query: string
+      accountIds?: AccountId[] | null
+      cursor?: string | null
+      limit?: number | null
+    }
+    result: SearchMailResult
+  }
   searchSources: { args: Record<string, never>; result: SourceInfo[] }
   seedRoles: { args: Record<string, never>; result: number }
+  sendDraft: {
+    args: { id: DraftId; delaySeconds?: number | null; sendAt?: string | null }
+    result: Draft
+  }
   sendMessage: {
     args: { conversationId: ConversationId; prompt: string; context?: string | null }
+    result: void
+  }
+  setAgentAccess: {
+    args: { id: AccountId; caller: AgentCallerKind; access: AgentMailAccess }
     result: void
   }
   setAgentKey: { args: { key: string }; result: void }
@@ -311,19 +428,32 @@ export interface Commands {
   }
   setItemStatus: { args: { id: ItemId; status: ItemStatus; log: boolean }; result: Item }
   setQuickJob: { args: { name: string; on: boolean }; result: QuickJobRow[] }
+  setThreadCategory: { args: { threads: ThreadId[]; category: MailCategory }; result: void }
+  snooze: { args: { threads: ThreadId[]; until: string }; result: Op[] }
+  star: { args: { threads: ThreadId[] }; result: Op[] }
   startExport: { args: { parts?: string[]; media?: boolean }; result: ExportHandle }
   startImport: { args: { name?: string; bytes: number }; result: ImportUpload }
   status: { args: Record<string, never>; result: VaultStatus }
+  subscribeAccountCalendar: { args: { account: AccountId; remoteId: string }; result: CalendarInfo }
   subscribeCalendar: { args: { name: string; url: string; color: string }; result: CalendarInfo }
+  suggestAddresses: { args: { prefix: string; limit?: number | null }; result: MailAddress[] }
+  summarizeThread: { args: { id: ThreadId }; result: ThreadSummary }
+  syncAccount: { args: { id: AccountId }; result: void }
   syncCalendar: { args: { id: CalendarId }; result: SyncReport }
   syncDueCalendars: { args: { force: boolean }; result: SyncReport[] }
+  syncStatus: { args: Record<string, never>; result: MailSyncProgress[] }
   taskStats: { args: Record<string, never>; result: TaskStats }
   taskTags: { args: Record<string, never>; result: TagCount[] }
   timeByPurpose: { args: { from: string; to: string }; result: BalanceReport }
   touch: { args: Record<string, never>; result: void }
   trackerDays: { args: { query: ReadingQuery }; result: TrackerDay[] }
+  trash: { args: { threads: ThreadId[] }; result: Op[] }
+  undoSend: { args: { draftId: DraftId }; result: Draft }
+  unlabel: { args: { threads: ThreadId[]; label: string }; result: Op[] }
   unlock: { args: { password: string }; result: VaultStatus }
   unseenRuns: { args: Record<string, never>; result: number }
+  unsnooze: { args: { threads: ThreadId[] }; result: void }
+  unstar: { args: { threads: ThreadId[] }; result: Op[] }
   vaultStats: { args: Record<string, never>; result: StoreStats }
   verifyPassword: { args: { password: string }; result: void }
   webSearch: { args: { request: SearchRequest }; result: SearchResult[] }
@@ -332,15 +462,23 @@ export interface Commands {
 
 /** The name each method sends over the wire. */
 export const COMMAND_NAMES = {
+  accountPresets: 'account_presets',
   addItem: 'add_item',
   agentSettings: 'agent_settings',
+  allowRemoteImages: 'allow_remote_images',
   applyMetadata: 'apply_metadata',
+  archive: 'archive',
+  attachOauthSignIn: 'attach_oauth_sign_in',
+  awaitOauthSignIn: 'await_oauth_sign_in',
+  beginOauthSignIn: 'begin_oauth_sign_in',
   calendarProviders: 'calendar_providers',
+  cancelOauthSignIn: 'cancel_oauth_sign_in',
   changePassword: 'change_password',
   clearAgentKey: 'clear_agent_key',
   collectGarbage: 'collect_garbage',
   confirmToolCall: 'confirm_tool_call',
   conversationMessages: 'conversation_messages',
+  deleteAccount: 'delete_account',
   deleteBlock: 'delete_block',
   deleteCalendar: 'delete_calendar',
   deleteConversation: 'delete_conversation',
@@ -359,10 +497,13 @@ export const COMMAND_NAMES = {
   deleteRun: 'delete_run',
   deleteTask: 'delete_task',
   deleteTracker: 'delete_tracker',
+  discardDraft: 'discard_draft',
   endExport: 'end_export',
   endImport: 'end_import',
+  fetchAttachment: 'fetch_attachment',
   fetchImage: 'fetch_image',
   flush: 'flush',
+  getAccount: 'get_account',
   getEntry: 'get_entry',
   getEvent: 'get_event',
   getGoal: 'get_goal',
@@ -370,13 +511,18 @@ export const COMMAND_NAMES = {
   getNote: 'get_note',
   getRun: 'get_run',
   getTask: 'get_task',
+  getThread: 'get_thread',
   goalActivity: 'goal_activity',
   importCalendar: 'import_calendar',
+  label: 'label',
   libraryStats: 'library_stats',
+  listAccountCalendars: 'list_account_calendars',
+  listAccounts: 'list_accounts',
   listBlocks: 'list_blocks',
   listCalendars: 'list_calendars',
   listCommands: 'list_commands',
   listConversations: 'list_conversations',
+  listDrafts: 'list_drafts',
   listEntries: 'list_entries',
   listEvents: 'list_events',
   listGoals: 'list_goals',
@@ -384,25 +530,33 @@ export const COMMAND_NAMES = {
   listJournals: 'list_journals',
   listKinds: 'list_kinds',
   listLogs: 'list_logs',
+  listMailboxes: 'list_mailboxes',
   listMemories: 'list_memories',
   listNotes: 'list_notes',
   listParts: 'list_parts',
   listProjects: 'list_projects',
   listReadings: 'list_readings',
+  listRemoteImageAllowances: 'list_remote_image_allowances',
   listRoles: 'list_roles',
   listRoutines: 'list_routines',
   listRuns: 'list_runs',
   listTags: 'list_tags',
   listTasks: 'list_tasks',
+  listThreads: 'list_threads',
   listTools: 'list_tools',
   listTrackers: 'list_trackers',
   lock: 'lock',
   logReading: 'log_reading',
   lookupMetadata: 'lookup_metadata',
+  mailActionsByOrigin: 'mail_actions_by_origin',
+  markRead: 'mark_read',
   markRunsSeen: 'mark_runs_seen',
+  markUnread: 'mark_unread',
   mergeTrackers: 'merge_trackers',
+  moveToMailbox: 'move_to_mailbox',
   newBlock: 'new_block',
   newConversation: 'new_conversation',
+  newDraft: 'new_draft',
   newEntry: 'new_entry',
   newGoal: 'new_goal',
   newJournal: 'new_journal',
@@ -443,13 +597,20 @@ export const COMMAND_NAMES = {
   quickWeekNote: 'quick_week_note',
   readExport: 'read_export',
   readImport: 'read_import',
+  rebuildMailIndex: 'rebuild_mail_index',
+  recategorizeMail: 'recategorize_mail',
+  respondToInvite: 'respond_to_invite',
+  revokeRemoteImageAllowance: 'revoke_remote_image_allowance',
   routineTemplates: 'routine_templates',
   runImport: 'run_import',
   runRoutine: 'run_routine',
   runTool: 'run_tool',
+  saveAccount: 'save_account',
+  saveAccountPassword: 'save_account_password',
   saveAgentSettings: 'save_agent_settings',
   saveBlock: 'save_block',
   saveCalendar: 'save_calendar',
+  saveDraft: 'save_draft',
   saveEntry: 'save_entry',
   saveEntryForce: 'save_entry_force',
   saveGoal: 'save_goal',
@@ -471,28 +632,44 @@ export const COMMAND_NAMES = {
   saveTasks: 'save_tasks',
   saveTracker: 'save_tracker',
   search: 'search',
+  searchMail: 'search_mail',
   searchSources: 'search_sources',
   seedRoles: 'seed_roles',
+  sendDraft: 'send_draft',
   sendMessage: 'send_message',
+  setAgentAccess: 'set_agent_access',
   setAgentKey: 'set_agent_key',
   setAutoLock: 'set_auto_lock',
   setForgetKey: 'set_forget_key',
   setItemProgress: 'set_item_progress',
   setItemStatus: 'set_item_status',
   setQuickJob: 'set_quick_job',
+  setThreadCategory: 'set_thread_category',
+  snooze: 'snooze',
+  star: 'star',
   startExport: 'start_export',
   startImport: 'start_import',
   status: 'status',
+  subscribeAccountCalendar: 'subscribe_account_calendar',
   subscribeCalendar: 'subscribe_calendar',
+  suggestAddresses: 'suggest_addresses',
+  summarizeThread: 'summarize_thread',
+  syncAccount: 'sync_account',
   syncCalendar: 'sync_calendar',
   syncDueCalendars: 'sync_due_calendars',
+  syncStatus: 'sync_status',
   taskStats: 'task_stats',
   taskTags: 'task_tags',
   timeByPurpose: 'time_by_purpose',
   touch: 'touch',
   trackerDays: 'tracker_days',
+  trash: 'trash',
+  undoSend: 'undo_send',
+  unlabel: 'unlabel',
   unlock: 'unlock',
   unseenRuns: 'unseen_runs',
+  unsnooze: 'unsnooze',
+  unstar: 'unstar',
   vaultStats: 'vault_stats',
   verifyPassword: 'verify_password',
   webSearch: 'web_search',
@@ -511,15 +688,23 @@ export const COMMAND_NAMES = {
  * cannot drift out of step with the Rust.
  */
 export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
+  'account_presets',
   'add_item',
   'agent_settings',
+  'allow_remote_images',
   'apply_metadata',
+  'archive',
+  'attach_oauth_sign_in',
+  'await_oauth_sign_in',
+  'begin_oauth_sign_in',
   'calendar_providers',
+  'cancel_oauth_sign_in',
   'change_password',
   'clear_agent_key',
   'collect_garbage',
   'confirm_tool_call',
   'conversation_messages',
+  'delete_account',
   'delete_block',
   'delete_calendar',
   'delete_conversation',
@@ -538,10 +723,13 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_run',
   'delete_task',
   'delete_tracker',
+  'discard_draft',
   'end_export',
   'end_import',
+  'fetch_attachment',
   'fetch_image',
   'flush',
+  'get_account',
   'get_entry',
   'get_event',
   'get_goal',
@@ -549,13 +737,18 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'get_note',
   'get_run',
   'get_task',
+  'get_thread',
   'goal_activity',
   'import_calendar',
+  'label',
   'library_stats',
+  'list_account_calendars',
+  'list_accounts',
   'list_blocks',
   'list_calendars',
   'list_commands',
   'list_conversations',
+  'list_drafts',
   'list_entries',
   'list_events',
   'list_goals',
@@ -563,25 +756,33 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_journals',
   'list_kinds',
   'list_logs',
+  'list_mailboxes',
   'list_memories',
   'list_notes',
   'list_parts',
   'list_projects',
   'list_readings',
+  'list_remote_image_allowances',
   'list_roles',
   'list_routines',
   'list_runs',
   'list_tags',
   'list_tasks',
+  'list_threads',
   'list_tools',
   'list_trackers',
   'lock',
   'log_reading',
   'lookup_metadata',
+  'mail_actions_by_origin',
+  'mark_read',
   'mark_runs_seen',
+  'mark_unread',
   'merge_trackers',
+  'move_to_mailbox',
   'new_block',
   'new_conversation',
+  'new_draft',
   'new_entry',
   'new_goal',
   'new_journal',
@@ -622,13 +823,20 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'quick_week_note',
   'read_export',
   'read_import',
+  'rebuild_mail_index',
+  'recategorize_mail',
+  'respond_to_invite',
+  'revoke_remote_image_allowance',
   'routine_templates',
   'run_import',
   'run_routine',
   'run_tool',
+  'save_account',
+  'save_account_password',
   'save_agent_settings',
   'save_block',
   'save_calendar',
+  'save_draft',
   'save_entry',
   'save_entry_force',
   'save_goal',
@@ -650,27 +858,43 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_tasks',
   'save_tracker',
   'search',
+  'search_mail',
   'search_sources',
   'seed_roles',
+  'send_draft',
+  'set_agent_access',
   'set_agent_key',
   'set_auto_lock',
   'set_forget_key',
   'set_item_progress',
   'set_item_status',
   'set_quick_job',
+  'set_thread_category',
+  'snooze',
+  'star',
   'start_export',
   'start_import',
   'status',
+  'subscribe_account_calendar',
   'subscribe_calendar',
+  'suggest_addresses',
+  'summarize_thread',
+  'sync_account',
   'sync_calendar',
   'sync_due_calendars',
+  'sync_status',
   'task_stats',
   'task_tags',
   'time_by_purpose',
   'touch',
   'tracker_days',
+  'trash',
+  'undo_send',
+  'unlabel',
   'unlock',
   'unseen_runs',
+  'unsnooze',
+  'unstar',
   'vault_stats',
   'verify_password',
   'web_search',
@@ -686,11 +910,17 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
  */
 export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'add_item',
+  'allow_remote_images',
   'apply_metadata',
+  'archive',
+  'attach_oauth_sign_in',
+  'begin_oauth_sign_in',
+  'cancel_oauth_sign_in',
   'change_password',
   'clear_agent_key',
   'collect_garbage',
   'confirm_tool_call',
+  'delete_account',
   'delete_block',
   'delete_calendar',
   'delete_conversation',
@@ -709,20 +939,34 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_run',
   'delete_task',
   'delete_tracker',
+  'discard_draft',
+  'fetch_attachment',
   'fetch_image',
   'flush',
   'import_calendar',
+  'label',
   'lock',
   'log_reading',
+  'mark_read',
   'mark_runs_seen',
+  'mark_unread',
   'merge_trackers',
+  'move_to_mailbox',
+  'new_draft',
   'poll_auto_lock',
+  'rebuild_mail_index',
+  'recategorize_mail',
+  'respond_to_invite',
+  'revoke_remote_image_allowance',
   'run_import',
   'run_routine',
   'run_tool',
+  'save_account',
+  'save_account_password',
   'save_agent_settings',
   'save_block',
   'save_calendar',
+  'save_draft',
   'save_entry',
   'save_entry_force',
   'save_goal',
@@ -744,27 +988,43 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_tasks',
   'save_tracker',
   'seed_roles',
+  'send_draft',
   'send_message',
+  'set_agent_access',
   'set_agent_key',
   'set_auto_lock',
   'set_forget_key',
   'set_item_progress',
   'set_item_status',
   'set_quick_job',
+  'set_thread_category',
+  'snooze',
+  'star',
+  'subscribe_account_calendar',
   'subscribe_calendar',
+  'sync_account',
   'sync_calendar',
   'sync_due_calendars',
   'touch',
+  'trash',
+  'undo_send',
+  'unlabel',
   'unlock',
+  'unsnooze',
+  'unstar',
   'verify_password',
 ])
 
 /** What a listener should reload after a command succeeds. */
 export const CHANGE_KINDS = {
   add_item: 'item',
+  allow_remote_images: 'settings',
   apply_metadata: 'item',
+  archive: 'thread',
+  attach_oauth_sign_in: 'account',
   change_password: 'settings',
   clear_agent_key: 'settings',
+  delete_account: 'account',
   delete_block: 'block',
   delete_calendar: 'calendar',
   delete_conversation: 'conversation',
@@ -783,14 +1043,24 @@ export const CHANGE_KINDS = {
   delete_run: 'routineRun',
   delete_task: 'task',
   delete_tracker: 'tracker',
+  discard_draft: 'draft',
   import_calendar: 'calendar',
+  label: 'thread',
   log_reading: 'reading',
+  mark_read: 'thread',
   mark_runs_seen: 'routineRun',
+  mark_unread: 'thread',
   merge_trackers: 'tracker',
+  move_to_mailbox: 'thread',
+  new_draft: 'draft',
+  revoke_remote_image_allowance: 'settings',
   run_routine: 'routineRun',
+  save_account: 'account',
+  save_account_password: 'account',
   save_agent_settings: 'settings',
   save_block: 'block',
   save_calendar: 'calendar',
+  save_draft: 'draft',
   save_entry: 'entry',
   save_entry_force: 'entry',
   save_goal: 'goal',
@@ -812,16 +1082,27 @@ export const CHANGE_KINDS = {
   save_tasks: 'task',
   save_tracker: 'tracker',
   seed_roles: 'role',
+  send_draft: 'draft',
   send_message: 'conversation',
+  set_agent_access: 'account',
   set_agent_key: 'settings',
   set_auto_lock: 'settings',
   set_forget_key: 'settings',
   set_item_progress: 'item',
   set_item_status: 'item',
   set_quick_job: 'settings',
+  set_thread_category: 'thread',
+  snooze: 'thread',
+  star: 'thread',
+  subscribe_account_calendar: 'calendar',
   subscribe_calendar: 'calendar',
   sync_calendar: 'event',
   sync_due_calendars: 'event',
+  trash: 'thread',
+  undo_send: 'draft',
+  unlabel: 'thread',
+  unsnooze: 'thread',
+  unstar: 'thread',
 } as const
 
 /**

@@ -100,12 +100,34 @@ pub async fn tick(service: &Arc<Service>) {
         return;
     }
     if vault.forget_key_if_idle() {
-        service.locked();
+        service.locked().await;
         return;
     }
     // A second copy of the application holds the write claim. Reading is
     // fine and writing is not, and every routine writes something.
-    if !vault.is_writable() || !vault.supports_routines() {
+    if !vault.is_writable() {
+        return;
+    }
+
+    // Snoozed threads whose moment has passed, back to the inbox -- the
+    // minute scheduler's hook `docs/plans/mail.md`'s phase 3 section asks
+    // for, independent of whether this vault has routines at all. Errors are
+    // logged rather than propagated: a mail-less vault answers `Ok(0)`
+    // immediately (`Service::get`/`is_writable` are the only reads it does),
+    // and a real failure here should not also cost this tick its routines.
+    if let Err(e) = crate::outbox::release_due_snoozes(service).await {
+        tracing::warn!(error = %e, "could not release due snoozes");
+    }
+
+    // The two model-assisted mail features that run unasked, on their own
+    // schedule rather than a tool call's -- see `crate::mailai`'s module
+    // docs for why neither is a tool, and why each keeps its own per-minute
+    // budget rather than sharing `check_mail_rate_limit`'s. Both are no-ops,
+    // cheaply, on every account that has not turned them on.
+    crate::mailai::categorize_tick(service).await;
+    crate::mailai::auto_draft_tick(service).await;
+
+    if !vault.supports_routines() {
         return;
     }
 
@@ -543,6 +565,7 @@ async fn resume(
     // happens, including a timeout.
     service.set_running_routine(Some(routine.name.clone()));
     let turn = Turn {
+        service: service.clone(),
         vault: vault.clone(),
         pending: service.pending(),
         conversation: conversation.id,
@@ -580,11 +603,17 @@ async fn resume(
     // yesterday's list after the morning brief had written into it: the run
     // appeared in the Assistant app and the note it made appeared nowhere
     // until somebody switched apps.
-    for kind in wrote {
+    for (kind, ids) in wrote {
+        // One or the other, never both -- see `Change`'s own contract.
+        let (id, ids) = match ids.len() {
+            1 => (Some(ids.into_iter().next().expect("len 1")), Vec::new()),
+            _ => (None, ids),
+        };
         service.events().changed(Change {
             kind,
             op: Op::Updated,
-            id: None,
+            id,
+            ids,
             origin: Some("assistant".to_string()),
         });
     }
@@ -697,6 +726,7 @@ fn run_change() -> Change {
         kind: Kind::RoutineRun,
         op: Op::Updated,
         id: None,
+        ids: Vec::new(),
         origin: Some("assistant".to_string()),
     }
 }

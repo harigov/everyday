@@ -74,6 +74,7 @@
 //! inside the sealed journal record, which made a tracker belong to one
 //! journal — see [`Journal::shown_trackers`](model::Journal::shown_trackers).
 
+pub mod account;
 pub mod agent;
 pub mod blobstore;
 pub mod calendar;
@@ -84,9 +85,12 @@ pub mod ics;
 pub mod id;
 pub mod library;
 pub mod lockfile;
+pub mod mail;
+pub mod mailsearch;
 pub mod media;
 pub mod model;
 pub mod note;
+pub mod packstore;
 pub mod profile;
 pub mod purpose;
 pub mod quick;
@@ -101,6 +105,10 @@ pub mod tracker;
 pub mod vault;
 pub mod websearch;
 
+pub use account::{
+    Account, AccountSecret, AccountStatus, AgentCaller, AgentMailAccess, AuthMethod, Endpoint,
+    EndpointSecurity, Identity, Permission as MailPermission, Preset as AccountPreset, Services,
+};
 pub use agent::{
     AgentSettings, Conversation, LLMModelConfig, LLMProviderConfig, Memory, Message, Provider,
     Role as MessageRole, ToolCall,
@@ -109,13 +117,23 @@ pub use blobstore::FileBlobStore;
 pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatus, SyncReport};
 pub use error::{Error, Result};
 pub use id::{
-    BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, GoalId, ItemId, JournalId,
-    KindId, LogId, MemoryId, MessageId, NoteId, ProjectId, ReadingId, RoleId, RoutineId,
-    RoutineRunId, TaskId, TrackerId,
+    AccountId, BlobId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId,
+    ItemId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NoteId, OpId,
+    PackId, ProjectId, ReadingId, RoleId, RoutineId, RoutineRunId, TaskId, ThreadId, TrackerId,
 };
 pub use library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,
     LogEntry, LogEvent, Progress, Verbs,
+};
+pub use mail::{
+    Address as MailAddress, Body as MailBody, Category as MailCategory, Draft as MailDraft,
+    DraftState as MailDraftState, GmailMeta, Mailbox, MailboxRole, Message as MailMessage,
+    MessageFlags, Op as MailOp, OpKind as MailOpKind, OpState as MailOpState,
+    OpTarget as MailOpTarget, Origin as MailOrigin, PartRef as MailPartRef, Thread as MailThread,
+};
+pub use mailsearch::{
+    Clause, DateBound, Hit, MailDoc, MailQuery, MailSearch, MessageKey, Op as QueryOp, QueryGroup,
+    RelUnit, SearchCursor, SearchPage, TextMatch, ThreadKey,
 };
 pub use model::{Attachment, Entry, EntrySummary, Journal, Location, MediaKind, Weather};
 pub use note::{Note, NoteSummary};
@@ -126,9 +144,11 @@ pub use purpose::{
 pub use quick::{Prompt as QuickPrompt, QuickApp, QuickContext, QuickJob, QuickPolicy};
 pub use richtext::RichDoc;
 pub use routine::{Due, Outcome, Routine, RoutineRun, Trigger, Weekday};
+pub use store::accounts::AccountStore;
 pub use store::agent::{AgentStore, ConversationQuery};
 pub use store::calendars::{CalendarStore, EventQuery};
 pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
+pub use store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
 pub use store::notes::{NoteQuery, NoteSort, NoteStore};
 pub use store::purpose::{GoalQuery, PurposeStore, PurposeWindow};
 pub use store::routines::RunQuery;

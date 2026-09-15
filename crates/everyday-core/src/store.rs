@@ -29,12 +29,15 @@ use crate::crypto::Cipher;
 use crate::error::{Error, Result};
 use crate::id::{BlobId, EntryId, JournalId};
 use crate::model::{Entry, EntrySummary, Journal};
+use crate::store::accounts::AccountStore;
 use crate::store::agent::AgentStore;
 use crate::store::calendars::CalendarStore;
 use crate::store::library::LibraryStore;
+use crate::store::mail::MailStore;
 use crate::store::notes::NoteStore;
 use crate::store::purpose::PurposeStore;
 use crate::store::routines::RoutineStore;
+use crate::store::secrets::SecretStore;
 use crate::store::tasks::TaskStore;
 use crate::store::trackers::TrackerStore;
 use jiff::civil::Date;
@@ -120,6 +123,40 @@ pub struct Capabilities {
     /// entries, and its task tools will say the backend does not do tasks.
     #[serde(default)]
     pub agent: bool,
+    /// Backend implements [`secrets::SecretStore`], so a record other than
+    /// the assistant can hold a credential of its own -- an account's
+    /// refresh token, in the first domain to need one.
+    ///
+    /// Independent of `agent` in the type: the two singleton tables the
+    /// assistant's secret has always used stay exactly as they are, and this
+    /// flag is about the *general* case, one credential per record, that
+    /// nothing needed until now.
+    #[serde(default)]
+    pub secrets: bool,
+    /// Backend implements [`accounts::AccountStore`], so a mailbox provider
+    /// can be signed in to at all.
+    ///
+    /// False hides Settings → Accounts, and with it the mail app and the
+    /// calendar's "other people's calendars" that reads over CalDAV -- both
+    /// need somewhere to keep the credential this flag is about. Independent
+    /// of `secrets` in the type, though every backend that carries one
+    /// carries the other: an account with nowhere to seal its refresh token
+    /// is an account that cannot stay signed in.
+    #[serde(default)]
+    pub accounts: bool,
+    /// Backend implements [`mail::MailStore`], so a synced mailbox has
+    /// somewhere to keep its mailboxes, messages, threads, bodies, drafts
+    /// and outbox.
+    ///
+    /// False hides the Mail app entirely, the way `library` hides the
+    /// library app -- offering to read mail nobody can store would be worse
+    /// than not offering it. Independent of `accounts` and `secrets` in the
+    /// type, though a backend that carries this in practice carries both: a
+    /// mailbox with nowhere to keep the credential it was synced with, or
+    /// the account record naming which mailbox it is, is not a mailbox at
+    /// all.
+    #[serde(default)]
+    pub mail: bool,
 }
 
 /// Per-vault configuration a backend needs and the core knows nothing about.
@@ -480,6 +517,52 @@ pub trait JournalStore: Send + Sync {
         None
     }
 
+    /// Storage for secrets scoped to a single record, if this backend has
+    /// any.
+    ///
+    /// Same shape and same reasoning as [`JournalStore::tasks`]. See
+    /// [`secrets`](crate::store::secrets) for why this is a table keyed by
+    /// owner rather than a second `agent_secret`.
+    fn secrets(&self) -> Option<&dyn SecretStore> {
+        None
+    }
+
+    /// Storage for accounts, if this backend has any.
+    ///
+    /// Same shape and same reasoning as [`JournalStore::tasks`]. See
+    /// [`accounts`](crate::store::accounts) for the one cascade it owns and
+    /// why the record carries almost nothing in the clear.
+    fn accounts(&self) -> Option<&dyn AccountStore> {
+        None
+    }
+
+    /// Storage for mail, if this backend has any.
+    ///
+    /// Same shape and same reasoning as [`JournalStore::tasks`]. See
+    /// [`mail`](crate::store::mail) for the eight tables it owns, the
+    /// cascade it recomputes on every ingest, flag change and removal, and
+    /// why a thread's own aggregates and its per-mailbox view in
+    /// `thread_mailboxes` are allowed to disagree.
+    fn mail(&self) -> Option<&dyn MailStore> {
+        None
+    }
+
+    /// Raw messages, sealed in the pack store, if this backend keeps them in
+    /// its own tables rather than beside itself on disk.
+    ///
+    /// Unlike every other accessor above, `None` here is the *common* case
+    /// rather than the exception: a local backend's pack store is a
+    /// directory of files beside its media, opened directly by whoever
+    /// assembles the vault (see `everyday_core::vault::Vault::store_root`),
+    /// not reached through this trait at all. Only a backend with no local
+    /// disk of its own -- Postgres, whose rows are the pack -- answers
+    /// `Some` here, because a `mail_packs` row is exactly as reachable as
+    /// any other table only through the same connection every other accessor
+    /// on this trait already uses.
+    fn mail_packs(&self) -> Option<&dyn crate::packstore::PackStore> {
+        None
+    }
+
     // ---- the owner ------------------------------------------------------
 
     /// Who this vault belongs to.
@@ -684,6 +767,19 @@ pub trait JournalStore: Send + Sync {
                 live.extend(note.attachments.iter().map(|a| a.blob));
             }
         }
+        // And a synced message's attachments and inline images, each a
+        // `PartRef.blob` inside the `Body` the sync engine's attachment pass
+        // filled in -- see `crate::mail::Body`. Reached through
+        // `MailStore::attachment_blob_refs` rather than by decrypting every
+        // message a mailbox holds: a body's `parts` list is the only place
+        // an attachment's blob id is written down, and this asks for exactly
+        // that column of every body, not the sanitised HTML or text beside
+        // it. Missing this walk would make the first sweep after mail syncs
+        // a hundred thousand messages delete every attachment nobody had
+        // opened in a day.
+        if let Some(mail) = self.mail() {
+            live.extend(mail.attachment_blob_refs()?);
+        }
         let mut removed = 0;
         for id in self.list_blobs()? {
             if live.contains(&id) {
@@ -790,12 +886,15 @@ impl BackendRegistry {
     }
 }
 
+pub mod accounts;
 pub mod agent;
 pub mod calendars;
 pub mod library;
+pub mod mail;
 pub mod notes;
 pub mod purpose;
 pub mod routines;
+pub mod secrets;
 pub mod tasks;
 pub mod trackers;
 

@@ -19,7 +19,7 @@
 // whether a base URL is this machine decides whether the panel says "ready"
 // without a key.
 
-import type { AgentEvent, AgentMessage } from './types'
+import type { AgentEvent, AgentMessage, ConfirmKind, MailLink } from './types'
 
 /**
  * One tool call as the panel draws it.
@@ -37,6 +37,16 @@ export interface ToolCard {
   summary: string
   /** What is about to be destroyed, on a card waiting to be told. */
   subject: string
+  /**
+   * Why a `waiting` card is asking -- `null` until it is one. Drawn
+   * differently per kind: `'destructive'` and `'search'` read as a
+   * warning, `'outward'` (sending mail) reads as a different kind of
+   * decision entirely. See `ConfirmKind`.
+   */
+  confirmKind: ConfirmKind | null
+  /** The thread a mail write named itself, once it has finished. See
+   *  [[MailLink]]. */
+  mailLink: MailLink | null
 }
 
 /** A turn in the panel: what was said, and what ran while it was said. */
@@ -88,6 +98,8 @@ export function applyEvent(turn: Turn, event: AgentEvent): void {
           state: 'running',
           summary: '',
           subject: '',
+          confirmKind: null,
+          mailLink: null,
         })
       break
     }
@@ -100,6 +112,8 @@ export function applyEvent(turn: Turn, event: AgentEvent): void {
         state: 'waiting',
         summary: '',
         subject: event.subject,
+        confirmKind: event.kind,
+        mailLink: null,
       })
       break
 
@@ -108,6 +122,7 @@ export function applyEvent(turn: Turn, event: AgentEvent): void {
       if (card) {
         card.state = event.ok ? 'done' : 'failed'
         card.summary = event.summary
+        card.mailLink = event.mailLink ?? null
       }
       break
     }
@@ -160,6 +175,8 @@ export function replay(messages: AgentMessage[]): Turn[] {
           state: 'done' as const,
           summary: '',
           subject: '',
+          confirmKind: null,
+          mailLink: null,
         })),
       })
       continue
@@ -171,6 +188,7 @@ export function replay(messages: AgentMessage[]): Turn[] {
       if (card) {
         card.state = m.failed ? 'failed' : 'done'
         card.summary = m.content.slice(0, 200)
+        card.mailLink = m.mailLink ?? null
       }
     }
     // `system` turns are the application talking to itself. Not drawn.

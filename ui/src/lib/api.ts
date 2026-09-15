@@ -6,7 +6,11 @@
 // native dependencies. That is what makes the design workable on its own.
 
 import type {
+  Account,
+  AccountId,
+  AgentCallerKind,
   AgentEvent,
+  AgentMailAccess,
   AgentSettings,
   BlockId,
   BlockKind,
@@ -19,6 +23,8 @@ import type {
   Connected,
   Connection,
   ConversationId,
+  Draft,
+  DraftId,
   Entry,
   EntryId,
   EntryQuery,
@@ -41,6 +47,9 @@ import type {
   LogEvent,
   LogId,
   LogQuery,
+  MailAgentOriginKind,
+  MailboxId,
+  MailMessageId,
   McpStatus,
   Memory,
   MemoryId,
@@ -69,6 +78,8 @@ import type {
   TaskId,
   TaskQuery,
   TaskStatus,
+  ThreadFilter,
+  ThreadId,
   TimeBlock,
   Tracker,
   TrackerId,
@@ -306,6 +317,29 @@ function call<K extends keyof Commands>(
   requestId?: string,
 ): Promise<Commands[K]['result']> {
   return invoke<Commands[K]['result']>(COMMAND_NAMES[name], args, requestId)
+}
+
+/**
+ * Call a command that is not yet in the generated surface, by its wire name.
+ *
+ * `mail-api.ts` is the one caller today: Phase 2-4 of `docs/plans/mail.md`
+ * name a couple of dozen commands that other agents are still landing, and
+ * `gen-api.mjs` cannot generate a typed method for one that does not exist
+ * in `crates/everyday-service/surface.json` yet. This is the untyped escape
+ * hatch `call` above is built from, kept to one call site rather than
+ * reached for anywhere a rename would go unnoticed.
+ *
+ * Mirrors what `call` does for a *known* command: under Tauri it always goes
+ * through the shell's `call`, never by name directly, because a command this
+ * build does not know about is never one of the handful the shell answers
+ * itself. Once `gen-api.mjs` catches up, each call site becomes a one-line
+ * typed method here instead, and this function's job shrinks back to zero.
+ */
+export function callCommand<T = unknown>(
+  name: string,
+  args: Record<string, unknown> = {},
+): Promise<T> {
+  return MOCK ? invoke<T>(name, args) : invoke<T>('call', { name, args, requestId: null })
 }
 
 export const api = {
@@ -648,6 +682,16 @@ export const api = {
   /** The providers the add sheet offers, with where to find each address. */
   calendarProviders: () => call('calendarProviders', {}),
 
+  /**
+   * The calendars `account` offers, marking which ones this vault already
+   * subscribes to. What "From an account" in the add-calendar sheet, and
+   * the calendar list in Settings → Accounts, both read.
+   */
+  listAccountCalendars: (account: AccountId) => call('listAccountCalendars', { account }),
+  /** Subscribe to one of an account's own calendars and fetch it once. */
+  subscribeAccountCalendar: (account: AccountId, remoteId: string) =>
+    call('subscribeAccountCalendar', { account, remoteId }),
+
   // ── The library domain ─────────────────────────────────────────────
   //
   // Shelves, the things on them, and the log of what you did with them.
@@ -882,6 +926,16 @@ export const api = {
   saveMemory: (memory: Memory) => call('saveMemory', { memory }),
   deleteMemory: (id: MemoryId) => call('deleteMemory', { id }),
 
+  /**
+   * What one kind of agent has done with mail -- newest first, resolved
+   * into an address and a subject rather than the bare ids `Op` itself
+   * carries. What Settings → Sharing draws for each connected MCP client,
+   * and the assistant's own settings draw for itself. `cursor` is the
+   * previous page's own last `opId`; omit it for the first page.
+   */
+  mailActionsByOrigin: (kind: MailAgentOriginKind, limit?: number, cursor?: string | null) =>
+    call('mailActionsByOrigin', { kind, limit: limit ?? null, cursor: cursor ?? null }),
+
   // ── The quick model ────────────────────────────────────────────────
   //
   // One call per flow that has a use for a small, fast model. Every one is a
@@ -980,6 +1034,169 @@ export const api = {
    * means the picker was dismissed.
    */
   openImport: () => invoke<PickedFile | null>('open_import'),
+
+  // ── Mail: mailboxes and threads ───────────────────────────────────────
+  //
+  // See `mail-api.ts` for the domain-shaped wrapper every Mail component
+  // actually calls -- singular thread ids where this is the plural `threads`
+  // the real commands take, and a couple of names (`respond_to_invite`,
+  // `set_thread_category`, `summarize_thread`) that are not in
+  // `surface.json` yet and so are not here either; see that file's own
+  // TODOs for the two contracts they belong to.
+
+  mailboxes: (account: AccountId) => call('listMailboxes', { account }),
+  threads: (
+    mailbox: MailboxId,
+    filter?: ThreadFilter,
+    cursor?: string | null,
+    limit?: number | null,
+  ) => call('listThreads', { mailbox, filter, cursor, limit }),
+  thread: (id: ThreadId) => call('getThread', { id }),
+  /** A part left `available: false` on a `MailMessageDetail` -- over the
+   *  attachment cap, with no blob yet. */
+  fetchAttachment: (messageId: MailMessageId, index: number) =>
+    call('fetchAttachment', { messageId, index }),
+
+  // ── Mail: batch thread actions ──────────────────────────────────────
+  //
+  // Each is one outbox op per thread -- see `docs/plans/mail.md`'s "What an
+  // action does" -- and answers with the `Op[]` it enqueued, which the
+  // interface does not currently read back (the row already changed
+  // optimistically); kept typed rather than `void` because that is what the
+  // command answers.
+
+  markRead: (threads: ThreadId[]) => call('markRead', { threads }),
+  markUnread: (threads: ThreadId[]) => call('markUnread', { threads }),
+  star: (threads: ThreadId[]) => call('star', { threads }),
+  unstar: (threads: ThreadId[]) => call('unstar', { threads }),
+  archive: (threads: ThreadId[]) => call('archive', { threads }),
+  trash: (threads: ThreadId[]) => call('trash', { threads }),
+  moveToMailbox: (threads: ThreadId[], to: MailboxId) => call('moveToMailbox', { threads, to }),
+  label: (threads: ThreadId[], label: string) => call('label', { threads, label }),
+  unlabel: (threads: ThreadId[], label: string) => call('unlabel', { threads, label }),
+  /** `until` is an ISO instant -- when the thread reappears. */
+  snooze: (threads: ThreadId[], until: string) => call('snooze', { threads, until }),
+  /** No outbox op -- see `Vault::release_snooze`'s own docs: snooze never
+   *  told the server anything, so there is nothing to tell it is over. */
+  unsnooze: (threads: ThreadId[]) => call('unsnooze', { threads }),
+
+  // ── Mail: drafts and sending ────────────────────────────────────────
+
+  /** Mints a blank draft, prefilled for a reply, a reply-all or a forward. */
+  newDraft: (opts: {
+    account: AccountId
+    inReplyTo?: MailMessageId | null
+    forwardOf?: MailMessageId | null
+    replyAll?: boolean | null
+  }) => call('newDraft', opts),
+  saveDraft: (draft: Draft) => call('saveDraft', { draft }),
+  discardDraft: (id: DraftId) => call('discardDraft', { id }),
+  /** `delaySeconds` is the undo window (5-30s, clamped by the backend);
+   *  `sendAt` queues for a specific, possibly distant, moment instead --
+   *  "send later". Passing neither uses the backend's own default window. */
+  sendDraft: (id: DraftId, delaySeconds?: number | null, sendAt?: string | null) =>
+    call('sendDraft', { id, delaySeconds, sendAt }),
+  /** Only valid inside the undo window `sendDraft` opened. */
+  undoSend: (draftId: DraftId) => call('undoSend', { draftId }),
+  drafts: (account: AccountId) => call('listDrafts', { account }),
+
+  // ── Mail: sync ───────────────────────────────────────────────────────
+
+  syncStatus: () => call('syncStatus', {}),
+  /** Ask an account's task to sync now, out of its ordinary cadence. */
+  syncAccount: (id: AccountId) => call('syncAccount', { id }),
+  rebuildMailIndex: (id?: AccountId) => call('rebuildMailIndex', { id }),
+
+  // ── Mail: remote images ─────────────────────────────────────────────
+  //
+  // Name exactly one of `sender`, `domain` or `messageId` -- the last is a
+  // one-off grant kept in memory for this session only, the other two join
+  // the standing, sealed allow-list. See `mailview.ts` for how a body's own
+  // `X-Mail-Images-Hidden` decides whether to offer this at all.
+
+  allowRemoteImages: (opts: {
+    sender?: string | null
+    domain?: string | null
+    messageId?: MailMessageId | null
+  }) => call('allowRemoteImages', opts),
+  listRemoteImageAllowances: () => call('listRemoteImageAllowances', {}),
+  revokeRemoteImageAllowance: (opts: { sender?: string | null; domain?: string | null }) =>
+    call('revokeRemoteImageAllowance', opts),
+
+  // ── Mail: search and address autocomplete ───────────────────────────
+
+  /** Gmail-style operators (`from:`, `is:unread`, …), keyset-paged. */
+  searchMail: (
+    query: string,
+    accountIds?: AccountId[] | null,
+    cursor?: string | null,
+    limit?: number | null,
+  ) => call('searchMail', { query, accountIds, cursor, limit }),
+  suggestAddresses: (prefix: string, limit?: number | null) =>
+    call('suggestAddresses', { prefix, limit }),
+
+  // ── Accounts ───────────────────────────────────────────────────────
+  //
+  // A mailbox provider signed in to -- not owned by the mail app, see
+  // `everyday_core::account`'s module doc. `AccountView` never carries a
+  // secret; `hasPassword` and `signedIn` are the only things this interface
+  // is ever told about one.
+
+  /** Every account this vault knows about, whole -- but never a secret. */
+  accounts: () => call('listAccounts', {}),
+  account: (id: AccountId) => call('getAccount', { id }),
+  /** Create or update an account record. Never the credential -- see below. */
+  saveAccount: (account: Account) => call('saveAccount', { account }),
+  deleteAccount: (id: AccountId) => call('deleteAccount', { id }),
+  /** Host, port, security and OAuth endpoints each well-known provider
+   *  publishes, for the add-account sheet to draw before anybody has typed
+   *  an address. */
+  accountPresets: () => call('accountPresets', {}),
+  /** Store or replace a password-authenticated account's credential. */
+  saveAccountPassword: (id: AccountId, password: string) =>
+    call('saveAccountPassword', { id, password }),
+  /** Flip one caller's -- the assistant's, or MCP's -- switches on one account. */
+  setAgentAccess: (id: AccountId, caller: AgentCallerKind, access: AgentMailAccess) =>
+    call('setAgentAccess', { id, caller, access }),
+
+  /**
+   * Start an OAuth sign-in: open the answered `url` yourself, with
+   * `openExternal` (see `ui/src/lib/open-external.ts`) on the desktop, or by
+   * showing it to copy when there is no browser this process can open --
+   * remote and server mode. Remember `signInId` for the two calls below.
+   */
+  // Named `Oauth`, not `OAuth`: `gen-api.mjs`'s `snake_case` -> `camelCase`
+  // conversion only capitalises the letter after each underscore, the same
+  // way `mcp_status` became `mcpStatus` rather than `mcpStatus`'s all-caps
+  // cousin. Matching it here is what keeps `call('beginOauthSignIn', ...)`
+  // a compile-time-checked key into `Commands` rather than a string that
+  // merely looks right.
+  beginOauthSignIn: (opts: {
+    authUrl: string
+    tokenUrl: string
+    clientId: string
+    clientSecret?: string
+    scopes: string[]
+    loginHint?: string
+  }) => call('beginOauthSignIn', opts),
+  /**
+   * Wait for that sign-in to land. Resolves once the browser has come back
+   * and the code has been exchanged, or rejects with a `CommandError` whose
+   * `code` is one of `invalidGrant`, `invalidClient`, `provider`,
+   * `timedOut` or `cancelled` -- see `crates/everyday-service/src/signin.rs`.
+   * Safe to call again after a dropped connection; it does not consume
+   * anything.
+   */
+  awaitOauthSignIn: (signInId: string) => call('awaitOauthSignIn', { signInId }),
+  /** Withdraw a sign-in nobody is going to finish. */
+  cancelOauthSignIn: (signInId: string) => call('cancelOauthSignIn', { signInId }),
+  /**
+   * Move a finished sign-in's tokens onto an account, sealed. The last step
+   * of the flow above -- see `crates/everyday-service/src/domains/
+   * accounts.rs`'s module doc for the hand-off this closes.
+   */
+  attachOauthSignIn: (id: AccountId, signInId: string, clientSecret?: string) =>
+    call('attachOauthSignIn', { id, signInId, clientSecret }),
 }
 
 /**
