@@ -37,6 +37,16 @@
 //! [`parse_mail_route`] can tell which shape a request arrived in, or needs
 //! to.
 //!
+//! Every id, token and content id this parses out of a path is
+//! percent-decoded exactly once before anything compares it against
+//! stored data -- `sanitize::sanitize`'s own `path_segment` is what encoded
+//! it going in, for the same reason a `cid:` or a `Message-ID` header can
+//! itself contain a character (`/`, a space, `=`) that would otherwise be
+//! read as a second path segment or corrupt the URL outright. Comparing an
+//! encoded path segment against a raw stored value -- a `cid:` from a
+//! message's MIME parts, most importantly -- silently finds nothing rather
+//! than the part that is actually there.
+//!
 //! ## Why `frame-src` had to change for this, and to exactly this
 //!
 //! `tauri.conf.json`'s CSP originally set `frame-src 'none'`: nothing this
@@ -186,7 +196,8 @@ enum MailRoute {
 }
 
 /// Parses `request`'s path (and, for the image route's older shape, its
-/// query) into a [`MailRoute`]. A pure function of the request, deliberately
+/// query) into a [`MailRoute`], with every segment percent-decoded exactly
+/// once -- see the module docs. A pure function of the request, deliberately
 /// apart from anything that touches a vault, so a test can drive it with a
 /// URL taken straight from [`everyday_mail::sanitize::sanitize`]'s own
 /// output rather than one this file's tests would otherwise have to
@@ -195,9 +206,13 @@ fn parse_mail_route(request: &Request<Vec<u8>>) -> Option<MailRoute> {
     let path = request.uri().path().trim_start_matches('/');
     let mut segments = path.split('/');
     match (segments.next(), segments.next(), segments.next(), segments.next()) {
-        (Some("body"), Some(id), None, None) => MailMessageId::parse(id).ok().map(MailRoute::Body),
+        (Some("body"), Some(id), None, None) => {
+            MailMessageId::parse(&percent_decode(id)).ok().map(MailRoute::Body)
+        }
         (Some("part"), Some(msg), Some(identifier), None) => {
-            MailMessageId::parse(msg).ok().map(|m| MailRoute::Part(m, identifier.to_string()))
+            let msg = percent_decode(msg);
+            let identifier = percent_decode(identifier);
+            MailMessageId::parse(&msg).ok().map(|m| MailRoute::Part(m, identifier))
         }
         // `mail/img/{message}/{token}` -- what `sanitize::sanitize` writes
         // today.
@@ -564,6 +579,38 @@ mod mail_route_tests {
             }
             other => panic!("expected Img, got {other:?}"),
         }
+    }
+
+    /// The bug this guards against: a `cid:` reference containing `=`, `$`,
+    /// `/` and a space, percent-encoded by `sanitize::sanitize`'s own
+    /// `path_segment`, has to decode back to exactly what the message's own
+    /// MIME part carries -- `find_part` in `everyday-service::mailview`
+    /// compares it against the raw, undecoded content id, so a route that
+    /// decoded it wrongly (or not at all) would never find the part a
+    /// message actually has.
+    #[test]
+    fn a_cid_with_characters_needing_escaping_round_trips() {
+        let message_id = MailMessageId::new();
+        let cid = "a=b$c/d e";
+        let out = sanitized(&format!(r#"<img src="cid:{cid}">"#), message_id);
+        let uri = first_src(&out.html);
+
+        let route = parse_mail_route(&request(uri)).expect("a recognised mail route");
+        match route {
+            MailRoute::Part(msg, identifier) => {
+                assert_eq!(msg, message_id);
+                assert_eq!(identifier, cid);
+            }
+            other => panic!("expected Part, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_body_route_round_trips_through_the_message_id() {
+        let message_id = MailMessageId::new();
+        let uri = format!("everyday://mail/body/{message_id}");
+        let route = parse_mail_route(&request(&uri)).expect("a recognised mail route");
+        assert!(matches!(route, MailRoute::Body(id) if id == message_id));
     }
 
     #[test]
