@@ -26,7 +26,7 @@
   } from '../lib/mail'
   import * as mailApi from '../lib/mail-api'
   import { mail } from '../lib/mail.svelte'
-  import { applyDarkOverride, bodyDocument, loadBody } from '../lib/mailview'
+  import { applyDarkOverride, bodyDocument, loadBody, mockPartUrl, partUrl } from '../lib/mailview'
   // A static import, deliberately, though it is only ever read behind
   // `isMock` below -- see `mail-api.ts`'s old note on the same trade-off,
   // which this file inherits: a dynamic `import()` cannot stay synchronous
@@ -34,17 +34,45 @@
   // of seed markup riding along in a production bundle that a bundler
   // tree-shakes once this stops being called with `MOCK` true.
   import { mockMessageBodyHtml } from '../lib/mock-mail'
-  import { formatInstantTime, longDate, plural } from '../lib/format'
+  import { formatInstantTime, humanBytes, longDate, plural } from '../lib/format'
   import { isoDate } from '../lib/time'
   import { app, handle } from '../lib/state.svelte'
-  import type { MailMessage, RemoteImageSettings } from '../lib/types'
+  import type { MailAttachment, MailMessageDetail, RemoteImageSettings } from '../lib/types'
   import Icon from './Icon.svelte'
 
   interface Props {
-    messages: MailMessage[]
+    messages: MailMessageDetail[]
     expanded: Set<string>
   }
   let { messages, expanded }: Props = $props()
+
+  const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+
+  /** Fetching state for a part left `available: false` -- keyed by
+   *  `${messageId}:${index}`, so two chips never share one spinner. */
+  let fetching = $state<Set<string>>(new Set())
+
+  function attachmentKey(messageId: string, index: number): string {
+    return `${messageId}:${index}`
+  }
+
+  async function download(messageId: string, attachment: MailAttachment) {
+    const key = attachmentKey(messageId, attachment.index)
+    fetching = new Set([...fetching, key])
+    try {
+      const updated = await mailApi.fetchAttachment(messageId, attachment.index)
+      const message = messages.find((m) => m.id === messageId)
+      if (message) {
+        message.attachments = message.attachments.map((a) =>
+          a.index === updated.index ? updated : a,
+        )
+      }
+    } catch (e) {
+      await handle(e)
+    } finally {
+      fetching = new Set([...fetching].filter((k) => k !== key))
+    }
+  }
 
   type LoadedBody = { html: string; imagesHidden: boolean }
   let bodies = $state<Map<string, LoadedBody | 'loading' | 'error'>>(new Map())
@@ -72,14 +100,14 @@
    *  until the message is one-off shown or its sender/domain joins the
    *  standing allow-list. Real mode reads the header instead; see
    *  `loadOne`. */
-  function mockImagesHidden(message: MailMessage): boolean {
+  function mockImagesHidden(message: MailMessageDetail): boolean {
     if (message.category !== 'newsletter') return false
     if (oneOff.has(message.id)) return false
     if (allowances && remoteImagesAllowed(allowances, message.from.email)) return false
     return true
   }
 
-  async function loadOne(message: MailMessage) {
+  async function loadOne(message: MailMessageDetail) {
     bodies.set(message.id, 'loading')
     bodies = new Map(bodies)
     try {
@@ -113,7 +141,7 @@
     mail.toggleExpanded(id)
   }
 
-  async function showOnce(message: MailMessage) {
+  async function showOnce(message: MailMessageDetail) {
     oneOff = new Set([...oneOff, message.id])
     try {
       await mailApi.allowRemoteImages({ messageId: message.id })
@@ -123,7 +151,7 @@
     await loadOne(message)
   }
 
-  async function allowSender(message: MailMessage) {
+  async function allowSender(message: MailMessageDetail) {
     try {
       await mailApi.allowRemoteImages({ sender: message.from.email })
       allowances = await mailApi.listRemoteImageAllowances()
@@ -133,7 +161,7 @@
     await loadOne(message)
   }
 
-  async function allowDomain(message: MailMessage) {
+  async function allowDomain(message: MailMessageDetail) {
     const domain = message.from.email.split('@')[1]
     if (!domain) return
     try {
@@ -146,7 +174,7 @@
   }
 
   /** (i) TODO: see `mail-api.ts`'s own TODO(i) for `respond_to_invite`. */
-  function inviteWhen(invite: NonNullable<MailMessage['invite']>): string {
+  function inviteWhen(invite: NonNullable<MailMessageDetail['invite']>): string {
     // `longDate` wants a local `YYYY-MM-DD`, the same as `threadListDate` in
     // `mail.ts` narrows a message's own instant before formatting it --
     // `invite.start`/`.end` are full ISO instants, not local dates.
@@ -259,13 +287,50 @@
             </div>
           {/if}
 
-          {#if message.hasAttachments}
-            <!-- A gap to report, not fake: `MailMessage` carries
-                 `hasAttachments` but no per-part list (filename, size, a
-                 `mailview.ts` `partUrl` identifier), so this chip cannot
-                 yet name or link to what it has. -->
+          {#if message.attachments.length > 0}
+            <!-- Every attachment opens the same way, `download` set so the
+                 browser or webview saves it rather than navigating away --
+                 an image attachment additionally gets a thumbnail. A PDF is
+                 deliberately not previewed in a pdf.js viewer: it opens
+                 (or downloads) the same as any other attachment. Wiring
+                 pdf.js in -- a worker bundle, a canvas, `THIRD-PARTY-
+                 NOTICES.md` -- is more surface than "one more attachment
+                 type opens the way every other one already does" earns
+                 here; see this build's final report for the reasoning. -->
             <div class="chips">
-              <span class="chip"><Icon name="tag" size={12} /> Attachment</span>
+              {#each message.attachments as a (a.index)}
+                {@const identifier = a.contentId ?? String(a.index)}
+                {@const url = a.available
+                  ? (partUrl(message.id, identifier) ??
+                    mockPartUrl(a.mimeType, `${message.id}:${a.index}`))
+                  : null}
+                {@const isImage = IMAGE_TYPES.has(a.mimeType)}
+                {@const isFetching = fetching.has(attachmentKey(message.id, a.index))}
+                {#if url}
+                  <a class="chip" href={url} target="_blank" rel="noopener noreferrer" download>
+                    {#if isImage}
+                      <img class="thumb" src={url} alt="" loading="lazy" />
+                    {:else}
+                      <Icon name="tag" size={12} />
+                    {/if}
+                    <span class="chip-name">{a.filename || 'attachment'}</span>
+                    <span class="chip-size">{humanBytes(a.size)}</span>
+                  </a>
+                {:else}
+                  <span class="chip unavailable">
+                    <Icon name="tag" size={12} />
+                    <span class="chip-name">{a.filename || 'attachment'}</span>
+                    <span class="chip-size">{humanBytes(a.size)}</span>
+                    <button
+                      class="chip-download"
+                      disabled={isFetching}
+                      onclick={() => void download(message.id, a)}
+                    >
+                      {isFetching ? 'Downloading…' : 'Download'}
+                    </button>
+                  </span>
+                {/if}
+              {/each}
             </div>
           {/if}
 
@@ -403,12 +468,42 @@
   .chip {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 2px var(--sp-2);
+    gap: 6px;
+    padding: 3px var(--sp-2);
     border-radius: 999px;
     background: var(--bg-hover);
     font-size: var(--text-xs);
     color: var(--fg-muted);
+  }
+  a.chip:hover {
+    background: var(--bg-active);
+    color: var(--fg);
+  }
+  .chip.unavailable {
+    color: var(--fg-faint);
+  }
+  .chip-name {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chip-size {
+    color: var(--fg-faint);
+  }
+  .thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    object-fit: cover;
+  }
+  .chip-download {
+    color: var(--journal-accent, var(--accent));
+    text-decoration: underline;
+  }
+  .chip-download:disabled {
+    opacity: 0.6;
+    text-decoration: none;
   }
 
   /* (i) TODO: the invite card, above the message it belongs to -- see

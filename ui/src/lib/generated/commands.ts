@@ -62,6 +62,7 @@ import type {
   LogId,
   LogQuery,
   MailAddress,
+  MailAttachment,
   MailCategory,
   MailMessageId,
   MailProviderInfo,
@@ -194,6 +195,7 @@ export interface Commands {
   discardDraft: { args: { id: DraftId }; result: void }
   endExport: { args: { handle: string }; result: void }
   endImport: { args: { handle: string }; result: void }
+  fetchAttachment: { args: { messageId: MailMessageId; index: number }; result: MailAttachment }
   fetchImage: { args: { url: string }; result: string }
   flush: { args: Record<string, never>; result: void }
   getAccount: { args: { id: AccountId }; result: AccountView }
@@ -493,6 +495,7 @@ export const COMMAND_NAMES = {
   discardDraft: 'discard_draft',
   endExport: 'end_export',
   endImport: 'end_import',
+  fetchAttachment: 'fetch_attachment',
   fetchImage: 'fetch_image',
   flush: 'flush',
   getAccount: 'get_account',
@@ -717,6 +720,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'discard_draft',
   'end_export',
   'end_import',
+  'fetch_attachment',
   'fetch_image',
   'flush',
   'get_account',
@@ -929,6 +933,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_task',
   'delete_tracker',
   'discard_draft',
+  'fetch_attachment',
   'fetch_image',
   'flush',
   'import_calendar',

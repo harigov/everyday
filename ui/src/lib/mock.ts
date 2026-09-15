@@ -88,6 +88,7 @@ import {
   mockAllowRemoteImagesOnce,
   mockArchive,
   mockDiscardDraft,
+  mockFetchAttachment,
   mockGetThread,
   mockLabel,
   mockListDrafts,
@@ -4452,6 +4453,10 @@ export const mockInvoke = async <T>(
     case 'get_thread':
       requireUnlocked()
       return mockGetThread(str(args.id)) as T
+
+    case 'fetch_attachment':
+      requireUnlocked()
+      return mockFetchAttachment(str(args.messageId), Number(args.index)) as T
 
     case 'mark_read':
       requireUnlocked()

@@ -21,15 +21,18 @@ import type {
   Draft,
   DraftId,
   MailAddress,
+  MailAttachment,
   MailCategory,
   MailInvite,
   Mailbox,
   MailboxId,
   MailboxRole,
   MailMessage,
+  MailMessageDetail,
   MailMessageId,
   Op,
   OpKind,
+  RecentAction,
   RemoteImageSettings,
   Thread,
   ThreadDetail,
@@ -264,6 +267,43 @@ interface Seeded {
   /** Which mailbox(es) each thread sits in -- `message_mailboxes` stands in
    *  for the many-to-many a Gmail label needs. */
   threadMailboxes: Map<ThreadId, MailboxId[]>
+  /** Every message's own `Body.parts`, turned into the chips
+   *  `MailThread.svelte` draws -- see `attachmentsFor`. */
+  attachments: Map<MailMessageId, MailAttachment[]>
+  /** A thread's own outbox history, for the "recent actions" line -- see
+   *  `seedRecentActions`. */
+  recentActions: Map<ThreadId, RecentAction[]>
+}
+
+/** A handful of attachments for a message flagged `hasAttachments` -- an
+ *  image (for the thumbnail) and, every third time, a PDF too (for the
+ *  preview), one of them left `available: false` every fifth time so the
+ *  "Download" path and `mockFetchAttachment` have something to demonstrate. */
+function attachmentsFor(seed: number): MailAttachment[] {
+  const unavailable = seed % 5 === 0
+  const out: MailAttachment[] = [
+    {
+      index: 0,
+      filename: `photo-${1 + (seed % 12)}.jpg`,
+      mimeType: 'image/jpeg',
+      size: 180_000 + seed * 1_200,
+      contentId: null,
+      inline: false,
+      available: !unavailable,
+    },
+  ]
+  if (seed % 3 === 0) {
+    out.push({
+      index: 1,
+      filename: 'report.pdf',
+      mimeType: 'application/pdf',
+      size: 640_000 + seed * 3_000,
+      contentId: null,
+      inline: false,
+      available: !unavailable,
+    })
+  }
+  return out
 }
 
 function buildSeed(): Seeded {
@@ -271,6 +311,8 @@ function buildSeed(): Seeded {
   const messages = new Map<MailMessageId, MailMessage>()
   const bodies = new Map<MailMessageId, string>()
   const threadMailboxes = new Map<ThreadId, MailboxId[]>()
+  const attachments = new Map<MailMessageId, MailAttachment[]>()
+  const recentActions = new Map<ThreadId, RecentAction[]>()
 
   let hoursAgo = 1
   const N = 60
@@ -350,11 +392,14 @@ function buildSeed(): Seeded {
       }
       messages.set(msgId, message)
       bodies.set(msgId, bodyHtmlFor(sender, message.subject, i + m))
+      if (message.hasAttachments) attachments.set(msgId, attachmentsFor(i))
       msgIds.push(msgId)
     }
     const last = messages.get(msgIds[msgIds.length - 1]!)!
     const unreadCount = msgIds.filter((id) => !messages.get(id)!.flags.seen).length
     const snoozedUntil = i % 13 === 0 ? iso(-24) : null // a small handful, due back tomorrow
+    const starred = msgIds.some((id) => messages.get(id)!.flags.flagged)
+    const hasAttachments = msgIds.some((id) => messages.get(id)!.hasAttachments)
     const thread: Thread = {
       id: threadId,
       accountId: account,
@@ -365,12 +410,51 @@ function buildSeed(): Seeded {
       unreadCount,
       category,
       snoozedUntil,
+      snippet: last.snippet,
+      starred,
+      hasAttachments,
     }
     threads.push(thread)
     threadMailboxes.set(threadId, [mailboxId(account, role)])
+
+    // A small, deterministic slice of threads get a "recent actions" line,
+    // to demonstrate every mark the plan's phase 5 asks a thread to be able
+    // to show -- an assistant's own action, an MCP client's, and a failure.
+    if (i % 15 === 1) {
+      recentActions.set(threadId, [
+        {
+          kind: { type: 'archive' },
+          origin: { type: 'assistant', conversation: 'demo-conversation' },
+          at: iso(2),
+          state: { type: 'done' },
+        },
+      ])
+    } else if (i % 15 === 6) {
+      recentActions.set(threadId, [
+        {
+          kind: { type: 'move', to: mailboxId(account, 'archive') },
+          origin: { type: 'mcp', client: 'Claude Desktop' },
+          at: iso(5),
+          state: { type: 'done' },
+        },
+      ])
+    } else if (i % 15 === 11) {
+      recentActions.set(threadId, [
+        {
+          kind: { type: 'archive' },
+          origin: { type: 'assistant', conversation: 'demo-conversation' },
+          at: iso(1),
+          state: {
+            type: 'failed',
+            permanent: true,
+            message: 'the server refused: over quota',
+          },
+        },
+      ])
+    }
   }
 
-  return { threads, messages, bodies, threadMailboxes }
+  return { threads, messages, bodies, threadMailboxes, attachments, recentActions }
 }
 
 const seed = buildSeed()
@@ -385,12 +469,15 @@ function messagesOf(threadId: ThreadId): MailMessage[] {
     .sort((a, b) => a.date.localeCompare(b.date))
 }
 
-/** A thread is "starred" when any of its messages is flagged -- there is no
- *  per-thread aggregate in the real record, see `types.ts`'s own note on
- *  `Thread`, so the mock's pseudo "Starred" mailbox reads the same message
- *  flags a real IMAP `\Flagged` search would. */
-function isThreadStarred(id: ThreadId): boolean {
-  return messagesOf(id).some((m) => m.flags.flagged)
+/** Recomputes `thread(id)`'s own `starred`/`hasAttachments` aggregates from
+ *  its current messages -- the mock's stand-in for
+ *  `everyday_store_sql::mail::write::recompute_thread`, called after
+ *  anything that could have changed either (starring, unstarring). */
+function recomputeThreadAggregates(id: ThreadId): void {
+  const t = thread(id)
+  const msgs = messagesOf(id)
+  t.starred = msgs.some((m) => m.flags.flagged)
+  t.hasAttachments = msgs.some((m) => m.hasAttachments)
 }
 
 // ── Drafts ───────────────────────────────────────────────────────────
@@ -454,7 +541,7 @@ export function mockListThreads(
   const account = mailboxes.find((m) => m.id === mailbox)?.accountId
   let rows = seed.threads.filter((t) => {
     if (account && t.accountId !== account) return false
-    if (pseudo === 'starred') return isThreadStarred(t.id)
+    if (pseudo === 'starred') return t.starred
     if (pseudo === 'snoozed') return t.snoozedUntil != null
     return (seed.threadMailboxes.get(t.id) ?? []).includes(mailbox)
   })
@@ -474,7 +561,22 @@ export function mockListThreads(
 export function mockGetThread(id: ThreadId): ThreadDetail {
   const thread = seed.threads.find((t) => t.id === id)
   if (!thread) throw new VaultError('notFound', 'no such thread')
-  return { thread, messages: messagesOf(id) }
+  const messages: MailMessageDetail[] = messagesOf(id).map((message) => ({
+    ...message,
+    attachments: seed.attachments.get(message.id) ?? [],
+  }))
+  return { thread, messages, recentActions: seed.recentActions.get(id) ?? [] }
+}
+
+/** Fetches one part left `available: false` -- the mock's stand-in for
+ *  extracting bytes from the raw message on demand. Flips `available` on
+ *  the seeded attachment and hands it back, same as the real command. */
+export function mockFetchAttachment(messageId: MailMessageId, index: number): MailAttachment {
+  const list = seed.attachments.get(messageId)
+  const part = list?.[index]
+  if (!part) throw new VaultError('notFound', 'no such part of this message')
+  part.available = true
+  return part
 }
 
 export function mockMessageBodyHtml(messageId: MailMessageId): string {
@@ -530,11 +632,17 @@ export function mockMarkUnread(ids: ThreadId[]): Op[] {
 }
 
 export function mockStar(ids: ThreadId[]): Op[] {
-  for (const id of ids) for (const m of messagesOf(id)) m.flags.flagged = true
+  for (const id of ids) {
+    for (const m of messagesOf(id)) m.flags.flagged = true
+    recomputeThreadAggregates(id)
+  }
   return opsFor(ids, { type: 'star' })
 }
 export function mockUnstar(ids: ThreadId[]): Op[] {
-  for (const id of ids) for (const m of messagesOf(id)) m.flags.flagged = false
+  for (const id of ids) {
+    for (const m of messagesOf(id)) m.flags.flagged = false
+    recomputeThreadAggregates(id)
+  }
   return opsFor(ids, { type: 'unstar' })
 }
 

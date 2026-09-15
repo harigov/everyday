@@ -1433,17 +1433,13 @@ export interface MailMessage {
 }
 
 /**
- * A thread, exactly as `everyday_core::mail::Thread` carries it -- no more.
+ * A thread, exactly as `everyday_core::mail::Thread` carries it.
  *
- * A list row therefore cannot show a star, a snippet, an attachment
- * paperclip or "drafted by the assistant" without opening the thread first:
- * the real record has no per-thread flagged aggregate, no cached snippet and
- * no attachment summary, only what is below. Earlier work on this app carried
- * four provisional fields here to fake those; they are gone, and the gap is
- * reported rather than reinstated -- see the final report this build shipped
- * with. `MailThread.svelte`, which *does* have a message's own flags once a
- * thread is open, is where a star or an attachment chip can honestly be
- * drawn today.
+ * `snippet`, `starred` and `hasAttachments` are aggregates
+ * `everyday_store_sql::mail::write::recompute_thread` keeps in step with the
+ * thread's own messages on every ingest, flag change and removal -- see that
+ * function's own docs. They are what let a list row show a preview line, a
+ * star and a paperclip without opening the thread first.
  */
 export interface Thread {
   id: ThreadId
@@ -1455,6 +1451,12 @@ export interface Thread {
   unreadCount: number
   category?: MailCategory | null
   snoozedUntil?: string | null
+  /** The newest message's own snippet. */
+  snippet: string
+  /** True when any message in the thread is flagged. */
+  starred: boolean
+  /** True when any message in the thread has at least one attachment. */
+  hasAttachments: boolean
 }
 
 /** All three fields ANDed; `null`/absent means "do not filter on this." */
@@ -1480,11 +1482,46 @@ export interface SearchMailResult {
   next?: string | null
 }
 
-/** A thread and every message in it -- what opening one reads. Bodies are
- * not included. */
+/**
+ * One part of a message, named the way `mailview::part`'s `find_part`
+ * addresses it -- `contentId` when the part has one, `index` otherwise.
+ * Exactly the identifier `partUrl(messageId, identifier)` wants.
+ */
+export interface MailAttachment {
+  index: number
+  filename?: string | null
+  mimeType: string
+  size: number
+  contentId?: string | null
+  /** Referenced by `cid:` from the sanitised HTML -- shown inline, not as a
+   *  chip. */
+  inline: boolean
+  /** `false` when this part is over the account's attachment cap and has not
+   *  been fetched yet -- what `fetchAttachment` turns `true`. */
+  available: boolean
+}
+
+/** One message, plus the attachments its body names -- metadata only, never
+ *  bytes. */
+export type MailMessageDetail = MailMessage & { attachments: MailAttachment[] }
+
+/** One of a thread's own recent ops, for the "recent actions" line under the
+ *  subject -- "archived by the assistant", "moved by an MCP client",
+ *  "Couldn't archive: {error}". */
+export interface RecentAction {
+  kind: OpKind
+  origin: MailOrigin
+  at: string
+  state: OpState
+}
+
+/** A thread and every message in it -- what opening one reads. Bodies'
+ *  *text* is not included; each message's `attachments` and the thread's own
+ *  `recentActions` are. */
 export interface ThreadDetail {
   thread: Thread
-  messages: MailMessage[]
+  messages: MailMessageDetail[]
+  recentActions: RecentAction[]
 }
 
 /** `summarize_thread`'s answer. `summary` is empty when there was nothing

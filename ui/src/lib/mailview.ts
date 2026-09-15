@@ -70,10 +70,52 @@ export function bodyDocument(messageId: string, mock: MockMailBody = {}): MailBo
  * `cid:` image, or a proxied remote image -- for an `<img src>` or a
  * download link inside the frame, or a chip beside it. `null` in mock
  * mode, where nothing answers that scheme; a mock message's own inline
- * `<img>` sources should point at ordinary web or data URLs instead. */
+ * `<img>` sources should point at ordinary web or data URLs instead, and an
+ * attachment chip's own link should use {@link mockPartUrl} instead. */
 export function partUrl(messageId: string, identifier: string): string | null {
   if (isMock) return null
   return `everyday://mail/part/${encodeURIComponent(messageId)}/${encodeURIComponent(identifier)}`
+}
+
+/** A minimal, valid, single-page PDF -- just enough for a real
+ *  `application/pdf` link to point at in mock mode, without shipping a
+ *  fixture file. */
+const MINIMAL_PDF = `%PDF-1.1
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj
+trailer<</Root 1 0 R>>`
+
+/** A soft gradient standing in for a photograph -- the same convention
+ *  `mock.ts`'s own `swatch`/`jacket` helpers use for a cover or a tracker's
+ *  photo, reused here rather than duplicated with a different shape. */
+function placeholderImage(seed: string): string {
+  let hash = 0
+  for (const ch of seed) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
+  const hue = hash % 360
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="150">` +
+    `<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">` +
+    `<stop offset="0%" stop-color="hsl(${hue},60%,55%)"/>` +
+    `<stop offset="100%" stop-color="hsl(${(hue + 60) % 360},55%,30%)"/>` +
+    `</linearGradient></defs><rect width="200" height="150" fill="url(#g)"/></svg>`
+  return `data:image/svg+xml;base64,${btoa(svg)}`
+}
+
+/**
+ * {@link partUrl}'s mock-mode counterpart, for an attachment chip: a
+ * deterministic `data:` URL standing in for the bytes `everyday://mail/part`
+ * would otherwise serve, so a thumbnail and a download link both have
+ * something real to point at without a network request -- see this module's
+ * own doc on why nothing here ever fetches. `null` in real mode, where
+ * {@link partUrl} already has the true address; a caller picks whichever of
+ * the two `isMock` says to use.
+ */
+export function mockPartUrl(mimeType: string, seed: string): string | null {
+  if (!isMock) return null
+  if (mimeType.startsWith('image/')) return placeholderImage(seed)
+  if (mimeType === 'application/pdf') return `data:application/pdf;base64,${btoa(MINIMAL_PDF)}`
+  return `data:text/plain;base64,${btoa(`Mock attachment: ${seed}`)}`
 }
 
 /** Minimal, self-contained document shape, echoing (not reusing --

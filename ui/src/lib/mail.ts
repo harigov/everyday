@@ -4,7 +4,16 @@
 
 import { friendlyDate, timeOfDay } from './format'
 import { isoDate } from './time'
-import type { MailAddress, MailCategory, MailInvite, RemoteImageSettings, Thread } from './types'
+import type {
+  MailAddress,
+  MailCategory,
+  MailInvite,
+  MailOrigin,
+  OpKind,
+  RecentAction,
+  RemoteImageSettings,
+  Thread,
+} from './types'
 
 // ── Sender-list formatting ─────────────────────────────────────────────
 
@@ -71,6 +80,54 @@ export function replyAllRecipients(
   const to = dedupeAgainst([message.from, ...message.to], new Set())
   const cc = dedupeAgainst(message.cc, new Set(to.map((a) => a.email.trim().toLowerCase())))
   return { to, cc }
+}
+
+// ── Marks from origin ───────────────────────────────────────────────────
+//
+// "Archived by the assistant", "Moved by an MCP client", "Couldn't archive:
+// {error}" -- what `ThreadDetail.recentActions` turns into under a thread's
+// subject. Person-made ops that succeeded say nothing: an action the person
+// themself took needs no origin mark, and is not what this line is for.
+
+const OP_LABELS: Record<OpKind['type'], { past: string; base: string }> = {
+  markRead: { past: 'Marked read', base: 'mark it read' },
+  markUnread: { past: 'Marked unread', base: 'mark it unread' },
+  star: { past: 'Starred', base: 'star it' },
+  unstar: { past: 'Unstarred', base: 'unstar it' },
+  archive: { past: 'Archived', base: 'archive it' },
+  trash: { past: 'Trashed', base: 'trash it' },
+  move: { past: 'Moved', base: 'move it' },
+  label: { past: 'Labelled', base: 'label it' },
+  unlabel: { past: 'Unlabelled', base: 'unlabel it' },
+  snooze: { past: 'Snoozed', base: 'snooze it' },
+  send: { past: 'Sent', base: 'send it' },
+  appendDraft: { past: 'Saved a draft copy', base: 'save a draft copy' },
+}
+
+/** Who did it, in words -- `null` for a person, who needs no mark. */
+export function originPhrase(origin: MailOrigin): string | null {
+  switch (origin.type) {
+    case 'assistant':
+      return 'the assistant'
+    case 'mcp':
+      return 'an MCP client'
+    case 'routine':
+      return 'a routine'
+    case 'person':
+      return null
+  }
+}
+
+/**
+ * One line for a thread's "recent actions" -- `null` when this op is not
+ * worth a line at all, per the rule above: a person's own action that
+ * succeeded.
+ */
+export function recentActionLine(action: RecentAction): string | null {
+  const label = OP_LABELS[action.kind.type]
+  if (action.state.type === 'failed') return `Couldn't ${label.base}: ${action.state.message}`
+  const by = originPhrase(action.origin)
+  return by ? `${label.past} by ${by}` : null
 }
 
 // ── Optimistic apply and revert of row state ───────────────────────────

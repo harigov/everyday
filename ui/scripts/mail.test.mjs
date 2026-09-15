@@ -24,6 +24,8 @@ const {
   applyInviteResponse,
   mergeSearchPage,
   remoteImagesAllowed,
+  originPhrase,
+  recentActionLine,
 } = mailLib
 
 function person(name, email) {
@@ -254,6 +256,51 @@ assert.equal(
 assert.equal(remoteImagesAllowed(settings, 'notifications@github.com'), true, 'a domain match')
 assert.equal(remoteImagesAllowed(settings, 'someone@figma.com'), false)
 assert.equal(remoteImagesAllowed(settings, 'not-an-address'), false, 'no domain to match against')
+
+// ── Marks from origin ────────────────────────────────────────────────
+
+assert.equal(originPhrase({ type: 'person' }), null, 'a person needs no mark')
+assert.equal(originPhrase({ type: 'assistant', conversation: 'c' }), 'the assistant')
+assert.equal(originPhrase({ type: 'mcp', client: 'Claude Desktop' }), 'an MCP client')
+assert.equal(originPhrase({ type: 'routine', run: 'r' }), 'a routine')
+
+assert.equal(
+  recentActionLine({
+    kind: { type: 'archive' },
+    origin: { type: 'assistant', conversation: 'c' },
+    at: '2026-09-01T00:00:00Z',
+    state: { type: 'done' },
+  }),
+  'Archived by the assistant',
+)
+assert.equal(
+  recentActionLine({
+    kind: { type: 'move', to: 'mb-1' },
+    origin: { type: 'mcp', client: 'Claude Desktop' },
+    at: '2026-09-01T00:00:00Z',
+    state: { type: 'done' },
+  }),
+  'Moved by an MCP client',
+)
+assert.equal(
+  recentActionLine({
+    kind: { type: 'archive' },
+    origin: { type: 'assistant', conversation: 'c' },
+    at: '2026-09-01T00:00:00Z',
+    state: { type: 'failed', permanent: true, message: 'over quota' },
+  }),
+  "Couldn't archive it: over quota",
+)
+assert.equal(
+  recentActionLine({
+    kind: { type: 'archive' },
+    origin: { type: 'person' },
+    at: '2026-09-01T00:00:00Z',
+    state: { type: 'done' },
+  }),
+  null,
+  "a person's own successful action needs no line",
+)
 
 await close()
 console.log('mail: all checks passed')

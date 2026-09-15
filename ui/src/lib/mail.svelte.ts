@@ -414,19 +414,18 @@ class MailState {
     return this.#act(id, { unreadCount: 1 }, mailApi.markUnread)
   }
   /**
-   * Star, best-effort.
-   *
-   * `Thread` -- the real record, see its own doc in `types.ts` -- carries no
-   * per-thread starred aggregate, only `MessageFlags.flagged` on each
-   * message. So this can only *know* the current state once the thread is
-   * open, from its newest message; from the list, with nothing loaded yet,
-   * it can only ever star, never toggle off. That gap is reported rather
-   * than faked with a client-side flag the backend would not agree with.
+   * Star, best-effort. `Thread.starred` -- the real per-thread aggregate,
+   * see its own doc in `types.ts` -- is the current state; the open thread's
+   * own messages are consulted only as a fallback for a row not currently in
+   * `this.threads` (a thread reached only through `openThread`, which does
+   * not happen in the interface today, but costs nothing to keep honest).
    */
   toggleStar(id: ThreadId) {
-    const flagged =
-      this.openThread?.thread.id === id && this.openThread.messages.some((m) => m.flags.flagged)
-    return this.#act(id, {}, flagged ? mailApi.unstar : mailApi.star)
+    const row = this.threads.find((t) => t.id === id) ?? this.searchResults.find((t) => t.id === id)
+    const starred =
+      row?.starred ??
+      (this.openThread?.thread.id === id && this.openThread.messages.some((m) => m.flags.flagged))
+    return this.#act(id, { starred: !starred }, starred ? mailApi.unstar : mailApi.star)
   }
   archive(id: ThreadId) {
     return this.#remove(id, mailApi.archive)

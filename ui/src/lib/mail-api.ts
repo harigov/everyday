@@ -24,6 +24,7 @@ import type {
   Draft,
   DraftId,
   MailAddress,
+  MailAttachment,
   MailboxId,
   MailCategory,
   MailMessageId,
@@ -48,6 +49,12 @@ export const listThreads = (
   limit?: number | null,
 ): Promise<ThreadPage> => api.threads(mailbox, filter, cursor, limit)
 export const getThread = (id: ThreadId): Promise<ThreadDetail> => api.thread(id)
+
+/** Fetch one part left `available: false` on a `MailMessageDetail` -- over
+ *  the account's attachment cap, with no blob yet. Returns the same shape,
+ *  updated, so a chip can flip to available without reloading the thread. */
+export const fetchAttachment = (messageId: MailMessageId, index: number): Promise<MailAttachment> =>
+  api.fetchAttachment(messageId, index)
 
 // ── Actions: one outbox op per thread, per "What an action does" ──────
 //

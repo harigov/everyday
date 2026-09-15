@@ -5,7 +5,7 @@
   // folded into one component the way the library and the todo app do.
 
   import { accounts } from '../lib/accounts.svelte'
-  import { CATEGORY_TABS, formatSenders, threadListDate } from '../lib/mail'
+  import { CATEGORY_TABS, formatSenders, recentActionLine, threadListDate } from '../lib/mail'
   import { mail } from '../lib/mail.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
@@ -30,6 +30,15 @@
 
   const openAccount = $derived(
     mail.openThread ? accounts.account(mail.openThread.thread.accountId) : undefined,
+  )
+
+  /** The lines worth showing under the open thread's subject -- non-person
+   *  origins and failures, per `recentActionLine`'s own rule; oldest of the
+   *  handful the backend sends last, so the most recent reads first. */
+  const recentActionLines = $derived(
+    (mail.openThread?.recentActions ?? [])
+      .map(recentActionLine)
+      .filter((l): l is string => l !== null),
   )
   /** (p) TODO: `summarize_thread` stays out of reach until the account's
    *  own `mailAi.summaries` switch is on -- see `mail-api.ts`'s TODO(p). */
@@ -57,7 +66,7 @@
         icon: 'check',
         run: () => void (t.unreadCount > 0 ? mail.markRead(t.id) : mail.markUnread(t.id)),
       },
-      { label: 'Star', icon: 'star', run: () => void mail.toggleStar(t.id) },
+      { label: t.starred ? 'Unstar' : 'Star', icon: 'star', run: () => void mail.toggleStar(t.id) },
       { label: 'Snooze…', icon: 'clock', run: () => (mail.wantsSnooze = t.id) },
       { label: 'Label…', icon: 'tag', run: () => (mail.wantsLabel = t.id) },
       { label: 'Move to…', icon: 'layers', items: moveMailboxItems(t) },
@@ -140,10 +149,17 @@
           <div class="body">
             <div class="line1">
               <span class="from">{formatSenders(t.participants)}</span>
+              {#if t.starred}
+                <Icon name="star" size={12} />
+              {/if}
+              {#if t.hasAttachments}
+                <Icon name="tag" size={12} />
+              {/if}
               <span class="date">{threadListDate(t.lastDate)}</span>
             </div>
             <div class="line2">
               <span class="subject">{t.subject || '(no subject)'}</span>
+              {#if t.snippet}<span class="snippet">— {t.snippet}</span>{/if}
             </div>
           </div>
         </button>
@@ -187,13 +203,17 @@
             <div class="body">
               <div class="line1">
                 <span class="from">{formatSenders(t.participants)}</span>
+                {#if t.starred}
+                  <Icon name="star" size={12} />
+                {/if}
+                {#if t.hasAttachments}
+                  <Icon name="tag" size={12} />
+                {/if}
                 <span class="date">{threadListDate(t.lastDate)}</span>
               </div>
               <div class="line2">
-                <!-- No snippet here: `Thread` carries no cached one -- see its
-                   own doc in `types.ts` for why that is a reported gap
-                   rather than a faked field. -->
                 <span class="subject">{t.subject || '(no subject)'}</span>
+                {#if t.snippet}<span class="snippet">— {t.snippet}</span>{/if}
                 {#if t.messageCount > 1}<span class="count">{t.messageCount}</span>{/if}
               </div>
             </div>
@@ -207,21 +227,30 @@
 <main class="main">
   {#if mail.openThread}
     <div class="thread-head">
-      <button class="back" onclick={() => mail.closeThread()} title="Back to the list (Escape)">
-        <Icon name="chevron" size={14} />
-      </button>
-      <h1>{mail.openThread.thread.subject || '(no subject)'}</h1>
-      <span class="count">{plural(mail.openThread.messages.length, 'message')}</span>
-      {#if canSummarize}
-        <button
-          class="summarize"
-          title="Summarise (Z)"
-          disabled={mail.summarizing}
-          onclick={() => void mail.summarizeOpenThread()}
-        >
-          <Icon name="sparkle" size={13} />
-          {mail.summarizing ? 'Summarising…' : 'Summarise'}
+      <div class="thread-head-row">
+        <button class="back" onclick={() => mail.closeThread()} title="Back to the list (Escape)">
+          <Icon name="chevron" size={14} />
         </button>
+        <h1>{mail.openThread.thread.subject || '(no subject)'}</h1>
+        <span class="count">{plural(mail.openThread.messages.length, 'message')}</span>
+        {#if canSummarize}
+          <button
+            class="summarize"
+            title="Summarise (Z)"
+            disabled={mail.summarizing}
+            onclick={() => void mail.summarizeOpenThread()}
+          >
+            <Icon name="sparkle" size={13} />
+            {mail.summarizing ? 'Summarising…' : 'Summarise'}
+          </button>
+        {/if}
+      </div>
+      {#if recentActionLines.length > 0}
+        <p class="recent-actions">
+          {#each recentActionLines as line, i (i)}
+            {#if i > 0}<span class="sep">·</span>{/if}<span>{line}</span>
+          {/each}
+        </p>
       {/if}
     </div>
     {#if mail.summary && mail.summary.threadId === mail.openThread.thread.id}
@@ -365,8 +394,22 @@
   .line1,
   .line2 {
     display: flex;
+    align-items: center;
     gap: var(--sp-2);
     overflow: hidden;
+  }
+  .line1 :global(svg),
+  .line2 :global(svg) {
+    flex: none;
+    color: var(--fg-faint);
+  }
+  .snippet {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--fg-faint);
   }
   .from {
     flex: 1;
@@ -435,12 +478,27 @@
   }
   .thread-head {
     display: flex;
+    flex-direction: column;
+    flex: none;
+    padding: 0 var(--sp-4);
+    border-bottom: 1px solid var(--border);
+  }
+  .thread-head-row {
+    display: flex;
     align-items: center;
     gap: var(--sp-2);
     height: var(--header-h);
-    padding: 0 var(--sp-4);
-    flex: none;
-    border-bottom: 1px solid var(--border);
+  }
+  .recent-actions {
+    display: flex;
+    gap: var(--sp-2);
+    margin: 0;
+    padding-bottom: var(--sp-2);
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+  }
+  .recent-actions .sep {
+    opacity: 0.5;
   }
   .back {
     display: grid;

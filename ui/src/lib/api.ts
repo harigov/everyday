@@ -1041,6 +1041,10 @@ export const api = {
     limit?: number | null,
   ) => call('listThreads', { mailbox, filter, cursor, limit }),
   thread: (id: ThreadId) => call('getThread', { id }),
+  /** A part left `available: false` on a `MailMessageDetail` -- over the
+   *  attachment cap, with no blob yet. */
+  fetchAttachment: (messageId: MailMessageId, index: number) =>
+    call('fetchAttachment', { messageId, index }),
 
   // ── Mail: batch thread actions ──────────────────────────────────────
   //
