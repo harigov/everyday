@@ -45,12 +45,15 @@
 //! interpret. The hook is `async`, which is what lets it wait for a person.
 
 use crate::events::Kind;
+use crate::service::Service;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use everyday_core::RoutineRunId;
-use everyday_core::agent::tools::{self, Effect, ToolContext};
+use everyday_core::agent::tools::{self, Caller as ToolCaller, Effect, ToolContext};
 use everyday_core::agent::{AgentSettings, Conversation, Message as VaultMessage, Role, ToolCall};
+use everyday_core::mail::Origin as MailOrigin;
 use everyday_core::model::system_tz;
 use everyday_core::{ConversationId, Vault};
 use rig_agent::agent::hook::{
@@ -64,7 +67,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::oneshot;
 
-use crate::error::{CommandError, CommandResult, codes};
+use crate::error::{CommandError, CommandResult, codes, mail_rate_limit_error};
 
 /// Where a turn's events go.
 ///
@@ -103,15 +106,32 @@ pub enum AgentEvent {
     /// That tool finished, or failed. `summary` is the human sentence the
     /// card shows; the model gets the full result separately.
     ToolFinished { call_id: String, name: String, ok: bool, summary: String },
-    /// A destructive call is waiting on a person. The panel draws the
+    /// A call is waiting on a person before it may run. The panel draws the
     /// confirm/decline buttons and answers with `confirm_tool_call`.
     ConfirmationRequired {
         call_id: String,
         name: String,
-        /// What will be destroyed, named rather than identified: "the deck"
-        /// rather than a UUID.
+        /// What is about to happen, named rather than identified: "the
+        /// deck" for a delete, "to alice@example.com — Re: dinner — ..."
+        /// for a send, the query itself for a `web_search` asked about
+        /// after mail was read this turn.
         subject: String,
         arguments: serde_json::Value,
+        /// Why this is being asked, so the panel can draw a different card
+        /// for each: `"destructive"` (removes something, no undo),
+        /// `"outward"` (reaches somebody who is not the vault's owner) or
+        /// `"search"` (mail was read this turn, and this would send its own
+        /// query to a search provider). See [`everyday_core::agent::tools::
+        /// Effect::Outward`] and `agent::tools::mail`'s module docs for the
+        /// first two, and the `web_search` doc comment below for the third.
+        ///
+        /// An owned `String` rather than `&'static str`: this event round
+        /// trips through `Deserialize` too (every event this rail emits is
+        /// replayed from a line of NDJSON on the other side of a process
+        /// boundary in `everyday-server`'s own client), and a borrowed
+        /// `'static` field cannot be produced from bytes that live only as
+        /// long as the line they arrived on.
+        kind: String,
     },
     /// The turn is over. Sent exactly once, whatever else happened, so the
     /// panel always has something to stop its spinner on.
@@ -200,6 +220,16 @@ struct ConfirmGate {
     /// What ran this turn, in call order, so the thread is written down with
     /// its tool calls rather than only its prose. See `run_turn`.
     ledger: Arc<Mutex<Vec<Ran>>>,
+    /// Set the moment a mail `Read` tool has returned content this turn --
+    /// checked by `web_search`'s own gate below. See the plan's "the
+    /// exfiltration path through `web_search`": a model that has just read
+    /// mail can put its words in a search query, so once that has happened
+    /// this turn, a search stops to ask first and shows what it would send.
+    /// A `bool` behind an `Arc` rather than a field on `Turn` itself,
+    /// because this hook -- unlike `Turn` -- outlives no single tool call
+    /// and has to be read and written from the same closures that read and
+    /// write `ledger`.
+    mail_read_this_turn: Arc<AtomicBool>,
 }
 
 /// One tool call and what it returned, kept for the record.
@@ -208,6 +238,39 @@ struct Ran {
     call: ToolCall,
     /// `None` until the result arrives -- a call the run abandoned keeps it.
     outcome: Option<std::result::Result<String, String>>,
+    /// The id (or ids) a successful write named itself, read out of its own
+    /// JSON result -- see `done` and `agent::tools::mail::draft_result` in
+    /// the core, both of which put an `id` in every mutating tool's answer.
+    /// What lets [`written`] report a `Change` with the record it actually
+    /// touched rather than none at all.
+    ids: Vec<String>,
+}
+
+/// Whether -- and, if so, why -- a call must stop and ask before it runs.
+/// `None` means run it immediately.
+///
+/// Pulled out of [`ConfirmGate::on_tool_call`] as a pure function on
+/// purpose: everything else that hook does is plumbing (registering a
+/// waiter, emitting events) that needs rig's own types to exercise, while
+/// this is the one decision actually worth a test of its own -- in
+/// particular, that `web_search` is left alone right up until
+/// `tainted_search` says a mail `Read` tool has already returned content
+/// this turn, and is never left alone again once it has.
+fn must_confirm(
+    effect: Option<Effect>,
+    enabled: bool,
+    tainted_search: bool,
+) -> Option<&'static str> {
+    match effect {
+        // A destructive call is gated on the person's own setting; the
+        // other two are not, because neither has a setting that turns them
+        // off -- see `Effect::Outward`'s own docs and the module doc's "the
+        // exfiltration path through `web_search`".
+        Some(Effect::Destructive) if enabled => Some("destructive"),
+        Some(Effect::Outward) => Some("outward"),
+        _ if tainted_search => Some("search"),
+        _ => None,
+    }
 }
 
 impl AgentHook for ConfirmGate {
@@ -230,13 +293,21 @@ impl AgentHook for ConfirmGate {
                 arguments: arguments.clone(),
             },
             outcome: None,
+            ids: Vec::new(),
         });
 
-        let destructive = tools::find(&name).is_some_and(|t| t.effect == Effect::Destructive);
-        if !destructive || !self.enabled {
+        // `web_search` is not in the core catalogue -- `tools::find` answers
+        // `None` for it -- so it reaches this hook exactly like every other
+        // tool and is singled out here rather than by a second hook. See the
+        // module doc's "the exfiltration path through `web_search`".
+        let tainted_search =
+            name == "web_search" && self.mail_read_this_turn.load(Ordering::Acquire);
+        let Some(kind) =
+            must_confirm(tools::find(&name).map(|t| t.effect), self.enabled, tainted_search)
+        else {
             (self.channel)(AgentEvent::ToolStarted { call_id, name, arguments });
             return ToolCallAction::Run;
-        }
+        };
 
         // Nobody is there. Declined on the spot rather than asked about:
         // registering a waiter would park a scheduled run on a question nobody
@@ -246,7 +317,8 @@ impl AgentHook for ConfirmGate {
         // The model is told plainly that it was not done and why, so it can say
         // so in its report rather than trying again. Somebody who wants a
         // routine to delete things turns the confirmation off, having read the
-        // sentence beside the switch.
+        // sentence beside the switch -- `outward` and `search` have no such
+        // switch and are refused unattended regardless.
         if self.unattended {
             (self.channel)(AgentEvent::ToolFinished {
                 call_id,
@@ -254,21 +326,39 @@ impl AgentHook for ConfirmGate {
                 ok: false,
                 summary: "declined: nobody was there to confirm it".into(),
             });
-            return ToolCallAction::Skip(
-                "This deletes something, and this is a scheduled run with nobody watching, \
-                 so it was refused. Do not try it again or work around it. Say in your \
-                 reply that it needs doing and leave it to them."
-                    .into(),
-            );
+            let reason = match kind {
+                "outward" => {
+                    "This sends something, and this is a scheduled run with nobody watching, \
+                     so it was refused. Do not try it again or work around it. Say in your \
+                     reply that it is ready to send and leave it to them."
+                }
+                "search" => {
+                    "This would search the web with words from mail this run has read, and \
+                     this is a scheduled run with nobody watching to confirm that, so it was \
+                     refused. Do not try it again or work around it."
+                }
+                _ => {
+                    "This deletes something, and this is a scheduled run with nobody watching, \
+                     so it was refused. Do not try it again or work around it. Say in your \
+                     reply that it needs doing and leave it to them."
+                }
+            };
+            return ToolCallAction::Skip(reason.into());
         }
 
+        let subject = if kind == "search" {
+            arguments.get("query").and_then(|v| v.as_str()).unwrap_or_default().to_string()
+        } else {
+            self.describe(&name, &arguments)
+        };
         let waiter = self.pending.register(&call_id);
         self.issued.lock().unwrap().push(call_id.clone());
         (self.channel)(AgentEvent::ConfirmationRequired {
             call_id: call_id.clone(),
             name: name.clone(),
-            subject: self.describe(&name, &arguments),
+            subject,
             arguments: arguments.clone(),
+            kind: kind.to_string(),
         });
 
         // A dropped sender means the turn was cancelled or the window went
@@ -305,11 +395,27 @@ impl AgentHook for ConfirmGate {
             None => summarise(event.raw_result.output()),
         };
 
+        if ok {
+            // The taint `web_search`'s own gate reads -- see the module
+            // doc's "the exfiltration path through `web_search`". Set on
+            // any successful mail `Read` tool, not only `read_thread`:
+            // `search_mail`'s snippets and `list_threads`' subjects are
+            // just as much somebody else's writing arriving in context.
+            let is_mail_read = tools::find(event.tool_name)
+                .is_some_and(|t| t.domain == tools::Domain::Mail && t.effect == Effect::Read);
+            if is_mail_read {
+                self.mail_read_this_turn.store(true, Ordering::Release);
+            }
+        }
+
         // Recorded against the call it answers, so a reopened thread shows
         // what the assistant did rather than only what it said about it.
         let mut ledger = self.ledger.lock().unwrap();
         if let Some(ran) = ledger.iter_mut().find(|r| r.call.id == event.internal_call_id) {
             ran.outcome = Some(if ok { Ok(summary.clone()) } else { Err(summary.clone()) });
+            if ok {
+                ran.ids = result_ids(event.raw_result.output());
+            }
         }
         drop(ledger);
 
@@ -336,8 +442,33 @@ impl ConfirmGate {
             tz: &self.tz,
             conversation: None,
             unattended: self.unattended,
+            // A confirmation card only ever reads a record to name it --
+            // `describe_send_draft` reads the draft's own recipients and
+            // subject straight off the vault -- so none of the four fields
+            // below are needed here, the same way they are not needed by
+            // `every_destructive_tool_can_name_what_it_would_delete` in the
+            // core's own tests.
+            caller: None,
+            mail_search: None,
+            assistant_provider: None,
+            mail_rate_limit: None,
         };
         tools::describe(&ctx, name, arguments).unwrap_or_default()
+    }
+}
+
+/// The id (or ids) a successful write's own JSON result named itself --
+/// what every mutating tool's `done()` shape, and mail's `draft_result`,
+/// already carry. Read here rather than trusted to a caller that only has
+/// the stringified `summary` by the time it would want one.
+fn result_ids(output: &ToolOutput) -> Vec<String> {
+    let Some(json) = output.as_json() else { return Vec::new() };
+    if let Some(id) = json.get("id").and_then(|v| v.as_str()) {
+        return vec![id.to_string()];
+    }
+    match json.get("ids").and_then(|v| v.as_array()) {
+        Some(ids) => ids.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+        None => Vec::new(),
     }
 }
 
@@ -350,18 +481,35 @@ fn zone_name(settings: &AgentSettings) -> String {
     settings.timezone.clone().unwrap_or_else(system_tz)
 }
 
+/// What every tool call within one turn shares, bundled into one value so
+/// that `build` and `run_tool` -- which both need every field here, plus a
+/// handful that vary per call -- stay under clippy's argument-count lint
+/// without losing any of them to a struct nobody could find again by name.
+/// Built once, in [`run_turn`], and cloned for each tool the turn wraps.
+#[derive(Clone)]
+struct TurnMeta {
+    service: Arc<Service>,
+    conversation: ConversationId,
+    /// Set when this turn is a scheduled run -- see [`Turn::unattended`].
+    unattended: bool,
+    /// This turn's own id -- the assistant's reply message id, unique per
+    /// call to [`run_turn`] -- so `Service::check_mail_rate_limit`'s
+    /// per-turn budget resets between one prompt and the next rather than
+    /// accumulating for the life of the whole conversation.
+    turn_id: String,
+}
+
 /// Wrap the core catalogue as rig tools and assemble the agent.
 ///
 /// `vault` is captured by every tool callback, which is why it arrives as an
 /// `Arc`: rig requires the callbacks to be `'static`, and the run outlives the
 /// command that started it.
 fn build(
+    meta: &TurnMeta,
     vault: Arc<Vault>,
     settings: &AgentSettings,
     key: Option<String>,
-    conversation: ConversationId,
     context: Option<&str>,
-    unattended: bool,
 ) -> CommandResult<Agent> {
     let model = &settings.assistant_model;
     let connection = &settings.provider_config;
@@ -388,22 +536,28 @@ fn build(
         .default_max_turns(settings.max_steps as usize);
     let builder = crate::llm::configure(builder, model);
 
-    // Only the tools this vault can actually serve. A model is never told
-    // about storage that does not exist, so it cannot claim to have used it.
+    // Only the tools this vault can actually serve, and -- for mail -- only
+    // what some account actually permits the assistant to do; see
+    // `tools::available_for` and `agent::tools::mail`.
     let zone = zone_name(settings);
+    let assistant_provider = settings.provider_config.acknowledgement_name();
     let wrap = |tool: &'static tools::Tool| {
         let vault = vault.clone();
+        let meta = meta.clone();
         let name = tool.name;
         let zone = zone.clone();
+        let assistant_provider = assistant_provider.clone();
         PortableDynamicTool::new(
             tool.name,
             tool.description,
             tool.parameters(),
             move |arguments: serde_json::Value| {
                 let vault = vault.clone();
+                let meta = meta.clone();
                 let zone = zone.clone();
+                let assistant_provider = assistant_provider.clone();
                 Box::pin(async move {
-                    run_tool(vault, name, arguments, conversation, zone, unattended).await
+                    run_tool(meta, vault, name, arguments, zone, assistant_provider).await
                 })
             },
         )
@@ -414,7 +568,8 @@ fn build(
     // registered on its own and the rest fold onto what that returns -- and a
     // vault with no tools at all, which no shipped backend produces, still
     // builds rather than being a case to handle.
-    let available = tools::available(&vault);
+    let caller = ToolCaller::Assistant { conversation: meta.conversation };
+    let available = tools::available_for(&vault, Some(&caller), Some(&assistant_provider));
     let Some((first, rest)) = available.split_first() else {
         return Ok(builder.build());
     };
@@ -510,12 +665,12 @@ fn web_search_tool() -> PortableDynamicTool {
 /// decrypt. This is the same `spawn_blocking` discipline every command in
 /// [`crate::commands`] follows, for the reason given there.
 async fn run_tool(
+    meta: TurnMeta,
     vault: Arc<Vault>,
     name: &'static str,
     arguments: serde_json::Value,
-    conversation: ConversationId,
     zone: String,
-    unattended: bool,
+    assistant_provider: String,
 ) -> Result<ToolOutput, ToolExecutionError> {
     let outcome = tokio::task::spawn_blocking(move || {
         // Read per call rather than once per turn: a conversation left open
@@ -525,12 +680,27 @@ async fn run_tool(
         // was.
         let now = jiff::Timestamp::now()
             .to_zoned(jiff::tz::TimeZone::get(&zone).unwrap_or(jiff::tz::TimeZone::UTC));
+        // Held for the duration of the call so `mail_search` below can
+        // borrow from it -- `Service::mail_index` hands back an `Arc`, not
+        // a reference, and the `Arc` has to outlive `ctx`.
+        let mail_index = meta.service.mail_index();
+        // Cloned out ahead of the closure below, which otherwise moves the
+        // whole of `meta` and leaves nothing for `ctx` to read afterwards.
+        let service = meta.service.clone();
+        let turn_id = meta.turn_id.clone();
+        let rate_limit = move |origin: &MailOrigin| -> everyday_core::error::Result<()> {
+            service.check_mail_rate_limit(origin, &turn_id).map_err(mail_rate_limit_error)
+        };
         let ctx = ToolContext {
             vault: &vault,
             today: now.date(),
             tz: &zone,
-            conversation: Some(conversation),
-            unattended,
+            conversation: Some(meta.conversation),
+            unattended: meta.unattended,
+            caller: Some(ToolCaller::Assistant { conversation: meta.conversation }),
+            mail_search: mail_index.as_deref(),
+            assistant_provider: Some(assistant_provider),
+            mail_rate_limit: Some(&rate_limit),
         };
         tools::dispatch(&ctx, name, &arguments)
     })
@@ -549,6 +719,7 @@ async fn run_tool(
 /// Everything one turn needs from the caller.
 pub struct Turn {
     pub vault: Arc<Vault>,
+    pub service: Arc<Service>,
     pub pending: Arc<Pending>,
     pub conversation: ConversationId,
     pub prompt: String,
@@ -587,23 +758,29 @@ pub struct Turned {
     /// announces that, and the note it wrote did not.
     ///
     /// Reported rather than emitted here, because a turn has no sink: the two
-    /// callers have one, and each already raises a change of its own.
-    pub wrote: Vec<Kind>,
+    /// callers have one, and each already raises a change of its own. Paired
+    /// with the ids each domain's writes named themselves, when they did --
+    /// see [`written`] -- so `Kind::Thread` reaches a listener with the
+    /// thread the assistant actually touched rather than none at all.
+    pub wrote: Vec<(Kind, Vec<String>)>,
 }
 
-/// One [`Kind`] per domain the tools in `ran` wrote to, in no order and
-/// without repeats.
+/// One [`Kind`] per domain the tools in `ran` wrote to, paired with every id
+/// those writes named themselves, in no order and without repeats.
 ///
 /// A representative kind rather than the exact record: a tool knows which
 /// domain it belongs to and not which table it touched, and the interface
 /// routes a change to an *app* anyway -- `Kind::Task` and `Kind::Project` both
 /// reload the todo app. So one per domain is all the precision there is to
-/// have, and all that is wanted.
+/// have for the *kind*; the ids beside it are exact, because
+/// `docs/plans/mail.md`'s phase 5 asks specifically for a mail write's
+/// `Change` to carry them, so a thread the assistant archived leaves an open
+/// list immediately rather than only on the next full reload.
 ///
 /// Reads only the tools that write. A turn that spent ten steps reading is not
 /// a reason to reload anything.
-fn kinds_written(ran: &[Ran]) -> Vec<Kind> {
-    let mut kinds: Vec<Kind> = Vec::new();
+fn written(ran: &[Ran]) -> Vec<(Kind, Vec<String>)> {
+    let mut out: Vec<(Kind, Vec<String>)> = Vec::new();
     for entry in ran {
         let Some(tool) = tools::find(&entry.call.name) else { continue };
         if !tool.effect.is_write() {
@@ -619,12 +796,14 @@ fn kinds_written(ran: &[Ran]) -> Vec<Kind> {
             tools::Domain::Purpose => Kind::Goal,
             tools::Domain::Routines => Kind::Routine,
             tools::Domain::Agent => Kind::Memory,
+            tools::Domain::Mail => Kind::Thread,
         };
-        if !kinds.contains(&kind) {
-            kinds.push(kind);
+        match out.iter_mut().find(|(k, _)| *k == kind) {
+            Some((_, ids)) => ids.extend(entry.ids.iter().cloned()),
+            None => out.push((kind, entry.ids.clone())),
         }
     }
-    kinds
+    out
 }
 
 /// Run one turn: send what was typed, stream what comes back, write it down.
@@ -637,7 +816,7 @@ fn kinds_written(ran: &[Ran]) -> Vec<Kind> {
 ///
 /// [`AgentStore::put_message`]: everyday_core::store::agent::AgentStore::put_message
 pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
-    let Turn { vault, pending, conversation, prompt, context, channel, unattended } = turn;
+    let Turn { service, vault, pending, conversation, prompt, context, channel, unattended } = turn;
 
     let (settings, key) = vault.agent_credentials()?;
 
@@ -669,8 +848,13 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     let context = unattended_context.or(context);
 
     let unattended_run = unattended.is_some();
-    let agent =
-        build(vault.clone(), &settings, key, conversation, context.as_deref(), unattended_run)?;
+    let meta = TurnMeta {
+        service,
+        conversation,
+        unattended: unattended_run,
+        turn_id: reply.id.to_string(),
+    };
+    let agent = build(&meta, vault.clone(), &settings, key, context.as_deref())?;
     let ledger: Arc<Mutex<Vec<Ran>>> = Arc::default();
     let issued: Arc<Mutex<Vec<String>>> = Arc::default();
     let gate = ConfirmGate {
@@ -683,6 +867,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         today: settings.now().date(),
         tz: zone_name(&settings),
         ledger: ledger.clone(),
+        mail_read_this_turn: Arc::default(),
     };
 
     let outcome =
@@ -697,7 +882,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     // What ran, whether or not the turn as a whole succeeded. A run that
     // failed after deleting a project must still show the deletion.
     let ran = std::mem::take(&mut *ledger.lock().unwrap());
-    let wrote = kinds_written(&ran);
+    let wrote = written(&ran);
 
     match outcome {
         Ok(text) => {
@@ -843,7 +1028,50 @@ fn summarise(output: &ToolOutput) -> String {
 mod tests {
     use super::*;
 
+    // ---- must_confirm ----------------------------------------------------
+
+    #[test]
+    fn a_destructive_call_is_gated_on_the_setting_and_outward_never_is() {
+        assert_eq!(must_confirm(Some(Effect::Destructive), true, false), Some("destructive"));
+        assert_eq!(
+            must_confirm(Some(Effect::Destructive), false, false),
+            None,
+            "confirm_destructive is off"
+        );
+        assert_eq!(must_confirm(Some(Effect::Outward), false, false), Some("outward"));
+        assert_eq!(
+            must_confirm(Some(Effect::Outward), true, false),
+            Some("outward"),
+            "outward is confirmed unconditionally -- there is no setting that turns it off"
+        );
+    }
+
+    /// The exfiltration path through `web_search`: an ordinary search call
+    /// (`effect: None`, since it is not in the core catalogue) runs freely
+    /// until a mail `Read` tool has returned content this turn, and stops
+    /// to ask every time after that.
+    #[test]
+    fn web_search_only_needs_confirming_once_mail_has_been_read_this_turn() {
+        assert_eq!(must_confirm(None, true, false), None, "mail untouched this turn");
+        assert_eq!(must_confirm(None, true, true), Some("search"));
+        assert_eq!(
+            must_confirm(None, false, true),
+            Some("search"),
+            "confirm_destructive is unrelated"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_read_or_write_is_never_gated() {
+        assert_eq!(must_confirm(Some(Effect::Write), true, false), None);
+        assert_eq!(must_confirm(Some(Effect::Read), true, false), None);
+    }
+
     fn ran(name: &str) -> Ran {
+        ran_with_id(name, None)
+    }
+
+    fn ran_with_id(name: &str, id: Option<&str>) -> Ran {
         Ran {
             call: ToolCall {
                 id: name.to_string(),
@@ -851,13 +1079,14 @@ mod tests {
                 arguments: serde_json::json!({}),
             },
             outcome: None,
+            ids: id.map(|i| vec![i.to_string()]).unwrap_or_default(),
         }
     }
 
     /// A turn that only read is not a reason to reload anything.
     #[test]
     fn reading_writes_nothing() {
-        assert!(kinds_written(&[ran("list_notes"), ran("list_tasks")]).is_empty());
+        assert!(written(&[ran("list_notes"), ran("list_tasks")]).is_empty());
     }
 
     /// One kind per domain, however many tools of it were called -- the
@@ -865,8 +1094,8 @@ mod tests {
     /// one turn is a wasted round trip on a connection that may be a phone's.
     #[test]
     fn a_domain_written_to_twice_is_reported_once() {
-        let kinds = kinds_written(&[ran("create_task"), ran("update_task"), ran("create_project")]);
-        assert_eq!(kinds, vec![Kind::Task]);
+        let kinds = written(&[ran("create_task"), ran("update_task"), ran("create_project")]);
+        assert_eq!(kinds.into_iter().map(|(k, _)| k).collect::<Vec<_>>(), vec![Kind::Task]);
     }
 
     /// Every domain the assistant can write to reports something, so no app is
@@ -880,12 +1109,23 @@ mod tests {
                 continue;
             }
             assert_eq!(
-                kinds_written(std::slice::from_ref(&ran(tool.name))).len(),
+                written(std::slice::from_ref(&ran(tool.name))).len(),
                 1,
                 "{} writes and reports no kind, so the app that draws what it \
                  touched is never told to reload",
                 tool.name
             );
         }
+    }
+
+    /// A mail write's own id, read out of its `done()` result, rides along
+    /// on the `Change` -- `docs/plans/mail.md`'s phase 5 asks for exactly
+    /// this, so a thread the assistant archived leaves an open list
+    /// immediately.
+    #[test]
+    fn a_mail_writes_id_travels_with_its_kind() {
+        let id = "0192f8b2-0000-7000-8000-000000000000";
+        let out = written(&[ran_with_id("archive_thread", Some(id))]);
+        assert_eq!(out, vec![(Kind::Thread, vec![id.to_string()])]);
     }
 }
