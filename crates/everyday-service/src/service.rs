@@ -28,11 +28,16 @@ use crate::signin::SignIns;
 use crate::supervisor::Supervisor;
 use crate::token_cache::TokenCache;
 use crate::transfers::Transfers;
+use everyday_core::id::{AccountId, DraftId};
+use everyday_core::mail::Origin;
+use everyday_core::mail::RateLimitState;
+use everyday_core::mail::rate_limit::RateLimitRefusal;
 use everyday_core::{BlobId, CalendarId, Vault};
+use jiff::{SignedDuration, Timestamp};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// The version of the command surface this build speaks.
 ///
@@ -129,6 +134,36 @@ pub struct Service {
     /// [`Service::open_mail`]/[`Service::close_mail`] for the two moments
     /// that open and drop them.
     mail: RwLock<Option<crate::mailsync::wiring::MailState>>,
+    /// One [`tokio::sync::Notify`] per account, woken by [`Service::notify_outbox`]
+    /// whenever a write enqueues an `Op` -- what lets an account's sync task
+    /// drain the outbox the moment something is due rather than waiting for
+    /// its next `IDLE` wake or timer tick. Get-or-create through
+    /// [`Service::outbox_notify`], so whichever of a write command or the
+    /// sync task asks first creates the handle the other one shares.
+    mail_notify: Mutex<HashMap<AccountId, Arc<tokio::sync::Notify>>>,
+    /// When each draft last enqueued an `AppendDraft` op, for
+    /// [`Service::draft_append_due`]'s thirty-second debounce. Session
+    /// state, not a vault fact: a draft typed into for a minute autosaves
+    /// locally on every keystroke, and this is what stops each of those
+    /// saves from also appending to the server's Drafts folder.
+    mail_draft_debounce: Mutex<HashMap<DraftId, Timestamp>>,
+    /// Per-caller state for [`Service::check_mail_rate_limit`], keyed by
+    /// `Origin::Assistant`'s conversation or `Origin::Mcp`'s client name.
+    /// `Origin::Person` and `Origin::Routine` never appear here --
+    /// [`Origin::is_rate_limited`](everyday_core::mail::Origin::is_rate_limited)
+    /// says so, and [`Service::check_mail_rate_limit`] returns before ever
+    /// touching this map for either.
+    mail_rate_limits: Mutex<HashMap<String, RateLimitState>>,
+    /// Where this process's own last `AppendDraft` for each draft landed --
+    /// what `crates/everyday-service/src/outbox.rs`'s `Lookups`
+    /// implementation answers `draft_server_copy` with, so the next
+    /// `AppendDraft` deletes the stale copy before writing a fresh one.
+    /// Session state, not a vault fact: the `Draft` record has nowhere to
+    /// carry a server uid without giving every draft a field that means
+    /// nothing until the first append, and losing this on restart only
+    /// costs one extra stale copy in Drafts rather than a wrong deletion --
+    /// see that module's docs for the full trade-off.
+    mail_draft_server_copy: Mutex<HashMap<DraftId, everyday_mail::outbox::Located>>,
 }
 
 impl Default for Service {
@@ -155,6 +190,10 @@ impl Service {
             token_cache: Arc::new(TokenCache::new()),
             remote_image_once: RwLock::new(HashSet::new()),
             mail: RwLock::new(None),
+            mail_notify: Mutex::new(HashMap::new()),
+            mail_draft_debounce: Mutex::new(HashMap::new()),
+            mail_rate_limits: Mutex::new(HashMap::new()),
+            mail_draft_server_copy: Mutex::new(HashMap::new()),
         }
     }
 
@@ -307,6 +346,118 @@ impl Service {
         self.events().lock_state(false);
     }
 
+    // ---- the outbox -------------------------------------------------------
+    //
+    // Three small pieces of session state `everyday_service::domains::mail`'s
+    // write commands and the sync agent's per-account task both reach for --
+    // see `crates/everyday-service/src/outbox.rs`'s module docs for exactly
+    // how the sync agent is meant to call `drain_outbox` alongside these.
+
+    /// The [`tokio::sync::Notify`] `account`'s sync task should
+    /// `.notified().await` on between polls, woken by
+    /// [`Service::notify_outbox`]. Get-or-create: whichever of the sync task
+    /// or a write command asks first creates the handle, and the other
+    /// shares it.
+    pub fn outbox_notify(&self, account: AccountId) -> Arc<tokio::sync::Notify> {
+        self.mail_notify
+            .lock()
+            .unwrap()
+            .entry(account)
+            .or_insert_with(|| Arc::new(tokio::sync::Notify::new()))
+            .clone()
+    }
+
+    /// Wake `account`'s sync task to drain the outbox now, rather than
+    /// leaving whatever it just enqueued to wait for the next `IDLE` wake or
+    /// timer tick. Every write command that touches the outbox calls this
+    /// once per distinct account it enqueued an op for.
+    pub fn notify_outbox(&self, account: AccountId) {
+        self.outbox_notify(account).notify_one();
+    }
+
+    /// Should this draft append to the server's Drafts folder right now?
+    /// `true` no more than once every thirty seconds per draft -- the
+    /// coalescing `docs/plans/mail.md`'s phase 3 section asks `save_draft`
+    /// to do, so that autosaving on every keystroke does not flood the
+    /// account's Drafts folder with one `APPEND` per keystroke. Answering
+    /// `true` also records `now` as this draft's last append, so the very
+    /// next call within the window answers `false`.
+    pub fn draft_append_due(&self, draft: DraftId, now: Timestamp) -> bool {
+        const DEBOUNCE: SignedDuration = SignedDuration::from_secs(30);
+        let mut last = self.mail_draft_debounce.lock().unwrap();
+        let due = match last.get(&draft) {
+            Some(&previous) => now.duration_since(previous) >= DEBOUNCE,
+            None => true,
+        };
+        if due {
+            last.insert(draft, now);
+        }
+        due
+    }
+
+    /// Where this process's own last successful `AppendDraft` for `draft`
+    /// landed, or `None` when there has not been one this session -- what
+    /// the outbox's `Lookups` implementation answers
+    /// `draft_server_copy` with.
+    pub fn draft_server_copy(&self, draft: DraftId) -> Option<everyday_mail::outbox::Located> {
+        self.mail_draft_server_copy.lock().unwrap().get(&draft).cloned()
+    }
+
+    /// Record where an `AppendDraft` just landed, for the next one to find
+    /// with [`Service::draft_server_copy`].
+    pub fn set_draft_server_copy(&self, draft: DraftId, located: everyday_mail::outbox::Located) {
+        self.mail_draft_server_copy.lock().unwrap().insert(draft, located);
+    }
+
+    /// The one gate every mail-op enqueue passes through, per the plan's
+    /// risk table: *"the assistant floods the outbox... exceeding it is an
+    /// error the model reads."* `origin` and `turn` are exactly
+    /// [`RateLimitState::check`]'s own two arguments; this only adds the
+    /// per-caller bucket, keyed by the conversation or client
+    /// [`Origin::is_rate_limited`](everyday_core::mail::Origin::is_rate_limited)
+    /// names, and the numbers below.
+    ///
+    /// `Origin::Person` and `Origin::Routine` return `Ok(())` immediately,
+    /// without ever touching the limiter or reading `turn` -- see
+    /// `Origin::is_rate_limited`'s own docs for why a person's clicking and
+    /// a routine's rare, bounded run are not the flood risk this exists
+    /// for. Nothing in phase 3 constructs an `Assistant` or `Mcp` origin --
+    /// that arrives with phase 5 -- but every write command already calls
+    /// this before it enqueues, so the day one does, it is already checked.
+    pub fn check_mail_rate_limit(&self, origin: &Origin, turn: &str) -> CommandResult<()> {
+        /// How many mail ops one model turn may enqueue before it is
+        /// refused -- generous enough for "archive these dozen newsletters"
+        /// in one go, tight enough that a runaway loop cannot spend a whole
+        /// minute's budget in a single turn.
+        const PER_TURN: u32 = 20;
+        /// How many mail ops one caller may enqueue per rolling minute.
+        const PER_MINUTE: u32 = 60;
+
+        if !origin.is_rate_limited() {
+            return Ok(());
+        }
+        let key = match origin {
+            Origin::Assistant { conversation } => format!("assistant:{conversation}"),
+            Origin::Mcp { client } => format!("mcp:{client}"),
+            Origin::Person | Origin::Routine { .. } => return Ok(()),
+        };
+        let now = Timestamp::now();
+        let mut limits = self.mail_rate_limits.lock().unwrap();
+        let state =
+            limits.entry(key).or_insert_with(|| RateLimitState::new(PER_TURN, PER_MINUTE, now));
+        state.check(turn, now).map_err(|refusal| {
+            let message = match refusal {
+                RateLimitRefusal::PerTurn => {
+                    "too many mail actions in this turn; wait for the next one"
+                }
+                RateLimitRefusal::PerMinute => {
+                    "too many mail actions in the last minute; slow down"
+                }
+            };
+            CommandError::new(codes::RATE_LIMITED, message)
+        })
+    }
+
     // ---- the vault ------------------------------------------------------
 
     pub fn set(self: &Arc<Self>, vault: Vault) -> Arc<Vault> {
@@ -346,6 +497,10 @@ impl Service {
         self.running_routine.write().unwrap().take();
         self.remote_image_once.write().unwrap().clear();
         self.close_mail();
+        self.mail_notify.lock().unwrap().clear();
+        self.mail_draft_debounce.lock().unwrap().clear();
+        self.mail_rate_limits.lock().unwrap().clear();
+        self.mail_draft_server_copy.lock().unwrap().clear();
         let previous = self.vault.write().unwrap().take();
         if let Some(vault) = &previous {
             // Drop the key and the decrypted index now rather than whenever the

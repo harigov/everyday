@@ -51,6 +51,7 @@ pub mod idempotency;
 pub mod llm;
 pub mod mailsync;
 pub mod mailview;
+pub mod outbox;
 pub mod quick;
 pub mod scheduler;
 pub mod service;

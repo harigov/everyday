@@ -595,6 +595,34 @@ pub trait MailSession: Send {
     /// Add and remove flags on a set of UIDs in one round trip.
     async fn store_flags(&mut self, uids: &UidSet, add: Flags, remove: Flags) -> Result<()>;
 
+    /// Add and remove Gmail labels (`X-GM-LABELS`) on a set of UIDs, in one
+    /// round trip each way — the label equivalent of [`Self::store_flags`],
+    /// and the one [`crate::outbox`] reaches for instead of it when
+    /// [`Capabilities::gmail`] is set: Gmail's Inbox, and every other
+    /// mailbox this crate would otherwise `SELECT` by name, is really a
+    /// label, so archiving a Gmail message is `-X-GM-LABELS (\Inbox)`, never
+    /// a `MOVE`. See `docs/plans/mail.md`'s "the Gmail folder rule".
+    ///
+    /// Added here rather than folded into [`Self::store_flags`] because a
+    /// label is an arbitrary string a person or Gmail itself chose, not one
+    /// of the five fixed [`Flags`] this trait already has a closed
+    /// vocabulary for — the same reason [`GmailMeta::labels`] is its own
+    /// `Vec<String>` rather than more bits in [`Flags`].
+    ///
+    /// The default implementation refuses with
+    /// [`MailError::Unsupported`]`("Gmail labels")`, which is correct for
+    /// every adapter that is not talking to Gmail and saves each of them
+    /// from having to say so by hand; [`crate::imap::ImapSession`] is the
+    /// one adapter that overrides it.
+    async fn store_gmail_labels(
+        &mut self,
+        _uids: &UidSet,
+        _add: &[String],
+        _remove: &[String],
+    ) -> Result<()> {
+        Err(MailError::Unsupported("Gmail labels"))
+    }
+
     /// Move a set of UIDs to another mailbox in the same account.
     async fn move_to(&mut self, uids: &UidSet, mailbox: &str) -> Result<()>;
 

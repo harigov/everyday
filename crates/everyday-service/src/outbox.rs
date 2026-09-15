@@ -1,0 +1,418 @@
+//! Draining one account's outbox: the seam between
+//! [`everyday_mail::outbox::execute`], which knows how to run one [`Op`]
+//! against a live session, and the vault, which is the only place that
+//! knows what a thread, a message or a draft actually is. Nothing in
+//! `everyday-mail` imports a vault -- see that crate's `outbox` module docs
+//! -- so this is where the two meet: [`VaultLookups`] answers
+//! `everyday_mail::outbox::Lookups` by reading the vault, and
+//! [`drain_outbox`] is the loop that fetches due ops, runs each one, and
+//! writes back what happened.
+//!
+//! # How the sync agent should call this
+//!
+//! Exactly two triggers, both cheap to get wrong in the same direction --
+//! calling too rarely, which is a slow inbox, not a bug:
+//!
+//! 1. **After every `IDLE` wake.** A `MailSession::idle` return is already
+//!    the sync engine's cue to resync the mailbox; draining the outbox in
+//!    the same breath means an op that has been sitting since the last
+//!    wake goes out immediately rather than waiting for its own timer.
+//! 2. **On a short timer while ops are pending.** [`DrainReport::pending`]
+//!    says whether this call's `due_ops` page came back full -- the account
+//!    task should keep calling `drain_outbox` back-to-back for as long as
+//!    it does, then fall back to a slower timer (a few seconds is plenty;
+//!    `not_before` is what actually paces retries and undo-send) once it
+//!    comes back short.
+//!
+//! Both triggers are also why [`Service::outbox_notify`] exists: a write
+//! command's [`Service::notify_outbox`] wakes the very `tokio::select!` an
+//! account task is almost certainly already blocked in between an `IDLE`
+//! and its next poll, so undo send's countdown and an archive's
+//! confirmation do not wait for either trigger above to come around on its
+//! own.
+//!
+//! # The one thing this file does not solve: a draft's stale server copy
+//!
+//! See [`Service::draft_server_copy`]'s own docs. In short: the `Draft`
+//! record has nowhere to remember where its last `AppendDraft` landed, so
+//! that fact lives in memory on [`Service`] instead, which means a restart
+//! forgets it -- the cost is one extra stale copy left in Drafts until the
+//! next edit, not a wrong deletion, which is the trade-off worth making
+//! rather than growing the schema for a fact that is cheap to be wrong
+//! about.
+//!
+//! # The other thing it approximates: a reply's `References` chain
+//!
+//! [`VaultLookups::parent_raw`] cannot read a message's real raw bytes --
+//! the pack store is wired up by the sync engine's own module, not this
+//! one -- so it synthesises just enough of a header block
+//! (`Message-ID`, `From`, `Date`) from the already-decrypted [`Message`]
+//! row for [`everyday_mail::compose::reply_headers`] to thread `In-Reply-To`
+//! correctly and seed `References` with the immediate parent. A deep
+//! reply chain's earlier ancestors -- which a real client reads from the
+//! parent's own `References` header -- are not reconstructed, since that
+//! header is not stored anywhere in the clear. Once the pack store is
+//! reachable from here this narrows to a real `mime::parse` of genuine
+//! bytes, with no change to `everyday_mail::outbox`'s own contract.
+
+use std::sync::Arc;
+
+use everyday_core::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, ThreadId};
+use everyday_core::mail::{Draft, MailboxRole, Op, OpKind, OpState, OpTarget};
+use everyday_mail::outbox::{
+    ExecContext, Executed, Located, Lookups, Sender, execute, is_retryable,
+};
+use everyday_mail::session::MailSession;
+use jiff::Timestamp;
+
+use crate::error::{CommandError, CommandResult};
+use crate::service::{Service, blocking};
+
+/// How many due ops one [`drain_outbox`] call fetches and runs. Bounded so
+/// one call cannot hold the vault's writer for an unbounded backlog; the
+/// module docs' calling convention is what lets the account task simply
+/// call again when [`DrainReport::pending`] says there is more.
+const DRAIN_BATCH: u32 = 25;
+
+/// What one [`drain_outbox`] pass did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DrainReport {
+    /// Ops this pass ran, whatever the outcome.
+    pub attempted: u32,
+    /// Ops that reached [`OpState::Done`].
+    pub done: u32,
+    /// Ops that failed with a retryable error and went back to
+    /// [`OpState::Pending`] with a later `not_before`.
+    pub retried: u32,
+    /// Ops that failed permanently: [`OpState::Failed`]`{ permanent: true }`,
+    /// with the optimistic local change reversed.
+    pub failed: u32,
+    /// `true` when this pass's `due_ops` page came back at [`DRAIN_BATCH`] --
+    /// a hint, not a promise, that calling again immediately would find
+    /// more due work rather than an empty page.
+    pub pending: bool,
+}
+
+/// Fetch `account`'s due ops and run each one against `session` and
+/// `sender`, in order. See the module docs for exactly when the sync
+/// agent's per-account task should call this.
+pub async fn drain_outbox<S, T>(
+    svc: &Arc<Service>,
+    account: AccountId,
+    session: &mut S,
+    sender: &T,
+) -> CommandResult<DrainReport>
+where
+    S: MailSession,
+    T: Sender,
+{
+    let vault = svc.require()?;
+    let now = Timestamp::now();
+    let ops = blocking({
+        let vault = vault.clone();
+        move || Ok(vault.due_ops(account, now, DRAIN_BATCH)?)
+    })
+    .await?;
+
+    let mut report = DrainReport { pending: ops.len() as u32 == DRAIN_BATCH, ..Default::default() };
+    let lookups = VaultLookups { svc: svc.clone(), account, gmail: session.capabilities().gmail };
+
+    for mut op in ops {
+        report.attempted += 1;
+
+        op.transition_to(OpState::InFlight)?;
+        persist_op(&vault, &op).await?;
+
+        let mut ctx = ExecContext { session, sender, lookups: &lookups };
+        match execute(&op, &mut ctx).await {
+            Ok(executed) => {
+                on_success(svc, &vault, &op, executed).await?;
+                op.transition_to(OpState::Done)?;
+                persist_op(&vault, &op).await?;
+                report.done += 1;
+            }
+            Err(err) if is_retryable(&err) => {
+                op.attempts += 1;
+                op.last_error = Some(err.to_string());
+                let backoff = everyday_core::mail::backoff_for_attempt(op.attempts);
+                op.not_before = Timestamp::now() + backoff;
+                op.transition_to(OpState::Pending)?;
+                persist_op(&vault, &op).await?;
+                report.retried += 1;
+            }
+            Err(err) => {
+                op.attempts += 1;
+                let message = err.to_string();
+                op.last_error = Some(message.clone());
+                op.transition_to(OpState::Failed { permanent: true, message })?;
+                persist_op(&vault, &op).await?;
+                on_permanent_failure(&vault, &op).await?;
+                report.failed += 1;
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+async fn persist_op(vault: &Arc<everyday_core::Vault>, op: &Op) -> CommandResult<()> {
+    let vault = vault.clone();
+    let op = op.clone();
+    blocking(move || Ok(vault.update_op(&op)?)).await
+}
+
+/// What a successfully executed op does beyond marking itself `Done`:
+/// `Send` marks the draft sent, `AppendDraft` remembers where the fresh
+/// copy landed.
+async fn on_success(
+    svc: &Arc<Service>,
+    vault: &Arc<everyday_core::Vault>,
+    op: &Op,
+    executed: Executed,
+) -> CommandResult<()> {
+    match executed {
+        Executed::Ok => Ok(()),
+        Executed::Sent { .. } => {
+            let OpTarget::Draft(id) = op.target else {
+                return Ok(()); // guarded by `everyday_mail::outbox::send`'s own contract
+            };
+            let vault = vault.clone();
+            blocking(move || {
+                let mut draft = vault.draft(id)?;
+                draft.state = everyday_core::mail::DraftState::Sent;
+                draft.updated_at = Timestamp::now();
+                vault.save_draft(&draft)?;
+                Ok(())
+            })
+            .await
+        }
+        Executed::Appended { uid: Some(uid) } => {
+            let OpTarget::Draft(id) = op.target else { return Ok(()) };
+            let Some(drafts_mailbox) =
+                special_use(vault, op.account_id, MailboxRole::Drafts).await?
+            else {
+                return Ok(()); // nothing to remember without a mailbox name to pair the uid with
+            };
+            svc.set_draft_server_copy(id, Located { mailbox: drafts_mailbox, uid });
+            Ok(())
+        }
+        // No `APPENDUID`: this crate cannot name the fresh copy's uid, so
+        // the next `AppendDraft` will not find a `draft_server_copy` either
+        // and simply writes another one -- a harmless extra copy on a
+        // server old enough to lack UIDPLUS, not a wrong deletion.
+        Executed::Appended { uid: None } => Ok(()),
+    }
+}
+
+/// What a permanently failed op undoes: the batch actions' local effect for
+/// a thread-targeted op, and a queued send's draft state for `Send`.
+/// `AppendDraft` made no optimistic local change to undo -- `save_draft`
+/// writes the person's own text regardless of whether the server copy
+/// ever lands -- so it is left alone.
+async fn on_permanent_failure(vault: &Arc<everyday_core::Vault>, op: &Op) -> CommandResult<()> {
+    match op.target {
+        OpTarget::Thread(thread) => {
+            let vault = vault.clone();
+            let kind = op.kind.clone();
+            blocking(move || Ok(vault.revert_thread_op(thread, &kind)?)).await
+        }
+        OpTarget::Draft(id) if matches!(op.kind, OpKind::Send) => {
+            let vault = vault.clone();
+            let op_id = op.id;
+            blocking(move || {
+                let mut draft = vault.draft(id)?;
+                if matches!(draft.state, everyday_core::mail::DraftState::Queued { op: queued } if queued == op_id)
+                {
+                    draft.state = everyday_core::mail::DraftState::Editing;
+                    draft.updated_at = Timestamp::now();
+                    vault.save_draft(&draft)?;
+                }
+                Ok(())
+            })
+            .await
+        }
+        // `AppendDraft`, and a `Message`-targeted op -- nothing in phase 3's
+        // command surface enqueues the latter; see the module docs on
+        // `everyday_mail::outbox::Lookups::message_locations` for the
+        // shape a future caller would need.
+        _ => Ok(()),
+    }
+}
+
+async fn special_use(
+    vault: &Arc<everyday_core::Vault>,
+    account: AccountId,
+    role: MailboxRole,
+) -> CommandResult<Option<String>> {
+    let vault = vault.clone();
+    blocking(move || {
+        Ok(vault.mailboxes(account)?.into_iter().find(|m| m.role == role).map(|m| m.remote_name))
+    })
+    .await
+}
+
+/// Bring every thread whose snooze has passed back to the inbox, and say
+/// so. Called from the minute scheduler (`scheduler::tick`), not from a
+/// command: nobody asks for this, the clock does.
+pub async fn release_due_snoozes(svc: &Arc<Service>) -> CommandResult<usize> {
+    let Some(vault) = svc.get() else { return Ok(0) };
+    if !vault.is_writable() || !vault.supports_mail() {
+        return Ok(0);
+    }
+    let now = Timestamp::now();
+    let due = blocking({
+        let vault = vault.clone();
+        move || Ok(vault.due_snoozed_threads(now, 200)?)
+    })
+    .await?;
+    if due.is_empty() {
+        return Ok(0);
+    }
+    let ids: Vec<String> = due.iter().map(ToString::to_string).collect();
+    blocking({
+        let vault = vault.clone();
+        let due = due.clone();
+        move || {
+            for thread in due {
+                vault.release_snooze(thread)?;
+            }
+            Ok(())
+        }
+    })
+    .await?;
+    svc.events().changed(crate::events::Change {
+        kind: crate::events::Kind::Thread,
+        op: crate::events::Op::Updated,
+        id: None,
+        ids,
+        origin: None,
+    });
+    Ok(due.len())
+}
+
+/// Answers [`everyday_mail::outbox::Lookups`] by reading a vault. See the
+/// module docs for the two places this approximates rather than reaching
+/// into storage this crate does not own.
+struct VaultLookups {
+    svc: Arc<Service>,
+    account: AccountId,
+    /// Captured once, from the live session's own connect-time handshake
+    /// (`MailSession::capabilities`), rather than read from the vault on
+    /// every call -- see the trait method's own docs for why.
+    gmail: bool,
+}
+
+impl VaultLookups {
+    fn vault(&self) -> CommandResult<Arc<everyday_core::Vault>> {
+        self.svc.require()
+    }
+
+    fn locations_of(&self, id: MailMessageId) -> everyday_mail::session::Result<Vec<Located>> {
+        let vault = self.vault().map_err(lookup_err)?;
+        let pairs = vault.mail_message_locations(id).map_err(vault_err)?;
+        pairs
+            .into_iter()
+            .map(|(mailbox, uid)| {
+                let name = vault.mailbox(mailbox).map_err(vault_err)?.remote_name;
+                Ok(Located { mailbox: name, uid })
+            })
+            .collect()
+    }
+}
+
+impl Lookups for VaultLookups {
+    fn thread_locations(&self, thread: ThreadId) -> everyday_mail::session::Result<Vec<Located>> {
+        let vault = self.vault().map_err(lookup_err)?;
+        let (_, messages) = vault.thread(thread).map_err(vault_err)?;
+        let mut out = Vec::new();
+        for message in messages {
+            out.extend(self.locations_of(message.id)?);
+        }
+        Ok(out)
+    }
+
+    fn message_locations(
+        &self,
+        message: MailMessageId,
+    ) -> everyday_mail::session::Result<Vec<Located>> {
+        self.locations_of(message)
+    }
+
+    fn special_use(&self, role: MailboxRole) -> everyday_mail::session::Result<Option<String>> {
+        let vault = self.vault().map_err(lookup_err)?;
+        Ok(vault
+            .mailboxes(self.account)
+            .map_err(vault_err)?
+            .into_iter()
+            .find(|m| m.role == role)
+            .map(|m| m.remote_name))
+    }
+
+    fn mailbox_name(&self, mailbox: MailboxId) -> everyday_mail::session::Result<String> {
+        let vault = self.vault().map_err(lookup_err)?;
+        Ok(vault.mailbox(mailbox).map_err(vault_err)?.remote_name)
+    }
+
+    fn is_gmail(&self) -> bool {
+        self.gmail
+    }
+
+    fn draft(&self, id: DraftId) -> everyday_mail::session::Result<Draft> {
+        let vault = self.vault().map_err(lookup_err)?;
+        vault.draft(id).map_err(vault_err)
+    }
+
+    fn draft_server_copy(&self, id: DraftId) -> everyday_mail::session::Result<Option<Located>> {
+        Ok(self.svc.draft_server_copy(id))
+    }
+
+    fn parent_raw(&self, id: MailMessageId) -> everyday_mail::session::Result<Vec<u8>> {
+        let vault = self.vault().map_err(lookup_err)?;
+        let m = vault.mail_message(id).map_err(vault_err)?;
+        // See the module docs: enough of a header block for
+        // `mime::parse` -> `compose::reply_headers`/`quote_html` to read
+        // what they actually read (`Message-ID`, `From`, `Date`), not this
+        // message's genuine raw bytes.
+        let date = jiff::fmt::strtime::format("%a, %d %b %Y %H:%M:%S +0000", m.date)
+            .unwrap_or_else(|_| m.date.to_string());
+        let from = if m.from.name.is_empty() {
+            m.from.email.clone()
+        } else {
+            format!("{} <{}>", m.from.name, m.from.email)
+        };
+        let raw = format!(
+            "Message-ID: {}\r\nFrom: {}\r\nDate: {}\r\nSubject: {}\r\n\r\n",
+            m.message_id_header, from, date, m.subject
+        );
+        Ok(raw.into_bytes())
+    }
+
+    fn attachment(
+        &self,
+        blob: BlobId,
+    ) -> everyday_mail::session::Result<(String, String, Vec<u8>)> {
+        let vault = self.vault().map_err(lookup_err)?;
+        let bytes = vault.blob(blob).map_err(vault_err)?;
+        // The `Draft` record names an attachment only by `BlobId` -- see
+        // `docs/plans/mail.md`'s data model -- with no filename or MIME
+        // type of its own alongside it, so those are placeholders until a
+        // draft-attachment upload command grows one to read instead.
+        Ok(("attachment".to_string(), "application/octet-stream".to_string(), bytes))
+    }
+
+    fn message_id_domain(&self) -> String {
+        self.svc
+            .get()
+            .and_then(|v| v.account(self.account).ok())
+            .map(|a| a.address.rsplit('@').next().unwrap_or("localhost").to_string())
+            .unwrap_or_else(|| "localhost".to_string())
+    }
+}
+
+fn lookup_err(e: CommandError) -> everyday_mail::session::MailError {
+    everyday_mail::session::MailError::Protocol(e.to_string())
+}
+
+fn vault_err(e: everyday_core::Error) -> everyday_mail::session::MailError {
+    everyday_mail::session::MailError::Protocol(e.to_string())
+}

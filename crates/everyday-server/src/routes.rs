@@ -158,8 +158,13 @@ impl IntoResponse for Failure {
             codes::FORBIDDEN => StatusCode::FORBIDDEN,
             // Concurrency limits, not authentication: `busy` is `everyday-service`'s
             // own transfer-slot ceiling, the same shape as a pairing code's
-            // attempt limit.
-            "too_many_attempts" | codes::BUSY => StatusCode::TOO_MANY_REQUESTS,
+            // attempt limit. `rate_limited` joins them: the assistant or an
+            // MCP client asked for more mail ops than its per-turn or
+            // per-minute budget allows, the same "slow down" answer as the
+            // other two.
+            "too_many_attempts" | codes::BUSY | codes::RATE_LIMITED => {
+                StatusCode::TOO_MANY_REQUESTS
+            }
             // Malformed input, whether the shape came from JSON that would
             // not deserialise or from a vault descriptor naming a backend or
             // a cipher this build has never heard of.
@@ -752,6 +757,7 @@ mod status_tests {
             (codes::NOT_AN_IMAGE, StatusCode::UNPROCESSABLE_ENTITY),
             (codes::PANIC, StatusCode::INTERNAL_SERVER_ERROR),
             (codes::QUICK, StatusCode::BAD_GATEWAY),
+            (codes::RATE_LIMITED, StatusCode::TOO_MANY_REQUESTS),
             (codes::RETRY, StatusCode::CONFLICT),
             (codes::TOO_LARGE, StatusCode::PAYLOAD_TOO_LARGE),
             (codes::UNKNOWN_COMMAND, StatusCode::NOT_FOUND),

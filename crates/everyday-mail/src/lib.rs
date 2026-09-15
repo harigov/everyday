@@ -18,6 +18,10 @@
 //!   envelope, sitting beside [`mime`] as the "what happens to a message"
 //!   half rather than the "talking to a server" half. [`imap`] and [`smtp`]
 //!   are the only modules with an async runtime or a TLS stack in them.
+//!   [`outbox`] is the third member of this half: it turns one durable `Op`
+//!   into calls against [`session::MailSession`] and its own small `Sender`
+//!   trait, staying just as free of a vault as [`session`] itself is — see
+//!   its own module docs for exactly where the line sits.
 //! * **Signing in.** [`oauth`] is neither of the above: it is the
 //!   authorization-code-with-PKCE dance and the RFC 8252 loopback redirect
 //!   that gets a browser's answer back to a process with no web server of
@@ -35,6 +39,7 @@ pub mod compose;
 pub mod imap;
 pub mod mime;
 pub mod oauth;
+pub mod outbox;
 pub mod sanitize;
 pub mod session;
 pub mod smtp;

@@ -89,6 +89,10 @@ pub mod codes {
     pub const NOT_AN_IMAGE: &str = "not_an_image";
     pub const PANIC: &str = "panic";
     pub const QUICK: &str = "quick";
+    /// [`Service::check_mail_rate_limit`](crate::service::Service::check_mail_rate_limit)
+    /// refused: this caller has enqueued too many mail ops this turn, or
+    /// this minute.
+    pub const RATE_LIMITED: &str = "rate_limited";
     pub const RETRY: &str = "retry";
     pub const TOO_LARGE: &str = "too_large";
     pub const UNKNOWN_COMMAND: &str = "unknown_command";
@@ -141,6 +145,7 @@ pub mod codes {
         NOT_AN_IMAGE,
         PANIC,
         QUICK,
+        RATE_LIMITED,
         RETRY,
         TOO_LARGE,
         UNKNOWN_COMMAND,

@@ -198,7 +198,9 @@ pub trait MailStore: Send + Sync {
     /// before it will answer a `remote_image` request for it: a permission
     /// check needs the `From` address, and a thread view already has a
     /// `Vec<Message>` in hand for everything else, so this exists only for
-    /// the caller that has nothing but the id.
+    /// the caller that has nothing but the id. Also what composing a reply or
+    /// a forward reads a subject, quoted body and recipients from, and what
+    /// the outbox executor's `Lookups` reads a reply's parent from.
     fn get_message(&self, id: MailMessageId) -> Result<Message>;
 
     // ---- bodies ------------------------------------------------------------
@@ -223,6 +225,11 @@ pub trait MailStore: Send + Sync {
     // ---- drafts ------------------------------------------------------------
 
     fn put_draft(&self, draft: &Draft) -> Result<()>;
+
+    /// One draft by id -- what the compose window opens, and what
+    /// `send_draft`/`undo_send`/`discard_draft` all load before deciding
+    /// whether the state transition they are asked for is legal.
+    fn get_draft(&self, id: DraftId) -> Result<Draft>;
 
     /// Every draft of `account`'s, most recently touched first -- Drafts,
     /// unfiltered; the interface narrows by [`crate::mail::DraftState`]
@@ -252,6 +259,11 @@ pub trait MailStore: Send + Sync {
     /// writes to it.
     fn update_op(&self, op: &Op) -> Result<()>;
 
+    /// One op by id -- what `undo_send` reads before it dares cancel it: it
+    /// must see the *current* state and `not_before`, not the ones the
+    /// caller happened to hold from when it was enqueued a second ago.
+    fn get_op(&self, id: OpId) -> Result<Op>;
+
     /// Every op whose [`crate::mail::Origin::kind`] is `kind` -- `"assistant"`,
     /// `"mcp"`, `"routine"`, `"person"` -- most recently updated first,
     /// capped at `limit`. What answers "what did the assistant do": the
@@ -260,6 +272,14 @@ pub trait MailStore: Send + Sync {
     fn ops_by_origin(&self, kind: &str, limit: u32) -> Result<Vec<Op>>;
 
     // ---- resolution and reset ------------------------------------------------
+
+    /// Every `(mailbox, uid)` pair message `id` is currently filed under --
+    /// the forward direction of [`MailStore::message_by_uid`], and what the
+    /// outbox executor's `Lookups` implementation resolves a thread or
+    /// message target against before it can `STORE`, `MOVE` or label
+    /// anything on a live session. A Gmail message under two labels answers
+    /// with two pairs; a plain IMAP message ordinarily answers with one.
+    fn message_locations(&self, id: MailMessageId) -> Result<Vec<(MailboxId, u32)>>;
 
     /// The message filed as `uid` in `mailbox`, or `None`.
     fn message_by_uid(&self, mailbox: MailboxId, uid: u32) -> Result<Option<Message>>;
@@ -291,6 +311,63 @@ pub trait MailStore: Send + Sync {
     /// as [`MailStore::remove_uids`] would recompute them for every uid it
     /// held.
     fn reset_mailbox(&self, mailbox: MailboxId) -> Result<()>;
+
+    // ---- optimistic local writes -------------------------------------------
+    //
+    // What a person's own action writes locally, in the same vault write
+    // that enqueues the `Op` telling the account task to make the server
+    // agree -- see `docs/plans/mail.md`'s "What an action does" and
+    // `everyday_service::domains::mail`, the one caller of every method
+    // below. Each is keyed by the id the interface already holds *before*
+    // any op has reached a server, which is why these are not simply
+    // `update_flags`/`update_labels` again: those two are keyed by
+    // `(mailbox, uid)`, the sync engine's own vocabulary for a change the
+    // server has already confirmed, and a just-enqueued op has nothing of
+    // the kind to offer yet.
+
+    /// Set message `id`'s flags directly, ahead of the server confirming
+    /// them -- the optimistic half of [`crate::mail::apply_optimistic`] for
+    /// [`crate::mail::OpKind::MarkRead`], `MarkUnread`, `Star` and `Unstar`.
+    /// Recomputes the thread it belongs to, on the same terms
+    /// [`MailStore::update_flags`] does. A message id this store has never
+    /// ingested is a no-op, not an error -- a permanently failed op's revert
+    /// racing a message that was deleted by a concurrent sync must not
+    /// itself fail.
+    fn set_message_flags(&self, id: MailMessageId, flags: MessageFlags) -> Result<()>;
+
+    /// As [`MailStore::set_message_flags`], for
+    /// [`crate::mail::OpKind::Label`] and [`crate::mail::OpKind::Unlabel`].
+    fn set_message_labels(&self, id: MailMessageId, labels: Vec<String>) -> Result<()>;
+
+    /// Hide `thread` from `mailbox`'s own list -- the optimistic half of
+    /// [`crate::mail::OpKind::Archive`], [`crate::mail::OpKind::Trash`] and
+    /// [`crate::mail::OpKind::Move`]: a `thread_mailboxes` row removed, with
+    /// `message_mailboxes` -- the durable mapping the sync engine trusts --
+    /// left exactly as it was, so this is reversible for free by
+    /// [`MailStore::restore_thread_mailboxes`] rather than needing its own
+    /// undo snapshot. A thread with no row for `mailbox` is a no-op.
+    fn hide_thread_from_mailbox(&self, thread: ThreadId, mailbox: MailboxId) -> Result<()>;
+
+    /// The exact inverse of [`MailStore::hide_thread_from_mailbox`]: recompute
+    /// every `thread_mailboxes` row for `thread` from its current
+    /// `message_mailboxes` rows, restoring whichever ones a permanently
+    /// failed `Archive`, `Trash` or `Move` op hid.
+    fn restore_thread_mailboxes(&self, thread: ThreadId) -> Result<()>;
+
+    /// Set (or clear, with `None`) `thread`'s own `snoozed_until` -- the
+    /// optimistic write behind [`crate::mail::OpKind::Snooze`], and also
+    /// what the minute scheduler calls with `None` once a snooze's moment
+    /// has passed (see [`MailStore::due_snoozed_threads`]), since bringing a
+    /// thread back from snooze needs no server round trip at all -- snooze
+    /// is local-only, per the plan's phase 7 section.
+    fn set_thread_snoozed_until(&self, thread: ThreadId, until: Option<Timestamp>) -> Result<()>;
+
+    /// Every thread, across every account, whose `snoozed_until` is set and
+    /// has passed `now` -- what the minute scheduler reads to decide which
+    /// threads return to the inbox this tick. Oldest-due first, capped at
+    /// `limit` the same way [`MailStore::due_ops`] is, so one very large
+    /// backlog of snoozes cannot make a single tick unbounded.
+    fn due_snoozed_threads(&self, now: Timestamp, limit: u32) -> Result<Vec<ThreadId>>;
 
     // ---- unread counts --------------------------------------------------------
 

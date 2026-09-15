@@ -287,6 +287,10 @@ impl MailStore for SqlStore {
         self.upsert(draft)
     }
 
+    fn get_draft(&self, id: DraftId) -> Result<Draft> {
+        self.get(id)
+    }
+
     fn list_drafts(&self, account: AccountId) -> Result<Vec<Draft>> {
         let rows = self.read().records(
             "SELECT id, data FROM drafts WHERE account_id = ?1 ORDER BY updated_us DESC",
@@ -319,6 +323,10 @@ impl MailStore for SqlStore {
         self.upsert(op)
     }
 
+    fn get_op(&self, id: OpId) -> Result<Op> {
+        self.get(id)
+    }
+
     fn ops_by_origin(&self, kind: &str, limit: u32) -> Result<Vec<Op>> {
         let mut sql = "SELECT id, data FROM ops WHERE origin = ?1".to_string();
         self.page(&mut sql, "not_before_us DESC", Some(limit), 0);
@@ -327,6 +335,22 @@ impl MailStore for SqlStore {
     }
 
     // ---- resolution and reset ------------------------------------------------
+
+    fn message_locations(&self, id: MailMessageId) -> Result<Vec<(MailboxId, u32)>> {
+        let rows = self.read().query(
+            "SELECT mailbox_id, uid FROM message_mailboxes WHERE message_id = ?1",
+            &vals![id.to_string()],
+        )?;
+        rows.into_iter()
+            .map(|r| {
+                let mailbox: MailboxId =
+                    r.text(0)?.parse().map_err(|e: <MailboxId as std::str::FromStr>::Err| {
+                        everyday_core::error::Error::Invalid(e.to_string())
+                    })?;
+                Ok((mailbox, r.i64(1)? as u32))
+            })
+            .collect()
+    }
 
     fn message_by_uid(&self, mailbox: MailboxId, uid: u32) -> Result<Option<Message>> {
         let row = self.read().query_opt(
@@ -379,6 +403,43 @@ impl MailStore for SqlStore {
 
     fn reset_mailbox(&self, mailbox: MailboxId) -> Result<()> {
         write::reset_mailbox(self, mailbox)
+    }
+
+    // ---- optimistic local writes -------------------------------------------
+
+    fn set_message_flags(&self, id: MailMessageId, flags: MessageFlags) -> Result<()> {
+        write::set_message_flags(self, id, flags)
+    }
+
+    fn set_message_labels(&self, id: MailMessageId, labels: Vec<String>) -> Result<()> {
+        write::set_message_labels(self, id, labels)
+    }
+
+    fn hide_thread_from_mailbox(&self, thread: ThreadId, mailbox: MailboxId) -> Result<()> {
+        write::hide_thread_from_mailbox(self, thread, mailbox)
+    }
+
+    fn restore_thread_mailboxes(&self, thread: ThreadId) -> Result<()> {
+        write::restore_thread_mailboxes(self, thread)
+    }
+
+    fn set_thread_snoozed_until(&self, thread: ThreadId, until: Option<Timestamp>) -> Result<()> {
+        write::set_thread_snoozed_until(self, thread, until)
+    }
+
+    fn due_snoozed_threads(&self, now: Timestamp, limit: u32) -> Result<Vec<ThreadId>> {
+        let mut sql = "SELECT id FROM threads WHERE snoozed_until_us IS NOT NULL \
+             AND snoozed_until_us <= ?1"
+            .to_string();
+        self.page(&mut sql, "snoozed_until_us ASC", Some(limit), 0);
+        let rows = self.read().query(&sql, &vals![to_us(now)])?;
+        rows.into_iter()
+            .map(|r| {
+                r.text(0)?.parse().map_err(|e: <ThreadId as std::str::FromStr>::Err| {
+                    everyday_core::error::Error::Invalid(e.to_string())
+                })
+            })
+            .collect()
     }
 
     // ---- unread counts --------------------------------------------------------

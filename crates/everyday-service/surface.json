@@ -115,6 +115,26 @@
     {
       "args": [
         {
+          "name": "threads",
+          "required": true,
+          "type": "ThreadId[]"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "archive",
+      "orScope": null,
+      "returns": "Op[]",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "id",
           "required": true,
           "type": "AccountId"
@@ -701,6 +721,26 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "DraftId"
+        }
+      ],
+      "changes": {
+        "kind": "draft",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "discard_draft",
+      "orScope": null,
+      "returns": "void",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "handle",
           "required": true,
           "type": "string"
@@ -966,6 +1006,31 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "threads",
+          "required": true,
+          "type": "ThreadId[]"
+        },
+        {
+          "name": "label",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "label",
+      "orScope": null,
+      "returns": "Op[]",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -1045,6 +1110,23 @@
       "orScope": null,
       "returns": "ConversationSummary[]",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "account",
+          "required": true,
+          "type": "AccountId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_drafts",
+      "orScope": null,
+      "returns": "Draft[]",
+      "scope": "mail",
       "sensitive": false,
       "streams": false
     },
@@ -1457,6 +1539,26 @@
     {
       "args": [
         {
+          "name": "threads",
+          "required": true,
+          "type": "ThreadId[]"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "mark_read",
+      "orScope": null,
+      "returns": "Op[]",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "ids",
           "required": false,
           "type": "RoutineRunId[]"
@@ -1471,6 +1573,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "threads",
+          "required": true,
+          "type": "ThreadId[]"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "mark_unread",
+      "orScope": null,
+      "returns": "Op[]",
+      "scope": "mail",
       "sensitive": false,
       "streams": false
     },
@@ -1496,6 +1618,31 @@
       "orScope": null,
       "returns": "number",
       "scope": "trackers",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "threads",
+          "required": true,
+          "type": "ThreadId[]"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "MailboxId"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "move_to_mailbox",
+      "orScope": null,
+      "returns": "Op[]",
+      "scope": "mail",
       "sensitive": false,
       "streams": false
     },
@@ -1539,6 +1686,41 @@
       "orScope": null,
       "returns": "Conversation",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "account",
+          "required": true,
+          "type": "AccountId"
+        },
+        {
+          "name": "inReplyTo",
+          "required": false,
+          "type": "MailMessageId | null"
+        },
+        {
+          "name": "forwardOf",
+          "required": false,
+          "type": "MailMessageId | null"
+        },
+        {
+          "name": "replyAll",
+          "required": false,
+          "type": "boolean | null"
+        }
+      ],
+      "changes": {
+        "kind": "draft",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "new_draft",
+      "orScope": null,
+      "returns": "Draft",
+      "scope": "mail",
       "sensitive": false,
       "streams": false
     },
@@ -2505,6 +2687,26 @@
     {
       "args": [
         {
+          "name": "draft",
+          "required": true,
+          "type": "Draft"
+        }
+      ],
+      "changes": {
+        "kind": "draft",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_draft",
+      "orScope": null,
+      "returns": "void",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "entry",
           "required": true,
           "type": "Entry"
@@ -2972,6 +3174,36 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "DraftId"
+        },
+        {
+          "name": "delaySeconds",
+          "required": false,
+          "type": "number | null"
+        },
+        {
+          "name": "sendAt",
+          "required": false,
+          "type": "string | null"
+        }
+      ],
+      "changes": {
+        "kind": "draft",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "send_draft",
+      "orScope": null,
+      "returns": "Draft",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "conversationId",
           "required": true,
           "type": "ConversationId"
@@ -3176,6 +3408,51 @@
       "orScope": null,
       "returns": "QuickJobRow[]",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "threads",
+          "required": true,
+          "type": "ThreadId[]"
+        },
+        {
+          "name": "until",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "snooze",
+      "orScope": null,
+      "returns": "Op[]",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "threads",
+          "required": true,
+          "type": "ThreadId[]"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "star",
+      "orScope": null,
+      "returns": "Op[]",
+      "scope": "mail",
       "sensitive": false,
       "streams": false
     },
@@ -3407,6 +3684,71 @@
     {
       "args": [
         {
+          "name": "threads",
+          "required": true,
+          "type": "ThreadId[]"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "trash",
+      "orScope": null,
+      "returns": "Op[]",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "draftId",
+          "required": true,
+          "type": "DraftId"
+        }
+      ],
+      "changes": {
+        "kind": "draft",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "undo_send",
+      "orScope": null,
+      "returns": "Draft",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "threads",
+          "required": true,
+          "type": "ThreadId[]"
+        },
+        {
+          "name": "label",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "unlabel",
+      "orScope": null,
+      "returns": "Op[]",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "password",
           "required": true,
           "type": "string"
@@ -3429,6 +3771,46 @@
       "orScope": null,
       "returns": "number",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "threads",
+          "required": true,
+          "type": "ThreadId[]"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "unsnooze",
+      "orScope": null,
+      "returns": "void",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "threads",
+          "required": true,
+          "type": "ThreadId[]"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "unstar",
+      "orScope": null,
+      "returns": "Op[]",
+      "scope": "mail",
       "sensitive": false,
       "streams": false
     },

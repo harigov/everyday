@@ -1,22 +1,41 @@
-//! Mail: mailboxes, threads and the messages in them.
+//! Mail: mailboxes, threads and the messages in them, and -- from phase 3 --
+//! every write a person makes: the actions on a batch of threads, and the
+//! whole life of a draft.
 //!
-//! Read-only, for now, and deliberately so. This is phase 2 of
-//! `docs/plans/mail.md`'s storage half landing in the service layer ahead of
-//! the sync engine, the outbox drain loop and the interface that will
-//! actually write to any of this -- three commands, matching exactly what a
-//! thread list and a thread view need to draw, and nothing that mutates a
-//! row. `list_threads` and `get_thread` are also the two calls phase 5's
-//! `list_threads` and `read_thread` tools will end up wrapping, so their
-//! shape is worth getting right now rather than guessed at twice.
+//! `list_mailboxes`, `list_threads` and `get_thread` are phase 2's
+//! read-only trio and are also the two calls phase 5's `list_threads` and
+//! `read_thread` tools will end up wrapping, so their shape was worth
+//! getting right before anything else here existed.
+//!
+//! Everything below them is phase 3, built on exactly two vault entry
+//! points per `docs/plans/mail.md`'s "What an action does": one write that
+//! changes a thread's local rows *and* enqueues the `Op` telling the account
+//! task to make the server agree
+//! ([`everyday_core::Vault::apply_thread_ops`]), and the draft lifecycle's
+//! own atomic pairs. Every write here is `Origin::Person` -- the only
+//! origin a person's own click or keystroke can ever be -- which is also
+//! why [`Service::check_mail_rate_limit`] is a visible no-op on every call
+//! site below: `Origin::Person` is never rate limited (see
+//! [`everyday_core::mail::Origin::is_rate_limited`]), and the call is made
+//! anyway so that this is the one enqueue path phase 5's `Assistant` and
+//! `Mcp` origins step onto later, rather than a second path that has to
+//! remember to add the check when they do.
+//!
+//! Every write that touches an account's outbox also wakes that account's
+//! sync task with [`Service::notify_outbox`], so undo send's countdown and
+//! an archive's confirmation do not wait for the next poll.
 
 use crate::command;
 use crate::ctx::Ctx;
-use crate::error::CommandResult;
+use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
-use everyday_core::id::{AccountId, MailboxId, ThreadId};
-use everyday_core::mail::{Mailbox, Message, Thread};
+use everyday_core::id::{AccountId, DraftId, MailMessageId, MailboxId, ThreadId};
+use everyday_core::mail::{Draft, Mailbox, Message, Op, OpKind, Origin, Thread, undo_send_delay};
 use everyday_core::store::mail::{ThreadFilter, ThreadPage};
+use everyday_mail::{compose, mime};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 #[derive(Deserialize)]
@@ -58,6 +77,288 @@ pub struct ThreadRef {
 pub struct ThreadDetail {
     pub thread: Thread,
     pub messages: Vec<Message>,
+}
+
+// ---- batch thread actions ------------------------------------------------
+
+/// What every plain "do this to a batch of threads" command takes --
+/// `mark_read`, `mark_unread`, `star`, `unstar`, `archive`, `trash` and
+/// `unsnooze`. `move_to_mailbox`, `label`, `unlabel` and `snooze` reuse the
+/// same `threads` field inside their own, slightly larger argument structs
+/// below.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadIds {
+    pub threads: Vec<ThreadId>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveThreads {
+    pub threads: Vec<ThreadId>,
+    pub to: MailboxId,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelThreads {
+    pub threads: Vec<ThreadId>,
+    pub label: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnoozeThreads {
+    pub threads: Vec<ThreadId>,
+    pub until: Timestamp,
+}
+
+/// Apply `kind`'s local effect to `threads` and enqueue one [`OpKind`] op
+/// per thread, all as [`Origin::Person`] -- the one shared body every batch
+/// action command below wraps. See the module docs for why
+/// [`Service::check_mail_rate_limit`] is called here even though a person's
+/// own action never trips it.
+async fn batch_op(
+    svc: Arc<Service>,
+    threads: Vec<ThreadId>,
+    kind: OpKind,
+) -> CommandResult<Vec<Op>> {
+    let origin = Origin::Person;
+    svc.check_mail_rate_limit(&origin, "person")?;
+    let vault = svc.require()?;
+    let ops = blocking(move || Ok(vault.apply_thread_ops(&threads, kind, origin)?)).await?;
+    for account in ops.iter().map(|op| op.account_id).collect::<BTreeSet<_>>() {
+        svc.notify_outbox(account);
+    }
+    Ok(ops)
+}
+
+async fn mark_read(svc: Arc<Service>, _ctx: Ctx, args: ThreadIds) -> CommandResult<Vec<Op>> {
+    batch_op(svc, args.threads, OpKind::MarkRead).await
+}
+
+async fn mark_unread(svc: Arc<Service>, _ctx: Ctx, args: ThreadIds) -> CommandResult<Vec<Op>> {
+    batch_op(svc, args.threads, OpKind::MarkUnread).await
+}
+
+async fn star(svc: Arc<Service>, _ctx: Ctx, args: ThreadIds) -> CommandResult<Vec<Op>> {
+    batch_op(svc, args.threads, OpKind::Star).await
+}
+
+async fn unstar(svc: Arc<Service>, _ctx: Ctx, args: ThreadIds) -> CommandResult<Vec<Op>> {
+    batch_op(svc, args.threads, OpKind::Unstar).await
+}
+
+async fn archive(svc: Arc<Service>, _ctx: Ctx, args: ThreadIds) -> CommandResult<Vec<Op>> {
+    batch_op(svc, args.threads, OpKind::Archive).await
+}
+
+async fn trash(svc: Arc<Service>, _ctx: Ctx, args: ThreadIds) -> CommandResult<Vec<Op>> {
+    batch_op(svc, args.threads, OpKind::Trash).await
+}
+
+async fn move_to_mailbox(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: MoveThreads,
+) -> CommandResult<Vec<Op>> {
+    batch_op(svc, args.threads, OpKind::Move { to: args.to }).await
+}
+
+async fn label(svc: Arc<Service>, _ctx: Ctx, args: LabelThreads) -> CommandResult<Vec<Op>> {
+    batch_op(svc, args.threads, OpKind::Label { label: args.label }).await
+}
+
+async fn unlabel(svc: Arc<Service>, _ctx: Ctx, args: LabelThreads) -> CommandResult<Vec<Op>> {
+    batch_op(svc, args.threads, OpKind::Unlabel { label: args.label }).await
+}
+
+async fn snooze(svc: Arc<Service>, _ctx: Ctx, args: SnoozeThreads) -> CommandResult<Vec<Op>> {
+    batch_op(svc, args.threads, OpKind::Snooze { until: args.until }).await
+}
+
+/// Bring a thread back from snooze early. No outbox op -- see
+/// [`everyday_core::Vault::release_snooze`]'s own docs for why: snooze never
+/// told the server anything, so there is nothing to tell it is over either.
+async fn unsnooze(svc: Arc<Service>, _ctx: Ctx, args: ThreadIds) -> CommandResult<()> {
+    let vault = svc.require()?;
+    blocking(move || {
+        for thread in &args.threads {
+            vault.release_snooze(*thread)?;
+        }
+        Ok(())
+    })
+    .await
+}
+
+// ---- drafts --------------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewDraft {
+    pub account: AccountId,
+    #[serde(default)]
+    pub in_reply_to: Option<MailMessageId>,
+    #[serde(default)]
+    pub forward_of: Option<MailMessageId>,
+    #[serde(default)]
+    pub reply_all: bool,
+}
+
+/// A [`ParsedMessage`](mime::ParsedMessage) carrying only what
+/// [`compose::quote_html`] actually reads (`from` and
+/// `date`), built from the already-decrypted [`Message`] row rather than a
+/// second parse of the raw bytes -- the local record already has both
+/// fields, in the clear the moment the vault has decrypted it, and asking
+/// for the parent's raw bytes here would mean touching the pack store for
+/// something `quote_html` was never going to look at.
+fn quote_source(parent: &Message) -> mime::ParsedMessage {
+    mime::ParsedMessage {
+        from: vec![mime::Address {
+            name: if parent.from.name.is_empty() { None } else { Some(parent.from.name.clone()) },
+            email: Some(parent.from.email.clone()),
+        }],
+        date: Some(parent.date),
+        ..mime::ParsedMessage::default()
+    }
+}
+
+async fn new_draft(svc: Arc<Service>, _ctx: Ctx, args: NewDraft) -> CommandResult<Draft> {
+    let vault = svc.require()?;
+    blocking(move || {
+        let account = vault.account(args.account)?;
+        let mut draft = Draft::new(args.account, account.address.clone(), Origin::Person);
+
+        let own: std::collections::HashSet<String> = std::iter::once(&account.address)
+            .chain(account.identities.iter().map(|i| &i.address))
+            .map(|a| a.to_lowercase())
+            .collect();
+
+        let parent_id = args.in_reply_to.or(args.forward_of);
+        if let Some(parent_id) = parent_id {
+            let parent = vault.mail_message(parent_id)?;
+            let body = vault.body(parent_id)?;
+            let quoted = compose::quote_html(&quote_source(&parent), &body.html_sanitised);
+
+            if args.in_reply_to.is_some() {
+                draft.in_reply_to = Some(parent_id);
+                draft.subject = compose::reply_subject(&parent.subject);
+                draft.to = vec![parent.from.clone()];
+                if args.reply_all {
+                    for addr in parent.to.iter().chain(parent.cc.iter()) {
+                        let already =
+                            draft.to.iter().any(|a| a.email.eq_ignore_ascii_case(&addr.email));
+                        if !already && !own.contains(&addr.email.to_lowercase()) {
+                            draft.cc.push(addr.clone());
+                        }
+                    }
+                }
+            } else {
+                draft.subject = compose::forward_subject(&parent.subject);
+            }
+            draft.body_html = quoted;
+        }
+
+        Ok(draft)
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveDraft {
+    pub draft: Draft,
+}
+
+/// Save `draft` locally, and enqueue an `AppendDraft` op when this draft has
+/// not appended to the server in the last thirty seconds -- the coalescing
+/// [`Service::draft_append_due`] decides, since that timer is session
+/// state, not a fact the vault write itself can answer.
+async fn save_draft(svc: Arc<Service>, _ctx: Ctx, args: SaveDraft) -> CommandResult<()> {
+    let mut draft = args.draft;
+    draft.updated_at = Timestamp::now();
+    let append = svc.draft_append_due(draft.id, draft.updated_at);
+    let vault = svc.require()?;
+    let op =
+        blocking(move || Ok(vault.save_draft_and_append(&draft, append, Origin::Person)?)).await?;
+    if let Some(op) = op {
+        svc.notify_outbox(op.account_id);
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftRef {
+    pub id: DraftId,
+}
+
+async fn discard_draft(svc: Arc<Service>, _ctx: Ctx, args: DraftRef) -> CommandResult<()> {
+    let vault = svc.require()?;
+    blocking(move || {
+        vault.discard_draft(args.id)?;
+        Ok(())
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendDraft {
+    pub id: DraftId,
+    /// Undo send's window, five to thirty seconds, clamped by
+    /// [`undo_send_delay`]. Ignored when `send_at` is given.
+    #[serde(default)]
+    pub delay_seconds: Option<u32>,
+    /// Send later: queue for a specific, possibly distant, moment instead
+    /// of the undo-send window.
+    #[serde(default)]
+    pub send_at: Option<Timestamp>,
+}
+
+async fn send_draft(svc: Arc<Service>, _ctx: Ctx, args: SendDraft) -> CommandResult<Draft> {
+    let origin = Origin::Person;
+    svc.check_mail_rate_limit(&origin, "person")?;
+    let vault = svc.require()?;
+    let (draft, op) = blocking(move || {
+        let draft = vault.draft(args.id)?;
+        if draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() {
+            return Err(CommandError::new(
+                codes::INVALID,
+                "a message needs at least one recipient",
+            ));
+        }
+        let not_before =
+            args.send_at.unwrap_or_else(|| Timestamp::now() + undo_send_delay(args.delay_seconds));
+        Ok(vault.queue_draft_send(args.id, not_before, origin)?)
+    })
+    .await?;
+    svc.notify_outbox(op.account_id);
+    Ok(draft)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoSend {
+    pub draft_id: DraftId,
+}
+
+/// Cancel a queued send, provided its undo window has not closed -- see
+/// [`everyday_core::Vault::undo_send`] for exactly when it refuses.
+async fn undo_send(svc: Arc<Service>, _ctx: Ctx, args: UndoSend) -> CommandResult<Draft> {
+    let vault = svc.require()?;
+    blocking(move || Ok(vault.undo_send(args.draft_id, Timestamp::now())?)).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftsQuery {
+    pub account: AccountId,
+}
+
+async fn list_drafts(svc: Arc<Service>, _ctx: Ctx, args: DraftsQuery) -> CommandResult<Vec<Draft>> {
+    let vault = svc.require()?;
+    blocking(move || Ok(vault.drafts(args.account)?)).await
 }
 
 async fn list_mailboxes(
@@ -113,5 +414,149 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: ThreadRef, returns: "ThreadDetail",
         signature: &[("id", "ThreadId", true)],
         run: get_thread,
+    },
+    // ---- batch thread actions --------------------------------------------
+    command! {
+        name: "mark_read", scope: Mail, effect: Write,
+        change: Thread/Updated,
+        ids: |a: &ThreadIds| a.threads.iter().map(|t| t.to_string()).collect(),
+        args: ThreadIds, returns: "Op[]",
+        signature: &[("threads", "ThreadId[]", true)],
+        run: mark_read,
+    },
+    command! {
+        name: "mark_unread", scope: Mail, effect: Write,
+        change: Thread/Updated,
+        ids: |a: &ThreadIds| a.threads.iter().map(|t| t.to_string()).collect(),
+        args: ThreadIds, returns: "Op[]",
+        signature: &[("threads", "ThreadId[]", true)],
+        run: mark_unread,
+    },
+    command! {
+        name: "star", scope: Mail, effect: Write,
+        change: Thread/Updated,
+        ids: |a: &ThreadIds| a.threads.iter().map(|t| t.to_string()).collect(),
+        args: ThreadIds, returns: "Op[]",
+        signature: &[("threads", "ThreadId[]", true)],
+        run: star,
+    },
+    command! {
+        name: "unstar", scope: Mail, effect: Write,
+        change: Thread/Updated,
+        ids: |a: &ThreadIds| a.threads.iter().map(|t| t.to_string()).collect(),
+        args: ThreadIds, returns: "Op[]",
+        signature: &[("threads", "ThreadId[]", true)],
+        run: unstar,
+    },
+    command! {
+        name: "archive", scope: Mail, effect: Write,
+        change: Thread/Updated,
+        ids: |a: &ThreadIds| a.threads.iter().map(|t| t.to_string()).collect(),
+        args: ThreadIds, returns: "Op[]",
+        signature: &[("threads", "ThreadId[]", true)],
+        run: archive,
+    },
+    command! {
+        name: "trash", scope: Mail, effect: Write,
+        change: Thread/Updated,
+        ids: |a: &ThreadIds| a.threads.iter().map(|t| t.to_string()).collect(),
+        args: ThreadIds, returns: "Op[]",
+        signature: &[("threads", "ThreadId[]", true)],
+        run: trash,
+    },
+    command! {
+        name: "move_to_mailbox", scope: Mail, effect: Write,
+        change: Thread/Updated,
+        ids: |a: &MoveThreads| a.threads.iter().map(|t| t.to_string()).collect(),
+        args: MoveThreads, returns: "Op[]",
+        signature: &[("threads", "ThreadId[]", true), ("to", "MailboxId", true)],
+        run: move_to_mailbox,
+    },
+    command! {
+        name: "label", scope: Mail, effect: Write,
+        change: Thread/Updated,
+        ids: |a: &LabelThreads| a.threads.iter().map(|t| t.to_string()).collect(),
+        args: LabelThreads, returns: "Op[]",
+        signature: &[("threads", "ThreadId[]", true), ("label", "string", true)],
+        run: label,
+    },
+    command! {
+        name: "unlabel", scope: Mail, effect: Write,
+        change: Thread/Updated,
+        ids: |a: &LabelThreads| a.threads.iter().map(|t| t.to_string()).collect(),
+        args: LabelThreads, returns: "Op[]",
+        signature: &[("threads", "ThreadId[]", true), ("label", "string", true)],
+        run: unlabel,
+    },
+    command! {
+        name: "snooze", scope: Mail, effect: Write,
+        change: Thread/Updated,
+        ids: |a: &SnoozeThreads| a.threads.iter().map(|t| t.to_string()).collect(),
+        args: SnoozeThreads, returns: "Op[]",
+        signature: &[("threads", "ThreadId[]", true), ("until", "string", true)],
+        run: snooze,
+    },
+    command! {
+        name: "unsnooze", scope: Mail, effect: Write,
+        change: Thread/Updated,
+        ids: |a: &ThreadIds| a.threads.iter().map(|t| t.to_string()).collect(),
+        args: ThreadIds, returns: "void",
+        signature: &[("threads", "ThreadId[]", true)],
+        run: unsnooze,
+    },
+    // ---- drafts -----------------------------------------------------------
+    command! {
+        name: "new_draft", scope: Mail, effect: Write,
+        change: Draft/Created,
+        args: NewDraft, returns: "Draft",
+        signature: &[
+            ("account", "AccountId", true),
+            ("inReplyTo", "MailMessageId | null", false),
+            ("forwardOf", "MailMessageId | null", false),
+            ("replyAll", "boolean | null", false),
+        ],
+        run: new_draft,
+    },
+    command! {
+        name: "save_draft", scope: Mail, effect: Write,
+        change: Draft/Updated,
+        id: |a: &SaveDraft| Some(a.draft.id.to_string()),
+        args: SaveDraft, returns: "void",
+        signature: &[("draft", "Draft", true)],
+        run: save_draft,
+    },
+    command! {
+        name: "discard_draft", scope: Mail, effect: Write,
+        change: Draft/Updated,
+        id: |a: &DraftRef| Some(a.id.to_string()),
+        args: DraftRef, returns: "void",
+        signature: &[("id", "DraftId", true)],
+        run: discard_draft,
+    },
+    command! {
+        name: "send_draft", scope: Mail, effect: Write,
+        change: Draft/Updated,
+        id: |a: &SendDraft| Some(a.id.to_string()),
+        args: SendDraft, returns: "Draft",
+        signature: &[
+            ("id", "DraftId", true),
+            ("delaySeconds", "number | null", false),
+            ("sendAt", "string | null", false),
+        ],
+        run: send_draft,
+    },
+    command! {
+        name: "undo_send", scope: Mail, effect: Write,
+        change: Draft/Updated,
+        id: |a: &UndoSend| Some(a.draft_id.to_string()),
+        args: UndoSend, returns: "Draft",
+        signature: &[("draftId", "DraftId", true)],
+        run: undo_send,
+    },
+    command! {
+        name: "list_drafts", scope: Mail, effect: Read,
+        args: DraftsQuery, returns: "Draft[]",
+        signature: &[("account", "AccountId", true)],
+        run: list_drafts,
     },
 ];
