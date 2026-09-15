@@ -1948,3 +1948,25 @@ export interface PickedFile {
   name: string
   bytes: number
 }
+
+/**
+ * What `beginOAuthSignIn` answers with: open `url` in the system browser (or
+ * show it to copy, in remote/server mode -- see `openExternal` in
+ * `ui/src/lib/open-external.ts`), and remember `signInId` for the two calls
+ * that follow it.
+ */
+export interface BegunSignIn {
+  signInId: string
+  url: string
+}
+
+/**
+ * What `awaitOAuthSignIn` answers with on success: `tokensSavedUnder` is the
+ * same `signInId` again, renamed to say what it now means -- the account
+ * form's `save_account` call is what claims the tokens waiting under it.
+ * Nothing here ever carries a token itself; see
+ * `crates/everyday-service/src/signin.rs`'s module doc.
+ */
+export interface AwaitedSignIn {
+  tokensSavedUnder: string
+}

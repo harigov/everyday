@@ -2160,6 +2160,18 @@ function requireUnlocked() {
   if (!unlocked) throw new VaultError('locked', 'vault is locked')
 }
 
+/**
+ * OAuth sign-ins the mock is pretending to drive, keyed by the id
+ * `begin_oauth_sign_in` minted -- the same shape `crate::signin::SignIns`
+ * holds in the real backend, minus the loopback and the token endpoint.
+ * `awaited` is what makes `await_oauth_sign_in` resolve only once: the real
+ * command is idempotent (see its own doc), and a mock that answered
+ * instantly on every call would never show the "waiting for the browser"
+ * state the Accounts screen has to draw.
+ */
+const oauthSignIns = new Map<string, { cancelled: boolean; awaited: boolean }>()
+let oauthSignInCounter = 0
+
 export const mockInvoke = async <T>(
   cmd: string,
   payload: Record<string, unknown> | Uint8Array = {},
@@ -3899,6 +3911,43 @@ export const mockInvoke = async <T>(
         replaced: args.mode === 'replace' ? parts.length : 0,
         skipped: args.mode === 'replace' ? 0 : parts.length,
       } as T
+    }
+
+    case 'begin_oauth_sign_in': {
+      requireUnlocked()
+      const signInId = `mock-sign-in-${++oauthSignInCounter}`
+      oauthSignIns.set(signInId, { cancelled: false, awaited: false })
+      const clientId = (args.clientId as string | undefined) ?? ''
+      return {
+        signInId,
+        // A page that does not exist -- there is no mock provider to send a
+        // browser to -- but shaped like a real authorization URL, so the
+        // Accounts screen's "open this link" and "or copy it" both have
+        // something real to draw.
+        url: `https://mock-provider.example.test/authorize?client_id=${encodeURIComponent(clientId)}&state=${signInId}`,
+      } as T
+    }
+
+    case 'await_oauth_sign_in': {
+      const signInId = args.signInId as string
+      const flow = oauthSignIns.get(signInId)
+      if (!flow) throw new VaultError('not_found', 'no sign-in is waiting under that id')
+      if (!flow.awaited) {
+        // The one-time delay standing in for "switch to a browser, sign in,
+        // come back" -- see the map's own doc for why this only happens once
+        // per flow.
+        flow.awaited = true
+        await sleep(1200)
+      }
+      if (flow.cancelled) throw new VaultError('cancelled', 'the sign-in was cancelled')
+      return { tokensSavedUnder: signInId } as T
+    }
+
+    case 'cancel_oauth_sign_in': {
+      const signInId = args.signInId as string
+      const flow = oauthSignIns.get(signInId)
+      if (flow) flow.cancelled = true
+      return undefined as T
     }
 
     default:

@@ -980,6 +980,38 @@ export const api = {
    * means the picker was dismissed.
    */
   openImport: () => invoke<PickedFile | null>('open_import'),
+
+  /**
+   * Start an OAuth sign-in: open the answered `url` yourself, with
+   * `openExternal` (see `ui/src/lib/open-external.ts`) on the desktop, or by
+   * showing it to copy when there is no browser this process can open --
+   * remote and server mode. Remember `signInId` for the two calls below.
+   */
+  // Named `Oauth`, not `OAuth`: `gen-api.mjs`'s `snake_case` -> `camelCase`
+  // conversion only capitalises the letter after each underscore, the same
+  // way `mcp_status` became `mcpStatus` rather than `mcpStatus`'s all-caps
+  // cousin. Matching it here is what keeps `call('beginOauthSignIn', ...)`
+  // a compile-time-checked key into `Commands` rather than a string that
+  // merely looks right.
+  beginOauthSignIn: (opts: {
+    authUrl: string
+    tokenUrl: string
+    clientId: string
+    clientSecret?: string
+    scopes: string[]
+    loginHint?: string
+  }) => call('beginOauthSignIn', opts),
+  /**
+   * Wait for that sign-in to land. Resolves once the browser has come back
+   * and the code has been exchanged, or rejects with a `CommandError` whose
+   * `code` is one of `invalidGrant`, `invalidClient`, `provider`,
+   * `timedOut` or `cancelled` -- see `crates/everyday-service/src/signin.rs`.
+   * Safe to call again after a dropped connection; it does not consume
+   * anything.
+   */
+  awaitOauthSignIn: (signInId: string) => call('awaitOauthSignIn', { signInId }),
+  /** Withdraw a sign-in nobody is going to finish. */
+  cancelOauthSignIn: (signInId: string) => call('cancelOauthSignIn', { signInId }),
 }
 
 /**

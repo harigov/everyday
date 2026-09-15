@@ -11,7 +11,9 @@ import type {
   AgentMessage,
   AgentSettings,
   ArchiveManifest,
+  AwaitedSignIn,
   BalanceReport,
+  BegunSignIn,
   BlockId,
   BlockKind,
   BlockQuery,
@@ -117,7 +119,20 @@ export interface Commands {
   addItem: { args: { kindId: KindId; title: string; lookup: boolean }; result: AddedItem }
   agentSettings: { args: Record<string, never>; result: AgentSettings }
   applyMetadata: { args: { id: ItemId; result: SearchResult; overwrite: boolean }; result: Item }
+  awaitOauthSignIn: { args: { signInId: string }; result: AwaitedSignIn }
+  beginOauthSignIn: {
+    args: {
+      authUrl: string
+      tokenUrl: string
+      clientId: string
+      clientSecret?: string
+      scopes: string[]
+      loginHint?: string
+    }
+    result: BegunSignIn
+  }
   calendarProviders: { args: Record<string, never>; result: ProviderInfo[] }
+  cancelOauthSignIn: { args: { signInId: string }; result: void }
   changePassword: { args: { current: string; next: string }; result: void }
   clearAgentKey: { args: Record<string, never>; result: void }
   collectGarbage: { args: Record<string, never>; result: number }
@@ -335,7 +350,10 @@ export const COMMAND_NAMES = {
   addItem: 'add_item',
   agentSettings: 'agent_settings',
   applyMetadata: 'apply_metadata',
+  awaitOauthSignIn: 'await_oauth_sign_in',
+  beginOauthSignIn: 'begin_oauth_sign_in',
   calendarProviders: 'calendar_providers',
+  cancelOauthSignIn: 'cancel_oauth_sign_in',
   changePassword: 'change_password',
   clearAgentKey: 'clear_agent_key',
   collectGarbage: 'collect_garbage',
@@ -514,7 +532,10 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'add_item',
   'agent_settings',
   'apply_metadata',
+  'await_oauth_sign_in',
+  'begin_oauth_sign_in',
   'calendar_providers',
+  'cancel_oauth_sign_in',
   'change_password',
   'clear_agent_key',
   'collect_garbage',
@@ -687,6 +708,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
 export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'add_item',
   'apply_metadata',
+  'begin_oauth_sign_in',
+  'cancel_oauth_sign_in',
   'change_password',
   'clear_agent_key',
   'collect_garbage',
