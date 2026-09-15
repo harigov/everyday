@@ -28,11 +28,15 @@
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
+use crate::events::{Change, Kind};
 use crate::service::{Service, blocking};
 use everyday_core::id::{AccountId, DraftId, MailMessageId, MailboxId, ThreadId};
-use everyday_core::mail::{Draft, Mailbox, Message, Op, OpKind, Origin, Thread, undo_send_delay};
+use everyday_core::mail::{
+    AttendeeResponse, Draft, DraftCalendarPart, InviteMethod, Mailbox, Message, Op, OpKind, Origin,
+    Thread, undo_send_delay,
+};
 use everyday_core::store::mail::{ThreadFilter, ThreadPage};
-use everyday_mail::{compose, mime};
+use everyday_mail::{compose, invite, mime};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -371,6 +375,176 @@ async fn list_drafts(svc: Arc<Service>, _ctx: Ctx, args: DraftsQuery) -> Command
     blocking(move || Ok(vault.drafts(args.account)?)).await
 }
 
+// ---- responding to a calendar invitation ----------------------------------
+
+/// The three RSVPs `respond_to_invite`'s own client can ask for. A smaller
+/// type than [`AttendeeResponse`] on purpose: `needsAction` is a state an
+/// attendee's own answer *starts* in, never one a person clicks their way
+/// back into, so it is not a legal value on the wire here at all rather than
+/// something this handler would have to notice and reject at runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InviteResponse {
+    Accepted,
+    Tentative,
+    Declined,
+}
+
+impl InviteResponse {
+    fn as_attendee_response(self) -> AttendeeResponse {
+        match self {
+            InviteResponse::Accepted => AttendeeResponse::Accepted,
+            InviteResponse::Tentative => AttendeeResponse::Tentative,
+            InviteResponse::Declined => AttendeeResponse::Declined,
+        }
+    }
+
+    /// The subject line's own verb, capitalised -- "Accepted: Standup".
+    fn subject_prefix(self) -> &'static str {
+        match self {
+            InviteResponse::Accepted => "Accepted",
+            InviteResponse::Tentative => "Tentative",
+            InviteResponse::Declined => "Declined",
+        }
+    }
+
+    /// The body line's own verb -- "Hari has accepted: Standup".
+    fn verb(self) -> &'static str {
+        match self {
+            InviteResponse::Accepted => "accepted",
+            InviteResponse::Tentative => "tentatively accepted",
+            InviteResponse::Declined => "declined",
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RespondToInvite {
+    pub message_id: MailMessageId,
+    pub response: InviteResponse,
+    #[serde(default)]
+    pub comment: Option<String>,
+}
+
+/// "Tue 10:00" for a timed event, "Tue, 12 Aug" for an all-day one -- the
+/// clause the reply's own human-readable body line ends with. Read in this
+/// process's own local zone: the text is generated once, now, and baked
+/// into the message body exactly the way `compose::quote_html`'s "On {date}
+/// wrote:" line already is, so there is no one zone that would stay correct
+/// for every later reader of the thread either.
+fn format_when(invite: &everyday_core::mail::Invite) -> String {
+    let zoned = invite.start.to_zoned(jiff::tz::TimeZone::system());
+    let fmt = if invite.all_day { "%a, %-d %b" } else { "%a %H:%M" };
+    jiff::fmt::strtime::format(fmt, &zoned).unwrap_or_else(|_| invite.start.to_string())
+}
+
+/// Escapes the five characters that matter inside an HTML text node -- the
+/// same small rule `everyday_mail::compose::escape_html` and
+/// `everyday_core::mail::compose::escape_html` each keep their own copy of,
+/// for a string that is, once again, untrusted: an invitation's own
+/// `SUMMARY` and a comment a person typed.
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// Build and queue an iTIP `REPLY` to the invitation carried by
+/// `args.message_id`, and update that message's own [`everyday_core::mail::Invite::my_response`]
+/// so the thread reflects the answer before the reply has gone anywhere.
+///
+/// Refuses when the message carries no invitation, when its method is
+/// `CANCEL` or `REPLY` (nothing to answer), or when none of the account's
+/// own addresses were ever invited.
+async fn respond_to_invite(
+    svc: Arc<Service>,
+    ctx: Ctx,
+    args: RespondToInvite,
+) -> CommandResult<()> {
+    let origin = Origin::Person;
+    svc.check_mail_rate_limit(&origin, "person")?;
+    let vault = svc.require()?;
+    let Some(packs) = svc.packs() else {
+        return Err(CommandError::new(codes::INTERNAL, "the mail pack store is not open"));
+    };
+
+    let (account_id, thread_id) = blocking(move || -> CommandResult<(AccountId, ThreadId)> {
+        let message = vault.mail_message(args.message_id)?;
+        let mut inv = message.invite.clone().ok_or_else(|| {
+            CommandError::new(codes::INVALID, "this message carries no calendar invitation")
+        })?;
+        if matches!(inv.method, InviteMethod::Cancel | InviteMethod::Reply) {
+            return Err(CommandError::new(
+                codes::INVALID,
+                "a cancelled invitation, or another reply, cannot be responded to",
+            ));
+        }
+
+        let account = vault.account(message.account_id)?;
+        let own: BTreeSet<String> = std::iter::once(account.address.clone())
+            .chain(account.identities.iter().map(|i| i.address.clone()))
+            .map(|a| a.to_lowercase())
+            .collect();
+        let Some(attendee) =
+            inv.attendees.iter().find(|a| own.contains(&a.address.email.to_lowercase()))
+        else {
+            return Err(CommandError::new(
+                codes::INVALID,
+                "none of this account's addresses were invited to this event",
+            ));
+        };
+        let responder = attendee.address.clone();
+
+        let raw = packs.read(&message.pack)?;
+        let calendar_bytes = mime::parse(&raw).ok().and_then(|p| p.calendar).ok_or_else(|| {
+            CommandError::new(codes::INVALID, "this message's calendar part could not be read")
+        })?;
+
+        let attendee_response = args.response.as_attendee_response();
+        let ics = invite::build_reply(
+            &calendar_bytes,
+            &responder,
+            attendee_response,
+            args.comment.as_deref(),
+        )
+        .ok_or_else(|| {
+            CommandError::new(codes::INVALID, "could not build a reply to this invitation")
+        })?;
+
+        let mut draft = Draft::new(message.account_id, account.address.clone(), Origin::Person);
+        draft.to = vec![inv.organizer.clone()];
+        draft.subject = format!("{}: {}", args.response.subject_prefix(), inv.summary);
+        let who = if responder.name.is_empty() { &responder.email } else { &responder.name };
+        draft.body_html = format!(
+            "<p>{} has {}: {}, {}</p>",
+            escape_html(who),
+            args.response.verb(),
+            escape_html(&inv.summary),
+            escape_html(&format_when(&inv)),
+        );
+        draft.calendar_part = Some(DraftCalendarPart { method: "REPLY".to_string(), ics });
+
+        vault.save_draft(&draft)?;
+        let not_before = Timestamp::now() + undo_send_delay(None);
+        vault.queue_draft_send(draft.id, not_before, origin)?;
+
+        inv.my_response = Some(attendee_response);
+        vault.set_message_invite(message.id, Some(inv))?;
+
+        Ok((message.account_id, message.thread_id))
+    })
+    .await?;
+
+    svc.notify_outbox(account_id);
+    svc.events().changed(Change {
+        kind: Kind::Thread,
+        op: crate::events::Op::Updated,
+        id: Some(thread_id.to_string()),
+        ids: Vec::new(),
+        origin: ctx.caller.origin().map(str::to_string),
+    });
+    Ok(())
+}
+
 async fn list_mailboxes(
     svc: Arc<Service>,
     _ctx: Ctx,
@@ -568,5 +742,24 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: DraftsQuery, returns: "Draft[]",
         signature: &[("account", "AccountId", true)],
         run: list_drafts,
+    },
+    // ---- calendar invitations ---------------------------------------------
+    command! {
+        name: "respond_to_invite", scope: Mail, effect: Write,
+        args: RespondToInvite, returns: "void",
+        // `response` is really `'accepted' | 'tentative' | 'declined'` on the
+        // wire -- see `InviteResponse`'s own `Deserialize` -- but `gen-api.mjs`
+        // resolves every identifier a signature string names against
+        // `ui/src/lib/types.ts`, which this crate does not write to (see
+        // `docs/plans/mail.md`'s phase 6 split of labour). `string` here is
+        // what keeps codegen working without a named union type only the UI
+        // side can add; nothing about validation changes; a bad value is
+        // still refused by serde before this command's body ever runs.
+        signature: &[
+            ("messageId", "MailMessageId", true),
+            ("response", "string", true),
+            ("comment", "string | null", false),
+        ],
+        run: respond_to_invite,
     },
 ];

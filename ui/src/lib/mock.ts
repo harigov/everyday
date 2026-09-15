@@ -4506,6 +4506,14 @@ export const mockInvoke = async <T>(
         args.response as 'accepted' | 'tentative' | 'declined',
       )
       return undefined as T
+    case 'respond_to_invite':
+      requireUnlocked()
+      mockRespondToInvite(
+        str(args.messageId),
+        str(args.response),
+        args.comment == null ? undefined : str(args.comment),
+      )
+      return undefined as T
 
     case 'list_drafts':
       requireUnlocked()

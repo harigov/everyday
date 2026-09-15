@@ -217,6 +217,7 @@ mod tests {
                 len: 0,
             },
             gmail: None,
+            invite: None,
         }
     }
 

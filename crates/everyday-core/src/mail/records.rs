@@ -289,6 +289,109 @@ pub struct Message {
     pub pack: PackRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gmail: Option<GmailMeta>,
+    /// The calendar invitation `everyday_mail::invite::parse_invite` read out
+    /// of this message's `text/calendar` part, if it carried one — phase 6's
+    /// "invitations in mail". `#[serde(default)]` on the same terms every
+    /// other field added to this sealed record after the fact is: a message
+    /// synced before invitations were parsed still decodes, as `None`, which
+    /// is exactly what "this message was never re-parsed for an invite"
+    /// already means. Additive, so no schema-version bump is needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite: Option<Invite>,
+}
+
+// ---- calendar invitations -------------------------------------------------
+
+/// What kind of iTIP message a `text/calendar` part carries — RFC 5546's own
+/// four verbs a client is expected to draw something for. `Publish`, `Add`,
+/// `Refresh` and `Declinecounter` exist in the RFC too but are not something
+/// this application offers a reply banner for, so
+/// `everyday_mail::invite::parse_invite` returns `None` for a message
+/// carrying one of those rather than inventing a fifth [`InviteMethod`]
+/// variant nothing in the interface would know what to do with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InviteMethod {
+    Request,
+    Cancel,
+    Reply,
+    Counter,
+}
+
+/// One attendee's own answer, `PARTSTAT`'s four values this application
+/// tracks. iCalendar also defines `DELEGATED`, `COMPLETED`, `IN-PROCESS` and
+/// `FAILED` — none of them a state a meeting attendee's own RSVP is ever in
+/// practice, so `everyday_mail::invite::parse_invite` folds all four into
+/// [`AttendeeResponse::NeedsAction`] rather than growing this enum for a
+/// value the interface has no button for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AttendeeResponse {
+    Accepted,
+    Tentative,
+    Declined,
+    NeedsAction,
+}
+
+/// One name on the attendee list, and where their own RSVP currently stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteAttendee {
+    pub address: Address,
+    pub response: AttendeeResponse,
+}
+
+/// The calendar invitation carried in one message's `text/calendar` part —
+/// parsed once, at sync, by `everyday_mail::invite::parse_invite`, so that
+/// reading a thread never has to parse iCalendar to draw the "accept,
+/// tentative, decline" banner above a message.
+///
+/// # The all-day convention
+///
+/// An all-day `VEVENT`'s `DTSTART`/`DTEND` are bare dates, with no time or
+/// zone of their own — iCalendar's `VALUE=DATE`. [`Invite::start`] and
+/// [`Invite::end`] still need to be instants, because every other timestamp
+/// this application shows is one, so an all-day invite's are the date at
+/// midnight **UTC**: the day itself, not any reader's local midnight, is the
+/// fact an all-day event is actually making, and UTC is the one zone that
+/// reads the same instant back as the same calendar date everywhere this
+/// value is ever displayed again. `all_day` is what tells the interface to
+/// draw a date rather than a time — never a UTC-vs-local guess from the
+/// clock reading `00:00`, which a genuine midnight meeting could also
+/// produce by coincidence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Invite {
+    /// The `VEVENT`'s own `UID` — stable across `REQUEST`, `REPLY`, `CANCEL`
+    /// and `COUNTER` for the same event, which is what
+    /// `everyday_mail::invite::build_reply` echoes back so the organiser's
+    /// software can match this reply to the invitation it answers.
+    pub uid: String,
+    pub method: InviteMethod,
+    pub summary: String,
+    pub start: Timestamp,
+    pub end: Timestamp,
+    pub all_day: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    pub organizer: Address,
+    #[serde(default)]
+    pub attendees: Vec<InviteAttendee>,
+    /// The response of whichever [`InviteAttendee`] matches one of the
+    /// account's own identities, kept apart from a lookup into `attendees`
+    /// so the interface never has to know which addresses are "ours" to
+    /// draw its own RSVP state. `None` for a `CANCEL` (nothing to RSVP to
+    /// any more) or when none of the account's identities were invited at
+    /// all — the latter can happen on a shared or forwarded invitation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub my_response: Option<AttendeeResponse>,
+    /// The `RRULE` value, verbatim (`FREQ=WEEKLY;COUNT=6`, say) rather than
+    /// expanded into occurrences — an invitation banner names a recurring
+    /// meeting's pattern in passing; expanding it into rows is
+    /// `everyday-service::accountcal`'s job, for the calendar this event
+    /// eventually lands in, not this one banner's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recurrence: Option<String>,
 }
 
 // ---- bodies -----------------------------------------------------------
@@ -518,6 +621,28 @@ pub struct DraftServerCopy {
     pub uid: u32,
 }
 
+/// A `text/calendar` part to attach when this draft is sent — today, always
+/// an iTIP `REPLY` built by `everyday_mail::invite::build_reply` for
+/// `respond_to_invite`, kept on the draft rather than passed alongside it so
+/// that a queued send surviving a restart still knows to attach it.
+/// `#[serde(default)]` on the same forward-compatibility terms as
+/// [`Draft::server_copy`]: a draft sealed before this field existed decodes
+/// as `None`, exactly "no calendar part", which is what it always meant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftCalendarPart {
+    /// The iTIP method this part carries, upper-case (`"REPLY"`) — a plain
+    /// `String` rather than [`InviteMethod`], because a `DraftCalendarPart`
+    /// is never anything this application reads back as an invitation; it is
+    /// only ever built once, for `mail-builder`'s `Content-Type: text/calendar;
+    /// method=…` parameter, and `InviteMethod` deliberately does not name
+    /// every method iTIP defines (see that enum's own docs).
+    pub method: String,
+    /// The `.ics` bytes themselves, verbatim — what
+    /// `everyday_mail::compose::build` writes as the calendar part's body.
+    pub ics: Vec<u8>,
+}
+
 /// A message being written — by the person, by the assistant asked to, or
 /// by the auto-draft pass phase 7 adds. See the plan's data model for why
 /// this is a record with three possible writers rather than compose-box
@@ -550,6 +675,10 @@ pub struct Draft {
     /// a sealed record here keeps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_copy: Option<DraftServerCopy>,
+    /// See [`DraftCalendarPart`]. `#[serde(default)]` for the same
+    /// forward-compatibility reason `server_copy` already has it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_part: Option<DraftCalendarPart>,
     pub origin: Origin,
     pub state: DraftState,
     pub created_at: Timestamp,
@@ -571,6 +700,7 @@ impl Draft {
             body_html: String::new(),
             attachments: Vec::new(),
             server_copy: None,
+            calendar_part: None,
             origin,
             state: DraftState::Editing,
             created_at: now,

@@ -107,6 +107,7 @@ mod live {
             in_reply_to: None,
             references: Vec::new(),
             message_id_domain: "example.com".to_string(),
+            calendar: None,
         }
     }
 

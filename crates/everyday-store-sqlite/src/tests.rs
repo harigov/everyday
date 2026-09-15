@@ -1142,6 +1142,7 @@ fn the_database_file_contains_no_readable_mail_text() {
         category: None,
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
+        invite: None,
     };
     store.ingest(account, vec![IngestMessage { message, mailbox: mailbox.id, uid: 1 }]).unwrap();
     store.flush().unwrap();

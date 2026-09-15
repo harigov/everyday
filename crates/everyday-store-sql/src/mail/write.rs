@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, ThreadId};
-use everyday_core::mail::{Address, Message, MessageFlags, Thread};
+use everyday_core::mail::{Address, Invite, Message, MessageFlags, Thread};
 use everyday_core::store::mail::{IngestMessage, message_aad, thread_aad};
 
 use crate::conn::{Sql, SqlExt, Value};
@@ -188,6 +188,27 @@ pub(super) fn set_message_labels(
     let (sql, args) = upsert_stmt(&message, sealed);
     tx.execute(&sql, &args)?;
     recompute_thread(store, tx.as_mut(), thread_id, &[])?;
+    tx.commit()
+}
+
+/// See [`everyday_core::store::mail::MailStore::set_message_invite`]. No
+/// [`recompute_thread`] call, unlike [`set_message_flags`] and
+/// [`set_message_labels`] just above: an invitation is not one of the
+/// aggregates a thread row keeps.
+pub(super) fn set_message_invite(
+    store: &SqlStore,
+    id: MailMessageId,
+    invite: Option<Invite>,
+) -> Result<()> {
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    let Some(mut message) = message_by_id(store, tx.as_mut(), id)? else {
+        return Ok(()); // deleted since the caller last looked: nothing to update
+    };
+    message.invite = invite;
+    let sealed = store.seal(&message_aad(id), &message)?;
+    let (sql, args) = upsert_stmt(&message, sealed);
+    tx.execute(&sql, &args)?;
     tx.commit()
 }
 

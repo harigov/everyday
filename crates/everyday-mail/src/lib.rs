@@ -8,8 +8,11 @@
 //!   sandboxed frame can show, with every remote reference rewritten to the
 //!   app's own protocol; [`text`] produces the snippet, the quoted and
 //!   signature ranges, and the plain text an assistant reads; [`threading`]
-//!   groups messages into conversations when the server does not. None of it
-//!   opens a socket.
+//!   groups messages into conversations when the server does not; [`invite`]
+//!   reads the `text/calendar` part [`mime::ParsedMessage::calendar`] found,
+//!   with `calcard`, into the accept/tentative/decline banner a thread shows,
+//!   and builds the iTIP `REPLY` an answer sends back. None of it opens a
+//!   socket.
 //! * **Talking to a server.** [`session`] is the trait the sync engine is
 //!   written against, so that the library underneath is a detail an adapter
 //!   hides; [`imap`] is the first adapter, and [`smtp`] sends what
@@ -37,6 +40,7 @@
 
 pub mod compose;
 pub mod imap;
+pub mod invite;
 pub mod mime;
 pub mod oauth;
 pub mod outbox;

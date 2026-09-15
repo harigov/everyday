@@ -2489,6 +2489,33 @@
     {
       "args": [
         {
+          "name": "messageId",
+          "required": true,
+          "type": "MailMessageId"
+        },
+        {
+          "name": "response",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "comment",
+          "required": false,
+          "type": "string | null"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "respond_to_invite",
+      "orScope": null,
+      "returns": "void",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "sender",
           "required": false,
           "type": "string | null"

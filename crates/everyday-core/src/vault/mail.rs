@@ -178,6 +178,20 @@ impl Vault {
         self.with_mail(|m| m.delete_draft(id))
     }
 
+    /// Set message `id`'s [`crate::mail::Invite`] directly -- what
+    /// `everyday_service::domains::mail::respond_to_invite` calls once the
+    /// reply is queued, so [`crate::mail::Invite::my_response`] reflects the
+    /// answer immediately rather than waiting for a resync of the sent
+    /// reply's own copy.
+    pub fn set_message_invite(
+        &self,
+        id: MailMessageId,
+        invite: Option<crate::mail::Invite>,
+    ) -> Result<()> {
+        self.writable()?;
+        self.with_mail(move |m| m.set_message_invite(id, invite))
+    }
+
     // ---- the outbox ----------------------------------------------------------
 
     pub fn enqueue_op(&self, op: &Op) -> Result<()> {

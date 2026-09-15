@@ -92,6 +92,12 @@ pub struct SyncContext<'a> {
     /// end of [`sync_once`] -- see `crate::mailsync::contacts`'s module
     /// docs. `None` on the same terms `unread_cache` is.
     pub contacts: Option<Arc<crate::mailsync::contacts::ContactIndex>>,
+    /// Every address this account answers to -- its own and every
+    /// [`everyday_core::account::Identity`]'s, lower-cased -- what
+    /// [`process_body`] hands to [`everyday_mail::invite::parse_invite`] so
+    /// [`everyday_core::mail::Invite::my_response`] can be filled in without
+    /// a second read of the account row for every message.
+    pub identities: Vec<String>,
 }
 
 /// Paces how often [`bodies_pass`] commits the search index, per the plan's
@@ -482,6 +488,7 @@ pub async fn bodies_pass<S: MailSession>(
         let account_id = ctx.account_id;
         let mailbox_id = mailbox.row.id;
         let attachment_cap = ctx.attachment_cap_bytes;
+        let identities = ctx.identities.clone();
         let batch_owned: Vec<(Message, Uid)> = batch.to_vec();
         let docs = tokio::task::spawn_blocking(move || {
             // Every message this batch actually got raw bytes for, in
@@ -510,6 +517,7 @@ pub async fn bodies_pass<S: MailSession>(
                     raw,
                     pack,
                     attachment_cap,
+                    &identities,
                 ));
             }
             // One upsert for the whole batch rather than one per message --
@@ -596,12 +604,22 @@ fn process_body(
     raw: &[u8],
     pack: everyday_core::packstore::PackRef,
     attachment_cap_bytes: Option<u64>,
+    identities: &[String],
 ) -> (Message, Uid, Body) {
     message.pack = pack;
 
     let mut remote_images = Vec::new();
+    // Phase 6's "invitations in mail": when this message carries a
+    // `text/calendar` part, parse it into the banner a thread draws above
+    // the message. Deliberately the smallest addition this match can carry
+    // -- everything else in this function is unchanged from before phase 6.
+    let mut invite = None;
     let (html_sanitised, plain, parts, has_attachments) = match everyday_mail::mime::parse(raw) {
         Ok(parsed) => {
+            invite = parsed
+                .calendar
+                .as_deref()
+                .and_then(|calendar| everyday_mail::invite::parse_invite(calendar, identities));
             let html_sanitised = parsed.html.as_deref().map_or_else(String::new, |html| {
                 let rewrite = everyday_mail::sanitize::Rewrite::new(message.id.to_string());
                 let sanitised = everyday_mail::sanitize::sanitize(html, &rewrite);
@@ -662,6 +680,7 @@ fn process_body(
 
     message.snippet = everyday_mail::text::snippet(&plain);
     message.has_attachments = has_attachments;
+    message.invite = invite;
 
     let body = Body {
         message_id: message.id,

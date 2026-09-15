@@ -43,8 +43,8 @@
 use crate::error::Result;
 use crate::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use crate::mail::{
-    Body, Category, ContactBook, Draft, Mailbox, Message, MessageFlags, Op, RemoteImageSettings,
-    Thread,
+    Body, Category, ContactBook, Draft, Invite, Mailbox, Message, MessageFlags, Op,
+    RemoteImageSettings, Thread,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -370,6 +370,16 @@ pub trait MailStore: Send + Sync {
     /// As [`MailStore::set_message_flags`], for
     /// [`crate::mail::OpKind::Label`] and [`crate::mail::OpKind::Unlabel`].
     fn set_message_labels(&self, id: MailMessageId, labels: Vec<String>) -> Result<()>;
+
+    /// Set message `id`'s [`crate::mail::Invite`] directly -- what
+    /// `respond_to_invite` calls once it has queued the `REPLY`, so
+    /// [`crate::mail::Invite::my_response`] reflects the answer immediately
+    /// rather than waiting for the reply to round-trip back through sync. No
+    /// thread recompute, unlike [`MailStore::set_message_flags`]: an
+    /// invitation is not one of the aggregates a [`crate::mail::Thread`] row
+    /// keeps. A message id this store has never ingested is a no-op, on the
+    /// same terms `set_message_flags` already is.
+    fn set_message_invite(&self, id: MailMessageId, invite: Option<Invite>) -> Result<()>;
 
     /// Hide `thread` from `mailbox`'s own list -- the optimistic half of
     /// [`crate::mail::OpKind::Archive`], [`crate::mail::OpKind::Trash`] and

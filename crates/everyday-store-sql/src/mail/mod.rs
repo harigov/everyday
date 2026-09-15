@@ -14,7 +14,8 @@ mod write;
 use everyday_core::error::Result;
 use everyday_core::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use everyday_core::mail::{
-    Body, ContactBook, Draft, Mailbox, Message, MessageFlags, Op, RemoteImageSettings, Thread,
+    Body, ContactBook, Draft, Invite, Mailbox, Message, MessageFlags, Op, RemoteImageSettings,
+    Thread,
 };
 use everyday_core::store::mail::{
     IngestMessage, MailStore, ThreadFilter, ThreadPage, body_aad, contacts_aad, draft_aad,
@@ -442,6 +443,10 @@ impl MailStore for SqlStore {
 
     fn set_message_labels(&self, id: MailMessageId, labels: Vec<String>) -> Result<()> {
         write::set_message_labels(self, id, labels)
+    }
+
+    fn set_message_invite(&self, id: MailMessageId, invite: Option<Invite>) -> Result<()> {
+        write::set_message_invite(self, id, invite)
     }
 
     fn hide_thread_from_mailbox(&self, thread: ThreadId, mailbox: MailboxId) -> Result<()> {

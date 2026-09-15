@@ -164,6 +164,10 @@ pub fn resolve_header(
         category: None,
         pack: pending_pack_ref(account_id),
         gmail,
+        // Filled in by `passes::process_body` once the bodies pass has the
+        // raw bytes in hand to look for a `text/calendar` part at all --
+        // the headers pass, here, never sees more than the envelope.
+        invite: None,
     };
     threads.seen_by_message_id.insert(message.message_id_header.clone(), message.clone());
     Ok(HeaderIngest { message, is_new: true })
