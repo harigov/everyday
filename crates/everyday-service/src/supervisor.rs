@@ -405,6 +405,28 @@ fn set_state(shared: &Shared, key: &str, generation: u64, state: TaskState) {
     shared.events.lock().unwrap().changed(task_change(key));
 }
 
+/// [`set_state`], and also clears `handle` and `stop_tx` -- what a task
+/// ending *on its own* (returning [`Outcome::Done`]) has to do that
+/// [`Supervisor::stop`] does not, because `stop` already takes both out of
+/// the registry itself before this task even gets a chance to. A `handle`
+/// left behind after the task it names has actually finished is what
+/// [`Supervisor::start`]'s idempotency check would otherwise mistake for
+/// still running -- see [`drive`]'s own call site.
+fn finish(shared: &Shared, key: &str, generation: u64, state: TaskState) {
+    {
+        let mut tasks = shared.tasks.lock().unwrap();
+        match tasks.get_mut(key) {
+            Some(entry) if entry.generation == generation => {
+                entry.handle = None;
+                entry.stop_tx = None;
+                entry.state = state;
+            }
+            _ => return,
+        }
+    }
+    shared.events.lock().unwrap().changed(task_change(key));
+}
+
 fn task_change(key: &str) -> Change {
     let mut change = Change::new(Kind::BackgroundTask, Op::Updated);
     change.id = Some(key.to_string());
@@ -436,7 +458,16 @@ async fn drive(
         set_state(&shared, &key, generation, TaskState::Running);
         match run_once(&factory, stop_rx.clone()).await {
             Ok(Outcome::Done) => {
-                set_state(&shared, &key, generation, TaskState::Stopped);
+                // Unlike `Supervisor::stop`, nobody has taken this task's own
+                // `handle` out of the registry on this path -- it finished on
+                // its own, by returning rather than by being aborted. Without
+                // clearing it here, `start`'s own `entry.handle.is_some()`
+                // check (its idempotency guard against asking twice for a
+                // task already running) would go on believing a task that
+                // has actually ended is still up, forever -- `ensure`,
+                // `restart_registered` and a later `sync_account` would all
+                // silently do nothing.
+                finish(&shared, &key, generation, TaskState::Stopped);
                 return;
             }
             Err(last_error) => {
@@ -643,6 +674,39 @@ mod tests {
             tokio::task::yield_now().await;
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// The regression for the bug `finish` fixes: a task that finished on
+    /// its own (`Outcome::Done`, not `Supervisor::stop`) left its `handle`
+    /// behind in the registry, which made `start`'s idempotency check believe
+    /// it was still running forever after -- so `ensure`, called again for
+    /// the same key once whatever stopped it the first time has changed
+    /// (mail: the account signing back in after `NeedsSignIn`, which is
+    /// exactly what `sync_account` calls `ensure_account_task` -- itself
+    /// `Supervisor::ensure` -- to do), must actually start a fresh attempt
+    /// rather than silently doing nothing.
+    #[tokio::test]
+    async fn ensure_after_done_starts_a_fresh_attempt() {
+        let sup = Supervisor::new(Arc::new(Silent));
+        let calls = Arc::new(AtomicU32::new(0));
+
+        let start = |sup: &Supervisor, calls: Arc<AtomicU32>| {
+            sup.ensure("acct", move |_stop| {
+                let calls = calls.clone();
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(Outcome::Done)
+                })
+            });
+        };
+
+        start(&sup, calls.clone());
+        settle(|| matches!(sup.state("acct"), Some(TaskState::Stopped))).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        start(&sup, calls.clone());
+        settle(|| calls.load(Ordering::SeqCst) == 2).await;
+        settle(|| matches!(sup.state("acct"), Some(TaskState::Stopped))).await;
     }
 
     #[tokio::test]
