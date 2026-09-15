@@ -1073,7 +1073,7 @@ why the whole test suite runs on a machine that cannot build a GUI.
 
 `everyday-service` is the middle. Every one of the 212 things a vault
 can be asked to do is an entry in one table there, run by name from JSON, and
-the desktop shell registers nine commands rather than 172. That is what
+the desktop shell registers nine commands rather than 212. That is what
 lets the same command bodies back this window, a server answering three
 machines, and a mobile shell later — and it is why the interface's own client
 is *generated* from that table rather than written beside it.
