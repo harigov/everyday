@@ -53,6 +53,9 @@ pub(super) enum Domain {
     Secrets,
     /// A mailbox provider signed in to -- see [`crate::account`].
     Accounts,
+    /// Mail: mailboxes, messages, threads, bodies, drafts and the outbox --
+    /// see [`crate::mail`] and [`crate::store::mail`].
+    Mail,
 }
 
 impl Domain {
@@ -70,6 +73,7 @@ impl Domain {
             Domain::Notes => "notes (this vault's backend stores journals only)",
             Domain::Secrets => "per-record secrets (this vault's backend stores journals only)",
             Domain::Accounts => "accounts (this vault's backend stores journals only)",
+            Domain::Mail => "mail (this vault's backend stores journals only)",
         }
     }
 }
@@ -254,5 +258,6 @@ mod tests {
             Domain::Accounts.to_string(),
             "accounts (this vault's backend stores journals only)"
         );
+        assert_eq!(Domain::Mail.to_string(), "mail (this vault's backend stores journals only)");
     }
 }
