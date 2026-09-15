@@ -400,6 +400,18 @@ fn enqueue_gate(ctx: &ToolContext<'_>, origin: &Origin) -> Result<()> {
     }
 }
 
+/// Tell the rest of the session a mail write on `account` just landed --
+/// see [`ToolContext::after_mail_write`]'s own docs for what that wakes and
+/// invalidates. Called once, after every mutating mail tool's own vault
+/// write actually succeeds, on the same "no-op when nothing is wired up"
+/// terms [`enqueue_gate`] already has for a test or a caller with nothing
+/// to notify.
+fn after_write(ctx: &ToolContext<'_>, account: AccountId) {
+    if let Some(hook) = ctx.after_mail_write {
+        hook(account);
+    }
+}
+
 /// Refuse `permission` on `account` for this call's caller, naming the
 /// account and the switch -- see the module docs' "The two callers this
 /// file actually serves". `Ok` unconditionally for the vault's owner acting
@@ -859,6 +871,7 @@ fn run_draft_reply(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 
     enqueue_gate(ctx, &origin)?;
     ctx.vault.save_draft_and_append(&draft, true, origin)?;
+    after_write(ctx, account.id);
     draft_result("drafted", &draft, Some(parent.thread_id))
 }
 
@@ -884,6 +897,7 @@ fn run_draft_message(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 
     enqueue_gate(ctx, &origin)?;
     ctx.vault.save_draft_and_append(&draft, true, origin)?;
+    after_write(ctx, account.id);
     draft_result("drafted", &draft, None)
 }
 
@@ -898,14 +912,22 @@ fn run_update_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         ));
     }
 
+    let origin = origin_of(ctx);
+    // Whether *this* call actually touched a recipient list, not merely
+    // whether one was named -- `update_addresses` already tells "omitted"
+    // from "sent as an empty list" apart, and only the latter counts.
+    let mut recipients_touched = false;
     if let Some(to) = update_addresses(args, "to")? {
         draft.to = to;
+        recipients_touched = true;
     }
     if let Some(cc) = update_addresses(args, "cc")? {
         draft.cc = cc;
+        recipients_touched = true;
     }
     if let Some(bcc) = update_addresses(args, "bcc")? {
         draft.bcc = bcc;
+        recipients_touched = true;
     }
     if let Some(subject) = args.opt_str("subject") {
         draft.subject = subject.to_string();
@@ -914,11 +936,19 @@ fn run_update_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         draft.body_html = body_html.to_string();
     }
     draft.updated_at = jiff::Timestamp::now();
+    // Marked only for a non-person caller -- see
+    // `Draft::recipients_changed_by`'s own doc. The vault's owner acting
+    // directly on this tool (a script, the palette) is still the person; it
+    // is `origin_of`'s `Origin::Person` branch that decides this, not the
+    // tool being called at all.
+    if recipients_touched && !matches!(origin, Origin::Person) {
+        draft.recipients_changed_by = Some(origin.clone());
+    }
 
     let thread_id = draft_thread_id(ctx, &draft);
-    let origin = origin_of(ctx);
     enqueue_gate(ctx, &origin)?;
     ctx.vault.save_draft_and_append(&draft, true, origin)?;
+    after_write(ctx, account.id);
     draft_result("updated", &draft, thread_id)
 }
 
@@ -933,18 +963,65 @@ fn update_addresses(args: &Args<'_>, key: &str) -> Result<Option<Vec<Address>>> 
     Ok(Some(parse_addresses(args, key)?))
 }
 
+/// Who a non-person [`Origin`] reads as, in a sentence a person reads on a
+/// confirmation card -- see [`describe_send_draft`]'s own "recipients
+/// changed by" line. `Origin::Person` never reaches this: it is the one
+/// variant [`Draft::recipients_changed_by`] is never set to (see that
+/// field's own doc), and [`Origin::Routine`] cannot either, since only
+/// `update_draft` sets it and a routine may draft but never send -- both
+/// are named anyway, rather than matched only on the two that occur, so
+/// this stays correct if that ever changes.
+fn origin_label(origin: &Origin) -> &'static str {
+    match origin {
+        Origin::Person => "you",
+        Origin::Assistant { .. } => "the assistant",
+        Origin::Mcp { .. } => "an MCP client",
+        Origin::Routine { .. } => "a routine",
+    }
+}
+
+/// `send_draft`'s confirmation card -- the one place a person actually
+/// reads a draft's recipients before an injected `update_draft` gets to
+/// reach somebody. Lists every one of `to`, `cc` and `bcc` by name rather
+/// than only `to`: a card that just says "to A, B" says nothing about a
+/// `Bcc` an earlier call quietly added, and `Bcc` is exactly the field
+/// built to be invisible to everyone *but* this reader, so it is named
+/// here, plainly, as what it is -- "hidden from other recipients" -- rather
+/// than folded in beside `to` and `cc` as if it were the same kind of
+/// thing.
+///
+/// Also says so when [`Draft::recipients_changed_by`] is set: a
+/// non-person origin touched `to`/`cc`/`bcc` since the person last saved
+/// this draft from compose, and this is the one sentence between that and
+/// an approval given to recipients nobody has actually looked at.
 fn describe_send_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
     let id: DraftId = args.opt_id("draft_id", "draft").ok()??;
     let draft = ctx.vault.draft(id).ok()?;
-    let to = draft.to.iter().map(display_address).collect::<Vec<_>>().join(", ");
+    let addresses =
+        |list: &[Address]| list.iter().map(display_address).collect::<Vec<_>>().join(", ");
+    let mut recipients = format!("to {}", addresses(&draft.to));
+    if !draft.cc.is_empty() {
+        recipients.push_str(&format!(", Cc {}", addresses(&draft.cc)));
+    }
+    if !draft.bcc.is_empty() {
+        recipients
+            .push_str(&format!(", Bcc (hidden from other recipients): {}", addresses(&draft.bcc)));
+    }
     let subject =
         if draft.subject.trim().is_empty() { "(no subject)" } else { draft.subject.trim() };
     let preview = first_lines(&draft.body_html, 2, 160);
-    Some(if preview.is_empty() {
-        format!("to {to} \u{2014} {subject}")
+    let mut out = if preview.is_empty() {
+        format!("{recipients} \u{2014} {subject}")
     } else {
-        format!("to {to} \u{2014} {subject} \u{2014} {preview}")
-    })
+        format!("{recipients} \u{2014} {subject} \u{2014} {preview}")
+    };
+    if let Some(changed_by) = &draft.recipients_changed_by {
+        out.push_str(&format!(
+            " \u{2014} recipients changed by {} since you last saw this draft",
+            origin_label(changed_by)
+        ));
+    }
+    Some(out)
 }
 
 fn run_send_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -973,6 +1050,7 @@ fn run_send_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     enqueue_gate(ctx, &origin)?;
     let not_before = jiff::Timestamp::now() + crate::mail::undo_send_delay(None);
     let (draft, _op) = ctx.vault.queue_draft_send(draft_id, not_before, origin.clone())?;
+    after_write(ctx, account.id);
 
     let subject = if draft.subject.trim().is_empty() { "(no subject)" } else { &draft.subject };
     let mut out = done("queued to send", "message", subject, draft.id.to_string())?;
@@ -1009,6 +1087,7 @@ fn run_mark_read(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let origin = origin_of(ctx);
     enqueue_gate(ctx, &origin)?;
     ctx.vault.apply_thread_ops(&[thread_id], kind, origin)?;
+    after_write(ctx, account.id);
     done_thread(if read { "marked read" } else { "marked unread" }, &thread, thread_id)
 }
 
@@ -1022,6 +1101,7 @@ fn run_label_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let origin = origin_of(ctx);
     enqueue_gate(ctx, &origin)?;
     ctx.vault.apply_thread_ops(&[thread_id], kind, origin)?;
+    after_write(ctx, account.id);
     done_thread(if remove { "unlabelled" } else { "labelled" }, &thread, thread_id)
 }
 
@@ -1034,6 +1114,7 @@ fn run_move_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let origin = origin_of(ctx);
     enqueue_gate(ctx, &origin)?;
     ctx.vault.apply_thread_ops(&[thread_id], OpKind::Move { to }, origin)?;
+    after_write(ctx, account.id);
     done_thread("moved", &thread, thread_id)
 }
 
@@ -1048,6 +1129,7 @@ fn run_snooze_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let origin = origin_of(ctx);
     enqueue_gate(ctx, &origin)?;
     ctx.vault.apply_thread_ops(&[thread_id], OpKind::Snooze { until }, origin)?;
+    after_write(ctx, account.id);
     done_thread("snoozed", &thread, thread_id)
 }
 
@@ -1058,6 +1140,7 @@ fn run_archive_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let origin = origin_of(ctx);
     enqueue_gate(ctx, &origin)?;
     ctx.vault.apply_thread_ops(&[thread_id], OpKind::Archive, origin)?;
+    after_write(ctx, account.id);
     done_thread("archived", &thread, thread_id)
 }
 
@@ -1068,6 +1151,7 @@ fn run_trash_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let origin = origin_of(ctx);
     enqueue_gate(ctx, &origin)?;
     ctx.vault.apply_thread_ops(&[thread_id], OpKind::Trash, origin)?;
+    after_write(ctx, account.id);
     done_thread("moved to trash", &thread, thread_id)
 }
 

@@ -584,6 +584,56 @@ pub struct Thread {
     /// True when any message in the thread has at least one attachment.
     #[serde(default)]
     pub has_attachments: bool,
+    /// `message_count` the last time `everyday_service::mailai`'s
+    /// categorisation pass sent this thread's newest message to the model,
+    /// whatever label came back -- including "still other". `None` means
+    /// never asked.
+    ///
+    /// What stops the bug the field exists to fix: without a marker, a
+    /// thread the model reads and still calls "other" is exactly as
+    /// eligible next tick as one it has never seen, so every `Other` thread
+    /// past the newest page is asked again, forever, for no new
+    /// information. Comparing this to the thread's *current*
+    /// `message_count` is the whole rule -- equal means "asked, and nothing
+    /// has arrived since", so `everyday_service::mailai::categorize_account`
+    /// skips it; a new message moves `message_count` past this value, which
+    /// is what makes the thread eligible again without this field ever
+    /// needing to be cleared.
+    ///
+    /// Sealed, not a clear column: it is read only after
+    /// `MailStore::threads_in_category` has already fetched the page (the
+    /// filter is applied in `everyday_service::mailai`, not in SQL), so it
+    /// costs nothing to keep beside `participants` and `snippet` rather
+    /// than in a column of its own. `#[serde(default)]` so a `Thread` sealed
+    /// before this field existed still decodes, as `None` -- exactly what
+    /// "never asked under this scheme" already means.
+    ///
+    /// A storage-layer `category_source: Rules | Model | Person` on
+    /// `Message` (once merged) would let this same question be answered
+    /// from the newest message's own record instead -- "already `Model`"
+    /// meaning the same thing this field means today. Until then, this is
+    /// the fallback the finding that added it names explicitly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_categorize_asked_at_count: Option<u32>,
+    /// As [`Thread::ai_categorize_asked_at_count`], for
+    /// `everyday_service::mailai`'s auto-draft pass -- "reply: false" is
+    /// its own answer, on the same terms "still other" is categorisation's,
+    /// and gets the same treatment: recorded once asked, re-asked only once
+    /// a new message moves `message_count` past it.
+    ///
+    /// Kept apart from `ai_categorize_asked_at_count` rather than shared
+    /// with it, even though the two passes never race each other today
+    /// (categorisation only reads `Category::Other` threads, auto-draft
+    /// only `Category::Important` ones, and a `Thread` carries one
+    /// `category` at a time): the moment categorisation itself promotes a
+    /// thread from `Other` to `Important`, a shared marker written by that
+    /// same call would make auto-draft believe it had already asked about
+    /// a thread it has never actually seen, and skip the one thread most
+    /// worth asking about -- the one that had just been decided
+    /// interesting. Two independent fields cost one more `Option<u32>` and
+    /// remove that coupling entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_auto_draft_asked_at_count: Option<u32>,
 }
 
 // ---- drafts ---------------------------------------------------------------
@@ -714,6 +764,24 @@ pub struct Draft {
     pub state: DraftState,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Who last changed `to`, `cc` or `bcc` on this draft *without* the
+    /// person seeing it happen through compose -- set by `update_draft`
+    /// (`everyday_core::agent::tools::mail`) when the caller is
+    /// `Assistant` or `Mcp` and the call actually touched one of the three,
+    /// cleared the moment the person themselves saves from compose
+    /// (`everyday_service::domains::mail::save_draft`, always, whether or
+    /// not that particular save touched the recipients).
+    ///
+    /// What lets `send_draft`'s own confirmation card say "recipients
+    /// changed by the assistant" for a draft whose `to`/`cc`/`bcc` an
+    /// injected instruction inside some other tool's result talked a model
+    /// into widening -- see `describe_send_draft`'s own docs for the
+    /// finding this answers. `#[serde(default)]` so a draft sealed before
+    /// this field existed still decodes, as `None` -- exactly what "the
+    /// person's own recipients, unchanged since they last looked" already
+    /// means.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipients_changed_by: Option<Origin>,
 }
 
 impl Draft {
@@ -737,6 +805,7 @@ impl Draft {
             state: DraftState::Editing,
             created_at: now,
             updated_at: now,
+            recipients_changed_by: None,
         }
     }
 }

@@ -476,6 +476,7 @@ impl ConfirmGate {
             mail_search: None,
             assistant_provider: None,
             mail_rate_limit: None,
+            after_mail_write: None,
             invite_responder: None,
         };
         tools::describe(&ctx, name, arguments).unwrap_or_default()
@@ -745,6 +746,17 @@ async fn run_tool(
                 service.check_mail_rate_limit(origin, &turn_id).map_err(mail_rate_limit_error)
             }
         };
+        // See `ToolContext::after_mail_write`'s own doc: the one door a
+        // successful mail write here shares with a person's own click
+        // through `domains::mail` -- wakes the account's sync task and
+        // drops its cached unread counts, so the chat assistant's own
+        // archive or send is seen exactly as promptly as a person's own.
+        let after_mail_write = {
+            let service = service.clone();
+            move |account: everyday_core::id::AccountId| {
+                service.notify_mail_write(account);
+            }
+        };
         // See `agent::tools::mail`'s `respond_to_invite` and
         // `everyday_core::agent::tools::InviteResponder`'s own doc: the
         // core cannot build an iTIP reply itself, so this closure is the
@@ -769,6 +781,7 @@ async fn run_tool(
             mail_search: mail_index.as_deref(),
             assistant_provider: Some(assistant_provider),
             mail_rate_limit: Some(&rate_limit),
+            after_mail_write: Some(&after_mail_write),
             invite_responder: Some(&invite_responder),
         };
         tools::dispatch(&ctx, name, &arguments)
