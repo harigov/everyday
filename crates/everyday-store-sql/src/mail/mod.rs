@@ -11,6 +11,9 @@
 mod threads;
 mod write;
 
+#[cfg(any(test, feature = "testing"))]
+pub use write::run_recategorize_staleness_regression;
+
 use everyday_core::error::Result;
 use everyday_core::id::{
     AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, PackId, ThreadId,

@@ -1105,6 +1105,13 @@ fn the_table_backed_pack_store_passes_the_shared_conformance_suite() {
 }
 
 #[test]
+fn recategorize_does_not_clobber_a_concurrent_flag_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    everyday_store_sql::mail::run_recategorize_staleness_regression(&store);
+}
+
+#[test]
 fn the_database_file_contains_no_readable_mail_text() {
     // What the mail tables promise, checked the way every other domain's
     // promise is: write a subject, a sender's name and a label nobody

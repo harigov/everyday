@@ -125,6 +125,12 @@ fn the_table_backed_pack_store_passes_the_shared_conformance_suite() {
 }
 
 #[test]
+fn recategorize_does_not_clobber_a_concurrent_flag_change() {
+    let Some(store) = store("conformance_recategorize_staleness", true) else { return };
+    everyday_store_sql::mail::run_recategorize_staleness_regression(&store);
+}
+
+#[test]
 fn an_untimed_reading_sorts_before_a_timed_one_on_the_same_day() {
     // Postgres sorts NULLs *last* on an ascending column and SQLite sorts
     // them first, so this ordering is the one place the two databases would
