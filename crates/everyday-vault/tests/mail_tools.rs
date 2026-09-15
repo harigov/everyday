@@ -106,6 +106,7 @@ fn ingest_eml(
         category: None,
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
+        invite: None,
     };
     vault
         .ingest_mail(account, vec![IngestMessage { message, mailbox, uid }])

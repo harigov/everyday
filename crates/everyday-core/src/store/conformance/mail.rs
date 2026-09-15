@@ -8,8 +8,8 @@
 use super::*;
 use crate::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
 use crate::mail::{
-    Address, Body, Draft, Mailbox, MailboxRole, Message, MessageFlags, Op, OpKind, OpState,
-    OpTarget, Origin, PartRef,
+    Address, AttendeeResponse, Body, Draft, Invite, InviteMethod, Mailbox, MailboxRole, Message,
+    MessageFlags, Op, OpKind, OpState, OpTarget, Origin, PartRef,
 };
 use crate::packstore::PackRef as MailPackRef;
 use crate::store::mail::{IngestMessage, MailStore, ThreadFilter};
@@ -83,6 +83,7 @@ fn message(
         category: None,
         pack: MailPackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
+        invite: None,
     }
 }
 
@@ -348,9 +349,42 @@ fn optimistic_writes_and_snooze_round_trip(store: &dyn JournalStore) {
     let (_, messages) = m.thread(thread_id).unwrap();
     assert_eq!(messages[0].labels, vec!["Work".to_string()]);
 
+    // An invitation, set and cleared directly by message id -- phase 6's
+    // `respond_to_invite` writing back `my_response` without a resync.
+    let invite = Invite {
+        uid: "event@example.com".into(),
+        method: InviteMethod::Request,
+        summary: "Standup".into(),
+        start: Timestamp::now(),
+        end: Timestamp::now() + SignedDuration::from_mins(30),
+        all_day: false,
+        location: None,
+        organizer: Address::bare("organiser@example.com"),
+        attendees: Vec::new(),
+        my_response: None,
+        recurrence: None,
+    };
+    m.set_message_invite(msg.id, Some(invite.clone())).unwrap();
+    let (_, messages) = m.thread(thread_id).unwrap();
+    assert_eq!(messages[0].invite.as_ref().map(|i| &i.uid), Some(&invite.uid));
+
+    let mut answered = invite;
+    answered.my_response = Some(AttendeeResponse::Accepted);
+    m.set_message_invite(msg.id, Some(answered)).unwrap();
+    let (_, messages) = m.thread(thread_id).unwrap();
+    assert_eq!(
+        messages[0].invite.as_ref().and_then(|i| i.my_response),
+        Some(AttendeeResponse::Accepted)
+    );
+
+    m.set_message_invite(msg.id, None).unwrap();
+    let (_, messages) = m.thread(thread_id).unwrap();
+    assert!(messages[0].invite.is_none());
+
     // A message id this store has never ingested is a no-op, not an error.
     m.set_message_flags(MailMessageId::new(), MessageFlags::default()).unwrap();
     m.set_message_labels(MailMessageId::new(), Vec::new()).unwrap();
+    m.set_message_invite(MailMessageId::new(), None).unwrap();
 
     // Hiding a thread from a mailbox removes it from that mailbox's list
     // without touching the durable `message_mailboxes` mapping, so
