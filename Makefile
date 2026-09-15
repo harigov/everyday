@@ -19,7 +19,7 @@ UI_DIR  := ui
 ARGS ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help setup run dev ui build test test-postgres test-imap test-smtp lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
+.PHONY: help setup run dev ui build test test-postgres test-imap test-smtp test-caldav lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
 
 help: ## Show this help
 	@echo "Every Day -- make <target>"
@@ -157,6 +157,43 @@ test-smtp: ## Run the SMTP client's suite against a throwaway Mailpit in Docker
 		cargo test -p everyday-mail --features insecure-test-tls --test smtp_mailpit; \
 	status=$$?; \
 	docker rm -f everyday-smtptest >/dev/null; \
+	exit $$status
+
+# `accountcal::caldav`'s suite (crates/everyday-service/tests/caldav_docker.rs),
+# against a throwaway Radicale -- Kozea's own image, GPL-3.0 licensed, which
+# is fine for a container this application never links: nothing here ships
+# Radicale, it only talks CalDAV to a copy of it that is deleted when the
+# test ends. Authenticated with a plain htpasswd file (one line, written to a
+# temp file below and never committed) rather than `--auth-type none`,
+# because Basic auth over a real server is exactly the credential path
+# `accountcal::caldav` uses for iCloud, Fastmail and Custom accounts, and a
+# test that skipped it would not be testing that path at all. The test
+# itself seeds the calendar and its events over plain HTTP PUT -- see its own
+# doc for why -- so nothing here does more than start the server and wait for
+# it to answer. The container is removed when it stops.
+test-caldav: ## Run the CalDAV adapter's suite against a throwaway Radicale in Docker
+	@docker rm -f everyday-caldavtest >/dev/null 2>&1 || true
+	@tmp_htpasswd=$$(mktemp); \
+	printf 'everyday:testpass\n' > $$tmp_htpasswd; \
+	docker run -d --rm --name everyday-caldavtest \
+		-v $$tmp_htpasswd:/etc/radicale/users:ro \
+		-p 15232:5232 \
+		kozea/radicale:latest --hosts 0.0.0.0:5232 \
+		--auth-type htpasswd --auth-htpasswd-filename /etc/radicale/users \
+		--auth-htpasswd-encryption plain >/dev/null; \
+	echo "waiting for Radicale..."; \
+	for i in $$(seq 1 60); do \
+		curl -sf -o /dev/null http://127.0.0.1:15232/ && break; \
+		sleep 1; \
+	done; \
+	EVERYDAY_TEST_CALDAV=1 \
+		EVERYDAY_TEST_CALDAV_URL=http://127.0.0.1:15232 \
+		EVERYDAY_TEST_CALDAV_USER=everyday \
+		EVERYDAY_TEST_CALDAV_PASS=testpass \
+		cargo test -p everyday-service --test caldav_docker; \
+	status=$$?; \
+	docker rm -f everyday-caldavtest >/dev/null; \
+	rm -f $$tmp_htpasswd; \
 	exit $$status
 
 # The pair to reach for: `lint` says what is wrong, `fix` fixes what it can.
