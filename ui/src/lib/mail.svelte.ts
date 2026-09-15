@@ -293,6 +293,22 @@ class MailState {
   }
 
   /**
+   * Open Mail at a thread from outside it -- the assistant transcript's own
+   * link ("Archived: Plans for Saturday →"), or the same list in Settings
+   * → Sharing and the assistant's settings.
+   *
+   * The same two-step every other app's own cross-app link already is
+   * (`app.goTo('notes').then(() => noteStore.openNote(id))` in
+   * `OverviewWidget.svelte`, say): switch the app bar to Mail through its
+   * existing routing, then reuse `openThreadById` rather than a second way
+   * of opening a thread.
+   */
+  async openFromElsewhere(id: ThreadId) {
+    if (!(await app.goTo('mail'))) return
+    await this.openThreadById(id)
+  }
+
+  /**
    * (p) TODO: find the auto-draft phase 7 writes ahead of a reply, and open
    * it in the compose sheet -- "the reply box opens pre-filled with it and
    * labelled 'Drafted by the assistant'," per `docs/plans/mail.md`'s

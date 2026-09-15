@@ -20,7 +20,9 @@ import type {
   AccountId,
   Draft,
   DraftId,
+  MailActionByOrigin,
   MailAddress,
+  MailAgentOriginKind,
   MailCategory,
   MailInvite,
   Mailbox,
@@ -629,6 +631,52 @@ export function mockRespondToInvite(
       a.address.email === ME.email ? { ...a, response } : a,
     ),
   }
+}
+
+// ── What an agent did with mail ─────────────────────────────────────
+//
+// `mail_actions_by_origin`'s mock: a handful of the seeded threads above,
+// replayed as if one kind of caller had acted on them, so Settings →
+// Sharing's own list and the assistant's settings have real threads to name
+// and open rather than a second, disconnected set of ids.
+
+const ACCOUNT_ADDRESS: Record<AccountId, string> = {
+  [GOOGLE]: 'me@gmail.com',
+  [FASTMAIL]: 'me@fastmail.com',
+}
+
+/** Two named MCP clients, so the mock's own "grouped by client" list has
+ *  more than one group to draw -- a settings panel built against only one
+ *  would not catch the grouping breaking. */
+const MCP_CLIENTS = ['Claude Code', 'Claude Desktop']
+
+export function mockMailActionsByOrigin(
+  kind: MailAgentOriginKind,
+  limit?: number | null,
+  cursor?: string | null,
+): MailActionByOrigin[] {
+  const take = limit ?? 50
+  const states = ['done', 'done', 'done', 'failed']
+  const rows: MailActionByOrigin[] = seed.threads.slice(0, 10).map((thread, i) => {
+    const state = states[i % states.length]!
+    const row: MailActionByOrigin = {
+      opId: `op-${kind}-${thread.id}`,
+      kind,
+      state,
+      at: iso(i * 3),
+      account: ACCOUNT_ADDRESS[thread.accountId] ?? thread.accountId,
+      threadId: thread.id,
+      subject: thread.subject,
+      lastError: state === 'failed' ? 'the server refused the request' : null,
+    }
+    if (kind === 'mcp') row.client = MCP_CLIENTS[i % MCP_CLIENTS.length]
+    else if (kind === 'assistant') row.conversation = 'conv-mail-demo'
+    else row.run = 'run-morning-brief'
+    return row
+  })
+
+  const after = cursor ? rows.findIndex((r) => r.opId === cursor) + 1 : 0
+  return rows.slice(after, after + take)
 }
 
 // ── Drafts and sending ───────────────────────────────────────────────

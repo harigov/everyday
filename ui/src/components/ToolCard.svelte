@@ -11,6 +11,7 @@
   // anything can be undone, because this application has no undo.
 
   import type { ToolCard } from '../lib/agent'
+  import { mail } from '../lib/mail.svelte'
   import Icon from './Icon.svelte'
 
   let { card, onanswer }: { card: ToolCard; onanswer: (approved: boolean) => void } = $props()
@@ -54,7 +55,18 @@
       {phrase}
       {#if card.subject}<b>{card.subject}</b>{/if}
     </span>
-    {#if card.state === 'done' && card.summary}
+    {#if card.state === 'done' && card.mailLink}
+      <!-- What the plan calls "the transcript links to what the assistant
+           did": a mail write's own result named a thread, so the sentence
+           that already describes it opens Mail there rather than sitting
+           inert beside a card nobody can act on. -->
+      <button
+        class="said link"
+        onclick={() => void mail.openFromElsewhere(card.mailLink!.threadId)}
+      >
+        {card.summary || `Opened ${card.mailLink.subject}`} &rarr;
+      </button>
+    {:else if card.state === 'done' && card.summary}
       <span class="said">{card.summary}</span>
     {:else if card.state === 'failed'}
       <span class="said bad">{card.summary || 'failed'}</span>
@@ -123,6 +135,21 @@
   }
   .said.bad {
     color: var(--danger);
+  }
+  /* A card's own summary, made a link when a mail write named a thread --
+     same size and place as the plain `.said` text, just clickable and in
+     the accent colour that says "this goes somewhere". */
+  button.said.link {
+    border: none;
+    background: none;
+    padding: 0;
+    font: inherit;
+    font-size: var(--text-xs);
+    color: var(--accent);
+    cursor: pointer;
+  }
+  button.said.link:hover {
+    text-decoration: underline;
   }
 
   .dot {

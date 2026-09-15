@@ -47,6 +47,7 @@ pub fn ctx(vault: &Vault) -> ToolContext<'_> {
         mail_search: None,
         assistant_provider: None,
         mail_rate_limit: None,
+        invite_responder: None,
     }
 }
 

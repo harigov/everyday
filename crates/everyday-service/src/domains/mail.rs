@@ -30,10 +30,11 @@ use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Change, Kind};
 use crate::service::{Service, blocking};
-use everyday_core::id::{AccountId, DraftId, MailMessageId, MailboxId, ThreadId};
+use everyday_core::Vault;
+use everyday_core::id::{AccountId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use everyday_core::mail::{
     AttendeeResponse, Category, Draft, DraftCalendarPart, InviteMethod, Mailbox, Message, Op,
-    OpKind, Origin, Thread, undo_send_delay,
+    OpKind, OpTarget, Origin, Thread, undo_send_delay,
 };
 use everyday_core::store::mail::{ThreadFilter, ThreadPage};
 use everyday_mail::{compose, invite, mime};
@@ -418,6 +419,29 @@ impl InviteResponse {
     }
 }
 
+/// The bridge from the `respond_to_invite` *tool*'s own answer --
+/// [`AttendeeResponse`], the only spelling `everyday-core` can name, since
+/// it cannot depend on this crate to borrow [`InviteResponse`] -- onto the
+/// one this file's shared body actually wants. Infallible in practice: the
+/// tool's own schema offers only `accepted`, `tentative` and `declined`
+/// (see `agent::tools::mail::parse_response`), so `NeedsAction` reaching
+/// here would mean that schema was bypassed, which this refuses rather than
+/// silently answering an invitation nobody asked to answer.
+impl TryFrom<AttendeeResponse> for InviteResponse {
+    type Error = CommandError;
+
+    fn try_from(response: AttendeeResponse) -> Result<Self, Self::Error> {
+        match response {
+            AttendeeResponse::Accepted => Ok(InviteResponse::Accepted),
+            AttendeeResponse::Tentative => Ok(InviteResponse::Tentative),
+            AttendeeResponse::Declined => Ok(InviteResponse::Declined),
+            AttendeeResponse::NeedsAction => {
+                Err(CommandError::new(codes::INVALID, "needsAction is not an answer"))
+            }
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RespondToInvite {
@@ -448,13 +472,101 @@ fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-/// Build and queue an iTIP `REPLY` to the invitation carried by
-/// `args.message_id`, and update that message's own [`everyday_core::mail::Invite::my_response`]
-/// so the thread reflects the answer before the reply has gone anywhere.
+/// Build and queue an iTIP `REPLY` to the invitation carried by `message_id`,
+/// and update that message's own
+/// [`everyday_core::mail::Invite::my_response`] so the thread reflects the
+/// answer before the reply has gone anywhere.
 ///
 /// Refuses when the message carries no invitation, when its method is
 /// `CANCEL` or `REPLY` (nothing to answer), or when none of the account's
 /// own addresses were ever invited.
+///
+/// The shared body behind the `respond_to_invite` command below (a person's
+/// own click) and the `respond_to_invite` tool's own
+/// [`invite_responder`](everyday_core::agent::tools::ToolContext::invite_responder)
+/// hook, wired up in [`respond_to_invite_for_tool`] -- `everyday-core`
+/// cannot depend on `everyday-mail` or `calcard`, the crates that actually
+/// read a `text/calendar` part and build an iTIP reply, so the tool calls
+/// back into this function through a closure rather than duplicating any of
+/// it. Synchronous rather than `async` so that both callers can run it
+/// directly on whichever blocking context they are already on: the command
+/// wraps it in [`blocking`], and the tool's own hook is invoked from inside
+/// `tools::dispatch`, which is already running on the blocking pool by the
+/// time it reaches here (see `agent::run_tool` and `domains::meta::run_tool`).
+///
+/// Returns the account and thread this touched rather than notifying the
+/// outbox or raising a `Change` itself, because the two callers differ in
+/// what `Change::origin` -- the *device* that gets to skip its own reload --
+/// should be, which is a property of the caller, not of this write.
+fn respond_to_invite_inner(
+    vault: &Vault,
+    packs: &dyn everyday_core::packstore::PackStore,
+    message_id: MailMessageId,
+    response: InviteResponse,
+    comment: Option<String>,
+    origin: Origin,
+) -> CommandResult<(AccountId, ThreadId)> {
+    let message = vault.mail_message(message_id)?;
+    let mut inv = message.invite.clone().ok_or_else(|| {
+        CommandError::new(codes::INVALID, "this message carries no calendar invitation")
+    })?;
+    if matches!(inv.method, InviteMethod::Cancel | InviteMethod::Reply) {
+        return Err(CommandError::new(
+            codes::INVALID,
+            "a cancelled invitation, or another reply, cannot be responded to",
+        ));
+    }
+
+    let account = vault.account(message.account_id)?;
+    let own: BTreeSet<String> = std::iter::once(account.address.clone())
+        .chain(account.identities.iter().map(|i| i.address.clone()))
+        .map(|a| a.to_lowercase())
+        .collect();
+    let Some(attendee) =
+        inv.attendees.iter().find(|a| own.contains(&a.address.email.to_lowercase()))
+    else {
+        return Err(CommandError::new(
+            codes::INVALID,
+            "none of this account's addresses were invited to this event",
+        ));
+    };
+    let responder = attendee.address.clone();
+
+    let raw = packs.read(&message.pack)?;
+    let calendar_bytes = mime::parse(&raw).ok().and_then(|p| p.calendar).ok_or_else(|| {
+        CommandError::new(codes::INVALID, "this message's calendar part could not be read")
+    })?;
+
+    let attendee_response = response.as_attendee_response();
+    let ics =
+        invite::build_reply(&calendar_bytes, &responder, attendee_response, comment.as_deref())
+            .ok_or_else(|| {
+                CommandError::new(codes::INVALID, "could not build a reply to this invitation")
+            })?;
+
+    let mut draft = Draft::new(message.account_id, account.address.clone(), origin.clone());
+    draft.to = vec![inv.organizer.clone()];
+    draft.subject = format!("{}: {}", response.subject_prefix(), inv.summary);
+    let who = if responder.name.is_empty() { &responder.email } else { &responder.name };
+    draft.body_html = format!(
+        "<p>{} has {}: {}, {}</p>",
+        escape_html(who),
+        response.verb(),
+        escape_html(&inv.summary),
+        escape_html(&format_when(&inv)),
+    );
+    draft.calendar_part = Some(DraftCalendarPart { method: "REPLY".to_string(), ics });
+
+    vault.save_draft(&draft)?;
+    let not_before = Timestamp::now() + undo_send_delay(None);
+    vault.queue_draft_send(draft.id, not_before, origin)?;
+
+    inv.my_response = Some(attendee_response);
+    vault.set_message_invite(message.id, Some(inv))?;
+
+    Ok((message.account_id, message.thread_id))
+}
+
 async fn respond_to_invite(
     svc: Arc<Service>,
     ctx: Ctx,
@@ -467,70 +579,15 @@ async fn respond_to_invite(
         return Err(CommandError::new(codes::INTERNAL, "the mail pack store is not open"));
     };
 
-    let (account_id, thread_id) = blocking(move || -> CommandResult<(AccountId, ThreadId)> {
-        let message = vault.mail_message(args.message_id)?;
-        let mut inv = message.invite.clone().ok_or_else(|| {
-            CommandError::new(codes::INVALID, "this message carries no calendar invitation")
-        })?;
-        if matches!(inv.method, InviteMethod::Cancel | InviteMethod::Reply) {
-            return Err(CommandError::new(
-                codes::INVALID,
-                "a cancelled invitation, or another reply, cannot be responded to",
-            ));
-        }
-
-        let account = vault.account(message.account_id)?;
-        let own: BTreeSet<String> = std::iter::once(account.address.clone())
-            .chain(account.identities.iter().map(|i| i.address.clone()))
-            .map(|a| a.to_lowercase())
-            .collect();
-        let Some(attendee) =
-            inv.attendees.iter().find(|a| own.contains(&a.address.email.to_lowercase()))
-        else {
-            return Err(CommandError::new(
-                codes::INVALID,
-                "none of this account's addresses were invited to this event",
-            ));
-        };
-        let responder = attendee.address.clone();
-
-        let raw = packs.read(&message.pack)?;
-        let calendar_bytes = mime::parse(&raw).ok().and_then(|p| p.calendar).ok_or_else(|| {
-            CommandError::new(codes::INVALID, "this message's calendar part could not be read")
-        })?;
-
-        let attendee_response = args.response.as_attendee_response();
-        let ics = invite::build_reply(
-            &calendar_bytes,
-            &responder,
-            attendee_response,
-            args.comment.as_deref(),
+    let (account_id, thread_id) = blocking(move || {
+        respond_to_invite_inner(
+            &vault,
+            packs.as_ref(),
+            args.message_id,
+            args.response,
+            args.comment,
+            origin,
         )
-        .ok_or_else(|| {
-            CommandError::new(codes::INVALID, "could not build a reply to this invitation")
-        })?;
-
-        let mut draft = Draft::new(message.account_id, account.address.clone(), Origin::Person);
-        draft.to = vec![inv.organizer.clone()];
-        draft.subject = format!("{}: {}", args.response.subject_prefix(), inv.summary);
-        let who = if responder.name.is_empty() { &responder.email } else { &responder.name };
-        draft.body_html = format!(
-            "<p>{} has {}: {}, {}</p>",
-            escape_html(who),
-            args.response.verb(),
-            escape_html(&inv.summary),
-            escape_html(&format_when(&inv)),
-        );
-        draft.calendar_part = Some(DraftCalendarPart { method: "REPLY".to_string(), ics });
-
-        vault.save_draft(&draft)?;
-        let not_before = Timestamp::now() + undo_send_delay(None);
-        vault.queue_draft_send(draft.id, not_before, origin)?;
-
-        inv.my_response = Some(attendee_response);
-        vault.set_message_invite(message.id, Some(inv))?;
-
-        Ok((message.account_id, message.thread_id))
     })
     .await?;
 
@@ -543,6 +600,224 @@ async fn respond_to_invite(
         origin: ctx.caller.origin().map(str::to_string),
     });
     Ok(())
+}
+
+/// Builds [`invite_responder`](everyday_core::agent::tools::ToolContext::invite_responder)'s
+/// closure: the same [`respond_to_invite_inner`] the command above wraps,
+/// called directly rather than through [`blocking`] because the tool
+/// catalogue's own caller (`agent::run_tool`, `domains::meta::run_tool`)
+/// has already dispatched onto the blocking pool by the time a tool body
+/// runs. `Change::origin` is `None` here, not a device id: a tool call has
+/// no `Ctx` of its own to read one from, and `None` reads as "no device to
+/// spare a reload for", which is exactly right for a write nobody's own
+/// open window issued.
+///
+/// Converts `everyday-core`'s own [`AttendeeResponse`] into this file's
+/// [`InviteResponse`] and every error into [`everyday_core::error::Error`],
+/// since a hook called from inside the core has to answer in the core's own
+/// error type, not this crate's.
+pub(crate) fn respond_to_invite_for_tool(
+    svc: &Service,
+    message_id: MailMessageId,
+    response: AttendeeResponse,
+    comment: Option<String>,
+    origin: Origin,
+) -> everyday_core::error::Result<()> {
+    fn to_core_error(e: CommandError) -> everyday_core::error::Error {
+        everyday_core::error::Error::Invalid(e.message)
+    }
+
+    let response: InviteResponse = response.try_into().map_err(to_core_error)?;
+    let vault = svc.require().map_err(to_core_error)?;
+    let packs = svc
+        .packs()
+        .ok_or(everyday_core::error::Error::Unsupported("the mail pack store is not open"))?;
+    let (account_id, thread_id) =
+        respond_to_invite_inner(&vault, packs.as_ref(), message_id, response, comment, origin)
+            .map_err(to_core_error)?;
+
+    svc.notify_outbox(account_id);
+    svc.events().changed(Change {
+        kind: Kind::Thread,
+        op: crate::events::Op::Updated,
+        id: Some(thread_id.to_string()),
+        ids: Vec::new(),
+        origin: None,
+    });
+    Ok(())
+}
+
+// ---- what an agent did with mail -------------------------------------------
+
+/// The three kinds of caller `mail_actions_by_origin` can be asked about --
+/// deliberately not `Origin::Person`, which is not "an agent" and has no row
+/// in Settings → Sharing or the assistant's own settings to be listed under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentOriginKind {
+    Mcp,
+    Assistant,
+    Routine,
+}
+
+impl AgentOriginKind {
+    /// The clear `ops.origin` column's own spelling -- see
+    /// [`everyday_core::mail::Origin::kind`].
+    fn as_str(self) -> &'static str {
+        match self {
+            AgentOriginKind::Mcp => "mcp",
+            AgentOriginKind::Assistant => "assistant",
+            AgentOriginKind::Routine => "routine",
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailActionsByOrigin {
+    pub kind: AgentOriginKind,
+    #[serde(default = "default_actions_limit")]
+    pub limit: u32,
+    /// The last page's own final `opId` -- rows strictly after it, in the
+    /// same newest-first order. `None` reads as the first page.
+    #[serde(default)]
+    pub cursor: Option<OpId>,
+}
+
+fn default_actions_limit() -> u32 {
+    50
+}
+
+/// Most rows a page ever hands back.
+const MAX_ACTIONS_LIMIT: u32 = 200;
+
+/// The most ops [`MailStore::ops_by_origin`](everyday_core::store::mail::MailStore::ops_by_origin)
+/// is ever asked to read for one call to `mail_actions_by_origin`, cursor or
+/// not.
+///
+/// That trait method takes no cursor of its own -- it is one op table shared
+/// by every origin kind, ordered newest first, and a keyset cursor over it
+/// is exactly the "Changes with ids" groundwork `docs/plans/mail.md`'s
+/// phase 0 already generalised for the *thread* list
+/// ([`crate::domains::mail::ListThreads::cursor`]), not for this smaller,
+/// rarely-paged one. So the cursor is applied here instead: fetch a page
+/// generous enough that a settings panel's list almost never needs a
+/// second round trip, and find `cursor`'s own row in it by a linear scan.
+/// A vault with more than this many pending or recent ops from one kind of
+/// caller in flight at once has a problem this list is not the fix for.
+const ACTIONS_FETCH_CAP: u32 = 500;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailActionByOrigin {
+    pub op_id: OpId,
+    pub kind: String,
+    pub state: String,
+    pub at: Timestamp,
+    pub account: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<ThreadId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// The MCP client this op's own sealed [`Origin`] names -- `Some` only
+    /// for `kind: "mcp"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+    /// The conversation this op's own sealed `Origin` names -- `Some` only
+    /// for `kind: "assistant"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
+    /// The routine run this op's own sealed `Origin` names -- `Some` only
+    /// for `kind: "routine"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+/// What thread, and what to call it, `op` was actually about -- read off
+/// whichever record its own [`OpTarget`] names. `None` for either half when
+/// the record it would explain has since been deleted; a settings list
+/// draws that as a plain, subjectless row rather than failing the whole
+/// page over one stale op.
+fn subject_of(vault: &Vault, op: &Op) -> (Option<ThreadId>, Option<String>) {
+    match op.target {
+        OpTarget::Thread(id) => match vault.thread(id) {
+            Ok((thread, _)) => (Some(id), Some(thread.subject)),
+            Err(_) => (Some(id), None),
+        },
+        OpTarget::Message(id) => match vault.mail_message(id) {
+            Ok(message) => (Some(message.thread_id), Some(message.subject)),
+            Err(_) => (None, None),
+        },
+        OpTarget::Draft(id) => match vault.draft(id) {
+            Ok(draft) => {
+                let thread_id =
+                    draft.in_reply_to.and_then(|m| vault.mail_message(m).ok()).map(|m| m.thread_id);
+                let subject = (!draft.subject.trim().is_empty()).then_some(draft.subject);
+                (thread_id, subject)
+            }
+            Err(_) => (None, None),
+        },
+    }
+}
+
+/// What each connected MCP client, or the assistant, has done with mail --
+/// `docs/plans/mail.md`'s risk table: "Settings → Sharing lists what each
+/// MCP client did through `origin`." Reads
+/// [`MailStore::ops_by_origin`](everyday_core::store::mail::MailStore::ops_by_origin)
+/// for the one `kind` asked about, newest first, and resolves each op's own
+/// thread or draft into a subject a person recognises rather than an id
+/// they would have to look up.
+async fn mail_actions_by_origin(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: MailActionsByOrigin,
+) -> CommandResult<Vec<MailActionByOrigin>> {
+    let vault = svc.require()?;
+    let limit = args.limit.clamp(1, MAX_ACTIONS_LIMIT) as usize;
+    blocking(move || {
+        let ops = vault.ops_by_origin(args.kind.as_str(), ACTIONS_FETCH_CAP)?;
+        let after_cursor = match args.cursor {
+            None => 0,
+            // A cursor naming a row no longer in the window (it fell off
+            // the fetch cap, or was cleaned up) reads as "nothing more" --
+            // the same "cannot page past a gone id" the keyset cursors
+            // elsewhere in this crate already accept, rather than a hard
+            // error over a settings panel scrolling a little further.
+            Some(cursor) => match ops.iter().position(|op| op.id == cursor) {
+                Some(idx) => idx + 1,
+                None => ops.len(),
+            },
+        };
+
+        let mut out = Vec::with_capacity(limit.min(ops.len()));
+        for op in ops.into_iter().skip(after_cursor).take(limit) {
+            let account = vault.account(op.account_id).map(|a| a.address).unwrap_or_default();
+            let (thread_id, subject) = subject_of(&vault, &op);
+            let (client, conversation, run) = match &op.origin {
+                Origin::Person => (None, None, None),
+                Origin::Assistant { conversation } => (None, Some(conversation.clone()), None),
+                Origin::Routine { run } => (None, None, Some(run.clone())),
+                Origin::Mcp { client } => (Some(client.clone()), None, None),
+            };
+            out.push(MailActionByOrigin {
+                op_id: op.id,
+                kind: op.origin.kind().to_string(),
+                state: op.state.as_str().to_string(),
+                at: op.updated_at,
+                account,
+                thread_id,
+                subject,
+                client,
+                conversation,
+                run,
+                last_error: op.last_error,
+            });
+        }
+        Ok(out)
+    })
+    .await
 }
 
 // ---- categorisation --------------------------------------------------------
@@ -893,5 +1168,20 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: SummarizeThreadArgs, returns: "ThreadSummary",
         signature: &[("id", "ThreadId", true)],
         run: summarize_thread,
+    },
+    // ---- what an agent did with mail ---------------------------------------
+    command! {
+        name: "mail_actions_by_origin", scope: Mail, effect: Read,
+        args: MailActionsByOrigin, returns: "MailActionByOrigin[]",
+        // `kind` is really `'mcp' | 'assistant' | 'routine'` on the wire --
+        // see `AgentOriginKind`'s own `Deserialize` -- kept as `string` here
+        // for the same `gen-api.mjs` reason `respond_to_invite`'s own
+        // `response` field is above.
+        signature: &[
+            ("kind", "string", true),
+            ("limit", "number | null", false),
+            ("cursor", "string | null", false),
+        ],
+        run: mail_actions_by_origin,
     },
 ];

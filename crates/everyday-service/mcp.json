@@ -1443,6 +1443,41 @@
       "title": "Remember"
     },
     {
+      "domain": "mail",
+      "effect": "outward",
+      "name": "respond_to_invite",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "comment": {
+            "description": "An optional note to the organiser. Left out of the reply if omitted.",
+            "type": "string"
+          },
+          "message_id": {
+            "description": "The message carrying the calendar invitation, from read_thread or search_mail.",
+            "type": "string"
+          },
+          "response": {
+            "description": "How to answer the organiser.",
+            "enum": [
+              "accepted",
+              "tentative",
+              "declined"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id",
+          "response"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Respond to invite"
+    },
+    {
       "domain": "routines",
       "effect": "write",
       "name": "run_routine",

@@ -23,6 +23,7 @@ import type {
   CalendarEvent,
   CalendarInfo,
   BalanceReport,
+  MailAgentOriginKind,
   MailProviderInfo,
   MailSyncProgress,
   EventQuery,
@@ -93,6 +94,7 @@ import {
   mockListDrafts,
   mockListMailboxes,
   mockListThreads,
+  mockMailActionsByOrigin,
   mockMarkRead,
   mockMarkUnread,
   mockMoveToMailbox,
@@ -4512,6 +4514,17 @@ export const mockInvoke = async <T>(
     case 'recategorize_mail':
       requireUnlocked()
       return mockRecategorizeMail(args.account as string | null | undefined) as T
+
+    // ── What an agent did with mail -- Settings → Sharing and the
+    //    assistant's own settings ───────────────────────────────────────
+
+    case 'mail_actions_by_origin':
+      requireUnlocked()
+      return mockMailActionsByOrigin(
+        str(args.kind) as MailAgentOriginKind,
+        args.limit as number | null | undefined,
+        args.cursor as string | null | undefined,
+      ) as T
 
     case 'list_drafts':
       requireUnlocked()

@@ -23,8 +23,11 @@ mod support;
 
 use everyday_core::account::{Account, AgentCaller, AgentMailAccess, Provider};
 use everyday_core::agent::tools::{self, Caller, ToolContext};
-use everyday_core::id::{AccountId, MailboxId, PackId};
-use everyday_core::mail::{Address, Body, Mailbox, MailboxRole, Message, MessageFlags};
+use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
+use everyday_core::mail::{
+    Address, AttendeeResponse, Body, Invite, InviteAttendee, InviteMethod, Mailbox, MailboxRole,
+    Message, MessageFlags, Origin,
+};
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::IngestMessage;
 use everyday_core::{ConversationId, Vault};
@@ -149,6 +152,7 @@ fn ctx<'a>(vault: &'a Vault, caller: Option<Caller>, provider: Option<&str>) -> 
         mail_search: None,
         assistant_provider: provider.map(str::to_string),
         mail_rate_limit: None,
+        invite_responder: None,
     }
 }
 
@@ -441,6 +445,157 @@ fn send_draft_is_refused_for_an_account_with_send_off_and_permitted_once_it_is_o
         .expect("send is now permitted");
     assert_eq!(out["action"], "queued to send");
     assert!(out["note"].as_str().unwrap_or_default().contains("undo window"));
+}
+
+// ---- respond_to_invite: the second Outward tool --------------------------
+
+/// A message carrying an invitation to "Standup" from dana@example.com,
+/// addressed to the seeded account's own address -- enough for the
+/// permission gate, `describe` and the hook's own arguments to be checked
+/// without a real `.ics` or pack store, neither of which this tool reads:
+/// everything past the permission check is `everyday-service`'s own
+/// `respond_to_invite_inner`, reached through the hook these tests stub.
+fn seed_invite_message(
+    v: &Vault,
+    account: AccountId,
+    mailbox: MailboxId,
+    uid: u32,
+) -> (MailMessageId, ThreadId) {
+    let thread_id = ThreadId::new();
+    let message_id = MailMessageId::new();
+    let organizer = Address::new("Dana", "dana@example.com");
+    let invite = Invite {
+        uid: "standup-1@example.com".into(),
+        method: InviteMethod::Request,
+        summary: "Standup".into(),
+        // 2026-09-15T17:00:00Z -- a Tuesday.
+        start: "2026-09-15T17:00:00Z".parse().unwrap(),
+        end: "2026-09-15T17:30:00Z".parse().unwrap(),
+        all_day: false,
+        location: None,
+        organizer: organizer.clone(),
+        attendees: vec![InviteAttendee {
+            address: Address::bare("me@example.com"),
+            response: AttendeeResponse::NeedsAction,
+        }],
+        my_response: None,
+        recurrence: None,
+    };
+    let message = Message {
+        id: message_id,
+        account_id: account,
+        thread_id,
+        message_id_header: format!("<{message_id}@example.com>"),
+        date: jiff::Timestamp::now(),
+        from: organizer,
+        to: vec![Address::bare("me@example.com")],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        reply_to: Vec::new(),
+        subject: "Invitation: Standup".into(),
+        snippet: String::new(),
+        flags: MessageFlags::default(),
+        labels: Vec::new(),
+        has_attachments: false,
+        size: 128,
+        category: None,
+        pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
+        gmail: None,
+        invite: Some(invite),
+    };
+    v.ingest_mail(account, vec![IngestMessage { message, mailbox, uid }]).unwrap();
+    (message_id, thread_id)
+}
+
+/// A hook that always succeeds without touching anything -- what stands in
+/// for `everyday_service::domains::mail::respond_to_invite_for_tool` in a
+/// test that has no `Service`, no pack store and no `everyday-mail` to build
+/// a real iTIP reply with. The tool's own job -- the permission check, the
+/// unattended refusal, `describe` -- is what these tests are about; the
+/// hook's own body is `everyday-service`'s to test.
+fn ok_invite_responder(
+    _message_id: MailMessageId,
+    _response: AttendeeResponse,
+    _comment: Option<String>,
+    _origin: Origin,
+) -> everyday_core::error::Result<()> {
+    Ok(())
+}
+
+#[test]
+fn respond_to_invite_is_refused_for_an_account_with_send_off_and_permitted_once_it_is_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(dir.path());
+    let account = seed_account(&v, true);
+    let inbox = seed_mailbox(&v, account.id, MailboxRole::Inbox);
+    let (message_id, thread_id) = seed_invite_message(&v, account.id, inbox, 1);
+    let caller = Caller::Mcp { client: "claude".into() };
+    let mut ctx = ctx(&v, Some(caller), None);
+    ctx.invite_responder = Some(&ok_invite_responder);
+
+    let err = tools::dispatch(
+        &ctx,
+        "respond_to_invite",
+        &serde_json::json!({ "message_id": message_id.to_string(), "response": "accepted" }),
+    )
+    .unwrap_err();
+    assert!(err.to_string().to_lowercase().contains("send"), "{err}");
+
+    let mut allowed = account.clone();
+    allowed.mcp_access.send = true;
+    v.save_account(&allowed).unwrap();
+    let out = tools::dispatch(
+        &ctx,
+        "respond_to_invite",
+        &serde_json::json!({ "message_id": message_id.to_string(), "response": "accepted" }),
+    )
+    .expect("send is now permitted");
+    assert_eq!(out["kind"], "invitation");
+    assert_eq!(out["thread_id"], thread_id.to_string());
+}
+
+#[test]
+fn an_unattended_run_may_not_respond_to_an_invitation() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(dir.path());
+    let account = seed_account(&v, true);
+    let inbox = seed_mailbox(&v, account.id, MailboxRole::Inbox);
+    let (message_id, _thread_id) = seed_invite_message(&v, account.id, inbox, 1);
+
+    let mut unattended = ctx(&v, None, None);
+    unattended.unattended = true;
+    unattended.invite_responder = Some(&ok_invite_responder);
+
+    let err = tools::dispatch(
+        &unattended,
+        "respond_to_invite",
+        &serde_json::json!({ "message_id": message_id.to_string(), "response": "accepted" }),
+    )
+    .unwrap_err();
+    assert!(err.to_string().to_lowercase().contains("scheduled run"), "{err}");
+}
+
+#[test]
+fn describe_respond_to_invite_names_the_organiser_the_event_and_the_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(dir.path());
+    let account = seed_account(&v, true);
+    let inbox = seed_mailbox(&v, account.id, MailboxRole::Inbox);
+    let (message_id, _thread_id) = seed_invite_message(&v, account.id, inbox, 1);
+    let plain = ctx(&v, None, None);
+
+    let text = tools::describe(
+        &plain,
+        "respond_to_invite",
+        &serde_json::json!({ "message_id": message_id.to_string(), "response": "accepted" }),
+    )
+    .expect("an invitation is on the message, so there is something to name");
+    assert!(text.contains("Standup"), "{text}");
+    assert!(text.contains("dana@example.com"), "{text}");
+    assert!(text.starts_with("Accept "), "{text}");
+    // `ctx`'s own zone is UTC, so 17:00Z reads back as 17:00 with no offset
+    // to account for.
+    assert!(text.contains("17:00"), "{text}");
 }
 
 // ---- who is who in AgentMailAccess --------------------------------------

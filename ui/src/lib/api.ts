@@ -47,6 +47,7 @@ import type {
   LogEvent,
   LogId,
   LogQuery,
+  MailAgentOriginKind,
   MailboxId,
   MailMessageId,
   McpStatus,
@@ -924,6 +925,16 @@ export const api = {
    */
   saveMemory: (memory: Memory) => call('saveMemory', { memory }),
   deleteMemory: (id: MemoryId) => call('deleteMemory', { id }),
+
+  /**
+   * What one kind of agent has done with mail -- newest first, resolved
+   * into an address and a subject rather than the bare ids `Op` itself
+   * carries. What Settings → Sharing draws for each connected MCP client,
+   * and the assistant's own settings draw for itself. `cursor` is the
+   * previous page's own last `opId`; omit it for the first page.
+   */
+  mailActionsByOrigin: (kind: MailAgentOriginKind, limit?: number, cursor?: string | null) =>
+    call('mailActionsByOrigin', { kind, limit: limit ?? null, cursor: cursor ?? null }),
 
   // ── The quick model ────────────────────────────────────────────────
   //

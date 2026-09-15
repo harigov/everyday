@@ -77,13 +77,16 @@ use std::collections::HashSet;
 use serde_json::{Value, json};
 
 use super::{
-    Args, Caller, Tool, ToolContext, done, empty_schema, flag, limit_arg, list, number, schema,
-    text,
+    Args, Caller, Tool, ToolContext, done, empty_schema, flag, limit_arg, list, number, one_of,
+    schema, text,
 };
 use crate::account::{Account, AgentCaller, Permission};
 use crate::error::{Error, Result};
 use crate::id::{AccountId, DraftId, MailMessageId, MailboxId, ThreadId};
-use crate::mail::{Address, Draft, DraftState, MailboxRole, OpKind, Origin, Thread, compose};
+use crate::mail::{
+    Address, AttendeeResponse, Draft, DraftState, Invite, MailboxRole, OpKind, Origin, Thread,
+    compose,
+};
 use crate::mailsearch::MailQuery;
 
 /// [`search_mail`]'s hard cap, per the plan's table -- "Capped at 25."
@@ -330,6 +333,37 @@ pub(super) static TOOLS: &[Tool] = &[
         run_send_draft,
         Some(describe_send_draft)
     ),
+    tool!(
+        "respond_to_invite",
+        Outward,
+        Mail,
+        schema(
+            vec![
+                (
+                    "message_id",
+                    text(
+                        "The message carrying the calendar invitation, from read_thread or \
+                          search_mail."
+                    )
+                ),
+                (
+                    "response",
+                    one_of("How to answer the organiser.", &["accepted", "tentative", "declined"])
+                ),
+                (
+                    "comment",
+                    text("An optional note to the organiser. Left out of the reply if omitted.")
+                ),
+            ],
+            &["message_id", "response"]
+        ),
+        "Answer a calendar invitation carried in a message: accept, tentatively accept or \
+         decline. Sends a reply to the organiser and updates the event's own state in the \
+         thread. Reaches somebody outside the vault exactly as send_draft does, so it is \
+         always confirmed before it happens and is never available on a scheduled run.",
+        run_respond_to_invite,
+        Some(describe_respond_to_invite)
+    ),
 ];
 
 // ---- who is asking, and what they may do -----------------------------
@@ -456,7 +490,7 @@ fn permission_for(tool: &str) -> Option<Permission> {
         }
         "archive_thread" => Some(Permission::Archive),
         "trash_thread" => Some(Permission::Remove),
-        "send_draft" => Some(Permission::Send),
+        "send_draft" | "respond_to_invite" => Some(Permission::Send),
         _ => None,
     }
 }
@@ -572,7 +606,14 @@ fn first_lines(html: &str, max_lines: usize, max_chars: usize) -> String {
     lines.join(" ").chars().take(max_chars).collect()
 }
 
-fn draft_result(action: &str, draft: &Draft) -> Result<Value> {
+/// `thread_id` is `Some` for a reply -- the thread it answers, known the
+/// moment [`run_draft_reply`] or [`run_update_draft`] has the parent
+/// message in hand -- and `None` for a message started from nothing, which
+/// has no thread to belong to until it is sent. Carried in the result so a
+/// caller building a transcript card (`everyday_service::agent`'s
+/// `ConfirmGate`) can link straight to the thread this draft is about,
+/// without re-deriving it from `in_reply_to` itself.
+fn draft_result(action: &str, draft: &Draft, thread_id: Option<ThreadId>) -> Result<Value> {
     let subject =
         if draft.subject.trim().is_empty() { "(no subject)" } else { draft.subject.trim() };
     let mut out = done(action, "draft", subject, draft.id.to_string())?;
@@ -586,6 +627,32 @@ fn draft_result(action: &str, draft: &Draft) -> Result<Value> {
                 "first_lines": first_lines(&draft.body_html, 3, 240),
             }),
         );
+        if let Some(thread_id) = thread_id {
+            map.insert("thread_id".into(), json!(thread_id.to_string()));
+        }
+    }
+    Ok(out)
+}
+
+/// The thread a draft answers, when it answers one at all -- read off its
+/// own `in_reply_to` rather than trusted to a caller that may not have the
+/// parent message in hand any more (an `update_draft` call, say).
+fn draft_thread_id(ctx: &ToolContext<'_>, draft: &Draft) -> Option<ThreadId> {
+    let parent = draft.in_reply_to?;
+    ctx.vault.mail_message(parent).ok().map(|m| m.thread_id)
+}
+
+/// [`done`] for the batch-shaped thread actions below, with an explicit
+/// `thread_id` alongside the generic `id`/`name` every mutating tool
+/// already carries -- `id` already *is* the thread's id for every one of
+/// these, but a caller building a transcript card
+/// (`everyday_service::agent`'s `ConfirmGate`) reads `thread_id` uniformly
+/// across every mail write, rather than knowing that "id" means "thread"
+/// only for this handful of tools and something else for a draft.
+fn done_thread(action: &str, thread: &Thread, thread_id: ThreadId) -> Result<Value> {
+    let mut out = done(action, "thread", &thread.subject, thread_id.to_string())?;
+    if let Some(map) = out.as_object_mut() {
+        map.insert("thread_id".into(), json!(thread_id.to_string()));
     }
     Ok(out)
 }
@@ -792,7 +859,7 @@ fn run_draft_reply(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 
     enqueue_gate(ctx, &origin)?;
     ctx.vault.save_draft_and_append(&draft, true, origin)?;
-    draft_result("drafted", &draft)
+    draft_result("drafted", &draft, Some(parent.thread_id))
 }
 
 fn run_draft_message(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -817,7 +884,7 @@ fn run_draft_message(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 
     enqueue_gate(ctx, &origin)?;
     ctx.vault.save_draft_and_append(&draft, true, origin)?;
-    draft_result("drafted", &draft)
+    draft_result("drafted", &draft, None)
 }
 
 fn run_update_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -848,10 +915,11 @@ fn run_update_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     }
     draft.updated_at = jiff::Timestamp::now();
 
+    let thread_id = draft_thread_id(ctx, &draft);
     let origin = origin_of(ctx);
     enqueue_gate(ctx, &origin)?;
     ctx.vault.save_draft_and_append(&draft, true, origin)?;
-    draft_result("updated", &draft)
+    draft_result("updated", &draft, thread_id)
 }
 
 /// `to`/`cc`/`bcc` on `update_draft`: `Some` only when the field was
@@ -910,6 +978,9 @@ fn run_send_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let mut out = done("queued to send", "message", subject, draft.id.to_string())?;
     if let Some(map) = out.as_object_mut() {
         map.insert("undo_window_seconds".into(), json!(crate::mail::UNDO_SEND_DEFAULT_SECONDS));
+        if let Some(thread_id) = draft_thread_id(ctx, &draft) {
+            map.insert("thread_id".into(), json!(thread_id.to_string()));
+        }
         // See the module docs and `docs/plans/mail.md`'s MCP section: MCP
         // has no confirmation UI of its own, so an account that allows MCP
         // to send is the whole of that consent, and the undo window is what
@@ -938,12 +1009,7 @@ fn run_mark_read(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let origin = origin_of(ctx);
     enqueue_gate(ctx, &origin)?;
     ctx.vault.apply_thread_ops(&[thread_id], kind, origin)?;
-    done(
-        if read { "marked read" } else { "marked unread" },
-        "thread",
-        &thread.subject,
-        thread_id.to_string(),
-    )
+    done_thread(if read { "marked read" } else { "marked unread" }, &thread, thread_id)
 }
 
 fn run_label_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -956,12 +1022,7 @@ fn run_label_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let origin = origin_of(ctx);
     enqueue_gate(ctx, &origin)?;
     ctx.vault.apply_thread_ops(&[thread_id], kind, origin)?;
-    done(
-        if remove { "unlabelled" } else { "labelled" },
-        "thread",
-        &thread.subject,
-        thread_id.to_string(),
-    )
+    done_thread(if remove { "unlabelled" } else { "labelled" }, &thread, thread_id)
 }
 
 fn run_move_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -973,7 +1034,7 @@ fn run_move_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let origin = origin_of(ctx);
     enqueue_gate(ctx, &origin)?;
     ctx.vault.apply_thread_ops(&[thread_id], OpKind::Move { to }, origin)?;
-    done("moved", "thread", &thread.subject, thread_id.to_string())
+    done_thread("moved", &thread, thread_id)
 }
 
 fn run_snooze_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -987,7 +1048,7 @@ fn run_snooze_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let origin = origin_of(ctx);
     enqueue_gate(ctx, &origin)?;
     ctx.vault.apply_thread_ops(&[thread_id], OpKind::Snooze { until }, origin)?;
-    done("snoozed", "thread", &thread.subject, thread_id.to_string())
+    done_thread("snoozed", &thread, thread_id)
 }
 
 fn run_archive_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -997,7 +1058,7 @@ fn run_archive_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let origin = origin_of(ctx);
     enqueue_gate(ctx, &origin)?;
     ctx.vault.apply_thread_ops(&[thread_id], OpKind::Archive, origin)?;
-    done("archived", "thread", &thread.subject, thread_id.to_string())
+    done_thread("archived", &thread, thread_id)
 }
 
 fn run_trash_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -1007,5 +1068,98 @@ fn run_trash_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let origin = origin_of(ctx);
     enqueue_gate(ctx, &origin)?;
     ctx.vault.apply_thread_ops(&[thread_id], OpKind::Trash, origin)?;
-    done("moved to trash", "thread", &thread.subject, thread_id.to_string())
+    done_thread("moved to trash", &thread, thread_id)
+}
+
+// ---- answering a calendar invitation --------------------------------------
+
+/// `response`'s wire spelling, restricted to the three answers a person can
+/// actually click -- `AttendeeResponse::NeedsAction` is a state an
+/// invitation *starts* in, never one this tool's own schema offers, so it is
+/// refused here by never appearing in the match rather than by a runtime
+/// check on a value the schema should not have accepted in the first place.
+fn parse_response(args: &Args<'_>) -> Result<AttendeeResponse> {
+    match args.str("response")?.trim().to_lowercase().as_str() {
+        "accepted" => Ok(AttendeeResponse::Accepted),
+        "tentative" => Ok(AttendeeResponse::Tentative),
+        "declined" => Ok(AttendeeResponse::Declined),
+        other => Err(args.bad(format!(
+            "`response` must be one of accepted, tentative, declined, got {other:?}"
+        ))),
+    }
+}
+
+/// "Tue 10:00" for a timed event, "Tue, 12 Aug" for an all-day one -- the
+/// same rule `everyday_service::domains::mail::format_when` keeps its own
+/// copy of for the reply's body line, read here in the caller's own zone
+/// (`ctx.tz`) rather than the host's, since a confirmation card is read by
+/// the person sitting at `ctx.tz`, not by whichever machine is running the
+/// service.
+fn format_invite_when(invite: &Invite, tz: &str) -> String {
+    let zoned =
+        invite.start.to_zoned(jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC));
+    let fmt = if invite.all_day { "%a, %-d %b" } else { "%a %H:%M" };
+    jiff::fmt::strtime::format(fmt, &zoned).unwrap_or_else(|_| invite.start.to_string())
+}
+
+fn describe_respond_to_invite(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
+    let id: MailMessageId = args.opt_id("message_id", "mail message").ok()??;
+    let message = ctx.vault.mail_message(id).ok()?;
+    let invite = message.invite.as_ref()?;
+    let response = parse_response(args).ok()?;
+    let verb = match response {
+        AttendeeResponse::Accepted => "Accept",
+        AttendeeResponse::Tentative => "Tentatively accept",
+        AttendeeResponse::Declined => "Decline",
+        // Never reached -- `parse_response` never returns this variant --
+        // but written out rather than `unreachable!()`, on the same
+        // reasoning `describe_send_draft` and friends return `None` rather
+        // than panic on a shape they did not expect: a confirmation card
+        // that draws nothing is a bug to notice, not a crash to ship.
+        AttendeeResponse::NeedsAction => return None,
+    };
+    let when = format_invite_when(invite, ctx.tz);
+    Some(format!("{verb} \"{}\" ({when}) from {}", invite.summary, invite.organizer.email))
+}
+
+fn run_respond_to_invite(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    // Same refusal, and the same reasoning, as `run_send_draft`'s own: this
+    // reaches somebody outside the vault, and a scheduled run has nobody to
+    // have said yes.
+    if ctx.unattended {
+        return Err(Error::Invalid(
+            "a scheduled run may not answer a calendar invitation. Say in your reply that it \
+             needs answering and leave it to them."
+                .into(),
+        ));
+    }
+    let message_id: MailMessageId = args.id("message_id", "mail message")?;
+    let response = parse_response(args)?;
+    let comment = args.opt_str("comment").map(str::to_string);
+
+    let message = ctx.vault.mail_message(message_id)?;
+    let account = ctx.vault.account(message.account_id)?;
+    require_permission(ctx, &account, Permission::Send, "respond_to_invite")?;
+    let invite = message.invite.clone().ok_or_else(|| {
+        Error::Invalid("respond_to_invite: this message carries no calendar invitation.".into())
+    })?;
+
+    let origin = origin_of(ctx);
+    enqueue_gate(ctx, &origin)?;
+    let responder = ctx
+        .invite_responder
+        .ok_or(Error::Unsupported("responding to invitations is not available right now"))?;
+    responder(message_id, response, comment, origin)?;
+
+    let verb = match response {
+        AttendeeResponse::Accepted => "accepted",
+        AttendeeResponse::Tentative => "tentatively accepted",
+        AttendeeResponse::Declined => "declined",
+        AttendeeResponse::NeedsAction => "answered",
+    };
+    let mut out = done(verb, "invitation", &invite.summary, message.thread_id.to_string())?;
+    if let Some(map) = out.as_object_mut() {
+        map.insert("thread_id".into(), json!(message.thread_id.to_string()));
+    }
+    Ok(out)
 }

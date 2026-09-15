@@ -61,6 +61,7 @@ import type {
   LogEvent,
   LogId,
   LogQuery,
+  MailActionByOrigin,
   MailAddress,
   MailCategory,
   MailMessageId,
@@ -267,6 +268,10 @@ export interface Commands {
   lookupMetadata: {
     args: { kindId: KindId; query: string; limit?: number | null }
     result: SearchResult[]
+  }
+  mailActionsByOrigin: {
+    args: { kind: string; limit?: number | null; cursor?: string | null }
+    result: MailActionByOrigin[]
   }
   markRead: { args: { threads: ThreadId[] }; result: Op[] }
   markRunsSeen: { args: { ids?: RoutineRunId[] }; result: void }
@@ -540,6 +545,7 @@ export const COMMAND_NAMES = {
   lock: 'lock',
   logReading: 'log_reading',
   lookupMetadata: 'lookup_metadata',
+  mailActionsByOrigin: 'mail_actions_by_origin',
   markRead: 'mark_read',
   markRunsSeen: 'mark_runs_seen',
   markUnread: 'mark_unread',
@@ -764,6 +770,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'lock',
   'log_reading',
   'lookup_metadata',
+  'mail_actions_by_origin',
   'mark_read',
   'mark_runs_seen',
   'mark_unread',
