@@ -313,6 +313,22 @@ impl MailStore for SqlStore {
         self.get(id)
     }
 
+    fn message_locations(&self, id: MailMessageId) -> Result<Vec<(MailboxId, u32)>> {
+        let rows = self.read().query(
+            "SELECT mailbox_id, uid FROM message_mailboxes WHERE message_id = ?1",
+            &vals![id.to_string()],
+        )?;
+        rows.into_iter()
+            .map(|r| {
+                let mailbox: MailboxId =
+                    r.text(0)?.parse().map_err(|e: <MailboxId as std::str::FromStr>::Err| {
+                        everyday_core::error::Error::Invalid(e.to_string())
+                    })?;
+                Ok((mailbox, r.i64(1)? as u32))
+            })
+            .collect()
+    }
+
     fn message_by_uid(&self, mailbox: MailboxId, uid: u32) -> Result<Option<Message>> {
         let row = self.read().query_opt(
             "SELECT m.id, m.data FROM mail_messages m

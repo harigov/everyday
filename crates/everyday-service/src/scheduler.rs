@@ -105,7 +105,21 @@ pub async fn tick(service: &Arc<Service>) {
     }
     // A second copy of the application holds the write claim. Reading is
     // fine and writing is not, and every routine writes something.
-    if !vault.is_writable() || !vault.supports_routines() {
+    if !vault.is_writable() {
+        return;
+    }
+
+    // Snoozed threads whose moment has passed, back to the inbox -- the
+    // minute scheduler's hook `docs/plans/mail.md`'s phase 3 section asks
+    // for, independent of whether this vault has routines at all. Errors are
+    // logged rather than propagated: a mail-less vault answers `Ok(0)`
+    // immediately (`Service::get`/`is_writable` are the only reads it does),
+    // and a real failure here should not also cost this tick its routines.
+    if let Err(e) = crate::outbox::release_due_snoozes(service).await {
+        tracing::warn!(error = %e, "could not release due snoozes");
+    }
+
+    if !vault.supports_routines() {
         return;
     }
 

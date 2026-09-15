@@ -137,6 +137,16 @@ pub struct Service {
     /// says so, and [`Service::check_mail_rate_limit`] returns before ever
     /// touching this map for either.
     mail_rate_limits: Mutex<HashMap<String, RateLimitState>>,
+    /// Where this process's own last `AppendDraft` for each draft landed --
+    /// what `crates/everyday-service/src/outbox.rs`'s `Lookups`
+    /// implementation answers `draft_server_copy` with, so the next
+    /// `AppendDraft` deletes the stale copy before writing a fresh one.
+    /// Session state, not a vault fact: the `Draft` record has nowhere to
+    /// carry a server uid without giving every draft a field that means
+    /// nothing until the first append, and losing this on restart only
+    /// costs one extra stale copy in Drafts rather than a wrong deletion --
+    /// see that module's docs for the full trade-off.
+    mail_draft_server_copy: Mutex<HashMap<DraftId, everyday_mail::outbox::Located>>,
 }
 
 impl Default for Service {
@@ -164,6 +174,7 @@ impl Service {
             mail_notify: Mutex::new(HashMap::new()),
             mail_draft_debounce: Mutex::new(HashMap::new()),
             mail_rate_limits: Mutex::new(HashMap::new()),
+            mail_draft_server_copy: Mutex::new(HashMap::new()),
         }
     }
 
@@ -306,6 +317,20 @@ impl Service {
         due
     }
 
+    /// Where this process's own last successful `AppendDraft` for `draft`
+    /// landed, or `None` when there has not been one this session -- what
+    /// the outbox's `Lookups` implementation answers
+    /// `draft_server_copy` with.
+    pub fn draft_server_copy(&self, draft: DraftId) -> Option<everyday_mail::outbox::Located> {
+        self.mail_draft_server_copy.lock().unwrap().get(&draft).cloned()
+    }
+
+    /// Record where an `AppendDraft` just landed, for the next one to find
+    /// with [`Service::draft_server_copy`].
+    pub fn set_draft_server_copy(&self, draft: DraftId, located: everyday_mail::outbox::Located) {
+        self.mail_draft_server_copy.lock().unwrap().insert(draft, located);
+    }
+
     /// The one gate every mail-op enqueue passes through, per the plan's
     /// risk table: *"the assistant floods the outbox... exceeding it is an
     /// error the model reads."* `origin` and `turn` are exactly
@@ -387,6 +412,7 @@ impl Service {
         self.mail_notify.lock().unwrap().clear();
         self.mail_draft_debounce.lock().unwrap().clear();
         self.mail_rate_limits.lock().unwrap().clear();
+        self.mail_draft_server_copy.lock().unwrap().clear();
         let previous = self.vault.write().unwrap().take();
         if let Some(vault) = &previous {
             // Drop the key and the decrypted index now rather than whenever the

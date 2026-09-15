@@ -143,6 +143,11 @@ fn threads_span_two_mailboxes(store: &dyn JournalStore) {
     )
     .unwrap();
 
+    let locations = m.message_locations(msg.id).unwrap();
+    assert_eq!(locations.len(), 2, "one physical message, two mailbox locations");
+    assert!(locations.contains(&(inbox.id, 1)));
+    assert!(locations.contains(&(label.id, 1)));
+
     let in_inbox = m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap();
     let in_label = m.list_threads(label.id, &ThreadFilter::default(), None, 10).unwrap();
     assert_eq!(in_inbox.threads.len(), 1);

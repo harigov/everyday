@@ -256,6 +256,14 @@ pub trait MailStore: Send + Sync {
     /// id the rest of the vault already holds.
     fn get_message(&self, id: MailMessageId) -> Result<Message>;
 
+    /// Every `(mailbox, uid)` pair message `id` is currently filed under --
+    /// the forward direction of [`MailStore::message_by_uid`], and what the
+    /// outbox executor's `Lookups` implementation resolves a thread or
+    /// message target against before it can `STORE`, `MOVE` or label
+    /// anything on a live session. A Gmail message under two labels answers
+    /// with two pairs; a plain IMAP message ordinarily answers with one.
+    fn message_locations(&self, id: MailMessageId) -> Result<Vec<(MailboxId, u32)>>;
+
     /// The message filed as `uid` in `mailbox`, or `None`.
     fn message_by_uid(&self, mailbox: MailboxId, uid: u32) -> Result<Option<Message>>;
 

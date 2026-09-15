@@ -181,6 +181,13 @@ impl Vault {
         self.with_mail(|m| m.get_message(id))
     }
 
+    /// Every `(mailbox, uid)` pair message `id` is currently filed under --
+    /// what the outbox executor's `Lookups` implementation resolves a
+    /// target against.
+    pub fn mail_message_locations(&self, id: MailMessageId) -> Result<Vec<(MailboxId, u32)>> {
+        self.with_mail(|m| m.message_locations(id))
+    }
+
     pub fn message_by_uid(&self, mailbox: MailboxId, uid: u32) -> Result<Option<Message>> {
         self.with_mail(|m| m.message_by_uid(mailbox, uid))
     }
