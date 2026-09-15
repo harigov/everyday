@@ -159,9 +159,14 @@ impl IntoResponse for Failure {
             // Malformed input, whether the shape came from JSON that would
             // not deserialise or from a vault descriptor naming a backend or
             // a cipher this build has never heard of.
-            "bad_code" | codes::INVALID | codes::UNKNOWN_BACKEND | codes::UNKNOWN_CIPHER => {
-                StatusCode::BAD_REQUEST
-            }
+            // `invalid_client` joins them: a wrong client id or secret is a
+            // malformed request in the same sense a bad backend name is --
+            // the fix is the caller's, not a retry.
+            "bad_code"
+            | codes::INVALID
+            | codes::UNKNOWN_BACKEND
+            | codes::UNKNOWN_CIPHER
+            | codes::INVALID_CLIENT => StatusCode::BAD_REQUEST,
             codes::UNKNOWN_COMMAND | codes::UNKNOWN_TOOL | codes::NOT_FOUND => {
                 StatusCode::NOT_FOUND
             }
@@ -179,11 +184,16 @@ impl IntoResponse for Failure {
             // Understood, but this vault or this input cannot honour it --
             // `not_an_image` is the same shape as `unsupported`: a caller
             // that gave a well-formed request pointed at the wrong thing.
+            // `invalid_grant` says the same thing about an account that
+            // `locked` says about a vault: understood, cannot be honoured
+            // as it stands, and there is a specific known step -- sign in
+            // again -- that fixes it.
             codes::LOCKED
             | codes::NO_VAULT
             | codes::UNSUPPORTED
             | codes::CONFIRM_REQUIRED
-            | codes::NOT_AN_IMAGE => StatusCode::UNPROCESSABLE_ENTITY,
+            | codes::NOT_AN_IMAGE
+            | codes::INVALID_GRANT => StatusCode::UNPROCESSABLE_ENTITY,
             // Another copy of this process holds the write claim. Distinct
             // from `conflict`'s optimistic-concurrency meaning -- nothing
             // about the record changed, the vault itself is spoken for --
@@ -193,9 +203,19 @@ impl IntoResponse for Failure {
             // beyond it did not answer, or answered with something that
             // could not be used: the web, or the model behind the assistant
             // and the quick model, whichever endpoint a person configured.
-            codes::NETWORK | codes::AGENT | codes::QUICK | codes::UNREADABLE => {
+            // `provider` joins them: the OAuth endpoint on the other end of
+            // the socket answered with something other than a token or one
+            // of the two named failures above, which is exactly the shape
+            // of "something beyond this server did not behave".
+            codes::NETWORK | codes::AGENT | codes::QUICK | codes::UNREADABLE | codes::PROVIDER => {
                 StatusCode::BAD_GATEWAY
             }
+            // Nobody's browser came back inside the sign-in's own window.
+            codes::TIMED_OUT => StatusCode::REQUEST_TIMEOUT,
+            // The flow this call named was withdrawn -- `cancel_oauth_sign_in`
+            // -- and, unlike `not_found`, once existed and will not answer
+            // again under the same id.
+            codes::CANCELLED => StatusCode::GONE,
             // Everything left is this side's own failure to make sense of
             // its own data or finish its own work: `decrypt_failed` is
             // ciphertext that does not check out against the key that
@@ -619,6 +639,11 @@ mod status_tests {
             (codes::UNKNOWN_COMMAND, StatusCode::NOT_FOUND),
             (codes::UNKNOWN_TOOL, StatusCode::NOT_FOUND),
             (codes::UNREADABLE, StatusCode::BAD_GATEWAY),
+            (codes::INVALID_GRANT, StatusCode::UNPROCESSABLE_ENTITY),
+            (codes::INVALID_CLIENT, StatusCode::BAD_REQUEST),
+            (codes::PROVIDER, StatusCode::BAD_GATEWAY),
+            (codes::TIMED_OUT, StatusCode::REQUEST_TIMEOUT),
+            (codes::CANCELLED, StatusCode::GONE),
         ];
         // Every constant is in the table above, and the table has nothing
         // beyond the constants -- so a code added to `codes::ALL` without a

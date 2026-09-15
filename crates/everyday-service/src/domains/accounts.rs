@@ -14,15 +14,17 @@
 //! the sealed secret table rather than the account row, and the second is a
 //! narrow read-modify-write so that ticking one switch in Settings → Accounts
 //! is one call rather than a round trip that hands a whole account back to
-//! the interface first.
+//! the interface first. `attach_oauth_sign_in` is the third: it is where a
+//! finished browser sign-in (`domains::signin`) stops being tokens held in
+//! memory and becomes an account's sealed secret.
 
 use super::Nothing;
 use crate::command;
 use crate::ctx::Ctx;
-use crate::error::CommandResult;
+use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use everyday_core::account::{
-    Account, AccountSecret, AgentCaller, AgentMailAccess, Preset, Provider,
+    Account, AccountSecret, AccountStatus, AgentCaller, AgentMailAccess, Preset, Provider,
 };
 use everyday_core::id::AccountId;
 use jiff::Timestamp;
@@ -93,6 +95,20 @@ pub struct SaveAccount {
 pub struct SaveAccountPassword {
     pub id: AccountId,
     pub password: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachOAuthSignIn {
+    pub id: AccountId,
+    /// What `await_oauth_sign_in` answered with.
+    pub sign_in_id: String,
+    /// Google's "desktop" clients have one and must present it on every
+    /// refresh; Microsoft's public clients do not. Given again here rather
+    /// than remembered from `begin_oauth_sign_in`, so the sign-in flow never
+    /// has to outlive the moment it hands its tokens over.
+    #[serde(default)]
+    pub client_secret: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -178,6 +194,41 @@ async fn save_account_password(
     .await
 }
 
+/// Move a finished sign-in's tokens onto an account, sealed.
+///
+/// `claim_tokens` removes them from memory as it hands them over, so a second
+/// call with the same `sign_in_id` finds nothing and says so -- the tokens
+/// live in exactly one place at any moment, and after this that place is the
+/// vault. A refresh token already stored is kept when the provider did not
+/// send a new one, which is how a second sign-in to the same account behaves
+/// with providers that only issue a refresh token on first consent.
+async fn attach_oauth_sign_in(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: AttachOAuthSignIn,
+) -> CommandResult<()> {
+    let vault = svc.require()?;
+    let tokens = svc.sign_ins().claim_tokens(&args.sign_in_id).ok_or_else(|| {
+        CommandError::new(codes::NOT_FOUND, "that sign-in has no tokens waiting to be saved")
+    })?;
+    blocking(move || {
+        let mut account = vault.account(args.id)?;
+        let mut secret = vault.account_secret(args.id)?.unwrap_or_default();
+        if tokens.refresh_token.is_some() {
+            secret.refresh_token = tokens.refresh_token.clone();
+        }
+        secret.access_token = Some((tokens.access_token.clone(), tokens.expires_at));
+        if args.client_secret.is_some() {
+            secret.client_secret = args.client_secret;
+        }
+        vault.save_account_secret(args.id, &secret)?;
+        account.status = AccountStatus::Ok;
+        account.updated_at = Timestamp::now();
+        Ok(vault.save_account(&account)?)
+    })
+    .await
+}
+
 /// Flip one caller's switches on one account.
 async fn set_agent_access(svc: Arc<Service>, _ctx: Ctx, args: SetAgentAccess) -> CommandResult<()> {
     let vault = svc.require()?;
@@ -233,6 +284,18 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: SaveAccountPassword, returns: "void",
         signature: &[("id", "AccountId", true), ("password", "string", true)],
         run: save_account_password,
+    },
+    command! {
+        name: "attach_oauth_sign_in", scope: Accounts, effect: Write,
+        change: Account / Updated,
+        id: |a: &AttachOAuthSignIn| Some(a.id.to_string()),
+        args: AttachOAuthSignIn, returns: "void",
+        signature: &[
+            ("id", "AccountId", true),
+            ("signInId", "string", true),
+            ("clientSecret", "string", false),
+        ],
+        run: attach_oauth_sign_in,
     },
     command! {
         name: "set_agent_access", scope: Accounts, effect: Write,

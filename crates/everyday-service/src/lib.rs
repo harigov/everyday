@@ -52,7 +52,9 @@ pub mod llm;
 pub mod quick;
 pub mod scheduler;
 pub mod service;
+pub mod signin;
 pub mod supervisor;
+pub mod token_cache;
 pub mod transfers;
 pub mod websearch;
 

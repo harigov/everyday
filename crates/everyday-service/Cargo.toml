@@ -11,6 +11,10 @@ authors.workspace = true
 everyday-core.workspace = true
 everyday-vault.workspace = true
 everyday-transfer.workspace = true
+# The OAuth protocol and the loopback redirect -- `signin.rs` wires them to
+# this crate's own service state and its own `CommandError` vocabulary, but
+# never re-implements the token dance itself. See `signin.rs`'s module doc.
+everyday-mail.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 jiff.workspace = true
@@ -19,6 +23,10 @@ tracing.workspace = true
 # provider outage does not turn into every account's sync task hammering it
 # on the same second.
 rand.workspace = true
+# `sign_in_id`, minted fresh per sign-in attempt. Session-only, so a plain
+# `uuid::Uuid` is enough; it is not one of `everyday-core`'s typed ids
+# because it names no vault record.
+uuid.workspace = true
 # The one network dependency, here rather than in the core on purpose:
 # `everyday-core` has no async runtime, no TLS stack and no ability to open a
 # socket, and the calendar and library features are built so that stays true.
@@ -34,4 +42,9 @@ rig-agent = "0.42"
 [dev-dependencies]
 base64 = "0.22"
 tempfile = "3"
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "test-util"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "test-util", "net", "io-util"] }
+# `signin.rs`'s tests play browser against a real loopback listener and a
+# mock token endpoint; both need a socket. Already in the workspace's lock
+# through `everyday-server` and `everyday-mail`.
+axum = "0.8"
+url = "2"

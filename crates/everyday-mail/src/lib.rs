@@ -18,6 +18,14 @@
 //!   envelope, sitting beside [`mime`] as the "what happens to a message"
 //!   half rather than the "talking to a server" half. [`imap`] and [`smtp`]
 //!   are the only modules with an async runtime or a TLS stack in them.
+//! * **Signing in.** [`oauth`] is neither of the above: it is the
+//!   authorization-code-with-PKCE dance and the RFC 8252 loopback redirect
+//!   that gets a browser's answer back to a process with no web server of
+//!   its own. It is pure protocol -- it has never heard of a `Vault`, an
+//!   `Account` record, or a `SecretStore` -- so it is exactly as testable as
+//!   [`mime`] and [`sanitize`] are, against a mock token endpoint rather
+//!   than a real provider. `everyday-service` is what hands its `Tokens` to
+//!   the vault; this crate only gets them out of a provider's hands.
 //!
 //! `everyday-core` stays synchronous and offline, as it always has: the
 //! records and the store traits a mailbox lands in live there, and this crate
@@ -26,6 +34,7 @@
 pub mod compose;
 pub mod imap;
 pub mod mime;
+pub mod oauth;
 pub mod sanitize;
 pub mod session;
 pub mod smtp;

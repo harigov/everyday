@@ -109,9 +109,26 @@ lettre = { version = "=0.11.23", default-features = false, features = [
 # is only new as a *direct* dependency of this crate.
 rand.workspace = true
 
+# The loopback redirect (`oauth::Loopback`) is a one-shot HTTP listener on
+# `127.0.0.1`, and the sync engine phase 2 lands will want a runtime under
+# it regardless -- this crate depends on tokio, core does not, that is the
+# whole reason it exists. `net` and `io-util` are the listener's own needs;
+# `sync` is the `watch` channel `Loopback::wait` is cancelled through; `rt`
+# and `macros` are what let this crate's own tests be `#[tokio::test]`.
+url = "2"
+# OAuth. `oauth2` without its own `reqwest` feature -- see `oauth.rs`'s
+# module doc for why that feature is refused rather than merely unused --
+# plus `oauth2-reqwest`, the alpha adapter that lets `oauth2`'s
+# `AsyncHttpClient` run over the workspace's reqwest 0.13 instead of the
+# 0.12 the crate's own feature would pull in. Both pinned exactly, per the
+# plan's rule for pre-1.0 dependencies.
+oauth2 = { version = "=5.0.0", default-features = false, features = ["timing-resistant-secret-traits"] }
+oauth2-reqwest = "=0.1.0-alpha.3"
+reqwest = { version = "0.13", default-features = false, features = ["default-tls", "http2"] }
+
 [dev-dependencies]
 proptest = "=1.11.0"
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "test-util"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "test-util", "time"] }
 # The SMTP integration suite's HTTP client, reading what `make test-smtp`'s
 # throwaway Mailpit container delivered back through its own API -- see
 # `tests/smtp_mailpit.rs`. Dev-only: never linked into a shipped binary.
@@ -123,6 +140,16 @@ reqwest = { version = "0.13", features = ["json"] }
 # One random subject per test run, so `tests/smtp_mailpit.rs` can tell its
 # own messages apart from another test's in Mailpit's one shared inbox.
 uuid.workspace = true
+# The mock token endpoint `oauth.rs`'s tests speak to. Already in the
+# workspace's lock through `everyday-server`, which pins the same `0.8` --
+# a dev-only second user of it costs nothing new there.
+axum = "0.8"
+# Recomputing S256(verifier) in `the_pkce_verifier_matches_the_challenge_in_the_url`
+# without either trusting `oauth2` to have got its own crypto right or
+# reaching into its private module -- `oauth2` depends on the same `sha2`
+# already, so this adds nothing new to the workspace's build.
+sha2 = "0.10"
+base64 = "0.22"
 
 [features]
 # A certificate verifier that trusts anything, for `make test-imap`'s
