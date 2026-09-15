@@ -1251,6 +1251,20 @@ export type AgentCallerKind = 'assistant' | 'mcp'
 export type AccountStatus =
   { type: 'ok' } | { type: 'needsSignIn'; reason: string } | { type: 'error'; message: string }
 
+/**
+ * The Superhuman-layer switches for one account: categorising, drafting
+ * ahead, and summarising, each off until turned on. TODO(p): the split-inbox
+ * contract; mirrors the `MailAi` the "Superhuman layer" agent is landing on
+ * `Account` (`docs/plans/mail.md` phase 7). Absent on an account this build
+ * has not saved one for yet, which reads as every switch off -- see
+ * `accounts.ts`'s `DEFAULT_MAIL_AI`.
+ */
+export interface MailAi {
+  categorize: boolean
+  autoDraft: boolean
+  summaries: boolean
+}
+
 export interface Account {
   id: AccountId
   provider: MailProvider
@@ -1270,6 +1284,8 @@ export interface Account {
   lastSyncedAt?: string | null
   createdAt: string
   updatedAt: string
+  /** TODO(p): see [[MailAi]]. */
+  mailAi?: MailAi | null
 }
 
 /**
@@ -1363,6 +1379,31 @@ export interface PackRef {
   len: number
 }
 
+/**
+ * A calendar invitation carried by one message -- a `text/calendar` part
+ * parsed at sync. TODO(i): mirrors the contract calendar-invitations-in-mail
+ * agent is landing (`docs/plans/mail.md` phase 6, "Invitations in mail");
+ * `respond_to_invite` is this build's own stand-in for the command that
+ * sends the iMIP reply -- see `mail-api.ts`.
+ */
+export interface MailInvite {
+  uid: string
+  method: 'request' | 'cancel' | 'reply' | 'counter'
+  summary: string
+  start: string
+  end: string
+  allDay: boolean
+  location?: string | null
+  organizer: MailAddress
+  attendees: {
+    address: MailAddress
+    response: 'accepted' | 'tentative' | 'declined' | 'needsAction'
+  }[]
+  /** This vault's own reply, once one has been sent. */
+  myResponse?: 'accepted' | 'tentative' | 'declined' | 'needsAction' | null
+  recurrence?: string | null
+}
+
 export interface MailMessage {
   id: MailMessageId
   accountId: AccountId
@@ -1383,8 +1424,24 @@ export interface MailMessage {
   category?: MailCategory | null
   pack: PackRef
   gmail?: GmailMeta | null
+  /** TODO(i): see [[MailInvite]]. `undefined`/`null` for every message that
+   *  is not an invitation. */
+  invite?: MailInvite | null
 }
 
+/**
+ * A thread, exactly as `everyday_core::mail::Thread` carries it -- no more.
+ *
+ * A list row therefore cannot show a star, a snippet, an attachment
+ * paperclip or "drafted by the assistant" without opening the thread first:
+ * the real record has no per-thread flagged aggregate, no cached snippet and
+ * no attachment summary, only what is below. Earlier work on this app carried
+ * four provisional fields here to fake those; they are gone, and the gap is
+ * reported rather than reinstated -- see the final report this build shipped
+ * with. `MailThread.svelte`, which *does* have a message's own flags once a
+ * thread is open, is where a star or an attachment chip can honestly be
+ * drawn today.
+ */
 export interface Thread {
   id: ThreadId
   accountId: AccountId
@@ -1395,24 +1452,6 @@ export interface Thread {
   unreadCount: number
   category?: MailCategory | null
   snoozedUntil?: string | null
-  /**
-   * Provisional: the data model in `docs/plans/mail.md` does not give a
-   * thread its own flag, only a message (`MessageFlags.flagged`). The
-   * interface needs one to draw a star on a list row without opening the
-   * thread first, so this is carried here until the write-commands agent
-   * either promotes it to a real aggregate or the list starts computing it
-   * server-side. Optional, and false when absent.
-   */
-  starred?: boolean
-  /** Provisional, for the same reason as `starred`: whether any message in
-   *  the thread carries an attachment, for the list row's paperclip. */
-  hasAttachments?: boolean
-  /** Provisional: the newest message's `snippet`, cached on the thread the
-   *  way Gmail's list does, so the row does not need its own fetch. */
-  snippet?: string
-  /** Provisional: whether the newest draft on this thread has `origin ===
-   *  'assistant'`, for the list row's "drafted by the assistant" mark. */
-  draftedByAssistant?: boolean
 }
 
 /** All three fields ANDed; `null`/absent means "do not filter on this." */
@@ -1494,6 +1533,15 @@ export type MailOrigin =
 export type DraftState =
   { type: 'editing' } | { type: 'queued'; op: OpId } | { type: 'sent' } | { type: 'discarded' }
 
+/** One attachment on a [[Draft]] -- a blob already uploaded through the same
+ *  path notes and journal entries use (`api.putBlob`), plus what a compose
+ *  window needs to draw a chip for it before it has been sent. */
+export interface DraftAttachment {
+  blob: BlobId
+  filename: string
+  mimeType: string
+}
+
 export interface Draft {
   id: DraftId
   accountId: AccountId
@@ -1505,7 +1553,7 @@ export interface Draft {
   bcc: MailAddress[]
   subject: string
   bodyHtml: string
-  attachments: BlobId[]
+  attachments: DraftAttachment[]
   origin: MailOrigin
   state: DraftState
   createdAt: string

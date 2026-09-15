@@ -23,6 +23,8 @@ import type {
   Connected,
   Connection,
   ConversationId,
+  Draft,
+  DraftId,
   Entry,
   EntryId,
   EntryQuery,
@@ -46,6 +48,7 @@ import type {
   LogId,
   LogQuery,
   MailboxId,
+  MailMessageId,
   McpStatus,
   Memory,
   MemoryId,
@@ -1023,12 +1026,12 @@ export const api = {
 
   // ── Mail: mailboxes and threads ───────────────────────────────────────
   //
-  // Read-only, and already generated -- `list_mailboxes`, `list_threads` and
-  // `get_thread` are in `surface.json`, unlike everything else the Mail app
-  // needs. See `mail-api.ts`, which wraps these three alongside the rest of
-  // Phase 2-4's surface, called by name through `callCommand` until the sync
-  // engine and the write-commands agent land theirs and this file is
-  // regenerated.
+  // See `mail-api.ts` for the domain-shaped wrapper every Mail component
+  // actually calls -- singular thread ids where this is the plural `threads`
+  // the real commands take, and a couple of names (`respond_to_invite`,
+  // `set_thread_category`, `summarize_thread`) that are not in
+  // `surface.json` yet and so are not here either; see that file's own
+  // TODOs for the two contracts they belong to.
 
   mailboxes: (account: AccountId) => call('listMailboxes', { account }),
   threads: (
@@ -1038,6 +1041,84 @@ export const api = {
     limit?: number | null,
   ) => call('listThreads', { mailbox, filter, cursor, limit }),
   thread: (id: ThreadId) => call('getThread', { id }),
+
+  // ── Mail: batch thread actions ──────────────────────────────────────
+  //
+  // Each is one outbox op per thread -- see `docs/plans/mail.md`'s "What an
+  // action does" -- and answers with the `Op[]` it enqueued, which the
+  // interface does not currently read back (the row already changed
+  // optimistically); kept typed rather than `void` because that is what the
+  // command answers.
+
+  markRead: (threads: ThreadId[]) => call('markRead', { threads }),
+  markUnread: (threads: ThreadId[]) => call('markUnread', { threads }),
+  star: (threads: ThreadId[]) => call('star', { threads }),
+  unstar: (threads: ThreadId[]) => call('unstar', { threads }),
+  archive: (threads: ThreadId[]) => call('archive', { threads }),
+  trash: (threads: ThreadId[]) => call('trash', { threads }),
+  moveToMailbox: (threads: ThreadId[], to: MailboxId) => call('moveToMailbox', { threads, to }),
+  label: (threads: ThreadId[], label: string) => call('label', { threads, label }),
+  unlabel: (threads: ThreadId[], label: string) => call('unlabel', { threads, label }),
+  /** `until` is an ISO instant -- when the thread reappears. */
+  snooze: (threads: ThreadId[], until: string) => call('snooze', { threads, until }),
+  /** No outbox op -- see `Vault::release_snooze`'s own docs: snooze never
+   *  told the server anything, so there is nothing to tell it is over. */
+  unsnooze: (threads: ThreadId[]) => call('unsnooze', { threads }),
+
+  // ── Mail: drafts and sending ────────────────────────────────────────
+
+  /** Mints a blank draft, prefilled for a reply, a reply-all or a forward. */
+  newDraft: (opts: {
+    account: AccountId
+    inReplyTo?: MailMessageId | null
+    forwardOf?: MailMessageId | null
+    replyAll?: boolean | null
+  }) => call('newDraft', opts),
+  saveDraft: (draft: Draft) => call('saveDraft', { draft }),
+  discardDraft: (id: DraftId) => call('discardDraft', { id }),
+  /** `delaySeconds` is the undo window (5-30s, clamped by the backend);
+   *  `sendAt` queues for a specific, possibly distant, moment instead --
+   *  "send later". Passing neither uses the backend's own default window. */
+  sendDraft: (id: DraftId, delaySeconds?: number | null, sendAt?: string | null) =>
+    call('sendDraft', { id, delaySeconds, sendAt }),
+  /** Only valid inside the undo window `sendDraft` opened. */
+  undoSend: (draftId: DraftId) => call('undoSend', { draftId }),
+  drafts: (account: AccountId) => call('listDrafts', { account }),
+
+  // ── Mail: sync ───────────────────────────────────────────────────────
+
+  syncStatus: () => call('syncStatus', {}),
+  /** Ask an account's task to sync now, out of its ordinary cadence. */
+  syncAccount: (id: AccountId) => call('syncAccount', { id }),
+  rebuildMailIndex: (id?: AccountId) => call('rebuildMailIndex', { id }),
+
+  // ── Mail: remote images ─────────────────────────────────────────────
+  //
+  // Name exactly one of `sender`, `domain` or `messageId` -- the last is a
+  // one-off grant kept in memory for this session only, the other two join
+  // the standing, sealed allow-list. See `mailview.ts` for how a body's own
+  // `X-Mail-Images-Hidden` decides whether to offer this at all.
+
+  allowRemoteImages: (opts: {
+    sender?: string | null
+    domain?: string | null
+    messageId?: MailMessageId | null
+  }) => call('allowRemoteImages', opts),
+  listRemoteImageAllowances: () => call('listRemoteImageAllowances', {}),
+  revokeRemoteImageAllowance: (opts: { sender?: string | null; domain?: string | null }) =>
+    call('revokeRemoteImageAllowance', opts),
+
+  // ── Mail: search and address autocomplete ───────────────────────────
+
+  /** Gmail-style operators (`from:`, `is:unread`, …), keyset-paged. */
+  searchMail: (
+    query: string,
+    accountIds?: AccountId[] | null,
+    cursor?: string | null,
+    limit?: number | null,
+  ) => call('searchMail', { query, accountIds, cursor, limit }),
+  suggestAddresses: (prefix: string, limit?: number | null) =>
+    call('suggestAddresses', { prefix, limit }),
 
   // ── Accounts ───────────────────────────────────────────────────────
   //
