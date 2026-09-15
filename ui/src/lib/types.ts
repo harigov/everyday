@@ -1610,6 +1610,13 @@ export interface Draft {
   state: DraftState
   createdAt: string
   updatedAt: string
+  /**
+   * Who last changed `to`, `cc` or `bcc` without the person seeing it
+   * through compose -- set by the assistant's or MCP's own `update_draft`,
+   * cleared the moment the person saves from compose. `null` (or absent)
+   * means the person's own recipients, unchanged since they last looked.
+   */
+  recipientsChangedBy?: MailOrigin | null
 }
 
 /** What an [[Op]] asks the account task to do. */

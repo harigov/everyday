@@ -392,9 +392,17 @@ pub struct SaveDraft {
 /// not appended to the server in the last thirty seconds -- the coalescing
 /// [`Service::draft_append_due`] decides, since that timer is session
 /// state, not a fact the vault write itself can answer.
+///
+/// Always clears [`Draft::recipients_changed_by`], whether or not this
+/// particular save touched `to`/`cc`/`bcc` -- see that field's own doc. A
+/// save from compose is the person looking at exactly the recipients this
+/// call is about to write, so whatever an earlier assistant or MCP
+/// `update_draft` changed unseen has now been seen, and the confirmation
+/// card's warning has done its job.
 async fn save_draft(svc: Arc<Service>, _ctx: Ctx, args: SaveDraft) -> CommandResult<()> {
     let mut draft = args.draft;
     draft.updated_at = Timestamp::now();
+    draft.recipients_changed_by = None;
     let append = svc.draft_append_due(draft.id, draft.updated_at);
     let vault = svc.require()?;
     let op =

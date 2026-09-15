@@ -448,6 +448,67 @@ fn send_draft_is_refused_for_an_account_with_send_off_and_permitted_once_it_is_o
     assert!(out["note"].as_str().unwrap_or_default().contains("undo window"));
 }
 
+/// Finding 4: the confirmation card `send_draft` shows before it is queued
+/// must name Cc and Bcc, not only `to` -- and must say so when a non-person
+/// caller changed the recipients since the person last saw this draft.
+#[test]
+fn describe_send_draft_names_cc_and_bcc_and_flags_a_recipient_change_by_an_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(dir.path());
+    let account = seed_account(&v, true);
+    let caller = Caller::Mcp { client: "claude".into() };
+    let ctx = ctx(&v, Some(caller), None);
+
+    let drafted = tools::dispatch(
+        &ctx,
+        "draft_message",
+        &serde_json::json!({
+            "account_id": account.id.to_string(),
+            "to": ["friend@example.com"],
+            "subject": "hello",
+            "body_html": "<p>hi</p>",
+        }),
+    )
+    .expect("mcp may draft by default");
+    let draft_id = drafted["id"].as_str().unwrap().to_string();
+
+    // The card before anything has touched the recipients: `to` only, and
+    // no warning.
+    let before = tools::describe(&ctx, "send_draft", &serde_json::json!({ "draft_id": draft_id }))
+        .expect("a real draft is there to name");
+    assert!(!before.contains("Bcc"), "{before}");
+    assert!(!before.contains("changed"), "{before}");
+
+    // An `update_draft` from the same, non-person caller adds a Cc and a
+    // Bcc -- exactly the injected-recipient shape the finding is about.
+    tools::dispatch(
+        &ctx,
+        "update_draft",
+        &serde_json::json!({
+            "draft_id": draft_id,
+            "cc": ["cc@example.com"],
+            "bcc": ["shadow@example.com"],
+        }),
+    )
+    .expect("mcp may edit its own draft");
+
+    let after = tools::describe(&ctx, "send_draft", &serde_json::json!({ "draft_id": draft_id }))
+        .expect("still there to name");
+    assert!(after.contains("friend@example.com"), "{after}");
+    assert!(after.contains("cc@example.com"), "{after}");
+    assert!(after.contains("shadow@example.com"), "{after}");
+    assert!(after.contains("Bcc"), "{after}");
+    assert!(after.to_lowercase().contains("hidden"), "Bcc must be marked prominently: {after}");
+    assert!(after.contains("changed"), "an agent's own change to the recipients is said: {after}");
+
+    let draft = v.draft(draft_id.parse().unwrap()).unwrap();
+    assert!(
+        matches!(draft.recipients_changed_by, Some(Origin::Mcp { .. })),
+        "the sealed flag itself is set, not only the card's text: {:?}",
+        draft.recipients_changed_by
+    );
+}
+
 // ---- respond_to_invite: the second Outward tool --------------------------
 
 /// A message carrying an invitation to "Standup" from dana@example.com,

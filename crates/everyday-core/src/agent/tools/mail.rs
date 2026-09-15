@@ -912,14 +912,22 @@ fn run_update_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         ));
     }
 
+    let origin = origin_of(ctx);
+    // Whether *this* call actually touched a recipient list, not merely
+    // whether one was named -- `update_addresses` already tells "omitted"
+    // from "sent as an empty list" apart, and only the latter counts.
+    let mut recipients_touched = false;
     if let Some(to) = update_addresses(args, "to")? {
         draft.to = to;
+        recipients_touched = true;
     }
     if let Some(cc) = update_addresses(args, "cc")? {
         draft.cc = cc;
+        recipients_touched = true;
     }
     if let Some(bcc) = update_addresses(args, "bcc")? {
         draft.bcc = bcc;
+        recipients_touched = true;
     }
     if let Some(subject) = args.opt_str("subject") {
         draft.subject = subject.to_string();
@@ -928,9 +936,16 @@ fn run_update_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         draft.body_html = body_html.to_string();
     }
     draft.updated_at = jiff::Timestamp::now();
+    // Marked only for a non-person caller -- see
+    // `Draft::recipients_changed_by`'s own doc. The vault's owner acting
+    // directly on this tool (a script, the palette) is still the person; it
+    // is `origin_of`'s `Origin::Person` branch that decides this, not the
+    // tool being called at all.
+    if recipients_touched && !matches!(origin, Origin::Person) {
+        draft.recipients_changed_by = Some(origin.clone());
+    }
 
     let thread_id = draft_thread_id(ctx, &draft);
-    let origin = origin_of(ctx);
     enqueue_gate(ctx, &origin)?;
     ctx.vault.save_draft_and_append(&draft, true, origin)?;
     after_write(ctx, account.id);
@@ -948,18 +963,65 @@ fn update_addresses(args: &Args<'_>, key: &str) -> Result<Option<Vec<Address>>> 
     Ok(Some(parse_addresses(args, key)?))
 }
 
+/// Who a non-person [`Origin`] reads as, in a sentence a person reads on a
+/// confirmation card -- see [`describe_send_draft`]'s own "recipients
+/// changed by" line. `Origin::Person` never reaches this: it is the one
+/// variant [`Draft::recipients_changed_by`] is never set to (see that
+/// field's own doc), and [`Origin::Routine`] cannot either, since only
+/// `update_draft` sets it and a routine may draft but never send -- both
+/// are named anyway, rather than matched only on the two that occur, so
+/// this stays correct if that ever changes.
+fn origin_label(origin: &Origin) -> &'static str {
+    match origin {
+        Origin::Person => "you",
+        Origin::Assistant { .. } => "the assistant",
+        Origin::Mcp { .. } => "an MCP client",
+        Origin::Routine { .. } => "a routine",
+    }
+}
+
+/// `send_draft`'s confirmation card -- the one place a person actually
+/// reads a draft's recipients before an injected `update_draft` gets to
+/// reach somebody. Lists every one of `to`, `cc` and `bcc` by name rather
+/// than only `to`: a card that just says "to A, B" says nothing about a
+/// `Bcc` an earlier call quietly added, and `Bcc` is exactly the field
+/// built to be invisible to everyone *but* this reader, so it is named
+/// here, plainly, as what it is -- "hidden from other recipients" -- rather
+/// than folded in beside `to` and `cc` as if it were the same kind of
+/// thing.
+///
+/// Also says so when [`Draft::recipients_changed_by`] is set: a
+/// non-person origin touched `to`/`cc`/`bcc` since the person last saved
+/// this draft from compose, and this is the one sentence between that and
+/// an approval given to recipients nobody has actually looked at.
 fn describe_send_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
     let id: DraftId = args.opt_id("draft_id", "draft").ok()??;
     let draft = ctx.vault.draft(id).ok()?;
-    let to = draft.to.iter().map(display_address).collect::<Vec<_>>().join(", ");
+    let addresses =
+        |list: &[Address]| list.iter().map(display_address).collect::<Vec<_>>().join(", ");
+    let mut recipients = format!("to {}", addresses(&draft.to));
+    if !draft.cc.is_empty() {
+        recipients.push_str(&format!(", Cc {}", addresses(&draft.cc)));
+    }
+    if !draft.bcc.is_empty() {
+        recipients
+            .push_str(&format!(", Bcc (hidden from other recipients): {}", addresses(&draft.bcc)));
+    }
     let subject =
         if draft.subject.trim().is_empty() { "(no subject)" } else { draft.subject.trim() };
     let preview = first_lines(&draft.body_html, 2, 160);
-    Some(if preview.is_empty() {
-        format!("to {to} \u{2014} {subject}")
+    let mut out = if preview.is_empty() {
+        format!("{recipients} \u{2014} {subject}")
     } else {
-        format!("to {to} \u{2014} {subject} \u{2014} {preview}")
-    })
+        format!("{recipients} \u{2014} {subject} \u{2014} {preview}")
+    };
+    if let Some(changed_by) = &draft.recipients_changed_by {
+        out.push_str(&format!(
+            " \u{2014} recipients changed by {} since you last saw this draft",
+            origin_label(changed_by)
+        ));
+    }
+    Some(out)
 }
 
 fn run_send_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {

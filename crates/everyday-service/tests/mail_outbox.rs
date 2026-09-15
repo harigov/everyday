@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use everyday_core::account::{Account, Provider};
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
-use everyday_core::mail::{Address, Mailbox, MailboxRole, Message, MessageFlags, OpState};
+use everyday_core::mail::{Address, Mailbox, MailboxRole, Message, MessageFlags, OpState, Origin};
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::IngestMessage;
 use everyday_mail::compose::Built;
@@ -267,6 +267,46 @@ async fn undo_send_works_inside_the_window_and_refuses_past_it() {
     let still_queued = call(&svc, "list_drafts", json!({ "account": account })).await;
     let d = &still_queued.as_array().unwrap()[0];
     assert_eq!(d["state"]["type"].as_str(), Some("queued"), "past the window, the send stands");
+}
+
+/// Finding 4's other half: `save_draft` -- what the compose window's own
+/// save goes through, `Origin::Person` always -- clears
+/// `Draft::recipients_changed_by`, even when this particular save never
+/// touches `to`/`cc`/`bcc` at all. The flag exists to say "look again
+/// before you send"; once the person has looked (by being in compose,
+/// saving anything), it has done its job.
+#[tokio::test]
+async fn saving_a_draft_from_compose_clears_the_recipients_changed_flag() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let mut draft = call(&svc, "new_draft", json!({ "account": account })).await;
+    draft["to"] = json!([{ "name": "", "email": "bob@example.com" }]);
+    draft["subject"] = json!("Hello");
+    call(&svc, "save_draft", json!({ "draft": draft.clone() })).await;
+    let draft_id = draft["id"].as_str().unwrap().to_string();
+
+    // Simulate what an assistant's or MCP's own `update_draft` would have
+    // left behind: the sealed flag set, naming who.
+    let vault = svc.get().unwrap();
+    let mut stored = vault.draft(draft_id.parse().unwrap()).unwrap();
+    stored.recipients_changed_by = Some(Origin::Mcp { client: "claude".into() });
+    vault.save_draft(&stored).unwrap();
+    assert!(
+        vault.draft(draft_id.parse().unwrap()).unwrap().recipients_changed_by.is_some(),
+        "the fixture set it"
+    );
+
+    // The person saves from compose, through the `save_draft` command --
+    // touching only the subject, never the recipients.
+    let mut person_edit = serde_json::to_value(&stored).unwrap();
+    person_edit["subject"] = json!("Hello, edited");
+    call(&svc, "save_draft", json!({ "draft": person_edit })).await;
+
+    assert!(
+        vault.draft(draft_id.parse().unwrap()).unwrap().recipients_changed_by.is_none(),
+        "a person's own save from compose clears the flag, even though this save did not touch \
+         the recipients"
+    );
 }
 
 #[tokio::test]

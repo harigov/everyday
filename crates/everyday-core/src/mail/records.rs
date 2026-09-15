@@ -764,6 +764,24 @@ pub struct Draft {
     pub state: DraftState,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Who last changed `to`, `cc` or `bcc` on this draft *without* the
+    /// person seeing it happen through compose -- set by `update_draft`
+    /// (`everyday_core::agent::tools::mail`) when the caller is
+    /// `Assistant` or `Mcp` and the call actually touched one of the three,
+    /// cleared the moment the person themselves saves from compose
+    /// (`everyday_service::domains::mail::save_draft`, always, whether or
+    /// not that particular save touched the recipients).
+    ///
+    /// What lets `send_draft`'s own confirmation card say "recipients
+    /// changed by the assistant" for a draft whose `to`/`cc`/`bcc` an
+    /// injected instruction inside some other tool's result talked a model
+    /// into widening -- see `describe_send_draft`'s own docs for the
+    /// finding this answers. `#[serde(default)]` so a draft sealed before
+    /// this field existed still decodes, as `None` -- exactly what "the
+    /// person's own recipients, unchanged since they last looked" already
+    /// means.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipients_changed_by: Option<Origin>,
 }
 
 impl Draft {
@@ -787,6 +805,7 @@ impl Draft {
             state: DraftState::Editing,
             created_at: now,
             updated_at: now,
+            recipients_changed_by: None,
         }
     }
 }
