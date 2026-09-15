@@ -87,6 +87,7 @@ import type {
   Reading,
   ReadingId,
   ReadingQuery,
+  RemoteCalendarInfo,
   RemoteImageSettings,
   Role,
   RoleId,
@@ -199,6 +200,7 @@ export interface Commands {
     result: CalendarInfo
   }
   libraryStats: { args: Record<string, never>; result: LibraryStats }
+  listAccountCalendars: { args: { account: AccountId }; result: RemoteCalendarInfo[] }
   listAccounts: { args: Record<string, never>; result: AccountView[] }
   listBlocks: { args: { query: BlockQuery }; result: TimeBlock[] }
   listCalendars: { args: Record<string, never>; result: CalendarInfo[] }
@@ -377,6 +379,7 @@ export interface Commands {
   startExport: { args: { parts?: string[]; media?: boolean }; result: ExportHandle }
   startImport: { args: { name?: string; bytes: number }; result: ImportUpload }
   status: { args: Record<string, never>; result: VaultStatus }
+  subscribeAccountCalendar: { args: { account: AccountId; remoteId: string }; result: CalendarInfo }
   subscribeCalendar: { args: { name: string; url: string; color: string }; result: CalendarInfo }
   syncCalendar: { args: { id: CalendarId }; result: SyncReport }
   syncDueCalendars: { args: { force: boolean }; result: SyncReport[] }
@@ -445,6 +448,7 @@ export const COMMAND_NAMES = {
   goalActivity: 'goal_activity',
   importCalendar: 'import_calendar',
   libraryStats: 'library_stats',
+  listAccountCalendars: 'list_account_calendars',
   listAccounts: 'list_accounts',
   listBlocks: 'list_blocks',
   listCalendars: 'list_calendars',
@@ -563,6 +567,7 @@ export const COMMAND_NAMES = {
   startExport: 'start_export',
   startImport: 'start_import',
   status: 'status',
+  subscribeAccountCalendar: 'subscribe_account_calendar',
   subscribeCalendar: 'subscribe_calendar',
   syncCalendar: 'sync_calendar',
   syncDueCalendars: 'sync_due_calendars',
@@ -641,6 +646,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'goal_activity',
   'import_calendar',
   'library_stats',
+  'list_account_calendars',
   'list_accounts',
   'list_blocks',
   'list_calendars',
@@ -758,6 +764,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'start_export',
   'start_import',
   'status',
+  'subscribe_account_calendar',
   'subscribe_calendar',
   'sync_calendar',
   'sync_due_calendars',
@@ -857,6 +864,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_item_progress',
   'set_item_status',
   'set_quick_job',
+  'subscribe_account_calendar',
   'subscribe_calendar',
   'sync_calendar',
   'sync_due_calendars',
@@ -932,6 +940,7 @@ export const CHANGE_KINDS = {
   set_item_progress: 'item',
   set_item_status: 'item',
   set_quick_job: 'settings',
+  subscribe_account_calendar: 'calendar',
   subscribe_calendar: 'calendar',
   sync_calendar: 'event',
   sync_due_calendars: 'event',

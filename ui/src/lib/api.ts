@@ -678,6 +678,16 @@ export const api = {
   /** The providers the add sheet offers, with where to find each address. */
   calendarProviders: () => call('calendarProviders', {}),
 
+  /**
+   * The calendars `account` offers, marking which ones this vault already
+   * subscribes to. What "From an account" in the add-calendar sheet, and
+   * the calendar list in Settings → Accounts, both read.
+   */
+  listAccountCalendars: (account: AccountId) => call('listAccountCalendars', { account }),
+  /** Subscribe to one of an account's own calendars and fetch it once. */
+  subscribeAccountCalendar: (account: AccountId, remoteId: string) =>
+    call('subscribeAccountCalendar', { account, remoteId }),
+
   // ── The library domain ─────────────────────────────────────────────
   //
   // Shelves, the things on them, and the log of what you did with them.
