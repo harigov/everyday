@@ -150,8 +150,11 @@
     // `longDate` wants a local `YYYY-MM-DD`, the same as `threadListDate` in
     // `mail.ts` narrows a message's own instant before formatting it --
     // `invite.start`/`.end` are full ISO instants, not local dates.
+    // An all-day invitation is a date, not an instant: the backend sends it
+    // as that date at midnight UTC, so it is read as written. Turning it into
+    // local time would show the day before anywhere west of Greenwich.
+    if (invite.allDay) return longDate(invite.start.slice(0, 10))
     const day = longDate(isoDate(new Date(invite.start)))
-    if (invite.allDay) return day
     return `${day} · ${formatInstantTime(invite.start)}–${formatInstantTime(invite.end)}`
   }
 

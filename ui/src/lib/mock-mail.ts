@@ -601,15 +601,16 @@ export function mockSummarizeThread(id: ThreadId): { summary: string } {
   }
 }
 
-// ── (i) TODO: invitations ───────────────────────────────────────────
-//
-// `respond_to_invite` is the calendars-that-sign-in agent's command -- see
-// `mail-api.ts`'s own TODO(i).
+// ── Invitations ─────────────────────────────────────────────────────
 
 export function mockRespondToInvite(
   messageId: MailMessageId,
-  response: 'accepted' | 'tentative' | 'declined',
+  response: string,
+  _comment?: string,
 ): void {
+  if (response !== 'accepted' && response !== 'tentative' && response !== 'declined') {
+    throw new VaultError('invalid', 'answer accepted, tentative or declined')
+  }
   const message = seed.messages.get(messageId)
   if (!message?.invite) throw new VaultError('notFound', 'no invitation on that message')
   message.invite = {
@@ -620,20 +621,6 @@ export function mockRespondToInvite(
     ),
   }
 }
-
-// ── Calendar invitations (phase 6) ───────────────────────────────────
-//
-// The invite banner itself -- a message's `invite` field, and what an
-// accept/tentative/decline click should update on it -- is agent (a)'s own
-// addition to this mock (see the module docs above on why this file is
-// expected to be replaced wholesale). This satisfies only the wire
-// contract, `void`, so a call against the mock transport does not throw
-// while that lands.
-export function mockRespondToInvite(
-  _messageId: MailMessageId,
-  _response: string,
-  _comment?: string,
-): void {}
 
 // ── Drafts and sending ───────────────────────────────────────────────
 
