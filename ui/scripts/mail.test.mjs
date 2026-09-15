@@ -375,5 +375,23 @@ assert.deepEqual(
 )
 assert.deepEqual(searchRemoval.rows, [], 'the same removal empties the search results too')
 
+// ── Finding 5: the neighbour a removed thread leaves behind ─────────────
+//
+// `#advanceIfOpen` in `mail.svelte.ts` tries the row below, then the row
+// above -- so a thread removed from the *end* of the list still lands on
+// its new neighbour rather than nothing. Both halves are `neighbourThread`,
+// already covered above; this is the fallback composition itself.
+
+function advanceTo(list, id) {
+  return neighbourThread(list, id, 1) ?? neighbourThread(list, id, -1)
+}
+assert.equal(advanceTo(mailboxThreads, 'th-1').id, 'th-2', 'the row below, ordinarily')
+assert.equal(
+  advanceTo(mailboxThreads, 'th-3').id,
+  'th-2',
+  'the last row falls back to the one above it',
+)
+assert.equal(advanceTo([thread('th-1')], 'th-1'), null, 'the only row leaves no neighbour at all')
+
 await close()
 console.log('mail: all checks passed')

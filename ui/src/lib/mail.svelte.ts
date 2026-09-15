@@ -412,6 +412,21 @@ class MailState {
     }
   }
 
+  /**
+   * If `id` is the open thread, move `selectedThread` on to its neighbour
+   * before whatever is about to remove `id`'s row does -- `#neighbour`'s
+   * lookup depends on the row still being in the list it reads, so this has
+   * to run first. Superhuman's own convention for archiving into the thread
+   * that was next, which a thread removed by a live change (finding 5)
+   * deserves exactly as much as one removed by the reader's own `e`.
+   */
+  #advanceIfOpen(id: ThreadId): void {
+    if (this.selectedThread !== id) return
+    this.selectedThread = (this.#neighbour(1) ?? this.#neighbour(-1))?.id ?? null
+    this.openThread = null
+    this.summary = null
+  }
+
   // ── actions ──────────────────────────────────────────────────────
   //
   // Every one of these follows the same shape: patch the row (or remove it),
@@ -455,11 +470,14 @@ class MailState {
    *  snooze -- and from a search's results too (finding 4), restoring both
    *  in place on failure. */
   async #remove(id: ThreadId, call: (id: ThreadId) => Promise<unknown>): Promise<void> {
+    // Finding 5: move on to the neighbour rather than simply closing the
+    // pane -- `#advanceIfOpen` must run before the row disappears below, so
+    // it can still find one.
+    this.#advanceIfOpen(id)
     const { rows, removed } = removeRow(this.threads, id)
     this.threads = rows
     const { rows: searchRows, removed: searchRemoved } = removeRow(this.searchResults, id)
     this.searchResults = searchRows
-    if (this.selectedThread === id) this.closeThread()
     try {
       await call(id)
       void this.refreshUnreadCounts()
@@ -717,7 +735,13 @@ class MailState {
       return true
     }
     if (change.op === 'deleted') {
+      // Finding 5: a thread deleted from another window or by the assistant
+      // must not stay open here just because nothing removed it from
+      // `openThread` -- `#advanceIfOpen` does what archiving already does,
+      // moving on to the neighbour, before the row disappears from under it.
+      this.#advanceIfOpen(id)
       this.threads = this.threads.filter((t) => t.id !== id)
+      this.searchResults = this.searchResults.filter((t) => t.id !== id)
       return true
     }
     if (change.op === 'created' || change.op === 'updated') {
