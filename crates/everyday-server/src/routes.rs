@@ -880,6 +880,7 @@ mod mail_route_tests {
             has_attachments: false,
             size: 0,
             category: None,
+            invite: None,
             pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
             gmail: None,
         };

@@ -206,6 +206,23 @@ fn split_header(raw: &[u8]) -> Vec<u8> {
     }
 }
 
+/// The bare `Message-ID` header value (angle brackets stripped, the same
+/// form [`everyday_mail::compose::build`] hands back as `Built::message_id`)
+/// of a raw RFC 822 message, for [`FakeMailSession::search_message_id`]'s
+/// own linear scan.
+fn message_id_header(raw: &[u8]) -> Option<String> {
+    let header = split_header(raw);
+    let text = String::from_utf8_lossy(&header);
+    for line in text.split("\r\n") {
+        if let Some(value) =
+            line.strip_prefix("Message-ID:").or_else(|| line.strip_prefix("Message-Id:"))
+        {
+            return Some(value.trim().trim_start_matches('<').trim_end_matches('>').to_string());
+        }
+    }
+    None
+}
+
 impl MailSession for FakeMailSession {
     async fn mailboxes(&mut self) -> SessionResult<Vec<RemoteMailbox>> {
         let server = self.server.lock().unwrap();
@@ -350,6 +367,28 @@ impl MailSession for FakeMailSession {
     ) -> SessionResult<Option<Uid>> {
         let mut server = self.server.lock().unwrap();
         Ok(Some(server.append(mailbox, raw.to_vec(), flags, None)))
+    }
+
+    /// `UID SEARCH HEADER Message-ID` stood in for by a linear scan of
+    /// `mailbox`'s own messages, comparing each one's parsed `Message-ID`
+    /// header -- exactly what the recovery path this fake exists for
+    /// actually needs, without a real IMAP `SEARCH` grammar to stand in
+    /// for.
+    async fn search_message_id(
+        &mut self,
+        mailbox: &str,
+        message_id: &str,
+    ) -> SessionResult<Option<Uid>> {
+        let server = self.server.lock().unwrap();
+        let mb = server
+            .mailboxes
+            .get(mailbox)
+            .ok_or_else(|| MailError::Protocol(format!("no such mailbox: {mailbox}")))?;
+        Ok(mb
+            .messages
+            .iter()
+            .find(|(_, msg)| message_id_header(&msg.raw).as_deref() == Some(message_id))
+            .map(|(&uid, _)| uid))
     }
 
     async fn idle(&mut self, _stop: tokio::sync::watch::Receiver<()>) -> SessionResult<IdleEvent> {
@@ -893,6 +932,133 @@ Content-Type: text/plain\r\n\r\nties them together\r\n"
     assert_eq!(page.threads.len(), 1, "the merged-away thread must no longer appear in the list");
 }
 
+/// The regression for `ThreadIndex::seen_by_message_id` caching a whole
+/// stale [`everyday_core::mail::Message`] rather than just an id: a real
+/// `Message` a `ThreadIndex` (kept alive across a whole account task's
+/// life, per `mailsync::task::run_account_with`, never per sync attempt)
+/// once cached for a message can go stale two ways before that same
+/// `Message-ID` is ever seen again -- its body arrives (turning a `pending`
+/// pack and an empty snippet into real ones) and a later message's
+/// `References` chain merges its thread into another. Both must survive the
+/// message turning up again at a new location, which is exactly what moving
+/// mailboxes -- or a new `UID` after a `UIDVALIDITY`-free move a plain
+/// `IMAP` `MOVE` produces -- does.
+#[tokio::test]
+async fn a_merged_and_relocated_message_keeps_its_thread_pack_and_snippet() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    {
+        let mut s = server.lock().unwrap();
+        s.append(
+            "INBOX",
+            raw_message(
+                "root-a@example.com",
+                None,
+                "a@example.com",
+                "Topic A",
+                "01 Jan 2024 09:00:00 +0000",
+                "start of A",
+            ),
+            flags_seen(),
+            None,
+        );
+        s.append(
+            "INBOX",
+            raw_message(
+                "root-b@example.com",
+                None,
+                "b@example.com",
+                "Topic B",
+                "01 Jan 2024 09:05:00 +0000",
+                "the body of B, which the snippet must still say after this wake",
+            ),
+            flags_seen(),
+            None,
+        );
+    }
+
+    // One `ThreadIndex`, reused across two wakes -- the shape
+    // `run_account_with` actually keeps one in for the account task's whole
+    // life, never a fresh one per sync attempt the way `TestEnv::sync`'s
+    // convenience wrapper does.
+    let mut session = FakeMailSession::new(server.clone());
+    let mut labels = LabelMailboxes::new(&env.vault, env.account_id);
+    let mut threads = ThreadIndex::new();
+    passes::sync_once(&env.ctx(), &mut session, &mut labels, &mut threads).await.unwrap();
+
+    let root_b_before = env
+        .vault
+        .message_by_message_id_header(env.account_id, "root-b@example.com")
+        .unwrap()
+        .expect("root b stored");
+    assert!(!super::ingest::is_pending(&root_b_before.pack), "the first wake's bodies pass ran");
+    assert!(!root_b_before.snippet.is_empty());
+    let pack_before = root_b_before.pack.clone();
+    let snippet_before = root_b_before.snippet.clone();
+
+    // The second wake: a message merging root a and root b's threads, *and*
+    // root b turning up again at a new location -- the two ways this bug
+    // needs at once. INBOX is synced before Archive (inbox-first), so the
+    // merge below is already applied to the vault by the time root b's
+    // `Message-ID` is seen again while syncing Archive, in the same
+    // `threads`.
+    {
+        let mut s = server.lock().unwrap();
+        s.append(
+            "INBOX",
+            b"Message-ID: <merges-both@example.com>\r\n\
+References: <root-a@example.com> <root-b@example.com>\r\n\
+From: c@example.com\r\n\
+To: me@example.com\r\n\
+Subject: Re: Topic A\r\n\
+Date: 01 Jan 2024 09:10:00 +0000\r\n\
+Content-Type: text/plain\r\n\r\nties them together\r\n"
+                .to_vec(),
+            flags_seen(),
+            None,
+        );
+        s.append(
+            "Archive",
+            raw_message(
+                "root-b@example.com",
+                None,
+                "b@example.com",
+                "Topic B",
+                "01 Jan 2024 09:05:00 +0000",
+                "the body of B, which the snippet must still say after this wake",
+            ),
+            flags_seen(),
+            None,
+        );
+    }
+    passes::sync_once(&env.ctx(), &mut session, &mut labels, &mut threads).await.unwrap();
+
+    let root_a_after = env
+        .vault
+        .message_by_message_id_header(env.account_id, "root-a@example.com")
+        .unwrap()
+        .expect("root a still stored");
+    let root_b_after = env
+        .vault
+        .message_by_message_id_header(env.account_id, "root-b@example.com")
+        .unwrap()
+        .expect("root b still stored");
+
+    assert_eq!(
+        root_b_after.thread_id, root_a_after.thread_id,
+        "root b must keep the merged thread, not revert to a stale cached one"
+    );
+    assert_eq!(root_b_after.pack, pack_before, "root b's pack ref must not be reset to pending");
+    assert_eq!(root_b_after.snippet, snippet_before, "root b's real snippet must survive");
+
+    let locations = env.vault.mail_message_locations(root_b_after.id).unwrap();
+    assert_eq!(
+        locations.len(),
+        2,
+        "root b must now be filed in both INBOX and Archive: {locations:?}"
+    );
+}
+
 #[tokio::test]
 async fn gmail_labels_put_one_message_in_both_the_inbox_and_a_user_label() {
     let env = TestEnv::new();
@@ -1335,6 +1501,96 @@ async fn draining_a_send_appends_the_sent_copy_and_marks_the_draft_sent() {
     );
 }
 
+/// The regression for the duplicate-send risk `crate::outbox::already_sent`
+/// exists to close: a `Send` op recovered from `InFlight` whose draft's
+/// (stable) `Message-ID` is already in Sent must be recognised as already
+/// sent, not sent again.
+#[tokio::test]
+async fn recovering_a_send_already_on_the_server_is_not_resent() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let server = plain_server();
+    let mut session = FakeMailSession::new(server.clone());
+
+    let statuses = svc.mail_statuses().unwrap();
+    let ctx = SyncContext {
+        vault: &vault,
+        account_id,
+        packs: svc.packs().unwrap(),
+        index: svc.mail_index().unwrap(),
+        statuses: &statuses,
+        attachment_cap_bytes: None,
+        index_commit: passes::CommitPacer::new(),
+        unread_cache: svc.mail_unread_cache(),
+        contacts: svc.mail_contacts(),
+        identities: Vec::new(),
+    };
+    let mut labels = LabelMailboxes::new(&vault, account_id);
+    let mut threads = ThreadIndex::new();
+    passes::sync_once(&ctx, &mut session, &mut labels, &mut threads).await.unwrap();
+
+    // A draft whose `Message-ID` was already stamped -- what
+    // `everyday_mail::outbox::send` does before it ever calls the sender,
+    // so it survives a crash between the two.
+    let mut draft = Draft::new(account_id, "me@example.com", Origin::Person);
+    draft.to = vec![Address::bare("bob@example.com")];
+    draft.subject = "Already sent".into();
+    draft.body_html = "<p>Hi</p>".into();
+    draft.message_id = Some("stable-id@example.com".into());
+    vault.save_draft(&draft).unwrap();
+    let (draft, op) = vault.queue_draft_send(draft.id, Timestamp::now(), Origin::Person).unwrap();
+
+    // The crash this test simulates happened *after* SMTP accepted the
+    // message: the server genuinely has a Sent copy under that exact
+    // `Message-ID`, and the op is stranded `InFlight` because this process
+    // never got to say so.
+    {
+        let mut s = server.lock().unwrap();
+        s.append(
+            "Sent",
+            raw_message(
+                "stable-id@example.com",
+                None,
+                "me@example.com",
+                "Already sent",
+                "01 Jan 2024 10:00:00 +0000",
+                "hi",
+            ),
+            flags_seen(),
+            None,
+        );
+    }
+    let mut stranded = vault.op(op.id).unwrap();
+    stranded.transition_to(OpState::InFlight).unwrap();
+    vault.update_op(&stranded).unwrap();
+
+    crate::outbox::recover_inflight_ops(&svc, account_id, &mut session).await.unwrap();
+
+    assert_eq!(
+        vault.op(op.id).unwrap().state,
+        OpState::Done,
+        "already on the server -- recovered as done, not requeued to send again"
+    );
+    assert_eq!(vault.draft(draft.id).unwrap().state, everyday_core::mail::DraftState::Sent);
+
+    // And, proof this genuinely skipped sending rather than merely getting
+    // lucky: nothing is left pending to drain, and the sender below is
+    // never asked to send anything.
+    let sender = FakeSender::default();
+    let report =
+        crate::outbox::drain_outbox(&svc, account_id, &mut session, &sender).await.unwrap();
+    assert_eq!(report.attempted, 0, "{report:?}");
+    assert!(sender.sent.lock().unwrap().is_empty(), "must not have been sent a second time");
+    assert_eq!(
+        s_message_count(&server, "Sent"),
+        1,
+        "still exactly the one copy the server already had"
+    );
+}
+
+fn s_message_count(server: &Arc<Mutex<FakeServer>>, mailbox: &str) -> usize {
+    server.lock().unwrap().mailboxes[mailbox].messages.len()
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_notify_wakes_the_idle_loop_promptly_rather_than_waiting_for_the_poll() {
     let (svc, vault, account_id, _dir) = service_test_env();
@@ -1410,6 +1666,88 @@ async fn a_notify_wakes_the_idle_loop_promptly_rather_than_waiting_for_the_poll(
     // is the notify itself having woken the `IDLE` `select!` -- which is
     // exactly the latency this test exists to prove.
     settle(|| vault.op(op.id).map(|o| o.state == OpState::Done).unwrap_or(false)).await;
+
+    stop_tx.send(true).unwrap();
+    handle.await.unwrap().unwrap();
+}
+
+/// The regression for the bug [`super::task::sleep_until_due`] fixes: a
+/// send-at op queued ten seconds out must drain at about ten seconds, not
+/// at `POLL_INTERVAL` (five minutes).
+///
+/// No paused clock here, unlike this module's other timing tests: `not_before`
+/// due-ness is decided by [`jiff::Timestamp::now`] (the real wall clock),
+/// never by `tokio::time`'s virtual one -- `next_pending_wake` converts a
+/// real duration into a virtual sleep exactly once, the same trade
+/// `crate::token_cache::deadline_from` makes, but the *due* check itself in
+/// `crate::outbox::drain_outbox` reads the wall clock fresh on every drain.
+/// So this test spends ten real seconds proving it, bounded well short of
+/// `POLL_INTERVAL` by [`settle_up_to`]'s own timeout, which is the one
+/// thing a wrong fix (falling back to `POLL_INTERVAL`) cannot pass short of
+/// genuinely waiting five minutes.
+#[tokio::test]
+async fn a_send_at_op_drains_at_its_own_time_not_the_poll_interval() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let server = plain_server();
+    let session = FakeMailSession::new(server).blocking_idle();
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+
+    let svc_task = svc.clone();
+    let vault_task = vault.clone();
+    let handle = tokio::spawn(async move {
+        super::task::run_account_with(
+            svc_task,
+            vault_task,
+            account_id,
+            stop_rx,
+            move |_account, _credential| {
+                let session = session.clone();
+                async move { Ok(session) }
+            },
+            |_account, _svc, _vault| FakeSender::default(),
+        )
+        .await
+    });
+
+    settle(|| {
+        matches!(
+            svc.mail_statuses()
+                .unwrap()
+                .all()
+                .iter()
+                .find(|p| p.account_id == account_id)
+                .map(|p| p.phase),
+            Some(super::status::Phase::Idling)
+        )
+    })
+    .await;
+
+    let start = std::time::Instant::now();
+    let mut draft = Draft::new(account_id, "me@example.com", Origin::Person);
+    draft.to = vec![Address::bare("bob@example.com")];
+    draft.subject = "Later".into();
+    draft.body_html = "<p>Later</p>".into();
+    vault.save_draft(&draft).unwrap();
+    let not_before = Timestamp::now() + jiff::SignedDuration::from_secs(10);
+    let (_, op) = vault.queue_draft_send(draft.id, not_before, Origin::Person).unwrap();
+    // What the real `send_draft` command does right after `queue_draft_send`
+    // -- see `domains::mail`'s own wiring -- so this test enqueues the op
+    // exactly the way a person actually would, rather than relying on the
+    // supervisor loop stumbling onto it by some other path. It also proves
+    // the fix is doing the work, not this call: the notify only tells the
+    // loop to notice a not-yet-due op and compute when it will be, per
+    // `crate::mailsync::task`'s own module docs on its fourth `select!` arm.
+    svc.notify_outbox(account_id);
+
+    settle_up_to(std::time::Duration::from_secs(60), || {
+        vault.op(op.id).map(|o| o.state == OpState::Done).unwrap_or(false)
+    })
+    .await;
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(30),
+        "took {elapsed:?} to drain a ten-second delay -- far too close to the five-minute poll"
+    );
 
     stop_tx.send(true).unwrap();
     handle.await.unwrap().unwrap();
@@ -1616,4 +1954,21 @@ async fn recategorize_mail_backfills_a_stale_category() {
     assert_eq!(changed, 1);
     let fixed = env.vault.mail_message(msg.id).unwrap();
     assert_eq!(fixed.category, Some(Category::Notification));
+}
+
+/// As [`settle`], but for a wait measured in real seconds rather than a
+/// handful of milliseconds -- what a test that genuinely needs wall-clock
+/// time to pass (a `not_before` some real duration out, checked against
+/// `jiff::Timestamp::now`, which no paused `tokio::time` clock touches)
+/// polls with instead.
+async fn settle_up_to(timeout: std::time::Duration, f: impl Fn() -> bool) {
+    let start = std::time::Instant::now();
+    loop {
+        if f() {
+            return;
+        }
+        assert!(start.elapsed() < timeout, "did not settle within {timeout:?}");
+        tokio::task::yield_now().await;
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }

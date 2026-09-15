@@ -25,6 +25,18 @@
 //! both of that `select!`'s branches, `continue`ing straight back round to
 //! the drain at the top rather than waiting out the rest of the poll or
 //! `IDLE` call.
+//!
+//! A fourth arm, [`sleep_until_due`], answers a moment none of those three
+//! cover: an op that is enqueued *not yet due* -- undo-send's five-to-thirty
+//! second window, send-at, a backed-off retry -- becomes due while this
+//! task is already parked in `IDLE` or the poll sleep, with nobody about to
+//! notify it and no reason for `IDLE` itself to fire. Without this, that op
+//! would simply wait for `POLL_INTERVAL` (five minutes) or the next
+//! unrelated wake to come around. [`next_pending_wake`] reads the earliest
+//! `not_before` still `Pending` for this account once per loop turn, and the
+//! `select!`s race a sleep to exactly that instant alongside their other
+//! arms -- `None`, when nothing is pending, is a branch that simply never
+//! wins.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -139,6 +151,14 @@ where
     let mut session = match connect(account.clone(), credential).await {
         Ok(session) => session,
         Err(MailError::Auth(reason)) => {
+            // The credential IMAP just rejected may be a cached access
+            // token that is merely stale -- forgotten so the *next* attempt
+            // (after the person signs in again, or on this same account's
+            // next restart) resolves a genuinely fresh one rather than
+            // handing out the same bad token again. See
+            // `crate::mailsync::sender`'s module docs for the equivalent
+            // reasoning on the SMTP side.
+            svc.token_cache().forget(&account_id.to_string()).await;
             credential::mark_needs_sign_in(&vault, &account, &reason);
             statuses.set_idle(account_id);
             return Ok(Outcome::Done);
@@ -178,6 +198,16 @@ where
     let outbox_notify = svc.outbox_notify(account_id);
     let sender = build_sender(account.clone(), svc.clone(), vault.clone());
 
+    // Before this task's very first drain: any op a previous run of this
+    // same account left `InFlight` -- stranded by a crash between claiming
+    // it and recording how it went -- goes back to work now, rather than
+    // sitting forever waiting for a drain that already happened. See
+    // `crate::outbox`'s own module docs for why nothing else ever notices.
+    if let Err(e) = crate::outbox::recover_inflight_ops(&svc, account_id, &mut session).await {
+        statuses.set_error(account_id, e.to_string());
+        return Err(e.to_string().into());
+    }
+
     loop {
         if *stop.borrow() {
             return Ok(Outcome::Done);
@@ -197,6 +227,7 @@ where
         {
             Ok(mailboxes) => mailboxes,
             Err(MailError::Auth(reason)) => {
+                svc.token_cache().forget(&account_id.to_string()).await;
                 credential::mark_needs_sign_in(&vault, &account, &reason);
                 statuses.set_idle(account_id);
                 return Ok(Outcome::Done);
@@ -212,6 +243,17 @@ where
         };
         credential::mark_ok(&vault, &account);
         statuses.set_phase(account_id, Phase::Idling, 0, 0);
+
+        // Undo-send and send-at are both a `Pending` op whose `not_before`
+        // is the only thing standing between it and a drain; so is a
+        // backed-off retry. Waiting out `POLL_INTERVAL` (or `IDLE`, which
+        // may not fire again for a while on a quiet mailbox) for one of
+        // those would mean a five-second undo window taking up to five
+        // minutes to actually send. `next_wake` is `None` whenever nothing
+        // is pending, in which case its branch below never fires -- exactly
+        // the outcome racing it against `stop`, a nudge and a notify already
+        // gives the other branches.
+        let next_wake = next_pending_wake(&vault, account_id).await;
 
         // `IDLE` on the inbox -- All Mail, on Gmail, since that is where its
         // messages physically live -- re-issued (inside `ImapSession::idle`
@@ -232,6 +274,7 @@ where
                 _ = stop.changed() => return Ok(Outcome::Done),
                 _ = nudged.changed() => continue,
                 () = outbox_notify.notified() => continue,
+                () = sleep_until_due(next_wake) => continue,
             }
         }
 
@@ -247,6 +290,7 @@ where
             _ = stop.changed() => return Ok(Outcome::Done),
             _ = nudged.changed() => continue,
             () = outbox_notify.notified() => continue,
+            () = sleep_until_due(next_wake) => continue,
             outcome = tokio::time::timeout(POLL_INTERVAL, session.idle(never_rx)) => {
                 match outcome {
                     Ok(Ok(IdleEvent::Activity | IdleEvent::Stopped)) => continue,
@@ -260,6 +304,38 @@ where
                 }
             }
         }
+    }
+}
+
+/// How long until `account_id`'s earliest still-[`OpState::Pending`] op is
+/// due, or `None` when the outbox has nothing pending at all --
+/// [`everyday_core::Vault::next_pending_op_at`] read once per loop turn and
+/// converted from a wall-clock instant to a duration the same way
+/// `crate::token_cache::deadline_from` converts a token's expiry, and
+/// clamped at zero for the same reason: a `not_before` that has already
+/// passed (the drain just above did not reach it because `DRAIN_BATCH`
+/// capped the page) must wake this `select!` at once, not underflow it.
+async fn next_pending_wake(vault: &Arc<Vault>, account_id: AccountId) -> Option<Duration> {
+    let at = crate::service::blocking({
+        let vault = vault.clone();
+        move || Ok(vault.next_pending_op_at(account_id)?)
+    })
+    .await
+    .ok()
+    .flatten()?;
+    let remaining = jiff::Timestamp::now().duration_until(at);
+    Some(if remaining.is_negative() { Duration::ZERO } else { remaining.unsigned_abs() })
+}
+
+/// The `select!` branch built from [`next_pending_wake`]'s answer: a real
+/// sleep when there is a due time to wake for, or a future that never
+/// completes when there is none, so omitting this branch's effect entirely
+/// needs no `if` around the `select!` itself -- [`std::future::pending`] is
+/// exactly as inert as leaving the arm out.
+async fn sleep_until_due(remaining: Option<Duration>) {
+    match remaining {
+        Some(d) => tokio::time::sleep(d).await,
+        None => std::future::pending().await,
     }
 }
 

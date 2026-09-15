@@ -679,6 +679,16 @@ pub struct Draft {
     /// forward-compatibility reason `server_copy` already has it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar_part: Option<DraftCalendarPart>,
+    /// The `Message-ID` minted for this draft's first send attempt, kept
+    /// stable across every retry -- see
+    /// `everyday_mail::outbox::Outgoing::message_id`'s own docs for why a
+    /// stable id is what lets a `Send` op recovered from `InFlight` ask the
+    /// server whether it already arrived rather than risking a duplicate.
+    /// `None` until a `Send` op has actually built this draft once;
+    /// `#[serde(default)]` so a draft sealed before this field existed
+    /// still decodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     pub origin: Origin,
     pub state: DraftState,
     pub created_at: Timestamp,
@@ -701,6 +711,7 @@ impl Draft {
             attachments: Vec::new(),
             server_copy: None,
             calendar_part: None,
+            message_id: None,
             origin,
             state: DraftState::Editing,
             created_at: now,

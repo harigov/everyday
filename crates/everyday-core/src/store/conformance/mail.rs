@@ -282,6 +282,13 @@ fn op_queue_ordering_and_not_before(store: &dyn JournalStore) {
     let account = AccountId::new();
     let now = Timestamp::now();
 
+    assert_eq!(
+        m.next_pending_op_at(account).unwrap(),
+        None,
+        "an account with no ops has nothing to wake for"
+    );
+    assert!(m.in_flight_ops(account).unwrap().is_empty());
+
     let due_first =
         Op::new(account, OpKind::Archive, OpTarget::Thread(ThreadId::new()), Origin::Person)
             .not_before(now - SignedDuration::from_secs(20));
@@ -312,13 +319,32 @@ fn op_queue_ordering_and_not_before(store: &dyn JournalStore) {
         "a person's op is not assistant-origin"
     );
 
-    // Transitioning an op out of `Pending` takes it out of `due_ops`.
+    // The earliest `not_before` among ops still `Pending` -- what the
+    // account task's `select!` sleeps until. The far-future op is included,
+    // since it is the earliest when nothing nearer is due yet. Compared by
+    // microsecond, the precision the clear column actually carries.
+    assert_eq!(
+        m.next_pending_op_at(account).unwrap().map(|t| t.as_microsecond()),
+        Some(due_first.not_before.as_microsecond()),
+        "the earliest not_before, due or not"
+    );
+
+    // Transitioning an op out of `Pending` takes it out of `due_ops` and out
+    // of `next_pending_op_at`, and into `in_flight_ops`.
     let mut in_flight = due_first.clone();
     in_flight.transition_to(OpState::InFlight).unwrap();
     m.update_op(&in_flight).unwrap();
     let due = m.due_ops(account, now, 10).unwrap();
     assert_eq!(due.len(), 1, "an in-flight op is no longer pending-due");
     assert_eq!(due[0].id, due_second.id);
+    assert_eq!(
+        m.next_pending_op_at(account).unwrap().map(|t| t.as_microsecond()),
+        Some(due_second.not_before.as_microsecond()),
+        "the in-flight op no longer counts"
+    );
+    let stranded = m.in_flight_ops(account).unwrap();
+    assert_eq!(stranded.len(), 1);
+    assert_eq!(stranded[0].id, due_first.id);
 
     cleanup_account(store, account);
 }

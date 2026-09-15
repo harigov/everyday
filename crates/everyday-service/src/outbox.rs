@@ -33,6 +33,22 @@
 //!    `not_before` is what actually paces retries and undo-send) once it
 //!    comes back short. See `crate::mailsync::task::drain_until_caught_up`.
 //!
+//! # Recovering from a crash mid-drain
+//!
+//! [`OpState::InFlight`] means "a drain claimed this op and has not yet
+//! said how it went" -- ordinarily a moment inside one loop iteration of
+//! [`drain_outbox`], between the `transition_to(InFlight)` near its top and
+//! the `Done`/`Pending`/`Failed` at its bottom. A crash, or the process
+//! simply being killed, in between leaves an op sitting there for good --
+//! nothing else ever moves an op *out* of `InFlight`, so without recovery
+//! it would wait forever for a drain that already happened.
+//! [`recover_inflight_ops`], called once by
+//! `crate::mailsync::task::run_account_with` before its very first drain,
+//! is that recovery: every `InFlight` op for the account goes back to
+//! `Pending`. A `Send` op gets one extra check, since the crash could have
+//! happened *after* SMTP already accepted the message -- see
+//! [`already_sent`].
+//!
 //! # A draft's server copy, and a reply's `References` chain
 //!
 //! Both used to be approximated here -- a stale server copy remembered only
@@ -120,10 +136,47 @@ where
         let mut ctx = ExecContext { session, sender, lookups: &lookups };
         match execute(&op, &mut ctx).await {
             Ok(executed) => {
-                on_success(svc, &vault, &op, executed).await?;
+                // The op's own state is durable *before* `on_success`'s
+                // follow-up writes run, not after: a `Send` or `AppendDraft`
+                // that reached the server has done the one thing this op
+                // promises, and a failure in `on_success` (the draft's own
+                // `save_draft`, say, racing a lock the person's compose
+                // window holds) must not leave the op stuck `InFlight` --
+                // see the module docs' recovery path for what that would
+                // otherwise cost on the very next restart.
                 op.transition_to(OpState::Done)?;
                 persist_op(&vault, &op).await?;
                 report.done += 1;
+                if let Err(e) = on_success(svc, &vault, &op, executed).await {
+                    tracing::warn!(
+                        error = %e,
+                        op = %op.id,
+                        "a mail op completed but its own follow-up write failed"
+                    );
+                }
+            }
+            Err(MailError::Auth(reason)) => {
+                // The credential this op just tried is no longer good --
+                // not a reason to give up on the op itself. A permanently
+                // failed `Send` reverses the draft back to `Editing` (see
+                // `on_permanent_failure`), which is wrong here: the person
+                // already asked for this to be sent, and the moment they
+                // sign back in it should simply go, not need asking again.
+                // So the op stays alive, `Pending` with the ordinary
+                // backoff, while the account itself is moved to
+                // `NeedsSignIn` -- the same state a credential failure at
+                // connect time already produces, just reached from deeper
+                // in an already-open session. See `crate::mailsync::sender`
+                // for the one retry-with-a-fresh-token this crate allows
+                // itself before ever surfacing `Auth` at all.
+                op.attempts += 1;
+                op.last_error = Some(reason.clone());
+                let backoff = everyday_core::mail::backoff_for_attempt(op.attempts);
+                op.not_before = Timestamp::now() + backoff;
+                op.transition_to(OpState::Pending)?;
+                persist_op(&vault, &op).await?;
+                mark_account_needs_sign_in(svc, &vault, account, &reason).await;
+                report.retried += 1;
             }
             Err(err) if is_retryable(&err) => {
                 op.attempts += 1;
@@ -149,10 +202,119 @@ where
     Ok(report)
 }
 
+/// Ops of `account`'s left [`OpState::InFlight`] by a crash mid-drain --
+/// called once, before the account task's very first
+/// [`drain_outbox`], so nothing sits waiting forever for a drain that
+/// already happened and will not come round again on its own; nothing else
+/// ever moves an op out of `InFlight`.
+///
+/// Every one goes back to [`OpState::Pending`] with `attempts` bumped, as
+/// if it had failed once -- which, in effect, it did: whatever ran it never
+/// got to say how it went. A [`OpKind::Send`] gets one extra check first,
+/// through [`already_sent`]: the crash could have happened *after* SMTP
+/// already accepted the message and before this process recorded that, in
+/// which case simply re-queuing it would send it twice.
+pub async fn recover_inflight_ops<S: MailSession>(
+    svc: &Arc<Service>,
+    account: AccountId,
+    session: &mut S,
+) -> CommandResult<()> {
+    let vault = svc.require()?;
+    let stranded = blocking({
+        let vault = vault.clone();
+        move || Ok(vault.in_flight_ops(account)?)
+    })
+    .await?;
+
+    for mut op in stranded {
+        if let OpTarget::Draft(id) = op.target
+            && matches!(op.kind, OpKind::Send)
+            && already_sent(&vault, session, id).await?
+        {
+            op.transition_to(OpState::Done)?;
+            persist_op(&vault, &op).await?;
+            if let Err(e) = mark_draft_sent(svc, &vault, id).await {
+                tracing::warn!(
+                    error = %e,
+                    op = %op.id,
+                    "a recovered send was found already on the server, but marking its draft sent failed"
+                );
+            }
+            continue;
+        }
+
+        op.attempts += 1;
+        op.last_error = Some("recovered after an interrupted drain".into());
+        op.transition_to(OpState::Pending)?;
+        persist_op(&vault, &op).await?;
+    }
+    Ok(())
+}
+
+/// Whether a recovered `Send` op's draft has already reached the server --
+/// asked of the server itself, via [`MailSession::search_message_id`],
+/// because local state is exactly what a crash mid-drain cannot be trusted
+/// to answer this from. Looks in Sent, or All Mail on Gmail (Sent is a
+/// label there, not a folder everything lands in the way a plain IMAP
+/// account's does -- the same split [`everyday_mail::smtp::needs_sent_append`]
+/// already draws). `false` -- "not found, or could not check" -- is the
+/// conservative answer either way: it sends again, which duplicates a
+/// message rather than silently dropping one, and a duplicate is the
+/// smaller mistake. A draft with no `message_id` yet was never actually
+/// built by [`everyday_mail::outbox::execute`] before the crash, so there
+/// is nothing a search could find; `false` without asking.
+async fn already_sent<S: MailSession>(
+    vault: &Arc<everyday_core::Vault>,
+    session: &mut S,
+    draft_id: DraftId,
+) -> CommandResult<bool> {
+    let vault_for_draft = vault.clone();
+    let draft = blocking(move || Ok(vault_for_draft.draft(draft_id)?)).await?;
+    let Some(message_id) = draft.message_id else { return Ok(false) };
+
+    let role = if session.capabilities().gmail { MailboxRole::All } else { MailboxRole::Sent };
+    let Some(mailbox_name) = special_use(vault, draft.account_id, role).await? else {
+        return Ok(false);
+    };
+
+    match session.search_message_id(&mailbox_name, &message_id).await {
+        Ok(found) => Ok(found.is_some()),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "could not check whether a recovered send already reached the server; sending again"
+            );
+            Ok(false)
+        }
+    }
+}
+
 async fn persist_op(vault: &Arc<everyday_core::Vault>, op: &Op) -> CommandResult<()> {
     let vault = vault.clone();
     let op = op.clone();
     blocking(move || Ok(vault.update_op(&op)?)).await
+}
+
+/// Move `account`'s own record to [`everyday_core::account::AccountStatus::NeedsSignIn`]
+/// after an op-level `Auth` failure -- the drain loop's own counterpart to
+/// `crate::mailsync::task`'s connect-time handling of the same error, reached
+/// from deeper inside an already-open session instead. Errors loading the
+/// account are swallowed: the op itself has already been kept alive by the
+/// caller regardless, and there is nothing more useful to do with a vault
+/// read failing here than there would be anywhere else in this best-effort
+/// path.
+async fn mark_account_needs_sign_in(
+    svc: &Arc<Service>,
+    vault: &Arc<everyday_core::Vault>,
+    account: AccountId,
+    reason: &str,
+) {
+    svc.token_cache().forget(&account.to_string()).await;
+    let vault_for_account = vault.clone();
+    let loaded = blocking(move || Ok(vault_for_account.account(account)?)).await;
+    if let Ok(acct) = loaded {
+        crate::mailsync::credential::mark_needs_sign_in(vault, &acct, reason);
+    }
 }
 
 /// What a successfully executed op does beyond marking itself `Done`:
@@ -168,26 +330,18 @@ async fn on_success(
 ) -> CommandResult<()> {
     match executed {
         Executed::Ok => Ok(()),
-        Executed::Sent { .. } => {
+        Executed::Sent { sent_append_error, .. } => {
             let OpTarget::Draft(id) = op.target else {
                 return Ok(()); // guarded by `everyday_mail::outbox::send`'s own contract
             };
-            let vault_for_draft = vault.clone();
-            let draft = blocking(move || {
-                let mut draft = vault_for_draft.draft(id)?;
-                draft.state = everyday_core::mail::DraftState::Sent;
-                draft.updated_at = Timestamp::now();
-                vault_for_draft.save_draft(&draft)?;
-                Ok(draft)
-            })
-            .await?;
-            if let Some(contacts) = svc.mail_contacts() {
-                for addr in draft.to.iter().chain(draft.cc.iter()) {
-                    contacts.record_sent_to(&addr.email, &addr.name);
-                }
-                contacts.persist_if_dirty(vault);
+            if let Some(note) = sent_append_error {
+                // The message itself is already gone by the time
+                // `everyday_mail::outbox::send` hands this back -- see that
+                // function's own docs for why this is a log line, not a
+                // failure.
+                tracing::warn!(op = %op.id, error = %note, "sent, but the Sent copy was not appended");
             }
-            Ok(())
+            mark_draft_sent(svc, vault, id).await
         }
         Executed::Appended { uid: Some(uid) } => {
             let OpTarget::Draft(id) = op.target else { return Ok(()) };
@@ -253,6 +407,34 @@ async fn on_permanent_failure(vault: &Arc<everyday_core::Vault>, op: &Op) -> Com
         // shape a future caller would need.
         _ => Ok(()),
     }
+}
+
+/// Mark draft `id` [`everyday_core::mail::DraftState::Sent`] and teach the
+/// contact index its recipients -- the write a `Send` op's own success makes
+/// true, and also what [`recover_inflight_ops`] applies directly once
+/// [`already_sent`] has confirmed a recovered send without this process
+/// having run [`everyday_mail::outbox::execute`] for it at all this time.
+async fn mark_draft_sent(
+    svc: &Arc<Service>,
+    vault: &Arc<everyday_core::Vault>,
+    id: DraftId,
+) -> CommandResult<()> {
+    let vault_for_draft = vault.clone();
+    let draft = blocking(move || {
+        let mut draft = vault_for_draft.draft(id)?;
+        draft.state = everyday_core::mail::DraftState::Sent;
+        draft.updated_at = Timestamp::now();
+        vault_for_draft.save_draft(&draft)?;
+        Ok(draft)
+    })
+    .await?;
+    if let Some(contacts) = svc.mail_contacts() {
+        for addr in draft.to.iter().chain(draft.cc.iter()) {
+            contacts.record_sent_to(&addr.email, &addr.name);
+        }
+        contacts.persist_if_dirty(vault);
+    }
+    Ok(())
 }
 
 async fn special_use(
@@ -381,6 +563,18 @@ impl Lookups for VaultLookups {
     fn draft(&self, id: DraftId) -> everyday_mail::session::Result<Draft> {
         let vault = self.vault().map_err(lookup_err)?;
         vault.draft(id).map_err(vault_err)
+    }
+
+    fn set_draft_message_id(
+        &self,
+        id: DraftId,
+        message_id: &str,
+    ) -> everyday_mail::session::Result<()> {
+        let vault = self.vault().map_err(lookup_err)?;
+        let mut draft = vault.draft(id).map_err(vault_err)?;
+        draft.message_id = Some(message_id.to_string());
+        draft.updated_at = Timestamp::now();
+        vault.save_draft(&draft).map_err(vault_err)
     }
 
     fn draft_server_copy(&self, id: DraftId) -> everyday_mail::session::Result<Option<Located>> {

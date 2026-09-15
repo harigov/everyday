@@ -499,6 +499,25 @@ impl MailSession for ImapSession {
         }
     }
 
+    /// `UID SEARCH HEADER Message-ID "<message_id>"` in `mailbox` --
+    /// `SELECT`ed first, since `SEARCH` acts on whatever mailbox is
+    /// current. `HEADER` search is a substring match per RFC 3501, and
+    /// [`crate::compose::build`]'s minted ids are random enough that a
+    /// substring match against the bare id (no angle brackets -- those are
+    /// the wire encoding, not part of the id this crate compares against)
+    /// is as exact as a full match would be. The first hit is returned when
+    /// more than one somehow matches; recovering from a stranded `Send` --
+    /// the one caller of this method -- only ever needs to know "is it
+    /// there at all".
+    async fn search_message_id(&mut self, mailbox: &str, message_id: &str) -> Result<Option<Uid>> {
+        self.select(mailbox).await?;
+        let session = self.session_mut()?;
+        let query = format!("HEADER Message-ID \"{message_id}\"");
+        let found: std::collections::HashSet<Uid> =
+            session.uid_search(&query).await.map_err(classify)?;
+        Ok(found.into_iter().next())
+    }
+
     async fn idle(&mut self, mut stop: watch::Receiver<()>) -> Result<IdleEvent> {
         if !self.capabilities.idle {
             return Err(MailError::Unsupported("IDLE"));
@@ -600,10 +619,25 @@ async fn connect_with(
     let raw_caps = session.capabilities().await.map_err(classify)?;
     let capabilities = capabilities_from(&raw_caps);
     let special_use = raw_caps.has_str("SPECIAL-USE");
+    let enable = raw_caps.has_str("ENABLE");
     drop(raw_caps);
 
-    if capabilities.condstore {
-        session.run_command_and_check_ok("ENABLE CONDSTORE").await.map_err(classify)?;
+    if wants_enable_condstore(capabilities.condstore, enable) {
+        // A `BAD`/`NO` answer here is not fatal: `CONDSTORE` itself was
+        // already advertised in `CAPABILITY`, and RFC 7162 §4 lets a client
+        // reach the same state through `SELECT (CONDSTORE)` (already what
+        // `ImapSession::select` sends when `capabilities.condstore` is set)
+        // without `ENABLE` ever having succeeded. A server that lets
+        // `CONDSTORE` slip into its capability list without also honouring
+        // `ENABLE` for it -- the bug this guards against -- would otherwise
+        // fail every connection outright over a command this crate never
+        // strictly needed to send.
+        if let Err(e) = session.run_command_and_check_ok("ENABLE CONDSTORE").await {
+            tracing::warn!(
+                error = %classify(e),
+                "the server refused ENABLE CONDSTORE; continuing without it"
+            );
+        }
     }
 
     Ok(ImapSession { session: Some(session), capabilities, special_use, selected: None })
@@ -865,6 +899,17 @@ fn append_uid(code: Option<&ResponseCode<'_>>) -> Option<Uid> {
     }
 }
 
+/// Whether connect-time setup should send `ENABLE CONDSTORE` at all --
+/// only when the server both offers `CONDSTORE` (RFC 7162) and advertises
+/// `ENABLE` (RFC 5161) to send it through. A server that has one without
+/// the other is not asked for a command it never offered: a `CONDSTORE`
+/// server with no `ENABLE` still works, since `ImapSession::select` reaches
+/// the same state with `SELECT (CONDSTORE)` regardless of whether `ENABLE`
+/// ever ran.
+fn wants_enable_condstore(condstore: bool, enable: bool) -> bool {
+    condstore && enable
+}
+
 fn capabilities_from(raw: &async_imap::types::Capabilities) -> Capabilities {
     Capabilities {
         condstore: raw.has_str("CONDSTORE"),
@@ -1008,6 +1053,17 @@ fn classify_auth(err: ImapLibError) -> MailError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enable_condstore_is_sent_only_when_both_are_advertised() {
+        assert!(wants_enable_condstore(true, true));
+        assert!(
+            !wants_enable_condstore(true, false),
+            "CONDSTORE without ENABLE must not be sent a command the server never offered"
+        );
+        assert!(!wants_enable_condstore(false, true));
+        assert!(!wants_enable_condstore(false, false));
+    }
 
     #[test]
     fn uid_set_encodes_ranges() {

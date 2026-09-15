@@ -108,6 +108,7 @@ mod live {
             references: Vec::new(),
             message_id_domain: "example.com".to_string(),
             calendar: None,
+            message_id: None,
         }
     }
 

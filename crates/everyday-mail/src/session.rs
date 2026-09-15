@@ -639,6 +639,19 @@ pub trait MailSession: Send {
     /// guessed at here.
     async fn append(&mut self, mailbox: &str, raw: &[u8], flags: Flags) -> Result<Option<Uid>>;
 
+    /// Find a message by its `Message-ID` header in `mailbox`, `SELECT`ing
+    /// it first -- `UID SEARCH HEADER Message-ID`, or its adapter's
+    /// equivalent. `None` when nothing matches.
+    ///
+    /// The one caller is the outbox's recovery from a `Send` op left
+    /// `InFlight` by a crash: the message may already have reached SMTP
+    /// before the crash, in which case re-sending it would duplicate it, so
+    /// recovery asks the server directly whether the draft's (stable, see
+    /// [`crate::compose::Outgoing::message_id`]) id is already there rather
+    /// than trusting local state alone, which is exactly what a crash mid
+    /// drain means it cannot.
+    async fn search_message_id(&mut self, mailbox: &str, message_id: &str) -> Result<Option<Uid>>;
+
     /// Block until something changes in the selected mailbox, or `stop`
     /// fires. Returns [`Err`] only for a connection problem; a clean stop is
     /// [`IdleEvent::Stopped`], not an error.
