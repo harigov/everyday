@@ -133,8 +133,11 @@ const IDLE_REISSUE: Duration = Duration::from_secs(25 * 60);
 /// [`async_imap::Session::idle`] takes the session *by value* and hands it
 /// back on [`async_imap::extensions::idle::Handle::done`] — see
 /// [`ImapSession::idle`]. Every other method takes it out with
-/// [`ImapSession::session_mut`] and never sees it missing, because nothing
-/// else in this type gives it up.
+/// [`ImapSession::session_mut`] and, in the ordinary run of things, never
+/// sees it missing, because nothing else in this type gives it up and
+/// [`ImapSession::idle`] itself only ever returns once the session is back
+/// — see that method's own docs on why the caller feeding it a wake signal,
+/// rather than racing the call outright, is what makes that promise good.
 pub struct ImapSession {
     session: Option<ImapLibSession<TlsStream>>,
     capabilities: Capabilities,
@@ -150,16 +153,26 @@ pub struct ImapSession {
 }
 
 impl ImapSession {
+    /// [`MailError::Network`], not [`MailError::Protocol`] — defence in
+    /// depth, not the expected path. A caller that always lets
+    /// [`ImapSession::idle`] finish before doing anything else should never
+    /// actually see this: a missing session here means some future bug
+    /// elsewhere gave up on the call early, and the closest honest answer
+    /// this crate has for that is "no connection is available right now" —
+    /// the same shape a dropped socket already reports — so the drain loop
+    /// retries with backoff (see `is_retryable`) rather than permanently
+    /// failing an op and reversing a person's own action over what is, from
+    /// here, indistinguishable from an ordinary reconnect.
+    fn missing_session() -> MailError {
+        MailError::Network("no IMAP connection is available right now".into())
+    }
+
     fn session_mut(&mut self) -> Result<&mut ImapLibSession<TlsStream>> {
-        self.session.as_mut().ok_or_else(|| {
-            MailError::Protocol("the session is mid-IDLE and was not returned".into())
-        })
+        self.session.as_mut().ok_or_else(Self::missing_session)
     }
 
     fn take_session(&mut self) -> Result<ImapLibSession<TlsStream>> {
-        self.session.take().ok_or_else(|| {
-            MailError::Protocol("the session is mid-IDLE and was not returned".into())
-        })
+        self.session.take().ok_or_else(Self::missing_session)
     }
 
     async fn fetch_raw_batch(&mut self, batch: &UidSet) -> Result<Vec<(Uid, Vec<u8>)>> {
@@ -1055,6 +1068,30 @@ fn classify_auth(err: ImapLibError) -> MailError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The regression for "cancelling IDLE loses the IMAP connection"'s
+    /// defence-in-depth half: a session found missing (this test's own
+    /// stand-in for the moment [`ImapSession::idle`] used to be cancelled
+    /// mid-flight, dropping the connection with it) must read as
+    /// [`MailError::Network`] -- retryable -- never
+    /// [`MailError::Protocol`], which the drain loop treats as permanent
+    /// and reverses the person's own action over.
+    #[test]
+    fn a_missing_session_is_retryable_not_a_permanent_protocol_error() {
+        let mut session = ImapSession {
+            session: None,
+            capabilities: Capabilities::default(),
+            special_use: false,
+            selected: None,
+        };
+        let err = session.session_mut().unwrap_err();
+        assert!(matches!(err, MailError::Network(_)), "{err:?}");
+        assert!(crate::outbox::is_retryable(&err));
+
+        let err = session.take_session().unwrap_err();
+        assert!(matches!(err, MailError::Network(_)), "{err:?}");
+        assert!(crate::outbox::is_retryable(&err));
+    }
 
     #[test]
     fn enable_condstore_is_sent_only_when_both_are_advertised() {

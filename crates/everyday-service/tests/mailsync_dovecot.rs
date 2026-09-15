@@ -626,12 +626,22 @@ async fn write_actions_sync_through_a_real_server() {
         .expect("draining the move op");
     assert_eq!(report.failed, 0, "{report:?}");
 
+    // Checked by searching for this test's own `Message-ID`, not a raw
+    // `EXISTS` count -- this suite's other tests share the same real
+    // account's `INBOX`, so a bare count is only reliably this test's own
+    // the instant nothing else happens to be mid-flight through it too.
     let mut verify_session = connect(&cfg).await;
-    let inbox_state = verify_session.select("INBOX").await.expect("SELECT INBOX");
-    assert_eq!(inbox_state.exists, 0, "the message should have left INBOX on the server");
-    let archive_state =
-        verify_session.select(&archive_folder).await.expect("SELECT the archive folder");
-    assert_eq!(archive_state.exists, 1, "and landed in the archive folder on the server");
+    let inbox_message_id_full = format!("{inbox_message_id}@everyday-mail.test");
+    let still_in_inbox = verify_session
+        .search_message_id("INBOX", &inbox_message_id_full)
+        .await
+        .expect("SEARCH INBOX");
+    assert!(still_in_inbox.is_none(), "the message should have left INBOX on the server");
+    let in_archive = verify_session
+        .search_message_id(&archive_folder, &inbox_message_id_full)
+        .await
+        .expect("SEARCH the archive folder");
+    assert!(in_archive.is_some(), "and landed in the archive folder on the server");
 
     // ---- reply, send, and verify delivery and the Sent copy ----
     let reply_subject = unique_subject("reply");
@@ -688,6 +698,158 @@ async fn write_actions_sync_through_a_real_server() {
         !threads.is_empty(),
         "the reply should be searchable once the next sync has indexed the Sent copy: {found}"
     );
+}
+
+// ---------------------------------------------------------------------
+// Cancelling IDLE must not lose the connection (finding 1)
+// ---------------------------------------------------------------------
+
+/// The regression for "cancelling IDLE loses the IMAP connection": this
+/// drives the real per-account task -- `run_account_with`, not
+/// `passes::sync_once` directly -- against the real Dovecot server, lets it
+/// settle into `IDLE` on a quiet mailbox, and then archives a thread while
+/// it is sitting there. An outbox notification wakes the task's own
+/// `select!` mid-`IDLE`; before this fix, that wake dropped the idle future
+/// (and the connection with it), and the archive op that followed failed
+/// permanently with a "mid-IDLE" protocol error instead of ever reaching
+/// the server. With the fix, `IDLE` ends cleanly through its own wake
+/// channel, the connection survives, and the op both completes and is
+/// reflected on the server.
+#[tokio::test]
+async fn archiving_while_the_task_is_idling_succeeds_and_the_server_reflects_it() {
+    let Some(cfg) = config() else { return };
+
+    let unique = format!("idle-archive-{}", std::process::id());
+    let archive_folder = format!("EverydayIdleArchive{unique}");
+
+    let mut seed_session = connect(&cfg).await;
+    seed_session.create_mailbox(&archive_folder).await.expect("CREATE the archive folder");
+    let raw = plain_message("Archive me while the task is idling", &unique, None, "archive me");
+    seed_session.append("INBOX", &raw, Flags::NONE).await.expect("APPEND to INBOX");
+    drop(seed_session);
+
+    let (svc, _dir) = support::vault::service(None);
+    let vault = svc.get().unwrap();
+
+    let mut account = Account::new(Provider::Custom, "everyday@example.com");
+    account.auth = AuthMethod::Password { username: cfg.user.clone() };
+    account.imap.host = cfg.host.clone();
+    account.imap.port = cfg.tls_port;
+    let account_id = account.id;
+    vault.save_account(&account).unwrap();
+    vault
+        .save_account_secret(
+            account_id,
+            &AccountSecret { password: Some(cfg.pass.clone()), ..Default::default() },
+        )
+        .unwrap();
+
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let svc_task = svc.clone();
+    let vault_task = vault.clone();
+    let handle = tokio::spawn(async move {
+        everyday_service::mailsync::task::run_account_with(
+            svc_task,
+            vault_task,
+            account_id,
+            stop_rx,
+            |account: Account, credential: Credential| async move {
+                imap::connect_insecure_for_tests(
+                    &account.imap.host,
+                    account.imap.port,
+                    Security::Tls,
+                    credential,
+                )
+                .await
+            },
+            everyday_service::mailsync::sender::LazySmtpSender::new,
+        )
+        .await
+    });
+
+    // Let the task connect, run its first sync, drain its (empty) outbox,
+    // and settle into `IDLE` on the real connection.
+    let mut idling = false;
+    for _ in 0..40 {
+        idling = svc.mail_statuses().unwrap().all().iter().any(|p| {
+            p.account_id == account_id
+                && p.phase == everyday_service::mailsync::status::Phase::Idling
+        });
+        if idling {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    assert!(idling, "the task never reached IDLE");
+
+    let thread_id = vault
+        .message_by_message_id_header(account_id, &format!("{unique}@everyday-mail.test"))
+        .unwrap()
+        .expect("the seeded message should have synced before IDLE")
+        .thread_id;
+    // Dovecot's plain `CREATE` tags nothing `SPECIAL-USE`, so
+    // `discover`d it with `MailboxRole::Other`; `archive` refuses without
+    // an Archive-role mailbox to move into (see
+    // `everyday_mail::outbox::archive`), and `discovery::discover` never
+    // overwrites a mailbox row's role once one exists -- see that module's
+    // own docs -- so setting it here, once, by hand is exactly what a real
+    // account would instead get from the server's own `SPECIAL-USE`
+    // attribute.
+    let mut archive_mailbox = vault
+        .mailboxes(account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.remote_name == archive_folder)
+        .expect("the archive folder should have synced as a mailbox row");
+    archive_mailbox.role = everyday_core::mail::MailboxRole::Archive;
+    vault.save_mailbox(&archive_mailbox).unwrap();
+
+    // Archive while the task is genuinely sitting in `IDLE` -- the command
+    // surface's own `notify_outbox` (see `domains::mail::batch_op`) is what
+    // wakes the `select!` this whole test exists to exercise.
+    let ops = call(&svc, "archive", serde_json::json!({ "threads": [thread_id] })).await;
+    let op_id: everyday_core::id::OpId =
+        ops.as_array().unwrap()[0]["id"].as_str().unwrap().parse().unwrap();
+
+    let mut state = None;
+    for _ in 0..40 {
+        let op = vault.op(op_id).unwrap();
+        if !matches!(
+            op.state,
+            everyday_core::mail::OpState::Pending | everyday_core::mail::OpState::InFlight
+        ) {
+            state = Some(op.state);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    assert_eq!(
+        state,
+        Some(everyday_core::mail::OpState::Done),
+        "the archive op must complete, not fail over a lost mid-IDLE connection"
+    );
+
+    stop_tx.send(true).unwrap();
+    let outcome = handle.await.unwrap();
+    assert!(
+        outcome.is_ok(),
+        "the task must not have errored out over a lost connection: {outcome:?}"
+    );
+
+    // Checked by searching for this test's own `Message-ID`, not a raw
+    // `EXISTS` count -- this suite's other tests share the same real
+    // account's `INBOX`, so a bare count is only ever this test's own the
+    // instant nothing else happens to be mid-flight through it too.
+    let mut verify_session = connect(&cfg).await;
+    let message_id = format!("{unique}@everyday-mail.test");
+    let still_in_inbox =
+        verify_session.search_message_id("INBOX", &message_id).await.expect("SEARCH INBOX");
+    assert!(still_in_inbox.is_none(), "the message must have left INBOX on the server");
+    let in_archive = verify_session
+        .search_message_id(&archive_folder, &message_id)
+        .await
+        .expect("SEARCH the archive folder");
+    assert!(in_archive.is_some(), "and landed in the archive folder on the server");
 }
 
 // ---------------------------------------------------------------------

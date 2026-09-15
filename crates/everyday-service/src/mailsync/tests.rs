@@ -169,10 +169,10 @@ struct FakeMailSession {
     server: Arc<Mutex<FakeServer>>,
     selected: Option<String>,
     /// When set, [`FakeMailSession::idle`] never returns on its own --
-    /// simulating a live `IDLE` connection that only ends when the caller's
-    /// own `tokio::select!` drops it. Off by default: every sync-pass test
-    /// wants `idle` to answer immediately, and only the task-level tests
-    /// that actually exercise `IDLE`'s own `select!` (see
+    /// simulating a live `IDLE` connection that only ends when its own
+    /// `stop` signal fires. Off by default: every sync-pass test wants
+    /// `idle` to answer immediately, and only the task-level tests that
+    /// actually exercise `crate::mailsync::task`'s own wake channel (see
     /// `a_notify_wakes_the_idle_loop_promptly_rather_than_waiting_for_the_poll`)
     /// need the alternative.
     block_idle: bool,
@@ -406,12 +406,18 @@ impl MailSession for FakeMailSession {
             .map(|(&uid, _)| uid))
     }
 
-    async fn idle(&mut self, _stop: tokio::sync::watch::Receiver<()>) -> SessionResult<IdleEvent> {
+    async fn idle(
+        &mut self,
+        mut stop: tokio::sync::watch::Receiver<()>,
+    ) -> SessionResult<IdleEvent> {
         if self.block_idle {
-            // Never resolves on its own -- see `block_idle`'s own docs. The
-            // caller's `tokio::select!` is what ends this, by dropping the
-            // future, exactly as a real `IDLE` connection is torn down.
-            std::future::pending::<()>().await;
+            // Blocks until the caller's own wake signal fires -- see
+            // `block_idle`'s own docs -- then ends cleanly, exactly the
+            // guarantee a real `ImapSession::idle` gives: `stop` is fed
+            // *into* this call by `crate::mailsync::task` rather than
+            // raced against it, so the connection (nothing to lose here,
+            // but the session in a real adapter) survives every wake.
+            let _ = stop.changed().await;
         }
         Ok(IdleEvent::Stopped)
     }
