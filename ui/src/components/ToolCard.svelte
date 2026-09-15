@@ -24,11 +24,32 @@
    * is never wrong.
    */
   const phrase = $derived(card.name.replaceAll('_', ' '))
+
+  /**
+   * Whether this card is asking about something leaving the vault --
+   * sending mail -- rather than something being removed. Drawn in its own
+   * colour and with its own question, because the two are different kinds
+   * of decision: one asks "can this be undone" and the other asks "should
+   * this reach them at all". See `ConfirmKind` in `lib/types.ts`.
+   */
+  const outward = $derived(card.confirmKind === 'outward')
+  const ask = $derived(
+    outward
+      ? 'This will reach somebody outside the vault.'
+      : card.confirmKind === 'search'
+        ? 'This would send words from mail just read to a search provider.'
+        : 'This cannot be undone.',
+  )
 </script>
 
-<div class="card" class:waiting={card.state === 'waiting'} class:bad={card.state === 'failed'}>
+<div
+  class="card"
+  class:waiting={card.state === 'waiting'}
+  class:outward
+  class:bad={card.state === 'failed'}
+>
   <div class="row">
-    <span class="dot" data-state={card.state}></span>
+    <span class="dot" data-state={card.state} class:outward></span>
     <span class="what">
       {phrase}
       {#if card.subject}<b>{card.subject}</b>{/if}
@@ -43,12 +64,12 @@
   </div>
 
   {#if card.state === 'waiting'}
-    <p class="ask">This cannot be undone.</p>
+    <p class="ask">{ask}</p>
     <div class="answer">
       <button class="no" onclick={() => onanswer(false)}>Don't</button>
-      <button class="yes" onclick={() => onanswer(true)}>
-        <Icon name="trash" size={13} />
-        Delete
+      <button class="yes" class:outward onclick={() => onanswer(true)}>
+        <Icon name={outward ? 'mail' : 'trash'} size={13} />
+        {outward ? 'Send' : 'Delete'}
       </button>
     </div>
   {/if}
@@ -66,6 +87,15 @@
   .card.waiting {
     border-color: var(--danger);
     background: color-mix(in oklab, var(--danger) 7%, var(--bg-raised));
+  }
+  /* Sending mail is a different kind of decision from a delete -- nothing
+     is destroyed, so the red the delete card reaches for would say the
+     wrong thing. The accent colour is what the rest of the interface
+     already uses for "this is on its way to happen", which is exactly
+     what a queued send is. */
+  .card.waiting.outward {
+    border-color: var(--accent);
+    background: color-mix(in oklab, var(--accent) 7%, var(--bg-raised));
   }
   .card.bad {
     border-color: color-mix(in oklab, var(--danger) 45%, var(--border));
@@ -113,6 +143,9 @@
   .dot[data-state='failed'],
   .dot[data-state='waiting'] {
     background: var(--danger);
+  }
+  .dot[data-state='waiting'].outward {
+    background: var(--accent);
   }
   @keyframes pulse {
     0%,
@@ -163,6 +196,9 @@
     border: 1px solid transparent;
     background: var(--danger);
     color: #fff;
+  }
+  .yes.outward {
+    background: var(--accent);
   }
   .yes:hover {
     filter: brightness(1.08);

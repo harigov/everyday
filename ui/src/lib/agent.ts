@@ -19,7 +19,7 @@
 // whether a base URL is this machine decides whether the panel says "ready"
 // without a key.
 
-import type { AgentEvent, AgentMessage } from './types'
+import type { AgentEvent, AgentMessage, ConfirmKind } from './types'
 
 /**
  * One tool call as the panel draws it.
@@ -37,6 +37,13 @@ export interface ToolCard {
   summary: string
   /** What is about to be destroyed, on a card waiting to be told. */
   subject: string
+  /**
+   * Why a `waiting` card is asking -- `null` until it is one. Drawn
+   * differently per kind: `'destructive'` and `'search'` read as a
+   * warning, `'outward'` (sending mail) reads as a different kind of
+   * decision entirely. See `ConfirmKind`.
+   */
+  confirmKind: ConfirmKind | null
 }
 
 /** A turn in the panel: what was said, and what ran while it was said. */
@@ -88,6 +95,7 @@ export function applyEvent(turn: Turn, event: AgentEvent): void {
           state: 'running',
           summary: '',
           subject: '',
+          confirmKind: null,
         })
       break
     }
@@ -100,6 +108,7 @@ export function applyEvent(turn: Turn, event: AgentEvent): void {
         state: 'waiting',
         summary: '',
         subject: event.subject,
+        confirmKind: event.kind,
       })
       break
 
@@ -160,6 +169,7 @@ export function replay(messages: AgentMessage[]): Turn[] {
           state: 'done' as const,
           summary: '',
           subject: '',
+          confirmKind: null,
         })),
       })
       continue

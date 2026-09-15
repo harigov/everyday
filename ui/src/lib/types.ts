@@ -2203,6 +2203,16 @@ export interface Memory {
 }
 
 /**
+ * Why a `confirmationRequired` event is asking: `'destructive'` removes
+ * something with no undo, `'outward'` reaches somebody who is not the
+ * vault's owner (sending mail), and `'search'` is `web_search` asked about
+ * after mail was read this turn -- see `agent::tools::mail`'s module docs
+ * in the Rust core for the whole of the reasoning behind each.
+ */
+export const CONFIRM_KINDS = ['destructive', 'outward', 'search'] as const
+export type ConfirmKind = (typeof CONFIRM_KINDS)[number]
+
+/**
  * One thing that happened during a turn.
  *
  * Arrives over a channel as the turn runs rather than all at once at the end
@@ -2220,6 +2230,8 @@ export type AgentEvent =
       name: string
       subject: string
       arguments: unknown
+      /** Why this is being asked -- see `ConfirmKind` below. */
+      kind: ConfirmKind
     }
   | { type: 'finished'; messageId: MessageId }
   | { type: 'failed'; message: string }

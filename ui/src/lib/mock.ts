@@ -4563,6 +4563,7 @@ export async function mockSendMessage(
       name: 'delete_task',
       subject: 'Order the timber',
       arguments: { task_id: '0192f3a1-mock' },
+      kind: 'destructive',
     })
     const approved = await new Promise<boolean>((resolve) => mockPending.set(callId, resolve))
     if (approved) {
