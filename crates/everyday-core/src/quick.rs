@@ -536,7 +536,10 @@ fn kind_schema() -> Value {
             "source": {
                 "type": "string",
                 "description": "Which catalogue suits this shelf best.",
-                "enum": ["web", "wikipedia", "openLibrary", "itunes", "nominatim"]
+                // Built from the sources themselves rather than typed out, so
+                // that a catalogue added to `websearch::Source` is one the
+                // model may choose the same day.
+                "enum": crate::websearch::Source::ALL.map(|s| s.slug()).to_vec()
             }
         },
         "required": ["icon", "color", "wishlistVerb", "activeVerb", "doneVerb", "itemNoun", "fields", "source"],

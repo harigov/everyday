@@ -294,9 +294,16 @@ assert.equal(mailboxHasTabs(undefined), false)
 
 // ── Bug 3: telling the backend to hide (or show) snoozed threads ────────
 
-assert.equal(isSnoozedMailbox({ remoteName: 'Snoozed' }), true)
+assert.equal(isSnoozedMailbox({ remoteName: 'Snoozed', pseudo: 'snoozed' }), true)
 assert.equal(isSnoozedMailbox({ remoteName: 'Inbox' }), false)
-assert.equal(isSnoozedMailbox({ remoteName: 'Starred' }), false, 'a different pseudo-mailbox')
+assert.equal(
+  isSnoozedMailbox({ remoteName: 'Starred', pseudo: 'starred' }),
+  false,
+  'a different pseudo-mailbox',
+)
+// A real server folder that happens to share the name (Spark makes one) is
+// a folder: asking for only its snoozed threads would show it empty.
+assert.equal(isSnoozedMailbox({ remoteName: 'Snoozed' }), false, 'a real folder named Snoozed')
 assert.equal(isSnoozedMailbox(null), false, 'no mailbox selected yet')
 assert.equal(isSnoozedMailbox(undefined), false)
 

@@ -293,7 +293,12 @@ impl MailIndex {
             // `MailIndex::open` always treated an unopenable index, per its
             // own docs, rather than propagated.
             OpenOutcome::SchemaOrDataUnreadable => {
-                clear_dir(dir)?;
+                // Unreadable to *this* build is not proof nobody is using
+                // it: an older build still running has a writer on it. The
+                // wipe only happens under the writer lock; see `clear_dir`.
+                if !clear_dir(dir, cipher.clone(), cache_bytes)? {
+                    return Ok((fields, None, false));
+                }
                 match Self::open_once(dir, cipher, cache_bytes, schema)? {
                     OpenOutcome::Ready(opened) => Ok((fields, Some(*opened), true)),
                     OpenOutcome::SchemaOrDataUnreadable
@@ -514,7 +519,19 @@ impl MailSearch for MailIndex {
         // could never succeed, no matter how many messages were pushed
         // through `index`, because nothing ever created a fresh index on
         // disk for them to land in.
-        clear_dir(&self.dir)?;
+        //
+        // Only under the writer lock, though. `rebuild_needed()` is also
+        // true when another process simply has the index open, and wiping
+        // then deletes a live writer's files and its lock out from under it
+        // -- after which this process locks a fresh lock file without
+        // trouble and two writers share one directory.
+        if !clear_dir(&self.dir, self.cipher.clone(), self.cache_bytes)? {
+            return Err(Error::Invalid(
+                "the mail search index is open in another Every Day process; \
+                 close that one and try again"
+                    .into(),
+            ));
+        }
 
         // `try_open`'s own `healed_on_open` is not read here: `self.dir` was
         // just wiped by this same call a few lines up, so `Index::exists`
@@ -540,18 +557,49 @@ impl MailSearch for MailIndex {
     }
 }
 
-/// Remove everything [`SealedDirectory::open`] put at `dir` and recreate it
-/// empty -- the on-disk half of [`MailIndex::rebuild_empty`]. `dir` not
-/// existing at all is not an error: there is nothing to remove, and it is
-/// recreated regardless so the reopen right after this has somewhere to
-/// write to.
-fn clear_dir(dir: &Path) -> Result<()> {
-    match std::fs::remove_dir_all(dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(Error::io(dir, e)),
+/// Remove everything [`SealedDirectory::open`] put at `dir` and leave it
+/// empty -- the on-disk half of [`MailIndex::rebuild_empty`] and of
+/// self-healing on open. `dir` not existing at all is not an error: it is
+/// created, so the reopen right after this has somewhere to write to.
+///
+/// Returns `false`, having touched nothing, when another handle holds
+/// tantivy's writer lock. The lock is taken *through* the sealed directory,
+/// exactly as a writer takes it, and held for the whole wipe; the lock file
+/// itself is the one entry left in place, because deleting a file somebody
+/// is locking is how a second writer comes to lock a different file of the
+/// same name and believe it is alone.
+fn clear_dir(dir: &Path, cipher: Arc<dyn Cipher>, cache_bytes: usize) -> Result<bool> {
+    use tantivy::Directory;
+    use tantivy::directory::INDEX_WRITER_LOCK;
+    use tantivy::directory::error::LockError;
+
+    let directory = SealedDirectory::open(dir, cipher, cache_bytes)?;
+    let _writer = match directory.acquire_lock(&INDEX_WRITER_LOCK) {
+        Ok(lock) => lock,
+        Err(LockError::LockBusy) => return Ok(false),
+        Err(LockError::IoError(e)) => {
+            return Err(Error::io(dir, std::io::Error::new(e.kind(), e.to_string())));
+        }
+    };
+    let entries = std::fs::read_dir(dir).map_err(|e| Error::io(dir, e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| Error::io(dir, e))?;
+        if entry.file_name() == INDEX_WRITER_LOCK.filepath.as_os_str() {
+            continue;
+        }
+        let path = entry.path();
+        let removed = if entry.file_type().map_err(|e| Error::io(&path, e))?.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        match removed {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(Error::io(&path, e)),
+        }
     }
-    std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))
+    Ok(true)
 }
 
 fn schema_field_name(schema: &tantivy::schema::Schema, field: tantivy::schema::Field) -> &str {

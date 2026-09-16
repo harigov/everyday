@@ -680,7 +680,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     label: 'Starred',
     group: 'Mail',
     when: () => anywhere() && inApp('mail')(),
-    run: () => void selectMailboxByName('Starred'),
+    run: () => void selectPseudoMailbox('starred'),
   },
   {
     keys: 'g d',
@@ -1110,8 +1110,10 @@ function selectMailboxByRole(role: 'inbox' | 'drafts' | 'sent') {
 
 /** `g s`: the pseudo-mailbox by name -- see `mock-mail.ts`'s own note on
  *  why "Starred" is not a real IMAP mailbox yet. */
-function selectMailboxByName(name: string) {
-  const box = mail.mailboxes.find((m) => m.remoteName === name)
+/** By `Mailbox.pseudo`, not by name -- a real folder called "Starred" is a
+ *  folder, not the view this shortcut means. */
+function selectPseudoMailbox(pseudo: 'starred' | 'snoozed') {
+  const box = mail.mailboxes.find((m) => m.pseudo === pseudo)
   if (box) void mail.selectMailbox(box.id)
 }
 

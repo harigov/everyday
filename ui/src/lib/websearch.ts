@@ -44,7 +44,7 @@ function errorMessage(e: unknown): string {
 /**
  * What a source is called, from the slug an item or a shelf stores.
  *
- * Mirrors `Source::label` in the core. A four-line map rather than a round
+ * Mirrors `Source::label` in the core. A small map rather than a round
  * trip through `searchSources()`, because this is wanted while drawing a
  * detail panel and "Filled in from openLibrary" is the sort of thing that
  * ships if the alternative is asynchronous.
@@ -57,6 +57,12 @@ export function sourceLabel(slug: string): string {
       return 'Open Library'
     case 'itunes':
       return 'iTunes'
+    case 'tvmaze':
+      return 'TVmaze'
+    case 'musicBrainz':
+      return 'MusicBrainz'
+    case 'steam':
+      return 'Steam'
     case 'nominatim':
       return 'OpenStreetMap'
     default:

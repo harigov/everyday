@@ -364,7 +364,7 @@ pub async fn stop_account_task(svc: &Service, account_id: AccountId) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use everyday_core::MailQuery;
     use everyday_core::account::{Account, Provider};
@@ -376,7 +376,7 @@ mod tests {
     use everyday_core::store::mail::IngestMessage;
     use jiff::Timestamp;
 
-    fn test_vault() -> (tempfile::TempDir, everyday_core::Vault) {
+    pub(crate) fn test_vault() -> (tempfile::TempDir, everyday_core::Vault) {
         let dir = tempfile::tempdir().unwrap();
         let cfg = everyday_core::VaultConfig {
             password: Some("correct horse battery".into()),
@@ -390,7 +390,12 @@ mod tests {
     /// Ingests one findable message directly into the vault's own storage,
     /// bypassing the sync engine entirely -- this test is about what
     /// happens to a *previously synced* mailbox, not about syncing one.
-    fn seed_message(vault: &Vault, account: AccountId, mailbox: MailboxId, subject: &str) {
+    pub(crate) fn seed_message(
+        vault: &Vault,
+        account: AccountId,
+        mailbox: MailboxId,
+        subject: &str,
+    ) {
         let id = MailMessageId::new();
         let message = Message {
             id,
@@ -429,6 +434,12 @@ mod tests {
                 remote_images: Vec::new(),
             })
             .unwrap();
+    }
+
+    /// A second handle on `vault`'s own index, holding its writer lock --
+    /// standing in for another process that has the vault unlocked.
+    pub(crate) fn hold_index(vault: &Vault) -> MailIndex {
+        open_index(vault).unwrap()
     }
 
     /// End-to-end proof of the two halves this fix put together: a schema

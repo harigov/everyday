@@ -87,14 +87,15 @@
     // Starred and Snoozed are drawn from the pseudo-mailboxes the mock seeds
     // -- see `mock-mail.ts`'s own note on why there is no server-side
     // "starred, across every folder" query yet.
-    const starred = boxes.find((b) => b.remoteName === 'Starred')
-    const snoozed = boxes.find((b) => b.remoteName === 'Snoozed')
+    // By `pseudo`, not by name: a real folder called "Snoozed" is a folder.
+    const starred = boxes.find((b) => b.pseudo === 'starred')
+    const snoozed = boxes.find((b) => b.pseudo === 'snoozed')
     const pseudo: Row[] = []
     if (starred) pseudo.push(rowFor(starred, 'star', true))
     if (snoozed) pseudo.push(rowFor(snoozed, 'clock', true))
 
     const folders = boxes
-      .filter((b) => b.role === 'other' && b.remoteName !== 'Starred' && b.remoteName !== 'Snoozed')
+      .filter((b) => b.role === 'other' && !b.pseudo)
       .sort((a, b) => a.remoteName.localeCompare(b.remoteName))
       .map((b) => rowFor(b, 'tag'))
 

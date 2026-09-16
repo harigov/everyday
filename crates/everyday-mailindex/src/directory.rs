@@ -298,6 +298,14 @@ mod os_lock {
     }
 }
 
+/// How many more times a blocking lock is tried after the first refusal,
+/// and how long apart. Tantivy's own default for a blocking lock, copied
+/// rather than reinvented: ten seconds is far longer than any reader reload
+/// or garbage collection holds `META_LOCK`, and short enough that a genuinely
+/// stuck holder surfaces as an error rather than a hang.
+const LOCK_RETRIES: usize = 100;
+const LOCK_RETRY_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Associated data binding a sealed file to the relative path tantivy knows
 /// it by. See the module docs' "what is sealed, and how".
 fn file_aad(path: &Path) -> Vec<u8> {
@@ -503,14 +511,31 @@ impl Directory for SealedDirectory {
     /// delete it on drop) is exactly the mistake
     /// [`MmapDirectory`](tantivy::directory::MmapDirectory) itself does not
     /// make.
+    ///
+    /// What it keeps from the default is the waiting. A [`Lock`] says
+    /// whether its caller expects to wait for it, and tantivy's
+    /// `META_LOCK` does: a reader reloading after a commit and the garbage
+    /// collection after a background merge both take it, briefly, and
+    /// each counts on the other finishing. Refusing at once turned an
+    /// ordinary overlap into a `commit` that reported `LockBusy` after its
+    /// write had succeeded, and into merged-away segments nobody deleted.
+    /// So a blocking lock is retried on the default's own schedule —
+    /// [`LOCK_RETRIES`] times, [`LOCK_RETRY_WAIT`] apart — and only a
+    /// non-blocking one, the writer's, is refused on the first try.
     fn acquire_lock(&self, lock: &Lock) -> Result<DirectoryLock, LockError> {
         let full = self.full_path(&lock.filepath);
-        os_lock::acquire(&full).map(|guard| DirectoryLock::from(Box::new(guard))).map_err(|e| {
-            match e {
-                os_lock::AcquireError::WouldBlock => LockError::LockBusy,
-                os_lock::AcquireError::Io(e) => LockError::IoError(Arc::new(e)),
+        let mut retries = if lock.is_blocking { LOCK_RETRIES } else { 0 };
+        loop {
+            match os_lock::acquire(&full) {
+                Ok(guard) => return Ok(DirectoryLock::from(Box::new(guard))),
+                Err(os_lock::AcquireError::WouldBlock) if retries > 0 => {
+                    retries -= 1;
+                    std::thread::sleep(LOCK_RETRY_WAIT);
+                }
+                Err(os_lock::AcquireError::WouldBlock) => return Err(LockError::LockBusy),
+                Err(os_lock::AcquireError::Io(e)) => return Err(LockError::IoError(Arc::new(e))),
             }
-        })
+        }
     }
 
     fn watch(&self, watch_callback: WatchCallback) -> tantivy::Result<WatchHandle> {
@@ -739,6 +764,33 @@ mod tests {
         assert!(matches!(d.acquire_lock(&lock), Err(LockError::LockBusy)));
         drop(acquired);
         assert!(d.acquire_lock(&lock).is_ok());
+    }
+
+    /// Regression for a commit that failed after it had written: tantivy
+    /// takes `META_LOCK` both to reload a reader and to collect garbage
+    /// after a merge, marks it blocking, and expects the second of two
+    /// overlapping takers to wait rather than be refused.
+    #[test]
+    fn a_blocking_lock_waits_for_its_holder_instead_of_refusing() {
+        let (_tmp, d) = dir();
+        let meta = Lock { filepath: PathBuf::from(".tantivy-meta.lock"), is_blocking: true };
+        let held = d.acquire_lock(&meta).unwrap();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            drop(held);
+        });
+        let waited = std::time::Instant::now();
+        assert!(d.acquire_lock(&meta).is_ok(), "a blocking lock must wait for its holder");
+        assert!(waited.elapsed() >= std::time::Duration::from_millis(200));
+        releaser.join().unwrap();
+
+        // The writer's lock is not blocking, and is still refused at once:
+        // two writers is a mistake to report, not a queue to join.
+        let writer = Lock { filepath: PathBuf::from(".tantivy-writer.lock"), is_blocking: false };
+        let _held = d.acquire_lock(&writer).unwrap();
+        let tried = std::time::Instant::now();
+        assert!(matches!(d.acquire_lock(&writer), Err(LockError::LockBusy)));
+        assert!(tried.elapsed() < LOCK_RETRY_WAIT);
     }
 
     #[test]

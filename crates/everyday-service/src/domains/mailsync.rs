@@ -79,12 +79,18 @@ async fn rebuild_mail_index(
         // `MailSearch::rebuild_empty` erases *every* account's documents,
         // not only the ones this call was asked to rebuild (see that
         // method's own docs).
-        if index.rebuild_needed() {
+        //
+        // And because it erases every account, a wipe widens the job to
+        // every account too. Rebuilding only the one that was asked for
+        // would leave the rest missing from search with nothing scheduled
+        // to put them back.
+        let wiped = index.rebuild_needed();
+        if wiped {
             index.rebuild_empty()?;
         }
         let account_ids: Vec<AccountId> = match args.id {
-            Some(id) => vec![id],
-            None => vault.accounts()?.into_iter().map(|a| a.id).collect(),
+            Some(id) if !wiped => vec![id],
+            _ => vault.accounts()?.into_iter().map(|a| a.id).collect(),
         };
         for account_id in account_ids {
             rebuild_account(&vault, index.as_ref(), account_id)?;
@@ -430,5 +436,55 @@ mod tests {
 
         let hits = index.search(&MailQuery::parse("ghost of mailboxes"), 10, None).unwrap();
         assert!(hits.hits.is_empty(), "a rebuild must clear an account's stale documents first");
+    }
+}
+
+#[cfg(test)]
+mod rebuild_tests {
+    use super::*;
+    use crate::mailsync::wiring::tests::{hold_index, seed_message, test_vault};
+    use crate::mailsync::wiring::{close, open};
+    use everyday_core::MailQuery;
+    use everyday_core::account::{Account, Provider};
+    use everyday_core::mail::{Mailbox, MailboxRole};
+
+    /// Regression: asking to rebuild one account while the index was dead
+    /// wiped every account's documents and put back only the one asked for.
+    #[tokio::test]
+    async fn rebuilding_one_account_on_a_dead_index_restores_them_all() {
+        let (_dir, vault) = test_vault();
+        let mut ids = Vec::new();
+        for (address, subject) in
+            [("a@example.com", "alpha parcel"), ("b@example.com", "bravo parcel")]
+        {
+            let mut account = Account::new(Provider::Custom, address);
+            // No real server behind it; see the wiring tests.
+            account.services.mail = false;
+            vault.save_account(&account).unwrap();
+            let mailbox = Mailbox::new(account.id, "INBOX", MailboxRole::Inbox);
+            vault.save_mailbox(&mailbox).unwrap();
+            seed_message(&vault, account.id, mailbox.id, subject);
+            ids.push(account.id);
+        }
+
+        let svc = Arc::new(Service::new());
+        let vault = svc.set(vault);
+        close(&svc);
+        // Open this service's index while another handle has the writer, so
+        // it comes up dead, then let the other handle go so a rebuild may
+        // wipe it.
+        let holder = hold_index(&vault);
+        let _ = open(&svc, &vault);
+        assert!(svc.mail_index().unwrap().rebuild_needed());
+        drop(holder);
+
+        rebuild_mail_index(svc.clone(), Ctx::local(), RebuildMailIndex { id: Some(ids[0]) })
+            .await
+            .unwrap();
+
+        let index = svc.mail_index().unwrap();
+        assert!(!index.rebuild_needed());
+        let hits = index.search(&MailQuery::parse("parcel"), 10, None).unwrap();
+        assert_eq!(hits.hits.len(), 2, "the account nobody named must be searchable again too");
     }
 }

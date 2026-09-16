@@ -1350,6 +1350,12 @@ export interface Mailbox {
   uidvalidity: number
   uidnext: number
   highestModseq: number
+  /**
+   * Set only on the mock's "Starred" and "Snoozed" views, which are not
+   * folders on any server. Never sent by the backend, so a real folder that
+   * happens to be called "Snoozed" -- Spark makes one -- stays a folder.
+   */
+  pseudo?: 'starred' | 'snoozed'
 }
 
 /** A closed, small set -- see `crate::mail::Category` for why a user-named
@@ -1884,7 +1890,8 @@ export interface Verbs {
 }
 
 /** Where a shelf's metadata is looked up. Matches `websearch::Source`. */
-export type SearchSource = 'web' | 'wikipedia' | 'openLibrary' | 'itunes' | 'nominatim'
+export type SearchSource =
+  'web' | 'wikipedia' | 'openLibrary' | 'itunes' | 'tvmaze' | 'musicBrainz' | 'steam' | 'nominatim'
 
 /** A category of thing you keep track of. Data, not a variant. */
 export interface Kind {
@@ -2110,6 +2117,16 @@ export interface SearchResult {
   /** Their score, normalised to 0–100. */
   rating?: number | null
   ratingCount?: number | null
+  /**
+   * Whose score that is, when it is not the source that answered.
+   *
+   * Steam quotes Metacritic's number, and a score without the name of
+   * whoever gave it is a score credited to the wrong people. Absent means
+   * the obvious thing: the source that answered is the source of the score.
+   */
+  ratingSource?: string
+  /** Where they published it, when that is not `url`. */
+  ratingUrl?: string
   /** Already keyed to match the field keys the seeded shelves use. */
   facts: Record<string, string>
   source: string

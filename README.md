@@ -413,10 +413,18 @@ source it asks depends on the shelf:
 | Shelf | Source | Because |
 |---|---|---|
 | Books | Open Library | covers, page counts, ISBNs, ratings |
-| Films, series, music, podcasts | iTunes Search | artwork at a usable size |
-| Games, and anything general | Wikipedia | a summary and a thumbnail |
+| Films, podcasts | iTunes Search | artwork at a usable size |
+| Series | TVmaze | the network, the genres, the year it began, a portrait |
+| Music | MusicBrainz, with covers from the Cover Art Archive | the year the record came out rather than the year of the remaster on sale |
+| Games | Steam | poster art, and the store's own page for who made it, when, and what it is |
 | Restaurants, places | OpenStreetMap | an address, often a cuisine and a phone number |
+| Anything general | Wikipedia | a summary and a thumbnail |
 | Articles, recipes | a plain web search | there is no catalogue of these |
+
+Any shelf can be pointed at a different one: right-click it and pick under
+**Look things up on**. The table is where the seeded shelves start, not
+where they have to stay, and a shelf you invented yourself — Wines, Board
+games — starts on whichever of these the assistant thought fit.
 
 When a catalogue draws a blank it falls through to **Wikipedia** and only
 then to a plain web search. That middle step is there because of what the
@@ -431,7 +439,18 @@ Every one of them works with no API key, no account and no client id
 registered to a vendor. That is a constraint rather than a coincidence: this
 is an application people build themselves and run offline by default, and a
 feature that stops working the day a free tier changes is a feature that
-should not have shipped.
+should not have shipped. It is also why the famous names are absent: TMDB
+and RAWG are better at films and at games than anything here, and both are
+an account, a key and a settings box away — a source that has to be set up
+is a source that is off on the first run, which is the run this feature
+exists for.
+
+One source asks a second question, and only ever about the result you
+picked: Steam's search answers with a name and an id, so choosing a game
+fetches that game's store page for the developer, the year, the blurb, the
+genres and Metacritic's score — which is recorded under *Metacritic's* name,
+not the shop's. Eight results would have been eight requests for seven games
+nobody is adding.
 
 Four rules hold this together, and the last two are the ones worth stating:
 

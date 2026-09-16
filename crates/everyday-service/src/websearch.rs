@@ -32,7 +32,7 @@
 use std::sync::Arc;
 
 use everyday_core::websearch::{
-    MAX_IMAGE_BYTES, MAX_RESPONSE_BYTES, Request, SearchRequest, SearchResult, http_url,
+    MAX_IMAGE_BYTES, MAX_RESPONSE_BYTES, Request, SearchRequest, SearchResult, Source, http_url,
 };
 use everyday_core::{Item, Kind, Vault};
 
@@ -188,12 +188,41 @@ fn describe(e: &reqwest::Error, request: &Request) -> CommandError {
     CommandError::new(codes::NETWORK, message)
 }
 
+/// Ask a source for the rest of what it knows about the one result somebody
+/// chose.
+///
+/// Only Steam has anything to add today -- see
+/// [`Source::detail`](everyday_core::websearch::Source::detail) for why the
+/// request is made on a pick rather than for every hit in a list. Everything
+/// here is best-effort by construction: no second request, a refused one, an
+/// unreadable answer or a store that has never heard of the game all leave
+/// the result exactly as the search returned it, which is already enough to
+/// put on a shelf.
+async fn enriched(result: &SearchResult) -> SearchResult {
+    let source = Source::from_slug(&result.source);
+    let Some(request) = source.detail(result) else { return result.clone() };
+    let mut filled = result.clone();
+    match get(&request).await {
+        Ok(body) => {
+            if let Err(e) = source.merge_detail(&mut filled, &body) {
+                tracing::warn!(source = source.slug(), error = %e, "could not read the details");
+                return result.clone();
+            }
+        }
+        Err(e) => tracing::info!(source = source.slug(), error = %e, "no details this time"),
+    }
+    filled
+}
+
 /// Apply a result to an item and bring its cover home, in that order.
 ///
 /// The two belong together because the second depends on the first: the core
 /// decides whether `cover_url` is allowed to change, and only then is there
 /// an address worth fetching. Splitting them across two call sites is how a
 /// re-fetch ends up downloading the old picture.
+///
+/// The detail request in front of it is best-effort for the same reason and
+/// in the same way -- see [`enriched`].
 ///
 /// Best-effort about the picture, and deliberately so. A cover that will not
 /// download is a card without artwork; refusing the metadata over it would
@@ -206,6 +235,7 @@ pub async fn apply_and_cover(
     item: &mut Item,
     overwrite: bool,
 ) {
+    let result = &enriched(result).await;
     everyday_core::websearch::apply(result, kind, item, overwrite);
 
     let wanted = item.cover_url.trim().to_string();

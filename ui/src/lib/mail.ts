@@ -318,12 +318,13 @@ export function mailboxHasTabs(mailbox: Pick<Mailbox, 'role'> | null | undefined
  * thread out of the mailbox it otherwise belongs to, so leaving `snoozed`
  * unset there would show it in both places at once).
  *
- * Matched by name, the same way `MailNav.svelte`'s own `rowsFor` finds it:
- * it is not a real IMAP mailbox (see `mock-mail.ts`'s own note on why), so
- * there is no `role` of its own for either file to test instead.
+ * Matched by `Mailbox.pseudo`, never by name. It is not a real IMAP mailbox
+ * (see `mock-mail.ts`'s own note on why), and a real folder that happens to
+ * be called "Snoozed" -- Spark makes one -- matched by name would list only
+ * snoozed threads, which is to say nothing, with a zero unread badge.
  */
-export function isSnoozedMailbox(mailbox: Pick<Mailbox, 'remoteName'> | null | undefined): boolean {
-  return mailbox?.remoteName === 'Snoozed'
+export function isSnoozedMailbox(mailbox: Pick<Mailbox, 'pseudo'> | null | undefined): boolean {
+  return mailbox?.pseudo === 'snoozed'
 }
 
 // ── (i) Invitations ─────────────────────────────────────────────────
