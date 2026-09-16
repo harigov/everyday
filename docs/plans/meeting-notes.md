@@ -1,7 +1,7 @@
 # Meeting notes that take themselves
 
 > **Delivered**, through Phase 7. Read this for the reasoning; read the
-> commits for what was done. Seven things went differently from the plan
+> commits for what was done. Nine things went differently from the plan
 > below, or were settled where the plan was silent rather than said outright,
 > each for a reason worth keeping:
 >
@@ -26,7 +26,7 @@
 >   transcriber is remote before enqueuing it; local transcription is CPU the
 >   same process needs for capture and VAD, so it always waits for the call
 >   to end, and a struggling machine is never asked to do both at once. The
->   chunk is transcribed either way — just not until [`enqueue`] runs at the
+>   chunk is transcribed either way — just not until `enqueue` runs at the
 >   end, which is always safe.
 > - **Voice enrolment is a shell command, not a service one.** `voice_enrol`
 >   records the microphone alone, natively, and hands the sample to
@@ -40,6 +40,17 @@
 > - **`list_meeting_notes` returns two titles.** `title` is the call's own
 >   title, from the recording; `note_title` is the note's current display
 >   title, which can differ once somebody has renamed the note it became.
+> - **An offer is answered by calendar and UID, not by `EventId`.** A
+>   subscribed feed mints fresh event ids on every sync, so "Never for this
+>   meeting" pressed after a resync would have named an event that no longer
+>   exists. `MeetingOffer` and `dismiss_meeting_offer` carry the durable pair
+>   instead.
+> - **Every change to a recording's row goes through one lock per
+>   recording.** The shell resends chunks, the pipeline saves progress and
+>   `finish` moves the stage, all as read-modify-write on the same sealed
+>   row; without the lock a resent chunk could vanish from the list and be
+>   deleted untranscribed. A chunk that arrives after `finish` is still
+>   accepted while the recording is transcribing, and refused after.
 > - **Clicking the OS notification for an offer does not focus the window.**
 >   `tauri-plugin-notification` 2.4 has no Rust-side click hook in this
 >   version to wire one through; the click handling that exists
@@ -51,7 +62,12 @@
 > implemented against `cpal`'s documented behaviour and its own changelog —
 > the Core Audio process tap on macOS 14.6+, WASAPI loopback on Windows — but
 > neither has been run against real hardware. Linux, on PipeWire, is the only
-> one of the three actually tested against a real call.
+> one of the three actually tested, with synthesised speech played into a
+> PipeWire sink: capture, spool, local transcription, speaker separation,
+> filing, Always mode, auto-stop and crash recovery all ran for real, and
+> only the summarising model was a local stand-in. The OpenAI and Gemini
+> transcription tests and a summary from a real assistant model are written
+> but were not run, for want of a working key.
 
 The app already knows when a call is about to start, who was invited, and
 how to write a note, and it already has a model it trusts to write one. What
