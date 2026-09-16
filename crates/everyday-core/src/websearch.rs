@@ -985,7 +985,8 @@ fn parse_tvmaze(body: &str) -> Result<Vec<SearchResult>> {
         let genres: Vec<&str> = show
             .get("genres")
             .and_then(Value::as_array)
-            .map_or_else(Vec::new, |g| g.iter().filter_map(Value::as_str).collect());
+            .map(|g| g.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
         if !genres.is_empty() {
             facts.insert("genre".to_string(), genres.join(", "));
         }
@@ -1102,7 +1103,7 @@ fn parse_musicbrainz(body: &str) -> Result<Vec<SearchResult>> {
             },
         ));
     }
-    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
     Ok(out.into_iter().map(|(_, r)| r).collect())
 }
 
@@ -1199,7 +1200,8 @@ fn merge_steam_detail(result: &mut SearchResult, body: &str) -> Result<()> {
     let genres: Vec<String> = data
         .get("genres")
         .and_then(Value::as_array)
-        .map_or_else(Vec::new, |all| all.iter().map(|g| string_at(g, "description")).collect());
+        .map(|all| all.iter().map(|g| string_at(g, "description")).collect())
+        .unwrap_or_default();
     let genres: Vec<String> = genres.into_iter().filter(|g| !g.is_empty()).collect();
     if !genres.is_empty() {
         result.facts.entry("genre".to_string()).or_insert_with(|| genres.join(", "));
