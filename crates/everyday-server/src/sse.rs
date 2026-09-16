@@ -22,7 +22,7 @@
 //! and rare.
 
 use axum::response::sse::{Event, KeepAlive, Sse};
-use everyday_service::events::{Change, EventSink, Notification};
+use everyday_service::events::{Change, EventSink, MeetingOffer, Notification};
 use futures::stream::Stream;
 use serde::Serialize;
 use std::time::Duration;
@@ -46,6 +46,7 @@ pub enum Outgoing {
     Notify(Notification),
     Changed(Change),
     LockState { locked: bool },
+    MeetingOffer(MeetingOffer),
 }
 
 impl Outgoing {
@@ -54,6 +55,7 @@ impl Outgoing {
             Outgoing::Notify(_) => "notify",
             Outgoing::Changed(_) => "changed",
             Outgoing::LockState { .. } => "lockState",
+            Outgoing::MeetingOffer(_) => "meetingOffer",
         }
     }
 
@@ -142,6 +144,10 @@ impl EventSink for Broadcaster {
     fn lock_state(&self, locked: bool) {
         self.send(Outgoing::LockState { locked });
     }
+
+    fn meeting_offer(&self, offer: MeetingOffer) {
+        self.send(Outgoing::MeetingOffer(offer));
+    }
 }
 
 /// Send to several sinks at once.
@@ -173,6 +179,12 @@ impl EventSink for Fanout {
     fn lock_state(&self, locked: bool) {
         for sink in &self.0 {
             sink.lock_state(locked);
+        }
+    }
+
+    fn meeting_offer(&self, offer: MeetingOffer) {
+        for sink in &self.0 {
+            sink.meeting_offer(offer.clone());
         }
     }
 }

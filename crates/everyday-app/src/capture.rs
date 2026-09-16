@@ -761,6 +761,54 @@ fn open_mic(host: &cpal::Host, tx: SyncSender<Event>) -> Result<cpal::Stream, Ca
     build_stream(&device, &config, Track::Mic, tx)
 }
 
+/// Record the microphone alone, for `seconds`, resampled to [`SAMPLE_RATE`]
+/// mono exactly like a call's mic track -- what `meeting.rs`'s `voice_enrol`
+/// command hands the service. No system track, no chunk framing, no sink: a
+/// voiceprint sample is one short clip, not a call, and it must not pick up
+/// whoever the microphone is not.
+///
+/// Blocking for the whole of `seconds`; call this off the async runtime the
+/// way every other disk- or device-bound call in this crate is called.
+pub fn record_mic_only(seconds: u32) -> Result<Vec<i16>, CaptureError> {
+    let host = cpal::default_host();
+    if host.default_input_device().is_none() {
+        return Err(CaptureError("no microphone found".into()));
+    }
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Event>(RAW_CHANNEL_CAPACITY);
+    let stream = open_mic(&host, tx)?;
+
+    let mut resampler: Option<TrackResampler> = None;
+    let mut out: Vec<i16> = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(u64::from(seconds));
+    let outcome: Result<(), CaptureError> = (|| {
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(Event::Audio { track: Track::Mic, samples, source_rate }) => {
+                    if resampler.is_none() {
+                        resampler = Some(TrackResampler::new(source_rate)?);
+                    }
+                    let resampled = resampler.as_mut().expect("just set").push(&samples)?;
+                    out.extend(resampled.into_iter().map(f32_to_i16));
+                }
+                Ok(Event::Audio { .. }) => {} // the system track, if somehow raised: ignored
+                Ok(Event::Error { message, .. }) => return Err(CaptureError(message)),
+                Ok(Event::Control(_)) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        Ok(())
+    })();
+
+    drop(stream);
+    outcome?;
+    if let Some(mut resampler) = resampler {
+        let tail = resampler.flush()?;
+        out.extend(tail.into_iter().map(f32_to_i16));
+    }
+    Ok(out)
+}
+
 /// Words a person can read, without a device model number in them, for why
 /// the system track did not open. Platform-specific because the reason
 /// (and the fix, if there is one) differs by desktop.

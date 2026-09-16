@@ -28,7 +28,7 @@ use crate::signin::SignIns;
 use crate::supervisor::Supervisor;
 use crate::token_cache::TokenCache;
 use crate::transfers::Transfers;
-use everyday_core::id::{AccountId, DraftId, ThreadId};
+use everyday_core::id::{AccountId, DraftId, RecordingId, ThreadId};
 use everyday_core::mail::Origin;
 use everyday_core::mail::RateLimitState;
 use everyday_core::mail::TokenBucket;
@@ -39,6 +39,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Instant;
 
 /// The version of the command surface this build speaks.
 ///
@@ -194,6 +195,33 @@ pub struct Service {
     /// As [`Service::mail_categorize_cursor`], for the auto-draft pass over
     /// `Important` threads.
     mail_autodraft_cursor: Mutex<HashMap<AccountId, String>>,
+    /// Calendar events the meeting watcher has already raised an offer for
+    /// this session, keyed by calendar and the event's own uid (not its
+    /// `EventId`, which a feed calendar mints fresh on every sync -- see
+    /// [`everyday_core::meeting::EventRef::series_key`]'s neighbour,
+    /// `Event::uid`, for why that is the durable half). Also where
+    /// `dismiss_meeting_offer` records "not now": either way, the same call
+    /// is not offered again until this process restarts or the vault
+    /// relocks and unlocks -- `everyday_service::meeting::watch` is the only
+    /// reader and writer.
+    meeting_offered: RwLock<HashSet<(CalendarId, String)>>,
+    /// When each recording last had a chunk appended to it, in this
+    /// process. What `everyday_service::meeting::spool`'s unlock recovery
+    /// reads to tell a call still being captured from one a crash or a quit
+    /// left stuck in `Stage::Recording` -- a recording with no entry here
+    /// has not been appended to since this process started, which after a
+    /// restart is every recording still open, so recovery treats "no entry"
+    /// the same as "stale". Session state on the same terms every other
+    /// scheduler bookkeeping field here already is: losing it costs
+    /// recovery nothing but immediacy, since a truly live capture keeps
+    /// refreshing its own entry.
+    meeting_last_append: Mutex<HashMap<RecordingId, Instant>>,
+    /// Failed recordings the minute tick's expiry sweep has already raised
+    /// its "will be deleted tomorrow" notification for, so it says so once
+    /// per process rather than once an hour for as long as the recording
+    /// sits in its last day. Cleared implicitly by never being consulted
+    /// again once the recording is actually deleted or retried.
+    meeting_expiry_warned: RwLock<HashSet<RecordingId>>,
 }
 
 impl Default for Service {
@@ -236,6 +264,9 @@ impl Service {
             mail_summary_cache: Mutex::new(HashMap::new()),
             mail_categorize_cursor: Mutex::new(HashMap::new()),
             mail_autodraft_cursor: Mutex::new(HashMap::new()),
+            meeting_offered: RwLock::new(HashSet::new()),
+            meeting_last_append: Mutex::new(HashMap::new()),
+            meeting_expiry_warned: RwLock::new(HashSet::new()),
         }
     }
 
@@ -485,6 +516,12 @@ impl Service {
         // very first poll, and both must already answer `Some`.
         self.open_mail(&vault);
         self.supervisor().restart_registered();
+        // A recording stuck in `Stage::Recording` with nothing left to
+        // capture it -- the app quit, the machine slept through a lock,
+        // this is a fresh process -- is found and moved on here, the same
+        // moment mail's own account tasks pick back up. See
+        // `everyday_service::meeting::spool::recover`.
+        crate::meeting::spool::recover(self, &vault);
         self.events().lock_state(false);
     }
 
@@ -787,6 +824,45 @@ impl Service {
     /// Note that a routine ran, so its next failure is news.
     pub fn routine_recovered(&self, id: String) {
         self.reported_routines.write().unwrap().remove(&id);
+    }
+
+    // ---- meetings: the watcher's and the spool's session state ------------
+
+    /// Mark `(calendar, uid)` as offered (or dismissed) this session, and
+    /// say whether it was new -- `true` the first time, `false` on every
+    /// later ask. What keeps `everyday_service::meeting::watch`'s minute
+    /// tick from raising the same offer again every time it sees the same
+    /// event still starting "now", and what `dismiss_meeting_offer` calls
+    /// directly so "Not now" has the same effect without waiting for the
+    /// next tick to notice.
+    pub fn meeting_offer_seen(&self, calendar: CalendarId, uid: &str) -> bool {
+        self.meeting_offered.write().unwrap().insert((calendar, uid.to_string()))
+    }
+
+    /// Record that `id` had a chunk appended just now, in this process.
+    pub fn meeting_touch_append(&self, id: RecordingId) {
+        self.meeting_last_append.lock().unwrap().insert(id, Instant::now());
+    }
+
+    /// How long ago `id` last had a chunk appended, in this process -- or
+    /// `None` if it never has been, which after a restart is true of every
+    /// recording still open. See [`Service::meeting_last_append`]'s own
+    /// docs for why recovery treats the two alike.
+    pub fn meeting_since_append(&self, id: RecordingId) -> Option<std::time::Duration> {
+        self.meeting_last_append.lock().unwrap().get(&id).map(Instant::elapsed)
+    }
+
+    /// Forget `id`'s append time -- called once a recording leaves
+    /// `Stage::Recording`, so a long-finished call's id does not sit in this
+    /// map for the rest of the session.
+    pub fn meeting_forget_append(&self, id: RecordingId) {
+        self.meeting_last_append.lock().unwrap().remove(&id);
+    }
+
+    /// Mark `id` as warned about its coming deletion, and say whether this
+    /// was the first time -- `true` the first call, `false` after.
+    pub fn meeting_expiry_warn_once(&self, id: RecordingId) -> bool {
+        self.meeting_expiry_warned.write().unwrap().insert(id)
     }
 
     /// Take this run for the life of the returned guard.

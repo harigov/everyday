@@ -30,7 +30,21 @@
 //!
 //! The vault locked or unlocked. Not a change to a record and not a
 //! notification: every client has to leave the screen it is on.
+//!
+//! # Meeting offers
+//!
+//! "Take notes for Design sync?" is neither a [`Change`] -- nothing has been
+//! written, and an "ask" offer may never be acted on -- nor a plain
+//! [`Notification`], which carries no structure for a listener to draw a
+//! banner from (a title, a time range, which calendar) or to act on (the
+//! desktop shell starting capture itself when "Always" chose for you). It
+//! gets its own event, [`MeetingOffer`], raised by
+//! `everyday_service::meeting::watch` alongside an ordinary [`Notification`]
+//! with [`Reach::User`] so the offer still reaches somebody who is not
+//! looking at the window.
 
+use everyday_core::id::EventId;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 /// How loud a notification is. Mirrors `NotifyLevel` in the interface.
@@ -220,11 +234,33 @@ impl Change {
     }
 }
 
+/// "Take notes for Design sync?" -- a detected call starting now. Mirrors
+/// the TS `MeetingOfferPayload` in `ui/src/lib/api.ts`, minus the shell-only
+/// `recordingId` that type also carries: this event exists before any
+/// recording does, and the desktop shell is what fills that field in once
+/// (and if) one starts.
+///
+/// Raised by `everyday_service::meeting::watch`, never stored: a listener
+/// that missed one because no window was open missed nothing worth
+/// recovering, unlike a [`Change`] to a record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingOffer {
+    pub event_id: EventId,
+    pub title: String,
+    pub start: Timestamp,
+    pub end: Timestamp,
+    pub calendar_name: String,
+    /// Detected on a calendar set to "Always": the shell has already begun
+    /// recording, and this is a toast rather than a question.
+    pub automatic: bool,
+}
+
 /// Where the service's own remarks go.
 ///
 /// Implemented by the shell (window events), the server (server-sent events)
 /// and tests (a vector). The default implementations do nothing, so a
-/// listener that cares about one kind is not obliged to write three methods.
+/// listener that cares about one kind is not obliged to write four methods.
 pub trait EventSink: Send + Sync {
     fn notify(&self, notification: Notification) {
         let _ = notification;
@@ -236,6 +272,10 @@ pub trait EventSink: Send + Sync {
 
     fn lock_state(&self, locked: bool) {
         let _ = locked;
+    }
+
+    fn meeting_offer(&self, offer: MeetingOffer) {
+        let _ = offer;
     }
 }
 

@@ -173,6 +173,7 @@ pub fn run() {
             meeting::meeting_start,
             meeting::meeting_stop,
             meeting::meeting_status,
+            meeting::voice_enrol,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

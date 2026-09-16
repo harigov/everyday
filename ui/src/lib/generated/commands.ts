@@ -131,6 +131,7 @@ import type {
   TaskStats,
   TaskStatus,
   Template,
+  TemplateId,
   ThreadDetail,
   ThreadFilter,
   ThreadId,
@@ -138,6 +139,7 @@ import type {
   ThreadSummary,
   TimeBlock,
   ToolInfo,
+  Track,
   Tracker,
   TrackerDay,
   TrackerId,
@@ -161,6 +163,10 @@ export interface Commands {
     args: { sender?: string | null; domain?: string | null; messageId?: MailMessageId | null }
     result: void
   }
+  appendRecordingChunk: {
+    args: { id: RecordingId; track: Track; seq: number; startMs: number; pcm: string }
+    result: void
+  }
   applyMetadata: { args: { id: ItemId; result: SearchResult; overwrite: boolean }; result: Item }
   archive: { args: { threads: ThreadId[] }; result: Op[] }
   attachOauthSignIn: {
@@ -178,6 +184,15 @@ export interface Commands {
       loginHint?: string
     }
     result: BegunSignIn
+  }
+  beginRecording: {
+    args: {
+      eventId?: EventId | null
+      title?: string | null
+      templateId?: TemplateId | null
+      automatic?: boolean
+    }
+    result: Recording
   }
   benchmarkSpeechModel: { args: { id: string }; result: ModelBenchmark }
   calendarProviders: { args: Record<string, never>; result: ProviderInfo[] }
@@ -212,11 +227,14 @@ export interface Commands {
   deleteTracker: { args: { id: TrackerId }; result: number }
   deleteVoiceprint: { args: { id: VoiceprintId }; result: void }
   discardDraft: { args: { id: DraftId }; result: void }
+  discardRecording: { args: { id: RecordingId }; result: void }
+  dismissMeetingOffer: { args: { eventId: EventId; never: boolean }; result: void }
   downloadSpeechModel: { args: { id: string }; result: void }
   endExport: { args: { handle: string }; result: void }
   endImport: { args: { handle: string }; result: void }
   fetchAttachment: { args: { messageId: MailMessageId; index: number }; result: MailAttachment }
   fetchImage: { args: { url: string }; result: string }
+  finishRecording: { args: { id: RecordingId }; result: Recording }
   flush: { args: Record<string, never>; result: void }
   getAccount: { args: { id: AccountId }; result: AccountView }
   getEntry: { args: { id: EntryId }; result: Entry }
@@ -380,6 +398,7 @@ export interface Commands {
     args: { messageId: MailMessageId; response: string; comment?: string | null }
     result: void
   }
+  retryRecording: { args: { id: RecordingId }; result: Recording }
   revokeRemoteImageAllowance: {
     args: { sender?: string | null; domain?: string | null }
     result: void
@@ -495,11 +514,13 @@ export const COMMAND_NAMES = {
   addItem: 'add_item',
   agentSettings: 'agent_settings',
   allowRemoteImages: 'allow_remote_images',
+  appendRecordingChunk: 'append_recording_chunk',
   applyMetadata: 'apply_metadata',
   archive: 'archive',
   attachOauthSignIn: 'attach_oauth_sign_in',
   awaitOauthSignIn: 'await_oauth_sign_in',
   beginOauthSignIn: 'begin_oauth_sign_in',
+  beginRecording: 'begin_recording',
   benchmarkSpeechModel: 'benchmark_speech_model',
   calendarProviders: 'calendar_providers',
   cancelOauthSignIn: 'cancel_oauth_sign_in',
@@ -533,11 +554,14 @@ export const COMMAND_NAMES = {
   deleteTracker: 'delete_tracker',
   deleteVoiceprint: 'delete_voiceprint',
   discardDraft: 'discard_draft',
+  discardRecording: 'discard_recording',
+  dismissMeetingOffer: 'dismiss_meeting_offer',
   downloadSpeechModel: 'download_speech_model',
   endExport: 'end_export',
   endImport: 'end_import',
   fetchAttachment: 'fetch_attachment',
   fetchImage: 'fetch_image',
+  finishRecording: 'finish_recording',
   flush: 'flush',
   getAccount: 'get_account',
   getEntry: 'get_entry',
@@ -642,6 +666,7 @@ export const COMMAND_NAMES = {
   rebuildMailIndex: 'rebuild_mail_index',
   recategorizeMail: 'recategorize_mail',
   respondToInvite: 'respond_to_invite',
+  retryRecording: 'retry_recording',
   revokeRemoteImageAllowance: 'revoke_remote_image_allowance',
   routineTemplates: 'routine_templates',
   runImport: 'run_import',
@@ -738,11 +763,13 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'add_item',
   'agent_settings',
   'allow_remote_images',
+  'append_recording_chunk',
   'apply_metadata',
   'archive',
   'attach_oauth_sign_in',
   'await_oauth_sign_in',
   'begin_oauth_sign_in',
+  'begin_recording',
   'benchmark_speech_model',
   'calendar_providers',
   'cancel_oauth_sign_in',
@@ -776,11 +803,14 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_tracker',
   'delete_voiceprint',
   'discard_draft',
+  'discard_recording',
+  'dismiss_meeting_offer',
   'download_speech_model',
   'end_export',
   'end_import',
   'fetch_attachment',
   'fetch_image',
+  'finish_recording',
   'flush',
   'get_account',
   'get_entry',
@@ -885,6 +915,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'rebuild_mail_index',
   'recategorize_mail',
   'respond_to_invite',
+  'retry_recording',
   'revoke_remote_image_allowance',
   'routine_templates',
   'run_import',
@@ -973,10 +1004,12 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
 export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'add_item',
   'allow_remote_images',
+  'append_recording_chunk',
   'apply_metadata',
   'archive',
   'attach_oauth_sign_in',
   'begin_oauth_sign_in',
+  'begin_recording',
   'cancel_oauth_sign_in',
   'cancel_speech_model_download',
   'change_password',
@@ -1007,9 +1040,12 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_tracker',
   'delete_voiceprint',
   'discard_draft',
+  'discard_recording',
+  'dismiss_meeting_offer',
   'download_speech_model',
   'fetch_attachment',
   'fetch_image',
+  'finish_recording',
   'flush',
   'import_calendar',
   'label',
@@ -1025,6 +1061,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'rebuild_mail_index',
   'recategorize_mail',
   'respond_to_invite',
+  'retry_recording',
   'revoke_remote_image_allowance',
   'run_import',
   'run_routine',
@@ -1092,6 +1129,7 @@ export const CHANGE_KINDS = {
   apply_metadata: 'item',
   archive: 'thread',
   attach_oauth_sign_in: 'account',
+  begin_recording: 'recording',
   cancel_speech_model_download: 'settings',
   change_password: 'settings',
   clear_agent_key: 'settings',
@@ -1119,7 +1157,9 @@ export const CHANGE_KINDS = {
   delete_tracker: 'tracker',
   delete_voiceprint: 'voiceprint',
   discard_draft: 'draft',
+  discard_recording: 'recording',
   download_speech_model: 'settings',
+  finish_recording: 'recording',
   import_calendar: 'calendar',
   label: 'thread',
   log_reading: 'reading',
@@ -1129,6 +1169,7 @@ export const CHANGE_KINDS = {
   merge_trackers: 'tracker',
   move_to_mailbox: 'thread',
   new_draft: 'draft',
+  retry_recording: 'recording',
   revoke_remote_image_allowance: 'settings',
   run_routine: 'routineRun',
   save_account: 'account',

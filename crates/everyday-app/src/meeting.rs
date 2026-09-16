@@ -10,17 +10,80 @@
 //! `Session`, so a recording made against a remote vault sends its audio
 //! exactly the way this module sends `begin_recording` itself.
 
-use everyday_core::id::{EventId, TemplateId};
+use base64::Engine;
+use everyday_core::id::{EventId, RecordingId, TemplateId};
 use everyday_core::meeting::Recording;
 use everyday_service::Ctx;
 use everyday_service::error::{CommandError, CommandResult};
+use everyday_service::events::MeetingOffer;
 use serde_json::{Value, json};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::capture::{self, CaptureStatus, RecordingHandle, RecordingSink};
 use crate::remote::Session;
 use crate::state::AppState;
 use crate::tray::Tray;
+
+/// The Tauri event carrying a `MeetingOfferPayload` -- what
+/// `everyday_service::meeting::watch` raised as a [`MeetingOffer`], turned
+/// into the shape `onMeetingOffer` in `ui/src/lib/api.ts` reads. Its other
+/// half is that function.
+pub const OFFER_EVENT: &str = "meeting-offer";
+
+/// Mirrors the TS `MeetingOfferPayload`, field for field.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OfferPayload {
+    event_id: EventId,
+    title: String,
+    start: jiff::Timestamp,
+    end: jiff::Timestamp,
+    calendar_name: String,
+    automatic: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recording_id: Option<RecordingId>,
+}
+
+impl From<MeetingOffer> for OfferPayload {
+    fn from(offer: MeetingOffer) -> Self {
+        Self {
+            event_id: offer.event_id,
+            title: offer.title,
+            start: offer.start,
+            end: offer.end,
+            calendar_name: offer.calendar_name,
+            automatic: offer.automatic,
+            recording_id: None,
+        }
+    }
+}
+
+/// What a [`MeetingOffer`] from the service becomes in this window.
+///
+/// For "Always" (`automatic: true`), the offer is not a question: the call
+/// has already been recorded without asking on every other window watching
+/// this vault, so this one starts capturing too -- through
+/// [`start_automatic`], the same hook a press of "Take notes" goes through
+/// -- and forwards the event so `meetings.svelte.ts`'s handler can show its
+/// toast and refresh the recordings list. For an ordinary offer, nothing
+/// starts on its own and the event is simply forwarded, for
+/// `MeetingOfferBanner.svelte` to ask about.
+///
+/// `recordingId` is left empty either way: `start_automatic` begins the
+/// microphone on its own spawned task rather than blocking this call on it,
+/// and the one place in the interface that reads an automatic offer today
+/// (`meetings.svelte.ts`'s own `onMeetingOffer`) does not need it -- it
+/// re-polls `active_recording` instead, which is how the pill finds the
+/// recording that resulted.
+pub fn on_meeting_offer(app: &AppHandle, offer: MeetingOffer) {
+    if offer.automatic {
+        start_automatic(app.clone(), offer.event_id);
+    }
+    let payload = OfferPayload::from(offer);
+    if let Err(e) = app.emit(OFFER_EVENT, payload) {
+        tracing::debug!(error = %e, "a meeting offer could not reach the interface");
+    }
+}
 
 /// Begin recording, on the service and then the microphone. `eventId` ties
 /// the recording to a calendar event (auto-stop watches its end);
@@ -44,16 +107,11 @@ pub async fn meeting_start(
 /// Same as [`meeting_start`], but for a call detected on a calendar the
 /// person has set to "Always" -- see `docs/plans/meeting-notes.md`'s
 /// "'Always' mode". Not a command: nothing in the interface asks for this
-/// by name, the watcher (not yet wired) will call it directly. Failures are
-/// logged rather than surfaced, the way a routine's are: there is no dialog
-/// to put them in, and a call that could not be recorded automatically is
-/// still a call the person can record by hand from the notes app.
-///
-/// A hook, not yet called from anywhere in this crate -- `everyday_service`
-/// has no watcher wired to a calendar's "Always" setting yet. Kept `pub`
-/// and unused rather than deleted, since the shape (`AppHandle`, the one
-/// event to record) is the contract the watcher will be built against.
-#[allow(dead_code)]
+/// by name; [`on_meeting_offer`] calls it directly when the service's
+/// offer says `automatic`. Failures are logged rather than surfaced, the
+/// way a routine's are: there is no dialog to put them in, and a call that
+/// could not be recorded automatically is still a call the person can
+/// record by hand from the notes app.
 pub fn start_automatic(app: AppHandle, event_id: EventId) {
     tauri::async_runtime::spawn(async move {
         if state_already_recording(&app) {
@@ -191,4 +249,38 @@ async fn stop(app: &AppHandle, discard: bool) -> CommandResult<()> {
 #[tauri::command]
 pub async fn meeting_status(state: State<'_, AppState>) -> CommandResult<Option<CaptureStatus>> {
     Ok(state.capture().lock().unwrap().as_ref().and_then(|h| h.status()))
+}
+
+/// Record the microphone for `seconds` and turn it into a voiceprint.
+///
+/// Native, like the three commands above: the webview has no microphone
+/// permission. `capture::record_mic_only` is the mic-only half of the same
+/// capture engine `meeting_start` uses -- no system track, so whoever else
+/// is on a call at the time is not folded into the sample -- and this
+/// command is the whole of the glue between that and `enrol_voice`, the
+/// service command the pipeline agent's work adds. If that command does not
+/// exist yet in this build, its rejection is returned exactly as the
+/// service raised it; `meetings.svelte.ts`'s `enrolVoice` already turns
+/// *any* failure of this Tauri command into one plain sentence for the
+/// person, so there is nothing this needs to do to soften it.
+#[tauri::command]
+pub async fn voice_enrol(
+    state: State<'_, AppState>,
+    seconds: u32,
+) -> CommandResult<everyday_service::domains::meetings::VoiceprintInfo> {
+    let session = state.session().as_session();
+    let pcm = everyday_service::service::blocking(move || {
+        capture::record_mic_only(seconds).map_err(CommandError::from)
+    })
+    .await?;
+
+    let mut bytes = Vec::with_capacity(pcm.len() * 2);
+    for s in pcm {
+        bytes.extend_from_slice(&s.to_le_bytes());
+    }
+    let pcm_b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+
+    let value = session.call(Ctx::local(), "enrol_voice", json!({ "pcm": pcm_b64 })).await?;
+    serde_json::from_value(value)
+        .map_err(|e| CommandError::new("invalid", format!("enrol_voice answered oddly: {e}")))
 }

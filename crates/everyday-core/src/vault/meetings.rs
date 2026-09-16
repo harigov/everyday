@@ -18,6 +18,15 @@
 //!   way, `Recording::note_id` -- so `Vault::delete_note` cannot express
 //!   "and take its transcript with it" through `NoteStore` alone. See
 //!   [`detach_note_from_meetings`].
+//! * **The spool is not `MeetingStore`'s to keep.** A recording's audio
+//!   lives in plain files beside the vault directory -- `spool/recordings/`,
+//!   found again by id, track and sequence, never by content hash -- rather
+//!   than in the backend's own blob store, because it has to exist and be
+//!   findable the same way whether the backend is SQLite or Postgres, and a
+//!   Postgres vault has nowhere on this machine to put a `BYTEA` a person
+//!   never asked it to keep past the note being written. See
+//!   [`Vault::seal_spool_bytes`] and `everyday_service::meeting::spool`,
+//!   which is the only caller.
 
 use super::Vault;
 use super::session::{Domain, Unlocked, pick_domain};
@@ -105,6 +114,27 @@ impl Vault {
 
     pub fn has_transcriber_key(&self) -> Result<bool> {
         Ok(self.transcriber_key()?.is_some())
+    }
+
+    // ---- the spool's own bytes ---------------------------------------------
+
+    /// Seal `plaintext`, bound to `aad`, under this vault's own key.
+    ///
+    /// What the spool uses to write one chunk file. Deliberately not
+    /// [`Vault::put_blob`]: that store is content-addressed and belongs to
+    /// whichever backend the vault chose, while a spool chunk is always a
+    /// plain file beside the vault directory (see [`Vault::path`]), found
+    /// again by recording id, track and sequence -- and gone, files and all,
+    /// the moment the note exists. Requires only that the vault be
+    /// unlocked; the write claim is [`everyday_service::meeting::spool`]'s
+    /// own to check, since only it knows which calls actually touch disk.
+    pub fn seal_spool_bytes(&self, aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
+        self.read(|u| u.cipher.seal(aad, plaintext))
+    }
+
+    /// The other half of [`Vault::seal_spool_bytes`].
+    pub fn open_spool_bytes(&self, aad: &[u8], sealed: &[u8]) -> Result<Vec<u8>> {
+        self.read(|u| u.cipher.open(aad, sealed))
     }
 
     // ---- recordings ---------------------------------------------------------
