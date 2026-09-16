@@ -67,7 +67,7 @@ use everyday_core::store::meetings::RecordingQuery;
 use everyday_core::{Error, Vault};
 use jiff::Timestamp;
 
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Change, Kind, Notification, Op};
 use crate::meeting::pipeline;
 use crate::service::Service;
@@ -155,7 +155,7 @@ pub fn read_chunk(
     let bytes = vault.open_spool_bytes(&chunk_aad(id, track, seq), &sealed)?;
     if bytes.len() % 2 != 0 {
         return Err(CommandError::new(
-            "invalid",
+            codes::INVALID,
             format!("{} held an odd number of bytes", path.display()),
         ));
     }
@@ -206,10 +206,13 @@ fn dir_size(dir: &Path) -> u64 {
 /// resources, true or false whatever the settings say, and cost nothing to
 /// answer; whether meeting notes are configured at all is the one question
 /// that needs a transcriber to weigh in, through
-/// [`crate::domains::meetings::view`]'s own "usable" check. Refusing on the
-/// cheap facts first is also what keeps them answerable in a test that has
-/// not (and today, pending the speech agent's own work landing, *cannot*)
-/// set up a usable transcriber.
+/// [`crate::domains::meetings::view`]'s own "usable" check -- which, for
+/// every backend, local or remote, also requires the speech kit to be
+/// genuinely installed on disk (VAD needs it before anything else can
+/// happen). Refusing on the cheap facts first is also what keeps them
+/// answerable in a plain unit test, which does not download ~40 MB of
+/// models just to construct a vault; see this file's own `env` for where
+/// that line is drawn.
 ///
 /// Title and calendar details come from `args.event_id`'s event when one is
 /// given (`args.title` still overrides the displayed title, for the notes
@@ -287,7 +290,7 @@ pub fn append(
 
     if pcm.len() > MAX_CHUNK_SAMPLES {
         return Err(CommandError::new(
-            "invalid",
+            codes::INVALID,
             format!(
                 "a chunk cannot hold more than {MAX_CHUNK_SAMPLES} samples \
                  ({CHUNK_SECONDS}s at {SAMPLE_RATE}Hz); this one has {}",
@@ -299,7 +302,7 @@ pub fn append(
     let mut recording = vault.recording(id)?;
     if !matches!(recording.stage, Stage::Recording) {
         return Err(CommandError::new(
-            "invalid",
+            codes::INVALID,
             format!("recording is {} and cannot take more audio", recording.stage.as_str()),
         ));
     }
@@ -344,7 +347,7 @@ pub fn finish(svc: &Arc<Service>, id: RecordingId) -> CommandResult<Recording> {
     let mut recording = vault.recording(id)?;
     if !matches!(recording.stage, Stage::Recording) {
         return Err(CommandError::new(
-            "invalid",
+            codes::INVALID,
             format!("recording is {} and cannot be finished", recording.stage.as_str()),
         ));
     }
@@ -365,7 +368,7 @@ pub fn discard(svc: &Arc<Service>, id: RecordingId) -> CommandResult<()> {
     let recording = vault.recording(id)?;
     if recording.stage.is_finished() {
         return Err(CommandError::new(
-            "invalid",
+            codes::INVALID,
             "a finished recording cannot be discarded, only deleted from the history",
         ));
     }
@@ -383,7 +386,7 @@ pub fn retry(svc: &Arc<Service>, id: RecordingId) -> CommandResult<Recording> {
     let vault = svc.require()?;
     let mut recording = vault.recording(id)?;
     let Stage::Failed { at, .. } = recording.stage.clone() else {
-        return Err(CommandError::new("invalid", "only a failed recording can be retried"));
+        return Err(CommandError::new(codes::INVALID, "only a failed recording can be retried"));
     };
     recording.stage = match *at {
         Stage::Recording => Stage::Transcribing,
@@ -536,12 +539,14 @@ mod tests {
     use std::sync::Mutex as StdMutex;
 
     /// A vault and a service around it, in a temporary directory. Meeting
-    /// notes are left off, and no transcriber is configured -- see this
-    /// module's own doc on why `begin`'s success path cannot be exercised
-    /// here, pending `crate::meeting::models` (the speech agent's file):
-    /// `installation_state` in `crate::domains::meetings` calls straight
-    /// through to that module's `todo!()` stubs the moment any transcriber
-    /// is configured, before `usable`'s own logic ever runs.
+    /// notes are left off, and no transcriber is configured -- see
+    /// [`begin`]'s own doc on why a plain unit test does not set up a
+    /// genuinely usable one: `usable` in `crate::domains::meetings` requires
+    /// the speech kit to be installed on disk for every backend, which this
+    /// helper does not download. `begin`'s success path is exercised by
+    /// `meeting_pipeline_e2e.rs` instead; the tests below seed a recording
+    /// directly in `Stage::Recording` or `Stage::Failed` -- exactly the
+    /// state a successful `begin` would have left.
     fn env() -> (Arc<Service>, Arc<Vault>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         // A real password, not `None`: an unencrypted vault's cipher is a

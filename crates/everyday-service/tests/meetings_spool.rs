@@ -10,15 +10,16 @@
 //! [`everyday_service::domains::meetings::view`] says the configured
 //! transcriber is usable, and that check calls straight through to
 //! `everyday_service::meeting::models::{installed, speech_kit_installed}` --
-//! the local speech agent's own file, still `todo!()` at the time this test
-//! was written, and out of this change's scope to fill in. So the tests
-//! below check `begin_recording`'s two reachable refusals over the wire
-//! (the switch off, no transcriber chosen) and, for the recording that
-//! `append`/`finish`/`discard`/`retry` need in `Stage::Recording` or
-//! `Stage::Failed`, seed it directly with [`everyday_core::Vault::save_recording`]
-//! rather than through `begin_recording` -- exactly the state a successful
-//! `begin_recording` would have left, minus the call this crate cannot make
-//! yet.
+//! which, for every backend, local or remote, requires the ~40 MB speech
+//! kit to be genuinely present on disk (VAD needs it before anything else
+//! can happen). This suite does not download that just to construct a
+//! vault, so the tests below check `begin_recording`'s two reachable
+//! refusals over the wire (the switch off, no transcriber chosen) and, for
+//! the recording that `append`/`finish`/`discard`/`retry` need in
+//! `Stage::Recording` or `Stage::Failed`, seed it directly with
+//! [`everyday_core::Vault::save_recording`] rather than through
+//! `begin_recording` -- exactly the state a successful `begin_recording`
+//! would have left.
 
 use everyday_core::id::{RecordingId, TemplateId};
 use everyday_core::meeting::{Recording, Stage};

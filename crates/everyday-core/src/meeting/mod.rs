@@ -501,19 +501,15 @@ pub struct MeetingSettings {
 }
 
 impl Default for MeetingSettings {
-    // Does *not* seed `templates` with [`template::starter`]. It would be
-    // the more complete default -- a fresh install offering one template
-    // rather than none -- but `starter` is a stub (`todo!`) until the
-    // template work lands, and `#[serde(default)]` on this struct means
-    // *every* JSON decode of a `MeetingSettings`, not just a genuinely
-    // absent settings row, builds one of these to seed fields a payload
-    // did not carry. Calling `starter` here would make reading back a
-    // fully-populated, already-saved settings row panic today. Once
-    // `starter` is real this can go back to calling it directly; until
-    // then, [`MeetingSettings::template`] already falls back to it when
-    // `templates` is empty, so nothing downstream silently loses the
-    // built-in template -- it is only absent from a *fresh* install's
-    // settings until this is restored.
+    // Seeds `templates` with [`template::starter`], so a fresh install
+    // offers one template rather than none. `#[serde(default)]` on this
+    // struct means *every* JSON decode of a `MeetingSettings`, not just a
+    // genuinely absent settings row, builds one of these first and overlays
+    // whatever the payload actually named on top -- so a fully-populated,
+    // already-saved settings row calls this too, and simply has its
+    // `templates` overwritten by its own. [`MeetingSettings::template`]
+    // falls back to `starter` regardless whenever `templates` is empty, for
+    // a settings row saved before this field existed at all.
     fn default() -> Self {
         let starter = template::starter();
         Self {
