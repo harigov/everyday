@@ -232,6 +232,7 @@ export interface Commands {
   downloadSpeechModel: { args: { id: string }; result: void }
   endExport: { args: { handle: string }; result: void }
   endImport: { args: { handle: string }; result: void }
+  enrolVoice: { args: { pcm: string }; result: VoiceprintInfo }
   fetchAttachment: { args: { messageId: MailMessageId; index: number }; result: MailAttachment }
   fetchImage: { args: { url: string }; result: string }
   finishRecording: { args: { id: RecordingId }; result: Recording }
@@ -254,6 +255,7 @@ export interface Commands {
   }
   label: { args: { threads: ThreadId[]; label: string }; result: Op[] }
   libraryStats: { args: Record<string, never>; result: LibraryStats }
+  lintMeetingTemplate: { args: { body: string }; result: string[] }
   listAccountCalendars: { args: { account: AccountId }; result: RemoteCalendarInfo[] }
   listAccounts: { args: Record<string, never>; result: AccountView[] }
   listBlocks: { args: { query: BlockQuery }; result: TimeBlock[] }
@@ -322,6 +324,10 @@ export interface Commands {
   meetingSettings: { args: Record<string, never>; result: MeetingSettingsView }
   mergeTrackers: { args: { from: TrackerId; into: TrackerId }; result: number }
   moveToMailbox: { args: { threads: ThreadId[]; to: MailboxId }; result: Op[] }
+  nameSpeaker: {
+    args: { noteId: NoteId; speakerKey: number; name: string; email?: string | null }
+    result: Transcript
+  }
   newBlock: {
     args: { subject: BlockSubject; start: string; minutes: number; kind?: BlockKind | null }
     result: TimeBlock
@@ -354,6 +360,7 @@ export interface Commands {
   newTracker: { args: { name: string; kind: TrackerKind }; result: Tracker }
   noteTags: { args: Record<string, never>; result: string[] }
   pollAutoLock: { args: Record<string, never>; result: boolean }
+  previewMeetingTemplate: { args: { body: string }; result: string }
   profile: { args: Record<string, never>; result: Profile }
   quickEntryLabels: {
     args: { entryId: EntryId; journalId?: JournalId | null }
@@ -403,6 +410,7 @@ export interface Commands {
     args: { sender?: string | null; domain?: string | null }
     result: void
   }
+  rewriteMeetingNote: { args: { noteId: NoteId; templateId: TemplateId }; result: string }
   routineTemplates: { args: Record<string, never>; result: Template[] }
   runImport: { args: { handle: string; parts: string[]; mode: string }; result: ImportResult }
   runRoutine: { args: { id: RoutineId }; result: RoutineRun }
@@ -491,6 +499,7 @@ export interface Commands {
   syncStatus: { args: Record<string, never>; result: MailSyncProgress[] }
   taskStats: { args: Record<string, never>; result: TaskStats }
   taskTags: { args: Record<string, never>; result: TagCount[] }
+  testTranscriber: { args: Record<string, never>; result: void }
   timeByPurpose: { args: { from: string; to: string }; result: BalanceReport }
   touch: { args: Record<string, never>; result: void }
   trackerDays: { args: { query: ReadingQuery }; result: TrackerDay[] }
@@ -559,6 +568,7 @@ export const COMMAND_NAMES = {
   downloadSpeechModel: 'download_speech_model',
   endExport: 'end_export',
   endImport: 'end_import',
+  enrolVoice: 'enrol_voice',
   fetchAttachment: 'fetch_attachment',
   fetchImage: 'fetch_image',
   finishRecording: 'finish_recording',
@@ -578,6 +588,7 @@ export const COMMAND_NAMES = {
   importCalendar: 'import_calendar',
   label: 'label',
   libraryStats: 'library_stats',
+  lintMeetingTemplate: 'lint_meeting_template',
   listAccountCalendars: 'list_account_calendars',
   listAccounts: 'list_accounts',
   listBlocks: 'list_blocks',
@@ -619,6 +630,7 @@ export const COMMAND_NAMES = {
   meetingSettings: 'meeting_settings',
   mergeTrackers: 'merge_trackers',
   moveToMailbox: 'move_to_mailbox',
+  nameSpeaker: 'name_speaker',
   newBlock: 'new_block',
   newConversation: 'new_conversation',
   newDraft: 'new_draft',
@@ -637,6 +649,7 @@ export const COMMAND_NAMES = {
   newTracker: 'new_tracker',
   noteTags: 'note_tags',
   pollAutoLock: 'poll_auto_lock',
+  previewMeetingTemplate: 'preview_meeting_template',
   profile: 'profile',
   quickEntryLabels: 'quick_entry_labels',
   quickEntryReadings: 'quick_entry_readings',
@@ -668,6 +681,7 @@ export const COMMAND_NAMES = {
   respondToInvite: 'respond_to_invite',
   retryRecording: 'retry_recording',
   revokeRemoteImageAllowance: 'revoke_remote_image_allowance',
+  rewriteMeetingNote: 'rewrite_meeting_note',
   routineTemplates: 'routine_templates',
   runImport: 'run_import',
   runRoutine: 'run_routine',
@@ -730,6 +744,7 @@ export const COMMAND_NAMES = {
   syncStatus: 'sync_status',
   taskStats: 'task_stats',
   taskTags: 'task_tags',
+  testTranscriber: 'test_transcriber',
   timeByPurpose: 'time_by_purpose',
   touch: 'touch',
   trackerDays: 'tracker_days',
@@ -808,6 +823,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'download_speech_model',
   'end_export',
   'end_import',
+  'enrol_voice',
   'fetch_attachment',
   'fetch_image',
   'finish_recording',
@@ -827,6 +843,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'import_calendar',
   'label',
   'library_stats',
+  'lint_meeting_template',
   'list_account_calendars',
   'list_accounts',
   'list_blocks',
@@ -868,6 +885,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'meeting_settings',
   'merge_trackers',
   'move_to_mailbox',
+  'name_speaker',
   'new_block',
   'new_conversation',
   'new_draft',
@@ -886,6 +904,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'new_tracker',
   'note_tags',
   'poll_auto_lock',
+  'preview_meeting_template',
   'profile',
   'quick_entry_labels',
   'quick_entry_readings',
@@ -917,6 +936,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'respond_to_invite',
   'retry_recording',
   'revoke_remote_image_allowance',
+  'rewrite_meeting_note',
   'routine_templates',
   'run_import',
   'run_routine',
@@ -978,6 +998,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'sync_status',
   'task_stats',
   'task_tags',
+  'test_transcriber',
   'time_by_purpose',
   'touch',
   'tracker_days',
@@ -1043,6 +1064,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'discard_recording',
   'dismiss_meeting_offer',
   'download_speech_model',
+  'enrol_voice',
   'fetch_attachment',
   'fetch_image',
   'finish_recording',
@@ -1056,6 +1078,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'mark_unread',
   'merge_trackers',
   'move_to_mailbox',
+  'name_speaker',
   'new_draft',
   'poll_auto_lock',
   'rebuild_mail_index',
@@ -1159,6 +1182,7 @@ export const CHANGE_KINDS = {
   discard_draft: 'draft',
   discard_recording: 'recording',
   download_speech_model: 'settings',
+  enrol_voice: 'voiceprint',
   finish_recording: 'recording',
   import_calendar: 'calendar',
   label: 'thread',
@@ -1168,6 +1192,7 @@ export const CHANGE_KINDS = {
   mark_unread: 'thread',
   merge_trackers: 'tracker',
   move_to_mailbox: 'thread',
+  name_speaker: 'transcript',
   new_draft: 'draft',
   retry_recording: 'recording',
   revoke_remote_image_allowance: 'settings',

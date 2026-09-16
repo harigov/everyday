@@ -1031,6 +1031,26 @@
     {
       "args": [
         {
+          "name": "pcm",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "voiceprint",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "enrol_voice",
+      "orScope": null,
+      "returns": "VoiceprintInfo",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "messageId",
           "required": true,
           "type": "MailMessageId"
@@ -2064,6 +2084,41 @@
     {
       "args": [
         {
+          "name": "noteId",
+          "required": true,
+          "type": "NoteId"
+        },
+        {
+          "name": "speakerKey",
+          "required": true,
+          "type": "number"
+        },
+        {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "email",
+          "required": false,
+          "type": "string | null"
+        }
+      ],
+      "changes": {
+        "kind": "transcript",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "name_speaker",
+      "orScope": null,
+      "returns": "Transcript",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "subject",
           "required": true,
           "type": "BlockSubject"
@@ -2385,6 +2440,23 @@
       "orScope": null,
       "returns": "boolean",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "body",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "preview_meeting_template",
+      "orScope": null,
+      "returns": "string",
+      "scope": "meetings",
       "sensitive": false,
       "streams": false
     },
@@ -2981,6 +3053,28 @@
       "orScope": null,
       "returns": "void",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "noteId",
+          "required": true,
+          "type": "NoteId"
+        },
+        {
+          "name": "templateId",
+          "required": true,
+          "type": "TemplateId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "rewrite_meeting_note",
+      "orScope": null,
+      "returns": "string",
+      "scope": "meetings",
       "sensitive": false,
       "streams": false
     },
@@ -4290,6 +4384,17 @@
       "orScope": null,
       "returns": "TagCount[]",
       "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "test_transcriber",
+      "orScope": null,
+      "returns": "void",
+      "scope": "meetings",
       "sensitive": false,
       "streams": false
     },
