@@ -36,6 +36,10 @@ pub struct AppState {
     sharing: Arc<Sharing>,
     /// Serving this vault's tools to an MCP client, when that is on.
     mcp: Arc<Mcp>,
+    /// A meeting being recorded, if one is, for the life of the capture. See
+    /// `capture.rs` and `meeting.rs`. `meeting_start` refuses a second
+    /// recording while this is `Some`.
+    capture: Mutex<Option<crate::capture::CaptureHandle>>,
     /// The one open handle onto `devices.json`, for the life of this
     /// process.
     ///
@@ -68,8 +72,16 @@ impl AppState {
             sink: RwLock::new(None),
             sharing: Arc::default(),
             mcp: Arc::default(),
+            capture: Mutex::new(None),
             registry: Mutex::new(None),
         }
+    }
+
+    /// The active recording's handle, if there is one -- what `meeting.rs`'s
+    /// commands take out (`meeting_stop`) or check the presence of
+    /// (`meeting_start`'s "already running" guard, `meeting_status`).
+    pub fn capture(&self) -> &Mutex<Option<crate::capture::CaptureHandle>> {
+        &self.capture
     }
 
     pub fn sharing(&self) -> Arc<Sharing> {

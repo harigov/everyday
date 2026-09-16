@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Merged into the generated Info.plist on macOS builds -- Tauri looks for a
+  file by this name next to tauri.conf.json automatically, no config entry
+  needed. See `src/capture.rs`: the only thing on this platform that opens
+  the microphone or a loopback tap is native `cpal` code in the shell, never
+  the webview, but macOS still gates both behind a privacy prompt whose text
+  comes from here. Windows needs nothing analogous; Linux's PipeWire asks the
+  desktop portal, not the app, and only for the microphone.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Every Day records your microphone when you start meeting notes, so the call can be transcribed. Audio never leaves this Mac unless you choose a remote transcription provider in Settings.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>Every Day captures what a call plays through your speakers when you start meeting notes, so the other side of the conversation can be transcribed alongside your microphone.</string>
+</dict>
+</plist>

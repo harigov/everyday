@@ -8,12 +8,14 @@
 //! point is a library: Tauri builds iOS and Android targets from `run()` rather
 //! than from `main`.
 
+pub mod capture;
 mod commands;
 mod events;
 mod fanout;
 mod hotkey;
 mod listener;
 mod mcp;
+mod meeting;
 mod protocol;
 mod remote;
 mod remotes;
@@ -166,6 +168,11 @@ pub fn run() {
             commands::ready_to_close,
             commands::set_tray_menu,
             commands::hide_tray,
+            // Meeting notes: hearing a call. See `capture.rs` and
+            // `meeting.rs`.
+            meeting::meeting_start,
+            meeting::meeting_stop,
+            meeting::meeting_status,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

@@ -77,7 +77,8 @@ jobs:
       # which means its tests and its lints run *nowhere* unless this job
       # installs the headers and asks for it by name. It is the crate holding
       # the only network code in the application, so that is worth a minute of
-      # apt.
+      # apt. The PipeWire headers are for `capture.rs`'s loopback track: see
+      # its module doc and `docs/plans/meeting-notes.md`.
       - name: Build dependencies
         run: |
           set -euo pipefail
@@ -88,7 +89,9 @@ jobs:
             libsoup-3.0-dev \
             libgtk-3-dev \
             librsvg2-dev \
-            libayatana-appindicator3-dev
+            libayatana-appindicator3-dev \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev
 
       - uses: actions/cache@v4
         with:

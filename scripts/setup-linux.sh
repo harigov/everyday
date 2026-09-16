@@ -19,15 +19,19 @@ if command -v apt-get >/dev/null 2>&1; then
         libgtk-3-dev \
         librsvg2-dev \
         libayatana-appindicator3-dev \
+        libpipewire-0.3-dev \
+        libspa-0.2-dev \
         build-essential curl wget file pkg-config
 elif command -v dnf >/dev/null 2>&1; then
     sudo dnf install -y \
         webkit2gtk4.1-devel javascriptcoregtk4.1-devel libsoup3-devel \
         gtk3-devel librsvg2-devel libappindicator-gtk3-devel \
+        pipewire-devel \
         openssl-devel curl wget file
 elif command -v pacman >/dev/null 2>&1; then
     sudo pacman -S --needed \
         webkit2gtk-4.1 gtk3 libsoup3 librsvg libayatana-appindicator \
+        libpipewire \
         base-devel curl wget file openssl
 else
     echo "Unrecognised package manager." >&2
