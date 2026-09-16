@@ -34,6 +34,7 @@ use crate::store::agent::AgentStore;
 use crate::store::calendars::CalendarStore;
 use crate::store::library::LibraryStore;
 use crate::store::mail::MailStore;
+use crate::store::meetings::MeetingStore;
 use crate::store::notes::NoteStore;
 use crate::store::purpose::PurposeStore;
 use crate::store::routines::RoutineStore;
@@ -157,6 +158,15 @@ pub struct Capabilities {
     /// all.
     #[serde(default)]
     pub mail: bool,
+    /// Backend implements [`meetings::MeetingStore`], so a recording, its
+    /// transcript and a voiceprint have somewhere to live.
+    ///
+    /// False hides meeting notes entirely, including the settings that
+    /// configure them -- offering to record a call nobody can transcribe or
+    /// keep is worse than not offering it, on the same reasoning `trackers`
+    /// gives.
+    #[serde(default)]
+    pub meetings: bool,
 }
 
 /// Per-vault configuration a backend needs and the core knows nothing about.
@@ -563,6 +573,15 @@ pub trait JournalStore: Send + Sync {
         None
     }
 
+    /// Storage for meeting notes, if this backend has any.
+    ///
+    /// Same shape and same reasoning as [`JournalStore::tasks`]. See
+    /// [`meetings`](crate::store::meetings) for what stays in the clear on a
+    /// recording and why the settings are a singleton like the assistant's.
+    fn meetings(&self) -> Option<&dyn MeetingStore> {
+        None
+    }
+
     // ---- the owner ------------------------------------------------------
 
     /// Who this vault belongs to.
@@ -891,6 +910,7 @@ pub mod agent;
 pub mod calendars;
 pub mod library;
 pub mod mail;
+pub mod meetings;
 pub mod notes;
 pub mod purpose;
 pub mod routines;
