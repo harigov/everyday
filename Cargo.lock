@@ -2099,6 +2099,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "audioadapter-buffers",
+ "axum",
  "base64 0.22.1",
  "cpal",
  "everyday-core",
@@ -2119,6 +2120,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

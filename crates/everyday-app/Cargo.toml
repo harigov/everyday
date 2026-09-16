@@ -103,6 +103,17 @@ everyday-mail.workspace = true
 # The capture spike (`examples/capture.rs`) only; nothing shipped bails out
 # through `anyhow`.
 anyhow = "1"
+# `tests/meeting_e2e.rs` runs a tiny local OpenAI-compatible HTTP stub for
+# the assistant's chat-completions call, the same reason `everyday-service`
+# already carries this as a dev-dependency for its own transcriber tests.
+axum = { version = "0.8", features = ["multipart"] }
+# The library dependency above only enables `sync`/`time`; the E2E test
+# needs a full multi-thread runtime with `#[tokio::test]` to drive real
+# capture, a spawned axum server and the pipeline's own async work side by
+# side. Cargo unifies this with the library's own `tokio` dependency for
+# test builds, so nothing shipped gains these features.
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "process"] }
+tempfile = "3"
 
 [features]
 # Enabled by `tauri dev`/`tauri build`; keeps devtools out of releases.

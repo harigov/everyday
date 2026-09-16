@@ -10,18 +10,20 @@
 //! `Session`, so a recording made against a remote vault sends its audio
 //! exactly the way this module sends `begin_recording` itself.
 
+use std::sync::{Arc, Mutex};
+
 use base64::Engine;
 use everyday_core::id::{EventId, RecordingId, TemplateId};
 use everyday_core::meeting::Recording;
 use everyday_service::Ctx;
 use everyday_service::error::{CommandError, CommandResult};
-use everyday_service::events::MeetingOffer;
+use everyday_service::events::{EventSink, MeetingOffer};
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::capture::{self, CaptureStatus, RecordingHandle, RecordingSink};
+use crate::capture::{self, CaptureHandle, CaptureStatus, RecordingHandle, RecordingSink};
 use crate::remote::Session;
-use crate::state::AppState;
+use crate::state::{AppState, SessionHandle};
 use crate::tray::Tray;
 
 /// The Tauri event carrying a `MeetingOfferPayload` -- what
@@ -76,13 +78,22 @@ impl From<MeetingOffer> for OfferPayload {
 /// re-polls `active_recording` instead, which is how the pill finds the
 /// recording that resulted.
 pub fn on_meeting_offer(app: &AppHandle, offer: MeetingOffer) {
-    if offer.automatic {
+    if starts_automatically(&offer) {
         start_automatic(app.clone(), offer.event_id);
     }
     let payload = OfferPayload::from(offer);
     if let Err(e) = app.emit(OFFER_EVENT, payload) {
         tracing::debug!(error = %e, "a meeting offer could not reach the interface");
     }
+}
+
+/// Whether an offer should start capture on its own, without a press --
+/// the one condition [`on_meeting_offer`] checks before calling
+/// [`start_automatic`]. Broken out so it is a plain, window-free fact to
+/// assert against both an "Always" and an "Ask" offer, rather than
+/// something only provable by driving a whole Tauri window.
+fn starts_automatically(offer: &MeetingOffer) -> bool {
+    offer.automatic
 }
 
 /// Begin recording, on the service and then the microphone. `eventId` ties
@@ -135,9 +146,50 @@ async fn begin(
     automatic: bool,
 ) -> CommandResult<Recording> {
     let state = app.state::<AppState>();
-    let session = state.session().as_session();
+    let recording = begin_headless(
+        state.session(),
+        state.sink(),
+        state.capture(),
+        event_id,
+        title,
+        template_id,
+        automatic,
+        Some(app.clone()),
+    )
+    .await?;
+    if let Some(tray) = app.try_state::<Tray>() {
+        let _ = tray.set_recording(&app, Some(&recording.title));
+    }
+    Ok(recording)
+}
 
-    let value = session
+/// The window-free core of [`begin`]: on the service and then the
+/// microphone, exactly the same two steps and the same order, but taking
+/// everything `begin` would otherwise read off an `AppHandle`'s `AppState`
+/// as plain arguments instead -- a `SessionHandle` rather than a window to
+/// fetch one from, `capture_slot` rather than `AppState::capture()`, and
+/// `app` only for [`capture::start`]'s own optional status emission (see
+/// its doc), never for a tray update, which is `begin`'s alone to do once
+/// this returns `Ok`.
+///
+/// This is what makes an E2E harness with no Tauri window able to start a
+/// recording through the identical path `meeting_start` and
+/// `start_automatic` do: both ultimately call this, `begin` for the
+/// former and, by way of `begin` itself, for the latter too.
+#[allow(clippy::too_many_arguments)]
+pub async fn begin_headless(
+    session: SessionHandle,
+    events: Option<Arc<dyn EventSink>>,
+    capture_slot: &Mutex<Option<CaptureHandle>>,
+    event_id: Option<EventId>,
+    title: Option<String>,
+    template_id: Option<TemplateId>,
+    automatic: bool,
+    app: Option<AppHandle>,
+) -> CommandResult<Recording> {
+    let call_session = session.as_session();
+
+    let value = call_session
         .call(
             Ctx::local(),
             "begin_recording",
@@ -148,11 +200,11 @@ async fn begin(
         CommandError::new("invalid", format!("begin_recording answered oddly: {e}"))
     })?;
 
-    let auto_stop_enabled = read_auto_stop(&session).await;
-    let events = state.sink();
-    let call_session = state.session().as_session();
+    let auto_stop_quiet =
+        if read_auto_stop(&call_session).await { Some(capture::AUTO_STOP_QUIET) } else { None };
+    let sink_session = session.as_session();
     let call: Box<capture::CommandCaller> = Box::new(move |name, args| {
-        tauri::async_runtime::block_on(call_session.call(Ctx::local(), name, args))
+        tauri::async_runtime::block_on(sink_session.call(Ctx::local(), name, args))
     });
     let sink = Box::new(RecordingSink::new(recording.id, call));
 
@@ -164,12 +216,9 @@ async fn begin(
         event_end: recording.event.as_ref().map(|e| e.end),
     };
 
-    match capture::start(handle, sink, events, app.clone(), auto_stop_enabled) {
+    match capture::start(handle, sink, events, app, auto_stop_quiet) {
         Ok(capture_handle) => {
-            *state.capture().lock().unwrap() = Some(capture_handle);
-            if let Some(tray) = app.try_state::<Tray>() {
-                let _ = tray.set_recording(&app, Some(&recording.title));
-            }
+            *capture_slot.lock().unwrap() = Some(capture_handle);
             Ok(recording)
         }
         Err(e) => {
@@ -180,7 +229,7 @@ async fn begin(
             // coming would be a row recovery has to find and explain;
             // discarding it here means the error the person sees is the
             // only trace it left.
-            let _ = session
+            let _ = call_session
                 .call(Ctx::local(), "discard_recording", json!({ "id": recording.id }))
                 .await;
             Err(e.into())
@@ -283,4 +332,30 @@ pub async fn voice_enrol(
     let value = session.call(Ctx::local(), "enrol_voice", json!({ "pcm": pcm_b64 })).await?;
     serde_json::from_value(value)
         .map_err(|e| CommandError::new("invalid", format!("enrol_voice answered oddly: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn offer(automatic: bool) -> MeetingOffer {
+        MeetingOffer {
+            event_id: EventId::new(),
+            title: "Design sync".into(),
+            start: jiff::Timestamp::now(),
+            end: jiff::Timestamp::now(),
+            calendar_name: "Work".into(),
+            automatic,
+        }
+    }
+
+    #[test]
+    fn an_always_offer_starts_automatically() {
+        assert!(starts_automatically(&offer(true)));
+    }
+
+    #[test]
+    fn an_ask_offer_does_not_start_on_its_own() {
+        assert!(!starts_automatically(&offer(false)));
+    }
 }

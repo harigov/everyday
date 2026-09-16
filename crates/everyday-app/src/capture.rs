@@ -625,18 +625,23 @@ pub enum AutoStopDecision {
 /// `mic_silent_ms`/`system_silent_ms`: how long each track has been
 /// continuously quiet, as of `now`. `event_end`: the calendar event's end,
 /// if this recording has one -- without it, auto-stop never acts, because
-/// there is nothing to measure "past" against.
+/// there is nothing to measure "past" against. `quiet`: how long both
+/// tracks must stay silent before acting -- [`AUTO_STOP_QUIET`] in
+/// production, threaded through explicitly rather than read from the
+/// constant so a test can shorten it without changing production's own
+/// value; see [`start`]'s `auto_stop_quiet` parameter.
 pub fn auto_stop_decision(
     event_end: Option<Timestamp>,
     now: Timestamp,
     mic_silent_ms: u64,
     system_silent_ms: u64,
+    quiet: Duration,
 ) -> AutoStopDecision {
     let Some(end) = event_end else { return AutoStopDecision::Continue };
     if now < end {
         return AutoStopDecision::Continue;
     }
-    let quiet_ms = AUTO_STOP_QUIET.as_millis() as u64;
+    let quiet_ms = quiet.as_millis() as u64;
     if mic_silent_ms >= quiet_ms && system_silent_ms >= quiet_ms {
         return AutoStopDecision::Stop;
     }
@@ -651,12 +656,14 @@ pub fn auto_stop_decision(
 
 /// When auto-stop *will* act, if both tracks are currently silent past the
 /// event's end -- `CaptureStatus::auto_stop_at`. `None` unless armed: past
-/// the event's end, and both tracks silent right now.
+/// the event's end, and both tracks silent right now. `quiet`: see
+/// [`auto_stop_decision`].
 pub fn auto_stop_at(
     event_end: Option<Timestamp>,
     now: Timestamp,
     mic_silent_ms: u64,
     system_silent_ms: u64,
+    quiet: Duration,
 ) -> Option<Timestamp> {
     let end = event_end?;
     if now < end || mic_silent_ms == 0 || system_silent_ms == 0 {
@@ -664,7 +671,7 @@ pub fn auto_stop_at(
     }
     let quietest = mic_silent_ms.min(system_silent_ms);
     let since = now.checked_sub(jiff::SignedDuration::from_millis(quietest as i64)).ok()?;
-    let quiet = jiff::SignedDuration::new(AUTO_STOP_QUIET.as_secs() as i64, 0);
+    let quiet = jiff::SignedDuration::new(quiet.as_secs() as i64, 0);
     since.checked_add(quiet).ok()
 }
 
@@ -906,12 +913,25 @@ impl CaptureHandle {
 /// that vanishes moments after open) is reported through `status` and a
 /// notification on `events`, because it can only be discovered on the
 /// capture thread once streams are actually opened there.
+///
+/// `app` is `None` for a window-free caller -- an E2E harness driving this
+/// module the same way `everyday-app`'s `meeting::begin` does, but with no
+/// Tauri window to emit `STATUS_EVENT`/`STILL_ON_EVENT` to. `status` (and
+/// `events`, already `Option`) are how such a caller still observes what is
+/// happening.
+///
+/// `auto_stop_quiet`: `None` turns auto-stop off, as `auto_stop_enabled:
+/// false` did before; `Some(quiet)` turns it on with `quiet` as how long
+/// both tracks must stay silent past the event's end before acting --
+/// [`AUTO_STOP_QUIET`] in production. Threaded through explicitly, rather
+/// than read from that constant deep inside [`run`], so a test can shorten
+/// it without touching the constant every real caller gets.
 pub fn start(
     recording: RecordingHandle,
     sink: Box<dyn ChunkSink>,
     events: Option<Arc<dyn EventSink>>,
-    app: AppHandle,
-    auto_stop_enabled: bool,
+    app: Option<AppHandle>,
+    auto_stop_quiet: Option<Duration>,
 ) -> Result<CaptureHandle, CaptureError> {
     let host = cpal::default_host();
     if host.default_input_device().is_none() {
@@ -927,7 +947,7 @@ pub fn start(
     let join = std::thread::Builder::new()
         .name("meeting-capture".into())
         .spawn(move || {
-            run(recording, sink, tx, rx, status_for_thread, events, app, auto_stop_enabled)
+            run(recording, sink, tx, rx, status_for_thread, events, app, auto_stop_quiet)
         })
         .map_err(|e| CaptureError(format!("could not start the capture thread: {e}")))?;
 
@@ -998,6 +1018,14 @@ impl TrackState {
     }
 }
 
+/// `app.emit`, guarded for the window-free case -- see [`start`]'s doc on
+/// `app`. A no-op when there is no window to tell.
+fn emit<T: serde::Serialize + Clone>(app: &Option<AppHandle>, name: &str, payload: T) {
+    if let Some(app) = app {
+        let _ = app.emit(name, payload);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run(
     recording: RecordingHandle,
@@ -1006,15 +1034,15 @@ fn run(
     rx: Receiver<Event>,
     status: Arc<Mutex<Option<CaptureStatus>>>,
     events: Option<Arc<dyn EventSink>>,
-    app: AppHandle,
-    auto_stop_enabled: bool,
+    app: Option<AppHandle>,
+    auto_stop_quiet: Option<Duration>,
 ) {
     let started_at = Instant::now();
     let elapsed_ms = || started_at.elapsed().as_millis() as u64;
 
     if let Err(e) = sink.begin() {
         tracing::warn!(error = %e, "meeting capture: sink refused to begin");
-        let _ = app.emit(STATUS_EVENT, Option::<CaptureStatus>::None);
+        emit(&app, STATUS_EVENT, Option::<CaptureStatus>::None);
         return;
     }
 
@@ -1026,7 +1054,7 @@ fn run(
         Err(e) => {
             tracing::warn!(error = %e, "meeting capture: could not open the microphone");
             let _ = sink.discard();
-            let _ = app.emit(STATUS_EVENT, Option::<CaptureStatus>::None);
+            emit(&app, STATUS_EVENT, Option::<CaptureStatus>::None);
             return;
         }
     };
@@ -1105,10 +1133,11 @@ fn run(
             let mic_silent = mic.silence.silent_since_ms.map_or(0, |s| now_ms.saturating_sub(s));
             let system_silent =
                 system.silence.silent_since_ms.map_or(0, |s| now_ms.saturating_sub(s));
-            let auto_stop_at_value = if auto_stop_enabled {
-                auto_stop_at(recording.event_end, now, mic_silent, system_silent)
-            } else {
-                None
+            let auto_stop_at_value = match auto_stop_quiet {
+                Some(quiet) => {
+                    auto_stop_at(recording.event_end, now, mic_silent, system_silent, quiet)
+                }
+                None => None,
             };
             let current = CaptureStatus {
                 recording_id: recording.id,
@@ -1121,14 +1150,15 @@ fn run(
                 system_unavailable: system_unavailable.clone(),
                 auto_stop_at: auto_stop_at_value,
             };
-            let _ = app.emit(STATUS_EVENT, &current);
+            emit(&app, STATUS_EVENT, &current);
             *status.lock().unwrap() = Some(current);
 
-            if auto_stop_enabled {
-                match auto_stop_decision(recording.event_end, now, mic_silent, system_silent) {
+            if let Some(quiet) = auto_stop_quiet {
+                match auto_stop_decision(recording.event_end, now, mic_silent, system_silent, quiet)
+                {
                     AutoStopDecision::Stop => break 'outer,
                     AutoStopDecision::AskToContinue => {
-                        let _ = app.emit(STILL_ON_EVENT, recording.id);
+                        emit(&app, STILL_ON_EVENT, recording.id);
                     }
                     AutoStopDecision::Continue => {}
                 }
@@ -1179,7 +1209,7 @@ fn run(
     }
 
     *status.lock().unwrap() = None;
-    let _ = app.emit(STATUS_EVENT, Option::<CaptureStatus>::None);
+    emit(&app, STATUS_EVENT, Option::<CaptureStatus>::None);
 }
 
 #[cfg(test)]
@@ -1325,7 +1355,7 @@ mod tests {
     #[test]
     fn auto_stop_never_fires_before_the_event_ends() {
         let end = ts(1000);
-        let decision = auto_stop_decision(Some(end), ts(999), 999_999, 999_999);
+        let decision = auto_stop_decision(Some(end), ts(999), 999_999, 999_999, AUTO_STOP_QUIET);
         assert_eq!(decision, AutoStopDecision::Continue);
     }
 
@@ -1333,35 +1363,39 @@ mod tests {
     fn auto_stop_waits_for_both_tracks_to_be_quiet() {
         let end = ts(1000);
         // Past the end, but only one track has been quiet long enough.
-        let decision = auto_stop_decision(Some(end), ts(1130), 130_000, 10_000);
+        let decision = auto_stop_decision(Some(end), ts(1130), 130_000, 10_000, AUTO_STOP_QUIET);
         assert_eq!(decision, AutoStopDecision::Continue);
     }
 
     #[test]
     fn auto_stop_fires_after_two_minutes_of_mutual_quiet() {
         let end = ts(1000);
-        let decision = auto_stop_decision(Some(end), ts(1130), 125_000, 121_000);
+        let decision = auto_stop_decision(Some(end), ts(1130), 125_000, 121_000, AUTO_STOP_QUIET);
         assert_eq!(decision, AutoStopDecision::Stop);
     }
 
     #[test]
     fn auto_stop_asks_after_thirty_minutes_if_still_going() {
         let end = ts(1000);
-        let decision = auto_stop_decision(Some(end), ts(1000 + 1800), 0, 0);
+        let decision = auto_stop_decision(Some(end), ts(1000 + 1800), 0, 0, AUTO_STOP_QUIET);
         assert_eq!(decision, AutoStopDecision::AskToContinue);
     }
 
     #[test]
     fn auto_stop_does_nothing_without_an_event() {
-        let decision = auto_stop_decision(None, ts(100_000), 999_999, 999_999);
+        let decision = auto_stop_decision(None, ts(100_000), 999_999, 999_999, AUTO_STOP_QUIET);
         assert_eq!(decision, AutoStopDecision::Continue);
     }
 
     #[test]
     fn auto_stop_at_is_armed_only_once_both_tracks_are_currently_silent() {
         let end = ts(1000);
-        assert_eq!(auto_stop_at(Some(end), ts(1010), 0, 5_000), None, "mic is currently live");
-        let armed = auto_stop_at(Some(end), ts(1010), 5_000, 5_000);
+        assert_eq!(
+            auto_stop_at(Some(end), ts(1010), 0, 5_000, AUTO_STOP_QUIET),
+            None,
+            "mic is currently live"
+        );
+        let armed = auto_stop_at(Some(end), ts(1010), 5_000, 5_000, AUTO_STOP_QUIET);
         assert!(armed.is_some());
     }
 
