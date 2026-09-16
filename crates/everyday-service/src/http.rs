@@ -1,38 +1,64 @@
 //! The application's one HTTP client, and the two things every caller of it
 //! needs to get right.
 //!
-//! There are exactly three features in Every Day that open a socket —
-//! refreshing a subscribed calendar ([`crate::feeds`]), looking up what a
-//! book is called ([`crate::websearch`]), and fetching a remote image a
-//! message asked to load ([`crate::mailview::remote_image`]) — and all three
-//! do it from here. Sharing the client is not about connection pooling; it
-//! is about the settings below being decided once. A second
-//! `Client::builder()` elsewhere in the tree would be a second timeout, a
-//! second redirect policy and a second chance to forget the size cap, and
-//! the only sign of the mistake would be a wedged request some months later.
+//! Five features in Every Day send an ordinary web request through this
+//! client: refreshing a subscribed calendar ([`crate::feeds`]); syncing a
+//! calendar an account already has, over Google's or Microsoft's own API
+//! rather than CalDAV ([`crate::accountcal::google`],
+//! [`crate::accountcal::graph`]); looking up what a book is called
+//! ([`crate::websearch`]); fetching a remote image a message asked to load
+//! ([`crate::mailview::remote_image`]); and, once a call ends, sending a
+//! chunk of speech to whichever remote transcriber the person configured
+//! ([`crate::meeting::transcribe::openai`],
+//! [`crate::meeting::transcribe::gemini`]). Sharing the client is not about
+//! connection pooling; it is about the settings below being decided once. A
+//! second `Client::builder()` elsewhere in the tree would be a second
+//! timeout, a second redirect policy and a second chance to forget the size
+//! cap, and the only sign of the mistake would be a wedged request some
+//! months later.
 //!
-//! What is *not* shared is the prose, or the extra caution one caller needs
-//! that the others do not. A 404 means "that subscription link has been
-//! revoked" to the calendar and "nothing was found" to a lookup, so each
-//! caller maps status codes itself. A remote image is the one address of
-//! the three that a *stranger* chose rather than the person using this
-//! application, so [`crate::mailview`] layers its own SSRF check and a
-//! generic `User-Agent` on top of this client's shared settings rather than
-//! trusting the far end the way a calendar subscription or a search result
-//! is. See [`crate::feeds::fetch`], [`crate::websearch::get`] and
+//! Two other things in this application open a socket on purpose rather than
+//! coming through here. [`crate::meeting::models`] downloads a model archive
+//! that can run to hundreds of megabytes over its own client, on its own
+//! long timeout, because this one's thirty-second budget would abort a real
+//! download before it finished -- see that module's doc for why its caution
+//! belongs there and not here. [`crate::llm::client`] talks to whichever
+//! model the assistant or the quick tier is configured against, over `rig`'s
+//! own client rather than this one, for the streaming and tool-calling shape
+//! chat needs; [`crate::accountcal::caldav`] likewise keeps its own
+//! WebDAV-verb client. Mail's IMAP and SMTP connections are not HTTP at all
+//! and never come near this module.
+//!
+//! What is *not* shared, among the five that do use this client, is the
+//! prose, or the extra caution one caller needs that the others do not. A
+//! 404 means "that subscription link has been revoked" to a calendar and
+//! "nothing was found" to a lookup, so each caller maps status codes itself.
+//! A remote image is the one address among them that a *stranger* chose
+//! rather than the person using this application, so [`crate::mailview`]
+//! layers its own SSRF check and a generic `User-Agent` on top of this
+//! client's shared settings rather than trusting the far end the way a
+//! calendar subscription, an account sync or a transcription request is. See
+//! [`crate::feeds::fetch`], [`crate::websearch::get`] and
 //! [`crate::mailview::remote_image`].
 //!
 //! # What this is allowed to talk to
 //!
-//! The address the user pasted into a calendar, the search endpoint behind a
-//! button they pressed, and an image address a message named -- fetched only
-//! once its sender is trusted or the person asks, and only after
-//! [`crate::mailview`]'s own checks. There is no telemetry, no update check,
-//! no crash reporter and no analytics anywhere in this application. The
-//! webview's own network permissions are unchanged and remain none at all —
-//! its content security policy still allows `connect-src 'self' ipc:` — so
-//! nothing it renders can cause a request of its own; every request this
-//! client makes is one a person, not a webview, chose.
+//! The address the user pasted into a calendar; the calendar API of an
+//! account they signed into; the search endpoint behind a button they
+//! pressed; an image address a message named -- fetched only once its
+//! sender is trusted or the person asks, and only after
+//! [`crate::mailview`]'s own checks -- and, if they chose a remote
+//! transcriber over a local one, that transcriber's endpoint: OpenAI's,
+//! Google's, or a base URL the person typed in for a compatible server of
+//! their own. What travels there is speech only -- VAD cuts silence out
+//! locally before anything is sent, per [`crate::meeting::transcribe`]'s own
+//! doc -- and never a voiceprint, which this application does not transmit
+//! to anybody. There is no telemetry, no update check, no crash reporter and
+//! no analytics anywhere in this application. The webview's own network
+//! permissions are unchanged and remain none at all — its content security
+//! policy still allows `connect-src 'self' ipc:` — so nothing it renders can
+//! cause a request of its own; every request this client makes is one a
+//! person, not a webview, chose.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, OnceLock};

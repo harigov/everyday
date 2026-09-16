@@ -78,7 +78,12 @@ jobs:
       # installs the headers and asks for it by name. It is the crate holding
       # the only network code in the application, so that is worth a minute of
       # apt. The PipeWire headers are for `capture.rs`'s loopback track: see
-      # its module doc and `docs/plans/meeting-notes.md`.
+      # its module doc and `docs/plans/meeting-notes.md`. libclang is for
+      # `bindgen`, which `libspa-sys`/`pipewire-sys` (cpal's PipeWire host)
+      # run at build time to generate their own bindings against those
+      # headers -- ubuntu-latest ships the `clang` binary already, but not
+      # reliably the `libclang` dev headers `bindgen` actually links against,
+      # so this is asked for explicitly rather than assumed.
       - name: Build dependencies
         run: |
           set -euo pipefail
@@ -91,7 +96,8 @@ jobs:
             librsvg2-dev \
             libayatana-appindicator3-dev \
             libpipewire-0.3-dev \
-            libspa-0.2-dev
+            libspa-0.2-dev \
+            libclang-dev
 
       - uses: actions/cache@v4
         with:

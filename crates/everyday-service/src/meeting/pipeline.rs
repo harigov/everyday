@@ -33,16 +33,14 @@
 //! shape (built elsewhere in this crate), so it needed no seam of its own --
 //! tests hand `run_recording` a fake one directly.
 //!
-//! # A stub two files away
+//! # One seam, two implementations
 //!
-//! `meeting::spool` is being built in parallel by another engineer (see
-//! `docs/plans/meeting-notes.md`'s module table); until it lands,
-//! `spool::read_chunk` and `spool::remove_audio` are placeholders that
-//! answer [`codes::UNSUPPORTED`]. [`SpoolSource`] is the thin adapter that
-//! calls them -- production code, wired into [`enqueue`] and
-//! [`chunk_closed`], but nothing in this crate's own tests exercises it: they
-//! all use [`FakeAudio`] instead. Once the spool lands for real, this file
-//! needs no change beyond `spool.rs` itself growing a real body.
+//! [`SpoolSource`] is the thin, production [`AudioSource`]: `read_chunk` and
+//! `remove_audio` call straight through to `meeting::spool`'s own functions
+//! of the same name. It is wired into [`enqueue`] and [`chunk_closed`], but
+//! nothing in this crate's own tests exercises it directly -- they all hand
+//! `run_recording` [`FakeAudio`] instead, so a stage's logic is tested
+//! without a real spool directory on disk.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -90,8 +88,7 @@ pub trait AudioSource: Send + Sync {
 }
 
 /// The production [`AudioSource`]: a thin adapter over `meeting::spool`,
-/// which is somebody else's file in this same change -- see this module's
-/// doc for why it is a placeholder there today.
+/// which owns the sealed chunk files on disk -- see that module's own doc.
 pub struct SpoolSource {
     vault: Arc<Vault>,
 }

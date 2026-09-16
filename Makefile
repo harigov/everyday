@@ -19,7 +19,7 @@ UI_DIR  := ui
 ARGS ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help setup run dev ui build test test-postgres test-imap test-smtp test-mail test-caldav lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
+.PHONY: help setup run dev ui build test test-speech test-postgres test-imap test-smtp test-mail test-caldav lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
 
 help: ## Show this help
 	@echo "Every Day -- make <target>"
@@ -74,6 +74,8 @@ test: ## Run the test suite under a memory cap
 	@if [ -z "$(ARGS)" ] && { [ "$$(uname -s)" != Linux ] || pkg-config --exists webkit2gtk-4.1 2>/dev/null; }; then \
 		./scripts/test.sh -p everyday-app; \
 	fi
+	@# Not the `speech` feature -- see `test-speech` below for why that is a
+	@# separate, opt-in target rather than folded in here.
 
 # The storage conformance suite against a real Postgres, which `make test`
 # cannot do because it would need a server it has no business starting. CI
@@ -237,16 +239,34 @@ test-mail: ## Run the mail sync engine's end-to-end suite against throwaway Dove
 	docker rm -f everyday-imaptest everyday-smtptest >/dev/null; \
 	exit $$status
 
+# The `speech` feature (`meeting::models`, `meeting::speech`,
+# `meeting::transcribe::local`; see docs/plans/meeting-notes.md) links
+# sherpa-onnx, whose build script downloads a ~20 MB prebuilt native library
+# the first time it builds, unless `SHERPA_ONNX_LIB_DIR` or
+# `SHERPA_ONNX_ARCHIVE_DIR` is already set -- see
+# `crates/everyday-service/Cargo.toml`'s own comment on that dependency.
+# Neither `test` nor `lint` below build it, on purpose: a plain clone's first
+# `make test` must not need that download or a native toolchain it may not
+# have. This is the manual equivalent of .github/workflows/check.yml's
+# separate `rust-speech` job, and the one job of the three there that `lint`
+# does not otherwise mirror.
+test-speech: ## Clippy and test the `speech` feature (downloads sherpa-onnx's native library)
+	cargo clippy -p everyday-service --all-targets --features speech -- -D warnings
+	cargo test -p everyday-service --features speech
+
 # The pair to reach for: `lint` says what is wrong, `fix` fixes what it can.
 # They are the same tools in the same order, so anything `fix` silences is
 # something `lint` would have complained about, and what survives a `fix` is
 # the list of things that need a person.
 #
-# Between them, the two jobs in .github/workflows/check.yml run exactly what
-# `lint` runs -- split in two only so the Rust half and the interface half go
-# in parallel. Keep the two in step when you change either: a check you can
-# only discover from a red build ten minutes after pushing is one people
-# learn to ignore.
+# Between them, the `rust` and `ui` jobs in .github/workflows/check.yml run
+# exactly what `lint` runs -- split in two only so the Rust half and the
+# interface half go in parallel. `check.yml`'s third job, `rust-speech`, is
+# not one of the two: `make test-speech` above is its manual equivalent,
+# kept out of `lint` for the same reason it is kept out of `test`. Keep
+# `lint` and the two jobs it does mirror in step when you change either: a
+# check you can only discover from a red build ten minutes after pushing is
+# one people learn to ignore.
 
 lint: $(UI_DIR)/node_modules ## Format check, clippy and interface typecheck -- changes nothing
 	cargo fmt --all -- --check

@@ -1,5 +1,58 @@
 # Meeting notes that take themselves
 
+> **Delivered**, through Phase 7. Read this for the reasoning; read the
+> commits for what was done. Seven things went differently from the plan
+> below, or were settled where the plan was silent rather than said outright,
+> each for a reason worth keeping:
+>
+> - **The offer is a first-class event, not a notification with extra
+>   fields.** `MeetingOffer` sits beside `Notification`/`Change`/the
+>   lock-state trio on `EventSink`, with its own `Outgoing::MeetingOffer`
+>   variant on the SSE wire — because "take notes for this call?" is a
+>   decision with three answers, and a remote client needs to be able to ask
+>   it the same way the desktop shell does, not just be told a recording
+>   already started.
+> - **The pipeline recomputes who said what for both the summarising and the
+>   writing stage, rather than persisting it between them.** A `Transcript`
+>   needs a `NoteId` to be indexed against, and that id does not exist until
+>   the note is written — so nothing is stored in between, `recording.partial`
+>   is left exactly as transcribing left it until `Done`, and `identify_stage`
+>   runs twice. The cost, stated at its point of use in `pipeline.rs`, is one
+>   redundant pass over a call's audio on every recording, even the ones that
+>   never fail — the alternative being a second storage shape for "a
+>   transcript with no note yet" that nothing else needs.
+> - **A chunk is only transcribed early, while the call is still going, for a
+>   remote backend.** `chunk_closed` checks whether the configured
+>   transcriber is remote before enqueuing it; local transcription is CPU the
+>   same process needs for capture and VAD, so it always waits for the call
+>   to end, and a struggling machine is never asked to do both at once. The
+>   chunk is transcribed either way — just not until [`enqueue`] runs at the
+>   end, which is always safe.
+> - **Voice enrolment is a shell command, not a service one.** `voice_enrol`
+>   records the microphone alone, natively, and hands the sample to
+>   `enrol_voice` — which means, like recording a call itself, it needs the
+>   desktop shell and is simply unavailable in a browser build with no native
+>   microphone access.
+> - **"Owner" for the watcher's online-call check reads every signed-in mail
+>   account's address and identities, not a `Profile` field** — `Profile`
+>   carries no address of its own to compare an attendee list against, and
+>   every mail account already does.
+> - **`list_meeting_notes` returns two titles.** `title` is the call's own
+>   title, from the recording; `note_title` is the note's current display
+>   title, which can differ once somebody has renamed the note it became.
+> - **Clicking the OS notification for an offer does not focus the window.**
+>   `tauri-plugin-notification` 2.4 has no Rust-side click hook in this
+>   version to wire one through; the click handling that exists
+>   (`notify.svelte.ts`) is webview-side, for the in-app banner, not an
+>   OS-level click on a notification raised from the tray. Left open, not
+>   silently dropped.
+>
+> **macOS and Windows capture are written, not verified.** Both are
+> implemented against `cpal`'s documented behaviour and its own changelog —
+> the Core Audio process tap on macOS 14.6+, WASAPI loopback on Windows — but
+> neither has been run against real hardware. Linux, on PipeWire, is the only
+> one of the three actually tested against a real call.
+
 The app already knows when a call is about to start, who was invited, and
 how to write a note, and it already has a model it trusts to write one. What
 it cannot do is hear. This plan gives it ears for the length of a call: it

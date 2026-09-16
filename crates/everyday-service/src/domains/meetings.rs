@@ -1,33 +1,32 @@
 //! Meeting notes: settings, the recording history, transcripts and
-//! voiceprints, and -- since the spool work -- recording itself:
-//! `begin`/`append`/`finish`/`discard`/`retry` and `dismiss_meeting_offer`,
-//! each a thin wire wrapper over `everyday_service::meeting::spool` and
-//! `everyday_service::meeting::watch`, which hold the actual behaviour.
-//! `everyday_core::meeting` decides what a call needs to be one;
-//! `everyday_core::vault::Vault` holds it; this is the surface a client --
-//! the interface, the shell's capture code, the assistant -- reaches both
-//! through.
+//! voiceprints, and recording itself: `begin`/`append`/`finish`/`discard`/
+//! `retry` and `dismiss_meeting_offer`, each a thin wire wrapper over
+//! `everyday_service::meeting::spool` and `everyday_service::meeting::watch`,
+//! which hold the actual behaviour. `everyday_core::meeting` decides what a
+//! call needs to be one; `everyday_core::vault::Vault` holds it; this is the
+//! surface a client -- the interface, the shell's capture code, the
+//! assistant -- reaches both through.
 //!
-//! What is *still not* here: `name_speaker`, `rewrite_meeting_note`,
-//! `preview_meeting_template`, `enrol_voice`, and the speech-model download
-//! commands. Those need the pipeline, the transcribers and the speech kit,
-//! all of which are somebody else's file in this same change -- see
+//! What is *not* here: `test_transcriber`, `preview_meeting_template`,
+//! `rewrite_meeting_note`, `name_speaker` and `enrol_voice` live in
+//! `domains::transcripts` instead, kept apart while both files were being
+//! written at once -- see that module's own doc, and
 //! `docs/plans/meeting-notes.md`.
 //!
-//! # A stub two files away
+//! # Installation state, kept as booleans
 //!
-//! [`usable`] decides whether the switch may be turned on without calling
-//! [`crate::meeting::models::installed`] or
-//! [`crate::meeting::models::speech_kit_installed`] itself -- both are
-//! `todo!()` until the speech agent's work lands. Instead it takes what they
-//! would have answered as plain booleans, so it can be unit tested today and
-//! [`view`] is the one place, reached only once a transcriber is actually
-//! configured, that calls the real thing.
+//! [`usable`] decides whether the switch may be turned on from plain
+//! booleans -- whether a local recogniser and the speech kit are installed
+//! -- rather than calling [`crate::meeting::models::installed`] or
+//! [`crate::meeting::models::speech_kit_installed`] itself, so the decision
+//! stays unit tested without a real vault or a real download. [`view`] is
+//! the one place, reached only once a transcriber is actually configured,
+//! that calls the real thing.
 
 use super::Nothing;
 use crate::command;
 use crate::ctx::Ctx;
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::meeting::{spool, watch};
 use crate::service::{Service, blocking};
 use base64::Engine;
@@ -298,10 +297,12 @@ pub(crate) fn view(
     })
 }
 
-/// Non-empty names, non-empty bodies, and no two templates sharing an id.
-/// `everyday_core::meeting::template::lint` -- which would also check the
-/// placeholders a template uses -- is `todo!()` until the template work
-/// lands, so this is only the part of validation that does not need it.
+/// Non-empty names, non-empty bodies, and no two templates sharing an id --
+/// the shape a settings save must refuse outright. Placeholder problems
+/// (an unknown `{{...}}`, unbalanced braces) are a different kind of wrong:
+/// worth flagging as the editor types, never worth refusing a save over, so
+/// they are [`everyday_core::meeting::template::lint`]'s job instead, run
+/// through [`lint_meeting_template`] rather than here.
 fn validate_templates(templates: &[NoteTemplate]) -> everyday_core::Result<()> {
     let mut ids = HashSet::new();
     for t in templates {
@@ -533,11 +534,11 @@ async fn append_recording_chunk(
     args: AppendRecordingChunk,
 ) -> CommandResult<()> {
     blocking(move || {
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(&args.pcm)
-            .map_err(|e| CommandError::new("invalid", format!("pcm was not valid base64: {e}")))?;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(&args.pcm).map_err(|e| {
+            CommandError::new(codes::INVALID, format!("pcm was not valid base64: {e}"))
+        })?;
         if bytes.len() % 2 != 0 {
-            return Err(CommandError::new("invalid", "pcm must be an even number of bytes"));
+            return Err(CommandError::new(codes::INVALID, "pcm must be an even number of bytes"));
         }
         let samples: Vec<i16> =
             bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();

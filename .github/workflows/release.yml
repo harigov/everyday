@@ -181,7 +181,10 @@ jobs:
       # Same set as scripts/setup-linux.sh, plus the three tools linuxdeploy
       # shells out to when it assembles the AppImage. libpipewire/libspa are
       # for `capture.rs`'s loopback track, built with the `pipewire` cpal
-      # feature on this target only.
+      # feature on this target only; libclang is for `bindgen`, which
+      # `libspa-sys`/`pipewire-sys` run at build time against those headers --
+      # see check.yml's identical step for why it is asked for by name rather
+      # than assumed present.
       - name: Linux build dependencies
         if: matrix.name == 'linux'
         run: |
@@ -196,6 +199,7 @@ jobs:
             libayatana-appindicator3-dev \
             libpipewire-0.3-dev \
             libspa-0.2-dev \
+            libclang-dev \
             build-essential curl wget file patchelf desktop-file-utils
 
       - name: Install interface packages

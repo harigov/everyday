@@ -45,6 +45,8 @@ Reproduced below in full:
   36. 3D-Speaker speaker-embedding model — © Alibaba, https://github.com/modelscope/3D-Speaker
   37. Parakeet TDT 0.6B v3 (model) — © NVIDIA Corporation, https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
   38. Whisper large-v3-turbo (model and code) — © 2022 OpenAI, https://github.com/openai/whisper
+  39. tar — © The tar-rs Project Contributors, https://github.com/composefs/tar-rs
+  40. bzip2 — © 2014-2025 Alex Crichton and Contributors, https://github.com/trifectatechfoundation/bzip2-rs
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
@@ -2438,6 +2440,64 @@ the reference code and the published model weights.
 MIT License
 
 Copyright (c) 2022 OpenAI
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 39. tar
+
+Two of the three model downloads arrive as `.tar.bz2` archives holding files
+this application does not want alongside the ones it does; `meeting::models`
+unpacks them and extracts only the named members through `tar`
+(https://github.com/composefs/tar-rs), dual MIT/Apache-2.0 licensed.
+Reproduced here under the MIT terms.
+
+Copyright (c) The tar-rs Project Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 40. bzip2
+
+The same extraction decompresses the `.bz2` layer through `bzip2`
+(https://github.com/trifectatechfoundation/bzip2-rs), dual MIT/Apache-2.0
+licensed. Reproduced here under the MIT terms.
+
+Copyright (c) 2014-2025 Alex Crichton and Contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
