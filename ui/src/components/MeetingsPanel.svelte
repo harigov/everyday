@@ -651,7 +651,8 @@
           <b>Match voices to names</b>
           <small>
             Biometric data, kept only in this vault and never sent anywhere. Off by default; on, a
-            voice is matched against the event's attendees and asked about once when it cannot be.
+            voice is matched against the event's attendees and asked about once when no match can be
+            made.
           </small>
         </span>
       </label>
@@ -762,7 +763,7 @@
 {#if confirmingDeleteAll}
   <ConfirmDialog
     title="Delete all voices?"
-    detail="Every voice this vault has learned is removed. Future calls will show 'Unknown' until they are named again."
+    detail="Every voice this vault has learned is removed. Future calls will show 'Unknown 1', 'Unknown 2' and so on until they are named again."
     confirmLabel="Delete all voices"
     onconfirm={() => void deleteAllVoiceprints()}
     oncancel={() => (confirmingDeleteAll = false)}

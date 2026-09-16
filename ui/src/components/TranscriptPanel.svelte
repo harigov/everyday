@@ -190,7 +190,7 @@
 
         {#if offerRewrite}
           <div class="offer">
-            <span>Rewrite the summary now this speaker has a name?</span>
+            <span>Rewrite the summary now that this speaker has a name?</span>
             <button class="link" onclick={() => (offerRewrite = false)}>Not now</button>
             <button class="btn btn-primary" onclick={openRewrite}>Rewrite summary</button>
           </div>

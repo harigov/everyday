@@ -223,13 +223,15 @@ pub fn begin(svc: &Arc<Service>, args: BeginArgs) -> CommandResult<Recording> {
     let vault = svc.require()?;
 
     if !reclaim_stale(svc, &vault)?.is_empty() {
-        return Err(CommandError::new("already_running", "a recording is already in progress"));
+        return Err(CommandError::new(codes::CONFLICT, "a recording is already in progress"));
     }
 
     let used = spool_bytes(&vault);
     if used >= SPOOL_CAP_BYTES {
+        // `too_large` rather than a code of its own, so a remote client gets
+        // a deliberate status for it instead of a generic failure.
         return Err(CommandError::new(
-            "spool_full",
+            codes::TOO_LARGE,
             format!(
                 "the meeting spool already holds {:.1} GB of unfinished recordings -- finish, \
                  discard or retry one before starting another",
@@ -681,7 +683,7 @@ mod tests {
         svc.meeting_touch_append(recording.id);
 
         let err = begin(&svc, BeginArgs::default()).unwrap_err();
-        assert_eq!(err.code, "already_running");
+        assert_eq!(err.code, codes::CONFLICT);
     }
 
     // A runtime, because handing the recording on starts the pipeline's task.
@@ -694,7 +696,7 @@ mod tests {
 
         // Still refused -- meeting notes are off in this vault -- but for a
         // *different* reason, proving the stale row was reclaimed on the
-        // way rather than blocking with `already_running`.
+        // way rather than blocking with a conflict.
         let err = begin(&svc, BeginArgs::default()).unwrap_err();
         assert_eq!(err.code, "invalid");
         assert!(err.message.contains("turned off"), "{}", err.message);
@@ -715,7 +717,7 @@ mod tests {
         file.set_len(SPOOL_CAP_BYTES).unwrap();
 
         let err = begin(&svc, BeginArgs::default()).unwrap_err();
-        assert_eq!(err.code, "spool_full");
+        assert_eq!(err.code, codes::TOO_LARGE);
     }
 
     // ---- finish / discard / retry ---------------------------------------
