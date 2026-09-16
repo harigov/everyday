@@ -165,6 +165,13 @@ pub enum Kind {
     /// One run of it. What the count on the app bar is drawn from.
     RoutineRun,
     Memory,
+    /// A call being recorded, or the history row of one that was. See
+    /// `everyday_core::meeting`.
+    Recording,
+    /// What was said in a call, kept beside its note.
+    Transcript,
+    /// A voice the meetings feature can recognise.
+    Voiceprint,
     /// The vault's own settings: auto-lock, the assistant's configuration.
     Settings,
     /// One of [`crate::supervisor::Supervisor`]'s long-lived keyed tasks --

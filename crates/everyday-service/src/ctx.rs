@@ -97,6 +97,14 @@ pub enum Scope {
     /// somebody's threads; that is no reason for it to be able to spend their
     /// tokens filling in a shelf.
     Quick,
+    /// Meeting notes: recordings, transcripts, voiceprints, and the
+    /// settings that decide what gets recorded.
+    ///
+    /// Its own scope rather than a corner of [`Scope::Notes`]: a transcript
+    /// is every word several people said, a voiceprint is biometric data,
+    /// and starting a recording switches on somebody's microphone. A client
+    /// that clips pages into notes has no business near any of it.
+    Meetings,
     /// Searching the web and fetching a picture. Its own scope because it is
     /// the one capability that puts a request on the network, and a client
     /// that only wants to read a shelf has no business asking for it.
@@ -142,6 +150,7 @@ impl Scope {
             Scope::Mail => "mail",
             Scope::Agent => "agent",
             Scope::Quick => "quick",
+            Scope::Meetings => "meetings",
             Scope::Web => "web",
             Scope::Admin => "admin",
             Scope::Any => "any",
@@ -165,6 +174,7 @@ impl Scope {
         Scope::Mail,
         Scope::Agent,
         Scope::Quick,
+        Scope::Meetings,
         Scope::Web,
         Scope::Admin,
     ];
