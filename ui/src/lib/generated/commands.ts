@@ -228,7 +228,10 @@ export interface Commands {
   deleteVoiceprint: { args: { id: VoiceprintId }; result: void }
   discardDraft: { args: { id: DraftId }; result: void }
   discardRecording: { args: { id: RecordingId }; result: void }
-  dismissMeetingOffer: { args: { eventId: EventId; never: boolean }; result: void }
+  dismissMeetingOffer: {
+    args: { calendarId: CalendarId; uid: string; never: boolean }
+    result: void
+  }
   downloadSpeechModel: { args: { id: string }; result: void }
   endExport: { args: { handle: string }; result: void }
   endImport: { args: { handle: string }; result: void }

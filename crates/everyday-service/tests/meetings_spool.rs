@@ -22,7 +22,7 @@
 //! would have left.
 
 use everyday_core::id::{RecordingId, TemplateId};
-use everyday_core::meeting::{Recording, Stage};
+use everyday_core::meeting::{Recording, Stage, Track, TrackSegment};
 use everyday_service::{Ctx, Service};
 use serde_json::json;
 use std::sync::Arc;
@@ -187,10 +187,47 @@ async fn retry_recording_re_stages_a_failed_recording_through_the_command_layer(
         reason: "the transcriber timed out".into(),
         at: Box::new(Stage::Summarising),
     };
+    // A real failure at `Summarising` -- the assistant call itself failed --
+    // still has what `Transcribing` and `Identifying` left it:
+    // `spool::retry` refuses to resume there with nothing in `partial`,
+    // since that combination means `Stage::Done` already cleared it and a
+    // note already exists (see that function's own doc).
+    recording.partial.push(TrackSegment {
+        track: Track::Mic,
+        start_ms: 0,
+        end_ms: 2_000,
+        text: "let's ship on Friday".into(),
+        speaker_hint: None,
+        hint_scope: 0,
+    });
     let id = recording.id;
     vault.save_recording(&recording).unwrap();
 
     let retried = call(&svc, "retry_recording", json!({ "id": id })).await;
     let retried: Recording = serde_json::from_value(retried).unwrap();
     assert_eq!(retried.stage, Stage::Summarising);
+}
+
+/// The regression `spool::retry`'s own guard exists to catch: a recording
+/// whose `Failed { at: Summarising }` row has already had its `chunks` and
+/// `partial` cleared -- exactly what `Stage::Done` leaves behind, and
+/// exactly the shape `pipeline::do_summarise_and_write`'s own doc describes
+/// a `remove_audio` failure being misclassified into. Retrying it must
+/// refuse clearly rather than silently write a second, near-empty note.
+#[tokio::test]
+async fn retry_recording_refuses_when_summarising_has_nothing_left_to_summarise() {
+    let (svc, _dir) = env();
+    let vault = svc.get().unwrap();
+    let mut recording = Recording::new("Design sync", None, TemplateId::new());
+    recording.stage = Stage::Failed {
+        reason: "could not clear the spool".into(),
+        at: Box::new(Stage::Summarising),
+    };
+    // Deliberately left empty: `chunks` and `partial` both empty is the
+    // signal this guard is watching for.
+    let id = recording.id;
+    vault.save_recording(&recording).unwrap();
+
+    let message = fails(&svc, "retry_recording", json!({ "id": id })).await;
+    assert!(message.contains("no audio left to summarise"), "{message}");
 }

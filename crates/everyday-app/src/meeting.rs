@@ -13,7 +13,7 @@
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
-use everyday_core::id::{EventId, RecordingId, TemplateId};
+use everyday_core::id::{CalendarId, EventId, RecordingId, TemplateId};
 use everyday_core::meeting::Recording;
 use everyday_service::Ctx;
 use everyday_service::error::{CommandError, CommandResult};
@@ -32,11 +32,16 @@ use crate::tray::Tray;
 /// half is that function.
 pub const OFFER_EVENT: &str = "meeting-offer";
 
-/// Mirrors the TS `MeetingOfferPayload`, field for field.
+/// Mirrors the TS `MeetingOfferPayload`, field for field. `calendarId` and
+/// `uid` ride along beside `eventId` for `dismissMeetingOffer` to use --
+/// see [`MeetingOffer`]'s own doc on why that command is keyed by the pair
+/// that survives a feed resync rather than by `eventId`, which does not.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OfferPayload {
     event_id: EventId,
+    calendar_id: CalendarId,
+    uid: String,
     title: String,
     start: jiff::Timestamp,
     end: jiff::Timestamp,
@@ -50,6 +55,8 @@ impl From<MeetingOffer> for OfferPayload {
     fn from(offer: MeetingOffer) -> Self {
         Self {
             event_id: offer.event_id,
+            calendar_id: offer.calendar_id,
+            uid: offer.uid,
             title: offer.title,
             start: offer.start,
             end: offer.end,
@@ -341,6 +348,8 @@ mod tests {
     fn offer(automatic: bool) -> MeetingOffer {
         MeetingOffer {
             event_id: EventId::new(),
+            calendar_id: CalendarId::new(),
+            uid: "evt-1@example.com".into(),
             title: "Design sync".into(),
             start: jiff::Timestamp::now(),
             end: jiff::Timestamp::now(),

@@ -21,11 +21,11 @@
   }
 
   function notNow() {
-    if (offer) void meetings.dismissOffer(offer.eventId, false)
+    if (offer) void meetings.dismissOffer(offer.calendarId, offer.uid, false)
   }
 
   function never() {
-    if (offer) void meetings.dismissOffer(offer.eventId, true)
+    if (offer) void meetings.dismissOffer(offer.calendarId, offer.uid, true)
   }
 </script>
 

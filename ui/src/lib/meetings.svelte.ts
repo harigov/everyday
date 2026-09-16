@@ -299,17 +299,22 @@ class MeetingsState {
 
   // ── Offers ────────────────────────────────────────────────────────
 
-  #dropOffer(eventId: string) {
-    this.offers = this.offers.filter((o) => o.eventId !== eventId)
+  // Keyed by calendarId + uid, not eventId -- the same durable pair
+  // `dismissMeetingOffer` itself is keyed by, so dropping an offer here and
+  // dismissing it on the service side agree about which one even after a
+  // feed resync has changed the eventId. See `MeetingOfferPayload`'s own
+  // doc in `api.ts`.
+  #dropOffer(calendarId: string, uid: string) {
+    this.offers = this.offers.filter((o) => !(o.calendarId === calendarId && o.uid === uid))
   }
 
-  async dismissOffer(eventId: string, never: boolean) {
-    this.#dropOffer(eventId)
-    await api.dismissMeetingOffer(eventId, never)
+  async dismissOffer(calendarId: string, uid: string, never: boolean) {
+    this.#dropOffer(calendarId, uid)
+    await api.dismissMeetingOffer(calendarId, uid, never)
   }
 
   async acceptOffer(offer: MeetingOfferPayload): Promise<Recording> {
-    this.#dropOffer(offer.eventId)
+    this.#dropOffer(offer.calendarId, offer.uid)
     return this.startCapture({ eventId: offer.eventId, title: offer.title })
   }
 

@@ -43,7 +43,7 @@
 //! with [`Reach::User`] so the offer still reaches somebody who is not
 //! looking at the window.
 
-use everyday_core::id::EventId;
+use everyday_core::id::{CalendarId, EventId};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -243,10 +243,21 @@ impl Change {
 /// Raised by `everyday_service::meeting::watch`, never stored: a listener
 /// that missed one because no window was open missed nothing worth
 /// recovering, unlike a [`Change`] to a record.
+///
+/// Carries `calendar_id` and `uid` alongside `event_id` on purpose:
+/// `event_id` is what starts a recording (`begin_recording` looks the event
+/// up by it, to read its attendees and title), but it is a feed event's own
+/// id, not stable across a resync -- see `meeting::watch`'s own doc. A
+/// dismissal that arrived after a resync had changed it would look up the
+/// wrong event, or none. `dismiss_meeting_offer` is built against the pair
+/// that *is* durable instead, the same one `meeting::watch::already_recorded`
+/// already keys a recording's own history lookup by.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingOffer {
     pub event_id: EventId,
+    pub calendar_id: CalendarId,
+    pub uid: String,
     pub title: String,
     pub start: Timestamp,
     pub end: Timestamp,

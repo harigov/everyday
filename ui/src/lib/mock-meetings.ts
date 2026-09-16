@@ -717,9 +717,9 @@ export async function mockRewriteMeetingNote(noteId: string, templateId: string)
     .join('\n')
 }
 
-export function mockDismissMeetingOffer(eventId: string, never: boolean): void {
-  if (never && !settings.skippedSeries.includes(eventId)) {
-    settings = { ...settings, skippedSeries: [...settings.skippedSeries, eventId] }
+export function mockDismissMeetingOffer(uid: string, never: boolean): void {
+  if (never && !settings.skippedSeries.includes(uid)) {
+    settings = { ...settings, skippedSeries: [...settings.skippedSeries, uid] }
   }
 }
 
@@ -897,6 +897,8 @@ export function mockTriggerMeetingOffer(automatic: boolean): void {
   const eventId = newId('evt-offer')
   const payload: MeetingOfferPayload = {
     eventId,
+    calendarId: newId('cal-offer'),
+    uid: `evt-offer-${eventId}`,
     title: 'Design sync',
     start: new Date().toISOString(),
     end: minutesFromNow(30),
