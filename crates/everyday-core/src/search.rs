@@ -202,7 +202,27 @@ impl SearchIndex {
 
     /// Add or replace a note.
     pub fn insert_note(&mut self, note: &Note) {
-        self.put(Found::Note { id: note.id }, note.display_title(), note.searchable_text());
+        self.insert_note_with_extra(note, "");
+    }
+
+    /// Add or replace a note whose indexed text also carries words from
+    /// somewhere else -- today, a meeting's transcript.
+    ///
+    /// A transcript is a record of its own, kept apart from the note it
+    /// belongs to (see `crate::meeting::Transcript`), so there is nothing on
+    /// `Note` itself for [`SearchIndex::insert_note`] to read it off. The
+    /// caller -- `Vault::save_transcript`, `Vault::delete_transcript`, and
+    /// the two places the index is rebuilt whole -- looks the transcript up
+    /// and hands its
+    /// [`searchable_text`](crate::meeting::Transcript::searchable_text) in
+    /// here instead. `extra` empty is exactly [`SearchIndex::insert_note`].
+    pub fn insert_note_with_extra(&mut self, note: &Note, extra: &str) {
+        let mut body = note.searchable_text();
+        if !extra.is_empty() {
+            body.push('\n');
+            body.push_str(extra);
+        }
+        self.put(Found::Note { id: note.id }, note.display_title(), body);
     }
 
     /// The body of both, which is the same body: tokenise the title, tokenise
@@ -737,6 +757,24 @@ mod tests {
         e.tags = vec!["Patagonia".into()];
         let idx = SearchIndex::build(&[e], &[]);
         assert_eq!(idx.search("patagonia", 10).len(), 1, "tags must be indexed");
+    }
+
+    #[test]
+    fn a_notes_extra_text_is_searchable_but_does_not_touch_the_title() {
+        use crate::note::Note;
+        let mut note = Note::new("Design sync");
+        note.body = RichDoc::from_plain_text("nothing much written by hand");
+        let mut idx = SearchIndex::default();
+        idx.insert_note_with_extra(&note, "Priya: let's ship on Friday");
+
+        assert_eq!(idx.search("friday", 10).len(), 1, "transcript words must be findable");
+        let hit = &idx.search("friday", 10)[0];
+        assert_eq!(hit.title, "Design sync", "the extra text is not the title");
+
+        // Re-inserting without the extra text (the transcript was deleted)
+        // must drop the old words rather than leaving them findable.
+        idx.insert_note(&note);
+        assert!(idx.search("friday", 10).is_empty());
     }
 
     #[test]

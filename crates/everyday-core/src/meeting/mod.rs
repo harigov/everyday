@@ -491,8 +491,20 @@ pub struct MeetingSettings {
 }
 
 impl Default for MeetingSettings {
+    // Does *not* seed `templates` with [`template::starter`]. It would be
+    // the more complete default -- a fresh install offering one template
+    // rather than none -- but `starter` is a stub (`todo!`) until the
+    // template work lands, and `#[serde(default)]` on this struct means
+    // *every* JSON decode of a `MeetingSettings`, not just a genuinely
+    // absent settings row, builds one of these to seed fields a payload
+    // did not carry. Calling `starter` here would make reading back a
+    // fully-populated, already-saved settings row panic today. Once
+    // `starter` is real this can go back to calling it directly; until
+    // then, [`MeetingSettings::template`] already falls back to it when
+    // `templates` is empty, so nothing downstream silently loses the
+    // built-in template -- it is only absent from a *fresh* install's
+    // settings until this is restored.
     fn default() -> Self {
-        let starter = template::starter();
         Self {
             enabled: false,
             offer: Offer::Ask,
@@ -501,8 +513,8 @@ impl Default for MeetingSettings {
             transcriber: None,
             use_assistant_key: false,
             language: None,
-            default_template: Some(starter.id),
-            templates: vec![starter],
+            default_template: None,
+            templates: Vec::new(),
             voiceprints: false,
             auto_stop: true,
             summary_budget: None,

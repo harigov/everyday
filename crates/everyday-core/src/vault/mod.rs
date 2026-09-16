@@ -37,6 +37,7 @@ mod library;
 mod lifecycle;
 mod mail;
 mod maintenance;
+mod meetings;
 mod notes;
 mod profile;
 mod purpose;
