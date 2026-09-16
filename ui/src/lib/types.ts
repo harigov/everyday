@@ -1350,6 +1350,12 @@ export interface Mailbox {
   uidvalidity: number
   uidnext: number
   highestModseq: number
+  /**
+   * Set only on the mock's "Starred" and "Snoozed" views, which are not
+   * folders on any server. Never sent by the backend, so a real folder that
+   * happens to be called "Snoozed" -- Spark makes one -- stays a folder.
+   */
+  pseudo?: 'starred' | 'snoozed'
 }
 
 /** A closed, small set -- see `crate::mail::Category` for why a user-named
