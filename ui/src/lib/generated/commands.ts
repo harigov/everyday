@@ -131,6 +131,7 @@ import type {
   TaskStats,
   TaskStatus,
   Template,
+  TemplateId,
   ThreadDetail,
   ThreadFilter,
   ThreadId,
@@ -157,28 +158,12 @@ export interface Commands {
   activeRecording: { args: Record<string, never>; result: Recording | null }
   addItem: { args: { kindId: KindId; title: string; lookup: boolean }; result: AddedItem }
   agentSettings: { args: Record<string, never>; result: AgentSettings }
-  allowRemoteImages: {
-    args: { sender?: string | null; domain?: string | null; messageId?: MailMessageId | null }
-    result: void
-  }
+  allowRemoteImages: { args: { sender?: string | null; domain?: string | null; messageId?: MailMessageId | null }; result: void }
   applyMetadata: { args: { id: ItemId; result: SearchResult; overwrite: boolean }; result: Item }
   archive: { args: { threads: ThreadId[] }; result: Op[] }
-  attachOauthSignIn: {
-    args: { id: AccountId; signInId: string; clientSecret?: string }
-    result: void
-  }
+  attachOauthSignIn: { args: { id: AccountId; signInId: string; clientSecret?: string }; result: void }
   awaitOauthSignIn: { args: { signInId: string }; result: AwaitedSignIn }
-  beginOauthSignIn: {
-    args: {
-      authUrl: string
-      tokenUrl: string
-      clientId: string
-      clientSecret?: string
-      scopes: string[]
-      loginHint?: string
-    }
-    result: BegunSignIn
-  }
+  beginOauthSignIn: { args: { authUrl: string; tokenUrl: string; clientId: string; clientSecret?: string; scopes: string[]; loginHint?: string }; result: BegunSignIn }
   benchmarkSpeechModel: { args: { id: string }; result: ModelBenchmark }
   calendarProviders: { args: Record<string, never>; result: ProviderInfo[] }
   cancelOauthSignIn: { args: { signInId: string }; result: void }
@@ -215,6 +200,7 @@ export interface Commands {
   downloadSpeechModel: { args: { id: string }; result: void }
   endExport: { args: { handle: string }; result: void }
   endImport: { args: { handle: string }; result: void }
+  enrolVoice: { args: { pcm: string }; result: VoiceprintInfo }
   fetchAttachment: { args: { messageId: MailMessageId; index: number }; result: MailAttachment }
   fetchImage: { args: { url: string }; result: string }
   flush: { args: Record<string, never>; result: void }
@@ -230,10 +216,7 @@ export interface Commands {
   getThread: { args: { id: ThreadId }; result: ThreadDetail }
   getTranscript: { args: { noteId: NoteId }; result: Transcript | null }
   goalActivity: { args: { id: GoalId }; result: GoalActivity }
-  importCalendar: {
-    args: { name: string; label: string; color: string; ics: string }
-    result: CalendarInfo
-  }
+  importCalendar: { args: { name: string; label: string; color: string; ics: string }; result: CalendarInfo }
   label: { args: { threads: ThreadId[]; label: string }; result: Op[] }
   libraryStats: { args: Record<string, never>; result: LibraryStats }
   listAccountCalendars: { args: { account: AccountId }; result: RemoteCalendarInfo[] }
@@ -241,10 +224,7 @@ export interface Commands {
   listBlocks: { args: { query: BlockQuery }; result: TimeBlock[] }
   listCalendars: { args: Record<string, never>; result: CalendarInfo[] }
   listCommands: { args: Record<string, never>; result: Surface }
-  listConversations: {
-    args: { limit?: number | null; includeRuns?: boolean }
-    result: ConversationSummary[]
-  }
+  listConversations: { args: { limit?: number | null; includeRuns?: boolean }; result: ConversationSummary[] }
   listDrafts: { args: { account: AccountId }; result: Draft[] }
   listEntries: { args: { query: EntryQuery }; result: EntrySummary[] }
   listEvents: { args: { query: EventQuery }; result: CalendarEvent[] }
@@ -266,58 +246,24 @@ export interface Commands {
   listRuns: { args: { query?: RunQuery }; result: RoutineRun[] }
   listTags: { args: Record<string, never>; result: string[] }
   listTasks: { args: { query: TaskQuery }; result: Task[] }
-  listThreads: {
-    args: {
-      mailbox: MailboxId
-      filter?: ThreadFilter
-      cursor?: string | null
-      limit?: number | null
-    }
-    result: ThreadPage
-  }
+  listThreads: { args: { mailbox: MailboxId; filter?: ThreadFilter; cursor?: string | null; limit?: number | null }; result: ThreadPage }
   listTools: { args: Record<string, never>; result: ToolInfo[] }
   listTrackers: { args: Record<string, never>; result: Tracker[] }
   listVoiceprints: { args: Record<string, never>; result: VoiceprintInfo[] }
   lock: { args: Record<string, never>; result: VaultStatus }
-  logReading: {
-    args: {
-      trackerId: TrackerId
-      value: number
-      date: string
-      at?: string | null
-      journalId?: JournalId | null
-      entryId?: EntryId | null
-    }
-    result: Reading
-  }
-  lookupMetadata: {
-    args: { kindId: KindId; query: string; limit?: number | null }
-    result: SearchResult[]
-  }
-  mailActionsByOrigin: {
-    args: { kind: string; limit?: number | null; cursor?: string | null }
-    result: MailActionByOrigin[]
-  }
+  logReading: { args: { trackerId: TrackerId; value: number; date: string; at?: string | null; journalId?: JournalId | null; entryId?: EntryId | null }; result: Reading }
+  lookupMetadata: { args: { kindId: KindId; query: string; limit?: number | null }; result: SearchResult[] }
+  mailActionsByOrigin: { args: { kind: string; limit?: number | null; cursor?: string | null }; result: MailActionByOrigin[] }
   markRead: { args: { threads: ThreadId[] }; result: Op[] }
   markRunsSeen: { args: { ids?: RoutineRunId[] }; result: void }
   markUnread: { args: { threads: ThreadId[] }; result: Op[] }
   meetingSettings: { args: Record<string, never>; result: MeetingSettingsView }
   mergeTrackers: { args: { from: TrackerId; into: TrackerId }; result: number }
   moveToMailbox: { args: { threads: ThreadId[]; to: MailboxId }; result: Op[] }
-  newBlock: {
-    args: { subject: BlockSubject; start: string; minutes: number; kind?: BlockKind | null }
-    result: TimeBlock
-  }
+  nameSpeaker: { args: { noteId: NoteId; speakerKey: number; name: string; email?: string | null }; result: Transcript }
+  newBlock: { args: { subject: BlockSubject; start: string; minutes: number; kind?: BlockKind | null }; result: TimeBlock }
   newConversation: { args: Record<string, never>; result: Conversation }
-  newDraft: {
-    args: {
-      account: AccountId
-      inReplyTo?: MailMessageId | null
-      forwardOf?: MailMessageId | null
-      replyAll?: boolean | null
-    }
-    result: Draft
-  }
+  newDraft: { args: { account: AccountId; inReplyTo?: MailMessageId | null; forwardOf?: MailMessageId | null; replyAll?: boolean | null }; result: Draft }
   newEntry: { args: { journalId: JournalId }; result: Entry }
   newGoal: { args: { roleId: RoleId; title: string }; result: Goal }
   newJournal: { args: { name: string }; result: Journal }
@@ -329,22 +275,14 @@ export interface Commands {
   newProject: { args: { name: string }; result: Project }
   newRole: { args: { name: string }; result: Role }
   newRoutine: { args: Record<string, never>; result: Routine }
-  newTask: {
-    args: { projectId?: ProjectId | null; parentId?: TaskId | null; status?: TaskStatus | null }
-    result: Task
-  }
+  newTask: { args: { projectId?: ProjectId | null; parentId?: TaskId | null; status?: TaskStatus | null }; result: Task }
   newTracker: { args: { name: string; kind: TrackerKind }; result: Tracker }
   noteTags: { args: Record<string, never>; result: string[] }
   pollAutoLock: { args: Record<string, never>; result: boolean }
+  previewMeetingTemplate: { args: { body: string }; result: string }
   profile: { args: Record<string, never>; result: Profile }
-  quickEntryLabels: {
-    args: { entryId: EntryId; journalId?: JournalId | null }
-    result: QuickLabels
-  }
-  quickEntryReadings: {
-    args: { entryId: EntryId; journalId?: JournalId | null }
-    result: QuickReading[]
-  }
+  quickEntryLabels: { args: { entryId: EntryId; journalId?: JournalId | null }; result: QuickLabels }
+  quickEntryReadings: { args: { entryId: EntryId; journalId?: JournalId | null }; result: QuickReading[] }
   quickEntryTitle: { args: { entryId: EntryId; journalId?: JournalId | null }; result: string }
   quickEstimate: { args: { taskId: TaskId }; result: number | null }
   quickEventFromLine: { args: { line: string }; result: QuickEventDraft | null }
@@ -352,20 +290,14 @@ export interface Commands {
   quickFrontMatter: { args: { ours: string[]; theirs: string[] }; result: QuickMapping }
   quickGoalBackfill: { args: { goalId: GoalId }; result: QuickBackfillPick[] }
   quickGoalWording: { args: { title: string; roleId: RoleId }; result: string }
-  quickImportColumns: {
-    args: { kindId: KindId; columns: string[]; sample?: string[] }
-    result: QuickMapping
-  }
+  quickImportColumns: { args: { kindId: KindId; columns: string[]; sample?: string[] }; result: QuickMapping }
   quickItemFields: { args: { itemId: ItemId }; result: QuickFields }
   quickJobs: { args: Record<string, never>; result: QuickJobRow[] }
   quickKindDraft: { args: { name: string }; result: QuickKindDraft }
   quickNoteLabels: { args: { noteId: NoteId }; result: QuickLabels }
   quickNoteTasks: { args: { noteId: NoteId }; result: QuickTaskDraft[] }
   quickNoteTitle: { args: { noteId: NoteId }; result: string }
-  quickPickResult: {
-    args: { kindId: KindId; query: string; results: SearchResult[] }
-    result: number | null
-  }
+  quickPickResult: { args: { kindId: KindId; query: string; results: SearchResult[] }; result: number | null }
   quickReadingFromLine: { args: { line: string }; result: QuickReading | null }
   quickSubtasks: { args: { taskId: TaskId }; result: QuickTaskDraft[] }
   quickTaskFromLine: { args: { line: string }; result: QuickTaskDraft | null }
@@ -376,21 +308,13 @@ export interface Commands {
   readImport: { args: { handle: string }; result: ArchiveManifest }
   rebuildMailIndex: { args: { id?: AccountId }; result: void }
   recategorizeMail: { args: { account?: AccountId | null }; result: RecategorizeResult }
-  respondToInvite: {
-    args: { messageId: MailMessageId; response: string; comment?: string | null }
-    result: void
-  }
-  revokeRemoteImageAllowance: {
-    args: { sender?: string | null; domain?: string | null }
-    result: void
-  }
+  respondToInvite: { args: { messageId: MailMessageId; response: string; comment?: string | null }; result: void }
+  revokeRemoteImageAllowance: { args: { sender?: string | null; domain?: string | null }; result: void }
+  rewriteMeetingNote: { args: { noteId: NoteId; templateId: TemplateId }; result: string }
   routineTemplates: { args: Record<string, never>; result: Template[] }
   runImport: { args: { handle: string; parts: string[]; mode: string }; result: ImportResult }
   runRoutine: { args: { id: RoutineId }; result: RoutineRun }
-  runTool: {
-    args: { name: string; arguments?: unknown; confirmDestructive?: boolean }
-    result: unknown
-  }
+  runTool: { args: { name: string; arguments?: unknown; confirmDestructive?: boolean }; result: unknown }
   saveAccount: { args: { account: Account }; result: void }
   saveAccountPassword: { args: { id: AccountId; password: string }; result: void }
   saveAgentSettings: { args: { settings: AgentSettings }; result: AgentSettings }
@@ -418,40 +342,17 @@ export interface Commands {
   saveTask: { args: { task: Task }; result: void }
   saveTasks: { args: { tasks: Task[] }; result: void }
   saveTracker: { args: { tracker: Tracker }; result: void }
-  search: {
-    args: { query: string; journalId?: JournalId | null; kind?: SearchKind | null; limit: number }
-    result: SearchHit[]
-  }
-  searchMail: {
-    args: {
-      query: string
-      accountIds?: AccountId[] | null
-      cursor?: string | null
-      limit?: number | null
-    }
-    result: SearchMailResult
-  }
+  search: { args: { query: string; journalId?: JournalId | null; kind?: SearchKind | null; limit: number }; result: SearchHit[] }
+  searchMail: { args: { query: string; accountIds?: AccountId[] | null; cursor?: string | null; limit?: number | null }; result: SearchMailResult }
   searchSources: { args: Record<string, never>; result: SourceInfo[] }
   seedRoles: { args: Record<string, never>; result: number }
-  sendDraft: {
-    args: { id: DraftId; delaySeconds?: number | null; sendAt?: string | null }
-    result: Draft
-  }
-  sendMessage: {
-    args: { conversationId: ConversationId; prompt: string; context?: string | null }
-    result: void
-  }
-  setAgentAccess: {
-    args: { id: AccountId; caller: AgentCallerKind; access: AgentMailAccess }
-    result: void
-  }
+  sendDraft: { args: { id: DraftId; delaySeconds?: number | null; sendAt?: string | null }; result: Draft }
+  sendMessage: { args: { conversationId: ConversationId; prompt: string; context?: string | null }; result: void }
+  setAgentAccess: { args: { id: AccountId; caller: AgentCallerKind; access: AgentMailAccess }; result: void }
   setAgentKey: { args: { key: string }; result: void }
   setAutoLock: { args: { seconds: number }; result: void }
   setForgetKey: { args: { seconds: number }; result: void }
-  setItemProgress: {
-    args: { id: ItemId; position: number; total?: number | null; log: boolean }
-    result: Item
-  }
+  setItemProgress: { args: { id: ItemId; position: number; total?: number | null; log: boolean }; result: Item }
   setItemStatus: { args: { id: ItemId; status: ItemStatus; log: boolean }; result: Item }
   setQuickJob: { args: { name: string; on: boolean }; result: QuickJobRow[] }
   setThreadCategory: { args: { threads: ThreadId[]; category: MailCategory }; result: void }
@@ -472,6 +373,7 @@ export interface Commands {
   syncStatus: { args: Record<string, never>; result: MailSyncProgress[] }
   taskStats: { args: Record<string, never>; result: TaskStats }
   taskTags: { args: Record<string, never>; result: TagCount[] }
+  testTranscriber: { args: Record<string, never>; result: void }
   timeByPurpose: { args: { from: string; to: string }; result: BalanceReport }
   touch: { args: Record<string, never>; result: void }
   trackerDays: { args: { query: ReadingQuery }; result: TrackerDay[] }
@@ -536,6 +438,7 @@ export const COMMAND_NAMES = {
   downloadSpeechModel: 'download_speech_model',
   endExport: 'end_export',
   endImport: 'end_import',
+  enrolVoice: 'enrol_voice',
   fetchAttachment: 'fetch_attachment',
   fetchImage: 'fetch_image',
   flush: 'flush',
@@ -595,6 +498,7 @@ export const COMMAND_NAMES = {
   meetingSettings: 'meeting_settings',
   mergeTrackers: 'merge_trackers',
   moveToMailbox: 'move_to_mailbox',
+  nameSpeaker: 'name_speaker',
   newBlock: 'new_block',
   newConversation: 'new_conversation',
   newDraft: 'new_draft',
@@ -613,6 +517,7 @@ export const COMMAND_NAMES = {
   newTracker: 'new_tracker',
   noteTags: 'note_tags',
   pollAutoLock: 'poll_auto_lock',
+  previewMeetingTemplate: 'preview_meeting_template',
   profile: 'profile',
   quickEntryLabels: 'quick_entry_labels',
   quickEntryReadings: 'quick_entry_readings',
@@ -643,6 +548,7 @@ export const COMMAND_NAMES = {
   recategorizeMail: 'recategorize_mail',
   respondToInvite: 'respond_to_invite',
   revokeRemoteImageAllowance: 'revoke_remote_image_allowance',
+  rewriteMeetingNote: 'rewrite_meeting_note',
   routineTemplates: 'routine_templates',
   runImport: 'run_import',
   runRoutine: 'run_routine',
@@ -705,6 +611,7 @@ export const COMMAND_NAMES = {
   syncStatus: 'sync_status',
   taskStats: 'task_stats',
   taskTags: 'task_tags',
+  testTranscriber: 'test_transcriber',
   timeByPurpose: 'time_by_purpose',
   touch: 'touch',
   trackerDays: 'tracker_days',
@@ -779,6 +686,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'download_speech_model',
   'end_export',
   'end_import',
+  'enrol_voice',
   'fetch_attachment',
   'fetch_image',
   'flush',
@@ -838,6 +746,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'meeting_settings',
   'merge_trackers',
   'move_to_mailbox',
+  'name_speaker',
   'new_block',
   'new_conversation',
   'new_draft',
@@ -856,6 +765,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'new_tracker',
   'note_tags',
   'poll_auto_lock',
+  'preview_meeting_template',
   'profile',
   'quick_entry_labels',
   'quick_entry_readings',
@@ -886,6 +796,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'recategorize_mail',
   'respond_to_invite',
   'revoke_remote_image_allowance',
+  'rewrite_meeting_note',
   'routine_templates',
   'run_import',
   'run_routine',
@@ -947,6 +858,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'sync_status',
   'task_stats',
   'task_tags',
+  'test_transcriber',
   'time_by_purpose',
   'touch',
   'tracker_days',
@@ -1008,6 +920,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_voiceprint',
   'discard_draft',
   'download_speech_model',
+  'enrol_voice',
   'fetch_attachment',
   'fetch_image',
   'flush',
@@ -1020,6 +933,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'mark_unread',
   'merge_trackers',
   'move_to_mailbox',
+  'name_speaker',
   'new_draft',
   'poll_auto_lock',
   'rebuild_mail_index',
@@ -1120,6 +1034,7 @@ export const CHANGE_KINDS = {
   delete_voiceprint: 'voiceprint',
   discard_draft: 'draft',
   download_speech_model: 'settings',
+  enrol_voice: 'voiceprint',
   import_calendar: 'calendar',
   label: 'thread',
   log_reading: 'reading',
@@ -1128,6 +1043,7 @@ export const CHANGE_KINDS = {
   mark_unread: 'thread',
   merge_trackers: 'tracker',
   move_to_mailbox: 'thread',
+  name_speaker: 'transcript',
   new_draft: 'draft',
   revoke_remote_image_allowance: 'settings',
   run_routine: 'routineRun',
