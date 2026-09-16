@@ -10,8 +10,8 @@
   whoever it is not.
 -->
 <script lang="ts">
+  import { api } from '../lib/api'
   import { plural } from '../lib/format'
-  import { getRecording, getTranscript, nameSpeaker, rewriteMeetingNote } from '../lib/meetings-api'
   import { formatOffset, speakerColor, speakerNameStyle } from '../lib/meetings-format'
   import { meetings } from '../lib/meetings.svelte'
   import type { EventRef, NoteId, RecordingId, Segment, Speaker, Transcript } from '../lib/types'
@@ -51,7 +51,7 @@
     transcript = null
     event = undefined
     try {
-      transcript = await getTranscript(id)
+      transcript = await api.getTranscript(id)
     } catch {
       transcript = null
     }
@@ -59,7 +59,7 @@
     const recordingId: RecordingId | null | undefined = transcript?.recordingId
     if (recordingId) {
       try {
-        const r = await getRecording(recordingId)
+        const r = await api.getRecording(recordingId)
         event = r.event ?? null
       } catch {
         event = null
@@ -106,7 +106,7 @@
     const key = namingKey
     namingKey = null
     try {
-      transcript = await nameSpeaker({ noteId, speakerKey: key, name: name.trim() })
+      transcript = await api.nameSpeaker({ noteId, speakerKey: key, name: name.trim() })
       offerRewrite = true
     } catch (e) {
       // The chip did the asking; a failed rename is quiet enough to retry.
@@ -129,7 +129,7 @@
     rewriting = true
     rewriteError = null
     try {
-      rewritePreview = await rewriteMeetingNote(noteId, rewriteTemplateId)
+      rewritePreview = await api.rewriteMeetingNote(noteId, rewriteTemplateId)
     } catch (e) {
       rewriteError = e instanceof Error ? e.message : String(e)
     } finally {

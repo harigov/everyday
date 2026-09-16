@@ -52,6 +52,7 @@ import type {
   MailboxId,
   MailMessageId,
   McpStatus,
+  MeetingSettings,
   Memory,
   MemoryId,
   Note,
@@ -66,6 +67,7 @@ import type {
   ReadingQuery,
   Recording,
   RecordingId,
+  RecordingQuery,
   Role,
   RoleId,
   Routine,
@@ -81,6 +83,7 @@ import type {
   TaskId,
   TaskQuery,
   TaskStatus,
+  TemplateId,
   ThreadFilter,
   ThreadId,
   TimeBlock,
@@ -89,6 +92,7 @@ import type {
   TrackerKind,
   TrayMenuItem,
   VaultStatus,
+  VoiceprintId,
   VoiceprintInfo,
 } from './types'
 import { VaultError } from './types'
@@ -256,9 +260,9 @@ if (!MOCK) {
     void listen<CaptureStatus | null>('meeting-status', (e) => handler(e.payload))
   }
   onMeetingStillOn = (handler) => {
-    void listen<{ recordingId: RecordingId }>('meeting-still-on', (e) =>
-      handler(e.payload.recordingId),
-    )
+    // `capture.rs` emits the bare `RecordingId`, not `{ recordingId }` --
+    // see `STILL_ON_EVENT`'s one call site.
+    void listen<RecordingId>('meeting-still-on', (e) => handler(e.payload))
   }
   onMeetingOffer = (handler) => {
     void listen<MeetingOfferPayload>('meeting-offer', (e) => handler(e.payload))
@@ -376,18 +380,22 @@ function call<K extends keyof Commands>(
 /**
  * Call a command that is not yet in the generated surface, by its wire name.
  *
- * `mail-api.ts` is the one caller today: Phase 2-4 of `docs/plans/mail.md`
- * name a couple of dozen commands that other agents are still landing, and
- * `gen-api.mjs` cannot generate a typed method for one that does not exist
- * in `crates/everyday-service/surface.json` yet. This is the untyped escape
- * hatch `call` above is built from, kept to one call site rather than
- * reached for anywhere a rename would go unnoticed.
+ * Two callers today, for two different reasons. `mail-api.ts` is the
+ * "not yet" case: Phase 2-4 of `docs/plans/mail.md` name a couple of
+ * commands other agents are still landing, and `gen-api.mjs` cannot
+ * generate a typed method for one that does not exist in
+ * `crates/everyday-service/surface.json` yet -- once it does, that call
+ * site becomes a one-line typed method here instead, the same way every
+ * meeting-notes command did when the pipeline landed. `meetings.svelte.ts`'s
+ * "Dev-only mock triggers" are the other case, and never graduate: no
+ * `mock_trigger_meeting_offer` or `mock_trigger_still_on` command exists in
+ * a real build, or ever will, so there is nothing for `gen-api.mjs` to
+ * generate a typed method from.
  *
  * Mirrors what `call` does for a *known* command: under Tauri it always goes
  * through the shell's `call`, never by name directly, because a command this
  * build does not know about is never one of the handful the shell answers
- * itself. Once `gen-api.mjs` catches up, each call site becomes a one-line
- * typed method here instead, and this function's job shrinks back to zero.
+ * itself.
  */
 export function callCommand<T = unknown>(
   name: string,
@@ -533,6 +541,57 @@ export const api = {
    * `docs/plans/meeting-notes.md`'s instruction to handle it gracefully.
    */
   voiceEnrol: (seconds = 20) => invoke<VoiceprintInfo>('voice_enrol', { seconds }),
+
+  // ── Meeting notes -- the service commands ──────────────────────────
+  //
+  // Everything about meeting notes that is an ordinary vault write, unlike
+  // the three above: settings, the recording history, transcripts, local
+  // speech models and voiceprints. This used to be `meetings-api.ts`'s own
+  // hand-rolled `callCommand` wrappers, kept apart from `surface.json`
+  // while the pipeline was still landing; now that it has, these are
+  // one-line forwards to `call` like everything else in this object.
+
+  meetingSettings: () => call('meetingSettings', {}),
+  saveMeetingSettings: (settings: MeetingSettings) => call('saveMeetingSettings', { settings }),
+  setTranscriberKey: (key: string | null) => call('setTranscriberKey', { key }),
+  newMeetingTemplate: () => call('newMeetingTemplate', {}),
+  lintMeetingTemplate: (body: string) => call('lintMeetingTemplate', { body }),
+  /** Renders with the real model -- may be slow, and may fail. */
+  previewMeetingTemplate: (body: string) => call('previewMeetingTemplate', { body }),
+  /** Probe the configured transcriber backend. Rejects with the failure text. */
+  testTranscriber: () => call('testTranscriber', {}),
+
+  listRecordings: (query: RecordingQuery = {}) => call('listRecordings', { query }),
+  getRecording: (id: RecordingId) => call('getRecording', { id }),
+  activeRecording: () => call('activeRecording', {}),
+  deleteRecording: (id: RecordingId) => call('deleteRecording', { id }),
+  retryRecording: (id: RecordingId) => call('retryRecording', { id }),
+  discardRecording: (id: RecordingId) => call('discardRecording', { id }),
+
+  getTranscript: (noteId: NoteId) => call('getTranscript', { noteId }),
+  nameSpeaker: (opts: {
+    noteId: NoteId
+    speakerKey: number
+    name: string
+    email?: string | null
+  }) => call('nameSpeaker', opts),
+  /** Proposed markdown body. The caller shows a diff and applies it itself. */
+  rewriteMeetingNote: (noteId: NoteId, templateId: TemplateId) =>
+    call('rewriteMeetingNote', { noteId, templateId }),
+
+  listVoiceprints: () => call('listVoiceprints', {}),
+  deleteVoiceprint: (id: VoiceprintId) => call('deleteVoiceprint', { id }),
+  deleteAllVoiceprints: () => call('deleteAllVoiceprints', {}),
+
+  speechModels: () => call('speechModels', {}),
+  downloadSpeechModel: (id: string) => call('downloadSpeechModel', { id }),
+  cancelSpeechModelDownload: (id: string) => call('cancelSpeechModelDownload', { id }),
+  deleteSpeechModel: (id: string) => call('deleteSpeechModel', { id }),
+  benchmarkSpeechModel: (id: string) => call('benchmarkSpeechModel', { id }),
+
+  dismissMeetingOffer: (eventId: string, never: boolean) =>
+    call('dismissMeetingOffer', { eventId, never }),
+
   unlock: (password: string) => call('unlock', { password }),
   /**
    * Check a password without opening or closing anything.

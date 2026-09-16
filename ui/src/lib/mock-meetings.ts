@@ -17,12 +17,13 @@
 // `mockOnMeetingStatus` and its two siblings.
 //
 // Dev-only triggers -- `mock_trigger_meeting_offer` and
-// `mock_trigger_still_on` -- are mock-only commands, called through the same
-// `callCommand` escape hatch as everything else in `meetings-api.ts`. There
-// is no real command of either name; they exist so the offer banner and the
-// "still on the call?" prompt can be exercised from a browser with nothing
-// running underneath. `MeetingsPanel.svelte` draws the buttons for them,
-// guarded on `isMock`.
+// `mock_trigger_still_on` -- are mock-only commands, called through
+// `meetings.svelte.ts`'s own use of the untyped `callCommand` escape hatch
+// in `api.ts`, the same one a real build never has a reason to reach for.
+// There is no real command of either name; they exist so the offer banner
+// and the "still on the call?" prompt can be exercised from a browser with
+// nothing running underneath. `MeetingsPanel.svelte` draws the buttons for
+// them, guarded on `isMock`.
 
 import { VaultError } from './types'
 import type {

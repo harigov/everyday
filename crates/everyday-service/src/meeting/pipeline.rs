@@ -1003,20 +1003,20 @@ pub async fn run_recording(
             Stage::Recording => return Ok(()),
             Stage::Transcribing => {
                 if let Err(e) = do_transcribe(&vault, &source, id).await {
-                    fail(&vault, id, Stage::Transcribing, &e).await?;
+                    fail(&vault, id, Stage::Transcribing, &e, events.as_ref()).await?;
                     return Err(e);
                 }
             }
             Stage::Identifying => {
                 if let Err(e) = do_identify(&vault, &source, id).await {
-                    fail(&vault, id, Stage::Identifying, &e).await?;
+                    fail(&vault, id, Stage::Identifying, &e, events.as_ref()).await?;
                     return Err(e);
                 }
             }
             Stage::Summarising => {
                 let Some(summariser) = summariser.clone() else {
                     let e = CommandError::new(codes::AGENT, "the assistant is not configured");
-                    fail(&vault, id, Stage::Summarising, &e).await?;
+                    fail(&vault, id, Stage::Summarising, &e, events.as_ref()).await?;
                     return Err(e);
                 };
                 if let Err(e) = do_summarise_and_write(
@@ -1028,7 +1028,7 @@ pub async fn run_recording(
                 )
                 .await
                 {
-                    fail(&vault, id, Stage::Summarising, &e).await?;
+                    fail(&vault, id, Stage::Summarising, &e, events.as_ref()).await?;
                     return Err(e);
                 }
                 return Ok(());
@@ -1038,11 +1038,18 @@ pub async fn run_recording(
     }
 }
 
+/// Marks `id` [`Stage::Failed`] and tells anyone watching the recordings
+/// list -- without this, a call that fails partway through the pipeline
+/// (unlike one that reaches [`Stage::Done`], which raises its own
+/// `Kind::Recording` change in [`do_summarise_and_write`]) would sit at its
+/// last-seen stage in every other window until something else happened to
+/// reload it.
 async fn fail(
     vault: &Arc<Vault>,
     id: RecordingId,
     at: Stage,
     e: &CommandError,
+    events: &dyn crate::events::EventSink,
 ) -> CommandResult<()> {
     let vault = vault.clone();
     let reason = crate::llm::friendly(&e.message);
@@ -1053,7 +1060,11 @@ async fn fail(
         vault.save_recording(&recording)?;
         Ok(())
     })
-    .await
+    .await?;
+    let mut change = Change::new(Kind::Recording, Op::Updated);
+    change.id = Some(id.to_string());
+    events.changed(change);
+    Ok(())
 }
 
 async fn do_transcribe(
@@ -1810,7 +1821,7 @@ mod tests {
         let err = do_summarise_and_write(&vault, &source, id, &FailingSummariser, events.as_ref())
             .await
             .unwrap_err();
-        fail(&vault, id, Stage::Summarising, &err).await.unwrap();
+        fail(&vault, id, Stage::Summarising, &err, events.as_ref()).await.unwrap();
 
         let recording = vault.recording(id).unwrap();
         match &recording.stage {

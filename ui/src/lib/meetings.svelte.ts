@@ -1,21 +1,21 @@
 // State for meeting notes: the settings pane, the live capture pill, the
-// offer banner, and the two lists that poll while something is moving --
-// recordings still in the pipeline, and a model still downloading.
+// offer banner, and the recordings/voiceprints lists and the model catalogue
+// they share this store with.
 //
 // Deliberately one store for all of it rather than one per surface. The
 // settings pane, the pill and the notes app all need to know the same two
 // things -- is a call being recorded right now, and what is in the pipeline
 // -- and a press in one of them (Stop, Retry, Download) has to be seen by
-// the other two without a page reload. A vault-wide `onChange` would do that
-// for an ordinary record, but recordings, transcripts and voiceprints are
-// not in `ChangeKind` yet (see `meetings-api.ts`'s own `TODO(meetings)`), so
-// this store polls instead -- narrowly, and only while there is something
-// worth polling for.
+// the other two without a page reload. `recording` and `voiceprint` are
+// ordinary `ChangeKind`s now, so `live.svelte.ts` routes a change of either
+// to this store's own `liveRefresh` the way every other domain's changes
+// route to its store -- see that module's `RELOADS`. The model catalogue is
+// the one list here that still polls: a byte counter mid-download is not a
+// vault write, so nothing raises a change for it, and `MODELS_POLL_MS`
+// below is that gap's whole fix, same as `speech.rs`'s own doc explains.
 
 import { api, callCommand, isMock, onMeetingOffer, onMeetingStatus, onMeetingStillOn } from './api'
 import type { MeetingOfferPayload } from './api'
-import * as meetingsApi from './meetings-api'
-import { stageIsActive } from './meetings-format'
 import { notify } from './notify.svelte'
 import { app, handle, isLocked } from './state.svelte'
 import type {
@@ -31,11 +31,9 @@ import type {
   VoiceprintInfo,
 } from './types'
 
-/** The stages worth a card in the notes list and a poll. */
+/** The stages worth a card in the notes list. */
 const ACTIVE_STAGES = ['recording', 'transcribing', 'identifying', 'summarising', 'failed']
 
-/** How often the recordings list is re-read while something is moving. */
-const RECORDINGS_POLL_MS = 4000
 /** How often the model catalogue is re-read while a download is running. */
 const MODELS_POLL_MS = 500
 
@@ -56,7 +54,6 @@ class MeetingsState {
   models = $state<SpeechModelInfo[]>([])
   voiceprints = $state<VoiceprintInfo[]>([])
 
-  #recordingsTimer: ReturnType<typeof setInterval> | null = null
   #modelsTimer: ReturnType<typeof setInterval> | null = null
   #started = false
 
@@ -74,9 +71,7 @@ class MeetingsState {
     this.recordings = []
     this.models = []
     this.voiceprints = []
-    if (this.#recordingsTimer) clearInterval(this.#recordingsTimer)
     if (this.#modelsTimer) clearInterval(this.#modelsTimer)
-    this.#recordingsTimer = null
     this.#modelsTimer = null
   }
 
@@ -134,7 +129,7 @@ class MeetingsState {
   async reload() {
     this.loading = true
     try {
-      this.view = await meetingsApi.meetingSettings()
+      this.view = await api.meetingSettings()
     } catch (e) {
       if (!isLocked(e)) await handle(e)
     } finally {
@@ -144,73 +139,74 @@ class MeetingsState {
 
   /** Throws on failure -- the settings pane shows the message beside Save. */
   async save(settings: MeetingSettings): Promise<MeetingSettingsView> {
-    const v = await meetingsApi.saveMeetingSettings(settings)
+    const v = await api.saveMeetingSettings(settings)
     this.view = v
     return v
   }
 
   async setKey(key: string | null): Promise<MeetingSettingsView> {
-    const v = await meetingsApi.setTranscriberKey(key)
+    const v = await api.setTranscriberKey(key)
     this.view = v
     return v
   }
 
   test(): Promise<void> {
-    return meetingsApi.testTranscriber()
+    return api.testTranscriber()
   }
 
   newTemplate(): Promise<NoteTemplate> {
-    return meetingsApi.newMeetingTemplate()
+    return api.newMeetingTemplate()
   }
 
   lintTemplate(body: string): Promise<string[]> {
-    return meetingsApi.lintMeetingTemplate(body)
+    return api.lintMeetingTemplate(body)
   }
 
   previewTemplate(body: string): Promise<string> {
-    return meetingsApi.previewMeetingTemplate(body)
+    return api.previewMeetingTemplate(body)
   }
 
-  // ── Recordings, polled while any of them is still moving ───────────
+  // ── Recordings, refreshed by a `recording` change from `live.svelte.ts` ──
 
   async refreshRecordings() {
     try {
-      this.recordings = await meetingsApi.listRecordings({ stages: ACTIVE_STAGES, limit: 50 })
+      this.recordings = await api.listRecordings({ stages: ACTIVE_STAGES, limit: 50 })
     } catch (e) {
       if (!isLocked(e)) return
     }
-    this.#ensureRecordingsPoll()
   }
 
-  #ensureRecordingsPoll() {
-    const moving = this.recordings.some((r) => stageIsActive(r.stage)) || this.capture != null
-    if (moving && !this.#recordingsTimer) {
-      this.#recordingsTimer = setInterval(() => void this.refreshRecordings(), RECORDINGS_POLL_MS)
-    } else if (!moving && this.#recordingsTimer) {
-      clearInterval(this.#recordingsTimer)
-      this.#recordingsTimer = null
-    }
+  /**
+   * What `live.svelte.ts`'s `RELOAD['meetings']` calls for a `recording` or
+   * `voiceprint` change -- another window's write, or this vault's own
+   * background pipeline finishing or failing a call it started. One target
+   * for both kinds, the same "an app, not a table" granularity every other
+   * domain's live refresh uses: neither list is ever large enough that
+   * telling the two kinds apart would save anything worth the extra code.
+   */
+  async liveRefresh() {
+    await Promise.all([this.refreshRecordings(), this.loadVoiceprints()])
   }
 
   async retryRecording(id: RecordingId) {
-    await meetingsApi.retryRecording(id)
+    await api.retryRecording(id)
     await this.refreshRecordings()
   }
 
   async discardRecording(id: RecordingId) {
-    await meetingsApi.discardRecording(id)
+    await api.discardRecording(id)
     await this.refreshRecordings()
   }
 
   async deleteRecording(id: RecordingId) {
-    await meetingsApi.deleteRecording(id)
+    await api.deleteRecording(id)
     await this.refreshRecordings()
   }
 
   // ── Local speech models ──────────────────────────────────────────
 
   async refreshModels() {
-    this.models = await meetingsApi.speechModels()
+    this.models = await api.speechModels()
     this.#ensureModelsPoll()
   }
 
@@ -225,37 +221,37 @@ class MeetingsState {
   }
 
   async downloadModel(id: string) {
-    await meetingsApi.downloadSpeechModel(id)
+    await api.downloadSpeechModel(id)
     await this.refreshModels()
   }
 
   async cancelDownload(id: string) {
-    await meetingsApi.cancelSpeechModelDownload(id)
+    await api.cancelSpeechModelDownload(id)
     await this.refreshModels()
   }
 
   async deleteModel(id: string) {
-    await meetingsApi.deleteSpeechModel(id)
+    await api.deleteSpeechModel(id)
     await this.refreshModels()
   }
 
   benchmark(id: string): Promise<ModelBenchmark> {
-    return meetingsApi.benchmarkSpeechModel(id)
+    return api.benchmarkSpeechModel(id)
   }
 
   // ── Voiceprints ───────────────────────────────────────────────────
 
   async loadVoiceprints() {
-    this.voiceprints = await meetingsApi.listVoiceprints()
+    this.voiceprints = await api.listVoiceprints()
   }
 
   async deleteVoiceprint(id: VoiceprintId) {
-    await meetingsApi.deleteVoiceprint(id)
+    await api.deleteVoiceprint(id)
     await this.loadVoiceprints()
   }
 
   async deleteAllVoiceprints() {
-    await meetingsApi.deleteAllVoiceprints()
+    await api.deleteAllVoiceprints()
     await this.loadVoiceprints()
   }
 
@@ -309,7 +305,7 @@ class MeetingsState {
 
   async dismissOffer(eventId: string, never: boolean) {
     this.#dropOffer(eventId)
-    await meetingsApi.dismissMeetingOffer(eventId, never)
+    await api.dismissMeetingOffer(eventId, never)
   }
 
   async acceptOffer(offer: MeetingOfferPayload): Promise<Recording> {

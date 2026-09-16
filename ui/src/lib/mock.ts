@@ -4689,10 +4689,12 @@ export const mockInvoke = async <T>(
 
     // ── Meeting notes -- docs/plans/meeting-notes.md ────────────────────
     //
-    // None of these are in `surface.json` yet; see `meetings-api.ts`'s own
-    // `TODO(meetings)`. Wire names are what `callCommand` sends, so the
-    // cases below are snake_case the same way every other command in this
-    // switch is.
+    // These are all in `surface.json` now -- `api.ts`'s own "Meeting notes"
+    // section calls every one of them through `call`, typed. This switch
+    // still matches by the wire (snake_case) name regardless, the same as
+    // every other command below: `call` resolves a typed method to its wire
+    // name before `invoke` ever reaches this file, in mock mode as much as
+    // in a real build.
 
     case 'meeting_settings':
       requireUnlocked()
