@@ -349,14 +349,23 @@
       {/if}
     </section>
 
+    <!-- Called a soul rather than a prompt, because that is what people put
+         in it. A box labelled "system prompt" invites the operating manual a
+         model already has -- use your tools, do not invent ids -- written
+         again, worse. This one is read first and its own instructions second,
+         so what goes here is temperament rather than procedure. -->
     <section>
-      <span class="eyebrow">Instructions</span>
+      <span class="eyebrow">Soul</span>
       <textarea
         bind:value={draft.instructions}
         rows="6"
-        placeholder="How you want it to behave. Be terse. Call me by my first name. I plan on Sunday evenings. Never use exclamation marks."
+        placeholder="Who you want it to be. Be terse. Call me by my first name. I plan on Sunday evenings. Never use exclamation marks."
       ></textarea>
-      <p class="hint">Sent with every message, before its own instructions.</p>
+      <p class="hint">
+        Its temperament, house style, anything you want true of every reply. Sent with every message
+        and read before its own instructions, which it keeps — this is who it is, not how it does
+        the work.
+      </p>
     </section>
 
     <section>

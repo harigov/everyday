@@ -413,6 +413,15 @@ pub struct AgentSettings {
     /// anything they want true of every reply. Prepended to the assistant's
     /// own operating instructions rather than replacing them — see
     /// [`system_prompt`].
+    ///
+    /// Settings calls this box the **soul**, which is the better name for
+    /// what people write in it and the reason the order in `system_prompt`
+    /// is what it is: a field labelled "system prompt" collects the
+    /// operating manual the model is already given, restated worse, and a
+    /// field labelled "soul" collects temperament. The key keeps the older
+    /// name because it is sealed into every payload that has one, and a
+    /// rename would be a migration handed a connection rather than a cipher
+    /// — the same problem [`legacy_model`](Self::legacy_model) documents.
     pub instructions: String,
     /// Whether a destructive tool call stops and asks first.
     ///
@@ -486,12 +495,12 @@ pub const MAX_STEPS_LIMIT: u32 = 100;
 /// Longest the assistant's name may be.
 ///
 /// A name, not a biography. Anything a person wants said about how it should
-/// behave belongs in the instructions below, which is the field sized for
-/// prose; a two-hundred-character "name" would be an instruction smuggled
-/// into the one string that is drawn in a 240px header.
+/// behave belongs in the soul below, which is the field sized for prose; a
+/// two-hundred-character "name" would be an instruction smuggled into the
+/// one string that is drawn in a 240px header.
 pub const MAX_NAME_CHARS: usize = 40;
 
-/// Longest a person's own instructions may be.
+/// Longest a person's own instructions — the soul — may be.
 ///
 /// Generous — several pages — and finite, because this string is sent with
 /// every single request. Someone who pastes a novel into it pays for that
@@ -517,9 +526,15 @@ impl AgentSettings {
         if self.name.contains(['\n', '\r']) {
             return Err(Error::Invalid("a name is one line".into()));
         }
+        // "Soul" rather than the field name, because this sentence is shown
+        // verbatim under the box it is about, and the box is labelled Soul.
+        // The routine's own identical-looking limit still says
+        // "instructions" -- see `routine::MAX_INSTRUCTIONS_BYTES` -- because
+        // a routine's box really is labelled Instructions. Two messages, two
+        // labels, each matching the thing the person is looking at.
         if self.instructions.len() > MAX_INSTRUCTIONS_BYTES {
             return Err(Error::Invalid(format!(
-                "instructions are {} bytes; the limit is {MAX_INSTRUCTIONS_BYTES}",
+                "the soul is {} bytes; the limit is {MAX_INSTRUCTIONS_BYTES}",
                 self.instructions.len()
             )));
         }
@@ -1202,7 +1217,15 @@ mod tests {
             instructions: "x".repeat(MAX_INSTRUCTIONS_BYTES + 1),
             ..Default::default()
         };
-        assert!(s.validate().is_err());
+        let err = s.validate().expect_err("a novel in the soul is refused");
+        // Pinned, because this sentence is drawn under the box it is about
+        // and the box is labelled Soul. A refusal that names a field the
+        // person cannot see on the screen in front of them is one they
+        // cannot act on.
+        assert!(
+            err.to_string().contains("the soul is"),
+            "the refusal should name the box as the interface does, got {err}"
+        );
     }
 
     #[test]
