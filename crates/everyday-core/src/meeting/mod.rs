@@ -18,6 +18,7 @@
 //! that exists until the note does. See `docs/plans/meeting-notes.md`.
 
 pub mod detect;
+pub mod filing;
 pub mod identify;
 pub mod merge;
 pub mod prompt;
@@ -316,19 +317,28 @@ impl Transcript {
         self.speakers.iter().find(|s| s.key == key)
     }
 
-    /// `[mm:ss] Name: text`, one line per segment: what the model reads and
-    /// what search indexes.
+    /// One turn of dialogue: `[mm:ss] Name: text`, or `[h:mm:ss] Name: text`
+    /// past an hour. Broken out of [`Transcript::as_lines`] so a caller
+    /// paging through a long transcript -- `get_transcript`, in
+    /// `agent::tools::meetings` -- can format one segment at a time without
+    /// building the whole thing first only to slice it.
+    pub fn line(&self, seg: &Segment) -> String {
+        let name = self.speaker(seg.speaker).map(|s| s.label.as_str()).unwrap_or("Unknown");
+        let secs = seg.start_ms / 1000;
+        let stamp = if secs >= 3600 {
+            format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+        } else {
+            format!("{:02}:{:02}", secs / 60, secs % 60)
+        };
+        format!("[{stamp}] {name}: {}", seg.text.trim())
+    }
+
+    /// Every line, one per segment: what search indexes.
     pub fn as_lines(&self) -> String {
         let mut out = String::new();
         for seg in &self.segments {
-            let name = self.speaker(seg.speaker).map(|s| s.label.as_str()).unwrap_or("Unknown");
-            let secs = seg.start_ms / 1000;
-            let stamp = if secs >= 3600 {
-                format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
-            } else {
-                format!("{:02}:{:02}", secs / 60, secs % 60)
-            };
-            out.push_str(&format!("[{stamp}] {name}: {}\n", seg.text.trim()));
+            out.push_str(&self.line(seg));
+            out.push('\n');
         }
         out
     }
