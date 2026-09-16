@@ -246,6 +246,146 @@ fn mcp_may_send_once_an_account_turns_it_on_and_is_queued_through_the_undo_windo
     });
 }
 
+/// The regression for "the draft fingerprint is rejected in normal
+/// operation": `send_draft`'s own `draft_fingerprint` argument exists to
+/// catch a *recipient* moving between the confirmation card being built and
+/// the person answering it, not to catch the outbox's own bookkeeping. The
+/// outbox writes to a draft through `Vault::with_draft` for reasons that
+/// have nothing to do with anyone changing it -- recording the server copy
+/// after an `AppendDraft`, minting the `Message-ID` -- and those writes
+/// must not be enough on their own to make a fingerprint captured earlier
+/// stop matching.
+#[test]
+fn a_bookkeeping_only_write_leaves_the_send_fingerprint_stable() {
+    let (svc, _dir) = support::vault::service(None);
+    let account = seed_account(&svc);
+    let vault = svc.get().unwrap();
+    let mut draft =
+        Draft::new(account.id, account.address.clone(), everyday_core::mail::Origin::Person);
+    draft.to = vec![Address::bare("friend@example.com")];
+    draft.subject = "hi".into();
+    vault.save_draft(&draft).unwrap();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        // A read that hands back a fingerprint, the same way a confirmation
+        // card would -- `update_draft`'s own result carries one, same as
+        // `draft_reply` and `draft_message`.
+        let out = svc
+            .call(
+                Ctx::local(),
+                "run_tool",
+                json!({
+                    "name": "update_draft",
+                    "arguments": { "draft_id": draft.id.to_string(), "subject": "hi there" },
+                }),
+            )
+            .await
+            .unwrap();
+        let fingerprint = out["fingerprint"].as_str().unwrap().to_string();
+
+        // Bookkeeping the outbox performs on this exact draft, none of
+        // which is a person or a routine touching the recipients: a
+        // recorded server copy from an `AppendDraft`, a minted
+        // `Message-ID`, and the `updated_at` bump `Vault::with_draft`
+        // always makes on any write at all.
+        vault
+            .with_draft(draft.id, |d| {
+                d.server_copy =
+                    Some(everyday_core::mail::DraftServerCopy { mailbox: "Drafts".into(), uid: 7 });
+                d.message_id = Some("<abc123@example.com>".into());
+                d.updated_at = jiff::Timestamp::now();
+                true
+            })
+            .unwrap();
+
+        let out = svc
+            .call(
+                Ctx::local(),
+                "run_tool",
+                json!({
+                    "name": "send_draft",
+                    "arguments": {
+                        "draft_id": draft.id.to_string(),
+                        "draft_fingerprint": fingerprint,
+                    },
+                    "confirmDestructive": true,
+                }),
+            )
+            .await
+            .expect(
+                "an outbox bookkeeping write must not invalidate a fingerprint nobody's \
+                 recipients moved under",
+            );
+        assert_eq!(out["action"], "queued to send");
+    });
+}
+
+/// The other half of the fingerprint's job: it must still catch what it was
+/// built for. A recipient added after the fingerprint was captured -- the
+/// exact race `run_send_draft`'s own comment describes, a scheduled
+/// routine's `update_draft` landing while a confirmation card is still on
+/// screen -- has to be refused, not waved through because bookkeeping
+/// fields were dropped from the hash.
+#[test]
+fn a_changed_recipient_invalidates_the_send_fingerprint() {
+    let (svc, _dir) = support::vault::service(None);
+    let account = seed_account(&svc);
+    let vault = svc.get().unwrap();
+    let mut draft =
+        Draft::new(account.id, account.address.clone(), everyday_core::mail::Origin::Person);
+    draft.to = vec![Address::bare("friend@example.com")];
+    draft.subject = "hi".into();
+    vault.save_draft(&draft).unwrap();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let out = svc
+            .call(
+                Ctx::local(),
+                "run_tool",
+                json!({
+                    "name": "update_draft",
+                    "arguments": { "draft_id": draft.id.to_string(), "subject": "hi there" },
+                }),
+            )
+            .await
+            .unwrap();
+        let fingerprint = out["fingerprint"].as_str().unwrap().to_string();
+
+        svc.call(
+            Ctx::local(),
+            "run_tool",
+            json!({
+                "name": "update_draft",
+                "arguments": {
+                    "draft_id": draft.id.to_string(),
+                    "cc": ["someone-else@example.com"],
+                },
+            }),
+        )
+        .await
+        .unwrap();
+
+        let err = svc
+            .call(
+                Ctx::local(),
+                "run_tool",
+                json!({
+                    "name": "send_draft",
+                    "arguments": {
+                        "draft_id": draft.id.to_string(),
+                        "draft_fingerprint": fingerprint,
+                    },
+                    "confirmDestructive": true,
+                }),
+            )
+            .await
+            .expect_err("a recipient changed after the fingerprint was captured");
+        assert_eq!(err.code, codes::INVALID, "{err:?}");
+    });
+}
+
 /// `respond_to_invite` is the catalogue's second `Effect::Outward` tool, and
 /// carries exactly the same confirmation requirement `send_draft` does --
 /// see `must_confirm` in `everyday_service::agent`, which is not keyed on

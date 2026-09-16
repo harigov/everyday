@@ -386,7 +386,11 @@ impl Service {
     /// the same tolerance [`crate::supervisor::Supervisor::ensure`] has for
     /// asking twice.
     pub(crate) fn open_mail(self: &Arc<Self>, vault: &Arc<everyday_core::Vault>) {
-        crate::mailsync::wiring::open(self, vault);
+        // `wiring::open`'s return value is the handle of a one-time reindex
+        // it queues after a self-healing wipe -- see that function's own
+        // docs. Dropped here deliberately: it is meant to run detached, and
+        // is returned at all only so a test can await it directly.
+        let _ = crate::mailsync::wiring::open(self, vault);
     }
 
     /// Drop mail's pack store and search index. See `mailsync::wiring::close`.

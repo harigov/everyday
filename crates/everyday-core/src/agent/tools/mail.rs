@@ -333,9 +333,9 @@ pub(super) static TOOLS: &[Tool] = &[
                     text(
                         "Optional. The `fingerprint` field from a recent read of this draft \
                          (draft_reply, draft_message, update_draft or the confirmation card's \
-                         own text). If given and the draft's recipients or last-saved time have \
-                         since changed, the send is refused rather than sent against recipients \
-                         nobody just looked at."
+                         own text). If given and the draft's recipients have since changed, the \
+                         send is refused rather than sent against recipients nobody just looked \
+                         at."
                     )
                 )
             ],
@@ -681,8 +681,8 @@ fn draft_result(action: &str, draft: &Draft, thread_id: Option<ThreadId>) -> Res
         // See `send_draft`'s own `draft_fingerprint` argument and
         // `run_send_draft`'s comment: a caller that passes this straight
         // back on a later `send_draft` call gets refused, rather than
-        // silently sent, if the recipients or this row's own save time
-        // moved between reading it here and sending it.
+        // silently sent, if the recipients moved between reading it here
+        // and sending it.
         map.insert("fingerprint".into(), json!(draft_fingerprint(draft)));
     }
     Ok(out)
@@ -1046,20 +1046,36 @@ fn origin_label(origin: &Origin) -> &'static str {
 }
 
 /// A short fingerprint of exactly the parts of `draft` a confirmed send
-/// must not have changed underneath the confirmation: its recipients and
-/// its own [`Draft::updated_at`]. Not the subject or body -- a person who
-/// approved "send this" while the body kept autosaving a typo fix is not
-/// the race this exists to catch; a scheduled routine's `update_draft`
-/// widening `bcc` while the card is still on screen is (see this module's
-/// own doc on `Pending` being process-wide, and `run_send_draft`'s own
-/// comment for what checking this actually buys and does not).
+/// must not have changed underneath the confirmation: its recipients, and
+/// nothing else.
+///
+/// Deliberately not the subject or body -- a person who approved "send
+/// this" while the body kept autosaving a typo fix is not the race this
+/// exists to catch; a scheduled routine's `update_draft` widening `bcc`
+/// while the card is still on screen is (see this module's own doc on
+/// `Pending` being process-wide, and `run_send_draft`'s own comment for
+/// what checking this actually buys and does not).
+///
+/// And deliberately *not* [`Draft::updated_at`] either, though it might
+/// look like the obvious catch-all for "anything changed": that field is
+/// bumped by writes that have nothing to do with the question this
+/// fingerprint answers. The outbox's own `Vault::with_draft` calls touch it
+/// while recording the server copy after an `AppendDraft`, minting the
+/// `message_id` once the append lands, and marking the draft `Sent` --
+/// every one of them bookkeeping this module's own send path performs on
+/// the very draft a person just confirmed, not a change any human or
+/// routine made to it. Hashing `updated_at` meant a fingerprint captured
+/// when the confirmation card was built could stop matching before the
+/// person ever finished reading the card, purely because the send
+/// machinery itself had already ticked the clock -- refusing a correctly
+/// confirmed send with "this draft changed since it was last read" for a
+/// change that was never a change to the recipients at all.
 fn draft_fingerprint(draft: &Draft) -> String {
     let mut hasher = blake3::Hasher::new();
     for addr in draft.to.iter().chain(draft.cc.iter()).chain(draft.bcc.iter()) {
         hasher.update(addr.email.to_lowercase().as_bytes());
         hasher.update(b"\0");
     }
-    hasher.update(draft.updated_at.to_string().as_bytes());
     hasher.finalize().to_hex()[..12].to_string()
 }
 
@@ -1142,9 +1158,10 @@ fn run_send_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     // neither confirmed nor refused unattended -- from landing on this
     // exact draft while the card is still on screen. A caller that passes
     // back the fingerprint the card was built from gets that gap closed:
-    // if this draft's recipients or `updated_at` moved since, the send is
-    // refused rather than carried out against recipients nobody just
-    // looked at. Optional, and only as strong as whatever called this
+    // if this draft's recipients moved since, the send is refused rather
+    // than carried out against recipients nobody just looked at. See
+    // `draft_fingerprint`'s own doc for why that check is scoped to
+    // recipients alone. Optional, and only as strong as whatever called this
     // actually bothers to pass -- `everyday-server`'s `VaultHost` and a
     // bare script never will, since neither ever saw a card -- so this is
     // one layer, not the fix: the complete fix is `agent.rs`'s `ConfirmGate`

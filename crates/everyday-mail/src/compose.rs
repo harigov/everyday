@@ -313,54 +313,79 @@ pub fn reply_headers(parent: &ParsedMessage) -> (Option<String>, Vec<String>) {
     (in_reply_to, references)
 }
 
-/// `subject` with one `Re: ` in front, unless it already has one — so
-/// replying to "Re: Budget" gives "Re: Budget", not "Re: Re: Budget", no
-/// matter how many times around the thread it goes.
+/// `subject` with one `Re: ` in front, unless it already carries a reply
+/// marker of some kind — so replying to "Re: Budget" gives "Re: Budget",
+/// not "Re: Re: Budget", no matter how many times around the thread it
+/// goes, and replying to "AW: Budget" (the German "Antwort") gives
+/// "AW: Budget" too, not "Re: AW: Budget".
+///
+/// Deliberately checked against [`REPLY_PREFIXES`] alone, not
+/// [`FORWARD_PREFIXES`] as well: replying to a forward must produce
+/// "Re: Fwd: Notes", not "Fwd: Notes" with no `Re:` at all, since the
+/// forward marker says nothing about whether *this* message is itself a
+/// reply. See [`has_prefix_from`]'s own doc for the bug this split fixes.
 pub fn reply_subject(subject: &str) -> String {
-    prefixed_subject(subject, "Re:")
+    prefixed_subject(subject, "Re:", REPLY_PREFIXES)
 }
 
-/// As [`reply_subject`], for forwarding: `Fwd: ` in front, once.
+/// As [`reply_subject`], for forwarding: `Fwd: ` in front, once, checked
+/// against [`FORWARD_PREFIXES`] alone so forwarding a reply produces
+/// "Fwd: Re: Budget" rather than silently dropping the `Fwd:` because the
+/// subject already said `Re:`.
 pub fn forward_subject(subject: &str) -> String {
-    prefixed_subject(subject, "Fwd:")
+    prefixed_subject(subject, "Fwd:", FORWARD_PREFIXES)
 }
 
-fn prefixed_subject(subject: &str, prefix: &str) -> String {
-    if has_reply_or_forward_prefix(subject) {
+fn prefixed_subject(subject: &str, prefix: &str, own_kind: &[&str]) -> String {
+    if has_prefix_from(subject, own_kind) {
         subject.to_string()
     } else {
         format!("{prefix} {subject}")
     }
 }
 
-/// Prefixes that mean "this subject already carries a reply or forward
-/// marker of some kind" -- the ones real mail clients actually send,
-/// including the ones localised by the system's own language rather than
-/// the message's, since Outlook and Apple Mail both do that.
-///
-/// A private copy of the same list `threading`'s own subject matching
-/// keeps (`REPLY_OR_FORWARD_PREFIXES` there): that copy is private to
-/// `threading`'s module and this file has no way to reach it without
-/// `threading` widening its own visibility, which is a change to a file
-/// this fix does not touch. Two lists this short, over the same handful of
-/// mail clients' own conventions, are cheap enough to keep in step by
-/// inspection.
-const REPLY_OR_FORWARD_PREFIXES: &[&str] =
-    &["re", "fw", "fwd", "aw", "sv", "antw", "rv", "odp", "tr", "wg"];
+/// Prefixes that mean "this subject already carries a *reply* marker" --
+/// the ones real reply-capable mail clients actually send, including the
+/// ones localised by the system's own language rather than the message's,
+/// since Outlook and Apple Mail both do that: `AW` (German "Antwort"),
+/// `SV` (Swedish/Danish "Svar"), `Antw` (Dutch "Antwoord"), `ODP` (Polish
+/// "Odpowiedź").
+const REPLY_PREFIXES: &[&str] = &["re", "aw", "sv", "antw", "odp"];
 
-/// Whether `subject` already starts with one of [`REPLY_OR_FORWARD_PREFIXES`],
+/// As [`REPLY_PREFIXES`], for forward markers: `Fw`/`Fwd` (English), `WG`
+/// (German "Weitergeleitet"), `TR` (French "Transfert"), `RV` (Spanish
+/// "Reenviar").
+const FORWARD_PREFIXES: &[&str] = &["fw", "fwd", "rv", "tr", "wg"];
+
+/// Whether `subject` already starts with one of `prefixes`,
 /// case-insensitively, optionally carrying a bracketed reply count on the
 /// word itself (`RE[2]:`, the way some clients count replies down a
 /// thread) -- what stops [`reply_subject`] and [`forward_subject`] from
-/// stacking a second marker in front of a subject that already carries
-/// one, however it spelled it.
+/// stacking a second marker of their *own* kind in front of a subject that
+/// already carries one, however it spelled it.
 ///
-/// Before this recognised only the exact spelling the caller was about to
-/// add -- `"Re:"` for a reply, `"Fwd:"` for a forward -- so replying to
-/// `"Fw: Budget"` produced `"Re: Fw: Budget"` and forwarding
-/// `"RE[2]: Budget"` produced `"Fwd: RE[2]: Budget"`: both already carried
-/// a marker, just not the one being checked for.
-fn has_reply_or_forward_prefix(subject: &str) -> bool {
+/// Reply and forward markers are checked as two disjoint lists
+/// ([`REPLY_PREFIXES`] and [`FORWARD_PREFIXES`]) rather than one combined
+/// list, because "already has *a* marker" is the wrong question for either
+/// caller to ask: replying to "Fwd: Notes" must still add "Re:" (the
+/// forward marker says nothing about whether this reply has been answered
+/// before), and forwarding "Re: Budget" must still add "Fwd:" for the same
+/// reason in the other direction. A single shared list -- what this used
+/// to check against -- answered "does this subject carry any marker at
+/// all", which suppressed both of those additions and left the recipient
+/// unable to tell a forward from a reply, or a reply from a forward.
+///
+/// `threading`'s own subject matching keeps a third copy of this
+/// vocabulary, `REPLY_OR_FORWARD_PREFIXES`, as one combined list: that
+/// module only asks "is this the same conversation", where reply and
+/// forward markers are genuinely interchangeable, so it has no reason to
+/// split them the way stacking-suppression here does. That list is private
+/// to `threading`'s module and this file has no way to reach it without
+/// `threading` widening its own visibility, which is a change to a file
+/// this fix does not touch; three lists this short, over the same handful
+/// of mail clients' own conventions, are cheap enough to keep in step by
+/// inspection.
+fn has_prefix_from(subject: &str, prefixes: &[&str]) -> bool {
     let trimmed = subject.trim();
     let Some(colon) = trimmed.find(':') else { return false };
     let candidate = trimmed[..colon].trim();
@@ -373,7 +398,7 @@ fn has_reply_or_forward_prefix(subject: &str) -> bool {
         Some(rest) => rest.split('[').next().unwrap_or(rest).trim(),
         None => candidate,
     };
-    REPLY_OR_FORWARD_PREFIXES.contains(&word.to_ascii_lowercase().as_str())
+    prefixes.contains(&word.to_ascii_lowercase().as_str())
 }
 
 /// Wraps `sanitised_html` — the parent message's own sanitised body, exactly
@@ -646,13 +671,29 @@ mod tests {
         assert_eq!(forward_subject("Fwd: Budget"), "Fwd: Budget");
     }
 
-    /// Finding 11: a mail client's own forward marker (`Fw:`, not this
-    /// application's `Fwd:`) must still be recognised as "already carries
-    /// one", not stacked under a second marker of a different spelling.
+    /// Bug 3's own regression: `forward_subject` and `reply_subject` must
+    /// each suppress stacking only for a marker of their *own* kind, not
+    /// for "any marker at all". Before this fix, `forward_subject("Re:
+    /// Budget")` returned `"Re: Budget"` with no `Fwd:` at all -- the
+    /// recipient could not tell a forward from a reply -- and
+    /// `reply_subject("Fwd: Notes")` returned `"Fwd: Notes"` with no `Re:`
+    /// at all, in the other direction.
     #[test]
-    fn reply_subject_does_not_stack_on_a_different_clients_own_spelling() {
-        assert_eq!(reply_subject("Fw: Budget"), "Fw: Budget");
+    fn forwarding_a_reply_and_replying_to_a_forward_each_stack_their_own_marker() {
+        assert_eq!(forward_subject("Re: Budget"), "Fwd: Re: Budget");
+        assert_eq!(reply_subject("Fwd: Notes"), "Re: Fwd: Notes");
+    }
+
+    /// A mail client's own forward marker (`Fw:`, not this application's
+    /// `Fwd:`) must still be recognised as "already carries a forward
+    /// marker" by `forward_subject`, so forwarding it does not stack a
+    /// second one -- but it is a different *kind* of marker to
+    /// `reply_subject`, which must still add its own `Re:` in front, the
+    /// same way it would for any other forward.
+    #[test]
+    fn reply_subject_does_not_treat_a_different_clients_forward_marker_as_its_own() {
         assert_eq!(forward_subject("Fw: Budget"), "Fw: Budget");
+        assert_eq!(reply_subject("Fw: Budget"), "Re: Fw: Budget");
     }
 
     /// Finding 11: a bracketed reply count some clients append to the word
@@ -675,8 +716,8 @@ mod tests {
 
     /// A subject that merely starts with a bracketed tag of its own --
     /// nothing like a reply or forward marker -- must not be swallowed by
-    /// the bracket-stripping [`has_reply_or_forward_prefix`] does for a
-    /// genuine `RE[2]`-shaped marker.
+    /// the bracket-stripping [`has_prefix_from`] does for a genuine
+    /// `RE[2]`-shaped marker.
     #[test]
     fn an_unrelated_bracketed_subject_still_gets_prefixed() {
         assert_eq!(reply_subject("[Ops] Budget"), "Re: [Ops] Budget");

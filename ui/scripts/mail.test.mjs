@@ -32,6 +32,7 @@ const {
   refreshLimit,
   visibleThreadList,
   neighbourThread,
+  isBlankDraft,
 } = mailLib
 
 function person(name, email) {
@@ -377,6 +378,36 @@ assert.equal(
   'the last row falls back to the one above it',
 )
 assert.equal(advanceTo([thread('th-1')], 'th-1'), null, 'the only row leaves no neighbour at all')
+
+// ── Compose: a blank draft is discarded, not autosaved ──────────────────
+//
+// `MailCompose.svelte`'s `discard()` used to delete the draft on this branch
+// and then let its `onDestroy` safety net flush the very same draft back
+// into existence -- a keystroke-loss fix (flush on unmount) colliding with
+// the empty-draft fix (delete on unmount). The boolean the two paths must
+// agree on is `isBlankDraft`.
+
+function draft(overrides = {}) {
+  return { subject: '', bodyHtml: '', to: [], ...overrides }
+}
+
+assert.equal(isBlankDraft(draft()), true, 'nothing typed at all')
+assert.equal(
+  isBlankDraft(draft({ bodyHtml: '<p></p>' })),
+  true,
+  'empty paragraph tags from a fresh editor are not "content"',
+)
+assert.equal(isBlankDraft(draft({ subject: 'Hi' })), false, 'a subject alone is worth keeping')
+assert.equal(
+  isBlankDraft(draft({ bodyHtml: '<p>hello</p>' })),
+  false,
+  'typed body text is worth keeping',
+)
+assert.equal(
+  isBlankDraft(draft({ to: [person('Priya Raman', 'priya@example.com')] })),
+  false,
+  'a recipient alone is worth keeping',
+)
 
 await close()
 console.log('mail: all checks passed')

@@ -16,8 +16,9 @@ use std::sync::{Arc, Mutex};
 use everyday_core::account::{Account, Provider};
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
 use everyday_core::mail::{
-    Address, AttendeeResponse, CategorySource, Draft, DraftState, Invite, InviteMethod, Mailbox,
-    MailboxRole, Message, MessageFlags, Op, OpKind, OpState, OpTarget, Origin,
+    Address, AttendeeResponse, CategorySource, Draft, DraftCalendarPart, DraftState, Invite,
+    InviteMethod, Mailbox, MailboxRole, Message, MessageFlags, Op, OpKind, OpState, OpTarget,
+    Origin,
 };
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::IngestMessage;
@@ -1152,11 +1153,16 @@ async fn a_permanently_failed_invite_reply_reverts_my_response() {
     // The RSVP draft `respond_to_invite_inner` builds -- named at the
     // invitation it answers via `in_reply_to`, the same field an ordinary
     // reply threads under and the field this plumbing reads to find it
-    // again.
+    // again. `calendar_part` is what actually marks this as an RSVP rather
+    // than an ordinary reply -- see
+    // `a_permanently_failed_ordinary_reply_does_not_touch_my_response`
+    // below for the sibling case this distinguishes it from.
     let mut draft = Draft::new(account, "me@example.com", Origin::Person);
     draft.in_reply_to = Some(message_id);
     draft.to = vec![Address::bare("boss@example.com")];
     draft.subject = "Accepted: Standup".into();
+    draft.calendar_part =
+        Some(DraftCalendarPart { method: "REPLY".into(), ics: "BEGIN:VCALENDAR".into() });
     let draft_id = draft.id;
     vault.save_draft(&draft).unwrap();
     vault.queue_draft_send(draft_id, Timestamp::now(), Origin::Person).unwrap();
@@ -1174,6 +1180,68 @@ async fn a_permanently_failed_invite_reply_reverts_my_response() {
         after.invite.unwrap().my_response,
         None,
         "a rejected RSVP must not still say Accepted"
+    );
+    assert_eq!(vault.draft(draft_id).unwrap().state, DraftState::Editing);
+}
+
+/// The regression this bug report actually describes: a plain reply in an
+/// invitation's own thread sets `in_reply_to` just like an RSVP does --
+/// that field only names "the message this threads under", not "the
+/// invitation this answers" -- but never sets `calendar_part`. If a
+/// permanent failure of that ordinary reply reverted `my_response` on the
+/// strength of `in_reply_to` alone, sending "sounds good, see you there" in
+/// the same thread and having it bounce would silently un-answer an
+/// invitation the organiser already has a real "Accepted" for, sent days
+/// earlier and never actually withdrawn.
+#[tokio::test]
+async fn a_permanently_failed_ordinary_reply_does_not_touch_my_response() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let inbox = seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+    let thread = seed_message(&svc, account, inbox, 1);
+
+    let vault = svc.get().unwrap();
+    let (_, messages) = vault.thread(thread).unwrap();
+    let message_id = messages[0].id;
+    let invite = Invite {
+        uid: "event-1".into(),
+        method: InviteMethod::Request,
+        summary: "Standup".into(),
+        start: Timestamp::now(),
+        end: Timestamp::now(),
+        all_day: false,
+        location: None,
+        organizer: Address::bare("boss@example.com"),
+        attendees: Vec::new(),
+        my_response: Some(AttendeeResponse::Accepted),
+        recurrence: None,
+    };
+    vault.set_message_invite(message_id, Some(invite)).unwrap();
+
+    // An ordinary reply in the same thread -- no `calendar_part`, unlike
+    // the RSVP draft above.
+    let mut draft = Draft::new(account, "me@example.com", Origin::Person);
+    draft.in_reply_to = Some(message_id);
+    draft.to = vec![Address::bare("boss@example.com")];
+    draft.subject = "Re: Standup".into();
+    draft.body_html = "<p>Sounds good, see you there.</p>".into();
+    let draft_id = draft.id;
+    vault.save_draft(&draft).unwrap();
+    vault.queue_draft_send(draft_id, Timestamp::now(), Origin::Person).unwrap();
+
+    let mut session = FakeSession::default();
+    let sender = FakeSender {
+        fail: Some(MailError::Server("550 5.1.1 no such user".into())),
+        ..Default::default()
+    };
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.failed, 1, "{report:?}");
+
+    let after = vault.mail_message(message_id).unwrap();
+    assert_eq!(
+        after.invite.unwrap().my_response,
+        Some(AttendeeResponse::Accepted),
+        "an unrelated reply failing must not un-answer an invitation the organiser already has"
     );
     assert_eq!(vault.draft(draft_id).unwrap().state, DraftState::Editing);
 }

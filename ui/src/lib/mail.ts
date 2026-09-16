@@ -5,6 +5,7 @@
 import { friendlyDate, timeOfDay } from './format'
 import { isoDate } from './time'
 import type {
+  Draft,
   Mailbox,
   MailAddress,
   MailCategory,
@@ -259,6 +260,21 @@ export function estimateBodyHeight(bodyHtml: string, widthPx: number): number {
   const lineHeightPx = 21
   const blockGapPx = 12
   return Math.min(2400, lines * lineHeightPx + blocks * blockGapPx + 24)
+}
+
+// ── Compose: is there anything here worth keeping? ──────────────────────
+
+/**
+ * A draft with no recipient, subject or body -- what `MailCompose.svelte`'s
+ * `discard()` treats as "never really started", deleting it outright rather
+ * than autosaving it. Pulled out as its own function because that same
+ * boolean also decides whether the sheet's autosave gets flushed or
+ * forgotten on the way out: `discardDraft` and a subsequent autosave write
+ * race, and the loser is either a wasted write or a draft the person just
+ * asked to throw away reappearing behind their back.
+ */
+export function isBlankDraft(draft: Pick<Draft, 'subject' | 'bodyHtml' | 'to'>): boolean {
+  return !draft.subject && !draft.bodyHtml.replace(/<[^>]*>/g, '').trim() && draft.to.length === 0
 }
 
 // ── (p) The split inbox: category tabs ─────────────────────────────────

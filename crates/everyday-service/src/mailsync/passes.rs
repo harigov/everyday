@@ -211,6 +211,28 @@ pub async fn sync_once<S: MailSession>(
 /// *not yet removed* -- see [`reap_vanished`], which [`sync_once`] calls
 /// once every mailbox in the round has ingested its own new headers, for
 /// why deleting them here, inline, would be too early.
+///
+/// # The one mailbox this cannot tell apart from a stuck reset
+///
+/// `resuming_an_interrupted_reset`, below, is `0` for exactly "never
+/// synced", "mid-reset" and one more case this function has no durable
+/// signal for at all: a mailbox that has completed every pass it has ever
+/// run and simply has never once held a message. Nothing this crate stores
+/// about a mailbox distinguishes "empty because nothing has arrived yet"
+/// from "empty because a reset's wipe has not been followed by a single
+/// ingested header" -- both leave `known` and every uid this pass fetched
+/// empty, so the completion write below has nothing to derive a non-`0`
+/// `uidnext` from. Concretely: such a mailbox pays `reset_mailbox`'s
+/// (idempotent, cheap-on-nothing) wipe every pass, and the first batch of
+/// headers it ever does receive pays `force_db_rematch`'s per-header vault
+/// scan even though nothing was ever reset. Both are self-correcting --
+/// the moment one message lands, `uidnext` becomes real and this stops --
+/// and neither loses or duplicates a message, which is what the rest of
+/// this function's docs are actually guarding against. A durable
+/// mailbox-level flag would close this one gap too, at the cost of a
+/// schema column and the plumbing to reach it from here; this crate does
+/// not have that plumbing available today, and the gap it leaves is a few
+/// wasted queries on an edge case, not a correctness bug.
 pub async fn sync_headers<S: MailSession>(
     ctx: &SyncContext<'_>,
     session: &mut S,
@@ -242,12 +264,13 @@ pub async fn sync_headers<S: MailSession>(
     // this row already has: `uidnext == 0` is otherwise true only for a
     // mailbox that has never once reached this function's own completion
     // at the bottom, which is the only place that ever writes a real,
-    // `IMAP`-legal `UIDNEXT` (never `0` for a mailbox that has ever been
-    // `SELECT`ed). Pairing that with `uidvalidity != 0` rules out "never
-    // synced" (whose `UIDVALIDITY` is still `0` too), leaving exactly "a
-    // reset started, stamped its new `UIDVALIDITY` right away, and this
-    // attempt never reached the bottom of this function to say it
-    // finished."
+    // never-`0` `uidnext` back -- see that write's own docs for why it is
+    // never `0` for a mailbox that has ever finished a pass, *without*
+    // trusting the one thing that would otherwise make that false. Pairing
+    // that with `uidvalidity != 0` rules out "never synced" (whose
+    // `UIDVALIDITY` is still `0` too), leaving exactly "a reset started,
+    // stamped its new `UIDVALIDITY` right away, and this attempt never
+    // reached the bottom of this function to say it finished."
     let uidvalidity_just_changed =
         mailbox.row.uidvalidity != 0 && mailbox.row.uidvalidity != state.uidvalidity;
     let resuming_an_interrupted_reset = mailbox.row.uidvalidity != 0 && mailbox.row.uidnext == 0;
@@ -346,6 +369,11 @@ pub async fn sync_headers<S: MailSession>(
     }
 
     let new_uids: Vec<Uid> = changes.new_uids.iter().collect();
+    // Kept apart from `new_uids` itself, which `discovery::newest_first_chunks`
+    // below consumes by value: this is the one piece of it the completion
+    // write at the bottom of this function still needs, once the batches
+    // it came from are gone. See that write's own docs for why.
+    let highest_new_uid = new_uids.iter().copied().max();
     let total = new_uids.len() as u64;
     let mut done = 0u64;
     ctx.statuses.set_phase(ctx.account_id, Phase::Headers, done, total);
@@ -467,7 +495,38 @@ pub async fn sync_headers<S: MailSession>(
         tokio::task::yield_now().await;
     }
 
-    mailbox.row.uidnext = state.uidnext;
+    // `state.uidnext` is `UIDNEXT` off the wire, and `UIDNEXT` is an
+    // *optional* untagged response to `SELECT` -- RFC 3501 section 6.3.1
+    // marks it, unlike `UIDVALIDITY`, without the word "REQUIRED" -- so on
+    // a server that never sends it, `everyday_mail::imap`'s adapter reports
+    // a permanent `0` (see its own doc comment at that call site). Writing
+    // that `0` straight into `mailbox.row.uidnext` here used to be exactly
+    // what `resuming_an_interrupted_reset`, above, watches for, which made
+    // it true forever on such a server: not just a crash-interrupted pass
+    // but *every* pass, on *every* mailbox, would look unfinished, and each
+    // one would wipe the mailbox's membership and pay `force_db_rematch`'s
+    // per-header vault scan for messages that were never part of any reset
+    // at all -- silently, since nothing here ever surfaced an error.
+    //
+    // So this does not simply copy `state.uidnext` in. It takes the
+    // largest uid this pass actually knows the mailbox holds -- `known`,
+    // read at the top of this function, and `highest_new_uid`, salvaged
+    // above from the `new_uids` batches this loop just consumed -- one past
+    // it, and only widens that with `state.uidnext` when the server *did*
+    // report a real one larger still (an expunged uid this mailbox never
+    // locally knew about, say). The result is not literally `UIDNEXT` any
+    // more, but nothing outside this one check ever reads this field as
+    // one: it is written here, zeroed by the reset branch above, and
+    // compared to `0` by `resuming_an_interrupted_reset` above, and that is
+    // the whole of its job. That comparison now only ever sees `0` for a
+    // mailbox that either has never been synced, is mid-reset, or -- the
+    // one case this cannot fix without a durable flag of its own, see
+    // `sync_headers`'s own doc comment's "one mailbox this cannot tell
+    // apart from a stuck reset" section -- has never once held a single
+    // message.
+    let highest_known_uid = known.iter().max().into_iter().chain(highest_new_uid).max();
+    mailbox.row.uidnext =
+        highest_known_uid.map(|uid| uid.saturating_add(1)).unwrap_or(0).max(state.uidnext);
     if let Some(modseq) = state.highestmodseq {
         mailbox.row.highest_modseq = modseq;
     }

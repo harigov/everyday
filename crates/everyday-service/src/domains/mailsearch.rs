@@ -202,11 +202,16 @@ async fn search_mail(
     if let Some(ids) = &args.account_ids {
         query.accounts = ids.iter().map(ToString::to_string).collect();
     }
-    let query = resolve_mailbox_names(&vault, query);
     let cursor = args.cursor.as_deref().and_then(decode_cursor);
     let limit = args.limit.max(1) as usize;
 
     blocking(move || {
+        // `resolve_mailbox_names` reads `vault.accounts()` and
+        // `vault.mailboxes()`, both of which decrypt -- it belongs inside
+        // this closure for the same reason `vault.thread` below already is:
+        // every vault read this command makes has to run on the blocking
+        // pool, not the async runtime thread `search_mail` itself runs on.
+        let query = resolve_mailbox_names(&vault, query);
         let page = index.search(&query, limit, cursor)?;
         let mut seen = HashSet::new();
         let mut threads = Vec::with_capacity(page.hits.len());

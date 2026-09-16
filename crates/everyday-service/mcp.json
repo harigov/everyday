@@ -1560,7 +1560,7 @@
         "additionalProperties": false,
         "properties": {
           "draft_fingerprint": {
-            "description": "Optional. The `fingerprint` field from a recent read of this draft (draft_reply, draft_message, update_draft or the confirmation card's own text). If given and the draft's recipients or last-saved time have since changed, the send is refused rather than sent against recipients nobody just looked at.",
+            "description": "Optional. The `fingerprint` field from a recent read of this draft (draft_reply, draft_message, update_draft or the confirmation card's own text). If given and the draft's recipients have since changed, the send is refused rather than sent against recipients nobody just looked at.",
             "type": "string"
           },
           "draft_id": {

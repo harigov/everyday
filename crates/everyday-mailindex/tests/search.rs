@@ -1,15 +1,16 @@
 //! End-to-end coverage of [`MailIndex`] as a whole: every query operator,
 //! address tokenisation reaching all the way through a real search,
-//! negation, date ranges, pagination, reopening, and opening under the
-//! wrong key. Unit-level coverage of the pieces these lean on lives beside
-//! them (`directory.rs`, `cache.rs`, `tokenizer.rs`); this file is about
-//! the seams between them.
+//! negation, date ranges, pagination, reopening, opening under the wrong
+//! key, and self-healing across a schema change or a busy writer lock.
+//! Unit-level coverage of the pieces these lean on lives beside them
+//! (`directory.rs`, `cache.rs`, `tokenizer.rs`); this file is about the
+//! seams between them.
 
 use std::sync::Arc;
 
 use everyday_core::crypto::{AeadCipher, Cipher, SecretKey};
 use everyday_core::{MailDoc, MailQuery, MailSearch, SearchCursor};
-use everyday_mailindex::MailIndex;
+use everyday_mailindex::{MailIndex, SealedDirectory};
 use jiff::Timestamp;
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
@@ -503,8 +504,18 @@ fn reopening_after_commit_finds_what_was_indexed() {
     assert_eq!(keys(&hits), ["m1"]);
 }
 
+/// A wrong key decrypts to garbage inside the very same
+/// `Index::open_or_create` call a real schema mismatch fails at --
+/// `SealedDirectory`'s decryption happens transparently underneath it, so
+/// there is no way to tell "wrong key" apart from "the schema changed" at
+/// that layer. `MailIndex::open` therefore self-heals it exactly the same
+/// way (see the crate's module docs, "self-healing on open"): the mailbox
+/// comes back usable immediately, empty, rather than staying dead for
+/// ever. Safe because the search index is never the only copy of
+/// anything -- whatever `rebuild_mail_index` would need to fill it back in
+/// still lives in the vault's own storage.
 #[test]
-fn opening_with_the_wrong_key_fails_clearly() {
+fn opening_with_the_wrong_key_self_heals_into_an_empty_index() {
     let tmp = tempfile::tempdir().unwrap();
     {
         let mi = open(tmp.path());
@@ -516,9 +527,94 @@ fn opening_with_the_wrong_key_fails_clearly() {
         CACHE_BYTES,
     )
     .unwrap();
-    assert!(wrong.rebuild_needed());
-    let err = wrong.search(&MailQuery::parse(""), 10, None).unwrap_err();
-    assert!(format!("{err}").to_lowercase().contains("rebuilt"));
+    assert!(
+        !wrong.rebuild_needed(),
+        "a wrong key must self-heal into a usable index, not stay dead forever"
+    );
+    assert!(wrong.healed_on_open(), "opening under the wrong key must be reported as a heal");
+    let hits = wrong.search(&MailQuery::parse(""), 10, None).unwrap();
+    assert!(
+        hits.hits.is_empty(),
+        "the old, wrong-keyed data must be gone, not merely inaccessible"
+    );
+}
+
+/// The real upgrade scenario Bug 1 exists for: a persisted field's
+/// tokenizer (or any other change to the schema tantivy writes to
+/// `meta.json`) makes `Index::open_or_create` refuse an index that already
+/// has real data on disk under the *old* schema. Before self-healing
+/// existed, this left `MailSearch::rebuild_needed` permanently `true` for
+/// every vault that had ever synced mail, across every restart, with
+/// nothing in `everyday-app` ever calling the one thing
+/// (`rebuild_mail_index`) that could fix it -- see the crate's module docs,
+/// "self-healing on open", for the whole story.
+///
+/// Constructed by writing a *different* schema straight through
+/// `SealedDirectory` with tantivy's own `Index::create`, bypassing
+/// `MailIndex` entirely -- standing in for "an earlier version of this
+/// crate wrote this directory with the schema it had at the time", the one
+/// scenario an in-process test can reach without shipping two versions of
+/// this crate.
+#[test]
+fn reopening_with_a_different_schema_self_heals_into_a_usable_empty_index() {
+    let tmp = tempfile::tempdir().unwrap();
+    {
+        let directory = SealedDirectory::open(tmp.path(), cipher(), CACHE_BYTES).unwrap();
+        let mut builder = tantivy::schema::Schema::builder();
+        builder.add_text_field("a_field_this_crate_has_never_indexed", tantivy::schema::TEXT);
+        let old_schema = builder.build();
+        tantivy::Index::create(directory, old_schema, tantivy::IndexSettings::default()).unwrap();
+    }
+
+    let mi = open(tmp.path());
+    assert!(
+        !mi.rebuild_needed(),
+        "a schema mismatch must self-heal into a usable index on open, not stay dead forever"
+    );
+    assert!(mi.healed_on_open(), "opening across a schema change must be reported as a heal");
+    let hits = mi.search(&MailQuery::parse(""), 10, None).unwrap();
+    assert!(hits.hits.is_empty(), "a self-healed index must start genuinely empty");
+
+    // And genuinely usable afterwards, not merely reporting healthy:
+    index_and_commit(&mi, vec![Doc::new("m1", date_ts(2024, 1, 1)).build()]);
+    let hits = mi.search(&MailQuery::parse("hello"), 10, None).unwrap();
+    assert_eq!(keys(&hits), ["m1"]);
+}
+
+/// The other half of the self-healing contract: a writer lock another live
+/// handle already holds must never be treated the same as a broken schema.
+/// Nothing on disk is wrong here, only unavailable to *this* handle right
+/// now -- see the crate's module docs, "self-healing on open", for why only
+/// a failure at `Index::open_or_create` itself, and never a failure to
+/// acquire the writer afterwards, is worth wiping anything over.
+#[test]
+fn a_busy_writer_lock_is_not_treated_as_broken() {
+    let tmp = tempfile::tempdir().unwrap();
+    let holder = open(tmp.path());
+    index_and_commit(&holder, vec![Doc::new("m1", date_ts(2024, 1, 1)).build()]);
+
+    // A second handle on the same directory while `holder` still holds
+    // tantivy's writer lock -- standing in for a second live process, per
+    // `directory.rs`'s own docs on that lock.
+    let second = open(tmp.path());
+    assert!(
+        second.rebuild_needed(),
+        "a lock another live handle holds must look dead, not healthy"
+    );
+    assert!(
+        !second.healed_on_open(),
+        "a busy lock must never be treated as a reason to wipe anything"
+    );
+    drop(second);
+    drop(holder);
+
+    // Once nothing else holds the lock, a fresh open finds `holder`'s
+    // committed data completely untouched -- proof the busy path above
+    // never wiped anything.
+    let reopened = open(tmp.path());
+    assert!(!reopened.rebuild_needed());
+    let hits = reopened.search(&MailQuery::parse("hello"), 10, None).unwrap();
+    assert_eq!(keys(&hits), ["m1"]);
 }
 
 #[test]
@@ -536,36 +632,35 @@ fn a_brand_new_mailbox_does_not_need_a_rebuild() {
 /// index directory, so `rebuild_needed() == true` was permanent -- every
 /// `index`/`commit` call into a dead `MailIndex` just failed the same way
 /// `require_opened` already did. This proves the actual recovery path
-/// `everyday_service::domains::mailsync::rebuild_mail_index` now calls:
-/// wipe, reopen, and end up genuinely usable.
+/// `everyday_service::domains::mailsync::rebuild_mail_index` still needs
+/// for the one case `MailIndex::open` itself does not, and must not,
+/// self-heal: a busy writer lock (see `a_busy_writer_lock_is_not_treated_
+/// as_broken`) -- `rebuild_empty` wipes and reopens unconditionally,
+/// whatever kept `opened` empty in the first place.
 #[test]
 fn rebuild_empty_recovers_a_dead_index_and_reopens_it_fresh() {
     let tmp = tempfile::tempdir().unwrap();
-    {
-        let mi = open(tmp.path());
-        index_and_commit(&mi, vec![Doc::new("m1", date_ts(2024, 1, 1)).build()]);
-    }
-    // Opened under the wrong key: the same dead shape
-    // `opening_with_the_wrong_key_fails_clearly` proves, standing in for
-    // any of the ways a real `MailIndex::open` can fail on what is already
-    // on disk -- a stale lock, a truncated segment, a key that rotated.
-    let wrong = MailIndex::open(
-        tmp.path(),
-        Arc::new(AeadCipher::new(&SecretKey::from_bytes([9u8; 32]))),
-        CACHE_BYTES,
-    )
-    .unwrap();
-    assert!(wrong.rebuild_needed());
+    let holder = open(tmp.path());
+    index_and_commit(&holder, vec![Doc::new("m1", date_ts(2024, 1, 1)).build()]);
 
-    wrong.rebuild_empty().unwrap();
-    assert!(!wrong.rebuild_needed(), "rebuild_empty must leave a healthy, reopened index behind");
+    // A second handle, opened while `holder` still holds tantivy's writer
+    // lock: the same dead shape `a_busy_writer_lock_is_not_treated_as_
+    // broken` proves, standing in for any of the ways a real
+    // `MailIndex::open` can leave `opened` empty without `open` itself
+    // having a safe way to fix it.
+    let dead = open(tmp.path());
+    assert!(dead.rebuild_needed());
+    drop(holder);
 
-    // Fully usable afterwards, exactly like a fresh mailbox: the old,
-    // wrong-keyed data is gone (rebuild_empty wipes the directory), but
-    // indexing and searching into it now work rather than repeating the
-    // same "needs to be rebuilt" error forever.
-    index_and_commit(&wrong, vec![Doc::new("m2", date_ts(2024, 1, 2)).build()]);
-    let hits = wrong.search(&MailQuery::parse("hello"), 10, None).unwrap();
+    dead.rebuild_empty().unwrap();
+    assert!(!dead.rebuild_needed(), "rebuild_empty must leave a healthy, reopened index behind");
+
+    // Fully usable afterwards, exactly like a fresh mailbox: the old data
+    // is gone (rebuild_empty wipes the directory), but indexing and
+    // searching into it now work rather than repeating the same "needs to
+    // be rebuilt" error forever.
+    index_and_commit(&dead, vec![Doc::new("m2", date_ts(2024, 1, 2)).build()]);
+    let hits = dead.search(&MailQuery::parse("hello"), 10, None).unwrap();
     assert_eq!(keys(&hits), ["m2"]);
 }
 

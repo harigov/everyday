@@ -44,12 +44,33 @@ struct FakeMailbox {
     special_use: Option<Role>,
     uidvalidity: u32,
     uidnext: Uid,
+    /// Whether [`FakeMailSession::select`] reports `uidnext` at all. `UIDNEXT`
+    /// is an *optional* untagged `SELECT` response (RFC 3501 6.3.1 marks
+    /// `UIDVALIDITY` "REQUIRED" and `UIDNEXT` only "OPTIONAL"), and real
+    /// servers exist that never send it -- see
+    /// `crate::mailsync::passes::sync_headers`'s own docs for the bug that
+    /// went unnoticed because nothing here exercised that server. `true` by
+    /// default: every other test in this file wants the ordinary,
+    /// UIDNEXT-reporting server.
+    reports_uidnext: bool,
     messages: BTreeMap<Uid, FakeMessage>,
 }
 
 impl FakeMailbox {
     fn new(special_use: Option<Role>) -> Self {
-        Self { special_use, uidvalidity: 1, uidnext: 1, messages: BTreeMap::new() }
+        Self {
+            special_use,
+            uidvalidity: 1,
+            uidnext: 1,
+            reports_uidnext: true,
+            messages: BTreeMap::new(),
+        }
+    }
+
+    /// Simulate a server that omits `UIDNEXT` from every `SELECT` response,
+    /// for good -- see [`Self::reports_uidnext`]'s own docs.
+    fn stop_reporting_uidnext(&mut self) {
+        self.reports_uidnext = false;
     }
 }
 
@@ -272,7 +293,7 @@ impl MailSession for FakeMailSession {
             .ok_or_else(|| MailError::Protocol(format!("no such mailbox: {mailbox}")))?;
         Ok(MailboxState {
             uidvalidity: mb.uidvalidity,
-            uidnext: mb.uidnext,
+            uidnext: if mb.reports_uidnext { mb.uidnext } else { 0 },
             // The highest mod-sequence actually *assigned* to a message
             // here -- not the server's next-to-assign counter, which is
             // always one ahead and would make a change land on exactly the
@@ -1198,6 +1219,97 @@ async fn resuming_an_interrupted_uidvalidity_reset_does_not_duplicate_messages()
         resumed_ids, original_ids,
         "each message must have been rematched to its original id, not minted fresh"
     );
+}
+
+/// Regression: on a server that never reports `UIDNEXT` at all (see
+/// [`FakeMailbox::reports_uidnext`]'s own docs), `mailbox.row.uidnext` used
+/// to read `0` forever, because `sync_headers`'s own completion write
+/// copied the server's -- permanently absent -- value straight in. That
+/// made `resuming_an_interrupted_reset` (meant only for a crash mid-reset)
+/// true on *every* pass, not just an interrupted one, so an entirely
+/// ordinary second sync -- nothing new on the server, no crash, no
+/// `UIDVALIDITY` change -- wiped the mailbox's membership and rematched
+/// every message by `Message-ID` all over again instead of doing nothing at
+/// all.
+///
+/// The fix derives the completion marker from what this pass itself
+/// learned the mailbox holds, rather than trusting the server's optional
+/// report of it -- see the doc comment on the write in `sync_headers` this
+/// is a regression test for.
+#[tokio::test]
+async fn a_server_that_never_reports_uidnext_does_not_reset_every_pass() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    let message_ids: Vec<String> = (0..3).map(|i| format!("nouidnext{i}@example.com")).collect();
+    {
+        let mut s = server.lock().unwrap();
+        s.mailbox("INBOX", None).stop_reporting_uidnext();
+        for id in &message_ids {
+            s.append(
+                "INBOX",
+                raw_message(id, None, "a@example.com", "Hi", "01 Jan 2024 10:00:00 +0000", "x"),
+                flags_seen(),
+                None,
+            );
+        }
+    }
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+
+    let inbox_after_first = env
+        .vault
+        .mailboxes(env.account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == MailboxRole::Inbox)
+        .unwrap();
+    assert_ne!(
+        inbox_after_first.uidnext, 0,
+        "a completed pass must leave uidnext non-zero even when the server never reports one"
+    );
+
+    let original_ids: std::collections::HashSet<_> = message_ids
+        .iter()
+        .map(|id| env.vault.message_by_message_id_header(env.account_id, id).unwrap().unwrap().id)
+        .collect();
+    let pack_before = env
+        .vault
+        .message_by_message_id_header(env.account_id, &message_ids[0])
+        .unwrap()
+        .unwrap()
+        .pack;
+
+    // A second, perfectly ordinary pass: nothing new on the server, no
+    // crash, no `UIDVALIDITY` change. On a server that reports `UIDNEXT`
+    // this is a no-op past the `SELECT`; before the fix, this is exactly
+    // the pass that wiped and re-ingested everything above.
+    env.sync(&mut session).await;
+
+    let resumed_ids: std::collections::HashSet<_> = message_ids
+        .iter()
+        .map(|id| env.vault.message_by_message_id_header(env.account_id, id).unwrap().unwrap().id)
+        .collect();
+    assert_eq!(
+        resumed_ids, original_ids,
+        "an ordinary second pass must not rematch or re-mint any message"
+    );
+    let pack_after = env
+        .vault
+        .message_by_message_id_header(env.account_id, &message_ids[0])
+        .unwrap()
+        .unwrap()
+        .pack;
+    assert_eq!(pack_after, pack_before, "raw bytes must not be refetched on an ordinary pass");
+
+    let inbox_after_second = env
+        .vault
+        .mailboxes(env.account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == MailboxRole::Inbox)
+        .unwrap();
+    let uids = env.vault.mail_uid_set(inbox_after_second.id).unwrap();
+    assert_eq!(uids.len(), 3, "membership must not have been wiped and rebuilt a second time");
 }
 
 /// Regression: a message moved between mailboxes server-side (INBOX to

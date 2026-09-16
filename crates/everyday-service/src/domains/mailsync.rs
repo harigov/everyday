@@ -120,7 +120,14 @@ const REBUILD_BATCH: usize = 500;
 ///
 /// `seen` deduplicates between the two passes -- a thread visible in some
 /// mailbox's list is never re-walked just because it also has a category.
-fn rebuild_account(
+///
+/// `pub(crate)` rather than private: `crate::mailsync::wiring::open` calls
+/// this too, once per account, the one time a self-healing wipe leaves
+/// [`everyday_core::MailSearch::rebuild_needed`] having just gone from
+/// `true` back to `false` on its own -- see that module's own docs for why
+/// nothing about a live sync pass ever re-populates a freshly emptied
+/// index by itself.
+pub(crate) fn rebuild_account(
     vault: &Vault,
     index: &dyn MailSearch,
     account_id: AccountId,

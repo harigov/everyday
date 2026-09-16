@@ -577,7 +577,22 @@ async fn revert_queued_send(
             }
             Err(e) => return Err(e.into()),
         };
+        // `in_reply_to` alone does not mean this draft answered an
+        // invitation -- it is set on every ordinary reply too, since that
+        // is also the field the thread view uses to find a message's
+        // parent. The one field an RSVP draft sets and an ordinary reply
+        // never does is `calendar_part`: `respond_to_invite_inner` (in
+        // `everyday_service::domains::mail`) attaches the iTIP `REPLY` part
+        // there specifically so `everyday-mail`'s outbox knows to send it as
+        // a calendar reply, and nothing else populates that field. Skipping
+        // this check would mean any unrelated reply in an invitation's
+        // thread that later bounces permanently un-answers the invitation
+        // locally, even though the organiser already has -- and keeps -- a
+        // real acceptance sent days earlier.
         let Some(parent) = draft.in_reply_to else { return Ok(None) };
+        if draft.calendar_part.is_none() {
+            return Ok(None);
+        }
         vault_for_draft.revert_invite_response(parent)?;
         Ok(vault_for_draft.mail_message(parent).ok().map(|m| m.thread_id))
     })

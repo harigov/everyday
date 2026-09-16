@@ -21,6 +21,7 @@
   import { Autosave } from '../lib/autosave'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import * as mailApi from '../lib/mail-api'
+  import { isBlankDraft } from '../lib/mail'
   import { mail } from '../lib/mail.svelte'
   import { toLocalInputValue } from '../lib/format'
   import type { Draft, MailAddress } from '../lib/types'
@@ -219,12 +220,18 @@
 
   async function discard() {
     syncBody()
-    if (
-      !working.subject &&
-      !working.bodyHtml.replace(/<[^>]*>/g, '').trim() &&
-      working.to.length === 0
-    ) {
+    if (isBlankDraft(working)) {
       await mailApi.discardDraft(working.id)
+      // The draft above no longer exists to write to. Without this,
+      // `onDestroy`'s safety-net `flush()` still finds `working.id` dirty
+      // from whatever `touch()` ran before this blank check, and writes
+      // `saveDraft` for a draft that was just discarded -- resurrecting it
+      // locally, and, once that write reaches the outbox, on the server too.
+      // `forget()` is `Autosave`'s own answer to "the record it would write
+      // is already gone" -- the same call `notes.svelte.ts`'s `remove()`
+      // makes for the same reason -- so there is nothing left for that
+      // safety net to do.
+      saver.forget(working.id)
     } else {
       await saver.flush()
     }
@@ -248,9 +255,10 @@
   }
 
   onDestroy(() => {
-    // `discard()` and `send()` above already flush before `onclose()` ever
-    // runs, so by the time Svelte tears this down through the ordinary close
-    // paths there is nothing left dirty. This is the safety net for the
+    // `discard()` and `send()` above already flush -- or, on `discard()`'s
+    // blank-draft branch, `forget()` -- before `onclose()` ever runs, so by
+    // the time Svelte tears this down through the ordinary close paths there
+    // is nothing left dirty. This is the safety net for the
     // other ways the sheet can go away -- `mail.reset()` on a lock, or
     // `undoSend()` swapping in a fresh draft instance over this one -- where
     // nothing upstream called either.
