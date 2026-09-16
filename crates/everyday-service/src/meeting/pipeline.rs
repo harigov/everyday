@@ -1269,7 +1269,7 @@ async fn transcribe_pending(
     };
 
     #[cfg(feature = "speech")]
-    let kit = speech::speech_kit().ok();
+    let kit = transcription_kit(id);
 
     transcribe_stage(
         vault,
@@ -1654,6 +1654,22 @@ pub fn chunk_closed(svc: &Arc<Service>, id: RecordingId, _track: Track, _seq: u3
 /// same function's own reading, loopback. This gate holds the early attempt
 /// "still running" a different way, exactly where a slow network call would
 /// sit if one were reachable.
+/// The speech kit transcription cuts audio with, when it is installed.
+///
+/// A seam only so the tests that fake a transcriber over HTTP can send their
+/// synthetic chunks whole: on a machine with the models installed, voice
+/// detection would otherwise find no speech in them and send nothing at all.
+#[cfg(feature = "speech")]
+fn transcription_kit(id: RecordingId) -> Option<Arc<SpeechKit>> {
+    #[cfg(test)]
+    if test_hooks::skips_vad(id) {
+        return None;
+    }
+    #[cfg(not(test))]
+    let _ = id;
+    speech::speech_kit().ok()
+}
+
 #[cfg(test)]
 mod test_hooks {
     use everyday_core::RecordingId;
@@ -1691,6 +1707,21 @@ mod test_hooks {
             Arc::new(Gate { reached: AtomicBool::new(false), notify: tokio::sync::Notify::new() });
         gates().lock().unwrap().insert(id, gate.clone());
         gate
+    }
+
+    fn without_vad() -> &'static Mutex<std::collections::HashSet<RecordingId>> {
+        static IDS: OnceLock<Mutex<std::collections::HashSet<RecordingId>>> = OnceLock::new();
+        IDS.get_or_init(Default::default)
+    }
+
+    /// Send `id`'s chunks whole, as a build without local speech would.
+    pub(super) fn skip_vad(id: RecordingId) {
+        without_vad().lock().unwrap().insert(id);
+    }
+
+    #[cfg_attr(not(feature = "speech"), allow(dead_code))]
+    pub(super) fn skips_vad(id: RecordingId) -> bool {
+        without_vad().lock().unwrap().contains(&id)
     }
 
     /// What [`super::run_recording`] calls. A no-op unless a test has armed
@@ -2469,6 +2500,7 @@ mod tests {
         let (_dir, vault) = test_vault();
         let audio = Arc::new(FakeAudio::new());
         let id = seed_recording(&vault, &audio, 1, 0);
+        test_hooks::skip_vad(id);
         let (base, calls) =
             spawn_flaky_server(2, axum::http::StatusCode::INTERNAL_SERVER_ERROR).await;
         let mut settings = vault.meeting_settings().unwrap();
@@ -2499,6 +2531,7 @@ mod tests {
         let (_dir, vault) = test_vault();
         let audio = Arc::new(FakeAudio::new());
         let id = seed_recording(&vault, &audio, 1, 0);
+        test_hooks::skip_vad(id);
         let (base, calls) =
             spawn_flaky_server(usize::MAX, axum::http::StatusCode::UNAUTHORIZED).await;
         let mut settings = vault.meeting_settings().unwrap();
@@ -2540,6 +2573,7 @@ mod tests {
         let (_dir, vault) = test_vault();
         let audio = Arc::new(FakeAudio::new());
         let id = seed_recording(&vault, &audio, 1, 0);
+        test_hooks::skip_vad(id);
         // `seed_recording` leaves the row at `Stage::Transcribing`; put it
         // back to `Stage::Recording`, the state a still-live call is
         // actually in when `chunk_closed` fires.
