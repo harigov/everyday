@@ -15,7 +15,11 @@ mod fanout;
 mod hotkey;
 mod listener;
 mod mcp;
-mod meeting;
+// `pub`: `meeting::begin_headless` is the window-free core of
+// `meeting_start`/`start_automatic` -- see its own doc -- and an E2E test
+// (`tests/meeting_e2e.rs`) drives a recording through it with no Tauri
+// window at all. Everything else in this module stays private.
+pub mod meeting;
 mod protocol;
 mod remote;
 mod remotes;
@@ -23,6 +27,11 @@ mod sharing;
 mod state;
 mod transfer;
 mod tray;
+
+// Re-exported, not the whole (otherwise private) `state` module: the one
+// piece of it `meeting::begin_headless`'s public signature needs a test to
+// be able to name. See that function's own doc.
+pub use state::SessionHandle;
 
 use state::AppState;
 use tauri::{Emitter, Manager, WindowEvent};
