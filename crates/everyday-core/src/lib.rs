@@ -20,6 +20,7 @@
 //!     +-- PurposeStore   optional (crate::store::purpose)
 //!     +-- RoutineStore   optional (crate::store::routines)
 //!     +-- AgentStore     optional (crate::store::agent)
+//!     +-- MeetingStore   optional (crate::store::meetings)
 //!     |
 //!   Cipher             trait: XChaCha20-Poly1305 or none (crate::crypto)
 //! ```
@@ -151,6 +152,7 @@ pub use store::agent::{AgentStore, ConversationQuery};
 pub use store::calendars::{CalendarStore, EventQuery};
 pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
 pub use store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
+pub use store::meetings::{MeetingStore, RecordingQuery};
 pub use store::notes::{NoteQuery, NoteSort, NoteStore};
 pub use store::purpose::{GoalQuery, PurposeStore, PurposeWindow};
 pub use store::routines::RunQuery;

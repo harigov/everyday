@@ -57,12 +57,20 @@ impl Vault {
         })
     }
 
+    /// Delete a note, its transcript if it had one, and the pointer a
+    /// finished recording kept back to it -- see
+    /// `super::meetings::detach_note_from_meetings`. A note carries no hint
+    /// of its own that it was ever a meeting note, so this cascade runs
+    /// unconditionally rather than only when one is expected; it is a no-op,
+    /// two cheap lookups, on every note that never had a recording behind
+    /// it.
     pub fn delete_note(&self, id: NoteId) -> Result<()> {
         self.writable()?;
         self.write(|u| {
             let notes = pick_domain(u.store.as_ref(), Domain::Notes, |s| s.notes())?;
             notes.delete_note(id)?;
             u.index.remove_note(id);
+            super::meetings::detach_note_from_meetings(u, id)?;
             Ok(())
         })
     }

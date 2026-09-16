@@ -3,10 +3,11 @@
 //!
 //! Every lock this crate takes on a [`Vault`](super::Vault) goes through the
 //! four accessors here, and every read or write of the store goes through
-//! [`Vault::read`] or [`Vault::write`]. The ten optional stores --
+//! [`Vault::read`] or [`Vault::write`]. The twelve optional stores --
 //! tasks, calendars, the library, purpose, trackers, the assistant,
-//! routines, notes, per-record secrets, accounts -- each used to hand-roll
-//! the same "does this backend carry it, and if not, say so" lookup;
+//! routines, notes, per-record secrets, accounts, mail, meetings -- each
+//! used to hand-roll the same "does this backend carry it, and if not, say
+//! so" lookup;
 //! [`Vault::with_domain`] is that lookup written once, and [`Domain`] is the
 //! label it is written once for.
 
@@ -31,7 +32,7 @@ pub(super) struct Unlocked {
 
 /// Which optional facade a call wants from the backend.
 ///
-/// Exists so the ten `with_x` accessors on [`Vault`] -- one per optional
+/// Exists so the twelve `with_x` accessors on [`Vault`] -- one per optional
 /// store -- share a single lookup instead of each spelling out its own
 /// "this backend does not support..." message. The strings below are the
 /// whole reason this type exists: they are policy, shown to whoever asked
@@ -56,6 +57,9 @@ pub(super) enum Domain {
     /// Mail: mailboxes, messages, threads, bodies, drafts and the outbox --
     /// see [`crate::mail`] and [`crate::store::mail`].
     Mail,
+    /// Meeting notes: recordings, transcripts and voiceprints -- see
+    /// [`crate::meeting`] and [`crate::store::meetings`].
+    Meetings,
 }
 
 impl Domain {
@@ -74,6 +78,7 @@ impl Domain {
             Domain::Secrets => "per-record secrets (this vault's backend stores journals only)",
             Domain::Accounts => "accounts (this vault's backend stores journals only)",
             Domain::Mail => "mail (this vault's backend stores journals only)",
+            Domain::Meetings => "meeting notes (this vault's backend stores journals only)",
         }
     }
 }
@@ -187,7 +192,7 @@ impl Vault {
     /// Read the store under a read lock, or answer `Unsupported` for
     /// `domain` if `pick` finds nothing there.
     ///
-    /// The one thing each of the ten `with_x` methods across this module
+    /// The one thing each of the twelve `with_x` methods across this module
     /// now does: pick the store out of `dyn JournalStore` and call `f` on
     /// it, or explain that this backend does not carry it. What used to be
     /// as many copies of that same "look it up, or an `Unsupported` naming
@@ -259,5 +264,9 @@ mod tests {
             "accounts (this vault's backend stores journals only)"
         );
         assert_eq!(Domain::Mail.to_string(), "mail (this vault's backend stores journals only)");
+        assert_eq!(
+            Domain::Meetings.to_string(),
+            "meeting notes (this vault's backend stores journals only)"
+        );
     }
 }
