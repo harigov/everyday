@@ -21,6 +21,7 @@
   import { tracking } from './lib/tracking.svelte'
   import { agent } from './lib/agent.svelte'
   import { live } from './lib/live.svelte'
+  import { meetings } from './lib/meetings.svelte'
   import { menu } from './lib/menu.svelte'
   import { notify } from './lib/notify.svelte'
   import { panels } from './lib/panels.svelte'
@@ -46,6 +47,7 @@
   import ContextMenu from './components/ContextMenu.svelte'
   import ChatPanel from './components/ChatPanel.svelte'
   import Icon from './components/Icon.svelte'
+  import MeetingOfferBanner from './components/MeetingOfferBanner.svelte'
   import SettingsDialog from './components/SettingsDialog.svelte'
   import ShortcutsHelp from './components/ShortcutsHelp.svelte'
   import Palette from './components/Palette.svelte'
@@ -110,6 +112,11 @@
     // would mean the first shelf, the first task and the first note of every
     // session silently got no suggestion.
     void quick.load()
+    // The recording pill and the offer banner both need to hear from the
+    // shell before either has anything to show; `capabilities.notes` is not
+    // known until `app.status` has loaded, which is why this waits for
+    // `main` rather than running at import time the way `live.start()` does.
+    meetings.start()
   })
 
   // Each app tints the window with the accent of whatever it has selected:
@@ -214,6 +221,7 @@
          is open. -->
     <div class="shell">
       <Notices />
+      <MeetingOfferBanner />
       <div class="panes">
         <AppBar />
         <!-- The Overview has no sidebar. Its half used to be the widget
