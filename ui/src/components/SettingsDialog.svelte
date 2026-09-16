@@ -22,10 +22,12 @@
   import { focusOnMount, trapFocus } from '../lib/focus'
   import { panels, type SettingsTab } from '../lib/panels.svelte'
   import { app } from '../lib/state.svelte'
+  import { meetings } from '../lib/meetings.svelte'
   import { tray } from '../lib/tray.svelte'
   import AccountsPanel from './AccountsPanel.svelte'
   import AgentPanel from './AgentPanel.svelte'
   import DataPanel from './DataPanel.svelte'
+  import MeetingsPanel from './MeetingsPanel.svelte'
   import McpPanel from './McpPanel.svelte'
   import ProfilePanel from './ProfilePanel.svelte'
   import SharePanel from './SharePanel.svelte'
@@ -82,13 +84,19 @@
     { id: 'profile', label: 'About You', icon: 'star' },
     { id: 'accounts', label: 'Accounts', icon: 'inbox' },
     { id: 'assistant', label: 'Assistant', icon: 'sparkle' },
+    { id: 'meetings', label: 'Meetings', icon: 'mic' },
     { id: 'data', label: 'Data', icon: 'upload' },
     { id: 'vault', label: 'Vault', icon: 'lock' },
   ]
   // The assistant tab is not offered on a backend that cannot store a
   // conversation, for the same reason the rail is not: an empty tab that
-  // explains why it is empty is worse than no tab.
-  const shown = $derived(TABS.filter((t) => t.id !== 'assistant' || agent.supported))
+  // explains why it is empty is worse than no tab. Meetings rides the notes
+  // capability -- see `meetings.svelte.ts`'s own `supported`.
+  const shown = $derived(
+    TABS.filter((t) => t.id !== 'assistant' || agent.supported).filter(
+      (t) => t.id !== 'meetings' || meetings.supported,
+    ),
+  )
 
   async function changePassword(e: Event) {
     e.preventDefault()
@@ -224,6 +232,8 @@
     <div class="body scroll">
       {#if tab === 'assistant'}
         <AgentPanel />
+      {:else if tab === 'meetings'}
+        <MeetingsPanel />
       {:else if tab === 'profile'}
         <ProfilePanel />
       {:else if tab === 'accounts'}

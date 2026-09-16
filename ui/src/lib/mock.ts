@@ -26,6 +26,8 @@ import type {
   MailAgentOriginKind,
   MailProviderInfo,
   MailSyncProgress,
+  MeetingSettings,
+  RecordingQuery,
   EventQuery,
   Goal,
   GoalActivity,
@@ -116,6 +118,45 @@ import {
   mockUnsnooze,
   mockUnstar,
 } from './mock-mail'
+import {
+  mockActiveRecording,
+  mockBenchmarkSpeechModel,
+  mockCancelSpeechModelDownload,
+  mockDeleteAllVoiceprints,
+  mockDeleteRecording,
+  mockDeleteSpeechModel,
+  mockDeleteVoiceprint,
+  mockDiscardRecording,
+  mockDismissMeetingOffer,
+  mockDownloadSpeechModel,
+  mockEnrolVoice,
+  mockGetRecording,
+  mockGetTranscript,
+  mockListRecordings,
+  mockListVoiceprints,
+  mockLintMeetingTemplate,
+  mockMeetingSettings,
+  mockMeetingsInit,
+  mockMeetingsSeedNotes,
+  mockMeetingStart,
+  mockMeetingStatus,
+  mockMeetingStop,
+  mockNameSpeaker,
+  mockNewMeetingTemplate,
+  mockOnMeetingOffer,
+  mockOnMeetingStatus,
+  mockOnMeetingStillOn,
+  mockPreviewMeetingTemplate,
+  mockRetryRecording,
+  mockRewriteMeetingNote,
+  mockSaveMeetingSettings,
+  mockSetTranscriberKey,
+  mockSpeechModels,
+  mockTestTranscriber,
+  mockTriggerMeetingOffer,
+  mockTriggerStillOn,
+  mockTriggerSystemSilent,
+} from './mock-meetings'
 
 const PASSWORD = 'everyday'
 
@@ -1016,6 +1057,10 @@ const entries: Entry[] = [
  * somebody's journal.
  */
 const notes: Note[] = [
+  // The finished meeting note lives here, among the ordinary ones: a note
+  // a call wrote is a note like any other once the recording is gone. See
+  // `mock-meetings.ts` for the recording and transcript that go with it.
+  ...mockMeetingsSeedNotes(),
   {
     id: 'n-1',
     title: 'Boat, before the spring launch',
@@ -1052,6 +1097,11 @@ const notes: Note[] = [
     updatedAt: iso(2),
   },
 ]
+
+// Gives the meeting-notes pipeline simulation a way to add a note once a
+// mock recording finishes, without exporting `notes` itself. See
+// `mock-meetings.ts`'s own doc on the note sink.
+mockMeetingsInit({ addNote: (note) => notes.unshift(note) })
 
 // ── The task domain ──────────────────────────────────────────────────────
 
@@ -1751,6 +1801,36 @@ const events: CalendarEvent[] = [
     allDay: true,
     busy: false,
   }),
+  // Spans right now, deliberately, and carries a join link -- see
+  // `meeting-hosts.ts`'s `MEETING_HOSTS`. Without this, nothing in the mock
+  // calendar was ever "in progress" while the app happened to be open, and
+  // `EventDetail`'s "Take notes" button -- which only draws for an online
+  // call between its own start and end -- had nothing to be exercised
+  // against outside a real vault.
+  (() => {
+    const start = new Date(Date.now() - 15 * 60_000)
+    const end = new Date(Date.now() + 15 * 60_000)
+    const localDate = day(0)
+    return {
+      id: 'ev-now',
+      calendarId: 'c-work',
+      uid: 'ev-now@example.com',
+      title: 'Design sync',
+      description: 'Weekly design sync. Join: https://meet.google.com/abc-defg-hij',
+      location: '',
+      start: start.toISOString(),
+      end: end.toISOString(),
+      localDate,
+      endDate: localDate,
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      allDay: false,
+      status: 'confirmed',
+      organizer: 'priya@example.com',
+      url: 'https://meet.google.com/abc-defg-hij',
+      busy: true,
+      updatedAt: iso(0),
+    } satisfies CalendarEvent
+  })(),
 ]
 
 /** Open tasks grouped by project; `null` is the inbox. Mirrors the SQL. */
@@ -2466,6 +2546,10 @@ let oauthSignInCounter = 0
  * is accepted and simply not remembered, which is a harmless difference --
  * nothing in the mock UI reopens a "session" to notice. */
 const mockRemoteImageSettings: RemoteImageSettings = { senders: [], domains: [] }
+
+// Re-exported so `api.ts`'s mock branch can wire the three meeting events
+// the way it wires everything else emitted by the (here, simulated) shell.
+export { mockOnMeetingOffer, mockOnMeetingStatus, mockOnMeetingStillOn }
 
 export const mockInvoke = async <T>(
   cmd: string,
@@ -4602,6 +4686,148 @@ export const mockInvoke = async <T>(
       }
       return undefined as T
     }
+
+    // ── Meeting notes -- docs/plans/meeting-notes.md ────────────────────
+    //
+    // None of these are in `surface.json` yet; see `meetings-api.ts`'s own
+    // `TODO(meetings)`. Wire names are what `callCommand` sends, so the
+    // cases below are snake_case the same way every other command in this
+    // switch is.
+
+    case 'meeting_settings':
+      requireUnlocked()
+      return mockMeetingSettings() as T
+    case 'save_meeting_settings':
+      requireUnlocked()
+      return mockSaveMeetingSettings(args.settings as MeetingSettings) as T
+    case 'set_transcriber_key':
+      requireUnlocked()
+      return mockSetTranscriberKey((args.key as string | null | undefined) ?? null) as T
+    case 'new_meeting_template':
+      requireUnlocked()
+      return mockNewMeetingTemplate() as T
+    case 'lint_meeting_template':
+      requireUnlocked()
+      return mockLintMeetingTemplate(str(args.body)) as T
+    case 'preview_meeting_template':
+      requireUnlocked()
+      return (await mockPreviewMeetingTemplate(str(args.body))) as T
+    case 'test_transcriber':
+      requireUnlocked()
+      await mockTestTranscriber()
+      return undefined as T
+
+    case 'list_recordings':
+      requireUnlocked()
+      return mockListRecordings((args.query as RecordingQuery | undefined) ?? {}) as T
+    case 'get_recording':
+      requireUnlocked()
+      return mockGetRecording(str(args.id)) as T
+    case 'active_recording':
+      requireUnlocked()
+      return mockActiveRecording() as T
+    case 'delete_recording':
+      requireUnlocked()
+      mockDeleteRecording(str(args.id))
+      return undefined as T
+    case 'retry_recording':
+      requireUnlocked()
+      return mockRetryRecording(str(args.id)) as T
+    case 'discard_recording':
+      requireUnlocked()
+      mockDiscardRecording(str(args.id))
+      return undefined as T
+
+    case 'get_transcript':
+      requireUnlocked()
+      return mockGetTranscript(str(args.noteId)) as T
+    case 'name_speaker':
+      requireUnlocked()
+      return mockNameSpeaker({
+        noteId: str(args.noteId),
+        speakerKey: Number(args.speakerKey),
+        name: str(args.name),
+        email: (args.email as string | null | undefined) ?? null,
+      }) as T
+    case 'rewrite_meeting_note':
+      requireUnlocked()
+      return (await mockRewriteMeetingNote(str(args.noteId), str(args.templateId))) as T
+
+    case 'list_voiceprints':
+      requireUnlocked()
+      return mockListVoiceprints() as T
+    case 'delete_voiceprint':
+      requireUnlocked()
+      mockDeleteVoiceprint(str(args.id))
+      return undefined as T
+    case 'delete_all_voiceprints':
+      requireUnlocked()
+      mockDeleteAllVoiceprints()
+      return undefined as T
+    case 'enrol_voice':
+      requireUnlocked()
+      return (await mockEnrolVoice()) as T
+
+    case 'speech_models':
+      requireUnlocked()
+      return mockSpeechModels() as T
+    case 'download_speech_model':
+      requireUnlocked()
+      mockDownloadSpeechModel(str(args.id))
+      return undefined as T
+    case 'cancel_speech_model_download':
+      requireUnlocked()
+      mockCancelSpeechModelDownload(str(args.id))
+      return undefined as T
+    case 'delete_speech_model':
+      requireUnlocked()
+      mockDeleteSpeechModel(str(args.id))
+      return undefined as T
+    case 'benchmark_speech_model':
+      requireUnlocked()
+      return (await mockBenchmarkSpeechModel(str(args.id))) as T
+
+    case 'dismiss_meeting_offer':
+      requireUnlocked()
+      mockDismissMeetingOffer(str(args.eventId), Boolean(args.never))
+      return undefined as T
+
+    // ── The shell's half: capture, called by name -- see `api.ts`'s
+    //    "Meeting capture, in the Tauri shell" ───────────────────────────
+
+    case 'meeting_start':
+      requireUnlocked()
+      return mockMeetingStart({
+        eventId: (args.eventId as string | null | undefined) ?? null,
+        title: (args.title as string | null | undefined) ?? null,
+        templateId: (args.templateId as string | null | undefined) ?? null,
+      }) as T
+    case 'meeting_stop':
+      requireUnlocked()
+      mockMeetingStop(Boolean(args.discard))
+      return undefined as T
+    case 'meeting_status':
+      requireUnlocked()
+      return mockMeetingStatus() as T
+    case 'voice_enrol':
+      requireUnlocked()
+      return (await mockEnrolVoice()) as T
+
+    // ── Dev-only triggers, mock-only -- no real command of either name.
+    //    See `mock-meetings.ts`'s own doc. ───────────────────────────────
+
+    case 'mock_trigger_meeting_offer':
+      requireUnlocked()
+      mockTriggerMeetingOffer(Boolean(args.automatic))
+      return undefined as T
+    case 'mock_trigger_still_on':
+      requireUnlocked()
+      mockTriggerStillOn()
+      return undefined as T
+    case 'mock_trigger_system_silent':
+      requireUnlocked()
+      mockTriggerSystemSilent()
+      return undefined as T
 
     default:
       throw new VaultError('unknown', `no mock for command ${cmd}`)

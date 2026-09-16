@@ -16,12 +16,14 @@
 
   import { app, type Section } from '../lib/state.svelte'
   import { assistant } from '../lib/assistant.svelte'
+  import { meetings } from '../lib/meetings.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { panels } from '../lib/panels.svelte'
   import { tray, type TrayEntry } from '../lib/tray.svelte'
   import type { Group } from '../lib/shortcuts.svelte'
   import Icon from './Icon.svelte'
+  import RecordingPill from './RecordingPill.svelte'
   import type { IconName } from '../lib/icons'
 
   interface AppEntry {
@@ -113,6 +115,14 @@
        this is where the window controls sit, and nothing of ours may be
        drawn under them. -->
   <div class="cap"></div>
+
+  <!-- The recording pill: present in every app, because a call being
+       recorded is a fact about the vault rather than about whichever app
+       is open, the same reason `Notices` sits above every pane rather than
+       inside one of them. -->
+  {#if meetings.supported}
+    <RecordingPill />
+  {/if}
 
   <!-- A bar with one app on it is a decoration: a backend that stores
        journals and nothing else leaves nothing to switch between. The two

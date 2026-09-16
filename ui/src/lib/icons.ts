@@ -305,4 +305,14 @@ export const ICONS = {
   // reader already parses as "this is a letter". Distinct from `inbox`, which
   // is the tray a thing lands in rather than the thing itself.
   mail: '<rect width="18" height="14" x="3" y="5" rx="2.5"/>' + '<path d="m4 7 8 6 8-6"/>',
+
+  // ── Meeting notes ──────────────────────────────────────────────────────
+
+  // A microphone: the capsule, and the stand it is never drawn without --
+  // the stand is what stops it reading as a rounded rectangle at 16px. Used
+  // by the Meetings settings tab and the recording pill.
+  mic:
+    '<rect width="6" height="12" x="9" y="2.5" rx="3"/>' +
+    '<path d="M5.5 11a6.5 6.5 0 0 0 13 0"/>' +
+    '<path d="M12 17.5v4"/><path d="M8.5 21.5h7"/>',
 } as const

@@ -19,6 +19,7 @@ import type {
   Bootstrap,
   Calendar,
   CalendarId,
+  CaptureStatus,
   ChangeEvent,
   Connected,
   Connection,
@@ -63,6 +64,8 @@ import type {
   Reading,
   ReadingId,
   ReadingQuery,
+  Recording,
+  RecordingId,
   Role,
   RoleId,
   Routine,
@@ -86,6 +89,7 @@ import type {
   TrackerKind,
   TrayMenuItem,
   VaultStatus,
+  VoiceprintInfo,
 } from './types'
 import { VaultError } from './types'
 import { COMMAND_NAMES, SERVICE_COMMANDS } from './generated/commands'
@@ -176,6 +180,38 @@ export let onLockState: (handler: (locked: boolean) => void) => void = () => {}
  */
 export let onPalette: (handler: () => void) => void = () => {}
 
+// ── Meeting capture, from the Tauri shell ───────────────────────────────
+//
+// Three events the native capture code raises, per `docs/plans/meeting-notes.md`
+// -- not vault writes, so they do not go through `onChange`. `meeting-status`
+// arrives about four times a second while a recording is live and carries
+// `null` the moment it stops; `meeting-still-on` is the "are you still on
+// the call?" prompt after a long silence; `meeting-offer` is the "take notes
+// for this?" banner, whether raised by a press (`automatic: false`) or
+// already recording because "Always" is on (`automatic: true`).
+//
+// Outside Tauri there is no capture to hear from, so these stay the
+// default no-ops -- except in mock mode, where `mock.ts` reassigns them to a
+// small in-page pub/sub so the pill and the offer banner can be exercised
+// with nothing but a browser. See `meetings.svelte.ts`'s "mock capture" for
+// the trigger side.
+
+/** What `meeting-offer` carries. Not a stored record -- see the module doc. */
+export interface MeetingOfferPayload {
+  eventId: string
+  title: string
+  start: string
+  end: string
+  calendarName: string
+  /** The shell has already started recording; this is a toast, not an ask. */
+  automatic: boolean
+  recordingId?: string | null
+}
+
+export let onMeetingStatus: (handler: (status: CaptureStatus | null) => void) => void = () => {}
+export let onMeetingStillOn: (handler: (recordingId: RecordingId) => void) => void = () => {}
+export let onMeetingOffer: (handler: (offer: MeetingOfferPayload) => void) => void = () => {}
+
 /**
  * Say something to the assistant, streaming what it says back.
  *
@@ -216,6 +252,17 @@ if (!MOCK) {
   onPalette = (handler) => {
     void listen('everyday://palette', () => handler())
   }
+  onMeetingStatus = (handler) => {
+    void listen<CaptureStatus | null>('meeting-status', (e) => handler(e.payload))
+  }
+  onMeetingStillOn = (handler) => {
+    void listen<{ recordingId: RecordingId }>('meeting-still-on', (e) =>
+      handler(e.payload.recordingId),
+    )
+  }
+  onMeetingOffer = (handler) => {
+    void listen<MeetingOfferPayload>('meeting-offer', (e) => handler(e.payload))
+  }
 
   const mod = await import('@tauri-apps/api/core')
   sendMessage = async (conversationId, prompt, context, onEvent) => {
@@ -253,8 +300,15 @@ if (!MOCK) {
     }
   }
 } else {
-  const { mockInvoke } = await import('./mock')
+  const { mockInvoke, mockOnMeetingOffer, mockOnMeetingStatus, mockOnMeetingStillOn } =
+    await import('./mock')
   invoke = mockInvoke
+  // A real backend emits these from native capture code; the mock has none,
+  // so it stands in with its own pub/sub, driven by `meetings.svelte.ts`'s
+  // "mock capture" simulation rather than by anything crossing a bridge.
+  onMeetingStatus = mockOnMeetingStatus
+  onMeetingStillOn = mockOnMeetingStillOn
+  onMeetingOffer = mockOnMeetingOffer
 }
 
 /**
@@ -452,6 +506,33 @@ export const api = {
    */
   hotkeyStatus: () => invoke<HotkeyStatus>('hotkey_status'),
   setHotkey: (on: boolean) => invoke<HotkeyStatus>('set_hotkey', { on }),
+
+  // ── Meeting capture, in the Tauri shell ────────────────────────────
+  //
+  // Native, not a service command: the webview has no microphone
+  // permission, and `capabilities/default.json` does not change that. These
+  // three are called by name, the same way `hotkeyStatus` above is, rather
+  // than through `call` -- see `docs/plans/meeting-notes.md`'s "Recording is
+  // native, in the Tauri shell". In mock mode `mock.ts` answers all three,
+  // so the pill still has something to poll in a browser.
+
+  meetingStart: (opts: {
+    eventId?: string | null
+    title?: string | null
+    templateId?: string | null
+  }) => invoke<Recording>('meeting_start', opts),
+  meetingStop: (discard: boolean) => invoke<void>('meeting_stop', { discard }),
+  meetingStatus: () => invoke<CaptureStatus | null>('meeting_status'),
+
+  /**
+   * Record a 20-second sample and turn it into a voiceprint, natively.
+   *
+   * Rejects if the capture engineer's build of this command has not landed
+   * yet -- `meetings.svelte.ts` turns that into "Voice enrolment isn't
+   * available in this build" rather than a raw Tauri error, per
+   * `docs/plans/meeting-notes.md`'s instruction to handle it gracefully.
+   */
+  voiceEnrol: (seconds = 20) => invoke<VoiceprintInfo>('voice_enrol', { seconds }),
   unlock: (password: string) => call('unlock', { password }),
   /**
    * Check a password without opening or closing anything.
