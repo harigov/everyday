@@ -415,9 +415,8 @@ async fn set_transcriber_key(
 /// Mint a template without saving it. The id is the core's to allocate, for
 /// the reason `new_routine` and `new_note` already give.
 ///
-/// Calls `template::starter`, which is `todo!()` until the template work
-/// lands -- fine at runtime once it does, but why this command has no test
-/// of its own here.
+/// A fresh template, starting from the built-in one's body so nobody faces
+/// an empty box.
 async fn new_meeting_template(
     _svc: Arc<Service>,
     _ctx: Ctx,
@@ -425,6 +424,22 @@ async fn new_meeting_template(
 ) -> CommandResult<NoteTemplate> {
     let starter = everyday_core::meeting::template::starter();
     Ok(NoteTemplate { id: TemplateId::new(), name: "New template".into(), body: starter.body })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LintTemplate {
+    pub body: String,
+}
+
+/// What is wrong with a template body, in words, for the editor to show as
+/// it is typed. Pure: the core decides, and nothing is saved.
+async fn lint_meeting_template(
+    _svc: Arc<Service>,
+    _ctx: Ctx,
+    args: LintTemplate,
+) -> CommandResult<Vec<String>> {
+    Ok(everyday_core::meeting::template::lint(&args.body))
 }
 
 async fn list_recordings(
@@ -650,6 +665,12 @@ pub static COMMANDS: &[crate::command::Command] = &[
         name: "new_meeting_template", scope: Meetings, effect: Read,
         args: Nothing, returns: "NoteTemplate", signature: &[],
         run: new_meeting_template,
+    },
+    command! {
+        name: "lint_meeting_template", scope: Meetings, effect: Read,
+        args: LintTemplate, returns: "string[]",
+        signature: &[("body", "string", true)],
+        run: lint_meeting_template,
     },
     command! {
         name: "list_recordings", scope: Meetings, effect: Read,

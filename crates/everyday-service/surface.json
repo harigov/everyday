@@ -1406,6 +1406,23 @@
     {
       "args": [
         {
+          "name": "body",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "lint_meeting_template",
+      "orScope": null,
+      "returns": "string[]",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "account",
           "required": true,
           "type": "AccountId"
