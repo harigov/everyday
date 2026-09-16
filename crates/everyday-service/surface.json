@@ -12,6 +12,17 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "active_recording",
+      "orScope": null,
+      "returns": "Recording | null",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "kindId",
@@ -359,6 +370,20 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": {
+        "kind": "voiceprint",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_all_voiceprints",
+      "orScope": null,
+      "returns": "void",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "id",
@@ -623,6 +648,26 @@
         {
           "name": "id",
           "required": true,
+          "type": "RecordingId"
+        }
+      ],
+      "changes": {
+        "kind": "recording",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_recording",
+      "orScope": null,
+      "returns": "void",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "RoleId"
         }
       ],
@@ -715,6 +760,26 @@
       "orScope": null,
       "returns": "number",
       "scope": "trackers",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "VoiceprintId"
+        }
+      ],
+      "changes": {
+        "kind": "voiceprint",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_voiceprint",
+      "orScope": null,
+      "returns": "void",
+      "scope": "meetings",
       "sensitive": false,
       "streams": false
     },
@@ -929,6 +994,23 @@
         {
           "name": "id",
           "required": true,
+          "type": "RecordingId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_recording",
+      "orScope": null,
+      "returns": "Recording",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "RoutineRunId"
         }
       ],
@@ -972,6 +1054,23 @@
       "orScope": null,
       "returns": "ThreadDetail",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "noteId",
+          "required": true,
+          "type": "NoteId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_transcript",
+      "orScope": null,
+      "returns": "Transcript | null",
+      "scope": "meetings",
       "sensitive": false,
       "streams": false
     },
@@ -1361,6 +1460,23 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "query",
+          "required": false,
+          "type": "RecordingQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_recordings",
+      "orScope": null,
+      "returns": "Recording[]",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -1489,6 +1605,17 @@
       "orScope": null,
       "returns": "Tracker[]",
       "scope": "trackers",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_voiceprints",
+      "orScope": null,
+      "returns": "VoiceprintInfo[]",
+      "scope": "meetings",
       "sensitive": false,
       "streams": false
     },
@@ -1659,6 +1786,17 @@
       "orScope": null,
       "returns": "Op[]",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "meeting_settings",
+      "orScope": null,
+      "returns": "MeetingSettingsView",
+      "scope": "meetings",
       "sensitive": false,
       "streams": false
     },
@@ -1887,6 +2025,17 @@
       "orScope": null,
       "returns": "LogEntry",
       "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "new_meeting_template",
+      "orScope": null,
+      "returns": "NoteTemplate",
+      "scope": "meetings",
       "sensitive": false,
       "streams": false
     },
@@ -3002,6 +3151,26 @@
     {
       "args": [
         {
+          "name": "settings",
+          "required": true,
+          "type": "MeetingSettings"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_meeting_settings",
+      "orScope": null,
+      "returns": "MeetingSettingsView",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "memory",
           "required": true,
           "type": "Memory"
@@ -3575,6 +3744,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "key",
+          "required": false,
+          "type": "string | null"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_transcriber_key",
+      "orScope": null,
+      "returns": "MeetingSettingsView",
+      "scope": "meetings",
       "sensitive": false,
       "streams": false
     },

@@ -70,12 +70,15 @@ import type {
   MailSyncProgress,
   Mailbox,
   MailboxId,
+  MeetingSettings,
+  MeetingSettingsView,
   Memory,
   MemoryId,
   Note,
   NoteId,
   NoteQuery,
   NoteSummary,
+  NoteTemplate,
   Op,
   PartInfo,
   Profile,
@@ -96,6 +99,9 @@ import type {
   ReadingId,
   ReadingQuery,
   RecategorizeResult,
+  Recording,
+  RecordingId,
+  RecordingQuery,
   RemoteCalendarInfo,
   RemoteImageSettings,
   Role,
@@ -134,7 +140,10 @@ import type {
   TrackerDay,
   TrackerId,
   TrackerKind,
+  Transcript,
   VaultStatus,
+  VoiceprintId,
+  VoiceprintInfo,
 } from '../types'
 
 /** The command surface this build of the interface was generated against. */
@@ -143,6 +152,7 @@ export const PROTOCOL = 1
 /** What each command takes and gives back. */
 export interface Commands {
   accountPresets: { args: Record<string, never>; result: MailProviderInfo[] }
+  activeRecording: { args: Record<string, never>; result: Recording | null }
   addItem: { args: { kindId: KindId; title: string; lookup: boolean }; result: AddedItem }
   agentSettings: { args: Record<string, never>; result: AgentSettings }
   allowRemoteImages: {
@@ -175,6 +185,7 @@ export interface Commands {
   confirmToolCall: { args: { callId: string; approved: boolean }; result: boolean }
   conversationMessages: { args: { id: ConversationId }; result: AgentMessage[] }
   deleteAccount: { args: { id: AccountId }; result: void }
+  deleteAllVoiceprints: { args: Record<string, never>; result: void }
   deleteBlock: { args: { id: BlockId }; result: void }
   deleteCalendar: { args: { id: CalendarId }; result: void }
   deleteConversation: { args: { id: ConversationId }; result: void }
@@ -188,11 +199,13 @@ export interface Commands {
   deleteNote: { args: { id: NoteId }; result: void }
   deleteProject: { args: { id: ProjectId }; result: void }
   deleteReading: { args: { id: ReadingId }; result: void }
+  deleteRecording: { args: { id: RecordingId }; result: void }
   deleteRole: { args: { id: RoleId }; result: void }
   deleteRoutine: { args: { id: RoutineId }; result: void }
   deleteRun: { args: { id: RoutineRunId }; result: void }
   deleteTask: { args: { id: TaskId }; result: void }
   deleteTracker: { args: { id: TrackerId }; result: number }
+  deleteVoiceprint: { args: { id: VoiceprintId }; result: void }
   discardDraft: { args: { id: DraftId }; result: void }
   endExport: { args: { handle: string }; result: void }
   endImport: { args: { handle: string }; result: void }
@@ -205,9 +218,11 @@ export interface Commands {
   getGoal: { args: { id: GoalId }; result: Goal }
   getItem: { args: { id: ItemId }; result: Item }
   getNote: { args: { id: NoteId }; result: Note }
+  getRecording: { args: { id: RecordingId }; result: Recording }
   getRun: { args: { id: RoutineRunId }; result: RoutineRun }
   getTask: { args: { id: TaskId }; result: Task }
   getThread: { args: { id: ThreadId }; result: ThreadDetail }
+  getTranscript: { args: { noteId: NoteId }; result: Transcript | null }
   goalActivity: { args: { id: GoalId }; result: GoalActivity }
   importCalendar: {
     args: { name: string; label: string; color: string; ics: string }
@@ -238,6 +253,7 @@ export interface Commands {
   listParts: { args: Record<string, never>; result: PartInfo[] }
   listProjects: { args: Record<string, never>; result: Project[] }
   listReadings: { args: { query: ReadingQuery }; result: Reading[] }
+  listRecordings: { args: { query?: RecordingQuery }; result: Recording[] }
   listRemoteImageAllowances: { args: Record<string, never>; result: RemoteImageSettings }
   listRoles: { args: Record<string, never>; result: RoleInfo[] }
   listRoutines: { args: Record<string, never>; result: RoutineInfo[] }
@@ -255,6 +271,7 @@ export interface Commands {
   }
   listTools: { args: Record<string, never>; result: ToolInfo[] }
   listTrackers: { args: Record<string, never>; result: Tracker[] }
+  listVoiceprints: { args: Record<string, never>; result: VoiceprintInfo[] }
   lock: { args: Record<string, never>; result: VaultStatus }
   logReading: {
     args: {
@@ -278,6 +295,7 @@ export interface Commands {
   markRead: { args: { threads: ThreadId[] }; result: Op[] }
   markRunsSeen: { args: { ids?: RoutineRunId[] }; result: void }
   markUnread: { args: { threads: ThreadId[] }; result: Op[] }
+  meetingSettings: { args: Record<string, never>; result: MeetingSettingsView }
   mergeTrackers: { args: { from: TrackerId; into: TrackerId }; result: number }
   moveToMailbox: { args: { threads: ThreadId[]; to: MailboxId }; result: Op[] }
   newBlock: {
@@ -299,6 +317,7 @@ export interface Commands {
   newJournal: { args: { name: string }; result: Journal }
   newKind: { args: { name: string; singular: string }; result: Kind }
   newLog: { args: { itemId: ItemId; event: LogEvent }; result: LogEntry }
+  newMeetingTemplate: { args: Record<string, never>; result: NoteTemplate }
   newMemory: { args: Record<string, never>; result: Memory }
   newNote: { args: Record<string, never>; result: Note }
   newProject: { args: { name: string }; result: Project }
@@ -381,6 +400,7 @@ export interface Commands {
   saveJournal: { args: { journal: Journal }; result: void }
   saveKind: { args: { kind: Kind }; result: void }
   saveLog: { args: { log: LogEntry }; result: void }
+  saveMeetingSettings: { args: { settings: MeetingSettings }; result: MeetingSettingsView }
   saveMemory: { args: { memory: Memory }; result: Memory[] }
   saveNote: { args: { note: Note; expect?: string | null }; result: void }
   saveNoteForce: { args: { note: Note }; result: void }
@@ -429,6 +449,7 @@ export interface Commands {
   setItemStatus: { args: { id: ItemId; status: ItemStatus; log: boolean }; result: Item }
   setQuickJob: { args: { name: string; on: boolean }; result: QuickJobRow[] }
   setThreadCategory: { args: { threads: ThreadId[]; category: MailCategory }; result: void }
+  setTranscriberKey: { args: { key?: string | null }; result: MeetingSettingsView }
   snooze: { args: { threads: ThreadId[]; until: string }; result: Op[] }
   star: { args: { threads: ThreadId[] }; result: Op[] }
   startExport: { args: { parts?: string[]; media?: boolean }; result: ExportHandle }
@@ -463,6 +484,7 @@ export interface Commands {
 /** The name each method sends over the wire. */
 export const COMMAND_NAMES = {
   accountPresets: 'account_presets',
+  activeRecording: 'active_recording',
   addItem: 'add_item',
   agentSettings: 'agent_settings',
   allowRemoteImages: 'allow_remote_images',
@@ -479,6 +501,7 @@ export const COMMAND_NAMES = {
   confirmToolCall: 'confirm_tool_call',
   conversationMessages: 'conversation_messages',
   deleteAccount: 'delete_account',
+  deleteAllVoiceprints: 'delete_all_voiceprints',
   deleteBlock: 'delete_block',
   deleteCalendar: 'delete_calendar',
   deleteConversation: 'delete_conversation',
@@ -492,11 +515,13 @@ export const COMMAND_NAMES = {
   deleteNote: 'delete_note',
   deleteProject: 'delete_project',
   deleteReading: 'delete_reading',
+  deleteRecording: 'delete_recording',
   deleteRole: 'delete_role',
   deleteRoutine: 'delete_routine',
   deleteRun: 'delete_run',
   deleteTask: 'delete_task',
   deleteTracker: 'delete_tracker',
+  deleteVoiceprint: 'delete_voiceprint',
   discardDraft: 'discard_draft',
   endExport: 'end_export',
   endImport: 'end_import',
@@ -509,9 +534,11 @@ export const COMMAND_NAMES = {
   getGoal: 'get_goal',
   getItem: 'get_item',
   getNote: 'get_note',
+  getRecording: 'get_recording',
   getRun: 'get_run',
   getTask: 'get_task',
   getThread: 'get_thread',
+  getTranscript: 'get_transcript',
   goalActivity: 'goal_activity',
   importCalendar: 'import_calendar',
   label: 'label',
@@ -536,6 +563,7 @@ export const COMMAND_NAMES = {
   listParts: 'list_parts',
   listProjects: 'list_projects',
   listReadings: 'list_readings',
+  listRecordings: 'list_recordings',
   listRemoteImageAllowances: 'list_remote_image_allowances',
   listRoles: 'list_roles',
   listRoutines: 'list_routines',
@@ -545,6 +573,7 @@ export const COMMAND_NAMES = {
   listThreads: 'list_threads',
   listTools: 'list_tools',
   listTrackers: 'list_trackers',
+  listVoiceprints: 'list_voiceprints',
   lock: 'lock',
   logReading: 'log_reading',
   lookupMetadata: 'lookup_metadata',
@@ -552,6 +581,7 @@ export const COMMAND_NAMES = {
   markRead: 'mark_read',
   markRunsSeen: 'mark_runs_seen',
   markUnread: 'mark_unread',
+  meetingSettings: 'meeting_settings',
   mergeTrackers: 'merge_trackers',
   moveToMailbox: 'move_to_mailbox',
   newBlock: 'new_block',
@@ -562,6 +592,7 @@ export const COMMAND_NAMES = {
   newJournal: 'new_journal',
   newKind: 'new_kind',
   newLog: 'new_log',
+  newMeetingTemplate: 'new_meeting_template',
   newMemory: 'new_memory',
   newNote: 'new_note',
   newProject: 'new_project',
@@ -620,6 +651,7 @@ export const COMMAND_NAMES = {
   saveJournal: 'save_journal',
   saveKind: 'save_kind',
   saveLog: 'save_log',
+  saveMeetingSettings: 'save_meeting_settings',
   saveMemory: 'save_memory',
   saveNote: 'save_note',
   saveNoteForce: 'save_note_force',
@@ -645,6 +677,7 @@ export const COMMAND_NAMES = {
   setItemStatus: 'set_item_status',
   setQuickJob: 'set_quick_job',
   setThreadCategory: 'set_thread_category',
+  setTranscriberKey: 'set_transcriber_key',
   snooze: 'snooze',
   star: 'star',
   startExport: 'start_export',
@@ -689,6 +722,7 @@ export const COMMAND_NAMES = {
  */
 export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'account_presets',
+  'active_recording',
   'add_item',
   'agent_settings',
   'allow_remote_images',
@@ -705,6 +739,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'confirm_tool_call',
   'conversation_messages',
   'delete_account',
+  'delete_all_voiceprints',
   'delete_block',
   'delete_calendar',
   'delete_conversation',
@@ -718,11 +753,13 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_note',
   'delete_project',
   'delete_reading',
+  'delete_recording',
   'delete_role',
   'delete_routine',
   'delete_run',
   'delete_task',
   'delete_tracker',
+  'delete_voiceprint',
   'discard_draft',
   'end_export',
   'end_import',
@@ -735,9 +772,11 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'get_goal',
   'get_item',
   'get_note',
+  'get_recording',
   'get_run',
   'get_task',
   'get_thread',
+  'get_transcript',
   'goal_activity',
   'import_calendar',
   'label',
@@ -762,6 +801,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_parts',
   'list_projects',
   'list_readings',
+  'list_recordings',
   'list_remote_image_allowances',
   'list_roles',
   'list_routines',
@@ -771,6 +811,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_threads',
   'list_tools',
   'list_trackers',
+  'list_voiceprints',
   'lock',
   'log_reading',
   'lookup_metadata',
@@ -778,6 +819,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'mark_read',
   'mark_runs_seen',
   'mark_unread',
+  'meeting_settings',
   'merge_trackers',
   'move_to_mailbox',
   'new_block',
@@ -788,6 +830,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'new_journal',
   'new_kind',
   'new_log',
+  'new_meeting_template',
   'new_memory',
   'new_note',
   'new_project',
@@ -846,6 +889,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_journal',
   'save_kind',
   'save_log',
+  'save_meeting_settings',
   'save_memory',
   'save_note',
   'save_note_force',
@@ -870,6 +914,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_item_status',
   'set_quick_job',
   'set_thread_category',
+  'set_transcriber_key',
   'snooze',
   'star',
   'start_export',
@@ -921,6 +966,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'collect_garbage',
   'confirm_tool_call',
   'delete_account',
+  'delete_all_voiceprints',
   'delete_block',
   'delete_calendar',
   'delete_conversation',
@@ -934,11 +980,13 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_note',
   'delete_project',
   'delete_reading',
+  'delete_recording',
   'delete_role',
   'delete_routine',
   'delete_run',
   'delete_task',
   'delete_tracker',
+  'delete_voiceprint',
   'discard_draft',
   'fetch_attachment',
   'fetch_image',
@@ -976,6 +1024,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_journal',
   'save_kind',
   'save_log',
+  'save_meeting_settings',
   'save_memory',
   'save_note',
   'save_note_force',
@@ -998,6 +1047,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_item_status',
   'set_quick_job',
   'set_thread_category',
+  'set_transcriber_key',
   'snooze',
   'star',
   'subscribe_account_calendar',
@@ -1025,6 +1075,7 @@ export const CHANGE_KINDS = {
   change_password: 'settings',
   clear_agent_key: 'settings',
   delete_account: 'account',
+  delete_all_voiceprints: 'voiceprint',
   delete_block: 'block',
   delete_calendar: 'calendar',
   delete_conversation: 'conversation',
@@ -1038,11 +1089,13 @@ export const CHANGE_KINDS = {
   delete_note: 'note',
   delete_project: 'project',
   delete_reading: 'reading',
+  delete_recording: 'recording',
   delete_role: 'role',
   delete_routine: 'routine',
   delete_run: 'routineRun',
   delete_task: 'task',
   delete_tracker: 'tracker',
+  delete_voiceprint: 'voiceprint',
   discard_draft: 'draft',
   import_calendar: 'calendar',
   label: 'thread',
@@ -1070,6 +1123,7 @@ export const CHANGE_KINDS = {
   save_journal: 'journal',
   save_kind: 'shelf',
   save_log: 'log',
+  save_meeting_settings: 'settings',
   save_memory: 'memory',
   save_note: 'note',
   save_note_force: 'note',
@@ -1092,6 +1146,7 @@ export const CHANGE_KINDS = {
   set_item_status: 'item',
   set_quick_job: 'settings',
   set_thread_category: 'thread',
+  set_transcriber_key: 'settings',
   snooze: 'thread',
   star: 'thread',
   subscribe_account_calendar: 'calendar',
