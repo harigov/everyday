@@ -679,8 +679,9 @@ mod tests {
         assert_eq!(err.code, "already_running");
     }
 
-    #[test]
-    fn begin_reclaims_a_stale_recording_rather_than_refusing_for_ever() {
+    // A runtime, because handing the recording on starts the pipeline's task.
+    #[tokio::test]
+    async fn begin_reclaims_a_stale_recording_rather_than_refusing_for_ever() {
         let (svc, vault, _dir) = env();
         let stale = seed(&vault, Stage::Recording);
         // No `meeting_touch_append`: exactly what a fresh process (after a
@@ -714,8 +715,9 @@ mod tests {
 
     // ---- finish / discard / retry ---------------------------------------
 
-    #[test]
-    fn finish_moves_to_transcribing_and_stamps_when_it_ended() {
+    // A runtime, because handing the recording on starts the pipeline's task.
+    #[tokio::test]
+    async fn finish_moves_to_transcribing_and_stamps_when_it_ended() {
         let (svc, vault, _dir) = env();
         let recording = seed(&vault, Stage::Recording);
 
@@ -754,8 +756,9 @@ mod tests {
         assert_eq!(err.code, "invalid");
     }
 
-    #[test]
-    fn retry_returns_a_failed_recording_to_the_stage_it_failed_at() {
+    // A runtime, because handing the recording on starts the pipeline's task.
+    #[tokio::test]
+    async fn retry_returns_a_failed_recording_to_the_stage_it_failed_at() {
         let (svc, vault, _dir) = env();
         let recording = seed(
             &vault,
@@ -776,8 +779,9 @@ mod tests {
 
     // ---- recovery ---------------------------------------------------------
 
-    #[test]
-    fn recovery_finishes_a_recording_with_no_live_capture_in_this_process() {
+    // A runtime, because handing the recording on starts the pipeline's task.
+    #[tokio::test]
+    async fn recovery_finishes_a_recording_with_no_live_capture_in_this_process() {
         let (svc, vault, _dir) = env();
         let stale = seed(&vault, Stage::Recording);
         // Never touched: a fresh process, per this module's own doc.
