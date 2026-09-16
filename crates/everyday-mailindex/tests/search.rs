@@ -617,6 +617,36 @@ fn a_busy_writer_lock_is_not_treated_as_broken() {
     assert_eq!(keys(&hits), ["m1"]);
 }
 
+/// Regression for a rebuild that wiped another process's live index: a
+/// second handle sees `rebuild_needed()` because the writer lock is taken,
+/// and `rebuild_mail_index` answers that with `rebuild_empty`. Before the
+/// wipe learned to take the writer lock first, that deleted the holder's
+/// files and its lock file, locked a fresh one, and left two writers on one
+/// directory.
+#[test]
+fn a_rebuild_never_wipes_an_index_another_handle_is_writing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let holder = open(tmp.path());
+    index_and_commit(&holder, vec![Doc::new("m1", date_ts(2024, 1, 1)).build()]);
+
+    let second = open(tmp.path());
+    assert!(second.rebuild_needed());
+    assert!(second.rebuild_empty().is_err(), "a rebuild must refuse while another writer is live");
+    assert!(second.rebuild_needed(), "and must leave its own handle as it was");
+
+    // The holder is untouched: it can still write, and what it wrote is
+    // still there.
+    index_and_commit(&holder, vec![Doc::new("m2", date_ts(2024, 1, 2)).build()]);
+    let hits = holder.search(&MailQuery::parse("hello"), 10, None).unwrap();
+    assert_eq!(keys(&hits), ["m2", "m1"]);
+    drop(second);
+    drop(holder);
+
+    let reopened = open(tmp.path());
+    let hits = reopened.search(&MailQuery::parse("hello"), 10, None).unwrap();
+    assert_eq!(keys(&hits), ["m2", "m1"]);
+}
+
 #[test]
 fn a_brand_new_mailbox_does_not_need_a_rebuild() {
     let tmp = tempfile::tempdir().unwrap();
