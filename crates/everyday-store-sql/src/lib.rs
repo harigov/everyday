@@ -135,6 +135,7 @@ mod calendars;
 mod journals;
 mod library;
 pub mod mail;
+mod meetings;
 mod notes;
 pub mod packs;
 mod pool;
@@ -313,6 +314,7 @@ impl SqlStore {
             secrets: true,
             accounts: true,
             mail: true,
+            meetings: true,
         }
     }
 

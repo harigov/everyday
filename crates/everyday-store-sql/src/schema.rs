@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -88,7 +88,7 @@ pub fn migrate(
 
 /// Every migration step, in order. Index 0 is version 1.
 pub fn steps(d: Dialect) -> Vec<Vec<String>> {
-    vec![v1(d), v2(d), v3(d), v4(d), v5(d), v6(d), v7(d), v8(d), v9(d)]
+    vec![v1(d), v2(d), v3(d), v4(d), v5(d), v6(d), v7(d), v8(d), v9(d), v10(d)]
 }
 
 /// The `blobs` table, for a backend that keeps attachments in the database.
@@ -1109,6 +1109,95 @@ fn v9(d: Dialect) -> Vec<String> {
         format!(
             "CREATE TABLE IF NOT EXISTS mail_category_rules (
                  account_id  TEXT PRIMARY KEY NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+    ]
+}
+
+/// Version 10: meeting notes -- recordings, transcripts, voiceprints, and
+/// the settings that decide what gets recorded. See
+/// `docs/plans/meeting-notes.md` and `everyday_core::meeting`'s own module
+/// docs for the design; this step is the storage half of it.
+///
+/// `meeting_settings` is a fourth singleton on the shape `agent_settings`,
+/// `profile` and `mail_remote_image_settings` already are -- a `CHECK` pins
+/// it to one row, so a vault that has never opened Settings → Meetings has a
+/// perfectly good answer without a row to read.
+///
+/// `recordings` is the pipeline's durable state *and*, once a recording
+/// reaches `done`, the history row that says which call a note came from --
+/// see `Recording`'s own docs for why it is both. Three columns stay in the
+/// clear, and they are the three the plan names for it: `stage`, so recovery
+/// can find every recording stuck mid-pipeline without unsealing a row it
+/// does not need to; `calendar_id`, copied out of the event a recording was
+/// of, nullable for a call that was started by hand rather than found on a
+/// calendar; and `started_us`, what the recording history is ordered by.
+/// Nothing else is readable -- not the event's title, not who was invited,
+/// not even whether a recording that has finished still has a note, which is
+/// why `note_id` stays inside the sealed payload rather than becoming a
+/// fifth clear column. `recordings_by_event` is `(calendar_id, started_us)`:
+/// there is no durable event id to index by (a feed event is re-minted on
+/// every sync, per `id.rs`'s own account of `EventId`), so "was this
+/// calendar's slot already recorded" is asked the way `EventRef`'s docs
+/// already say it has to be -- by calendar and by time, not by identity.
+/// `recordings_by_stage` is the second half of the recovery query above:
+/// `stage` alone is a handful of distinct values, so pairing it with
+/// `started_us` is what makes "the oldest recording still stuck
+/// transcribing" an index scan rather than a sort of everything that matches.
+///
+/// `transcripts` is what a call turns into, and what survives after the
+/// audio is gone. The only clear column is `note_id` -- never a subject, a
+/// name, or a word anyone said -- because the one question this table is
+/// ever asked besides "this transcript, by id" is "does this note have one",
+/// and `transcripts_by_note` answers it without a scan. It is a `UNIQUE`
+/// index rather than a plain one: a note has at most one transcript, ever,
+/// and letting the database refuse a second row for the same note is one
+/// less way a bug could leave two disagreeing about what was said.
+///
+/// `voiceprints` carries nothing at all in the clear beyond the timestamps
+/// every table in this file has. A voice is biometric data, and the sealed
+/// centroid vectors are exactly as much of an identity as the name beside
+/// them -- there is no index a search over a handful of voices would
+/// benefit from that would not also be a reason to decrypt them anyway, so
+/// `MeetingStore::list_voiceprints` returns everything and lets the caller
+/// sort what it has just decrypted.
+fn v10(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS meeting_settings (
+                 id          {int} PRIMARY KEY CHECK (id = 1),
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS recordings (
+                 id           TEXT    PRIMARY KEY NOT NULL,
+                 stage        TEXT    NOT NULL,
+                 calendar_id  TEXT,
+                 started_us   {int} NOT NULL,
+                 data         {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS recordings_by_event
+             ON recordings (calendar_id, started_us)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS recordings_by_stage
+             ON recordings (stage, started_us)"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS transcripts (
+                 id       TEXT    PRIMARY KEY NOT NULL,
+                 note_id  TEXT    NOT NULL,
+                 data     {blob} NOT NULL
+             )"
+        ),
+        "CREATE UNIQUE INDEX IF NOT EXISTS transcripts_by_note ON transcripts (note_id)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS voiceprints (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
                  data        {blob} NOT NULL
              )"
         ),
