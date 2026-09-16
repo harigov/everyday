@@ -74,6 +74,7 @@ import type {
   MeetingSettingsView,
   Memory,
   MemoryId,
+  ModelBenchmark,
   Note,
   NoteId,
   NoteQuery,
@@ -119,6 +120,7 @@ import type {
   SearchRequest,
   SearchResult,
   SourceInfo,
+  SpeechModelInfo,
   StoreStats,
   Surface,
   SyncReport,
@@ -177,8 +179,10 @@ export interface Commands {
     }
     result: BegunSignIn
   }
+  benchmarkSpeechModel: { args: { id: string }; result: ModelBenchmark }
   calendarProviders: { args: Record<string, never>; result: ProviderInfo[] }
   cancelOauthSignIn: { args: { signInId: string }; result: void }
+  cancelSpeechModelDownload: { args: { id: string }; result: void }
   changePassword: { args: { current: string; next: string }; result: void }
   clearAgentKey: { args: Record<string, never>; result: void }
   collectGarbage: { args: Record<string, never>; result: number }
@@ -203,10 +207,12 @@ export interface Commands {
   deleteRole: { args: { id: RoleId }; result: void }
   deleteRoutine: { args: { id: RoutineId }; result: void }
   deleteRun: { args: { id: RoutineRunId }; result: void }
+  deleteSpeechModel: { args: { id: string }; result: void }
   deleteTask: { args: { id: TaskId }; result: void }
   deleteTracker: { args: { id: TrackerId }; result: number }
   deleteVoiceprint: { args: { id: VoiceprintId }; result: void }
   discardDraft: { args: { id: DraftId }; result: void }
+  downloadSpeechModel: { args: { id: string }; result: void }
   endExport: { args: { handle: string }; result: void }
   endImport: { args: { handle: string }; result: void }
   fetchAttachment: { args: { messageId: MailMessageId; index: number }; result: MailAttachment }
@@ -451,6 +457,7 @@ export interface Commands {
   setThreadCategory: { args: { threads: ThreadId[]; category: MailCategory }; result: void }
   setTranscriberKey: { args: { key?: string | null }; result: MeetingSettingsView }
   snooze: { args: { threads: ThreadId[]; until: string }; result: Op[] }
+  speechModels: { args: Record<string, never>; result: SpeechModelInfo[] }
   star: { args: { threads: ThreadId[] }; result: Op[] }
   startExport: { args: { parts?: string[]; media?: boolean }; result: ExportHandle }
   startImport: { args: { name?: string; bytes: number }; result: ImportUpload }
@@ -493,8 +500,10 @@ export const COMMAND_NAMES = {
   attachOauthSignIn: 'attach_oauth_sign_in',
   awaitOauthSignIn: 'await_oauth_sign_in',
   beginOauthSignIn: 'begin_oauth_sign_in',
+  benchmarkSpeechModel: 'benchmark_speech_model',
   calendarProviders: 'calendar_providers',
   cancelOauthSignIn: 'cancel_oauth_sign_in',
+  cancelSpeechModelDownload: 'cancel_speech_model_download',
   changePassword: 'change_password',
   clearAgentKey: 'clear_agent_key',
   collectGarbage: 'collect_garbage',
@@ -519,10 +528,12 @@ export const COMMAND_NAMES = {
   deleteRole: 'delete_role',
   deleteRoutine: 'delete_routine',
   deleteRun: 'delete_run',
+  deleteSpeechModel: 'delete_speech_model',
   deleteTask: 'delete_task',
   deleteTracker: 'delete_tracker',
   deleteVoiceprint: 'delete_voiceprint',
   discardDraft: 'discard_draft',
+  downloadSpeechModel: 'download_speech_model',
   endExport: 'end_export',
   endImport: 'end_import',
   fetchAttachment: 'fetch_attachment',
@@ -679,6 +690,7 @@ export const COMMAND_NAMES = {
   setThreadCategory: 'set_thread_category',
   setTranscriberKey: 'set_transcriber_key',
   snooze: 'snooze',
+  speechModels: 'speech_models',
   star: 'star',
   startExport: 'start_export',
   startImport: 'start_import',
@@ -731,8 +743,10 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'attach_oauth_sign_in',
   'await_oauth_sign_in',
   'begin_oauth_sign_in',
+  'benchmark_speech_model',
   'calendar_providers',
   'cancel_oauth_sign_in',
+  'cancel_speech_model_download',
   'change_password',
   'clear_agent_key',
   'collect_garbage',
@@ -757,10 +771,12 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_role',
   'delete_routine',
   'delete_run',
+  'delete_speech_model',
   'delete_task',
   'delete_tracker',
   'delete_voiceprint',
   'discard_draft',
+  'download_speech_model',
   'end_export',
   'end_import',
   'fetch_attachment',
@@ -916,6 +932,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_thread_category',
   'set_transcriber_key',
   'snooze',
+  'speech_models',
   'star',
   'start_export',
   'start_import',
@@ -961,6 +978,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'attach_oauth_sign_in',
   'begin_oauth_sign_in',
   'cancel_oauth_sign_in',
+  'cancel_speech_model_download',
   'change_password',
   'clear_agent_key',
   'collect_garbage',
@@ -984,10 +1002,12 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_role',
   'delete_routine',
   'delete_run',
+  'delete_speech_model',
   'delete_task',
   'delete_tracker',
   'delete_voiceprint',
   'discard_draft',
+  'download_speech_model',
   'fetch_attachment',
   'fetch_image',
   'flush',
@@ -1072,6 +1092,7 @@ export const CHANGE_KINDS = {
   apply_metadata: 'item',
   archive: 'thread',
   attach_oauth_sign_in: 'account',
+  cancel_speech_model_download: 'settings',
   change_password: 'settings',
   clear_agent_key: 'settings',
   delete_account: 'account',
@@ -1093,10 +1114,12 @@ export const CHANGE_KINDS = {
   delete_role: 'role',
   delete_routine: 'routine',
   delete_run: 'routineRun',
+  delete_speech_model: 'settings',
   delete_task: 'task',
   delete_tracker: 'tracker',
   delete_voiceprint: 'voiceprint',
   discard_draft: 'draft',
+  download_speech_model: 'settings',
   import_calendar: 'calendar',
   label: 'thread',
   log_reading: 'reading',
