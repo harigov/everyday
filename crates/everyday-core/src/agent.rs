@@ -413,6 +413,15 @@ pub struct AgentSettings {
     /// anything they want true of every reply. Prepended to the assistant's
     /// own operating instructions rather than replacing them — see
     /// [`system_prompt`].
+    ///
+    /// Settings calls this box the **soul**, which is the better name for
+    /// what people write in it and the reason the order in `system_prompt`
+    /// is what it is: a field labelled "system prompt" collects the
+    /// operating manual the model is already given, restated worse, and a
+    /// field labelled "soul" collects temperament. The key keeps the older
+    /// name because it is sealed into every payload that has one, and a
+    /// rename would be a migration handed a connection rather than a cipher
+    /// — the same problem [`legacy_model`](Self::legacy_model) documents.
     pub instructions: String,
     /// Whether a destructive tool call stops and asks first.
     ///

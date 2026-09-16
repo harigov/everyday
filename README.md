@@ -1200,6 +1200,27 @@ The time zone is yours rather than the machine's, and that is not a detail: a
 vault served from a box under a desk has whatever zone that box was installed
 with, and a routine set for seven has to mean seven where *you* are.
 
+### Who you want it to be
+
+That box below the name is the **soul**, and the word is doing work. It is a
+paragraph in your own words about temperament — be terse, call me by my first
+name, never use exclamation marks — and it is read first, before the
+assistant's own operating instructions, which it keeps.
+
+It is not labelled "system prompt", and that is the point. A field with that
+label collects the operating manual: *use your tools, do not invent ids, say
+what you changed*. The assistant is already given all of that, better phrased
+and kept in step with the tools it actually has, so a person who writes it
+again has spent a paragraph restating the parts that were never missing and
+none on the part only they know. A field labelled "soul" collects the part
+only they know. The two are concatenated rather than swapped precisely
+because a good soul is not a competent agent: character first, procedure
+second, and nothing you write can cost it the ability to do the work.
+
+Several pages, and capped — this string is sent with every request, so a
+novel pasted in is a novel paid for on every turn of every conversation, with
+no way to see why the bill grew.
+
 ### Looking things up
 
 `web_search` is the only tool the assistant has that is not in the core's
