@@ -761,6 +761,35 @@
       "title": "Get task"
     },
     {
+      "domain": "meetings",
+      "effect": "read",
+      "name": "get_transcript",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Segments to return in this page. Defaults to 400, capped at 2000.",
+            "type": "integer"
+          },
+          "note_id": {
+            "description": "Id of the meeting note, from list_meeting_notes or search.",
+            "type": "string"
+          },
+          "offset": {
+            "description": "Skip this many segments from the start, to continue a previous page.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "note_id"
+        ],
+        "type": "object"
+      },
+      "scope": "meetings",
+      "sensitivity": "ordinary",
+      "title": "Get transcript"
+    },
+    {
       "domain": "mail",
       "effect": "write",
       "name": "label_thread",
@@ -973,6 +1002,37 @@
       "scope": "journals",
       "sensitivity": "ordinary",
       "title": "List journals"
+    },
+    {
+      "domain": "meetings",
+      "effect": "read",
+      "name": "list_meeting_notes",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "attendee": {
+            "description": "Only calls with somebody matching this: a substring of their name or email address, case-insensitive.",
+            "type": "string"
+          },
+          "from": {
+            "description": "Start of the window, inclusive. Defaults to 90 days ago. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most notes to return. Defaults to 20, capped at 200.",
+            "type": "integer"
+          },
+          "to": {
+            "description": "End of the window, inclusive. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "meetings",
+      "sensitivity": "ordinary",
+      "title": "List meeting notes"
     },
     {
       "domain": "agent",
