@@ -88,6 +88,7 @@ pub mod lockfile;
 pub mod mail;
 pub mod mailsearch;
 pub mod media;
+pub mod meeting;
 pub mod model;
 pub mod note;
 pub mod packstore;
@@ -119,7 +120,8 @@ pub use error::{Error, Result};
 pub use id::{
     AccountId, BlobId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId,
     ItemId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NoteId, OpId,
-    PackId, ProjectId, ReadingId, RoleId, RoutineId, RoutineRunId, TaskId, ThreadId, TrackerId,
+    PackId, ProjectId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId, TaskId, TemplateId,
+    ThreadId, TrackerId, TranscriptId, VoiceprintId,
 };
 pub use library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,

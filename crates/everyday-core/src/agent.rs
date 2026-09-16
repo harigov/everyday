@@ -110,7 +110,7 @@ impl Provider {
 /// on a credential, and a DNS lookup that says "localhost" resolves
 /// somewhere else is not a reason to refuse to save a setting. The check
 /// that actually protects anything is the one at request time, in the shell.
-fn is_loopback(url: &str) -> bool {
+pub fn is_loopback(url: &str) -> bool {
     let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
     let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
     // Credentials in the URL are rare but legal, and `user@host` must not be

@@ -83,6 +83,14 @@ typed_id!(NoteId, "note");
 typed_id!(RoutineId, "routine");
 typed_id!(RoutineRunId, "run");
 
+// Meeting notes. A `RecordingId` names one call being (or once) recorded, a
+// `TranscriptId` what was said in it, a `VoiceprintId` a voice, and a
+// `TemplateId` a note shape. See `crate::meeting`.
+typed_id!(RecordingId, "recording");
+typed_id!(TranscriptId, "transcript");
+typed_id!(VoiceprintId, "voiceprint");
+typed_id!(TemplateId, "template");
+
 // The task domain. Separate newtypes for the same reason as above: a
 // `TaskId` and a `ProjectId` are both UUIDs and are never interchangeable,
 // and a `BlockId` addresses a span of time rather than a thing to do.

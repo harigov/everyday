@@ -7,6 +7,13 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+# Local speech: VAD, recognition, diarisation and speaker embeddings through
+# sherpa-onnx, which links a native library. On in the desktop app and the
+# server; off for the CLI and a plain `cargo test`. See
+# docs/plans/meeting-notes.md.
+speech = []
+
 [dependencies]
 everyday-core.workspace = true
 everyday-vault.workspace = true
