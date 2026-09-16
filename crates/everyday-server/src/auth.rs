@@ -296,10 +296,14 @@ impl Registry {
     /// Serialising the writes is affordable because they are rare: pairing,
     /// revoking, and a last-used stamp every few minutes.
     fn save_locked(&self, devices: &[Device]) -> CommandResult<()> {
+        self.write_locked(devices, true)
+    }
+
+    fn write_locked(&self, devices: &[Device], create_dir: bool) -> CommandResult<()> {
         let file = DeviceFile { devices: devices.to_vec() };
         let text = serde_json::to_string_pretty(&file)
             .map_err(|e| CommandError::new("internal", e.to_string()))?;
-        if let Some(parent) = self.path.parent() {
+        if create_dir && let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| CommandError::new("io", format!("{}: {e}", parent.display())))?;
         }
@@ -597,16 +601,11 @@ impl Registry {
     /// written, so a missing directory was removed on purpose -- a settings
     /// directory somebody deleted, or a test's temporary one dropped while
     /// this write was still queued. Putting it back for the sake of a
-    /// timestamp would resurrect the one and leak the other.
+    /// timestamp would resurrect the one and leak the other. Skipping the
+    /// `create_dir_all` rather than checking first leaves no window: the
+    /// write itself fails if the directory is not there.
     fn save_last_seen_locked(&self, devices: &[Device]) -> CommandResult<()> {
-        if self
-            .path
-            .parent()
-            .is_some_and(|parent| !parent.as_os_str().is_empty() && !parent.is_dir())
-        {
-            return Ok(());
-        }
-        self.save_locked(devices)
+        self.write_locked(devices, false)
     }
 
     pub fn revoke(&self, id: &str) -> CommandResult<bool> {
@@ -936,6 +935,24 @@ mod tests {
             assert_eq!(code.len(), CODE_LENGTH);
             assert!(!code.contains(['0', 'O', '1', 'I', 'L']), "{code}");
         }
+    }
+
+    /// A last-seen stamp does not bring back a settings directory that has
+    /// gone -- the way a test's temporary directory used to reappear, holding
+    /// only `devices.json`, after the test had dropped it.
+    #[test]
+    fn a_last_seen_stamp_does_not_recreate_a_removed_directory() {
+        let (registry, dir) = registry();
+        let code = registry.new_pairing_code();
+        let (token, _) = registry.pair(&code, "Laptop", vec![Scope::All]).unwrap();
+        let stale = jiff::Timestamp::now()
+            - std::time::Duration::from_secs(PERSIST_LAST_SEEN_EVERY as u64 + 1);
+        registry.devices.lock().unwrap()[0].last_seen = stale;
+
+        std::fs::remove_dir_all(dir.path()).unwrap();
+        registry.authenticate(&token).unwrap();
+
+        assert!(!dir.path().exists(), "the stamp recreated {:?}", dir.path());
     }
 
     /// The last-seen stamp still reaches disk once there is a runtime to
