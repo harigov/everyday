@@ -25,9 +25,13 @@
 //!
 //! * A key. [`Supervisor::ensure`] is idempotent on it: asking twice for
 //!   `"account:1"` while it is already running, backing off, or even mid
-//!   restart does nothing the second time -- which is what lets a caller ask
+//!   restart starts nothing a second time -- which is what lets a caller ask
 //!   for every account's task on every unlock without first checking which
-//!   ones happen to be up already.
+//!   ones happen to be up already. It is not, however, a pure no-op: an
+//!   `ensure` that finds the key already running marks it to be run again
+//!   once its current attempt finishes, even if that attempt was seconds
+//!   from answering [`Outcome::Done`] when the call landed -- see
+//!   `Entry::rerun_requested`'s own doc for the race this closes.
 //! * A [`watch::Receiver<bool>`](tokio::sync::watch::Receiver), handed fresh
 //!   to the factory on every attempt, that turns `true` the moment somebody
 //!   asks this task to stop. A task that is only ever going to be aborted
@@ -202,6 +206,23 @@ struct Entry {
     /// about an attempt nobody cares about any more, and is dropped rather
     /// than allowed to clobber the state the newer attempt has already set.
     generation: u64,
+    /// Set by [`Supervisor::start`] when `ensure` is called for this key
+    /// while `handle` is still `Some` -- "please run again" arriving too
+    /// late to be started as a fresh attempt, because one is already
+    /// registered. Checked, and cleared, by [`drive`] the moment its
+    /// current attempt resolves to [`Outcome::Done`]: if it is set, the
+    /// `Done` just received is stale -- something wants this key looked at
+    /// again -- so `drive` loops back to `Running` instead of finishing.
+    ///
+    /// Without this, a caller whose `ensure` lands in the narrow window
+    /// between a task's future resolving to `Done` and [`finish`] clearing
+    /// its `handle` (both guarded by the same `tasks` lock, but on two
+    /// different sides of it) sees `handle.is_some()`, does nothing, and
+    /// the request is simply lost -- the exact race `meeting::pipeline`'s
+    /// `finish` landing while `chunk_closed`'s own early attempt is mid-exit
+    /// can hit, leaving a recording stuck until something else re-`enqueue`s
+    /// it.
+    rerun_requested: bool,
 }
 
 struct Shared {
@@ -266,8 +287,14 @@ impl Supervisor {
         // there to update rather than racing this function to create it.
         let generation = {
             let mut tasks = self.0.tasks.lock().unwrap();
-            if let Some(entry) = tasks.get(&key) {
+            if let Some(entry) = tasks.get_mut(&key) {
                 if entry.handle.is_some() {
+                    // Already running (or between resolving and `finish`
+                    // clearing its handle -- see `Entry::rerun_requested`'s
+                    // own doc for that exact window). Ask it to run again
+                    // once it is done, rather than starting a second
+                    // attempt underneath it.
+                    entry.rerun_requested = true;
                     return;
                 }
             }
@@ -280,6 +307,7 @@ impl Supervisor {
                     stop_tx: None,
                     handle: None,
                     generation,
+                    rerun_requested: false,
                 },
             );
             generation
@@ -427,6 +455,18 @@ fn finish(shared: &Shared, key: &str, generation: u64, state: TaskState) {
     shared.events.lock().unwrap().changed(task_change(key));
 }
 
+/// Read and clear `key`'s [`Entry::rerun_requested`], for the same
+/// `generation` [`drive`] is currently running -- see that field's own doc.
+/// `false` if the entry is gone or has already moved on to a newer
+/// generation, the same guard [`set_state`] and [`finish`] use.
+fn take_rerun(shared: &Shared, key: &str, generation: u64) -> bool {
+    let mut tasks = shared.tasks.lock().unwrap();
+    match tasks.get_mut(key) {
+        Some(entry) if entry.generation == generation => std::mem::take(&mut entry.rerun_requested),
+        _ => false,
+    }
+}
+
 fn task_change(key: &str) -> Change {
     let mut change = Change::new(Kind::BackgroundTask, Op::Updated);
     change.id = Some(key.to_string());
@@ -464,6 +504,18 @@ async fn drive(
         let started = tokio::time::Instant::now();
         match run_once(&factory, stop_rx.clone()).await {
             Ok(Outcome::Done) => {
+                // A concurrent `ensure` for this same key may have landed
+                // between this attempt's future resolving and this line --
+                // both `start`'s idempotency check and this arm read and
+                // write through the same `tasks` lock, but on either side of
+                // that gap, `start` still saw `handle.is_some()` and set
+                // `Entry::rerun_requested` rather than starting a second
+                // attempt (see that field's own doc). Honour it: this
+                // `Done` is stale, so loop back to `Running` and call the
+                // factory again instead of retiring the key.
+                if take_rerun(&shared, &key, generation) {
+                    continue;
+                }
                 // Unlike `Supervisor::stop`, nobody has taken this task's own
                 // `handle` out of the registry on this path -- it finished on
                 // its own, by returning rather than by being aborted. Without
@@ -800,6 +852,64 @@ mod tests {
         start(&sup, calls.clone());
         settle(|| calls.load(Ordering::SeqCst) == 2).await;
         settle(|| matches!(sup.state("acct"), Some(TaskState::Stopped))).await;
+    }
+
+    /// The narrower race `Entry::rerun_requested` closes, one level up from
+    /// `ensure_after_done_starts_a_fresh_attempt`: an `ensure` landing while
+    /// the *current* attempt is still mid-flight, on its way to answering
+    /// `Outcome::Done`, rather than after `finish` has already cleared its
+    /// `handle`. Before this fix, `start`'s idempotency check saw
+    /// `handle.is_some()` (the attempt has not returned yet, from the
+    /// registry's point of view) and did nothing at all -- exactly the shape
+    /// of `meeting::pipeline::finish`'s own `enqueue` landing while
+    /// `chunk_closed`'s early attempt was mid-exit, silently dropped.
+    ///
+    /// The factory blocks on a gate for its first call only, so the test
+    /// controls precisely when "about to answer `Done`" happens: the second
+    /// `ensure` below is made, and observed to have set the registry's own
+    /// bookkeeping, strictly before the gate is opened and the first
+    /// attempt is allowed to resolve.
+    #[tokio::test]
+    async fn ensure_while_a_task_is_about_to_finish_asks_it_to_run_again() {
+        let sup = Supervisor::new(Arc::new(Silent));
+        let calls = Arc::new(AtomicU32::new(0));
+        let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+        let gate_rx = Arc::new(Mutex::new(Some(gate_rx)));
+
+        let counter = calls.clone();
+        let gate = gate_rx.clone();
+        sup.ensure("acct", move |_stop| {
+            let calls = counter.clone();
+            let gate = gate.clone();
+            Box::pin(async move {
+                let n = calls.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    // Parked here until the test releases it -- standing in
+                    // for the gap between this future resolving and
+                    // `finish` clearing `handle`, during which a concurrent
+                    // `ensure` still finds `handle.is_some()`.
+                    let rx = gate.lock().unwrap().take().unwrap();
+                    let _ = rx.await;
+                }
+                Ok(Outcome::Done)
+            })
+        });
+        settle(|| matches!(sup.state("acct"), Some(TaskState::Running))).await;
+
+        // The factory given here is never used -- a key already running
+        // keeps the one it started with (see `Supervisor::ensure`'s own
+        // doc) -- only the request to run again matters.
+        sup.ensure("acct", |_stop| Box::pin(async move { Ok(Outcome::Done) }));
+
+        let _ = gate_tx.send(());
+
+        settle(|| calls.load(Ordering::SeqCst) >= 2).await;
+        settle(|| matches!(sup.state("acct"), Some(TaskState::Stopped))).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "the ensure that landed mid-flight must still cause a second attempt, not be lost"
+        );
     }
 
     #[tokio::test]

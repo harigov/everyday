@@ -10,10 +10,17 @@
 //! backoff and stop-on-lock machinery (see that module's doc) is what gives
 //! this "stops when the vault locks, resumes on unlock" for free, the same
 //! way it already does for one mail account's sync task. A transient error
-//! (a network hiccup talking to a transcriber, say) is returned as `Err` so
-//! the supervisor retries it; reaching [`Stage::Done`] or [`Stage::Failed`]
-//! is reported as [`supervisor::Outcome::Done`], because there is nothing
-//! further for that key to do until a retry or a discard re-`enqueue`s it.
+//! talking to a transcriber or the assistant -- a network hiccup, a
+//! timeout, a rate limit, a provider having a bad moment, see
+//! [`is_transient`] -- is retried in place, with backoff, before this
+//! module gives up on it (see [`retry_transient`]); a permanent one (a
+//! refused key, a model the endpoint does not know, a chunk too large to
+//! send) is never retried at all. Either way, once a stage's own retries
+//! are exhausted the recording is marked [`Stage::Failed`] and `Err` is
+//! returned so the supervisor stops asking for it; reaching [`Stage::Done`]
+//! or [`Stage::Failed`] is reported as [`supervisor::Outcome::Done`],
+//! because there is nothing further for that key to do until a retry or a
+//! discard re-`enqueue`s it.
 //!
 //! # The stages
 //!
@@ -1025,9 +1032,10 @@ fn purpose_for(vault: &Vault, event: Option<&EventRef>) -> Option<everyday_core:
 /// through to [`Stage::Done`] (or a terminal [`Stage::Failed`]).
 ///
 /// Every branch below saves the recording as its own work finishes -- see
-/// this module's doc on why. `Stage::Recording` is a no-op here: the spool
-/// itself owns the transition out of it, and this function is never called
-/// before that transition happens (see [`enqueue`]'s own doc).
+/// this module's doc on why. `Stage::Recording` never advances the stage
+/// here -- the spool itself owns that transition, once the call actually
+/// ends -- but it is not a no-op: see [`transcribe_live`] for the early
+/// transcription this branch attempts while the call is still going.
 pub async fn run_recording(
     vault: Arc<Vault>,
     source: Arc<dyn AudioSource>,
@@ -1041,15 +1049,37 @@ pub async fn run_recording(
             blocking(move || Ok(vault.recording(id)?)).await?
         };
         match recording.stage.clone() {
-            Stage::Recording => return Ok(()),
+            Stage::Recording => {
+                if let Err(e) = transcribe_live(&vault, &source, id).await {
+                    // A head start, not a promise: whatever did not get
+                    // transcribed now is exactly as `Stage::Transcribing`
+                    // will pick it up once `finish` ends the call for
+                    // real. Logged, not `fail`ed -- the call is still live,
+                    // and a network hiccup reaching a transcriber early
+                    // must never be the reason a recording that is still
+                    // going gets marked `Failed`.
+                    tracing::warn!(
+                        recording = %id,
+                        error = %e.message,
+                        "meeting pipeline: early transcription failed; the ordinary pass at \
+                         the end of the call will retry it"
+                    );
+                }
+                // Test-only, and a no-op unless a test has armed `id` -- see
+                // `test_hooks`'s own doc for why a test needs a hook here at
+                // all rather than a slow real transcriber.
+                #[cfg(test)]
+                test_hooks::wait(id).await;
+                return Ok(());
+            }
             Stage::Transcribing => {
-                if let Err(e) = do_transcribe(&vault, &source, id).await {
+                if let Err(e) = retry_transient(|| do_transcribe(&vault, &source, id)).await {
                     fail(&vault, id, Stage::Transcribing, &e, events.as_ref()).await?;
                     return Err(e);
                 }
             }
             Stage::Identifying => {
-                if let Err(e) = do_identify(&vault, &source, id).await {
+                if let Err(e) = retry_transient(|| do_identify(&vault, &source, id)).await {
                     fail(&vault, id, Stage::Identifying, &e, events.as_ref()).await?;
                     return Err(e);
                 }
@@ -1060,13 +1090,15 @@ pub async fn run_recording(
                     fail(&vault, id, Stage::Summarising, &e, events.as_ref()).await?;
                     return Err(e);
                 };
-                if let Err(e) = do_summarise_and_write(
-                    &vault,
-                    &source,
-                    id,
-                    summariser.as_ref(),
-                    events.as_ref(),
-                )
+                if let Err(e) = retry_transient(|| {
+                    do_summarise_and_write(
+                        &vault,
+                        &source,
+                        id,
+                        summariser.as_ref(),
+                        events.as_ref(),
+                    )
+                })
                 .await
                 {
                     fail(&vault, id, Stage::Summarising, &e, events.as_ref()).await?;
@@ -1077,6 +1109,81 @@ pub async fn run_recording(
             Stage::Done | Stage::Failed { .. } => return Ok(()),
         }
     }
+}
+
+/// How many attempts [`retry_transient`] gives a transient error before
+/// giving up and letting it through to `fail` -- see [`is_transient`].
+/// Bounded on purpose: an endpoint whose network trouble never clears is
+/// still worth telling a person about eventually, rather than retrying
+/// forever with nothing for them to see or act on.
+const TRANSIENT_RETRIES: u32 = 5;
+
+/// The delay before [`retry_transient`]'s *second* attempt (the first
+/// retry); each one after that doubles it, capped by
+/// [`TRANSIENT_RETRY_CAP`]. Chosen, with [`TRANSIENT_RETRIES`], so the
+/// worst case -- every attempt transient, every delay maxed out -- spans
+/// roughly ten minutes: long enough to outlast a network blip or a
+/// provider's bad minute, short enough that a call's note is not left
+/// waiting for the length of the call itself.
+const TRANSIENT_RETRY_BASE: Duration = Duration::from_secs(30);
+
+/// The largest gap [`retry_transient`] leaves between attempts.
+const TRANSIENT_RETRY_CAP: Duration = Duration::from_secs(4 * 60);
+
+/// Whether `code` names a failure worth retrying -- a network hiccup, a
+/// timeout, a rate limit, or a provider having a bad moment -- as opposed to
+/// one retrying can never fix: a refused key, a model or endpoint that does
+/// not exist, a chunk too large to send, or an assistant that is not
+/// configured at all. See `crate::error::codes`, and each `Transcriber`'s
+/// own `status_error` (`transcribe/openai.rs`, `transcribe/gemini.rs`) for
+/// what maps to which.
+fn is_transient(code: &str) -> bool {
+    matches!(code, codes::NETWORK | codes::TIMED_OUT | codes::RATE_LIMITED | codes::PROVIDER)
+}
+
+/// Run one stage's own operation -- `do_transcribe`, `do_identify`,
+/// `do_summarise_and_write` -- retrying it in place while its error is
+/// [`is_transient`], up to [`TRANSIENT_RETRIES`] times with growing backoff.
+/// A permanent error is returned on the very first attempt: see
+/// [`is_transient`] for why retrying one is never worth doing.
+///
+/// Safe to retry a whole stage rather than only the one request that
+/// failed: every stage checkpoints as it goes (`transcribe_stage` saves
+/// after each chunk; `do_identify` and `do_summarise_and_write` are cheap,
+/// local recomputation until their own final network call -- see
+/// `do_identify`'s own doc on why nothing is persisted between identifying
+/// and summarising), so re-running one from the top never re-pays for
+/// audio already transcribed, only for whatever a network hiccup actually
+/// interrupted.
+async fn retry_transient<F, Fut>(op: F) -> CommandResult<()>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = CommandResult<()>>,
+{
+    retry_transient_from(op, TRANSIENT_RETRY_BASE).await
+}
+
+/// [`retry_transient`], with the starting delay broken out so a test can
+/// shrink it without a real recording ever needing to -- the same seam
+/// `capture.rs`'s `finish_with_retry_from` uses for the same reason.
+async fn retry_transient_from<F, Fut>(op: F, mut delay: Duration) -> CommandResult<()>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = CommandResult<()>>,
+{
+    let mut last_err = None;
+    for attempt in 0..TRANSIENT_RETRIES {
+        if attempt > 0 {
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(TRANSIENT_RETRY_CAP);
+        }
+        match op().await {
+            Ok(()) => return Ok(()),
+            Err(e) if is_transient(&e.code) => last_err = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.expect("looped at least once"))
 }
 
 /// Marks `id` [`Stage::Failed`] and tells anyone watching the recordings
@@ -1127,7 +1234,15 @@ async fn fail(
     Ok(())
 }
 
-async fn do_transcribe(
+/// Build the configured transcriber and its hints, then run
+/// [`transcribe_stage`] against `id` -- everything [`do_transcribe`] and
+/// [`transcribe_live`] both need before they can each decide what to do
+/// once transcription itself is caught up: `do_transcribe` may advance the
+/// stage out of `Transcribing`; `transcribe_live`, mid-call, never does.
+/// Shared so the two can never disagree about what "the configured
+/// transcriber" means, the same reason [`build_transcriber`] itself is
+/// shared with `domains::transcripts`.
+async fn transcribe_pending(
     vault: &Arc<Vault>,
     source: &Arc<dyn AudioSource>,
     id: RecordingId,
@@ -1165,7 +1280,44 @@ async fn do_transcribe(
         #[cfg(feature = "speech")]
         kit,
     )
-    .await?;
+    .await
+}
+
+/// Transcribe whatever chunks have closed so far, without advancing the
+/// recording out of `Stage::Recording` -- the call may still be going, so
+/// there is nothing here to checkpoint beyond [`transcribe_stage`]'s own
+/// per-chunk save. Only for a remote backend, and only best-effort: see
+/// `chunk_closed`'s own doc for why local transcription never runs early,
+/// and `run_recording`'s `Stage::Recording` arm for why an error here is
+/// logged rather than ever failing the recording.
+///
+/// Re-reads the setting rather than trusting whoever enqueued this pass:
+/// `chunk_closed` already checks `is_remote` before enqueuing, but the
+/// person could switch the transcriber to a local one between one chunk
+/// closing and this attempt actually running, and a local model has no
+/// business being built here regardless of what triggered the call.
+async fn transcribe_live(
+    vault: &Arc<Vault>,
+    source: &Arc<dyn AudioSource>,
+    id: RecordingId,
+) -> CommandResult<()> {
+    let settings = {
+        let vault = vault.clone();
+        blocking(move || Ok(vault.meeting_settings()?)).await?
+    };
+    let remote = settings.transcriber.as_ref().is_some_and(TranscriberConfig::is_remote);
+    if !remote {
+        return Ok(());
+    }
+    transcribe_pending(vault, source, id).await
+}
+
+async fn do_transcribe(
+    vault: &Arc<Vault>,
+    source: &Arc<dyn AudioSource>,
+    id: RecordingId,
+) -> CommandResult<()> {
+    transcribe_pending(vault, source, id).await?;
 
     // Locked, and re-checked: a chunk `append` accepted in the gap between
     // `transcribe_stage`'s own last "nothing pending" reload and this save
@@ -1428,10 +1580,16 @@ fn task_key(id: RecordingId) -> String {
     format!("meeting:{id}")
 }
 
-/// A recording has finished (or been retried) and is owed its note. Starts
-/// or wakes the pipeline for it; returns at once. See the supervisor's own
-/// doc for what "starts or wakes" means: calling this twice for the same
-/// recording while it is already running does nothing the second time.
+/// A recording has finished (or been retried), or a chunk of a still-live
+/// one has closed and is worth transcribing early. Starts or wakes the
+/// pipeline for it; returns at once. See the supervisor's own doc for what
+/// "starts or wakes" means: calling this twice for the same recording while
+/// it is already running never starts a second attempt underneath the
+/// first, but it does ask that attempt to run again once it finishes --
+/// which matters here specifically because `finish` calling this the
+/// instant a call ends can otherwise land in the narrow gap between an
+/// early, `chunk_closed`-triggered attempt seeing `Stage::Recording` and
+/// that attempt actually retiring; see `Supervisor::Entry::rerun_requested`.
 pub fn enqueue(svc: &Arc<Service>, id: RecordingId) {
     let Ok(vault) = svc.require() else { return };
     let source: Arc<dyn AudioSource> = Arc::new(SpoolSource::new(vault.clone()));
@@ -1458,16 +1616,17 @@ pub fn enqueue(svc: &Arc<Service>, id: RecordingId) {
     });
 }
 
-/// One chunk has been spooled while the call is still going. The pipeline
-/// may transcribe it early so a long call is mostly done by its end --
-/// debounced, and only when it will not compete with capture for the
-/// machine: a remote transcriber costs this process nothing but a request in
-/// flight, so early transcription is only attempted for one.
+/// One chunk has been spooled while the call is still going. For a remote
+/// transcriber, [`enqueue`] -- and, through it, [`run_recording`]'s
+/// `Stage::Recording` arm and [`transcribe_live`] -- transcribes it right
+/// away, so a long call is mostly done by its end rather than starting from
+/// nothing once it ends.
 ///
 /// Deliberately conservative: local transcription is CPU the same process
 /// needs for capture and VAD, so a struggling machine is never asked to do
-/// both at once by this path. The chunk is still transcribed -- just not
-/// until the call ends and [`enqueue`] runs, which is always safe.
+/// both at once by this path. A local chunk is still transcribed -- just
+/// not until the call ends and [`enqueue`] runs from `finish`, which is
+/// always safe.
 pub fn chunk_closed(svc: &Arc<Service>, id: RecordingId, _track: Track, _seq: u32) {
     let Ok(vault) = svc.require() else { return };
     let Ok(settings) = vault.meeting_settings() else { return };
@@ -1477,12 +1636,81 @@ pub fn chunk_closed(svc: &Arc<Service>, id: RecordingId, _track: Track, _seq: u3
     }
 }
 
+/// A per-recording gate [`run_recording`]'s `Stage::Recording` arm waits on
+/// just before returning -- test-only, and a no-op for every recording
+/// nothing has armed. Exists for one reason: proving that `enqueue` landing
+/// while an early, `chunk_closed`-triggered attempt is genuinely still
+/// running -- not yet retired by the supervisor -- still wakes that attempt
+/// rather than losing the request. See `supervisor.rs`'s
+/// `Entry::rerun_requested` for the mechanism this proves, and
+/// `tests::finish_landing_while_the_early_attempt_is_still_running_still_reaches_done`
+/// for the test that uses it.
+///
+/// A slow or gated real transcriber could stand in for this instead, and is
+/// what `tests::spawn_flaky_server` gives the *other* retry tests their
+/// timing from -- but `chunk_closed`'s own early transcription only runs for
+/// a transcriber [`TranscriberConfig::is_remote`] calls remote, and every
+/// address a test can actually reach from inside this process is, by that
+/// same function's own reading, loopback. This gate holds the early attempt
+/// "still running" a different way, exactly where a slow network call would
+/// sit if one were reachable.
+#[cfg(test)]
+mod test_hooks {
+    use everyday_core::RecordingId;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    pub(super) struct Gate {
+        reached: AtomicBool,
+        notify: tokio::sync::Notify,
+    }
+
+    impl Gate {
+        /// Whether `run_recording` has reached this gate yet -- what a test
+        /// polls before assuming the early attempt is truly parked, rather
+        /// than assuming any particular amount of scheduling has happened.
+        pub(super) fn reached(&self) -> bool {
+            self.reached.load(Ordering::SeqCst)
+        }
+
+        pub(super) fn release(&self) {
+            self.notify.notify_one();
+        }
+    }
+
+    fn gates() -> &'static Mutex<HashMap<RecordingId, Arc<Gate>>> {
+        static GATES: OnceLock<Mutex<HashMap<RecordingId, Arc<Gate>>>> = OnceLock::new();
+        GATES.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    /// Arm the gate for `id`. One test at a time per id -- trivially true in
+    /// practice, since every test mints its own fresh `RecordingId`.
+    pub(super) fn arm(id: RecordingId) -> Arc<Gate> {
+        let gate =
+            Arc::new(Gate { reached: AtomicBool::new(false), notify: tokio::sync::Notify::new() });
+        gates().lock().unwrap().insert(id, gate.clone());
+        gate
+    }
+
+    /// What [`super::run_recording`] calls. A no-op unless a test has armed
+    /// `id` first.
+    pub(super) async fn wait(id: RecordingId) {
+        let gate = gates().lock().unwrap().get(&id).cloned();
+        if let Some(gate) = gate {
+            gate.reached.store(true, Ordering::SeqCst);
+            gate.notify.notified().await;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use everyday_core::meeting::{Recording, Stage};
     use std::collections::HashMap;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     // ---- group_turns / map_segment ----------------------------------------
 
@@ -2046,5 +2274,449 @@ mod tests {
         })
         .await
         .map(|_| ())
+    }
+
+    // ---- transient vs permanent errors, and the bounded retry -------------
+
+    /// Fails its first `fails_left` calls with `code`, then succeeds -- for
+    /// proving [`retry_transient`] keeps going through a transient error and
+    /// stops the moment it clears.
+    struct FlakyTranscriber {
+        code: &'static str,
+        fails_left: AtomicU32,
+        calls: AtomicU32,
+    }
+
+    impl Transcriber for FlakyTranscriber {
+        fn limits(&self) -> Limits {
+            Limits { max_bytes: 100_000_000, max_seconds: 3_600 }
+        }
+        fn diarises(&self) -> bool {
+            false
+        }
+        fn transcribe<'a>(
+            &'a self,
+            chunk: &'a SpeechChunk,
+            _hints: &'a Hints,
+        ) -> crate::meeting::transcribe::BoxFuture<'a, CommandResult<Vec<RawSegment>>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let duration = chunk.duration_ms();
+            Box::pin(async move {
+                let mut remaining = self.fails_left.load(Ordering::SeqCst);
+                while remaining > 0 {
+                    match self.fails_left.compare_exchange(
+                        remaining,
+                        remaining - 1,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
+                        Ok(_) => return Err(CommandError::new(self.code, "not yet")),
+                        Err(seen) => remaining = seen,
+                    }
+                }
+                Ok(vec![RawSegment {
+                    start_ms: 0,
+                    end_ms: duration,
+                    text: "hi".into(),
+                    speaker_hint: None,
+                }])
+            })
+        }
+    }
+
+    /// Always fails with `code` -- for proving a permanent error is never
+    /// retried, and that a transient one which never clears still gives up
+    /// once its budget is spent rather than retrying for ever.
+    struct AlwaysFails {
+        code: &'static str,
+        calls: AtomicU32,
+    }
+
+    impl Transcriber for AlwaysFails {
+        fn limits(&self) -> Limits {
+            Limits { max_bytes: 100_000_000, max_seconds: 3_600 }
+        }
+        fn diarises(&self) -> bool {
+            false
+        }
+        fn transcribe<'a>(
+            &'a self,
+            _chunk: &'a SpeechChunk,
+            _hints: &'a Hints,
+        ) -> crate::meeting::transcribe::BoxFuture<'a, CommandResult<Vec<RawSegment>>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move { Err(CommandError::new(self.code, "still no")) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_transient_error_is_retried_until_it_clears() {
+        let (_dir, vault) = test_vault();
+        let audio = Arc::new(FakeAudio::new());
+        let id = seed_recording(&vault, &audio, 1, 0);
+        let source: Arc<dyn AudioSource> = audio.clone();
+        let transcriber = FlakyTranscriber {
+            code: codes::NETWORK,
+            fails_left: AtomicU32::new(2),
+            calls: AtomicU32::new(0),
+        };
+
+        let result = retry_transient_from(
+            || do_transcribe_with(&vault, &source, id, &transcriber),
+            Duration::from_millis(1),
+        )
+        .await;
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            transcriber.calls.load(Ordering::SeqCst),
+            3,
+            "two transient failures, then a third attempt that succeeded"
+        );
+        let recording = vault.recording(id).unwrap();
+        assert_eq!(
+            recording.stage,
+            Stage::Identifying,
+            "the stage still advanced once retried through"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_permanent_error_is_never_retried() {
+        let (_dir, vault) = test_vault();
+        let audio = Arc::new(FakeAudio::new());
+        let id = seed_recording(&vault, &audio, 1, 0);
+        let source: Arc<dyn AudioSource> = audio.clone();
+        let transcriber = AlwaysFails { code: codes::FORBIDDEN, calls: AtomicU32::new(0) };
+
+        let result = retry_transient_from(
+            || do_transcribe_with(&vault, &source, id, &transcriber),
+            Duration::from_millis(1),
+        )
+        .await;
+
+        let err = result.unwrap_err();
+        assert_eq!(err.code, codes::FORBIDDEN);
+        assert_eq!(
+            transcriber.calls.load(Ordering::SeqCst),
+            1,
+            "a permanent error must fail on the very first attempt, never retried"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_transient_error_that_never_clears_still_gives_up_eventually() {
+        let (_dir, vault) = test_vault();
+        let audio = Arc::new(FakeAudio::new());
+        let id = seed_recording(&vault, &audio, 1, 0);
+        let source: Arc<dyn AudioSource> = audio.clone();
+        let transcriber = AlwaysFails { code: codes::NETWORK, calls: AtomicU32::new(0) };
+
+        let result = retry_transient_from(
+            || do_transcribe_with(&vault, &source, id, &transcriber),
+            Duration::from_millis(1),
+        )
+        .await;
+
+        let err = result.unwrap_err();
+        assert_eq!(err.code, codes::NETWORK);
+        assert_eq!(
+            transcriber.calls.load(Ordering::SeqCst),
+            TRANSIENT_RETRIES,
+            "bounded: a transient error that never clears must not be retried for ever"
+        );
+    }
+
+    // ---- the same classification against a real transcriber over HTTP -----
+
+    async fn spawn_flaky_server(
+        fail_times: usize,
+        status: axum::http::StatusCode,
+    ) -> (String, Arc<AtomicU32>) {
+        let calls = Arc::new(AtomicU32::new(0));
+        let calls_for_route = calls.clone();
+        let app = axum::Router::new().route(
+            "/audio/transcriptions",
+            axum::routing::post(move |_body: axum::body::Bytes| {
+                let calls = calls_for_route.clone();
+                async move {
+                    use axum::response::IntoResponse;
+                    let n = calls.fetch_add(1, Ordering::SeqCst) as usize;
+                    if n < fail_times {
+                        (status, "server trouble").into_response()
+                    } else {
+                        axum::Json(serde_json::json!({"text": "hello from the fake server"}))
+                            .into_response()
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        (format!("http://{addr}"), calls)
+    }
+
+    /// The same retry this module promises, proven against the real
+    /// [`build_transcriber`]/`do_transcribe` path rather than a fake
+    /// `Transcriber` -- a 500 is exactly what `OpenAiTranscriber::status_error`
+    /// classifies as [`codes::NETWORK`], so this is what a real, flaky
+    /// compatible server looks like from here.
+    #[tokio::test]
+    async fn a_real_transcribers_500_is_retried_and_the_recording_is_never_failed() {
+        let (_dir, vault) = test_vault();
+        let audio = Arc::new(FakeAudio::new());
+        let id = seed_recording(&vault, &audio, 1, 0);
+        let (base, calls) =
+            spawn_flaky_server(2, axum::http::StatusCode::INTERNAL_SERVER_ERROR).await;
+        let mut settings = vault.meeting_settings().unwrap();
+        settings.transcriber =
+            Some(TranscriberConfig::Compatible { base_url: base, model: "whisper-1".into() });
+        vault.save_meeting_settings(&settings).unwrap();
+        let source: Arc<dyn AudioSource> = audio.clone();
+
+        let result =
+            retry_transient_from(|| do_transcribe(&vault, &source, id), Duration::from_millis(1))
+                .await;
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "two 500s, then a third request that succeeded"
+        );
+        let recording = vault.recording(id).unwrap();
+        assert_eq!(recording.stage, Stage::Identifying);
+    }
+
+    /// The permanent half of the same proof: a 401 is
+    /// `OpenAiTranscriber::status_error`'s [`codes::FORBIDDEN`], and must
+    /// cost exactly one request.
+    #[tokio::test]
+    async fn a_real_transcribers_401_is_never_retried() {
+        let (_dir, vault) = test_vault();
+        let audio = Arc::new(FakeAudio::new());
+        let id = seed_recording(&vault, &audio, 1, 0);
+        let (base, calls) =
+            spawn_flaky_server(usize::MAX, axum::http::StatusCode::UNAUTHORIZED).await;
+        let mut settings = vault.meeting_settings().unwrap();
+        settings.transcriber =
+            Some(TranscriberConfig::Compatible { base_url: base, model: "whisper-1".into() });
+        vault.save_meeting_settings(&settings).unwrap();
+        let source: Arc<dyn AudioSource> = audio.clone();
+
+        let result =
+            retry_transient_from(|| do_transcribe(&vault, &source, id), Duration::from_millis(1))
+                .await;
+
+        let err = result.unwrap_err();
+        assert_eq!(err.code, codes::FORBIDDEN);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    // ---- early transcription while a call is still live --------------------
+
+    /// A local, immediate fake server -- `spawn_flaky_server(0, ..)` always
+    /// succeeds, standing in for a healthy remote transcriber that early
+    /// transcription talks to while a call is still going.
+    async fn spawn_ok_server() -> String {
+        spawn_flaky_server(0, axum::http::StatusCode::OK).await.0
+    }
+
+    /// The regression this finding is about: before `run_recording`'s
+    /// `Stage::Recording` arm ran early transcription, a chunk closed
+    /// mid-call was never transcribed until the call ended -- see
+    /// `chunk_closed`'s own doc. Proven against [`transcribe_pending`], the
+    /// shared engine [`transcribe_live`] calls once its own remote check has
+    /// passed: every base URL reachable from inside a test is loopback (see
+    /// `test_hooks`'s own doc), so `transcribe_live` itself is exercised
+    /// separately, by `early_transcription_does_nothing_for_a_local_transcriber`
+    /// below and by the supervisor-race test, rather than by asserting on a
+    /// remote check this process cannot genuinely satisfy.
+    #[tokio::test]
+    async fn early_transcription_marks_chunks_transcribed_without_advancing_the_stage() {
+        let (_dir, vault) = test_vault();
+        let audio = Arc::new(FakeAudio::new());
+        let id = seed_recording(&vault, &audio, 1, 0);
+        // `seed_recording` leaves the row at `Stage::Transcribing`; put it
+        // back to `Stage::Recording`, the state a still-live call is
+        // actually in when `chunk_closed` fires.
+        let mut recording = vault.recording(id).unwrap();
+        recording.stage = Stage::Recording;
+        vault.save_recording(&recording).unwrap();
+
+        let base = spawn_ok_server().await;
+        let mut settings = vault.meeting_settings().unwrap();
+        settings.transcriber =
+            Some(TranscriberConfig::Compatible { base_url: base, model: "whisper-1".into() });
+        vault.save_meeting_settings(&settings).unwrap();
+        let source: Arc<dyn AudioSource> = audio.clone();
+
+        transcribe_pending(&vault, &source, id).await.unwrap();
+
+        let recording = vault.recording(id).unwrap();
+        assert_eq!(
+            recording.stage,
+            Stage::Recording,
+            "the call is still live; nothing advances it"
+        );
+        assert!(
+            recording.chunks.iter().all(|c| c.transcribed),
+            "the closed chunk was transcribed early"
+        );
+        assert!(!recording.partial.is_empty(), "the early transcript text was saved");
+    }
+
+    /// The other half of `chunk_closed`'s own gate: a local transcriber is
+    /// never asked to do this early -- see that function's doc on why, and
+    /// `transcribe_live`'s own doc on re-checking rather than trusting the
+    /// caller.
+    #[tokio::test]
+    async fn early_transcription_does_nothing_for_a_local_transcriber() {
+        let (_dir, vault) = test_vault();
+        let audio = Arc::new(FakeAudio::new());
+        let id = seed_recording(&vault, &audio, 1, 0);
+        let mut recording = vault.recording(id).unwrap();
+        recording.stage = Stage::Recording;
+        vault.save_recording(&recording).unwrap();
+
+        let mut settings = vault.meeting_settings().unwrap();
+        settings.transcriber = Some(TranscriberConfig::Local {
+            model: everyday_core::meeting::LocalModel::ParakeetV3,
+        });
+        vault.save_meeting_settings(&settings).unwrap();
+        let source: Arc<dyn AudioSource> = audio.clone();
+
+        transcribe_live(&vault, &source, id).await.unwrap();
+
+        let recording = vault.recording(id).unwrap();
+        assert!(
+            recording.chunks.iter().all(|c| !c.transcribed),
+            "a local transcriber must never be asked to transcribe early"
+        );
+    }
+
+    // ---- the supervisor race: `finish` landing while an early attempt is --
+    // ---- still mid-flight ---------------------------------------------------
+
+    /// The same shape [`enqueue`] gives the supervisor, with `summariser`
+    /// injected directly instead of built from `vault.agent_settings()` --
+    /// this test's own seam for driving the real `Supervisor::ensure`/
+    /// `chunk_closed`/`finish` wiring (and the race
+    /// `supervisor::Entry::rerun_requested` closes) all the way to
+    /// `Stage::Done` without a real assistant answering. Everything else is
+    /// exactly what `enqueue` itself does.
+    fn enqueue_test(
+        svc: &Arc<Service>,
+        vault: Arc<Vault>,
+        source: Arc<dyn AudioSource>,
+        id: RecordingId,
+        summariser: Arc<dyn Summariser>,
+    ) {
+        let events = svc.events();
+        svc.supervisor().ensure(task_key(id), move |_stop| {
+            let vault = vault.clone();
+            let source = source.clone();
+            let summariser = summariser.clone();
+            let events = events.clone();
+            Box::pin(async move {
+                match run_recording(vault, source, id, Some(summariser), events).await {
+                    Ok(()) => Ok(Outcome::Done),
+                    Err(e) => {
+                        Err(Box::new(std::io::Error::other(e.message))
+                            as crate::supervisor::TaskError)
+                    }
+                }
+            }) as crate::supervisor::TaskFuture
+        });
+    }
+
+    /// Poll `f` against real wall-clock time rather than a virtual one --
+    /// this test drives real scheduling (and a real TCP round trip over
+    /// loopback), which a paused clock cannot stand in for.
+    async fn settle_real(f: impl Fn() -> bool) {
+        for _ in 0..500 {
+            if f() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(f(), "did not settle");
+    }
+
+    /// The regression finding 2 is about: `chunk_closed` enqueues the
+    /// pipeline for a still-live recording; that early attempt reaches
+    /// `Stage::Recording`'s early transcription and is genuinely still
+    /// running -- parked on `test_hooks`'s gate, standing in for the network
+    /// call a remote transcriber would actually be mid-flight on -- the
+    /// instant `finish` lands, simulated here by flipping the stage and
+    /// calling `enqueue` again exactly as `spool::finish` itself does.
+    /// Before `Entry::rerun_requested` existed, the supervisor's own
+    /// idempotency check silently dropped that second `enqueue`, and the
+    /// recording sat in `Stage::Transcribing` for good (until an unrelated
+    /// unlock's `recover` swept it up). Now it reaches `Stage::Done` here,
+    /// in the same attempt, once the gate is released.
+    #[tokio::test]
+    async fn finish_landing_while_the_early_attempt_is_still_running_still_reaches_done() {
+        // Built directly, rather than through `test_vault`, so the vault is
+        // owned by a real `Service` from the start -- this test needs
+        // `svc.supervisor()`, which `test_vault`'s bare `Arc<Vault>` has no
+        // way to reach.
+        let _dir = tempfile::tempdir().unwrap();
+        let cfg = everyday_core::VaultConfig {
+            password: Some("correct horse battery".into()),
+            kdf: everyday_core::crypto::KdfParams::insecure_fast(),
+            ..Default::default()
+        };
+        let vault = everyday_vault::create(_dir.path(), cfg).unwrap();
+        let svc = Arc::new(Service::new());
+        let vault = svc.set(vault);
+
+        let audio = Arc::new(FakeAudio::new());
+        let id = seed_recording(&vault, &audio, 1, 0);
+        let mut recording = vault.recording(id).unwrap();
+        recording.stage = Stage::Recording;
+        vault.save_recording(&recording).unwrap();
+
+        // A real, immediate fake server: `transcribe_live` will not reach
+        // it (loopback reads as local, not remote -- see `test_hooks`'s own
+        // doc), but `do_transcribe` will, for real, once the recording is
+        // woken back up at `Stage::Transcribing` below.
+        let base = spawn_ok_server().await;
+        let mut settings = vault.meeting_settings().unwrap();
+        settings.transcriber =
+            Some(TranscriberConfig::Compatible { base_url: base, model: "whisper-1".into() });
+        vault.save_meeting_settings(&settings).unwrap();
+
+        let source: Arc<dyn AudioSource> = audio.clone();
+        let gate = test_hooks::arm(id);
+
+        // Stands in for `chunk_closed`'s own `enqueue`: the call is still
+        // live, so this attempt reaches `Stage::Recording`'s early
+        // transcription and, immediately after, parks on the gate.
+        enqueue_test(&svc, vault.clone(), source.clone(), id, Arc::new(FakeSummariser));
+        settle_real(|| gate.reached()).await;
+
+        // Stands in for `spool::finish`: the call has now genuinely ended,
+        // while the early attempt above is still parked, its own `handle`
+        // still registered with the supervisor.
+        crate::meeting::spool::mutate_recording(&vault, id, |r| {
+            r.stage = Stage::Transcribing;
+            r.ended_at = Some(Timestamp::now());
+            Ok(())
+        })
+        .unwrap();
+        enqueue_test(&svc, vault.clone(), source.clone(), id, Arc::new(FakeSummariser));
+
+        // Let the parked attempt notice it has been asked to run again
+        // rather than simply retiring.
+        gate.release();
+
+        settle_real(|| matches!(vault.recording(id).map(|r| r.stage), Ok(Stage::Done))).await;
+        let recording = vault.recording(id).unwrap();
+        assert_eq!(recording.stage, Stage::Done);
+        assert!(recording.note_id.is_some());
     }
 }

@@ -17,7 +17,7 @@
 import { api, callCommand, isMock, onMeetingOffer, onMeetingStatus, onMeetingStillOn } from './api'
 import type { MeetingOfferPayload } from './api'
 import { notify } from './notify.svelte'
-import { app, handle, isLocked } from './state.svelte'
+import { app, errorMessage, handle, isLocked } from './state.svelte'
 import type {
   CaptureStatus,
   MeetingSettings,
@@ -64,6 +64,16 @@ class MeetingsState {
 
   /** Recordings still in the pipeline, or failed -- the notes list's cards. */
   recordings = $state<Recording[]>([])
+  /**
+   * Set when `refreshRecordings` fails for a reason worth telling somebody
+   * about -- everything except the vault locking, which is its own screen,
+   * not a message over this one. Cleared the moment a refresh succeeds
+   * again. `recordings` itself is left exactly as it was on a failure: the
+   * cards on screen stay put (stale, but not wrong) rather than vanishing,
+   * and `NotesNav` shows this beside them so a stale list is at least a
+   * visible one.
+   */
+  recordingsError = $state<string | null>(null)
   models = $state<SpeechModelInfo[]>([])
   voiceprints = $state<VoiceprintInfo[]>([])
 
@@ -82,6 +92,7 @@ class MeetingsState {
     this.stillOn = null
     this.offers = []
     this.recordings = []
+    this.recordingsError = null
     this.models = []
     this.voiceprints = []
     this.starting = false
@@ -185,8 +196,14 @@ class MeetingsState {
   async refreshRecordings() {
     try {
       this.recordings = await api.listRecordings({ stages: ACTIVE_STAGES, limit: 50 })
+      this.recordingsError = null
     } catch (e) {
-      if (!isLocked(e)) return
+      // A lock is its own screen, not a message over this one -- the same
+      // policy `handle` itself applies, but without `handle`'s global
+      // banner: a background refresh failing is worth a line beside the
+      // cards it could not update, not a report over the whole window.
+      if (isLocked(e)) return
+      this.recordingsError = errorMessage(e)
     }
   }
 
