@@ -170,11 +170,19 @@ fn local_part(email: &str) -> String {
     email.split('@').next().unwrap_or(email).to_string()
 }
 
-/// Cut a string down to (about) `max` characters without splitting a name in
-/// the middle: back up to the last ", " at or before the limit.
+/// Cut a string down to (about) `max` bytes without splitting a name in the
+/// middle: back up to the last ", " at or before the limit.
+///
+/// The limit is first moved back onto a character boundary: attendee names
+/// are whatever the calendar says, and "José" straddling byte 400 must not
+/// take the whole pipeline down with it.
 fn truncate_at_name_boundary(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
+    }
+    let mut max = max;
+    while !s.is_char_boundary(max) {
+        max -= 1;
     }
     let cut = s[..max].rfind(", ").unwrap_or(max);
     let mut out = s[..cut].to_string();
@@ -312,6 +320,22 @@ mod tests {
     #[test]
     fn transcriber_hint_with_no_names_is_just_the_title() {
         assert_eq!(transcriber_hint("Design sync", &[]), "Meeting: Design sync.");
+    }
+
+    #[test]
+    fn transcriber_hint_never_cuts_through_a_character() {
+        // Every offset near the limit, so one of them lands inside a
+        // two-byte "é" or a three-byte "田".
+        for pad in 0..6 {
+            let names: Vec<String> =
+                (0..60).map(|i| format!("{}José 田中 Müller {i}", "x".repeat(pad))).collect();
+            let hint = transcriber_hint("Réunion", &names);
+            assert!(hint.len() <= 401, "{}", hint.len());
+            assert!(hint.ends_with('.'));
+        }
+        // And one long name with no comma to back up to at all.
+        let hint = transcriber_hint("Réunion", &["é".repeat(400)]);
+        assert!(hint.len() <= 401);
     }
 
     #[test]

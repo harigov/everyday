@@ -22,21 +22,15 @@ use crate::store::meetings::RecordingQuery;
 /// [`MeetingStore`](crate::store::meetings::MeetingStore); public so a
 /// backend under construction can run it alone.
 ///
-/// # A landmine this suite deliberately steps around
-///
-/// `MeetingSettings::default()` -- and so `..Default::default()` anywhere on
-/// it -- calls `everyday_core::meeting::template::starter()`, which is
-/// `todo!()` until the template work lands (see `docs/plans/meeting-notes.md`
-/// and that module's own docs). That is also what backs the "absent settings
-/// ⇒ the default" half of `MeetingStore::meeting_settings`'s contract, so it
-/// is real production behaviour and not this suite's to route around by
-/// changing the store. What this suite avoids instead is ever exercising
-/// that particular branch: [`blank_settings`] builds a `MeetingSettings` by
-/// hand rather than through `Default`, and every settings test writes a row
-/// before reading it back, so `meeting_settings`'s "nothing saved yet" branch
-/// -- and `template::starter` behind it -- is never reached here.
+/// Starts with the "nothing saved yet" branch of `meeting_settings`, which
+/// must answer with the defaults rather than an error.
 pub fn run_meeting_suite(store: &dyn JournalStore) {
     eprintln!("--- meeting conformance suite ---");
+    assert_eq!(
+        meetings(store).meeting_settings().unwrap(),
+        crate::meeting::MeetingSettings::default(),
+        "a vault that never saved meeting settings reads back the defaults"
+    );
 
     settings_round_trip(store);
     recording_round_trips_every_field(store);
@@ -72,9 +66,8 @@ fn meeting_cleanup(store: &dyn JournalStore) {
     assert!(m.list_voiceprints().unwrap().is_empty());
 }
 
-/// A `MeetingSettings` built field by field rather than through `Default`
-/// -- see [`run_meeting_suite`]'s module note for why `Default` is not safe
-/// to call here yet.
+/// A `MeetingSettings` built field by field, so a round trip is not only
+/// ever checked against the defaults.
 fn blank_settings() -> MeetingSettings {
     MeetingSettings {
         enabled: false,
