@@ -151,6 +151,12 @@
     </button>
   </div>
 
+  {#if !notes.query.trim() && meetings.recordingsError}
+    <p class="error recordings-error">
+      Couldn’t refresh call recordings: {meetings.recordingsError}
+    </p>
+  {/if}
+
   {#if !notes.query.trim() && meetings.recordings.length > 0}
     <div class="recordings">
       {#each meetings.recordings as r (r.id)}

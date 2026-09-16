@@ -57,7 +57,7 @@ use jiff::Timestamp;
 use rubato::{Fft, FixedSync, Indexing, Resampler as _};
 use serde::Serialize;
 use serde_json::{Value, json};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Below this RMS (of a full-scale signal, 0..1) a track counts as silent:
 /// `CaptureStatus::system_silent_ms`, the mic-only fallback's own level
@@ -942,6 +942,31 @@ impl CaptureHandle {
         self.status.lock().unwrap().clone()
     }
 
+    /// Whether the capture thread behind this handle has already exited on
+    /// its own -- auto-stop past the event's end, a microphone that died
+    /// and could not be reopened, a sink error -- without anyone calling
+    /// [`stop`](Self::stop). `join` is only ever consumed by `stop` (or
+    /// `Drop`'s own send-and-join backstop), so a handle whose thread has
+    /// finished while `join` is still `Some` is one nobody has told yet: a
+    /// slot still holding it is not "recording" any more, just stale. See
+    /// `meeting.rs`'s `begin_headless`, which checks this before refusing a
+    /// start as "already in progress".
+    pub fn ended_on_its_own(&self) -> bool {
+        self.join.as_ref().is_some_and(|j| j.is_finished())
+    }
+
+    /// Join a capture thread that has already ended on its own -- see
+    /// [`ended_on_its_own`](Self::ended_on_its_own) -- without sending it a
+    /// stop signal it no longer needs. Unlike [`stop`](Self::stop) this
+    /// never blocks in practice, since the thread is already gone by the
+    /// time anything calls this; it exists only so the `JoinHandle` is
+    /// reaped rather than simply dropped.
+    pub fn reclaim(mut self) {
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+
     /// Stop capture and join its thread, running the sink's `finish` (or
     /// `discard`) to completion first. Blocking -- call this off the async
     /// runtime, the way `everyday_service::service::blocking` does for
@@ -951,6 +976,20 @@ impl CaptureHandle {
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
+    }
+}
+
+#[cfg(test)]
+impl CaptureHandle {
+    /// A handle wrapped around a thread that is not doing any real capture
+    /// -- for `meeting.rs`'s own tests, to put a slot in the state a
+    /// capture thread ending on its own (auto-stop, a dead microphone, a
+    /// sink error) leaves it in, without opening a real audio device. The
+    /// channel is real but talks to nobody: whatever is sent down it is
+    /// simply dropped.
+    pub fn test_from_thread(recording_id: RecordingId, join: std::thread::JoinHandle<()>) -> Self {
+        let (control, _rx) = std::sync::mpsc::sync_channel(1);
+        Self { control, status: Arc::new(Mutex::new(None)), join: Some(join), recording_id }
     }
 }
 
@@ -1231,6 +1270,14 @@ fn run(
     let mut system = TrackState::new(Track::System);
     let mut stopped_reason: Option<String> = None;
     let mut discard_on_stop = false;
+    // Set only by an explicit `ControlMsg::Stop` -- a press of "Stop
+    // recording", or `CaptureHandle`'s own `Drop` backstop, which sends the
+    // same message. Everything else this loop can break `'outer` for (a
+    // dead microphone that could not be reopened, an ingest or sink error,
+    // auto-stop past the event's end) leaves this `false`, which is what
+    // tells the cleanup below that nobody has been told capture is over yet
+    // -- see `clear_stale_slot`.
+    let mut explicit_stop = false;
     let mut last_status_emit = Instant::now() - STATUS_INTERVAL;
     let mut last_system_retry = Instant::now();
 
@@ -1294,6 +1341,7 @@ fn run(
             }
             Ok(Event::Control(ControlMsg::Stop { discard })) => {
                 discard_on_stop = discard;
+                explicit_stop = true;
                 break 'outer;
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -1435,6 +1483,55 @@ fn run(
 
     *status.lock().unwrap() = None;
     emit(&app, STATUS_EVENT, Option::<CaptureStatus>::None);
+
+    // Capture ending on its own -- auto-stop, a dead microphone, a sink
+    // error -- is not the same as somebody stopping it: nothing has told
+    // the slot holding this handle, or the tray, that there is nothing left
+    // to stop. An explicit stop already cleared both itself (`meeting.rs`'s
+    // `stop`), so only reach in here when this thread is the one that
+    // decided to end.
+    if !explicit_stop {
+        clear_stale_slot(&app, recording.id);
+    }
+}
+
+/// Undo what a capture thread ending on its own would otherwise leave
+/// stuck: the slot still holding this recording's [`CaptureHandle`] (so
+/// every later `meeting_start` is refused as "already in progress", and
+/// automatic recordings are silently skipped) and the tray still saying
+/// "Stop recording" for a capture that has already stopped.
+///
+/// Only reaches in when there is a window to reach into -- `app` is `None`
+/// for the window-free caller `start`'s own doc describes, and there is
+/// nothing here for it to clear; [`crate::meeting::begin_headless`]'s own
+/// backstop (a slot whose capture thread has already finished is treated as
+/// free) is what recovers that case instead, and is what a window-free test
+/// exercises. `recording_id` is compared before clearing even with a
+/// window: by the time this runs, the slot might already hold a *different*
+/// recording that started after this one ended, and this must never clobber
+/// that one.
+fn clear_stale_slot(app: &Option<AppHandle>, recording_id: RecordingId) {
+    let Some(app) = app else { return };
+    let stale = if let Some(state) = app.try_state::<crate::state::AppState>() {
+        let mut slot = state.capture().lock().unwrap();
+        let stale =
+            matches!(&*slot, Some(CaptureSlot::Recording(h)) if h.recording_id == recording_id);
+        if stale {
+            *slot = None;
+        }
+        stale
+    } else {
+        false
+    };
+    // Gated on the same check as the slot itself: if a newer recording is
+    // already under way by the time this runs, the tray is already telling
+    // the truth about *that* one, and resetting it here would wrongly say
+    // "not recording" out from under a capture that genuinely still is.
+    if stale {
+        if let Some(tray) = app.try_state::<crate::tray::Tray>() {
+            let _ = tray.set_recording(app, None);
+        }
+    }
 }
 
 #[cfg(test)]

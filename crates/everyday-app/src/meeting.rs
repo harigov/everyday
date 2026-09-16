@@ -217,6 +217,20 @@ async fn begin(
 /// path out of this function after that reservation -- success, a failed
 /// `begin_recording`, a failed `capture::start` -- clears or replaces it in
 /// [`finish_reservation`], so a refusal is never permanent.
+///
+/// # A slot can also go stale on its own
+///
+/// A recording does not only ever end because somebody presses "Stop": an
+/// auto-stop past the event's end, a microphone that dies and cannot be
+/// reopened, or a sink erroring out all end the capture thread from inside
+/// itself. Production clears the slot for that case too -- see
+/// `capture.rs`'s `clear_stale_slot`, run from the capture thread's own
+/// exit once `app` is `Some` -- but that push has nowhere to land for a
+/// window-free caller, and even with a window there is a gap between the
+/// thread exiting and that cleanup running. [`reclaim_if_ended`] below is
+/// the backstop that makes this check self-healing regardless: a slot
+/// found holding a [`CaptureHandle`] whose thread has already finished is
+/// reclaimed on the spot, exactly as if it had been empty all along.
 #[allow(clippy::too_many_arguments)]
 pub async fn begin_headless(
     session: SessionHandle,
@@ -230,6 +244,7 @@ pub async fn begin_headless(
 ) -> CommandResult<Recording> {
     {
         let mut slot = capture_slot.lock().unwrap();
+        reclaim_if_ended(&mut slot);
         if slot.is_some() {
             return Err(CommandError::new("already_running", "a recording is already in progress"));
         }
@@ -299,6 +314,21 @@ async fn try_begin(
                 .call(Ctx::local(), "discard_recording", json!({ "id": recording.id }))
                 .await;
             Err(e.into())
+        }
+    }
+}
+
+/// If `slot` holds a [`CaptureSlot::Recording`] whose capture thread has
+/// already ended on its own (see `capture.rs`'s
+/// `CaptureHandle::ended_on_its_own`), take it out and reap its thread --
+/// leaving `slot` empty, as if nothing had ever been recording. A slot that
+/// is `Starting`, empty already, or genuinely still recording is left
+/// untouched. See [`begin_headless`]'s own doc, "A slot can also go stale
+/// on its own", for why this check exists at all.
+fn reclaim_if_ended(slot: &mut Option<CaptureSlot>) {
+    if matches!(slot, Some(CaptureSlot::Recording(h)) if h.ended_on_its_own()) {
+        if let Some(CaptureSlot::Recording(handle)) = slot.take() {
+            handle.reclaim();
         }
     }
 }
@@ -533,5 +563,87 @@ mod tests {
         // failure (`finish_reservation`), so a third start is never
         // blocked by this race's own bookkeeping.
         assert!(capture.lock().unwrap().is_none());
+    }
+
+    // ---- a capture that ends on its own -----------------------------------
+
+    /// A finished thread wrapped as a `CaptureHandle`, standing in for a
+    /// capture that ended on its own -- auto-stop past the event's end, a
+    /// dead microphone, a sink error -- rather than through an explicit
+    /// `meeting_stop`. `capture::CaptureHandle::test_from_thread` is the
+    /// test hook this needs: building a real `CaptureHandle` any other way
+    /// means opening a real audio device, which a capture thread ending on
+    /// its own has nothing to do with.
+    fn ended_capture_handle(recording_id: RecordingId) -> CaptureHandle {
+        let join = std::thread::spawn(|| {});
+        // `spawn` only guarantees the thread will run eventually, not that
+        // it already has by the time this returns; wait for it to actually
+        // finish so `ended_on_its_own` is true the moment the slot is next
+        // locked, the way a real capture thread's exit already would be.
+        while !join.is_finished() {
+            std::thread::yield_now();
+        }
+        CaptureHandle::test_from_thread(recording_id, join)
+    }
+
+    /// The regression this finding is about: a recording that stopped
+    /// itself -- the capture thread already gone -- must not leave the slot
+    /// looking like a recording still in progress. Before `begin_headless`
+    /// checked `ended_on_its_own`, a slot in this state refused every later
+    /// start as "already in progress" forever, since nothing but a press of
+    /// "Stop" (which this recording never got, because it stopped itself)
+    /// ever cleared it.
+    #[tokio::test]
+    async fn a_slot_whose_capture_thread_already_ended_is_treated_as_free() {
+        let (session, _dir) = local_session();
+        let recording_id = RecordingId::new();
+        let capture: Mutex<Option<CaptureSlot>> =
+            Mutex::new(Some(CaptureSlot::Recording(ended_capture_handle(recording_id))));
+
+        let result = begin_headless(session, None, &capture, None, None, None, false, None).await;
+
+        // Refused, but for the vault's own reason (meeting notes turned
+        // off) -- proving `begin_headless` reclaimed the stale slot and
+        // genuinely went on to call `begin_recording`, rather than bouncing
+        // off a slot that still looked occupied.
+        let err = result.unwrap_err();
+        assert_ne!(
+            err.code, "already_running",
+            "a slot whose capture thread already finished must not block a fresh start; got \
+             {err:?}"
+        );
+    }
+
+    /// The other half of the same fix: once reclaimed, the slot is truly
+    /// empty rather than left holding the finished handle for a caller
+    /// that only checked `is_some()` to still trip over.
+    #[test]
+    fn reclaiming_a_stale_slot_leaves_it_empty() {
+        let mut slot = Some(CaptureSlot::Recording(ended_capture_handle(RecordingId::new())));
+        reclaim_if_ended(&mut slot);
+        assert!(slot.is_none());
+    }
+
+    /// A slot that is genuinely still recording -- its thread has not
+    /// finished -- must be left alone: `reclaim_if_ended` is a backstop for
+    /// staleness, not a way to interrupt a live capture.
+    #[test]
+    fn a_still_running_capture_is_not_reclaimed() {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let join = std::thread::spawn(move || {
+            // Blocks until the test drops `tx`, standing in for a capture
+            // thread that has not exited yet.
+            let _ = rx.recv();
+        });
+        let mut slot =
+            Some(CaptureSlot::Recording(CaptureHandle::test_from_thread(RecordingId::new(), join)));
+        reclaim_if_ended(&mut slot);
+        assert!(slot.is_some(), "a still-running capture must not be reclaimed");
+
+        // Let the parked thread finish so the test does not leak it.
+        drop(tx);
+        if let Some(CaptureSlot::Recording(handle)) = slot.take() {
+            handle.reclaim();
+        }
     }
 }
