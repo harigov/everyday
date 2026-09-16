@@ -21,7 +21,9 @@ use everyday_service::events::{EventSink, MeetingOffer};
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::capture::{self, CaptureHandle, CaptureStatus, RecordingHandle, RecordingSink};
+use crate::capture::{
+    self, CaptureHandle, CaptureSlot, CaptureStatus, RecordingHandle, RecordingSink,
+};
 use crate::remote::Session;
 use crate::state::{AppState, SessionHandle};
 use crate::tray::Tray;
@@ -100,18 +102,20 @@ fn starts_automatically(offer: &MeetingOffer) -> bool {
 /// the recording to a calendar event (auto-stop watches its end);
 /// `templateId` picks a note shape, defaulting the way
 /// `MeetingSettings::template` does. Refuses if a recording is already
-/// running -- one microphone, one call at a time.
+/// running, or starting -- one microphone, one call at a time.
+///
+/// The refusal itself happens inside [`begin_headless`], which reserves the
+/// slot with [`CaptureSlot::Starting`] *before* the `begin_recording` await
+/// -- see that function's own doc for why a check made here instead, with
+/// nothing reserved until the await returns, would let two starts pressed
+/// together both pass it.
 #[tauri::command]
 pub async fn meeting_start(
     app: AppHandle,
-    state: State<'_, AppState>,
     event_id: Option<EventId>,
     title: Option<String>,
     template_id: Option<TemplateId>,
 ) -> CommandResult<Recording> {
-    if state.capture().lock().unwrap().is_some() {
-        return Err(CommandError::new("already_running", "a recording is already in progress"));
-    }
     begin(app, event_id, title, template_id, false).await
 }
 
@@ -123,6 +127,11 @@ pub async fn meeting_start(
 /// way a routine's are: there is no dialog to put them in, and a call that
 /// could not be recorded automatically is still a call the person can
 /// record by hand from the notes app.
+///
+/// The `state_already_recording` peek below is only ever a cheap early
+/// exit -- skip spawning a task, and the `begin_recording` round trip it
+/// would make, when the slot is obviously taken already. It is not what
+/// keeps two starts from racing; [`begin_headless`]'s own reservation is.
 pub fn start_automatic(app: AppHandle, event_id: EventId) {
     tauri::async_runtime::spawn(async move {
         if state_already_recording(&app) {
@@ -176,17 +185,70 @@ async fn begin(
 /// recording through the identical path `meeting_start` and
 /// `start_automatic` do: both ultimately call this, `begin` for the
 /// former and, by way of `begin` itself, for the latter too.
+///
+/// # The slot is reserved before the first await, not after
+///
+/// The "already recording" refusal and the write that actually claims the
+/// slot used to be two different moments: `meeting_start` checked
+/// `capture_slot.lock().unwrap().is_some()` before calling this function at
+/// all, and nothing wrote to the slot until [`capture::start`] returned --
+/// on the far side of the `begin_recording` await below, a real network (or
+/// at least IPC) round trip. Two starts pressed together (a person
+/// double-clicking "Take notes", or a press racing an "Always" calendar's
+/// own automatic start) could both read the slot as empty before either had
+/// written to it, both go on to call `begin_recording` and open the
+/// microphone, and whichever finished last would overwrite the slot, silently
+/// dropping the first `CaptureHandle` -- and, before that handle grew a
+/// `Drop` impl of its own (see `capture.rs`), leaking its capture thread
+/// forever, still recording to a row nothing would ever call `finish` on.
+///
+/// The fix is to reserve the slot -- write [`CaptureSlot::Starting`] into
+/// it -- *before* the `begin_recording` await, atomically with the
+/// "already recording" check, both under the same lock acquisition below.
+/// A second start racing this one now sees `Starting` rather than an empty
+/// slot and is refused immediately, not after its own round trip. Every
+/// path out of this function after that reservation -- success, a failed
+/// `begin_recording`, a failed `capture::start` -- clears or replaces it in
+/// [`finish_reservation`], so a refusal is never permanent.
 #[allow(clippy::too_many_arguments)]
 pub async fn begin_headless(
     session: SessionHandle,
     events: Option<Arc<dyn EventSink>>,
-    capture_slot: &Mutex<Option<CaptureHandle>>,
+    capture_slot: &Mutex<Option<CaptureSlot>>,
     event_id: Option<EventId>,
     title: Option<String>,
     template_id: Option<TemplateId>,
     automatic: bool,
     app: Option<AppHandle>,
 ) -> CommandResult<Recording> {
+    {
+        let mut slot = capture_slot.lock().unwrap();
+        if slot.is_some() {
+            return Err(CommandError::new("already_running", "a recording is already in progress"));
+        }
+        *slot = Some(CaptureSlot::Starting);
+    }
+
+    let result = try_begin(session, events, event_id, title, template_id, automatic, app).await;
+    finish_reservation(capture_slot, result)
+}
+
+/// Everything [`begin_headless`] does *after* reserving the slot: the
+/// `begin_recording` call, then [`capture::start`]. Split out so the
+/// reservation and its release -- [`finish_reservation`] -- are the only
+/// things touching `capture_slot` directly, and every early return in here
+/// (a failed service call, a failed `capture::start`) is just an ordinary
+/// `?`/`Err` rather than something that also has to remember to clear a
+/// lock.
+async fn try_begin(
+    session: SessionHandle,
+    events: Option<Arc<dyn EventSink>>,
+    event_id: Option<EventId>,
+    title: Option<String>,
+    template_id: Option<TemplateId>,
+    automatic: bool,
+    app: Option<AppHandle>,
+) -> CommandResult<(Recording, CaptureHandle)> {
     let call_session = session.as_session();
 
     let value = call_session
@@ -217,10 +279,7 @@ pub async fn begin_headless(
     };
 
     match capture::start(handle, sink, events, app, auto_stop_quiet) {
-        Ok(capture_handle) => {
-            *capture_slot.lock().unwrap() = Some(capture_handle);
-            Ok(recording)
-        }
+        Ok(capture_handle) => Ok((recording, capture_handle)),
         Err(e) => {
             // The record exists on the service but the microphone never
             // opened -- a machine with no input device at all, the one
@@ -233,6 +292,26 @@ pub async fn begin_headless(
                 .call(Ctx::local(), "discard_recording", json!({ "id": recording.id }))
                 .await;
             Err(e.into())
+        }
+    }
+}
+
+/// Release [`begin_headless`]'s reservation: on success, replace
+/// `Starting` with the real [`CaptureSlot::Recording`]; on failure, clear
+/// the slot back to empty so the refusal a racing start saw was only ever
+/// "someone else is starting right now", never permanent.
+fn finish_reservation(
+    capture_slot: &Mutex<Option<CaptureSlot>>,
+    result: CommandResult<(Recording, CaptureHandle)>,
+) -> CommandResult<Recording> {
+    match result {
+        Ok((recording, capture_handle)) => {
+            *capture_slot.lock().unwrap() = Some(CaptureSlot::Recording(capture_handle));
+            Ok(recording)
+        }
+        Err(e) => {
+            *capture_slot.lock().unwrap() = None;
+            Err(e)
         }
     }
 }
@@ -276,7 +355,21 @@ pub fn stop_from_tray(app: AppHandle) {
 
 async fn stop(app: &AppHandle, discard: bool) -> CommandResult<()> {
     let state = app.state::<AppState>();
-    let handle = state.capture().lock().unwrap().take();
+    // A slot still `CaptureSlot::Starting` (a start's `begin_recording`
+    // round trip has not returned yet) has no `CaptureHandle` to stop --
+    // leave the reservation alone rather than clearing it, so the start
+    // still in flight lands normally instead of racing a fresh start in
+    // underneath it. This window is one IPC round trip long; a stop
+    // pressed inside it is rare enough that "the start finishes, then this
+    // stop is simply a no-op" costs nothing a person would notice.
+    let handle = {
+        let mut slot = state.capture().lock().unwrap();
+        if matches!(*slot, Some(CaptureSlot::Recording(_))) { slot.take() } else { None }
+    }
+    .and_then(|slot| match slot {
+        CaptureSlot::Recording(handle) => Some(handle),
+        CaptureSlot::Starting => None,
+    });
     let Some(handle) = handle else { return Ok(()) };
     if let Some(tray) = app.try_state::<Tray>() {
         let _ = tray.set_recording(app, None);
@@ -297,7 +390,13 @@ async fn stop(app: &AppHandle, discard: bool) -> CommandResult<()> {
 /// recorded right now.
 #[tauri::command]
 pub async fn meeting_status(state: State<'_, AppState>) -> CommandResult<Option<CaptureStatus>> {
-    Ok(state.capture().lock().unwrap().as_ref().and_then(|h| h.status()))
+    Ok(state
+        .capture()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(CaptureSlot::handle)
+        .and_then(|h| h.status()))
 }
 
 /// Record the microphone for `seconds` and turn it into a voiceprint.
@@ -357,5 +456,73 @@ mod tests {
     #[test]
     fn an_ask_offer_does_not_start_on_its_own() {
         assert!(!starts_automatically(&offer(false)));
+    }
+
+    // ---- the reservation race -------------------------------------------
+
+    /// A local service and vault, meeting notes left off -- the same
+    /// pattern `everyday-service`'s own `spool.rs` tests use, and for the
+    /// same reason (see that module's own `env` doc): `begin_recording`
+    /// against this vault refuses for a plain, predictable reason ("turned
+    /// off") without needing a real transcriber on disk. That refusal is
+    /// not what this test is about; it only needs `begin_recording` to be a
+    /// real service call worth racing two starts against.
+    fn local_session() -> (SessionHandle, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = everyday_vault::create(
+            dir.path(),
+            everyday_core::VaultConfig {
+                password: Some("correct horse battery staple".into()),
+                kdf: everyday_core::crypto::KdfParams::insecure_fast(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let service = Arc::new(everyday_service::Service::new());
+        service.set(vault);
+        (SessionHandle::Local(service), dir)
+    }
+
+    /// The regression this whole finding is about: two starts pressed
+    /// together must not both pass the "already recording" check. Before
+    /// `begin_headless` reserved its slot ahead of the `begin_recording`
+    /// await, both of these could observe an empty `capture_slot` and both
+    /// go on to call `begin_recording` -- see this function's own doc.
+    /// `tokio::join!` polls both futures on the same task, so each runs its
+    /// synchronous prefix (the reservation) before either can be pre-empted
+    /// by real parallelism; that is enough to prove the property, because
+    /// the guarantee comes from the `Mutex` never being released between
+    /// the check and the write, not from timing.
+    #[tokio::test]
+    async fn two_starts_pressed_together_only_let_one_through() {
+        let (session, _dir) = local_session();
+        let capture: Mutex<Option<CaptureSlot>> = Mutex::new(None);
+
+        let (a, b) = tokio::join!(
+            begin_headless(session.clone(), None, &capture, None, None, None, false, None),
+            begin_headless(session.clone(), None, &capture, None, None, None, false, None),
+        );
+
+        let codes: Vec<String> =
+            [&a, &b].into_iter().map(|r| r.as_ref().unwrap_err().code.clone()).collect();
+        assert_eq!(
+            codes.iter().filter(|c| c.as_str() == "already_running").count(),
+            1,
+            "exactly one of two simultaneous starts must be refused as already running; got {codes:?}"
+        );
+        // The one that was not refused for racing still refuses -- this
+        // vault has meeting notes turned off -- but for a different
+        // reason, proving it genuinely reached `begin_recording` rather
+        // than being refused twice for the same thing.
+        assert!(
+            codes.iter().any(|c| c.as_str() != "already_running"),
+            "the start that reserved the slot should fail for the vault's own reason, not \
+             the race guard; got {codes:?}"
+        );
+
+        // Nothing is left reserved: both branches clear the slot on
+        // failure (`finish_reservation`), so a third start is never
+        // blocked by this race's own bookkeeping.
+        assert!(capture.lock().unwrap().is_none());
     }
 }

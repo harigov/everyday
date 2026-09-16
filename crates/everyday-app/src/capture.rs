@@ -78,6 +78,14 @@ pub const AUTO_STOP_QUIET: Duration = Duration::from_secs(120);
 /// whether to keep going (`meeting-still-on`).
 pub const AUTO_STOP_ASK_AFTER: Duration = Duration::from_secs(30 * 60);
 
+/// How often [`run`] tries to reopen the system track once it has failed --
+/// on the first open, or after a `cpal::Error` mid-call. A device that was
+/// not there yet (a Bluetooth headset still pairing, PipeWire still
+/// starting up) or dropped out and comes back should not need the person to
+/// restart the recording to pick it up again; see [`CaptureStatus::system_unavailable`],
+/// which this clears on the retry that succeeds.
+const SYSTEM_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+
 /// Blocks in flight between a `cpal` callback and the capture thread. Small
 /// on purpose: a full channel means the worker is behind, and dropping the
 /// odd block is a click, not a gap you'd notice in a transcript. `try_send`
@@ -107,7 +115,10 @@ pub struct CaptureStatus {
     pub system_level: f32,
     /// The call track has been flat this long while the mic was live.
     pub system_silent_ms: u64,
-    /// System audio could not be opened on this machine; mic only.
+    /// System audio could not be opened on this machine; mic only. Retried
+    /// every [`SYSTEM_RETRY_INTERVAL`] in the background -- see [`run`] --
+    /// so this clears itself, without a restart, the moment a retry
+    /// succeeds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_unavailable: Option<String>,
     /// When auto-stop will act, if armed.
@@ -692,31 +703,54 @@ enum ControlMsg {
 }
 
 /// Interleaved samples of any `cpal`-supported format, down to mono `f32`
-/// in `-1.0..=1.0`.
-fn downmix<T>(data: &[T], channels: cpal::ChannelCount) -> Vec<f32>
+/// in `-1.0..=1.0`, written into `out` (cleared first, so its capacity is
+/// kept rather than freed) instead of being returned as a fresh `Vec` --
+/// see [`build_stream`]'s own doc on why the realtime callback must not
+/// allocate one every block.
+fn downmix_into<T>(data: &[T], channels: cpal::ChannelCount, out: &mut Vec<f32>)
 where
     T: Sample,
     f32: FromSample<T>,
 {
     let channels = channels.max(1) as usize;
-    data.chunks(channels)
-        .map(|frame| {
-            let sum: f32 = frame.iter().map(|s| f32::from_sample(*s)).sum();
-            sum / frame.len() as f32
-        })
-        .collect()
+    out.clear();
+    out.extend(data.chunks(channels).map(|frame| {
+        let sum: f32 = frame.iter().map(|s| f32::from_sample(*s)).sum();
+        sum / frame.len() as f32
+    }));
 }
+
+/// How many spare buffers [`build_stream`]'s pool starts with -- and the
+/// most it will ever hold, since [`RAW_CHANNEL_CAPACITY`] is also the most
+/// blocks that can be in flight (held by the audio channel, or briefly by
+/// the capture thread before it is returned) at once.
+const BUFFER_POOL_CAPACITY: usize = RAW_CHANNEL_CAPACITY;
 
 /// Build and start an input stream on `device`, downmixing every callback
 /// to mono and pushing it through `tx`. Shared by the microphone (an
 /// ordinary input device) and the system track (an output device opened as
 /// input -- the loopback trick this module's doc explains).
+///
+/// The realtime callback must not allocate (this module's own doc, "the
+/// loopback trick" section notwithstanding -- see "Threads" instead), but
+/// downmixing a block still needs somewhere to write its samples, and that
+/// `Vec` has to move out of the callback whole -- ownership, not a
+/// copy -- to reach the capture thread through `tx` without a second
+/// allocation there. The two together mean a fresh buffer is needed every
+/// callback unless *something* hands old ones back. That something is the
+/// `SyncSender<Vec<f32>>` this returns alongside the stream: the capture
+/// thread (`run`, or `record_mic_only`'s own loop) sends a buffer back
+/// through it once done reading from it, the callback's own `Receiver`
+/// half draws from that pool first and only allocates -- `unwrap_or_default`
+/// -- on the rare block where the pool is empty (cold start, or a run of
+/// blocks the capture thread has not caught up on yet). Steady state, once
+/// the pool has warmed up, costs no allocation at all.
 fn build_stream(
     device: &cpal::Device,
     config: &SupportedStreamConfig,
     track: Track,
     tx: SyncSender<Event>,
-) -> Result<cpal::Stream, CaptureError> {
+) -> Result<(cpal::Stream, SyncSender<Vec<f32>>), CaptureError> {
     let channels = config.channels();
     let source_rate = config.sample_rate();
     let tx_err = tx.clone();
@@ -724,13 +758,17 @@ fn build_stream(
         let _ = tx_err.try_send(Event::Error { track, kind: e.kind(), message: e.to_string() });
     };
 
+    let (free_tx, free_rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(BUFFER_POOL_CAPACITY);
+
     macro_rules! build {
         ($t:ty) => {{
             let tx = tx.clone();
+            let free_rx = free_rx;
             device.build_input_stream(
                 config.clone().into(),
                 move |data: &[$t], _: &cpal::InputCallbackInfo| {
-                    let samples = downmix::<$t>(data, channels);
+                    let mut samples = free_rx.try_recv().unwrap_or_default();
+                    downmix_into::<$t>(data, channels, &mut samples);
                     // Never blocks the realtime callback: a full channel
                     // means the capture thread is behind, and dropping this
                     // block is a missed fraction of a second, not a stall.
@@ -756,10 +794,13 @@ fn build_stream(
     .map_err(|e| CaptureError(format!("could not open stream: {e}")))?;
 
     stream.play().map_err(|e| CaptureError(format!("could not start stream: {e}")))?;
-    Ok(stream)
+    Ok((stream, free_tx))
 }
 
-fn open_mic(host: &cpal::Host, tx: SyncSender<Event>) -> Result<cpal::Stream, CaptureError> {
+fn open_mic(
+    host: &cpal::Host,
+    tx: SyncSender<Event>,
+) -> Result<(cpal::Stream, SyncSender<Vec<f32>>), CaptureError> {
     let device =
         host.default_input_device().ok_or_else(|| CaptureError("no microphone found".into()))?;
     let config = device
@@ -782,7 +823,11 @@ pub fn record_mic_only(seconds: u32) -> Result<Vec<i16>, CaptureError> {
         return Err(CaptureError("no microphone found".into()));
     }
     let (tx, rx) = std::sync::mpsc::sync_channel::<Event>(RAW_CHANNEL_CAPACITY);
-    let stream = open_mic(&host, tx)?;
+    // A one-shot clip has no long steady state for the buffer pool to pay
+    // off in, so its returned buffers are simply left unreturned -- see
+    // `build_stream`'s own doc on the pool; running dry just means it falls
+    // back to allocating, exactly as it did before the pool existed.
+    let (stream, _returns) = open_mic(&host, tx)?;
 
     let mut resampler: Option<TrackResampler> = None;
     let mut out: Vec<i16> = Vec::new();
@@ -837,7 +882,10 @@ fn system_unavailable_reason(detail: &str) -> String {
 /// `cpal`'s WASAPI and Core Audio backends detect that this is an
 /// output-direction device and enable their own loopback mode; PipeWire's
 /// host exposes the device as duplex to begin with.
-fn open_system(host: &cpal::Host, tx: SyncSender<Event>) -> Result<cpal::Stream, CaptureError> {
+fn open_system(
+    host: &cpal::Host,
+    tx: SyncSender<Event>,
+) -> Result<(cpal::Stream, SyncSender<Vec<f32>>), CaptureError> {
     let device = host
         .default_output_device()
         .ok_or_else(|| CaptureError(system_unavailable_reason("no default output device")))?;
@@ -902,6 +950,73 @@ impl CaptureHandle {
         let _ = self.control.send(Event::Control(ControlMsg::Stop { discard }));
         if let Some(join) = self.join.take() {
             let _ = join.join();
+        }
+    }
+}
+
+impl Drop for CaptureHandle {
+    /// A backstop for a `CaptureHandle` dropped without an explicit
+    /// [`CaptureHandle::stop`] -- today, only reachable if a bug lets two
+    /// starts race past `meeting.rs`'s "already recording" check and the
+    /// second's `begin` overwrites the slot holding the first (the reason
+    /// that check now reserves its slot *before* the await that begins a
+    /// recording, rather than after -- see `meeting.rs`'s `begin_headless`).
+    /// This exists behind that fix, not instead of it: belt and braces, so
+    /// a capture thread is never simply orphaned, still holding the
+    /// microphone and recording to a row nothing will ever call `finish` on,
+    /// no matter how a `CaptureHandle` comes to be dropped.
+    ///
+    /// Sends the same stop signal `stop()` does, but does not block this
+    /// thread to join it -- whoever is dropping this handle (an `Option`
+    /// being overwritten, mid some other lock) is not expecting to wait for
+    /// a capture thread it never asked to stop, and blocking a lock holder
+    /// on an audio-thread join is its own way to wedge the app. The join
+    /// handle is instead joined on a short-lived helper thread, purely so
+    /// the OS thread does not leak; nothing waits on that helper either.
+    /// Safe to run even after an ordinary `stop()` already did this same
+    /// send-and-join: the channel's receiver is long gone by then, so the
+    /// second send is a harmless, immediate `Err`, and `join` is already
+    /// `None`.
+    fn drop(&mut self) {
+        let _ = self.control.send(Event::Control(ControlMsg::Stop { discard: false }));
+        if let Some(join) = self.join.take() {
+            let _ = std::thread::Builder::new().name("meeting-capture-drop-join".into()).spawn(
+                move || {
+                    let _ = join.join();
+                },
+            );
+        }
+    }
+}
+
+/// What the shell holds for the life of a recording -- `AppState::capture`
+/// in `everyday-app`'s own state, or the equivalent in a window-free
+/// harness (`meeting_e2e.rs`'s `Harness`). Not just `Option<CaptureHandle>`
+/// any more: `Starting` is a placeholder reserved *before* the network
+/// round trip `begin_recording` makes, so two starts racing each other
+/// cannot both observe an empty slot, both proceed, and have the second
+/// overwrite the first's `CaptureHandle` out from under it -- see
+/// `meeting.rs`'s `begin_headless`, the only place this is constructed or
+/// cleared.
+pub enum CaptureSlot {
+    /// Reserved: a `begin_recording` call (or the `capture::start` that
+    /// follows it) is in flight, but no `CaptureHandle` exists yet. Nothing
+    /// to stop and no status to report while a slot is in this state.
+    Starting,
+    /// Capture is under way (or just stopped, mid-`stop()`, on its way out
+    /// of the slot).
+    Recording(CaptureHandle),
+}
+
+impl CaptureSlot {
+    /// The handle, if capture has actually started -- `None` for
+    /// `Starting` as well as for an empty slot, so `meeting_status` and the
+    /// "already recording" checks can treat "reserved" and "running" alike
+    /// without matching on the variant themselves.
+    pub fn handle(&self) -> Option<&CaptureHandle> {
+        match self {
+            CaptureSlot::Recording(handle) => Some(handle),
+            CaptureSlot::Starting => None,
         }
     }
 }
@@ -1026,6 +1141,45 @@ fn emit<T: serde::Serialize + Clone>(app: &Option<AppHandle>, name: &str, payloa
     }
 }
 
+/// How many times [`run`]'s stop path retries `sink.finish()` before
+/// leaving the recording for the service's own stale-recording recovery to
+/// pick up -- see the comment where this is called.
+const FINISH_RETRIES: u32 = 4;
+
+/// Retry `sink.finish()` a few times with growing backoff before giving up.
+/// Mirrors `RecordingSink::send_with_retry`'s own shape (and, for a
+/// `RecordingSink`, sits on top of it: `finish` calls `drain_pending`,
+/// which already retries each chunk) but one level up, for the "finish"
+/// call itself -- a vault that is briefly unreachable (a remote session's
+/// connection stuttering right as the person hangs up) should not cost the
+/// whole recording when every chunk might land fine a few seconds later.
+///
+/// Blocking is fine here: this runs on the capture thread, at the very end
+/// of its life, after every chunk has already been sent or given up on.
+fn finish_with_retry(sink: &mut dyn ChunkSink) -> Result<(), CaptureError> {
+    finish_with_retry_from(sink, Duration::from_millis(500))
+}
+
+/// [`finish_with_retry`], with the starting backoff broken out so a test
+/// can shrink it without a real recording ever needing to.
+fn finish_with_retry_from(
+    sink: &mut dyn ChunkSink,
+    mut delay: Duration,
+) -> Result<(), CaptureError> {
+    let mut last_err = None;
+    for attempt in 0..FINISH_RETRIES {
+        if attempt > 0 {
+            std::thread::sleep(delay);
+            delay = (delay * 3).min(Duration::from_secs(10));
+        }
+        match sink.finish() {
+            Ok(()) => return Ok(()),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.expect("looped at least once"))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run(
     recording: RecordingHandle,
@@ -1049,8 +1203,8 @@ fn run(
     let host = cpal::default_host();
     tracing::info!(host = %host.id().name(), "meeting capture: starting");
 
-    let mic_stream = match open_mic(&host, tx.clone()) {
-        Ok(s) => Some(s),
+    let (mic_stream, mic_returns) = match open_mic(&host, tx.clone()) {
+        Ok((s, returns)) => (Some(s), Some(returns)),
         Err(e) => {
             tracing::warn!(error = %e, "meeting capture: could not open the microphone");
             let _ = sink.discard();
@@ -1060,31 +1214,43 @@ fn run(
     };
 
     let mut system_unavailable = None;
-    let system_stream = match open_system(&host, tx.clone()) {
-        Ok(s) => Some(s),
+    let (system_stream, system_returns) = match open_system(&host, tx.clone()) {
+        Ok((s, returns)) => (Some(s), Some(returns)),
         Err(e) => {
             tracing::info!(error = %e, "meeting capture: system audio unavailable, mic only");
             system_unavailable = Some(e.0);
-            None
+            (None, None)
         }
     };
     let mut mic_stream = mic_stream;
     let mut system_stream = system_stream;
+    let mut mic_returns = mic_returns;
+    let mut system_returns = system_returns;
 
     let mut mic = TrackState::new(Track::Mic);
     let mut system = TrackState::new(Track::System);
     let mut stopped_reason: Option<String> = None;
     let mut discard_on_stop = false;
     let mut last_status_emit = Instant::now() - STATUS_INTERVAL;
+    let mut last_system_retry = Instant::now();
 
     'outer: loop {
         match rx.recv_timeout(STATUS_INTERVAL) {
             Ok(Event::Audio { track, samples, source_rate }) => {
-                let state = match track {
-                    Track::Mic => &mut mic,
-                    Track::System => &mut system,
+                let (state, returns) = match track {
+                    Track::Mic => (&mut mic, &mic_returns),
+                    Track::System => (&mut system, &system_returns),
                 };
-                if let Err(e) = state.ingest(&samples, source_rate, elapsed_ms(), sink.as_mut()) {
+                let result = state.ingest(&samples, source_rate, elapsed_ms(), sink.as_mut());
+                // Hand the buffer back to `build_stream`'s pool now that
+                // this thread is done reading it -- see that function's own
+                // doc. Best-effort: a full pool (the callback outrunning
+                // this thread) just means the buffer is dropped instead of
+                // reused, not lost audio.
+                if let Some(returns) = returns {
+                    let _ = returns.try_send(samples);
+                }
+                if let Err(e) = result {
                     stopped_reason = Some(e.0);
                     break 'outer;
                 }
@@ -1095,8 +1261,17 @@ fn run(
                     match track {
                         Track::Mic => {
                             mic_stream = None;
+                            // Not reset to `None` here the way `system_returns`
+                            // is below: this arm either replaces it with a
+                            // fresh pool on success or breaks `'outer`
+                            // immediately on failure (a dead microphone ends
+                            // the recording), so there is no window where a
+                            // stale sender could be read.
                             match open_mic(&host, tx.clone()) {
-                                Ok(s) => mic_stream = Some(s),
+                                Ok((s, returns)) => {
+                                    mic_stream = Some(s);
+                                    mic_returns = Some(returns);
+                                }
                                 Err(e) => {
                                     stopped_reason = Some(e.0);
                                     break 'outer;
@@ -1105,8 +1280,12 @@ fn run(
                         }
                         Track::System => {
                             system_stream = None;
+                            system_returns = None;
                             match open_system(&host, tx.clone()) {
-                                Ok(s) => system_stream = Some(s),
+                                Ok((s, returns)) => {
+                                    system_stream = Some(s);
+                                    system_returns = Some(returns);
+                                }
                                 Err(e) => system_unavailable = Some(e.0),
                             }
                         }
@@ -1124,6 +1303,24 @@ fn run(
                 // (and `meeting-status`) alive regardless.
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break 'outer,
+        }
+
+        // The system track failed to open at all (no `Event::Error` will
+        // ever arrive for a stream that never existed) or dropped out and
+        // could not be reopened above -- either way, retry it slowly in the
+        // background rather than leaving the call mic-only until it is
+        // restarted by hand. See `SYSTEM_RETRY_INTERVAL`'s own doc.
+        if system_stream.is_none() && last_system_retry.elapsed() >= SYSTEM_RETRY_INTERVAL {
+            last_system_retry = Instant::now();
+            match open_system(&host, tx.clone()) {
+                Ok((s, returns)) => {
+                    tracing::info!("meeting capture: system audio became available; reopened");
+                    system_stream = Some(s);
+                    system_returns = Some(returns);
+                    system_unavailable = None;
+                }
+                Err(e) => system_unavailable = Some(e.0),
+            }
         }
 
         if last_status_emit.elapsed() >= STATUS_INTERVAL {
@@ -1189,20 +1386,48 @@ fn run(
             sink.discard()
         } else {
             match flushed {
-                Ok(()) => sink.finish(),
+                Ok(()) => finish_with_retry(sink.as_mut()),
                 Err(e) => {
                     tracing::warn!(error = %e, "meeting capture: could not flush the last chunk");
                     sink.discard()
                 }
             }
         };
+        // `discard_on_stop`'s own `sink.discard()` above is never retried
+        // past whatever `RecordingSink` itself already does (a person who
+        // asked to throw a recording away should not be kept waiting on a
+        // vault that has gone quiet); only the ordinary "finish" path below
+        // gets the extra backoff, because unlike a discard it has real
+        // audio worth waiting for.
         if let Err(e) = outcome {
-            tracing::warn!(error = %e, "meeting capture: could not finish the recording");
+            // `finish_with_retry` exhausted its attempts (or the flush
+            // itself failed, in which case `sink.discard()` ran instead and
+            // this is *its* error). Either way, nothing here deletes the
+            // spool: every chunk `RecordingSink::append` already sent has
+            // landed on the vault regardless of what `finish` does next,
+            // and the sink is simply dropped, not asked to discard. The
+            // service is left holding a row still in `Stage::Recording`
+            // with no live capture behind it -- exactly what
+            // `everyday_service::meeting::spool`'s own recovery already
+            // exists to notice: once `RECOVERY_STALE` (two minutes) passes
+            // with no further chunk appended, `begin`'s own reclaiming pass
+            // (or the periodic sweep at the next unlock) moves it on to
+            // `Stage::Transcribing` from wherever its last chunk left off,
+            // so a fresh recording is never blocked on this for more than
+            // that. The notification below says as much, so the person
+            // sees the audio as saved rather than lost.
+            tracing::warn!(
+                error = %e,
+                "meeting capture: could not finish the recording after retrying; it will be \
+                 recovered automatically"
+            );
             if let Some(events) = &events {
                 events.notify(
-                    everyday_service::events::Notification::warning("Recording could not be saved")
-                        .body(e.to_string())
-                        .for_user(),
+                    everyday_service::events::Notification::warning(
+                        "Recording saved but not finished",
+                    )
+                    .body("It will be finished automatically once the vault is reachable again.")
+                    .for_user(),
                 );
             }
         }
@@ -1320,9 +1545,26 @@ mod tests {
     fn downmixes_stereo_to_mono() {
         // Left full-scale, right silent: mono should land at half.
         let interleaved: Vec<f32> = (0..200).flat_map(|_| [1.0f32, 0.0f32]).collect();
-        let mono = downmix::<f32>(&interleaved, 2);
+        let mut mono = Vec::new();
+        downmix_into::<f32>(&interleaved, 2, &mut mono);
         assert_eq!(mono.len(), 200);
         assert!((mono[0] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn downmix_into_reuses_the_buffer_it_is_given_rather_than_growing_it_unboundedly() {
+        // The whole point of `downmix_into` over the old `downmix` is that
+        // a buffer handed back for reuse keeps its capacity -- `clear`, not
+        // a fresh `Vec` -- so a steady stream of same-sized blocks settles
+        // into zero further allocation. Prove that directly: capacity after
+        // a second, same-sized call must not have grown past the first.
+        let interleaved: Vec<f32> = (0..200).flat_map(|_| [1.0f32, 0.0f32]).collect();
+        let mut buf = Vec::new();
+        downmix_into::<f32>(&interleaved, 2, &mut buf);
+        let capacity_after_first = buf.capacity();
+        downmix_into::<f32>(&interleaved, 2, &mut buf);
+        assert_eq!(buf.capacity(), capacity_after_first, "same-sized block must not reallocate");
+        assert_eq!(buf.len(), 200);
     }
 
     // ---- level meter / silence -------------------------------------------
@@ -1474,6 +1716,62 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // ---- finish_with_retry --------------------------------------------------
+
+    /// A sink whose `finish` fails `fail_times` times before succeeding --
+    /// standing in for `RecordingSink::finish` when the vault (or the final
+    /// `finish_recording` round trip specifically) is briefly unreachable.
+    struct FlakyFinishSink {
+        fail_times: u32,
+        attempts: u32,
+    }
+
+    impl ChunkSink for FlakyFinishSink {
+        fn begin(&mut self) -> Result<(), CaptureError> {
+            Ok(())
+        }
+        fn append(
+            &mut self,
+            _track: Track,
+            _seq: u32,
+            _start_ms: u64,
+            _samples: Vec<i16>,
+        ) -> Result<(), CaptureError> {
+            Ok(())
+        }
+        fn finish(&mut self) -> Result<(), CaptureError> {
+            self.attempts += 1;
+            if self.attempts <= self.fail_times {
+                Err(CaptureError("vault unreachable".into()))
+            } else {
+                Ok(())
+            }
+        }
+        fn discard(&mut self) -> Result<(), CaptureError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn finish_with_retry_succeeds_once_the_transient_failure_clears() {
+        let mut sink = FlakyFinishSink { fail_times: 2, attempts: 0 };
+        finish_with_retry_from(&mut sink, Duration::from_millis(1)).unwrap();
+        assert_eq!(sink.attempts, 3, "two failures, then the try that finally lands");
+    }
+
+    #[test]
+    fn finish_with_retry_gives_up_after_its_own_cap_without_discarding() {
+        // A sink that never recovers: `finish_with_retry` must stop after
+        // `FINISH_RETRIES` attempts (not loop forever) and hand the error
+        // back rather than silently swallowing it -- `run`'s caller is what
+        // decides not to discard on this error, but this proves the retry
+        // loop itself is bounded.
+        let mut sink = FlakyFinishSink { fail_times: u32::MAX, attempts: 0 };
+        let err = finish_with_retry_from(&mut sink, Duration::from_millis(1)).unwrap_err();
+        assert_eq!(sink.attempts, FINISH_RETRIES);
+        assert!(err.0.contains("vault unreachable"));
+    }
+
     // ---- RecordingSink retry/backlog ---------------------------------------
 
     #[test]
@@ -1571,7 +1869,7 @@ mod tests {
 
         let host = cpal::default_host();
         let (tx, rx) = std::sync::mpsc::sync_channel(RAW_CHANNEL_CAPACITY);
-        let stream =
+        let (stream, _returns) =
             open_system(&host, tx).expect("the system track should open on a real desktop");
 
         let mut player = std::process::Command::new("pw-play")

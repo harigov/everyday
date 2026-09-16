@@ -30,10 +30,12 @@
   let recordSheet = $state(false)
   let recordTitle = $state('')
   let recordError = $state<string | null>(null)
-  let recording = $state(false)
 
+  // `meetings.starting` (not a local flag) gates the Start button below --
+  // see that field's own doc: this keeps a press here from racing a press
+  // of "Take notes" on `EventDetail`'s panel or `MeetingOfferBanner`'s
+  // offer, all three of which call the same `startCapture`.
   async function startRecordCall() {
-    recording = true
     recordError = null
     try {
       await meetings.startCapture({ title: recordTitle.trim() || null })
@@ -41,8 +43,6 @@
       recordTitle = ''
     } catch (e) {
       recordError = e instanceof Error ? e.message : String(e)
-    } finally {
-      recording = false
     }
   }
 
@@ -235,8 +235,8 @@
         aria-label="Title"
         spellcheck="false"
       />
-      <button class="btn btn-primary" type="submit" disabled={recording}>
-        {recording ? 'Starting…' : 'Start'}
+      <button class="btn btn-primary" type="submit" disabled={meetings.starting}>
+        {meetings.starting ? 'Starting…' : 'Start'}
       </button>
     </form>
     {#if recordError}<p class="error">{recordError}</p>{/if}

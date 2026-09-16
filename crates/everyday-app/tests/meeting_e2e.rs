@@ -80,7 +80,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use everyday_app_lib::SessionHandle;
-use everyday_app_lib::capture::{self, CaptureHandle, RecordingHandle, RecordingSink};
+use everyday_app_lib::capture::{self, CaptureHandle, CaptureSlot, RecordingHandle, RecordingSink};
 use everyday_app_lib::meeting::begin_headless;
 
 use everyday_core::agent::{AgentSettings, LLMModelConfig, LLMProviderConfig, Provider};
@@ -588,7 +588,7 @@ async fn meeting_settings_local_parakeet() -> MeetingSettings {
 struct Harness {
     service: Arc<Service>,
     vault: Arc<Vault>,
-    capture: Mutex<Option<CaptureHandle>>,
+    capture: Mutex<Option<CaptureSlot>>,
 }
 
 impl Harness {
@@ -635,7 +635,10 @@ async fn begin(harness: &Harness, event_id: Option<EventId>, automatic: bool) ->
 }
 
 fn take_capture(harness: &Harness) -> CaptureHandle {
-    harness.capture.lock().unwrap().take().expect("capture should have started")
+    match harness.capture.lock().unwrap().take().expect("capture should have started") {
+        CaptureSlot::Recording(handle) => handle,
+        CaptureSlot::Starting => panic!("capture was still `Starting`, never finished starting"),
+    }
 }
 
 async fn wait_for_terminal_stage(vault: &Vault, id: RecordingId, timeout: Duration) -> Recording {

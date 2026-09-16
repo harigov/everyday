@@ -14,7 +14,9 @@
   import { plural } from '../lib/format'
   import { formatOffset, speakerColor, speakerNameStyle } from '../lib/meetings-format'
   import { meetings } from '../lib/meetings.svelte'
+  import { notes } from '../lib/notes.svelte'
   import type { EventRef, NoteId, RecordingId, Segment, Speaker, Transcript } from '../lib/types'
+  import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
 
   let {
@@ -41,6 +43,10 @@
   let rewriteTemplateId = $state<string | null>(null)
   let rewriteError = $state<string | null>(null)
   let rewritePreview = $state<string | null>(null)
+  /** The body's shape when Preview was last requested -- see `applyRewrite`. */
+  let previewBodySnapshot = $state<string | null>(null)
+  /** Showing because Replace would clobber edits made since that snapshot. */
+  let confirmReplaceLossy = $state(false)
 
   $effect(() => {
     void load(noteId)
@@ -48,11 +54,36 @@
 
   async function load(id: NoteId) {
     loading = true
+    // Every bit of state below belongs to whichever note was open when it
+    // was set -- a rewrite preview drafted against note A, a speaker still
+    // mid-naming, a search still typed into the box. None of it means
+    // anything once `noteId` points somewhere else, and left alone it used
+    // to survive the switch: "Replace body" from a preview written for the
+    // call just closed could land in the diary entry opened after it. See
+    // this panel's own review notes on why every one of these needs a line
+    // here, not just `transcript`/`event`.
     transcript = null
     event = undefined
+    query = ''
+    copiedAt = null
+    namingKey = null
+    nameDraft = ''
+    offerRewrite = false
+    rewriting = false
+    rewriteTemplateId = null
+    rewriteError = null
+    rewritePreview = null
+    previewBodySnapshot = null
+    confirmReplaceLossy = false
     try {
-      transcript = await api.getTranscript(id)
+      const t = await api.getTranscript(id)
+      // The note changed again while this was in flight -- a result for the
+      // note this panel no longer shows. Applying it now would be exactly
+      // the stale-response bug this whole reset exists to close.
+      if (id !== noteId) return
+      transcript = t
     } catch {
+      if (id !== noteId) return
       transcript = null
     }
     loading = false
@@ -60,8 +91,10 @@
     if (recordingId) {
       try {
         const r = await api.getRecording(recordingId)
+        if (id !== noteId) return
         event = r.event ?? null
       } catch {
+        if (id !== noteId) return
         event = null
       }
     }
@@ -104,9 +137,14 @@
   async function confirmName(name: string) {
     if (namingKey === null || !transcript || !name.trim()) return
     const key = namingKey
+    const requestedFor = noteId
     namingKey = null
     try {
-      transcript = await api.nameSpeaker({ noteId, speakerKey: key, name: name.trim() })
+      const t = await api.nameSpeaker({ noteId, speakerKey: key, name: name.trim() })
+      // The note changed while this was in flight -- a rename for a
+      // transcript this panel no longer shows.
+      if (requestedFor !== noteId) return
+      transcript = t
       offerRewrite = true
     } catch (e) {
       // The chip did the asking; a failed rename is quiet enough to retry.
@@ -121,26 +159,65 @@
     offerRewrite = false
     rewriteError = null
     rewritePreview = null
+    previewBodySnapshot = null
     rewriteTemplateId = rewriteTemplateId ?? templates[0]?.id ?? null
+  }
+
+  /** The note's body right now, as a plain value cheap to compare later --
+   *  see `applyRewrite`. `notes.syncBody()` first, because `notes.open.body`
+   *  otherwise lags the editor until the next save (see `DocBinding`'s own
+   *  doc); comparing a stale copy would never see an edit that happened to
+   *  land inside the same tick as a save already had. */
+  function bodySnapshot(): string {
+    notes.syncBody()
+    return JSON.stringify(notes.open?.body ?? null)
   }
 
   async function runRewrite() {
     if (!rewriteTemplateId) return
+    const requestedFor = noteId
+    const templateId = rewriteTemplateId
+    previewBodySnapshot = bodySnapshot()
     rewriting = true
     rewriteError = null
     try {
-      rewritePreview = await api.rewriteMeetingNote(noteId, rewriteTemplateId)
+      const preview = await api.rewriteMeetingNote(requestedFor, templateId)
+      // The note changed while this was in flight -- a preview written
+      // against a body this panel no longer shows. `NotesView`'s
+      // `replaceBodyFromMarkdown` would apply it to whatever is open *now*,
+      // which is exactly the cross-note mixup this guard exists to stop.
+      if (requestedFor !== noteId) return
+      rewritePreview = preview
     } catch (e) {
+      if (requestedFor !== noteId) return
       rewriteError = e instanceof Error ? e.message : String(e)
     } finally {
-      rewriting = false
+      if (requestedFor === noteId) rewriting = false
     }
   }
 
+  /**
+   * "Replace body": if the note has not been touched since Preview was
+   * requested, apply it straight away, exactly as before. If it has --
+   * typing continued, a tag or the title changed the body some other way --
+   * ask first, the same `ConfirmDialog` pattern `NotesView`'s own delete
+   * uses, because replacing now would silently throw those edits away.
+   */
   function applyRewrite() {
+    if (!rewritePreview) return
+    if (previewBodySnapshot !== null && bodySnapshot() !== previewBodySnapshot) {
+      confirmReplaceLossy = true
+      return
+    }
+    commitRewrite()
+  }
+
+  function commitRewrite() {
     if (rewritePreview) onreplacebody(rewritePreview)
     rewritePreview = null
     rewriteTemplateId = null
+    previewBodySnapshot = null
+    confirmReplaceLossy = false
   }
 </script>
 
@@ -232,7 +309,15 @@
               <p class="hint">This will replace the note's body:</p>
               <pre class="preview">{rewritePreview}</pre>
               <div class="row">
-                <button class="btn" onclick={() => (rewritePreview = null)}>Cancel</button>
+                <button
+                  class="btn"
+                  onclick={() => {
+                    rewritePreview = null
+                    previewBodySnapshot = null
+                  }}
+                >
+                  Cancel
+                </button>
                 <button class="btn btn-primary" onclick={applyRewrite}>Replace body</button>
               </div>
             {/if}
@@ -263,6 +348,16 @@
       </div>
     {/if}
   </section>
+{/if}
+
+{#if confirmReplaceLossy}
+  <ConfirmDialog
+    title="Replace the body?"
+    detail="The note has been edited since this preview was written. Replacing the body now will lose those edits."
+    confirmLabel="Replace anyway"
+    onconfirm={commitRewrite}
+    oncancel={() => (confirmReplaceLossy = false)}
+  />
 {/if}
 
 <style>

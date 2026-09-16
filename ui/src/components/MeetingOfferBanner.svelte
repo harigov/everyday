@@ -15,9 +15,27 @@
   import { meetings } from '../lib/meetings.svelte'
 
   const offer = $derived(meetings.offers[0] ?? null)
+  let takeError = $state<string | null>(null)
+
+  // Reset the error once a different offer is showing -- a call refused for
+  // this event should not still be on screen once the offer it belonged to
+  // is gone (accepted, dismissed, or replaced by a newer one).
+  $effect(() => {
+    void offer
+    takeError = null
+  })
 
   async function take() {
-    if (offer) await meetings.acceptOffer(offer)
+    if (!offer) return
+    takeError = null
+    try {
+      // Dropped from `meetings.offers` only once this actually succeeds --
+      // see `acceptOffer`'s own doc. A failed start leaves the offer (and
+      // now the error below) on screen instead of vanishing along with it.
+      await meetings.acceptOffer(offer)
+    } catch (e) {
+      takeError = e instanceof Error ? e.message : String(e)
+    }
   }
 
   function notNow() {
@@ -38,11 +56,16 @@
           new Date(offer.start),
         )}–{timeOfDay(new Date(offer.end))}
       </span>
+      {#if takeError}<p class="error">{takeError}</p>{/if}
     </div>
     <div class="actions">
-      <button class="btn" onclick={never}>Never for this meeting</button>
-      <button class="btn" onclick={notNow}>Not now</button>
-      <button class="btn btn-primary" onclick={() => void take()}>Take notes</button>
+      <button class="btn" disabled={meetings.starting} onclick={never}>
+        Never for this meeting
+      </button>
+      <button class="btn" disabled={meetings.starting} onclick={notNow}>Not now</button>
+      <button class="btn btn-primary" disabled={meetings.starting} onclick={() => void take()}>
+        {meetings.starting ? 'Starting…' : 'Take notes'}
+      </button>
     </div>
   </div>
 {/if}
@@ -67,6 +90,11 @@
   }
   .text span {
     color: var(--fg-muted);
+  }
+  .text .error {
+    margin: 0;
+    color: var(--danger);
+    font-size: var(--text-xs);
   }
   .actions {
     display: flex;

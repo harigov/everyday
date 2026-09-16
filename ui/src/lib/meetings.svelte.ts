@@ -44,6 +44,19 @@ class MeetingsState {
 
   /** Non-null exactly while the shell (or its mock stand-in) is recording. */
   capture = $state<CaptureStatus | null>(null)
+  /**
+   * True from the moment any surface calls `startCapture` until
+   * `api.meetingStart` settles -- set here, once, rather than by each of
+   * `MeetingOfferBanner`, `EventDetail` and `NotesNav` in their own local
+   * state, so the three cannot race each other: a press in one disables the
+   * "Take notes"/"Start" control in all three, rather than leaving the
+   * other two clickable while a start (and the service round trip behind
+   * it) is already under way. The shell's own reservation
+   * (`meeting.rs`'s `begin_headless`) is what actually keeps two starts
+   * from both succeeding; this is the UI's half, so a second press reads as
+   * disabled rather than as a race that resolves into a confusing refusal.
+   */
+  starting = $state(false)
   /** Set while the "still on the call?" prompt should be showing. */
   stillOn = $state<RecordingId | null>(null)
   /** Offers awaiting a decision -- "Take notes for X?" -- oldest first. */
@@ -71,6 +84,7 @@ class MeetingsState {
     this.recordings = []
     this.models = []
     this.voiceprints = []
+    this.starting = false
     if (this.#modelsTimer) clearInterval(this.#modelsTimer)
     this.#modelsTimer = null
   }
@@ -284,10 +298,15 @@ class MeetingsState {
     title?: string | null
     templateId?: string | null
   }): Promise<Recording> {
-    const r = await api.meetingStart(opts)
-    this.capture = await api.meetingStatus().catch(() => null)
-    await this.refreshRecordings()
-    return r
+    this.starting = true
+    try {
+      const r = await api.meetingStart(opts)
+      this.capture = await api.meetingStatus().catch(() => null)
+      await this.refreshRecordings()
+      return r
+    } finally {
+      this.starting = false
+    }
   }
 
   async stopCapture(discard: boolean) {
@@ -308,9 +327,18 @@ class MeetingsState {
     await api.dismissMeetingOffer(eventId, never)
   }
 
+  /**
+   * "Take notes" on an offer. The offer is dropped from the list only once
+   * `startCapture` has actually succeeded -- previously it was dropped
+   * first, so a failed start (the mic already claimed, the vault refusing
+   * to begin) lost the offer along with the error, leaving nothing on
+   * screen for the person to retry. `MeetingOfferBanner` is what surfaces
+   * a thrown error now; this just has to not hide the offer behind one.
+   */
   async acceptOffer(offer: MeetingOfferPayload): Promise<Recording> {
+    const recording = await this.startCapture({ eventId: offer.eventId, title: offer.title })
     this.#dropOffer(offer.eventId)
-    return this.startCapture({ eventId: offer.eventId, title: offer.title })
+    return recording
   }
 
   // ── Dev-only mock triggers ───────────────────────────────────────
