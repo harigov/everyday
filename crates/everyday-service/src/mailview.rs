@@ -297,6 +297,14 @@ fn char_boundary_at_or_before(s: &str, at: usize) -> usize {
 /// `everyday-mail::sanitize`'s own hand-rolled CSS scanner argues for over a
 /// dependency -- a few lines of a state machine are less surface than a new
 /// crate for one job this small.
+///
+/// Carries `rel="noopener noreferrer"`, the same as every `<a>` ammonia
+/// leaves behind in an HTML body's own sanitised markup (see the module
+/// docs' list of what ammonia's allow-list does) -- without it, a plain-text
+/// message's own links would be the one path through this file that handed
+/// a clicked link's new tab an `Opener` reference back into this
+/// application, or leaked a `Referer` naming it, purely because the message
+/// happened to be plain text rather than HTML.
 fn linkify(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut at_boundary = true;
@@ -308,7 +316,7 @@ fn linkify(text: &str) -> String {
             let escaped = escape_html(url);
             out.push_str("<a href=\"");
             out.push_str(&escaped);
-            out.push_str("\">");
+            out.push_str("\" rel=\"noopener noreferrer\">");
             out.push_str(&escaped);
             out.push_str("</a>");
             rest = tail;
@@ -413,10 +421,35 @@ pub fn part(
     })?;
     let bytes = vault.with_store(|s| s.get_blob(blob_id))?;
 
-    let sniffed = media::sniff_mime(&bytes);
+    // Skips a leading UTF-8 BOM and ASCII whitespace before sniffing --
+    // `media::sniff_mime`'s own signatures (including its `<svg`/`<?xml`
+    // match for `image/svg+xml`) only ever match at offset 0, so an SVG
+    // exported with a byte-order mark, a blank line, a leading XML comment,
+    // or a `<!DOCTYPE svg` prelude would otherwise sniff as
+    // `application/octet-stream` and fall through to being served under
+    // whatever this part's *declared* type claims -- see below for why that
+    // is never allowed for `text/html` or `image/svg+xml` regardless of what
+    // sniffing found.
+    let sniffed = media::sniff_mime(skip_bom_and_whitespace(&bytes));
     let declared = found.mime_type.trim().to_ascii_lowercase();
 
-    if sniffed == "text/html" || sniffed == "image/svg+xml" || declared == "text/html" {
+    // Never serve a declared-or-sniffed `text/html`, `application/xhtml+xml`
+    // or `image/svg+xml` attachment under that type: all three can carry
+    // their own script, sanitiser or not (see the plan's "Risks", and this
+    // function's own docs on `mime_type` being a claim by whoever sent the
+    // message, not a fact). `sniffed == "text/html"` can never actually
+    // match -- `media::sniff_mime` has no signature that returns it -- but
+    // it costs nothing to check and keeps this condition legible as "either
+    // way we found out, force octet-stream" rather than silently depending
+    // on `sniff_mime` never changing shape. `Content-Disposition: attachment`
+    // is set regardless of `mime_type`, but forcing the *type* too is what
+    // stops a webview or an OS handler that reopens a downloaded attachment
+    // by its `Content-Type` from choosing to render it instead of saving it.
+    const NEVER_INLINE_AS_DECLARED: [&str; 3] =
+        ["text/html", "application/xhtml+xml", "image/svg+xml"];
+    if NEVER_INLINE_AS_DECLARED.contains(&sniffed)
+        || NEVER_INLINE_AS_DECLARED.contains(&declared.as_str())
+    {
         return Ok(PartResponse {
             content_type: "application/octet-stream".to_string(),
             bytes,
@@ -446,6 +479,18 @@ pub fn part(
         declared
     };
     Ok(PartResponse { content_type, bytes, attachment: true, filename: found.filename.clone() })
+}
+
+/// Strips a leading UTF-8 byte-order mark and ASCII whitespace, so
+/// `media::sniff_mime`'s offset-0 signatures see the same first real byte a
+/// browser's own, far more lenient sniffer would. Deliberately local to this
+/// module rather than a change to [`media::sniff_mime`] itself -- that
+/// function's contract (match at offset 0, exactly) is right for the blob
+/// route, which serves whatever bytes were actually stored; skipping ahead
+/// is specific to *this* caller's reason for sniffing at all, which is
+/// "decide whether this is safe to render inline," not "identify the file."
+fn skip_bom_and_whitespace(bytes: &[u8]) -> &[u8] {
+    bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes).trim_ascii_start()
 }
 
 fn find_part<'a>(body: &'a Body, identifier: &str) -> Option<&'a PartRef> {
@@ -694,6 +739,16 @@ async fn fetch_remote_image(
 /// test server bound to `127.0.0.1` without weakening the check every other
 /// caller relies on.
 async fn resolve_and_check(host: &str, port: u16, allow_loopback: bool) -> CommandResult<()> {
+    // `Url::host_str` hands back an IPv6 literal host with its brackets
+    // still on (`"[::1]"`), because that is the slice of the URL's own
+    // serialisation, brackets included -- `crate::http`'s redirect policy
+    // already strips them for the identical reason before parsing. Left on,
+    // `lookup_host` cannot parse `"[::1]"` as an address or resolve it as a
+    // name, so it always errors -- failing closed, never open, but it also
+    // means this branch of the SSRF filter below never actually ran for an
+    // IPv6 literal: every one was refused for looking unresolvable, not for
+    // being private.
+    let host = host.trim_start_matches('[').trim_end_matches(']');
     let addrs = tokio::net::lookup_host((host, port)).await.map_err(|_| {
         CommandError::new(codes::NETWORK, "that image's address could not be resolved")
     })?;
@@ -873,7 +928,20 @@ mod tests {
         let (_dir, vault) = test_vault();
         let id = seeded_message(&vault, "a@example.com", "", "see https://example.com/x for it");
         let doc = body_document(&vault, id, false).unwrap();
-        assert!(doc.html.contains(r#"<a href="https://example.com/x">https://example.com/x</a>"#));
+        assert!(doc.html.contains(
+            r#"<a href="https://example.com/x" rel="noopener noreferrer">https://example.com/x</a>"#
+        ));
+    }
+
+    /// Finding 8: a plain-text message's own links must carry the same
+    /// `rel="noopener noreferrer"` ammonia already adds to every `<a>` in an
+    /// HTML body -- see `everyday-mail::sanitize`'s module docs -- so which
+    /// rendering path a message takes is not also a difference in what a
+    /// clicked link's opened tab can reach back into.
+    #[test]
+    fn a_plain_text_link_carries_rel_noopener_noreferrer() {
+        let out = linkify("visit https://example.com/x now");
+        assert!(out.contains(r#"rel="noopener noreferrer""#), "{out}");
     }
 
     #[test]
@@ -947,6 +1015,60 @@ mod tests {
         vault.save_body(&body).unwrap();
 
         let served = part(&vault, id, "evil.svg").unwrap();
+        assert_eq!(served.content_type, "application/octet-stream");
+        assert!(served.attachment);
+    }
+
+    /// Finding 7, half one: an SVG whose bytes start with something other
+    /// than `<svg` at offset 0 -- here, a UTF-8 BOM, the shape a real export
+    /// tool routinely produces -- must still not be served as
+    /// `image/svg+xml` just because that is what the sender declared it as.
+    /// Before this fix, `sniff_mime` (offset-0 only) missed it, and the
+    /// declared type was never checked for `image/svg+xml` at all, so this
+    /// fell all the way through to being served as the sender's own claimed
+    /// type.
+    #[test]
+    fn a_bom_prefixed_svg_is_still_refused_inline() {
+        let (_dir, vault) = test_vault();
+        let id = seeded_message(&vault, "a@example.com", "<p>hi</p>", "hi");
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(br#"<svg onload="alert(1)"></svg>"#);
+        let blob = vault.put_blob(&bytes).unwrap();
+        let mut body = vault.body(id).unwrap();
+        body.parts.push(PartRef {
+            cid: Some("evil.svg".into()),
+            filename: Some("evil.svg".into()),
+            mime_type: "image/svg+xml".into(),
+            size: bytes.len() as u64,
+            blob: Some(blob),
+        });
+        vault.save_body(&body).unwrap();
+
+        let served = part(&vault, id, "evil.svg").unwrap();
+        assert_eq!(served.content_type, "application/octet-stream");
+        assert!(served.attachment);
+    }
+
+    /// Finding 7, half two: even when sniffing genuinely fails (arbitrary
+    /// bytes, nothing recognisable), a part *declared* `image/svg+xml` must
+    /// not be served under that declared type -- only octet-stream is safe
+    /// for a claim this module cannot verify.
+    #[test]
+    fn a_declared_svg_with_unrecognisable_bytes_is_still_refused_its_declared_type() {
+        let (_dir, vault) = test_vault();
+        let id = seeded_message(&vault, "a@example.com", "<p>hi</p>", "hi");
+        let blob = vault.put_blob(b"not actually svg content").unwrap();
+        let mut body = vault.body(id).unwrap();
+        body.parts.push(PartRef {
+            cid: Some("weird.svg".into()),
+            filename: Some("weird.svg".into()),
+            mime_type: "image/svg+xml".into(),
+            size: 10,
+            blob: Some(blob),
+        });
+        vault.save_body(&body).unwrap();
+
+        let served = part(&vault, id, "weird.svg").unwrap();
         assert_eq!(served.content_type, "application/octet-stream");
         assert!(served.attachment);
     }
@@ -1103,6 +1225,19 @@ mod tests {
             let ip: std::net::IpAddr = addr.parse().unwrap();
             assert!(!crate::http::is_forbidden_address(ip, false), "{addr} should be allowed");
         }
+    }
+
+    /// Finding 9's `mailview.rs` half: an IPv6 literal host arrives from
+    /// `Url::host_str` with its brackets still on (`"[::1]"`), and without
+    /// stripping them `lookup_host` cannot resolve it at all -- this would
+    /// have failed with a `NETWORK` error ("could not be resolved") every
+    /// time, never actually reaching `is_forbidden_address` to answer
+    /// `FORBIDDEN`. This asserts it is `FORBIDDEN`, not just "an error",
+    /// which is what proves the brackets were stripped before resolution.
+    #[tokio::test]
+    async fn a_bracketed_ipv6_loopback_literal_is_recognised_as_forbidden() {
+        let err = resolve_and_check("[::1]", 80, false).await.unwrap_err();
+        assert_eq!(err.code, codes::FORBIDDEN, "got {err:?}");
     }
 
     #[test]

@@ -47,10 +47,24 @@
 //!   [`Directory::open_write`] — are immutable once written, so they are
 //!   sealed whole, once, when tantivy calls
 //!   [`TerminatingWrite::terminate`]. There is no incremental seal-as-you-go
-//!   here: the plaintext is buffered in memory as it streams in (segments
-//!   are bounded by the writer's heap budget, so this is not unbounded) and
-//!   sealed in one call once the last byte has arrived, which is both
-//!   simpler and cheaper than re-sealing a growing prefix on every flush.
+//!   here: the plaintext is buffered in memory as it streams in and sealed
+//!   in one call once the last byte has arrived, which is both simpler and
+//!   cheaper than re-sealing a growing prefix on every flush. `seal` itself
+//!   then allocates a second, full-size copy for the sealed bytes, so one
+//!   segment briefly costs twice its own size in memory — [`SealedSegmentWriter::terminate_ref`]
+//!   frees the plaintext half as soon as the sealed copy exists, rather
+//!   than holding both for the length of the write that follows, but the
+//!   peak during `seal` itself is still two full copies at once. This is
+//!   bounded by [`crate::index::WRITER_HEAP_BYTES`] for an *ordinary*
+//!   segment tantivy's own indexing thread produces, but **not** for a
+//!   segment tantivy merges from several existing ones: a merge writes
+//!   through this same `open_write`, and a merged segment over a
+//!   hundred-thousand-message mailbox can be far larger than any one
+//!   batch's own writer-heap budget. Streaming the seal in fixed-size
+//!   chunks instead would remove the doubling entirely, at the cost of a
+//!   framed, chunked file format this crate does not have today — left as
+//!   a known, documented limitation rather than built speculatively ahead
+//!   of a mailbox actually large enough for it to matter in practice.
 //! - **`meta.json` and `.managed.json`** go through
 //!   [`Directory::atomic_write`], tantivy's own "replace this small file
 //!   without a reader ever observing a half-written one" API. This
@@ -63,10 +77,20 @@
 //! - **Lockfiles** (`.tantivy-writer.lock`, `.tantivy-meta.lock`) are
 //!   written in the clear. They hold no content — their entire purpose is
 //!   to exist or not — so sealing them would spend an AEAD tag protecting
-//!   zero bits of secret, and `Directory::acquire_lock`'s default
-//!   implementation relies on `open_write` failing with
-//!   `FileAlreadyExists` for exclusivity, which a plain `create_new` open
-//!   gives for free.
+//!   zero bits of secret. What decides exclusivity is not their content, or
+//!   even their existence: [`SealedDirectory::acquire_lock`] overrides the
+//!   trait's own default (below) to take a real OS advisory lock on the
+//!   open file, the same primitive [`MmapDirectory`](tantivy::directory::MmapDirectory)
+//!   itself reaches for and for the same reason — a lock that is *merely* a
+//!   file existing, released only by a caller's own `Drop` running, does
+//!   not survive a `SIGKILL` or a power loss: the file is still there on
+//!   the next open, and every open after that, forever. An OS-held lock is
+//!   released by the kernel the moment the holding process's file
+//!   descriptors go away, no destructor required, which is what makes a
+//!   lock left behind by a crash recoverable without anyone noticing and
+//!   deleting a file by hand. See [`os_lock`]'s own docs for the platform
+//!   split — Unix gets the real fix, non-Unix keeps the trait's original
+//!   behaviour rather than an untested lock primitive.
 //!
 //! Every seal binds the file's own relative path as associated data (see
 //! [`file_aad`]), the same "name it belongs to" binding
@@ -95,10 +119,10 @@ use std::sync::{Arc, Mutex};
 use everyday_core::crypto::Cipher;
 use everyday_core::error::{Error, Result as CoreResult};
 use everyday_core::fsutil;
-use tantivy::directory::error::{DeleteError, OpenReadError, OpenWriteError};
+use tantivy::directory::error::{DeleteError, LockError, OpenReadError, OpenWriteError};
 use tantivy::directory::{
-    AntiCallToken, Directory, FileHandle, OwnedBytes, TerminatingWrite, WatchCallback,
-    WatchCallbackList, WatchHandle, WritePtr,
+    AntiCallToken, Directory, DirectoryLock, FileHandle, Lock, OwnedBytes, TerminatingWrite,
+    WatchCallback, WatchCallbackList, WatchHandle, WritePtr,
 };
 
 use crate::cache::DecryptedCache;
@@ -162,6 +186,116 @@ impl SealedDirectory {
 
 fn is_lock_file(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "lock")
+}
+
+/// An OS-kernel advisory lock on an open file, the same primitive
+/// [`MmapDirectory`](tantivy::directory::MmapDirectory) reaches for through
+/// the `fs4` crate -- reimplemented here as a direct `flock(2)` binding,
+/// rather than depending on that crate from this one, since `fs4` is
+/// already linked into this binary anyway (`everyday-core` depends on it
+/// directly, for the vault's own [`everyday_core::lockfile`]) and a second
+/// copy buys nothing a few lines of `extern "C"` do not already give for
+/// free. The one property this exists for: the kernel drops the lock the
+/// moment the holding process's file descriptor table goes away, crash or
+/// clean exit alike, which is what makes a lock left by a killed process
+/// recoverable without anyone having to notice and delete a file by hand.
+///
+/// Windows is not covered -- `SealedDirectory::acquire_lock` falls back to
+/// tantivy's own default (create-the-file, delete-on-drop) there, exactly
+/// the behaviour this module exists to move away from on the platforms
+/// this vault is actually tested on. A `LockFileEx`/`UnlockFileEx` binding
+/// would close that gap the same way, if this ever needs to run on Windows
+/// without Tauri's own desktop shell mediating file access some other way.
+#[cfg(unix)]
+mod os_lock {
+    use std::fs::{File, OpenOptions};
+    use std::io;
+    use std::os::unix::io::AsRawFd;
+    use std::path::Path;
+
+    const LOCK_EX: i32 = 2;
+    const LOCK_NB: i32 = 4;
+
+    unsafe extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
+    }
+
+    pub enum AcquireError {
+        /// Already held by someone else -- `EWOULDBLOCK`, from `LOCK_NB`.
+        WouldBlock,
+        Io(io::Error),
+    }
+
+    /// Open `path` (creating it if it does not exist -- including
+    /// reopening a stale one a killed process left behind) and take an
+    /// exclusive, non-blocking advisory lock on it.
+    ///
+    /// The returned `File` *is* the lock: held for as long as the caller
+    /// keeps it, released by the kernel the instant every descriptor on
+    /// this same open file description closes -- a clean drop, an
+    /// unhandled panic unwinding past it, or a `SIGKILL` that runs no
+    /// destructor at all. Nothing here ever deletes `path`: the next
+    /// `acquire` reopens the very same file and lets the kernel decide
+    /// whether it is actually free, never a directory listing that a
+    /// crash could leave stale.
+    pub fn acquire(path: &Path) -> Result<File, AcquireError> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .map_err(AcquireError::Io)?;
+        // Safety: `file.as_raw_fd()` is a valid, open file descriptor for
+        // as long as `file` is alive, which outlives this call; `flock`
+        // takes no pointers and cannot violate memory safety regardless of
+        // what it returns.
+        let ret = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
+        if ret == 0 {
+            return Ok(file);
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::WouldBlock {
+            Err(AcquireError::WouldBlock)
+        } else {
+            Err(AcquireError::Io(err))
+        }
+    }
+}
+
+/// The non-Unix stand-in: tantivy's own default `acquire_lock` strategy
+/// (exclusive by atomic creation, cleaned up by deleting the file on drop),
+/// inlined here so [`SealedDirectory::acquire_lock`] needs only one call
+/// regardless of platform -- see [`os_lock`]'s own docs for why only Unix
+/// gets the actual fix in this module. Not crash-safe: a lock left behind
+/// by a killed process on this platform still has to be removed by hand,
+/// exactly as it did before this fix.
+#[cfg(not(unix))]
+mod os_lock {
+    use std::fs::OpenOptions;
+    use std::io;
+    use std::path::{Path, PathBuf};
+
+    pub enum AcquireError {
+        WouldBlock,
+        Io(io::Error),
+    }
+
+    pub struct DeleteOnDrop(PathBuf);
+
+    impl Drop for DeleteOnDrop {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    pub fn acquire(path: &Path) -> Result<DeleteOnDrop, AcquireError> {
+        match OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(_file) => Ok(DeleteOnDrop(path.to_path_buf())),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(AcquireError::WouldBlock),
+            Err(e) => Err(AcquireError::Io(e)),
+        }
+    }
 }
 
 /// Associated data binding a sealed file to the relative path tantivy knows
@@ -229,6 +363,16 @@ impl TerminatingWrite for SealedSegmentWriter {
             .cipher
             .seal(&file_aad(&self.rel_path), &self.buffer)
             .map_err(|e| io::Error::other(e.to_string()))?;
+        // `seal` above already paid for a second, full-size copy -- see the
+        // module docs on this writer's memory shape. Freeing the plaintext
+        // half here, before the write below, is the one mitigation
+        // available without a chunked/streaming seal: it does not lower the
+        // peak `seal` itself reaches, but it stops that peak from being
+        // held for the length of a write syscall too, which is what a slow
+        // disk (or a merged segment far larger than one batch's own
+        // writer-heap budget) turns from "a spike" into "a spike that
+        // lasts".
+        self.buffer = Vec::new();
         let mut file = File::create(&self.full_path)?;
         file.write_all(&sealed)?;
         file.sync_all()?;
@@ -353,10 +497,21 @@ impl Directory for SealedDirectory {
         Ok(())
     }
 
-    // `acquire_lock` is not overridden: the trait's default implementation
-    // -- retrying `open_write` on the lock's path and relying on
-    // `FileAlreadyExists` for exclusivity -- is exactly right for our plain
-    // lockfiles, and `open_write` above already gives it that.
+    /// Overridden, unlike every other method here that just delegates to a
+    /// plain file -- see the module docs' "Why a real OS lock, not a plain
+    /// file" for why the trait's own default (create the file exclusively,
+    /// delete it on drop) is exactly the mistake
+    /// [`MmapDirectory`](tantivy::directory::MmapDirectory) itself does not
+    /// make.
+    fn acquire_lock(&self, lock: &Lock) -> Result<DirectoryLock, LockError> {
+        let full = self.full_path(&lock.filepath);
+        os_lock::acquire(&full).map(|guard| DirectoryLock::from(Box::new(guard))).map_err(|e| {
+            match e {
+                os_lock::AcquireError::WouldBlock => LockError::LockBusy,
+                os_lock::AcquireError::Io(e) => LockError::IoError(Arc::new(e)),
+            }
+        })
+    }
 
     fn watch(&self, watch_callback: WatchCallback) -> tantivy::Result<WatchHandle> {
         Ok(self.inner.watch_router.subscribe(watch_callback))
@@ -549,6 +704,40 @@ mod tests {
         assert_eq!(std::fs::read(tmp.path().join(&lock.filepath)).unwrap(), b"");
         assert!(matches!(d.acquire_lock(&lock), Err(LockError::LockBusy)));
         drop(held);
+        assert!(d.acquire_lock(&lock).is_ok());
+    }
+
+    /// Regression for "a crash leaves a lock file that blocks every future
+    /// open": under the trait's own default `acquire_lock` (create the
+    /// file exclusively, delete it on drop), a lock file merely *existing*
+    /// -- left behind by a process that was `SIGKILL`ed before its `Drop`
+    /// ever ran -- would refuse every future open with `LockBusy` forever,
+    /// since nothing left running could ever delete it. The OS advisory
+    /// lock this module actually takes does not care whether the file
+    /// already exists on disk, only whether the kernel currently
+    /// associates a lock with it -- which a file nobody has `flock`ed,
+    /// however it got there, never does.
+    #[test]
+    fn a_stale_lock_file_left_by_a_dead_process_is_not_an_obstacle() {
+        let (tmp, d) = dir();
+        let lock = Lock { filepath: PathBuf::from(".tantivy-writer.lock"), is_blocking: false };
+
+        // A file on disk with no live kernel lock on it at all -- standing
+        // in for exactly what a crashed process leaves behind, since this
+        // never calls `acquire_lock` (or `flock`) to create it.
+        std::fs::write(tmp.path().join(&lock.filepath), b"leftover from a killed process").unwrap();
+
+        let acquired = d.acquire_lock(&lock);
+        assert!(
+            acquired.is_ok(),
+            "a stale lock file with no live OS lock on it must still be claimable, not \
+             permanently refuse every future open"
+        );
+
+        // The lock just taken still behaves like every other one: exclusive
+        // while held, and releasable.
+        assert!(matches!(d.acquire_lock(&lock), Err(LockError::LockBusy)));
+        drop(acquired);
         assert!(d.acquire_lock(&lock).is_ok());
     }
 

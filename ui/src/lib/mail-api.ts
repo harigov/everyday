@@ -88,9 +88,16 @@ export const newDraft = (opts: {
 
 export const saveDraft = (draft: Draft): Promise<void> => api.saveDraft(draft)
 export const discardDraft = (id: DraftId): Promise<void> => api.discardDraft(id)
-/** `delaySeconds` is the undo window; absent uses the backend's own default. */
-export const sendDraft = (id: DraftId, delaySeconds?: number): Promise<Draft> =>
-  api.sendDraft(id, delaySeconds)
+/** `delaySeconds` is the undo window (5-30s, clamped by the backend);
+ *  `sendAt` queues for a specific, possibly distant, moment instead --
+ *  "send later" -- and wins over `delaySeconds` when both are given, per
+ *  `SendDraft` in `mail.rs`. Passing neither uses the backend's own default
+ *  window. */
+export const sendDraft = (
+  id: DraftId,
+  delaySeconds?: number | null,
+  sendAt?: string | null,
+): Promise<Draft> => api.sendDraft(id, delaySeconds, sendAt)
 /** Only valid inside the undo window `sendDraft` opened. */
 export const undoSend = (draftId: DraftId): Promise<Draft> => api.undoSend(draftId)
 export const listDrafts = (account: AccountId): Promise<Draft[]> => api.drafts(account)

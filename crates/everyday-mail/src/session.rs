@@ -120,15 +120,24 @@ impl UidSet {
                     && self.ranges[i - 1].1.saturating_add(1) >= uid
                     && self.ranges[i - 1].1 < uid;
                 let already_in_prev = i > 0 && self.ranges[i - 1].1 >= uid;
+                // `saturating_add`, not `uid + 1`: inserting `Uid::MAX`
+                // (legal per RFC 3501 -- a `Uid` is an unadorned `u32`)
+                // must not overflow just because nothing can ever start a
+                // range one above it. Saturating means this simply never
+                // equals a following range's start, which is exactly
+                // right -- there cannot be one.
                 if already_in_prev {
                     // already covered
-                } else if touches_prev && i < self.ranges.len() && self.ranges[i].0 == uid + 1 {
+                } else if touches_prev
+                    && i < self.ranges.len()
+                    && self.ranges[i].0 == uid.saturating_add(1)
+                {
                     // merges the gap between the previous and the next range
                     self.ranges[i - 1].1 = self.ranges[i].1;
                     self.ranges.remove(i);
                 } else if touches_prev {
                     self.ranges[i - 1].1 = uid;
-                } else if i < self.ranges.len() && self.ranges[i].0 == uid + 1 {
+                } else if i < self.ranges.len() && self.ranges[i].0 == uid.saturating_add(1) {
                     self.ranges[i].0 = uid;
                 } else {
                     self.ranges.insert(i, (uid, uid));
@@ -182,7 +191,11 @@ impl FromIterator<Uid> for UidSet {
         let mut ranges: Vec<(Uid, Uid)> = Vec::new();
         for uid in sorted {
             match ranges.last_mut() {
-                Some((_, hi)) if *hi + 1 == uid => *hi = uid,
+                // `saturating_add`, on the same terms `UidSet::insert`
+                // uses it: `hi` can legally be `Uid::MAX` and nothing
+                // sorts above it, so this must never overflow computing a
+                // successor that could not exist anyway.
+                Some((_, hi)) if hi.saturating_add(1) == uid => *hi = uid,
                 _ => ranges.push((uid, uid)),
             }
         }
@@ -317,7 +330,22 @@ pub enum Role {
 pub struct RemoteMailbox {
     /// The name as the server spells it — `INBOX`, `[Gmail]/Sent Mail`,
     /// `Archives/2024` — used verbatim in every later command against it.
+    /// This is the raw wire form, still RFC 3501 §5.1.3 modified UTF-7 for a
+    /// non-ASCII folder — see [`Self::display_name`] for the decoded form,
+    /// and never send that one back to `SELECT`/`APPEND`.
     pub name: String,
+    /// [`Self::name`], decoded from modified UTF-7 for display —
+    /// [`crate::imap::decode_mailbox_name_utf7`]. Plain ASCII decodes to
+    /// itself unchanged, so every adapter can fill this the same way it
+    /// fills `name` even on a server that never needed the encoding at all.
+    ///
+    /// Not carried any further than this struct today:
+    /// `everyday_core::mail::Mailbox`, the row a discovered mailbox becomes,
+    /// has no display-name field of its own to receive it, and adding one
+    /// is a schema change in a crate this one does not own. A caller that
+    /// wants a decoded name for a mailbox already stored has to decode
+    /// `remote_name` itself, the same way this field is built.
+    pub display_name: String,
     /// The character this server uses to separate levels of a mailbox's
     /// hierarchy, e.g. `Some('/')`. `None` means the name has no hierarchy.
     pub delimiter: Option<char>,
@@ -676,4 +704,34 @@ pub trait MailSession: Send {
     async fn idle(&mut self, stop: tokio::sync::watch::Receiver<()>) -> Result<IdleEvent>;
 
     fn capabilities(&self) -> &Capabilities;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: `UidSet::insert` used to compute `uid + 1` without a
+    /// guard, which panics in a debug build (and silently wraps in
+    /// release) the moment `uid` is `Uid::MAX` -- a legal IMAP UID, even if
+    /// an unlikely one. Inserting it, adjacent to its predecessor or not,
+    /// must simply work.
+    #[test]
+    fn insert_at_uid_max_does_not_overflow() {
+        let mut set = UidSet::new();
+        set.insert(Uid::MAX - 1);
+        set.insert(Uid::MAX);
+        assert_eq!(set.to_imap(), format!("{}:{}", Uid::MAX - 1, Uid::MAX));
+
+        let mut isolated = UidSet::new();
+        isolated.insert(Uid::MAX);
+        assert_eq!(isolated.to_imap(), Uid::MAX.to_string());
+    }
+
+    /// The same regression, through `FromIterator` -- the collection path
+    /// `changes_since` and `chunks` both build a [`UidSet`] with.
+    #[test]
+    fn from_iter_at_uid_max_does_not_overflow() {
+        let set: UidSet = [Uid::MAX - 1, Uid::MAX].into_iter().collect();
+        assert_eq!(set.to_imap(), format!("{}:{}", Uid::MAX - 1, Uid::MAX));
+    }
 }

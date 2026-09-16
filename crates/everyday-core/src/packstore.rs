@@ -55,14 +55,36 @@
 //!
 //! A batch is flushed once, at the end, after every frame in it has been
 //! written -- so the only way a pack can hold a torn frame is a crash
-//! between two of those writes. [`FilePackStore`] does not trust the
-//! file's length at face value: before it appends, it walks the pack's
-//! frames from the start, stops at the first one that does not fully fit in
-//! what is on disk, and truncates away everything after that point. Every
-//! frame before it was the last byte of a batch that finished and was
-//! flushed, so it is kept; anything after it was never durable and is
-//! discarded, the same way a half-written WAL record is discarded by any
-//! database that replays one.
+//! between two of those writes. Recovering from that is the *write* path's
+//! job alone: before it appends, [`FilePackStore`] walks the pack's frames
+//! from the start, stops at the first one that does not fully fit in what
+//! is on disk, and truncates away everything after that point. Every frame
+//! before it was the last byte of a batch that finished and was flushed, so
+//! it is kept; anything after it was never durable and is discarded, the
+//! same way a half-written WAL record is discarded by any database that
+//! replays one.
+//!
+//! Every *other* caller -- anything that only wants to know where a pack's
+//! frames end, never mind writing to it -- must never truncate on the way
+//! there. [`scan_frames`] is the read-only form: it walks the identical
+//! length prefixes and reports where the walk stopped, but never opens the
+//! file for writing and never shortens it. [`pack_dead_stats`],
+//! [`FilePackStore::compaction_worthwhile`] and [`compact_one_pack`] all go
+//! through it rather than the write path's `recover_valid_len`, and for a
+//! reason sharper than "reads should not write": a frame's length prefix is
+//! cleartext and unauthenticated, so a single corrupted byte in the
+//! *middle* of an otherwise-intact pack desyncs this same walk exactly the
+//! way a genuine torn tail does. Nothing about the walk itself can tell
+//! "this is where a crash stopped" apart from "this is where a bit flip
+//! sent us off the rails, with perfectly good frames still sitting later in
+//! the file that the walk can no longer find." Before this was split, the
+//! read path shared the write path's function -- and its truncation --
+//! which meant a decrypt-nothing check like `compaction_worthwhile` could
+//! silently discard every later frame in a pack, live rows and all, on
+//! nothing more than a flipped bit. See [`scan_frames`]'s own docs for the
+//! one heuristic this module uses to tell the two apart, and for why it
+//! cannot always succeed: when it cannot, every caller here fails loudly
+//! instead of guessing which half of the file to keep.
 //!
 //! # Data-safety invariants, stated plainly
 //!
@@ -103,6 +125,20 @@
 //!    genuinely unreferenced. Nothing here depends on a caller retrying in
 //!    any particular way, only on the next `compact` call eventually
 //!    happening.
+//! 5. **A frame walk that cannot prove it reached a clean boundary is never
+//!    trusted to decide what is dead, what is compactable, or what is safe
+//!    to drop.** [`scan_frames`] reports `desynced` rather than a plain
+//!    length whenever a frame's declared size points past the end of the
+//!    file by more than any real write could produce -- the one case this
+//!    module cannot tell apart from a genuine torn tail using length
+//!    prefixes alone. [`pack_dead_stats`] turns that into an `Err`, which
+//!    [`FilePackStore::compaction_worthwhile`] logs and skips past (that one
+//!    pack contributes nothing to the answer, but every other pack in the
+//!    account still does) and which [`compact_one_pack`] surfaces the same
+//!    way a corrupt frame already made it fail -- caught by
+//!    [`PackStore::compact`]'s own per-pack `Err` handling, so the pack is
+//!    left exactly where it is rather than rewritten from a walk that may
+//!    have missed live frames entirely.
 //!
 //! # The write claim
 //!
@@ -660,9 +696,28 @@ impl PackStore for FilePackStore {
                 }
                 continue;
             }
-            let (total, dead_count) = pack_dead_stats(&dir, *pack)?;
-            if total > 0 && dead_count * 3 >= total {
-                return Ok(true);
+            match pack_dead_stats(&dir, *pack) {
+                Ok((total, dead_count)) => {
+                    if total > 0 && dead_count * 3 >= total {
+                        return Ok(true);
+                    }
+                }
+                Err(e) => {
+                    // A desynced frame walk (see `FrameScan::desynced`),
+                    // most likely -- this is a decrypt-nothing estimate,
+                    // documented to be cheap enough to call on every
+                    // sync-pass wake, so one unreadable pack must not
+                    // abort the whole account's check. It contributes
+                    // nothing toward "worthwhile" either way; every other
+                    // pack still gets its say.
+                    tracing::warn!(
+                        account,
+                        pack = %pack,
+                        error = %e,
+                        "skipping a pack with an unreadable frame walk while checking \
+                         whether compaction is worthwhile"
+                    );
+                }
             }
         }
         Ok(false)
@@ -845,7 +900,22 @@ fn compact_one_pack(
 ) -> Result<Option<PackCompaction>> {
     let path = dir.join(format!("{pack}.pack"));
     let dead_path = dir.join(format!("{pack}.dead"));
-    let valid_len = recover_valid_len(&path)?;
+    // Read-only: `compact_one_pack` must never truncate the pack it is
+    // about to rewrite (that is the write path's job, at open time, on a
+    // pack about to be appended to -- not compaction's). A desynced walk
+    // means this pack must not be treated as compactable at all -- the
+    // `Err` here is caught by `FilePackStore::compact`'s own per-pack
+    // handling, the same as any other corrupt frame, and the pack is left
+    // exactly where it is.
+    let scan = scan_frames(&path)?;
+    if scan.desynced {
+        return Err(Error::Invalid(format!(
+            "pack {pack} has a frame length prefix that does not look like a torn \
+             tail from a crash; refusing to compact it, since the walk may have lost \
+             track of live frames past that point"
+        )));
+    }
+    let valid_len = scan.valid_len;
     let dead = read_dead_offsets(&dead_path)?;
     let offsets = frame_offsets(&path, valid_len)?;
     let total = offsets.len() as u64;
@@ -921,12 +991,28 @@ fn frame_offsets(path: &Path, valid_len: u64) -> Result<Vec<(u64, u32)>> {
 /// [`FilePackStore::compaction_worthwhile`] and [`pack_is_fully_dead`]. A
 /// pack that does not exist (already reclaimed, or never had a frame
 /// written) reads as `(0, 0)`.
+///
+/// Reads the pack read-only, through [`scan_frames`] -- this must never
+/// truncate, since it runs on every `compaction_worthwhile` check, which is
+/// documented to cost nothing and touch nothing on every sync-pass wake.
+/// Returns `Err` when the frame walk desynchronises (see
+/// [`FrameScan::desynced`]) rather than reporting statistics computed from a
+/// walk that may have lost track of live frames -- every caller here treats
+/// that as "leave this pack alone," never as license to keep walking on bad
+/// information.
 fn pack_dead_stats(dir: &Path, pack: PackId) -> Result<(u64, u64)> {
     let path = dir.join(format!("{pack}.pack"));
     let dead_path = dir.join(format!("{pack}.dead"));
-    let valid_len = recover_valid_len(&path)?;
+    let scan = scan_frames(&path)?;
+    if scan.desynced {
+        return Err(Error::Invalid(format!(
+            "pack {pack} has a frame length prefix that does not look like a torn \
+             tail from a crash; refusing to report dead-frame statistics computed \
+             from a walk that may have lost track of live frames past that point"
+        )));
+    }
     let dead = read_dead_offsets(&dead_path)?;
-    let offsets = frame_offsets(&path, valid_len)?;
+    let offsets = frame_offsets(&path, scan.valid_len)?;
     let total = offsets.len() as u64;
     let dead_count = offsets.iter().filter(|(offset, _)| dead.contains(offset)).count() as u64;
     Ok((total, dead_count))
@@ -942,31 +1028,98 @@ fn pack_is_fully_dead(dir: &Path, pack: PackId) -> Result<bool> {
     Ok(total == dead_count)
 }
 
-/// Walk `path`'s frames from the start, and truncate away anything after the
-/// last one that is fully there.
+/// A sanity ceiling on one sealed frame's declared length, used only to tell
+/// a genuine torn tail (the last frame in a pack, cut short mid-write by a
+/// crash) apart from a length prefix corrupted into nonsense -- see
+/// [`scan_frames`]'s own docs for why the two otherwise look identical to a
+/// walk that only reads length prefixes.
 ///
-/// Returns the number of bytes that are valid -- which, after this call, is
-/// also the file's length. A file that does not exist yet has zero valid
-/// bytes and nothing to truncate.
+/// `everyday-mail` keeps large attachments in the blob store rather than in
+/// a raw message pack (see the module docs), so no real frame should
+/// approach this; it exists purely to reject a `u32` that a single flipped
+/// bit sent far outside anything a real write could ever have produced. Set
+/// well above [`PACK_ROTATE_BYTES`] rather than at it, since a single
+/// message larger than the rotation threshold still gets one frame, in a
+/// pack that then simply exceeds the threshold once.
+const MAX_PLAUSIBLE_FRAME_LEN: u64 = 512 * 1024 * 1024;
+
+/// What walking `path`'s frames by their length prefixes, from the start,
+/// found -- without touching the file at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FrameScan {
+    /// Bytes accounted for by complete frames, back to back, from offset 0.
+    valid_len: u64,
+    /// The file's actual length on disk right now.
+    total_len: u64,
+    /// `true` once the walk stopped because a frame's declared length
+    /// pointed further past the end of the file than any real write could
+    /// produce (see [`MAX_PLAUSIBLE_FRAME_LEN`]) -- the one signal this
+    /// walk has that it is looking at a corrupted length prefix rather than
+    /// a torn tail from a crash. A pack in this state must never be
+    /// truncated and must never be treated as compactable: the frames the
+    /// walk lost track of when it desynced may still be sitting, perfectly
+    /// intact, later in the file.
+    desynced: bool,
+}
+
+impl FrameScan {
+    /// The walk reached the end of the file with nothing left over: either
+    /// every byte belongs to a complete frame, or what remains is too short
+    /// to even be a length prefix. Either way there is no ambiguity to
+    /// resolve -- what is past `valid_len`, if anything, is a genuine torn
+    /// tail and nothing else.
+    fn clean(&self) -> bool {
+        self.valid_len == self.total_len
+    }
+}
+
+/// Walk `path`'s frames by their length prefixes alone, from the start, and
+/// report where the walk stopped -- without opening the file for writing or
+/// shortening it. The read-only counterpart to `recover_valid_len` below;
+/// every caller that only wants to know how much of a pack is trustworthy,
+/// never mind writing to it, must come through here instead.
 ///
-/// This is an `O(frames already in the pack)` scan, run on every
-/// [`FilePackStore::append_batch`] call against the pack being appended to.
-/// That is deliberately not optimised further here: packs are bounded by
-/// [`PACK_ROTATE_BYTES`], so the scan is bounded too, and it reads only the
-/// four-byte length prefix of each frame rather than any sealed bytes. If
-/// profiling ever says otherwise, the fix is a cached "known-good length"
-/// rather than a change to what this function promises.
-fn recover_valid_len(path: &Path) -> Result<u64> {
+/// # Why this cannot always tell a crash apart from corruption
+///
+/// A frame's `len` is read from the frame itself, in the clear and
+/// unauthenticated -- AEAD only proves the *sealed bytes* were not tampered
+/// with once a frame is fully read, and this walk never gets that far for
+/// one that does not fit. A single flipped byte in a length prefix
+/// *anywhere* in an otherwise-intact pack desyncs the walk exactly the way
+/// a genuine crash mid-write does: both stop with "the next frame does not
+/// fully fit in what's on disk." What actually differs is what is true of
+/// the bytes that follow: a crash leaves nothing coherent after the one
+/// torn frame, while corruption in the middle leaves perfectly good frames
+/// the walk can no longer find, because it jumped off track reading a
+/// bogus length.
+///
+/// This function does not try to resynchronise and search for those frames
+/// -- it draws exactly one line, using [`MAX_PLAUSIBLE_FRAME_LEN`]: a
+/// declared length larger than any real write could ever produce marks the
+/// walk [`FrameScan::desynced`] rather than merely short. It is a
+/// conservative, one-sided check -- a corrupted length that still happens
+/// to land within the file is not caught here, because nothing short of
+/// authenticating the length itself could catch that -- but it is exactly
+/// the shape of corruption the module's callers must never guess about:
+/// silently discarding, or silently compacting away, frames a bit flip only
+/// pretended did not exist.
+fn scan_frames(path: &Path) -> Result<FrameScan> {
     let mut file = match File::open(path) {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(FrameScan { valid_len: 0, total_len: 0, desynced: false });
+        }
         Err(e) => return Err(Error::io(path, e)),
     };
     let total = file.metadata().map_err(|e| Error::io(path, e))?.len();
 
     let mut pos = 0u64;
+    let mut desynced = false;
     loop {
         if pos + FRAME_PREFIX_LEN > total {
+            // Not even a full length prefix left on disk: unambiguously
+            // the literal end of whatever was durably written, whether
+            // that is a clean end-of-file or a crash between two frames.
             break;
         }
         file.seek(SeekFrom::Start(pos)).map_err(|e| Error::io(path, e))?;
@@ -977,18 +1130,60 @@ fn recover_valid_len(path: &Path) -> Result<u64> {
         let len = u32::from_le_bytes(len_buf) as u64;
         let frame_end = pos + FRAME_PREFIX_LEN + len;
         if frame_end > total {
+            if len > MAX_PLAUSIBLE_FRAME_LEN {
+                desynced = true;
+            }
             break;
         }
         pos = frame_end;
     }
 
-    if pos != total {
-        drop(file);
+    Ok(FrameScan { valid_len: pos, total_len: total, desynced })
+}
+
+/// Walk `path`'s frames from the start, and truncate away anything after the
+/// last one that is fully there. The **write** path's own recovery,
+/// called only when [`FilePackStore`] is about to append to a pack (see
+/// [`FilePackStore::current_pack`]) -- every read-only caller must use
+/// [`scan_frames`] instead, which reports the identical walk without ever
+/// touching the file. See the module docs' "Recovering from a crash
+/// mid-write" section for why the split matters.
+///
+/// Refuses to touch the file, returning `Err`, when the walk cannot tell a
+/// torn tail apart from a corrupted length prefix (see [`scan_frames`] and
+/// [`FrameScan::desynced`]) -- truncating in that case could discard frames
+/// that are still perfectly intact later in the file. A pack that fails
+/// this way needs a person, not a guess; nothing durable is lost by
+/// refusing, since nothing here has touched the file yet.
+///
+/// Returns the number of bytes that are valid -- which, after this call
+/// returns `Ok`, is also the file's length. A file that does not exist yet
+/// has zero valid bytes and nothing to truncate.
+///
+/// This is an `O(frames already in the pack)` scan, run on every
+/// [`FilePackStore::append_batch`] call against the pack being appended to.
+/// That is deliberately not optimised further here: packs are bounded by
+/// [`PACK_ROTATE_BYTES`], so the scan is bounded too, and it reads only the
+/// four-byte length prefix of each frame rather than any sealed bytes. If
+/// profiling ever says otherwise, the fix is a cached "known-good length"
+/// rather than a change to what this function promises.
+fn recover_valid_len(path: &Path) -> Result<u64> {
+    let scan = scan_frames(path)?;
+    if scan.desynced {
+        return Err(Error::Invalid(format!(
+            "pack at {} has a frame length prefix that cannot be a torn tail from a \
+             crash -- refusing to truncate a pack that may still hold intact frames \
+             past the point where the frame walk desynchronised; this pack needs \
+             manual recovery before this account can append to it again",
+            path.display()
+        )));
+    }
+    if !scan.clean() {
         let trimmed = OpenOptions::new().write(true).open(path).map_err(|e| Error::io(path, e))?;
-        trimmed.set_len(pos).map_err(|e| Error::io(path, e))?;
+        trimmed.set_len(scan.valid_len).map_err(|e| Error::io(path, e))?;
         trimmed.sync_all().map_err(|e| Error::io(path, e))?;
     }
-    Ok(pos)
+    Ok(scan.valid_len)
 }
 
 /// The frame offsets `mark_dead` recorded for one pack, or an empty set if
@@ -1595,6 +1790,79 @@ mod tests {
         )
         .unwrap();
         assert_eq!(other.read(&refs[0]).unwrap_err().code(), "decrypt_failed");
+    }
+
+    /// Regression for the corrupted-length-prefix data-loss bug: a bit flip
+    /// in one frame's length prefix, well before the pack's own physical
+    /// end, must never be treated as a torn tail from a crash. Before the
+    /// fix, `compaction_worthwhile` -- documented to be cheap enough to call
+    /// on every sync-pass wake, with nothing it walks ever opened with the
+    /// cipher -- shared the write path's destructive `recover_valid_len`, so
+    /// merely *checking* whether compaction was worthwhile could truncate
+    /// away every later frame in the pack, live rows and all; `compact`
+    /// would then rewrite the mostly-dead-looking survivors into a fresh
+    /// pack and report the original one obsolete, for a caller to drop for
+    /// good.
+    #[test]
+    fn a_corrupted_mid_file_length_prefix_is_never_truncated_or_compacted_away() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), true);
+        let msgs: Vec<&[u8]> = vec![
+            b"m0".as_slice(),
+            b"m1".as_slice(),
+            b"m2".as_slice(),
+            b"m3".as_slice(),
+            b"m4".as_slice(),
+        ];
+        let refs = s.append_batch("acc-1", &msgs).unwrap();
+
+        // Corrupt frame 2's length prefix -- comfortably in the middle of
+        // the pack, with two more genuinely intact frames still sitting
+        // after it -- into a value no real write could ever have produced.
+        let path = s.account_dir("acc-1").join(format!("{}.pack", refs[2].pack));
+        let prefix_at = (refs[2].offset - FRAME_PREFIX_LEN) as usize;
+        let mut bytes = std::fs::read(&path).unwrap();
+        let original_len = bytes.len() as u64;
+        bytes[prefix_at..prefix_at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+
+        let referenced: Vec<PackId> = refs.iter().map(|r| r.pack).collect();
+        let snap = snapshot(&s, "acc-1", referenced);
+
+        // (i) A worthwhile-check must not truncate the pack out from under
+        // the frames after the corruption, no matter what it answers.
+        let _ = s.compaction_worthwhile("acc-1", &snap).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            original_len,
+            "checking whether compaction is worthwhile must never shrink a pack on disk"
+        );
+
+        // (ii) Compaction itself must skip the damaged pack rather than
+        // rewrite-and-drop it: nothing here is safe to call live or dead
+        // from a walk that lost track partway through.
+        let result = s.compact("acc-1", &snap, &|| true).unwrap();
+        assert!(
+            !result.obsolete.contains(&refs[2].pack),
+            "a pack whose frame walk desynchronised must never be dropped"
+        );
+        assert!(
+            result.remap.iter().all(|(old, _)| old.pack != refs[2].pack),
+            "a pack whose frame walk desynchronised must never be rewritten either"
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            original_len,
+            "compaction must not have touched the damaged pack's bytes at all"
+        );
+
+        // Every genuinely intact frame -- including the ones sitting past
+        // the corruption, which the old behaviour would have discarded --
+        // must still read exactly as it always did.
+        assert_eq!(s.read(&refs[0]).unwrap(), b"m0");
+        assert_eq!(s.read(&refs[1]).unwrap(), b"m1");
+        assert_eq!(s.read(&refs[3]).unwrap(), b"m3");
+        assert_eq!(s.read(&refs[4]).unwrap(), b"m4");
     }
 
     #[test]

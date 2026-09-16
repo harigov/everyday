@@ -29,8 +29,9 @@
 //! [`Scope::Any`]: crate::ctx::Scope::Any
 
 use crate::command;
-use crate::ctx::{Ctx, Scope};
+use crate::ctx::{Caller, Ctx, Scope};
 use crate::error::{CommandError, CommandResult, codes, mail_rate_limit_error};
+use crate::events::{Change, Kind, Op};
 use crate::service::{PROTOCOL, Service, blocking};
 use everyday_core::agent::tools::{self, Caller as ToolCaller};
 use everyday_core::mail::Origin as MailOrigin;
@@ -41,37 +42,80 @@ use std::sync::Arc;
 
 use super::Nothing;
 
-/// Who a `list_tools` or `run_tool` call is really on behalf of, named by
-/// whoever built the JSON this deserialises from -- never taken at face
-/// value from an arbitrary caller, which is what makes it safe to trust.
+/// What a `list_tools` or `run_tool` request's own JSON *claims* about who
+/// it is on behalf of.
 ///
-/// # Where this comes from, and why it is not a security hole
+/// # This is not where trust comes from any more
 ///
-/// The only two things that ever set this field are `everyday-server`'s
-/// `VaultHost`, which mints it itself from the authenticated MCP caller's
-/// own device id (`everyday_mcp`'s wire protocol carries no such field for
-/// this to merely proxy), and nothing else -- a palette entry or a script
-/// calling `run_tool` over the ordinary command surface leaves it unset,
-/// which reads as the vault's owner acting directly.
+/// It used to be: the doc here previously argued that only `everyday-server`'s
+/// `VaultHost` ever sets this field, so a body claiming `Mcp` could only ever
+/// *narrow* what it could do. That argument had a hole exactly the size of
+/// the field's `#[serde(default)]`: nothing made *omitting* the claim
+/// exclusive to a caller entitled to omit it. `everyday-server`'s
+/// `mcp::issue_token` records an MCP client's token in the very same
+/// `devices.json` the ordinary `/v1/call/{name}` route authenticates
+/// against, so a client holding nothing but that token could `POST
+/// /v1/call/run_tool` with no `caller` at all and be read by
+/// [`require_permission`](everyday_core::agent::tools::mail) as the vault's
+/// owner acting directly -- skipping every per-account `mcp_access` switch,
+/// including `send`, which defaults to off.
 ///
-/// A device that *could* set this by hand on an ordinary `/v1` call already
-/// has to hold [`Scope::Mail`] to reach a single mail tool at all -- exactly
-/// as much as it needs to read mail through `domains::mail`'s own commands
-/// -- and claiming to be MCP only ever *narrows* what it may do next, to
-/// whatever `mcp_access` allows, never widens it past what the vault's
-/// owner already has. See `everyday_core::agent::tools::mail`'s module docs
-/// for what each switch actually gates.
+/// The fix is that a claim in this shape is now merely a hint the wire may
+/// supply for attribution (the `client` label an MCP client's write is
+/// stamped with, see [`everyday_core::mail::Origin::Mcp`]) and is no longer
+/// what decides *whether* a call may claim to be MCP at all. [`resolve_caller`]
+/// makes that decision from the request's *authenticated connection* --
+/// `Ctx::caller`, built by `everyday-server`'s `auth::Registry::authenticate`
+/// from the bearer token itself, specifically whether the token's own
+/// device row was minted by `auth::Registry::issue` for an MCP client
+/// (`auth::Device::mcp`) -- and refuses a body whose claim disagrees with
+/// what the connection actually is, rather than trusting either side alone.
+/// See [`resolve_caller`]'s own doc for exactly how.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum WireCaller {
     Mcp { client: String },
 }
 
-impl WireCaller {
-    fn into_tool_caller(self) -> ToolCaller {
-        match self {
-            WireCaller::Mcp { client } => ToolCaller::Mcp { client },
+/// Decide the [`ToolCaller`] this call may actually claim, from the
+/// authenticated connection (`ctx.caller`) rather than from `claimed` --
+/// the request body's own [`WireCaller`], which is no longer trusted alone
+/// for anything more than an attribution label. See [`WireCaller`]'s module
+/// doc for the bypass this closes.
+///
+/// - A connection authenticated as an MCP-issued device (its id carries
+///   `everyday_core::agent::tools::MCP_DEVICE_ID_PREFIX`, stamped there by
+///   `auth::Registry::authenticate` and nowhere else) can *never* be read as
+///   the vault's owner acting directly, no matter what -- or whether -- the
+///   body claims. `caller: None` on such a connection is not "the owner",
+///   it is a body that simply did not bother to say what the connection
+///   already proves; this manufactures `Mcp` regardless, keeping the body's
+///   own `client` label if it supplied one purely for attribution.
+/// - Any other connection (the local window, the local socket, an
+///   ordinarily-paired device) is free to omit the claim, which reads as the
+///   owner exactly as it always has. It may *not* claim `Mcp`: that claim
+///   would not describe this connection, and a mismatch between what a
+///   request says and what it is gets refused rather than silently resolved
+///   in either direction -- see the module's `RunTool::caller` doc for why a
+///   caller that could talk itself into a wider identity than its own
+///   connection proves is exactly the shape of bug this whole function
+///   exists to close.
+fn resolve_caller(ctx: &Ctx, claimed: Option<WireCaller>) -> CommandResult<Option<ToolCaller>> {
+    let device_is_mcp = matches!(
+        &ctx.caller,
+        Caller::Device(id) if everyday_core::agent::tools::is_mcp_device_id(id)
+    );
+    match (device_is_mcp, claimed) {
+        (true, Some(WireCaller::Mcp { client })) => Ok(Some(ToolCaller::Mcp { client })),
+        (true, None) => {
+            let client = ctx.caller.origin().unwrap_or("mcp").to_string();
+            Ok(Some(ToolCaller::Mcp { client }))
         }
+        (false, None) => Ok(None),
+        (false, Some(WireCaller::Mcp { .. })) => Err(CommandError::new(
+            codes::UNSUPPORTED,
+            "this connection was not authenticated as an MCP client and may not claim to be one",
+        )),
     }
 }
 
@@ -101,7 +145,9 @@ pub struct ToolInfo {
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ListTools {
-    /// See [`WireCaller`]. Absent for every caller but `VaultHost`.
+    /// See [`WireCaller`] and [`resolve_caller`]. A hint only -- an
+    /// attribution label an already-authenticated MCP connection may
+    /// supply, never what decides whether this call may be treated as one.
     #[serde(default)]
     pub caller: Option<WireCaller>,
 }
@@ -124,7 +170,12 @@ pub struct RunTool {
     /// for itself.
     #[serde(default)]
     pub confirm_destructive: bool,
-    /// See [`WireCaller`].
+    /// See [`WireCaller`] and [`resolve_caller`]. A hint only -- an
+    /// attribution label an already-authenticated MCP connection may
+    /// supply, never what decides whether this call may be treated as one.
+    /// In particular, *omitting* this is not the same thing as being
+    /// entitled to omit it: whether that reads as the vault's owner acting
+    /// directly is decided from this call's `Ctx`, not from this field.
     #[serde(default)]
     pub caller: Option<WireCaller>,
 }
@@ -194,7 +245,7 @@ async fn list_commands(_svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> Command
 /// for Tasks alone has no business being shown a Notes tool it could not run.
 async fn list_tools(svc: Arc<Service>, ctx: Ctx, args: ListTools) -> CommandResult<Vec<ToolInfo>> {
     let vault = svc.require()?;
-    let caller = args.caller.map(WireCaller::into_tool_caller);
+    let caller = resolve_caller(&ctx, args.caller)?;
     blocking(move || {
         // `assistant_provider: None` throughout this module: the two
         // callers that ever reach `list_tools`/`run_tool` are a script or
@@ -254,7 +305,13 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
     // carry from one it can, and asking about the domain first is what keeps
     // the two answers indistinguishable from outside.
     ctx.require(scope_of(tool.domain))?;
-    let caller = args.caller.clone().map(WireCaller::into_tool_caller);
+    // Stamped on the `Change` this call may raise -- see `mail_tool_change`
+    // -- exactly as `Command::invoke` stamps its own, so a client that made
+    // this write itself does not reload because of it. Read off `ctx` here,
+    // before it is shadowed below by the `ToolContext` built for the tool
+    // itself, which has no `Ctx` of its own to read this from.
+    let origin = ctx.caller.origin().map(str::to_string);
+    let caller = resolve_caller(&ctx, args.caller.clone())?;
     // Checked against what this vault offers rather than against the whole
     // catalogue, so a tool from a domain the backend cannot carry -- or one
     // no account permits this caller to use at all -- is not reachable by
@@ -352,9 +409,60 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
             after_mail_write: Some(&after_mail_write),
             invite_responder: Some(&invite_responder),
         };
-        tools::dispatch(&ctx, &args.name, &args.arguments).map_err(CommandError::from)
+        let result =
+            tools::dispatch(&ctx, &args.name, &args.arguments).map_err(CommandError::from)?;
+        // See `mail_tool_change`'s own doc: this is `run_tool`'s equivalent
+        // of the `change:` a row in `command::COMMANDS` declares for itself,
+        // for the one row -- this one -- whose actual effect depends on
+        // which tool it named rather than being fixed at the table.
+        if let Some(mut change) = mail_tool_change(&args.name, &result) {
+            change.origin = origin.clone();
+            svc.events().changed(change);
+        }
+        Ok(result)
     })
     .await
+}
+
+/// The [`Change`] equivalent, for a mail tool run through [`run_tool`], to
+/// what the matching direct command in `domains::mail` declares on its own
+/// row via `change:` -- see [`crate::command::Command::change`]'s own doc
+/// for what that ordinarily does and why `run_tool` cannot lean on the same
+/// mechanism: `Command::invoke` reads a `(Kind, Op)` fixed per row and an id
+/// out of that row's own *arguments*, both fixed at compile time, whereas
+/// `run_tool` is one row for the whole tool catalogue, each tool shaped
+/// differently. This is `run_tool`'s own copy of the same fact, keyed by
+/// tool name, reading the touched record's id back out of the tool's own
+/// JSON result -- `"id"`, which every mutating mail tool's `done`,
+/// `done_thread` and `draft_result` helper (in `agent::tools::mail`)
+/// already sets to the record it just touched, since a person reading the
+/// same JSON needs exactly that id too.
+///
+/// Before this existed, a mail write made through `run_tool` -- an MCP
+/// archive, a scheduled auto-draft, `send_draft`'s own queued send --
+/// raised nothing on [`Service::events`] at all, despite `run_tool` being
+/// listed in `command`'s own `a_command_that_writes_says_what_it_touched`
+/// test as an intentional exception on the theory that "its effect is
+/// whatever tool it ran, which announces its own" -- a claim that was not
+/// true until this function made it true. `everyday_server::mcp`'s module
+/// doc rests its whole account of the undo window on exactly this: a change
+/// event a window could act on the moment an MCP send is queued.
+///
+/// `None` for a read, for `respond_to_invite` (whose direct command
+/// counterpart declares no `change:` of its own either -- an invitation's
+/// reply lives on the message a thread already re-reads, not on a
+/// [`Kind`] any list is drawn from), and for anything this table simply
+/// does not yet name.
+fn mail_tool_change(name: &str, result: &Value) -> Option<Change> {
+    let (kind, op) = match name {
+        "draft_reply" | "draft_message" => (Kind::Draft, Op::Created),
+        "update_draft" | "send_draft" => (Kind::Draft, Op::Updated),
+        "mark_read" | "label_thread" | "move_thread" | "snooze_thread" | "archive_thread"
+        | "trash_thread" => (Kind::Thread, Op::Updated),
+        _ => return None,
+    };
+    let id = result.get("id").and_then(Value::as_str).map(str::to_string);
+    Some(Change { kind, op, id, ids: Vec::new(), origin: None })
 }
 
 pub static COMMANDS: &[crate::command::Command] = &[

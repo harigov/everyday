@@ -29,11 +29,10 @@
 //! compared, only returned, so it stays `STORED` alone.
 
 use tantivy::schema::{
-    FAST, Field, INDEXED, IndexRecordOption, STORED, STRING, Schema, TEXT, TextFieldIndexing,
-    TextOptions,
+    FAST, Field, INDEXED, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions,
 };
 
-use crate::tokenizer::ADDRESS_TOKENIZER;
+use crate::tokenizer::{ADDRESS_TOKENIZER, CJK_AWARE_TOKENIZER};
 
 /// Every field handle [`crate::index::MailIndex`] needs, resolved once at
 /// schema build time rather than looked up by name on every document.
@@ -65,6 +64,17 @@ pub fn build() -> (Schema, Fields) {
         .set_index_option(IndexRecordOption::WithFreqsAndPositions);
     let address_options = TextOptions::default().set_indexing_options(address_indexing);
 
+    // `subject` and `body_text` go through `CjkAwareTokenizer` rather than
+    // tantivy's own `TEXT` (which uses the built-in `"default"` analyser)
+    // -- see that tokenizer's own docs for why the default analyser drops a
+    // CJK sentence's terms entirely. `query.rs`'s translation of a
+    // `subject:` or free-text clause looks the analyser up by this same
+    // name, which is what keeps indexing and querying in agreement.
+    let cjk_indexing = TextFieldIndexing::default()
+        .set_tokenizer(CJK_AWARE_TOKENIZER)
+        .set_index_option(IndexRecordOption::WithFreqsAndPositions);
+    let cjk_options = TextOptions::default().set_indexing_options(cjk_indexing);
+
     let fields = Fields {
         message_key: b.add_text_field("message_key", STRING | STORED | FAST),
         thread_key: b.add_text_field("thread_key", STRING | STORED),
@@ -74,8 +84,8 @@ pub fn build() -> (Schema, Fields) {
         from: b.add_text_field("from", address_options.clone()),
         to: b.add_text_field("to", address_options.clone()),
         cc: b.add_text_field("cc", address_options),
-        subject: b.add_text_field("subject", TEXT),
-        body_text: b.add_text_field("body_text", TEXT),
+        subject: b.add_text_field("subject", cjk_options.clone()),
+        body_text: b.add_text_field("body_text", cjk_options),
         date: b.add_i64_field("date", INDEXED | FAST | STORED),
         has_attachment: b.add_bool_field("has_attachment", INDEXED | FAST),
         unread: b.add_bool_field("unread", INDEXED | FAST),

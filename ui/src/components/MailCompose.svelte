@@ -21,6 +21,7 @@
   import { Autosave } from '../lib/autosave'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import * as mailApi from '../lib/mail-api'
+  import { isBlankDraft } from '../lib/mail'
   import { mail } from '../lib/mail.svelte'
   import { toLocalInputValue } from '../lib/format'
   import type { Draft, MailAddress } from '../lib/types'
@@ -46,6 +47,8 @@
   let showCcBcc = $state(working.cc.length > 0 || working.bcc.length > 0)
   let suggestions = $state<MailAddress[]>([])
   let suggestingField: 'to' | 'cc' | 'bcc' | null = $state(null)
+  /** Guards `addressField`'s await -- see that function's own note. */
+  let addressGeneration = 0
 
   let sendingLater = $state(false)
   let sendAt = $state(toLocalInputValue(new Date(Date.now() + 3_600_000)))
@@ -54,23 +57,52 @@
     await mailApi.saveDraft($state.snapshot(working))
   })
 
+  /**
+   * `syncBody()` first: this is TipTap's `onUpdate` handler as well as every
+   * other field's, and `saver`'s write is `saveDraft($state.snapshot(working))`
+   * -- a snapshot taken whenever the debounce timer fires, not whenever this
+   * runs. Without pulling the editor's own HTML into `working.bodyHtml`
+   * *here*, every autosave persisted whatever `working.bodyHtml` was seeded
+   * with when the sheet opened (blank, or a quoted reply) and never a
+   * keystroke that had been typed since.
+   */
   function touch() {
+    syncBody()
     working.updatedAt = new Date().toISOString()
     saver.touch(working.id)
   }
 
+  /**
+   * Generation-guarded the way `mail.svelte.ts`'s own loads are: a keystroke
+   * fires this on every change, and a slow answer for an old prefix must not
+   * overwrite a newer one that already landed.
+   */
   async function addressField(text: string, field: 'to' | 'cc' | 'bcc') {
     suggestingField = field
-    suggestions = text.trim() ? await mailApi.suggestAddresses(text.trim()) : []
+    const gen = ++addressGeneration
+    const results = text.trim() ? await mailApi.suggestAddresses(text.trim()) : []
+    if (gen !== addressGeneration) return
+    // Never offer an address already a chip in this field -- accepting it
+    // would add a second `{a.email}`-keyed row, which is Bug 7's crash.
+    const already = new Set(working[field].map((a) => a.email.trim().toLowerCase()))
+    suggestions = results.filter((s) => !already.has(s.email.trim().toLowerCase()))
   }
 
+  /** Adds `address` to `field`, unless it is already there -- case-insensitively,
+   *  since `{#each working.to as a (a.email)}` keys chips by address and a
+   *  second copy of the same one is Svelte's `each_key_duplicate` at runtime,
+   *  not a harmless-looking duplicate chip. */
   function addAddress(field: 'to' | 'cc' | 'bcc', address: MailAddress) {
-    working[field] = [...working[field], address]
+    const email = address.email.trim().toLowerCase()
+    const already = working[field].some((a) => a.email.trim().toLowerCase() === email)
+    if (!already) {
+      working[field] = [...working[field], address]
+      touch()
+    }
     if (field === 'to') toText = ''
     if (field === 'cc') ccText = ''
     if (field === 'bcc') bccText = ''
     suggestions = []
-    touch()
   }
 
   function removeAddress(field: 'to' | 'cc' | 'bcc', email: string) {
@@ -157,27 +189,49 @@
    *  seconds" outbox window; the middle of that range. */
   const UNDO_WINDOW_S = 8
 
-  async function send(delaySeconds?: number) {
+  /**
+   * `sendAt`, given, is "send later": an ISO instant `mail.send` forwards
+   * verbatim to `sendDraft`, which the backend then uses exactly as given
+   * (`SendDraft::send_at` in `mail.rs`) rather than the undo-send window.
+   * Absent, this is an ordinary send with the fixed undo window below.
+   *
+   * Commits whatever is still sitting, typed but unconfirmed, in each
+   * address field first -- Enter/comma is what ordinarily turns typed text
+   * into a chip, and a person who types an address and clicks Send without
+   * pressing either would otherwise lose it silently, sending to whoever
+   * *was* already committed. `commitTyped` no-ops on an empty field.
+   */
+  async function send(scheduledAt?: string) {
+    commitTyped('to', toText)
+    commitTyped('cc', ccText)
+    commitTyped('bcc', bccText)
     syncBody()
     await saver.flush()
     onclose()
-    await mail.send($state.snapshot(working), delaySeconds ?? UNDO_WINDOW_S)
+    // Not awaited: `mail.send` handles its own failure (a toast, via
+    // `handle`) now that this sheet is already gone, so there is nothing
+    // left here to await it for.
+    void mail.send($state.snapshot(working), scheduledAt ? undefined : UNDO_WINDOW_S, scheduledAt)
   }
 
   async function sendLater() {
-    const at = new Date(sendAt)
-    const delay = Math.max(1, Math.round((at.getTime() - Date.now()) / 1000))
-    await send(delay)
+    await send(new Date(sendAt).toISOString())
   }
 
   async function discard() {
     syncBody()
-    if (
-      !working.subject &&
-      !working.bodyHtml.replace(/<[^>]*>/g, '').trim() &&
-      working.to.length === 0
-    ) {
+    if (isBlankDraft(working)) {
       await mailApi.discardDraft(working.id)
+      // The draft above no longer exists to write to. Without this,
+      // `onDestroy`'s safety-net `flush()` still finds `working.id` dirty
+      // from whatever `touch()` ran before this blank check, and writes
+      // `saveDraft` for a draft that was just discarded -- resurrecting it
+      // locally, and, once that write reaches the outbox, on the server too.
+      // `forget()` is `Autosave`'s own answer to "the record it would write
+      // is already gone" -- the same call `notes.svelte.ts`'s `remove()`
+      // makes for the same reason -- so there is nothing left for that
+      // safety net to do.
+      saver.forget(working.id)
     } else {
       await saver.flush()
     }
@@ -189,11 +243,36 @@
       e.preventDefault()
       void send()
     }
-    if (e.key === 'Escape') onclose()
+    if (e.key === 'Escape') {
+      // Not a bare `onclose()`: that dropped whatever autosave had not yet
+      // written, per Bug 1. `discard()` is exactly what the close button and
+      // the scrim already do -- flush a draft worth keeping, delete a blank
+      // one -- so Escape stops being the one way out of this sheet that
+      // loses text.
+      e.preventDefault()
+      void discard()
+    }
   }
 
   onDestroy(() => {
-    saver.cancel()
+    // `discard()` and `send()` above already flush -- or, on `discard()`'s
+    // blank-draft branch, `forget()` -- before `onclose()` ever runs, so by
+    // the time Svelte tears this down through the ordinary close paths there
+    // is nothing left dirty. This is the safety net for the
+    // other ways the sheet can go away -- `mail.reset()` on a lock, or
+    // `undoSend()` swapping in a fresh draft instance over this one -- where
+    // nothing upstream called either.
+    //
+    // `flush()` cannot be awaited here: `onDestroy` cannot suspend teardown.
+    // It does not need to be. The write it starts does not depend on this
+    // component still being mounted -- `saver` and the
+    // `mailApi.saveDraft($state.snapshot(working))` closure it holds are
+    // plain objects, kept alive by `Autosave`'s own promise chain (`#queue`)
+    // until the write lands, the same as any other in-flight write from a
+    // store nothing is currently rendering. `cancel()`, which drops pending
+    // edits without writing them, stays reserved for the one case `Autosave`
+    // itself says it is for: a lock, with nothing left to write to.
+    void saver.flush()
   })
 </script>
 

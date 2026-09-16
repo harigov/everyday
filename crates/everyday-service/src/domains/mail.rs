@@ -361,11 +361,27 @@ async fn new_draft(svc: Arc<Service>, _ctx: Ctx, args: NewDraft) -> CommandResul
             if args.in_reply_to.is_some() {
                 draft.in_reply_to = Some(parent_id);
                 draft.subject = compose::reply_subject(&parent.subject);
-                draft.to = vec![parent.from.clone()];
+                // RFC 5322 §3.6.2: `Reply-To`, when the sender set one, names
+                // where a reply is actually meant to go -- a mailing list, a
+                // ticketing system, a `no-reply@` address whose own
+                // `Reply-To` names a real mailbox -- and takes priority over
+                // `From`, which this ignored entirely until now.
+                draft.to = if parent.reply_to.is_empty() {
+                    vec![parent.from.clone()]
+                } else {
+                    parent.reply_to.clone()
+                };
                 if args.reply_all {
                     for addr in parent.to.iter().chain(parent.cc.iter()) {
-                        let already =
-                            draft.to.iter().any(|a| a.email.eq_ignore_ascii_case(&addr.email));
+                        // Checked against `cc` as it fills, not only against
+                        // `to` -- otherwise an address the parent listed in
+                        // both `to` and `cc` was added to this draft's `cc`
+                        // twice, one RCPT TO for one recipient.
+                        let already = draft
+                            .to
+                            .iter()
+                            .chain(draft.cc.iter())
+                            .any(|a| a.email.eq_ignore_ascii_case(&addr.email));
                         if !already && !own.contains(&addr.email.to_lowercase()) {
                             draft.cc.push(addr.clone());
                         }
@@ -406,42 +422,102 @@ pub struct SaveDraft {
 /// draft with no existing row yet (its very first save) has nothing to
 /// preserve, so `draft` is used as given.
 ///
-/// Always clears [`Draft::recipients_changed_by`], whether or not this
-/// particular save touched `to`/`cc`/`bcc` -- see that field's own doc. A
-/// save from compose is the person looking at exactly the recipients this
-/// call is about to write, so whatever an earlier assistant or MCP
-/// `update_draft` changed unseen has now been seen, and the confirmation
-/// card's warning has done its job.
+/// Clears [`Draft::recipients_changed_by`] only when *this* save actually
+/// changes `to`, `cc` or `bcc` from what the row already held -- not on
+/// every save from compose, which is what this used to do (see that
+/// field's own doc, now stale on this point). The compose sheet autosaves
+/// on every keystroke and flushes once more right before a send, so
+/// "always clear it" meant the marker a person was supposed to be warned
+/// by was gone by the time they ever saw a confirmation card: typing one
+/// more line of the body, with the recipients an assistant or MCP call
+/// widened still sitting there untouched, silently cleared the very
+/// warning that widening was supposed to raise. Comparing `to`/`cc`/`bcc`
+/// against the row this call is about to overwrite is what tells "the
+/// person looked at these recipients and kept typing" apart from "the
+/// person looked at these recipients and changed them" -- only the second
+/// is the person actually having seen and dealt with whatever an agent
+/// changed.
 async fn save_draft(svc: Arc<Service>, _ctx: Ctx, args: SaveDraft) -> CommandResult<()> {
     let incoming = args.draft;
     let now = Timestamp::now();
     let append = svc.draft_append_due(incoming.id, now);
     let vault = svc.require()?;
+    let draft_id = incoming.id;
+    // `incoming` is cloned once, rather than moved into the merge closure
+    // below, so it is still ours to fall back on if that closure never
+    // runs at all -- see the `NotFound` arm.
+    let merge_from = incoming.clone();
     let op = blocking(move || {
-        let draft = match vault.draft(incoming.id) {
-            Ok(mut existing) => {
-                existing.identity = incoming.identity;
-                existing.in_reply_to = incoming.in_reply_to;
-                existing.to = incoming.to;
-                existing.cc = incoming.cc;
-                existing.bcc = incoming.bcc;
-                existing.subject = incoming.subject;
-                existing.body_html = incoming.body_html;
-                existing.attachments = incoming.attachments;
-                existing.calendar_part = incoming.calendar_part;
+        // `Vault::with_draft` reads, mutates and writes this row under one
+        // `Vault::write` guard -- not `vault.draft(id)` followed by a
+        // separate `save_draft_and_append` -- because those two used to be
+        // two different moments the outbox's own account task could land
+        // between. This command reads what a compose window had open,
+        // possibly seconds ago; if the outbox minted this draft's
+        // `message_id` (or moved its `state`, or updated `server_copy`) in
+        // that gap, this call used to overwrite the whole row with its own
+        // stale copy of those fields, silently reverting a mint a retry
+        // would then have to redo -- skipping the "already delivered"
+        // check that id exists to make and sending the message twice. The
+        // closure below mutates the *current*, just-locked row in place,
+        // leaving every field it does not name -- `server_copy`,
+        // `message_id`, `state`, `origin` -- exactly as the outbox last
+        // left it.
+        let existing = vault.with_draft(draft_id, move |existing| {
+            // Compared before any of the three fields below are
+            // overwritten -- see this function's own doc for why "this
+            // save touched the recipients" is the question, not "this is
+            // a save at all".
+            let person_changed_recipients = existing.to != merge_from.to
+                || existing.cc != merge_from.cc
+                || existing.bcc != merge_from.bcc;
+            existing.identity = merge_from.identity;
+            existing.in_reply_to = merge_from.in_reply_to;
+            existing.to = merge_from.to;
+            existing.cc = merge_from.cc;
+            existing.bcc = merge_from.bcc;
+            existing.subject = merge_from.subject;
+            existing.body_html = merge_from.body_html;
+            existing.attachments = merge_from.attachments;
+            existing.calendar_part = merge_from.calendar_part;
+            if person_changed_recipients {
                 existing.recipients_changed_by = None;
-                existing.updated_at = now;
-                existing
             }
+            existing.updated_at = now;
+            true
+        });
+        let draft = match existing {
+            Ok(draft) => draft,
+            // A draft with no row yet (its very first save) has nothing a
+            // concurrent outbox write could be racing -- the outbox only
+            // ever touches a draft it already knows about -- so there is
+            // no atomicity to preserve here, and `save_draft_and_append`
+            // below both creates the row and enqueues its first
+            // `AppendDraft` in the one write it already makes.
             Err(everyday_core::error::Error::NotFound { .. }) => {
                 let mut fresh = incoming;
                 fresh.recipients_changed_by = None;
                 fresh.updated_at = now;
-                fresh
+                return Ok(vault.save_draft_and_append(&fresh, append, Origin::Person)?);
             }
             Err(e) => return Err(e.into()),
         };
-        Ok(vault.save_draft_and_append(&draft, append, Origin::Person)?)
+        // The merge above already wrote the draft itself; enqueuing
+        // `AppendDraft` is a second, independent write (a new row in the
+        // outbox's own table) that cannot clobber anything on the draft
+        // record, so doing it as a separate step after the guard above has
+        // released reopens no race the guard was protecting against.
+        if !append {
+            return Ok(None);
+        }
+        let op = Op::new(
+            draft.account_id,
+            OpKind::AppendDraft,
+            OpTarget::Draft(draft.id),
+            Origin::Person,
+        );
+        vault.enqueue_op(&op)?;
+        Ok(Some(op))
     })
     .await?;
     if let Some(op) = op {
@@ -696,6 +772,15 @@ fn respond_to_invite_inner(
             })?;
 
     let mut draft = Draft::new(message.account_id, account.address.clone(), origin.clone());
+    // Without this, `Vault::revert_invite_response` -- what undoes the
+    // optimistic `my_response` write below once this RSVP's own send fails
+    // for good, so the thread stops claiming an answer the organiser was
+    // never actually told -- has nothing to key its lookup on: it is found
+    // by walking from the failed op back to the draft it sent and from
+    // there to `in_reply_to`, the one field that names the original
+    // invitation message again. Left unset, a permanently failed RSVP would
+    // leave `my_response` reading "Accepted" forever.
+    draft.in_reply_to = Some(message.id);
     draft.to = vec![inv.organizer.clone()];
     draft.subject = format!("{}: {}", response.subject_prefix(), inv.summary);
     let who = if responder.name.is_empty() { &responder.email } else { &responder.name };

@@ -456,6 +456,12 @@ async fn drive(
     let mut attempt: u32 = 0;
     loop {
         set_state(&shared, &key, generation, TaskState::Running);
+        // `tokio::time::Instant`, not `std::time::Instant`: this has to
+        // agree with `tokio::time::sleep`/`advance` under a paused clock
+        // the way every timing test in this file already does, or the
+        // "healthy run" check just below would never see one in a test at
+        // all, no matter how much virtual time the test advances.
+        let started = tokio::time::Instant::now();
         match run_once(&factory, stop_rx.clone()).await {
             Ok(Outcome::Done) => {
                 // Unlike `Supervisor::stop`, nobody has taken this task's own
@@ -471,6 +477,17 @@ async fn drive(
                 return;
             }
             Err(last_error) => {
+                // An attempt that ran healthily for at least `BACKOFF_CAP`
+                // before failing gets a clean slate: without this, `attempt`
+                // only ever climbs, so an account that reconnects cleanly
+                // after ten unrelated blinks over a week is, by the
+                // eleventh, drawing up to the full five-minute cap for a
+                // blink that would otherwise have resolved in a second or
+                // two. A healthy run this long is evidence the *previous*
+                // run of failures is over, not a continuation of it.
+                if started.elapsed() >= BACKOFF_CAP {
+                    attempt = 0;
+                }
                 attempt += 1;
                 let delay = backoff_delay(attempt);
                 let until = jiff::Timestamp::now()
@@ -653,6 +670,82 @@ mod tests {
         settle(|| matches!(sup.state("acct"), Some(TaskState::Stopped))).await;
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
         assert!(events.ids().contains(&"acct".to_string()));
+    }
+
+    /// Regression: `attempt` used to only ever climb, so an account back
+    /// under `drive`'s own loop for a healthy stretch after several
+    /// earlier blinks would still draw a near-`BACKOFF_CAP` delay for its
+    /// next failure -- exactly as long a wait as if none of the time in
+    /// between had ever passed. Eleven quick failures saturate
+    /// `backoff_delay`'s own exponent; the twelfth attempt then runs
+    /// healthily for longer than `BACKOFF_CAP` before failing too, and the
+    /// delay drawn for *that* failure must look like attempt one's again,
+    /// not attempt twelve's.
+    #[tokio::test(start_paused = true)]
+    async fn a_healthy_run_resets_the_backoff_counter() {
+        let sup = Supervisor::new(Arc::new(Silent));
+        let attempts = Arc::new(AtomicU32::new(0));
+        let counter = attempts.clone();
+        sup.ensure("acct", move |_stop| {
+            let attempts = counter.clone();
+            Box::pin(async move {
+                let n = attempts.fetch_add(1, Ordering::SeqCst);
+                if n < 11 {
+                    Err(boxed_err("blink"))
+                } else if n == 11 {
+                    tokio::time::sleep(BACKOFF_CAP + Duration::from_secs(1)).await;
+                    Err(boxed_err("a blink after a long healthy run"))
+                } else {
+                    Ok(Outcome::Done)
+                }
+            })
+        });
+
+        // Driven off `attempts` itself, not off `sup.state`'s own
+        // `Backoff` variant: two calls in a row both land in `Backoff`
+        // with nothing else distinguishing them at a glance, so settling
+        // on "is it `Backoff` yet" can observe the *same* stale answer
+        // twice -- once genuinely after a failure, once again before the
+        // next `advance` has had any chance to matter -- and silently
+        // skip an attempt. The attempt counter has no such ambiguity: it
+        // only ever goes up, once per call.
+        for expected in 1..=11 {
+            settle(|| attempts.load(Ordering::SeqCst) >= expected).await;
+            tokio::time::advance(BACKOFF_CAP).await;
+        }
+        // Attempt twelve (n == 11) is now in flight, the one that actually
+        // awaits something (its own long sleep) -- so, unlike the eleven
+        // above, `Running` is a state this test can reliably catch before
+        // advancing the clock past it.
+        settle(|| attempts.load(Ordering::SeqCst) >= 12).await;
+        settle(|| matches!(sup.state("acct"), Some(TaskState::Running))).await;
+        // The sleep this attempt awaits is `BACKOFF_CAP`-sized (five
+        // minutes) -- long enough that a single `advance` call does not
+        // reliably carry tokio's own paused-clock timer wheel past it in
+        // one step, the coarser a wheel level gets the further out a
+        // timer's deadline is. Chunked, breaking the moment this attempt's
+        // own failure lands, rather than one large `advance` that risks
+        // also carrying the *next* attempt's own backoff past this test's
+        // own read of `until` below.
+        for _ in 0..12 {
+            tokio::time::advance(BACKOFF_CAP).await;
+            if matches!(sup.state("acct"), Some(TaskState::Backoff { .. })) {
+                break;
+            }
+        }
+        let before = jiff::Timestamp::now();
+        let Some(TaskState::Backoff { until, .. }) = sup.state("acct") else {
+            panic!("expected Backoff after attempt twelve's own failure: {:?}", sup.state("acct"));
+        };
+        let delay = before.duration_until(until);
+        // Unreset, attempt twelve's own exponent is already saturated at
+        // `BACKOFF_CAP` (five minutes); reset, it is attempt one's, capped
+        // at `BACKOFF_BASE` (one second). A little slack for the assertion
+        // itself, nowhere near enough to also pass for the unreset value.
+        assert!(
+            delay <= jiff::SignedDuration::from_millis(1_500),
+            "a healthy run must reset the backoff counter, not draw a near-cap delay: {delay:?}"
+        );
     }
 
     #[tokio::test]

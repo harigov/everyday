@@ -728,6 +728,19 @@ pub(super) fn recompute_thread(
             "DELETE FROM thread_mailboxes WHERE thread_id = ?1",
             &vals![thread_id.to_string()],
         )?;
+        // `recompute_thread_mailboxes` is also the only place that clears a
+        // stale `hidden_thread_mailboxes` marker, and this branch used to
+        // return before ever reaching it -- harmless on IMAP, where a new
+        // thread id is minted per conversation, but not on Gmail, whose
+        // thread id is deterministic: a thread that empties here and later
+        // gets a new message (or the same one comes back on a re-sync)
+        // reuses this exact id, and would otherwise inherit an
+        // optimistic-archive marker left over from before it ever emptied.
+        // `message_mailboxes`/`mail_messages` are already empty for this
+        // thread by this point, so this call's own `NOT IN` subquery drops
+        // every marker unconditionally, exactly like the manual delete just
+        // above -- it does no less than that delete already did.
+        recompute_thread_mailboxes(tx, thread_id)?;
         return Ok(());
     }
 

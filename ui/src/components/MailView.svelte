@@ -9,7 +9,7 @@
   import { mail } from '../lib/mail.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
-  import { plural } from '../lib/format'
+  import { plural, relativeTime } from '../lib/format'
   import type { Mailbox, Thread } from '../lib/types'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
@@ -286,7 +286,17 @@
 
 {#if mail.sendingUndo}
   <div class="undo-toast">
-    <span>Sending in {mail.sendingUndo.secondsLeft}s…</span>
+    <span>
+      {#if mail.sendingUndo.scheduled}
+        <!-- A "send later" window can be hours out -- a countdown in seconds
+             would either read as an absurd number or, worse, look wrong the
+             instant it started (Bug 11). `relativeTime` gives the same
+             "in 3 hours" shape the rest of the app already uses. -->
+        Scheduled — sending {relativeTime(new Date(mail.sendingUndo.at).toISOString())}
+      {:else}
+        Sending in {mail.sendingUndo.secondsLeft}s…
+      {/if}
+    </span>
     <button class="link" onclick={() => void mail.undoSend()}>Undo</button>
   </div>
 {/if}

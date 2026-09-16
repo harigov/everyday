@@ -43,7 +43,9 @@
 //! re-derive it from the variant names by hand.
 
 use everyday_core::id::{BlobId, DraftId, MailMessageId, MailboxId, ThreadId};
-use everyday_core::mail::{Address as CoreAddress, Draft, MailboxRole, Op, OpKind, OpTarget};
+use everyday_core::mail::{
+    Address as CoreAddress, Draft, DraftState, MailboxRole, Op, OpKind, OpTarget,
+};
 
 use crate::compose::{self, Built, Outgoing, OutgoingAttachment};
 use crate::mime;
@@ -536,6 +538,20 @@ async fn send<S: MailSession, T: Sender, L: Lookups>(
         return Err(MailError::Protocol("a Send op must target a draft".into()));
     };
     let mut draft = ctx.lookups.draft(id)?;
+    // The last line of defence against discarding a draft racing its own
+    // pending `Send`: `everyday_core::Vault::discard_draft` cancels the op
+    // before it ever becomes due, but a `Send` already `InFlight` at the
+    // moment of discard is not cancelled -- see that method's own docs --
+    // so it can still reach here with the draft already `Discarded`
+    // underneath it. Refusing outright, rather than sending a message the
+    // person no longer wants sent, is a permanent failure: retrying would
+    // only ask the same question again, and there is no local state left
+    // to reverse (`Discarded` is where `on_permanent_failure` would have
+    // sent it back to `Editing` from, and a discarded draft has no
+    // "editing" to return to).
+    if matches!(draft.state, DraftState::Discarded) {
+        return Err(MailError::Protocol("this draft was discarded before it could be sent".into()));
+    }
     let is_retry = draft.message_id.is_some();
     if draft.message_id.is_none() {
         let minted = compose::generate_message_id(&ctx.lookups.message_id_domain());
@@ -576,24 +592,60 @@ async fn send<S: MailSession, T: Sender, L: Lookups>(
     Ok(Executed::Sent { message_id: built.message_id, sent_append_error })
 }
 
+/// The mailboxes worth asking [`already_delivered`]'s question of, in the
+/// order tried. On Gmail, All Mail alone already holds a copy of every
+/// message the account has ever sent or received, so there is nothing a
+/// second role would find that the first did not. Off Gmail there is no
+/// such single place: the *only* thing that ever puts a sent copy in Sent
+/// on a plain IMAP account is this crate's own [`append_sent_copy`], which
+/// runs *after* [`Sender::send`] -- so a crash or a dropped socket between
+/// SMTP accepting the message and that append leaves Sent with nothing to
+/// find, even though the message genuinely went out. Widening the search to
+/// wherever the server itself might have filed the message -- Sent if the
+/// append did land, All Mail on a provider that keeps one under another
+/// name, Inbox for a message the account sent to itself -- catches those
+/// without changing what a miss means: still "not found, or could not
+/// check", never proof of absence.
+pub fn search_roles(is_gmail: bool) -> &'static [MailboxRole] {
+    if is_gmail {
+        &[MailboxRole::All]
+    } else {
+        &[MailboxRole::Sent, MailboxRole::All, MailboxRole::Inbox]
+    }
+}
+
 /// Whether `message_id` is already on the server -- asked directly, via
 /// [`MailSession::search_message_id`], because the one thing a `Network`
 /// error genuinely cannot say is whether the server's response this crate
-/// never saw was actually an acceptance. Looked for in Sent, or All Mail on
-/// Gmail -- see [`crate::smtp::needs_sent_append`] and
-/// `crates/everyday-service/src/outbox.rs`'s `already_sent`, the
-/// crash-recovery counterpart of this exact question.
+/// never saw was actually an acceptance. Tried against every mailbox
+/// [`search_roles`] names for this account, in order, stopping at the first
+/// hit -- see that function's own docs for why more than one is worth
+/// asking off Gmail, and `crates/everyday-service/src/outbox.rs`'s
+/// `already_sent` for the crash-recovery counterpart of this exact
+/// question, which searches the same roles.
 ///
-/// `false` on any lookup failure, or when nothing is found: the
-/// conservative answer sends again rather than risking a message that
-/// reached nowhere being treated as delivered.
+/// `false` when every role comes back empty, cannot be resolved to a
+/// mailbox name, or fails to search: the conservative answer sends again
+/// rather than risking a message that reached nowhere being treated as
+/// delivered. This still leaves one real gap, inherent to the question
+/// rather than to how many mailboxes it asks: between the moment SMTP
+/// accepts a message and the moment this crate's own Sent append (or the
+/// server's own copy, on Gmail) actually lands, there is no server-side
+/// evidence anywhere to find, for any role. A crash or a dropped socket
+/// inside that narrow window still resends -- deliberately: a duplicate a
+/// person can see and delete is a smaller mistake than a message this
+/// crate silently decided not to send.
 async fn already_delivered<S: MailSession, T: Sender, L: Lookups>(
     ctx: &mut ExecContext<'_, S, T, L>,
     message_id: &str,
 ) -> bool {
-    let role = if ctx.lookups.is_gmail() { MailboxRole::All } else { MailboxRole::Sent };
-    let Ok(Some(mailbox)) = ctx.lookups.special_use(role) else { return false };
-    matches!(ctx.session.search_message_id(&mailbox, message_id).await, Ok(Some(_)))
+    for &role in search_roles(ctx.lookups.is_gmail()) {
+        let Ok(Some(mailbox)) = ctx.lookups.special_use(role) else { continue };
+        if matches!(ctx.session.search_message_id(&mailbox, message_id).await, Ok(Some(_))) {
+            return true;
+        }
+    }
+    false
 }
 
 /// The half of [`send`] that can fail without the send itself having
@@ -1464,6 +1516,61 @@ Original body.\r\n"
             session.calls
         );
         assert_eq!(sender.sent.lock().unwrap().len(), 1);
+    }
+
+    /// The regression for "a discarded draft's queued send still goes
+    /// out": `send`'s own defensive check must refuse a draft the vault
+    /// already marked `Discarded`, rather than build and send it anyway.
+    /// This is the last line of defence for the race
+    /// `everyday_core::Vault::discard_draft`'s own docs describe -- a
+    /// `Send` op already `InFlight` at the moment of discard is not
+    /// cancelled there, so it can still reach this executor.
+    #[tokio::test]
+    async fn sending_a_discarded_draft_is_refused() {
+        let account = AccountId::new();
+        let mut draft = simple_draft(account);
+        draft.state = everyday_core::mail::DraftState::Discarded;
+        let id = draft.id;
+        let lookups =
+            FakeLookups::new(false).with_draft(draft).with_special_use(MailboxRole::Sent, "Sent");
+        let mut session = FakeSession::default();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        let err =
+            execute(&op(account, OpKind::Send, OpTarget::Draft(id)), &mut ctx).await.unwrap_err();
+        assert!(matches!(err, MailError::Protocol(_)), "must be a permanent failure: {err:?}");
+        assert!(!is_retryable(&err));
+        assert!(sender.sent.lock().unwrap().is_empty(), "a discarded draft must never be sent");
+    }
+
+    /// The regression for "the already-delivered check can never succeed on
+    /// a non-Gmail account": a message the server actually filed under
+    /// Inbox (a self-send, say) rather than Sent must still be recognised,
+    /// not resent, once the search is widened past Sent alone.
+    #[tokio::test]
+    async fn a_retried_send_is_found_via_a_widened_search_when_sent_lacks_it() {
+        let account = AccountId::new();
+        let mut draft = simple_draft(account);
+        draft.message_id = Some("already-there@example.com".into());
+        let id = draft.id;
+        // No `Sent` special-use registered at all -- only Inbox -- so this
+        // can only pass if `already_delivered` tries more than the one
+        // role it used to.
+        let lookups =
+            FakeLookups::new(false).with_draft(draft).with_special_use(MailboxRole::Inbox, "INBOX");
+        let mut session = FakeSession::default();
+        session.found_message_ids.insert("already-there@example.com".into(), 9);
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        let outcome =
+            execute(&op(account, OpKind::Send, OpTarget::Draft(id)), &mut ctx).await.unwrap();
+        assert!(matches!(outcome, Executed::Sent { .. }), "{outcome:?}");
+        assert!(
+            sender.sent.lock().unwrap().is_empty(),
+            "must not resend a message the widened search already found"
+        );
     }
 
     // ---- append draft: coalescing the previous server copy ------------------

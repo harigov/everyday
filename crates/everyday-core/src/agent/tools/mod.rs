@@ -320,6 +320,33 @@ pub enum Caller {
     Mcp { client: String },
 }
 
+/// The prefix `everyday-server`'s device registry (`auth::Registry`) stamps
+/// on the id of a device it minted specifically for an MCP client, so that
+/// anything downstream can tell an MCP-issued device apart from an
+/// ordinarily-paired one *without* trusting whatever a request's own body
+/// happens to claim about itself.
+///
+/// This has to live here, in `everyday-core`, rather than beside the
+/// `Device` type it actually describes, in `everyday-server`'s `auth`
+/// module: `everyday-service`'s `domains::meta::run_tool` -- the one place
+/// that has to turn "which device authenticated this call" into "which
+/// [`Caller`] this call may claim to be" -- cannot depend on
+/// `everyday-server`, which is built on top of it. `everyday-core` is the
+/// one crate both sides already share.
+///
+/// See `everyday_service::domains::meta::WireCaller`'s module doc for the
+/// vulnerability this exists to close: a request's body was previously the
+/// *only* thing that said whether a call was MCP's or the vault owner's
+/// own, and a body is exactly the thing an untrusted caller controls.
+pub const MCP_DEVICE_ID_PREFIX: &str = "mcp:";
+
+/// Whether `id` -- the device id carried by `everyday_service::ctx::
+/// Caller::Device`, as built by `everyday-server`'s `auth::Registry` -- names
+/// a device minted for an MCP client. See [`MCP_DEVICE_ID_PREFIX`].
+pub fn is_mcp_device_id(id: &str) -> bool {
+    id.starts_with(MCP_DEVICE_ID_PREFIX)
+}
+
 /// The type behind [`ToolContext::mail_rate_limit`], named so the field
 /// itself does not spell out a function pointer inline -- clippy's own
 /// `type_complexity` lint, and a reader's, agree that a closure type is
@@ -506,6 +533,20 @@ impl<'a> Args<'a> {
     /// rather than a bill.
     pub fn limit(&self) -> u32 {
         self.opt_u32("limit").unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
+    }
+
+    /// Whether `key` was actually named in this call, with a non-null
+    /// value -- `[]` counts, `null` and an absent key do not.
+    ///
+    /// What tells "omitted" apart from "sent as an empty list" for a field
+    /// like `update_draft`'s `bcc`, which [`Args::strings`] alone cannot:
+    /// an omitted `bcc` and an explicit `"bcc": []` both read back as an
+    /// empty `Vec` from that method, so a caller that needs to *clear* a
+    /// list -- remove every Bcc a previous call added -- has no way to say
+    /// so if the two are conflated. This checks the raw JSON for the key's
+    /// presence instead of asking what it decoded to.
+    pub fn has_key(&self, key: &str) -> bool {
+        self.value.get(key).is_some_and(|v| !v.is_null())
     }
 
     pub fn strings(&self, key: &str) -> Vec<String> {

@@ -212,6 +212,23 @@ impl OAuthClient {
     /// Build the fully-configured `oauth2` client this module's three verbs
     /// share. Cheap -- it is field assignment over already-owned `String`s,
     /// no I/O -- so it is rebuilt on every call rather than cached.
+    ///
+    /// # Why `redirect` is only sometimes set
+    ///
+    /// `oauth2`'s `redirect_url` is a plain `Option<RedirectUrl>` field, not
+    /// part of the client's typestate -- unlike `auth_url` and `token_url`,
+    /// nothing at the type level forces it to be set before a request is
+    /// built. That is what makes an empty redirect legitimate for
+    /// [`Self::refresh`]: RFC 6749 §6 does not carry a `redirect_uri` on a
+    /// refresh-token grant at all, so a caller resolving credentials to
+    /// refresh an access token -- see
+    /// `everyday-service::mailsync::credential::resolve`, which never has a
+    /// loopback port to hand back -- has nothing correct to put there. Only
+    /// [`Self::begin`] and [`Self::exchange`] carry a `redirect_uri` on the
+    /// wire ([RFC 6749 §4.1.1](https://www.rfc-editor.org/rfc/rfc6749#section-4.1.1),
+    /// [§4.1.3](https://www.rfc-editor.org/rfc/rfc6749#section-4.1.3)), so
+    /// they are the only two callers that require `self.redirect` to be
+    /// non-empty; see [`Self::require_redirect`].
     fn configured(&self) -> Result<ConfiguredClient, OAuthError> {
         let auth_url = AuthUrl::new(self.auth_url.clone()).map_err(|e| OAuthError::Provider {
             code: "invalid_auth_url".to_string(),
@@ -222,19 +239,40 @@ impl OAuthClient {
                 code: "invalid_token_url".to_string(),
                 description: e.to_string(),
             })?;
-        let redirect_url =
-            RedirectUrl::new(self.redirect.clone()).map_err(|e| OAuthError::Provider {
-                code: "invalid_redirect_url".to_string(),
-                description: e.to_string(),
-            })?;
         let mut client = BasicClient::new(ClientId::new(self.client_id.clone()))
             .set_auth_uri(auth_url)
-            .set_token_uri(token_url)
-            .set_redirect_uri(redirect_url);
+            .set_token_uri(token_url);
+        if !self.redirect.is_empty() {
+            let redirect_url =
+                RedirectUrl::new(self.redirect.clone()).map_err(|e| OAuthError::Provider {
+                    code: "invalid_redirect_url".to_string(),
+                    description: e.to_string(),
+                })?;
+            client = client.set_redirect_uri(redirect_url);
+        }
         if let Some(secret) = &self.client_secret {
             client = client.set_client_secret(ClientSecret::new(secret.clone()));
         }
         Ok(client)
+    }
+
+    /// The check [`Self::begin`] and [`Self::exchange`] share: both send a
+    /// `redirect_uri` on the wire, so a caller that built this client with
+    /// an empty one (correct for [`Self::refresh`], never for these two) is
+    /// misusing the type rather than hitting a transient provider problem --
+    /// worth its own error code so that mistake does not present as the
+    /// provider's fault. See [`Self::configured`]'s doc for why the redirect
+    /// is optional at all.
+    fn require_redirect(&self) -> Result<(), OAuthError> {
+        if self.redirect.is_empty() {
+            return Err(OAuthError::Provider {
+                code: "missing_redirect_url".to_string(),
+                description:
+                    "this call requires a redirect URI; an empty one is only valid for refresh"
+                        .to_string(),
+            });
+        }
+        Ok(())
     }
 
     /// Google's authorization endpoint, detected from the URL rather than
@@ -264,6 +302,7 @@ impl OAuthClient {
     /// rather than sent empty, since an empty `login_hint` is its own small
     /// tell to whoever is watching the request.
     pub fn begin(&self, login_hint: Option<&str>) -> Result<Authorization, OAuthError> {
+        self.require_redirect()?;
         let client = self.configured()?;
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
         let mut request =
@@ -292,6 +331,7 @@ impl OAuthClient {
     /// Exchange an authorization code -- and the verifier [`Self::begin`]
     /// minted alongside its challenge -- for tokens.
     pub async fn exchange(&self, code: &str, pkce_verifier: &str) -> Result<Tokens, OAuthError> {
+        self.require_redirect()?;
         let client = self.configured()?;
         let http = http_client()?;
         let response = client
@@ -742,6 +782,55 @@ mod tests {
         // `scope` is not a secret and should still be legible -- this is a
         // redaction test, not a "print nothing" test.
         assert!(rendered.contains("mail.read"));
+    }
+
+    /// The regression for the bug this module's `configured` doc describes:
+    /// `everyday-service::mailsync::credential::resolve` builds an
+    /// `OAuthClient` with `redirect: String::new()` for every refresh,
+    /// because a refresh has no loopback port to hand back. Before this fix,
+    /// `configured()` called `RedirectUrl::new("")` unconditionally, which
+    /// `url`'s parser rejects ("relative URL without a base") -- turning
+    /// every single OAuth mail account's token refresh into an immediate,
+    /// unretriable `invalid_redirect_url` failure with no request ever sent.
+    #[tokio::test]
+    async fn refresh_gets_past_url_construction_with_an_empty_redirect() {
+        let mut c = client("http://127.0.0.1:9/token".to_string(), None);
+        c.redirect = String::new();
+
+        // `configured()` is private, but `refresh`'s only path to an error
+        // before a request is sent is through it -- so a `Transient` error
+        // (nothing is listening on port 9) rather than the old
+        // `invalid_redirect_url` `Provider` error proves construction
+        // succeeded and this test actually reached the network attempt.
+        let err = c.refresh("some-refresh-token").await.unwrap_err();
+        assert!(matches!(err, OAuthError::Transient { .. }), "got {err:?}");
+    }
+
+    /// `begin` and `exchange` are not `refresh`: both put a `redirect_uri` on
+    /// the wire, so an empty one is a real misconfiguration for them, not
+    /// the legitimate "no redirect needed" case `refresh` alone gets. This
+    /// is what stops a caller that meant to build a refresh-only client from
+    /// accidentally reusing it to start a sign-in.
+    #[test]
+    fn begin_refuses_an_empty_redirect() {
+        let mut c = client("http://127.0.0.1:9/token".to_string(), None);
+        c.redirect = String::new();
+        let err = c.begin(None).unwrap_err();
+        assert!(
+            matches!(err, OAuthError::Provider { ref code, .. } if code == "missing_redirect_url"),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exchange_refuses_an_empty_redirect() {
+        let mut c = client("http://127.0.0.1:9/token".to_string(), None);
+        c.redirect = String::new();
+        let err = c.exchange("code", "verifier").await.unwrap_err();
+        assert!(
+            matches!(err, OAuthError::Provider { ref code, .. } if code == "missing_redirect_url"),
+            "got {err:?}"
+        );
     }
 
     #[test]

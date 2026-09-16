@@ -12,7 +12,7 @@ use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
 use everyday_core::mail::{Address, CategorySource, Mailbox, MailboxRole, Message, MessageFlags};
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::IngestMessage;
-use everyday_service::ctx::Ctx;
+use everyday_service::ctx::{Caller, Ctx};
 use jiff::Timestamp;
 use serde_json::json;
 
@@ -76,6 +76,19 @@ fn mcp_caller(client: &str) -> serde_json::Value {
     json!({ "type": "mcp", "client": client })
 }
 
+/// See the identically-named helper in `mail_agent_tools.rs`: a `Ctx`
+/// shaped like an MCP-authenticated connection, which is what `domains::
+/// meta::resolve_caller` now actually keys a call's identity on.
+fn mcp_ctx() -> Ctx {
+    Ctx {
+        caller: Caller::Device(format!(
+            "{}test-device",
+            everyday_core::agent::tools::MCP_DEVICE_ID_PREFIX
+        )),
+        ..Ctx::local()
+    }
+}
+
 #[test]
 fn lists_what_an_mcp_client_archived_newest_first_with_a_resolved_subject() {
     let (svc, _dir) = support::vault::service(None);
@@ -86,7 +99,7 @@ fn lists_what_an_mcp_client_archived_newest_first_with_a_resolved_subject() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         svc.call(
-            Ctx::local(),
+            mcp_ctx(),
             "run_tool",
             json!({
                 "name": "archive_thread",
@@ -133,7 +146,7 @@ fn a_cursor_pages_strictly_after_the_row_it_names() {
     rt.block_on(async {
         for thread in &threads {
             svc.call(
-                Ctx::local(),
+                mcp_ctx(),
                 "run_tool",
                 json!({
                     "name": "archive_thread",

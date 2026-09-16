@@ -90,8 +90,12 @@ pub async fn resolve(svc: &Arc<Service>, vault: &Arc<Vault>, account: &Account) 
                 auth_url: auth_url.clone(),
                 token_url: token_url.clone(),
                 scopes: scopes.clone(),
-                // Only ever used for `begin`, which this path never calls --
-                // `refresh` needs no redirect URI at all.
+                // `refresh` never puts a `redirect_uri` on the wire (RFC
+                // 6749 §6 has no such parameter on a refresh-token grant),
+                // and this path has no loopback port to hand back anyway --
+                // `OAuthClient::configured` treats an empty redirect as
+                // legitimate for exactly this call. `begin` and `exchange`
+                // would reject it; this credential is never used for those.
                 redirect: String::new(),
             };
 

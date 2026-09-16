@@ -57,9 +57,42 @@ export interface MockMailBody {
  * check lives. See {@link MailBodySource} for what each mode returns and
  * how to use it.
  */
+/**
+ * The origin every `mail/…` address hangs off, which is not the same string
+ * on every platform.
+ *
+ * Tauri maps a custom scheme onto an ordinary `http://everyday.localhost`
+ * origin on Windows and Android, where `everyday://` does not resolve at
+ * all and the scheme's own host (`mail`) has nowhere to ride but the first
+ * path segment. `protocol.rs`'s `mail_path` accepts both shapes; `api.ts`'s
+ * `mediaUrl` makes this same check for blobs. Getting it wrong is not a
+ * degraded image somewhere -- it is every message body failing to load.
+ */
+export function mailOrigin(): string {
+  return navigator.userAgent.includes('Windows') || navigator.userAgent.includes('Android')
+    ? 'http://everyday.localhost/mail'
+    : 'everyday://mail'
+}
+
+/**
+ * Point a stored body's own `everyday://mail/…` addresses at the origin this
+ * platform actually resolves.
+ *
+ * Remote-image and `cid:` addresses are written into the HTML once, by
+ * `sanitize::sanitize` at sync time, long before anyone knows which webview
+ * will render it -- so unlike {@link bodyDocument} they cannot be built for
+ * the right platform in the first place, and are corrected here instead.
+ * A no-op everywhere the scheme resolves natively.
+ */
+export function applyPlatformOrigin(html: string): string {
+  const origin = mailOrigin()
+  if (origin === 'everyday://mail') return html
+  return html.split('everyday://mail/').join(`${origin}/`)
+}
+
 export function bodyDocument(messageId: string, mock: MockMailBody = {}): MailBodySource {
   if (!isMock) {
-    return { url: `everyday://mail/body/${encodeURIComponent(messageId)}` }
+    return { url: `${mailOrigin()}/body/${encodeURIComponent(messageId)}` }
   }
   const inner = mock.html?.trim() ? mock.html : `<pre>${escapeAndLinkify(mock.text ?? '')}</pre>`
   return { html: mockDocument(inner), imagesHidden: mock.imagesHidden ?? false }
@@ -74,7 +107,7 @@ export function bodyDocument(messageId: string, mock: MockMailBody = {}): MailBo
  * attachment chip's own link should use {@link mockPartUrl} instead. */
 export function partUrl(messageId: string, identifier: string): string | null {
   if (isMock) return null
-  return `everyday://mail/part/${encodeURIComponent(messageId)}/${encodeURIComponent(identifier)}`
+  return `${mailOrigin()}/part/${encodeURIComponent(messageId)}/${encodeURIComponent(identifier)}`
 }
 
 /** A minimal, valid, single-page PDF -- just enough for a real

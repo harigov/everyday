@@ -183,11 +183,13 @@ fn free_text_query(index: &Index, fields: &Fields, m: &TextMatch) -> Box<dyn Que
     Box::new(BooleanQuery::new(subs))
 }
 
-/// `subject` and `body_text` are indexed with tantivy's built-in `"default"`
-/// tokenizer; this runs the same analyser over the query value so the terms
-/// line up with what was indexed.
+/// `subject` and `body_text` are indexed with
+/// [`crate::tokenizer::CjkAwareTokenizer`] (see `schema.rs`); this runs the
+/// same analyser over the query value so the terms line up with what was
+/// indexed -- including a CJK substring tokenising to the same bigrams the
+/// original text did.
 fn text_field_query(index: &Index, field: Field, m: &TextMatch) -> Box<dyn Query> {
-    let terms = tokenize(index, "default", field, &m.text);
+    let terms = tokenize(index, crate::tokenizer::CJK_AWARE_TOKENIZER, field, &m.text);
     make_query(terms, m.phrase)
 }
 
@@ -291,20 +293,121 @@ fn resolve_date(bound: DateBound, now: Timestamp) -> i64 {
         DateBound::Absolute(date) => date,
         DateBound::Relative { amount, unit } => {
             let today = now.to_zoned(TimeZone::UTC).date();
+            // `try_*` rather than the panicking `days`/`months`/`years`:
+            // `MailQuery::parse` already clamps `amount` to jiff's
+            // representable range (see `clamp_relative_amount` in
+            // `everyday_core::mailsearch`), but resolving a date is not the
+            // place to trust that a value reaching here always went through
+            // that clamp — a panic here runs under `panic = "abort"` in
+            // release, so failing this fallibly and degrading to the
+            // extreme end of what a `Date` can hold is the only acceptable
+            // outcome for an amount this large, in either direction.
             let span = match unit {
-                RelUnit::Days => Span::new().days(amount),
-                RelUnit::Months => Span::new().months(amount),
-                RelUnit::Years => Span::new().years(amount),
+                RelUnit::Days => Span::new().try_days(amount),
+                RelUnit::Months => Span::new().try_months(amount),
+                RelUnit::Years => Span::new().try_years(amount),
             };
-            today.saturating_sub(span)
+            match span {
+                Ok(span) => today.saturating_sub(span),
+                // A negative amount subtracts a negative span, which moves
+                // forward in time -- so an amount too large in magnitude to
+                // represent lands at the far future end; a positive amount
+                // too large lands at the far past end.
+                Err(_) if amount < 0 => Date::MAX,
+                Err(_) => Date::MIN,
+            }
         }
     };
     date_start_micros(date)
 }
 
+/// `date`'s own range (`Date::MIN..=Date::MAX`, roughly ±9999 years) is very
+/// slightly wider than what a UTC midnight can convert to a [`Timestamp`] --
+/// the last couple of days at each end overflow it (`jiff` 0.2.35;
+/// `Timestamp`'s own valid range is a handful of days narrower than
+/// `Date`'s). That was unreachable in practice while every date here came
+/// from a 4-digit-year `before:`/`after:` literal or a `saturating_sub` of a
+/// span jiff itself had already bounded to something reasonable -- but
+/// `resolve_date`'s fallback for an out-of-range relative amount saturates
+/// deliberately to `Date::MIN`/`Date::MAX` (and an in-range amount can still
+/// saturate `today.saturating_sub`/`saturating_add` there too, for an amount
+/// merely large rather than absurd), so this can no longer assume the
+/// conversion always succeeds.
 fn date_start_micros(date: Date) -> i64 {
-    date.to_zoned(TimeZone::UTC)
-        .expect("every civil date has a valid UTC midnight")
-        .timestamp()
-        .as_microsecond()
+    match date.to_zoned(TimeZone::UTC) {
+        Ok(z) => z.timestamp().as_microsecond(),
+        // Saturate to whichever end of `Timestamp`'s own range is on the
+        // same side -- a date this far out already meant "as far as this
+        // store can represent," so losing the last day or two of precision
+        // here distinguishes nothing any query actually cared about.
+        Err(_) if date.year() < 0 => Timestamp::MIN.as_microsecond(),
+        Err(_) => Timestamp::MAX.as_microsecond(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn now() -> Timestamp {
+        Date::new(2024, 6, 15).unwrap().to_zoned(TimeZone::UTC).unwrap().timestamp()
+    }
+
+    /// Regression for a process-killing panic: `older_than:<huge number>d`
+    /// (or `m`/`y`) used to build `Span::new().days(amount)` directly, which
+    /// panics outside roughly ±7,304,484 days per jiff 0.2.35's own doc
+    /// comment -- and this crate's release profile sets `panic = "abort"`,
+    /// so a search query alone could kill the whole app. `resolve_date` must
+    /// degrade instead.
+    #[test]
+    fn a_huge_relative_amount_in_every_unit_does_not_panic() {
+        for unit in [RelUnit::Days, RelUnit::Months, RelUnit::Years] {
+            let bound = DateBound::Relative { amount: 50_000_000, unit };
+            let resolved = resolve_date(bound, now());
+            assert_eq!(
+                resolved,
+                date_start_micros(Date::MIN),
+                "an amount this far out of range must degrade to the earliest \
+                 representable date, not panic"
+            );
+        }
+    }
+
+    /// The most direct reproduction of the bug report: `i64::MAX`, which a
+    /// model calling the `search_mail` tool (whose schema advertises this
+    /// exact `older_than:`/`newer_than:` syntax) could plausibly send
+    /// straight through, since `digits.parse::<i64>()` in
+    /// `everyday_core::mailsearch` never range-checked its result before
+    /// this fix.
+    #[test]
+    fn i64_max_does_not_panic_in_any_unit() {
+        for unit in [RelUnit::Days, RelUnit::Months, RelUnit::Years] {
+            let bound = DateBound::Relative { amount: i64::MAX, unit };
+            let resolved = resolve_date(bound, now());
+            assert_eq!(resolved, date_start_micros(Date::MIN));
+        }
+    }
+
+    /// The mirror case: a huge *negative* amount (reachable through
+    /// `older_than:-...` before the value's sign is stripped) moves forward
+    /// in time instead of back, so it must degrade to the opposite end.
+    #[test]
+    fn i64_min_does_not_panic_and_degrades_the_other_direction() {
+        for unit in [RelUnit::Days, RelUnit::Months, RelUnit::Years] {
+            let bound = DateBound::Relative { amount: i64::MIN, unit };
+            let resolved = resolve_date(bound, now());
+            assert_eq!(resolved, date_start_micros(Date::MAX));
+        }
+    }
+
+    /// An ordinary, in-range amount must still resolve exactly as before --
+    /// this fix must not change behaviour for every query that was already
+    /// fine.
+    #[test]
+    fn an_ordinary_amount_still_resolves_normally() {
+        let bound = DateBound::Relative { amount: 2, unit: RelUnit::Days };
+        let resolved = resolve_date(bound, now());
+        let expected = date_start_micros(Date::new(2024, 6, 13).unwrap());
+        assert_eq!(resolved, expected);
+    }
 }

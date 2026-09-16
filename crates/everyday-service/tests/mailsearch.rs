@@ -149,6 +149,60 @@ async fn search_mail_honours_an_account_filter() {
     assert_eq!(scoped_threads.len(), 1, "{scoped}");
 }
 
+/// Regression for "`in:<mailbox>` can never match": `everyday-mailindex`'s
+/// query translation matches `Op::In` against the indexed `mailboxes`
+/// field as a raw term, and `seed_searchable_thread` indexes under the
+/// mailbox's real id -- a bare UUID, exactly like the real sync passes do
+/// -- never the role name `"inbox"` a person types. Before
+/// `resolve_mailbox_names` existed, `in:inbox` built a query for the
+/// literal term `"inbox"`, which nothing was ever indexed as.
+#[tokio::test]
+async fn search_mail_resolves_in_mailbox_name_to_its_id() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let thread_id =
+        seed_searchable_thread(&svc, account, "Quarterly report", "the marmalade figures are in");
+
+    let result = call(&svc, "search_mail", json!({ "query": "in:inbox" })).await;
+    let threads = result["threads"].as_array().unwrap();
+    assert_eq!(threads.len(), 1, "{result}");
+    assert_eq!(threads[0]["id"], thread_id.to_string());
+}
+
+/// A name matching no mailbox at all must keep behaving exactly like
+/// before this fix -- no matches, not an error a search box would have to
+/// explain.
+#[tokio::test]
+async fn search_mail_in_an_unrecognised_mailbox_name_finds_nothing() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    seed_searchable_thread(&svc, account, "Quarterly report", "the marmalade figures are in");
+
+    let result = call(&svc, "search_mail", json!({ "query": "in:not-a-real-mailbox" })).await;
+    assert!(result["threads"].as_array().unwrap().is_empty(), "{result}");
+}
+
+/// A name matching more than one mailbox -- here, two different accounts'
+/// own inboxes -- must reach every one of them, not only the first one
+/// resolution happened to find.
+#[tokio::test]
+async fn search_mail_in_inbox_reaches_every_accounts_own_inbox() {
+    let (svc, _dir) = service();
+    let account_a = seed_account(&svc);
+    let account_b = {
+        let vault = svc.get().unwrap();
+        let account = Account::new(Provider::Custom, "someone-else@example.com");
+        let id = account.id;
+        vault.save_account(&account).unwrap();
+        id
+    };
+    seed_searchable_thread(&svc, account_a, "From account A", "shared word appears here");
+    seed_searchable_thread(&svc, account_b, "From account B", "shared word appears here too");
+
+    let result = call(&svc, "search_mail", json!({ "query": "in:inbox" })).await;
+    assert_eq!(result["threads"].as_array().unwrap().len(), 2, "{result}");
+}
+
 #[tokio::test]
 async fn suggest_addresses_matches_contacts_by_prefix() {
     let (svc, _dir) = service();

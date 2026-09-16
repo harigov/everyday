@@ -15,10 +15,17 @@
 //! `everyday_service::domains::meta::run_tool` already filters against what
 //! this vault can actually offer and already refuses a destructive tool
 //! without confirmation. Reaching past it into `tools::dispatch` would skip
-//! two things `docs/plans/mcp.md` calls out by name: the change-event
-//! fan-out, so a task an external agent creates appears in an open window
-//! immediately, and the scope check on the caller's [`Ctx`]. [`VaultHost`]
-//! is built precisely so that every call from this route is a
+//! two things `docs/plans/mcp.md` calls out by name: the scope check on the
+//! caller's [`Ctx`], and -- for mail specifically, see
+//! `everyday_service::domains::meta::mail_tool_change` -- the change-event
+//! fan-out that lets a mail write an external agent makes appear in an open
+//! window immediately. (That second one is `run_tool`'s own doing, not
+//! `Service::call`'s: unlike every other row in `command::COMMANDS`,
+//! `run_tool`'s actual effect depends on which tool it named, so it raises
+//! its own `Change` rather than leaning on the table-driven mechanism
+//! `Command::invoke` uses for a fixed row. A tool outside mail run this way
+//! still raises nothing yet -- narrower than this doc used to claim.)
+//! [`VaultHost`] is built precisely so that every call from this route is a
 //! [`Service::call`] and nothing else.
 //!
 //! # What a retry is not
@@ -76,7 +83,13 @@
 //! goes through, person or agent, and `send_draft`'s own result says as
 //! much when the caller was MCP. The person who turned that switch on
 //! turned it on knowing what it does; the undo window is what still stands
-//! between that and a send with genuinely no way back.
+//! between that and a send with genuinely no way back -- and, since
+//! `everyday_service::domains::meta::mail_tool_change`, that window is one
+//! an open client actually learns about the moment it opens: `run_tool`
+//! raises the same `Draft`/`Updated` [`Change`](everyday_service::Change) a
+//! person's own `send_draft` command would, so a window watching this
+//! draft redraws immediately rather than the person finding out only once
+//! the send has already left.
 //!
 //! # A locked vault offers nothing
 //!
@@ -257,7 +270,11 @@ const DEVICE_NAME: &str = "MCP client";
 /// into two places. See [`Config`]'s doc for what that costs and why it is
 /// accepted.
 pub fn issue_token(registry: &Registry, dir: &Path, scopes: Vec<Scope>) -> CommandResult<String> {
-    let (token, device_id) = registry.issue(DEVICE_NAME, scopes)?;
+    // `mcp: true` -- the one call site in this application that mints a
+    // device row `Registry::authenticate` must always answer for as MCP, no
+    // matter what a request built with the resulting token later claims
+    // about itself. See `auth::Device::mcp`'s own doc.
+    let (token, device_id) = registry.issue(DEVICE_NAME, scopes, true)?;
     let mut config = Config::load(dir);
     config.token = Some(token.clone());
     config.device_id = Some(device_id);

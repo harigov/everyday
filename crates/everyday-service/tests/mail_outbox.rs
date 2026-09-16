@@ -16,7 +16,9 @@ use std::sync::{Arc, Mutex};
 use everyday_core::account::{Account, Provider};
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
 use everyday_core::mail::{
-    Address, CategorySource, Mailbox, MailboxRole, Message, MessageFlags, OpKind, OpState, Origin,
+    Address, AttendeeResponse, CategorySource, Draft, DraftCalendarPart, DraftState, Invite,
+    InviteMethod, Mailbox, MailboxRole, Message, MessageFlags, Op, OpKind, OpState, OpTarget,
+    Origin,
 };
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::IngestMessage;
@@ -129,6 +131,11 @@ struct FakeSession {
     /// checks to prove something (a label mailbox, a Sent copy) was never
     /// touched, not only that the right thing was.
     calls: Vec<String>,
+    /// What [`FakeSession::search_message_id`] answers, keyed by the bare
+    /// id a test seeded -- standing in for a message a previous attempt (or
+    /// a crash-recovered one) already put on the server, in whichever
+    /// mailbox the test names.
+    found_message_ids: std::collections::HashMap<String, Uid>,
 }
 
 impl FakeSession {
@@ -200,10 +207,11 @@ impl MailSession for FakeSession {
     }
     async fn search_message_id(
         &mut self,
-        _mailbox: &str,
-        _message_id: &str,
+        mailbox: &str,
+        message_id: &str,
     ) -> SessionResult<Option<Uid>> {
-        Ok(None)
+        self.calls.push(format!("search_message_id {message_id} in {mailbox}"));
+        Ok(self.found_message_ids.get(message_id).copied())
     }
     async fn idle(&mut self, _stop: tokio::sync::watch::Receiver<()>) -> SessionResult<IdleEvent> {
         Ok(IdleEvent::Stopped)
@@ -214,11 +222,27 @@ impl MailSession for FakeSession {
 }
 
 #[derive(Default)]
-struct FakeSender;
+struct FakeSender {
+    /// A one-shot failure a test can seed to drive a `Send` op into
+    /// `drain_outbox`'s permanent-failure branch without a real SMTP
+    /// server to reject it -- `MailError::Server` and the like are never
+    /// retryable (see `everyday_mail::outbox::is_retryable`), so this is
+    /// enough to exercise `on_permanent_failure`'s own revert.
+    fail: Option<MailError>,
+    /// How many times [`Sender::send`] was actually asked to send
+    /// something -- what a test checks to prove a cancelled or discarded
+    /// `Send` op never reaches here at all, not only that its own state
+    /// looks right.
+    sent: std::sync::Mutex<u32>,
+}
 
 #[allow(async_fn_in_trait)]
 impl Sender for FakeSender {
     async fn send(&self, built: &Built) -> SessionResult<everyday_mail::smtp::SendReceipt> {
+        if let Some(err) = &self.fail {
+            return Err(err.clone());
+        }
+        *self.sent.lock().unwrap() += 1;
         Ok(everyday_mail::smtp::SendReceipt {
             accepted: built.envelope_to.clone(),
             server_response: "250 Ok".into(),
@@ -257,7 +281,7 @@ async fn archiving_hides_a_thread_and_a_permanent_failure_brings_it_back() {
     );
 
     let mut session = FakeSession::default();
-    let sender = FakeSender;
+    let sender = FakeSender::default();
     let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
     assert_eq!(report.attempted, 1);
     assert_eq!(report.failed, 1, "no Archive mailbox is a permanent failure");
@@ -319,7 +343,7 @@ async fn undo_send_works_inside_the_window_and_refuses_past_it() {
 /// before you send"; once the person has looked (by being in compose,
 /// saving anything), it has done its job.
 #[tokio::test]
-async fn saving_a_draft_from_compose_clears_the_recipients_changed_flag() {
+async fn a_save_clears_the_recipients_changed_flag_only_when_it_changes_the_recipients() {
     let (svc, _dir) = service();
     let account = seed_account(&svc);
     let mut draft = call(&svc, "new_draft", json!({ "account": account })).await;
@@ -345,10 +369,27 @@ async fn saving_a_draft_from_compose_clears_the_recipients_changed_flag() {
     person_edit["subject"] = json!("Hello, edited");
     call(&svc, "save_draft", json!({ "draft": person_edit })).await;
 
+    // The mark survives, because this save did not touch the recipients.
+    // It has to: compose autosaves on a timer while a person types, and
+    // flushes once more immediately before sending, so a mark cleared by
+    // any save at all is a mark that has always been cleared by the time
+    // it would have been worth reading. What it exists to say -- somebody
+    // other than you put an address on this message -- is true until the
+    // person themselves changes the addresses.
+    assert!(
+        vault.draft(draft_id.parse().unwrap()).unwrap().recipients_changed_by.is_some(),
+        "a save that leaves the recipients alone must not clear the mark naming who changed them"
+    );
+
+    // Changing the recipients is what clears it: the person has now seen
+    // and overridden whatever was put there.
+    let mut person_changes_recipients = serde_json::to_value(&stored).unwrap();
+    person_changes_recipients["to"] = json!([{ "name": "", "email": "carol@example.com" }]);
+    call(&svc, "save_draft", json!({ "draft": person_changes_recipients })).await;
+
     assert!(
         vault.draft(draft_id.parse().unwrap()).unwrap().recipients_changed_by.is_none(),
-        "a person's own save from compose clears the flag, even though this save did not touch \
-         the recipients"
+        "a person's own change to the recipients clears the mark"
     );
 }
 
@@ -415,7 +456,7 @@ async fn an_inflight_op_left_by_a_crash_is_recovered_and_drains() {
 
     // Recovery did not just flip a state bit: the op is genuinely runnable
     // again.
-    let sender = FakeSender;
+    let sender = FakeSender::default();
     let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
     assert_eq!(report.done, 1, "{report:?}");
 }
@@ -564,7 +605,7 @@ async fn gmail_archive_and_mark_read_never_touch_a_label_mailbox() {
         capabilities: Capabilities { gmail: true, ..Default::default() },
         ..Default::default()
     };
-    let sender = FakeSender;
+    let sender = FakeSender::default();
     let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
     assert_eq!(report.attempted, 2, "{report:?}");
     assert_eq!(report.done, 2, "{report:?}");
@@ -604,7 +645,7 @@ async fn a_first_retry_backs_off_thirty_seconds_not_sixty() {
         fail_next: Some(MailError::Network("connection reset".into())),
         ..Default::default()
     };
-    let sender = FakeSender;
+    let sender = FakeSender::default();
     let before = Timestamp::now();
     let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
     assert_eq!(report.retried, 1, "{report:?}");
@@ -636,7 +677,7 @@ async fn saving_a_draft_again_does_not_erase_its_recorded_server_copy() {
     call(&svc, "save_draft", json!({ "draft": draft.clone() })).await;
 
     let mut session = FakeSession::default();
-    let sender = FakeSender;
+    let sender = FakeSender::default();
     let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
     assert_eq!(report.done, 1, "the AppendDraft must have run: {report:?}");
 
@@ -679,7 +720,7 @@ async fn sending_a_draft_removes_its_server_copy() {
     let draft_id: everyday_core::id::DraftId = draft["id"].as_str().unwrap().parse().unwrap();
 
     let mut session = FakeSession::default();
-    let sender = FakeSender;
+    let sender = FakeSender::default();
     // The AppendDraft first, giving the draft its own server copy to leak.
     let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
     assert_eq!(report.done, 1, "{report:?}");
@@ -719,7 +760,7 @@ async fn discarding_a_draft_removes_its_server_copy() {
     call(&svc, "save_draft", json!({ "draft": draft.clone() })).await;
 
     let mut session = FakeSession::default();
-    let sender = FakeSender;
+    let sender = FakeSender::default();
     let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
     assert_eq!(report.done, 1, "the AppendDraft must have run: {report:?}");
     assert!(vault_draft(&svc, draft_id).server_copy.is_some());
@@ -737,4 +778,522 @@ async fn discarding_a_draft_removes_its_server_copy() {
 
 fn vault_draft(svc: &Arc<Service>, id: everyday_core::id::DraftId) -> everyday_core::mail::Draft {
     svc.get().unwrap().draft(id).unwrap()
+}
+
+// ---- Finding 1: discarding a draft cancels its own pending send -----------
+
+/// The regression for "discarding a draft does not cancel its queued
+/// send": once a draft has been queued to send, discarding it must cancel
+/// that op outright, so the message the person just discarded is never
+/// actually mailed.
+#[tokio::test]
+async fn discarding_a_queued_draft_cancels_its_pending_send() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let mut draft = call(&svc, "new_draft", json!({ "account": account })).await;
+    draft["to"] = json!([{ "name": "", "email": "bob@example.com" }]);
+    draft["subject"] = json!("Hello");
+    call(&svc, "save_draft", json!({ "draft": draft.clone() })).await;
+    let draft_id: everyday_core::id::DraftId = draft["id"].as_str().unwrap().parse().unwrap();
+
+    let sent = call(&svc, "send_draft", json!({ "id": draft_id })).await;
+    let op_id: everyday_core::id::OpId = sent["state"]["op"].as_str().unwrap().parse().unwrap();
+
+    call(&svc, "discard_draft", json!({ "id": draft_id })).await;
+
+    let vault = svc.get().unwrap();
+    let op = vault.op(op_id).unwrap();
+    assert_eq!(op.state, OpState::Cancelled, "discarding a queued draft must cancel its send");
+
+    // Draining the outbox afterwards must never actually send it -- a
+    // cancelled op is simply not due any more.
+    let mut session = FakeSession::default();
+    let sender = FakeSender::default();
+    drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(*sender.sent.lock().unwrap(), 0, "a discarded draft's send must never go out");
+}
+
+/// The other half: [`everyday_mail::outbox::send`]'s own defensive check.
+/// A `Send` op already `InFlight` at the moment of discard is not
+/// cancelled by [`everyday_core::Vault::discard_draft`] (the account task
+/// may already be mid-send) -- this proves the executor itself refuses to
+/// mail a draft that has since been marked `Discarded`, the last line of
+/// defence for that race. Exercised here by racing the vault directly,
+/// since reproducing the real timing would need a session that pauses
+/// mid-`execute`.
+#[tokio::test]
+async fn a_discarded_draft_is_never_sent_even_if_its_op_survives() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    // A Drafts mailbox, so the ordinary `AppendDraft` op `save_draft` also
+    // queues succeeds cleanly -- this test's own business is the `Send`
+    // op's own refusal, not an unrelated failure from having nowhere to
+    // append to.
+    seed_mailbox(&svc, account, "Drafts", MailboxRole::Drafts);
+    let mut draft = call(&svc, "new_draft", json!({ "account": account })).await;
+    draft["to"] = json!([{ "name": "", "email": "bob@example.com" }]);
+    call(&svc, "save_draft", json!({ "draft": draft.clone() })).await;
+    let draft_id: everyday_core::id::DraftId = draft["id"].as_str().unwrap().parse().unwrap();
+
+    let sent = call(&svc, "send_draft", json!({ "id": draft_id })).await;
+    let op_id: everyday_core::id::OpId = sent["state"]["op"].as_str().unwrap().parse().unwrap();
+
+    // Simulate the race: the draft is discarded, but its `Send` op is left
+    // exactly as `send_draft` queued it -- standing in for an op that was
+    // `InFlight` (and so left alone by `discard_draft`'s own cancellation)
+    // at the moment of discard. Backdated past the undo-send window it
+    // would otherwise still be sitting inside, the same way other tests in
+    // this file age an op to make it due without a real sleep.
+    let vault = svc.get().unwrap();
+    let mut op = vault.op(op_id).unwrap();
+    op.not_before = Timestamp::now() - SignedDuration::from_secs(1);
+    vault.update_op(&op).unwrap();
+    let mut stored = vault.draft(draft_id).unwrap();
+    stored.state = DraftState::Discarded;
+    vault.save_draft(&stored).unwrap();
+
+    let mut session = FakeSession::default();
+    let sender = FakeSender::default();
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.failed, 1, "the executor must refuse a Discarded draft: {report:?}");
+    assert_eq!(*sender.sent.lock().unwrap(), 0, "it must never actually be sent");
+    let op = vault.op(op_id).unwrap();
+    assert!(matches!(op.state, OpState::Failed { permanent: true, .. }));
+}
+
+// ---- Finding 2: undo send closes for good after an attempt -----------------
+
+/// The regression for "the undo-send window reopens after every retryable
+/// failure": once an attempt has actually been made (`attempts > 0`), undo
+/// must refuse even though the op is back to `Pending` with `now` still
+/// short of its new `not_before` -- exactly the shape a retryable failure
+/// leaves behind.
+#[tokio::test]
+async fn undo_send_refuses_once_the_send_has_been_attempted() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let mut draft = call(&svc, "new_draft", json!({ "account": account })).await;
+    draft["to"] = json!([{ "name": "", "email": "bob@example.com" }]);
+    call(&svc, "save_draft", json!({ "draft": draft.clone() })).await;
+    let draft_id: everyday_core::id::DraftId = draft["id"].as_str().unwrap().parse().unwrap();
+
+    let sent = call(&svc, "send_draft", json!({ "id": draft_id })).await;
+    let op_id: everyday_core::id::OpId = sent["state"]["op"].as_str().unwrap().parse().unwrap();
+
+    let vault = svc.get().unwrap();
+    let mut op = vault.op(op_id).unwrap();
+    op.attempts = 1;
+    op.not_before = Timestamp::now() + SignedDuration::from_secs(30);
+    vault.update_op(&op).unwrap();
+    // `send`'s own stable-id write, the other half of "has been attempted".
+    let mut stored = vault.draft(draft_id).unwrap();
+    stored.message_id = Some("already-tried@example.com".into());
+    vault.save_draft(&stored).unwrap();
+
+    let err = fails(&svc, "undo_send", json!({ "draftId": draft_id })).await;
+    assert_eq!(err.code, "invalid");
+    assert!(
+        err.message.contains("already been attempted"),
+        "must say plainly that an attempt was made, not merely that the window passed: {}",
+        err.message
+    );
+    assert_eq!(
+        vault.draft(draft_id).unwrap().state.as_str(),
+        "queued",
+        "a refused undo must leave the send exactly as queued"
+    );
+}
+
+/// `undo_send`'s refusal must say something different for a send that was
+/// already cancelled -- distinct from "the window has passed", which
+/// wrongly implies the message might have gone out.
+#[tokio::test]
+async fn undo_send_on_an_already_cancelled_op_says_so_distinctly() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let mut draft = call(&svc, "new_draft", json!({ "account": account })).await;
+    draft["to"] = json!([{ "name": "", "email": "bob@example.com" }]);
+    call(&svc, "save_draft", json!({ "draft": draft.clone() })).await;
+    let draft_id: everyday_core::id::DraftId = draft["id"].as_str().unwrap().parse().unwrap();
+
+    let sent = call(&svc, "send_draft", json!({ "id": draft_id })).await;
+    let op_id: everyday_core::id::OpId = sent["state"]["op"].as_str().unwrap().parse().unwrap();
+    let vault = svc.get().unwrap();
+    let mut op = vault.op(op_id).unwrap();
+    op.transition_to(OpState::Cancelled).unwrap();
+    vault.update_op(&op).unwrap();
+
+    let err = fails(&svc, "undo_send", json!({ "draftId": draft_id })).await;
+    assert!(err.message.contains("already been cancelled"), "{}", err.message);
+}
+
+/// ...and a different message again for a send that already failed for
+/// good: there is nothing to undo, which is not the same thing as "too
+/// late".
+#[tokio::test]
+async fn undo_send_on_a_permanently_failed_op_says_so_distinctly() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let mut draft = call(&svc, "new_draft", json!({ "account": account })).await;
+    draft["to"] = json!([{ "name": "", "email": "bob@example.com" }]);
+    call(&svc, "save_draft", json!({ "draft": draft.clone() })).await;
+    let draft_id: everyday_core::id::DraftId = draft["id"].as_str().unwrap().parse().unwrap();
+
+    let sent = call(&svc, "send_draft", json!({ "id": draft_id })).await;
+    let op_id: everyday_core::id::OpId = sent["state"]["op"].as_str().unwrap().parse().unwrap();
+    let vault = svc.get().unwrap();
+    let mut op = vault.op(op_id).unwrap();
+    op.transition_to(OpState::InFlight).unwrap();
+    op.transition_to(OpState::Failed { permanent: true, message: "rejected".into() }).unwrap();
+    vault.update_op(&op).unwrap();
+
+    let err = fails(&svc, "undo_send", json!({ "draftId": draft_id })).await;
+    assert!(err.message.contains("there is nothing to undo"), "{}", err.message);
+}
+
+// ---- Finding 3: a widened already-sent search catches a crashed send -----
+
+/// The regression for "the already-sent check can never succeed on a
+/// non-Gmail account": a message a recovered `Send` op's own draft names
+/// must be found even when the server filed it somewhere other than Sent
+/// -- here, Inbox, with no Sent mailbox registered for the account at
+/// all -- or crash recovery resends a message that already went out.
+#[tokio::test]
+async fn recovering_a_crashed_send_finds_it_via_a_widened_search() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+
+    let mut draft = call(&svc, "new_draft", json!({ "account": account })).await;
+    draft["to"] = json!([{ "name": "", "email": "bob@example.com" }]);
+    call(&svc, "save_draft", json!({ "draft": draft.clone() })).await;
+    let draft_id: everyday_core::id::DraftId = draft["id"].as_str().unwrap().parse().unwrap();
+
+    let vault = svc.get().unwrap();
+    let mut stored = vault.draft(draft_id).unwrap();
+    stored.message_id = Some("crashed@example.com".into());
+    vault.save_draft(&stored).unwrap();
+    let op = Op::new(account, OpKind::Send, OpTarget::Draft(draft_id), Origin::Person);
+    vault.enqueue_op(&op).unwrap();
+    let mut inflight = op.clone();
+    inflight.transition_to(OpState::InFlight).unwrap();
+    vault.update_op(&inflight).unwrap();
+
+    let mut session = FakeSession::default();
+    session.found_message_ids.insert("crashed@example.com".into(), 5);
+    everyday_service::outbox::recover_inflight_ops(&svc, account, &mut session).await.unwrap();
+
+    let recovered = vault.op(op.id).unwrap();
+    assert_eq!(
+        recovered.state,
+        OpState::Done,
+        "found via the widened search, so recovery must not resend it: {recovered:?}"
+    );
+    assert_eq!(vault.draft(draft_id).unwrap().state, DraftState::Sent);
+}
+
+// ---- Finding 5: ops for the same thread drain in creation order -----------
+
+/// The regression for "ops for the same target can execute out of order
+/// after a retry": a `Label` pushed into the future by a simulated
+/// transient failure must hold back a later-queued `Unlabel` for the same
+/// thread, even though `Unlabel`'s own `not_before` is already due --
+/// otherwise the unlabel drains first and undoes a label the server was
+/// never even told to add. Once `Label`'s own backoff has elapsed, both
+/// become due together and drain in the order they were created.
+#[tokio::test]
+async fn due_ops_preserves_creation_order_within_a_thread_across_calls() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let all_mail = seed_mailbox(&svc, account, "[Gmail]/All Mail", MailboxRole::All);
+    let thread = seed_message(&svc, account, all_mail, 1);
+    let vault = svc.get().unwrap();
+
+    let label_ops = vault
+        .apply_thread_ops(&[thread], OpKind::Label { label: "Work".into() }, Origin::Person)
+        .unwrap();
+    let mut label_op = label_ops[0].clone();
+    // Simulate a transient failure's own backoff -- the exact shape
+    // `drain_outbox`'s retry arm leaves behind.
+    label_op.not_before = Timestamp::now() + SignedDuration::from_secs(30);
+    vault.update_op(&label_op).unwrap();
+
+    let unlabel_ops = vault
+        .apply_thread_ops(&[thread], OpKind::Unlabel { label: "Work".into() }, Origin::Person)
+        .unwrap();
+    let unlabel_op = unlabel_ops[0].clone();
+
+    let due_early = vault.due_ops(account, Timestamp::now(), 10).unwrap();
+    assert!(
+        due_early.is_empty(),
+        "the later-queued Unlabel must wait for Label even though it is itself due: {due_early:?}"
+    );
+
+    let due_later =
+        vault.due_ops(account, Timestamp::now() + SignedDuration::from_secs(31), 10).unwrap();
+    assert_eq!(due_later.len(), 2, "{due_later:?}");
+    assert_eq!(due_later[0].id, label_op.id, "Label must drain first, in creation order");
+    assert_eq!(due_later[1].id, unlabel_op.id);
+}
+
+/// One stuck target must never block an unrelated one: a second thread's
+/// own op, queued after the first thread's stuck op, is unaffected.
+#[tokio::test]
+async fn due_ops_holdback_is_scoped_to_one_thread() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let all_mail = seed_mailbox(&svc, account, "[Gmail]/All Mail", MailboxRole::All);
+    let stuck_thread = seed_message(&svc, account, all_mail, 1);
+    let other_thread = seed_message(&svc, account, all_mail, 2);
+    let vault = svc.get().unwrap();
+
+    let stuck_ops = vault
+        .apply_thread_ops(&[stuck_thread], OpKind::Label { label: "Work".into() }, Origin::Person)
+        .unwrap();
+    let mut stuck_op = stuck_ops[0].clone();
+    stuck_op.not_before = Timestamp::now() + SignedDuration::from_secs(30);
+    vault.update_op(&stuck_op).unwrap();
+    vault
+        .apply_thread_ops(&[stuck_thread], OpKind::Unlabel { label: "Work".into() }, Origin::Person)
+        .unwrap();
+
+    let other_ops =
+        vault.apply_thread_ops(&[other_thread], OpKind::MarkRead, Origin::Person).unwrap();
+
+    let due = vault.due_ops(account, Timestamp::now(), 10).unwrap();
+    assert_eq!(due.len(), 1, "{due:?}");
+    assert_eq!(due[0].id, other_ops[0].id, "the unrelated thread's op must not be held back");
+}
+
+// ---- Finding 4: field-scoped draft writes never lose a concurrent one -----
+
+/// The regression for "a draft read-modify-write outside a transaction
+/// loses the user's typing or the minted Message-ID":
+/// [`everyday_core::Vault::with_draft`] reads, mutates and writes under one
+/// lock, so two callers racing to set different fields on the same draft
+/// both survive, whichever actually runs first.
+#[tokio::test]
+async fn with_draft_serializes_two_concurrent_field_scoped_writes() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let draft = call(&svc, "new_draft", json!({ "account": account })).await;
+    call(&svc, "save_draft", json!({ "draft": draft.clone() })).await;
+    let draft_id: everyday_core::id::DraftId = draft["id"].as_str().unwrap().parse().unwrap();
+    let vault = svc.get().unwrap();
+
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+
+    let vault_a = vault.clone();
+    let barrier_a = barrier.clone();
+    let a = std::thread::spawn(move || {
+        barrier_a.wait();
+        vault_a
+            .with_draft(draft_id, |d| {
+                d.message_id = Some("minted@example.com".into());
+                true
+            })
+            .unwrap();
+    });
+
+    let vault_b = vault.clone();
+    let barrier_b = barrier.clone();
+    let b = std::thread::spawn(move || {
+        barrier_b.wait();
+        vault_b
+            .with_draft(draft_id, |d| {
+                d.subject = "Edited concurrently".into();
+                true
+            })
+            .unwrap();
+    });
+
+    a.join().unwrap();
+    b.join().unwrap();
+
+    let after = vault.draft(draft_id).unwrap();
+    assert_eq!(
+        after.message_id.as_deref(),
+        Some("minted@example.com"),
+        "one concurrent field-scoped write must not be lost, whichever ran first"
+    );
+    assert_eq!(after.subject, "Edited concurrently", "nor must the other");
+}
+
+// ---- Finding 7: a rejected invite reply reverts its own RSVP -------------
+
+/// The regression for "a permanently failed invite reply still shows as
+/// answered": once the `Send` op behind an RSVP fails for good, the
+/// invitation's own `my_response` must revert -- the organiser was never
+/// actually told "Accepted".
+#[tokio::test]
+async fn a_permanently_failed_invite_reply_reverts_my_response() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let inbox = seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+    let thread = seed_message(&svc, account, inbox, 1);
+
+    let vault = svc.get().unwrap();
+    let (_, messages) = vault.thread(thread).unwrap();
+    let message_id = messages[0].id;
+    let invite = Invite {
+        uid: "event-1".into(),
+        method: InviteMethod::Request,
+        summary: "Standup".into(),
+        start: Timestamp::now(),
+        end: Timestamp::now(),
+        all_day: false,
+        location: None,
+        organizer: Address::bare("boss@example.com"),
+        attendees: Vec::new(),
+        my_response: Some(AttendeeResponse::Accepted),
+        recurrence: None,
+    };
+    vault.set_message_invite(message_id, Some(invite)).unwrap();
+
+    // The RSVP draft `respond_to_invite_inner` builds -- named at the
+    // invitation it answers via `in_reply_to`, the same field an ordinary
+    // reply threads under and the field this plumbing reads to find it
+    // again. `calendar_part` is what actually marks this as an RSVP rather
+    // than an ordinary reply -- see
+    // `a_permanently_failed_ordinary_reply_does_not_touch_my_response`
+    // below for the sibling case this distinguishes it from.
+    let mut draft = Draft::new(account, "me@example.com", Origin::Person);
+    draft.in_reply_to = Some(message_id);
+    draft.to = vec![Address::bare("boss@example.com")];
+    draft.subject = "Accepted: Standup".into();
+    draft.calendar_part =
+        Some(DraftCalendarPart { method: "REPLY".into(), ics: "BEGIN:VCALENDAR".into() });
+    let draft_id = draft.id;
+    vault.save_draft(&draft).unwrap();
+    vault.queue_draft_send(draft_id, Timestamp::now(), Origin::Person).unwrap();
+
+    let mut session = FakeSession::default();
+    let sender = FakeSender {
+        fail: Some(MailError::Server("550 5.1.1 no such user".into())),
+        ..Default::default()
+    };
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.failed, 1, "{report:?}");
+
+    let after = vault.mail_message(message_id).unwrap();
+    assert_eq!(
+        after.invite.unwrap().my_response,
+        None,
+        "a rejected RSVP must not still say Accepted"
+    );
+    assert_eq!(vault.draft(draft_id).unwrap().state, DraftState::Editing);
+}
+
+/// The regression this bug report actually describes: a plain reply in an
+/// invitation's own thread sets `in_reply_to` just like an RSVP does --
+/// that field only names "the message this threads under", not "the
+/// invitation this answers" -- but never sets `calendar_part`. If a
+/// permanent failure of that ordinary reply reverted `my_response` on the
+/// strength of `in_reply_to` alone, sending "sounds good, see you there" in
+/// the same thread and having it bounce would silently un-answer an
+/// invitation the organiser already has a real "Accepted" for, sent days
+/// earlier and never actually withdrawn.
+#[tokio::test]
+async fn a_permanently_failed_ordinary_reply_does_not_touch_my_response() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let inbox = seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+    let thread = seed_message(&svc, account, inbox, 1);
+
+    let vault = svc.get().unwrap();
+    let (_, messages) = vault.thread(thread).unwrap();
+    let message_id = messages[0].id;
+    let invite = Invite {
+        uid: "event-1".into(),
+        method: InviteMethod::Request,
+        summary: "Standup".into(),
+        start: Timestamp::now(),
+        end: Timestamp::now(),
+        all_day: false,
+        location: None,
+        organizer: Address::bare("boss@example.com"),
+        attendees: Vec::new(),
+        my_response: Some(AttendeeResponse::Accepted),
+        recurrence: None,
+    };
+    vault.set_message_invite(message_id, Some(invite)).unwrap();
+
+    // An ordinary reply in the same thread -- no `calendar_part`, unlike
+    // the RSVP draft above.
+    let mut draft = Draft::new(account, "me@example.com", Origin::Person);
+    draft.in_reply_to = Some(message_id);
+    draft.to = vec![Address::bare("boss@example.com")];
+    draft.subject = "Re: Standup".into();
+    draft.body_html = "<p>Sounds good, see you there.</p>".into();
+    let draft_id = draft.id;
+    vault.save_draft(&draft).unwrap();
+    vault.queue_draft_send(draft_id, Timestamp::now(), Origin::Person).unwrap();
+
+    let mut session = FakeSession::default();
+    let sender = FakeSender {
+        fail: Some(MailError::Server("550 5.1.1 no such user".into())),
+        ..Default::default()
+    };
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.failed, 1, "{report:?}");
+
+    let after = vault.mail_message(message_id).unwrap();
+    assert_eq!(
+        after.invite.unwrap().my_response,
+        Some(AttendeeResponse::Accepted),
+        "an unrelated reply failing must not un-answer an invitation the organiser already has"
+    );
+    assert_eq!(vault.draft(draft_id).unwrap().state, DraftState::Editing);
+}
+
+// ---- Finding 8: a crash between an op's own terminal state and its --------
+// ---- draft's own write is reconciled at startup ---------------------------
+
+/// The regression for "a crash between marking an op Done and finishing
+/// its side effects strands the draft forever": [`recover_inflight_ops`]
+/// must also reconcile a draft left `Queued` naming an op that has already
+/// reached a terminal state -- `Done` (the send actually went out) and a
+/// permanent `Failed` (it did not, and never will) each need a different
+/// answer.
+#[tokio::test]
+async fn a_crash_between_an_ops_terminal_state_and_its_draft_write_is_reconciled() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let vault = svc.get().unwrap();
+
+    let mut sent_draft = Draft::new(account, "me@example.com", Origin::Person);
+    sent_draft.to = vec![Address::bare("bob@example.com")];
+    let sent_draft_id = sent_draft.id;
+    vault.save_draft(&sent_draft).unwrap();
+    let (_, sent_op) =
+        vault.queue_draft_send(sent_draft_id, Timestamp::now(), Origin::Person).unwrap();
+    let mut done = sent_op.clone();
+    done.transition_to(OpState::InFlight).unwrap();
+    done.transition_to(OpState::Done).unwrap();
+    vault.update_op(&done).unwrap();
+
+    let mut failed_draft = Draft::new(account, "me@example.com", Origin::Person);
+    failed_draft.to = vec![Address::bare("carol@example.com")];
+    let failed_draft_id = failed_draft.id;
+    vault.save_draft(&failed_draft).unwrap();
+    let (_, failed_op) =
+        vault.queue_draft_send(failed_draft_id, Timestamp::now(), Origin::Person).unwrap();
+    let mut failed = failed_op.clone();
+    failed.transition_to(OpState::InFlight).unwrap();
+    failed.transition_to(OpState::Failed { permanent: true, message: "rejected".into() }).unwrap();
+    vault.update_op(&failed).unwrap();
+
+    let mut session = FakeSession::default();
+    everyday_service::outbox::recover_inflight_ops(&svc, account, &mut session).await.unwrap();
+
+    assert_eq!(
+        vault.draft(sent_draft_id).unwrap().state,
+        DraftState::Sent,
+        "a Done op's own draft must be reconciled to Sent"
+    );
+    assert_eq!(
+        vault.draft(failed_draft_id).unwrap().state,
+        DraftState::Editing,
+        "a permanently failed op's own draft must not be stuck Queued forever"
+    );
 }

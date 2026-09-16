@@ -119,6 +119,15 @@ enum Verifier {
 /// stream catches up.
 const RAW_BATCH_SIZE: usize = 20;
 
+/// The batch size for [`ImapSession::changes_since`]'s non-`CONDSTORE`
+/// flag refetch -- see that branch's own docs for why one `UID FETCH`
+/// naming every known uid at once is not safe. A `FLAGS`-only fetch is far
+/// smaller per uid than a header, so this could go higher than
+/// `everyday_service::mailsync::passes::HEADER_BATCH_SIZE`'s own five
+/// hundred, but there is no benefit to doing so and a shared order of
+/// magnitude is easier to reason about than a bespoke one.
+const FLAG_REFETCH_BATCH_SIZE: usize = 500;
+
 /// How long an `IDLE` is allowed to sit before [`ImapSession::idle`] ends it
 /// with `DONE` and starts another. RFC 2177 advises re-issuing well inside
 /// thirty minutes to avoid a server-side inactivity timeout;
@@ -246,6 +255,7 @@ impl MailSession for ImapSession {
                     let role = role_from_attributes(name_attributes, name, gmail);
                     out.push(RemoteMailbox {
                         name: name.to_string(),
+                        display_name: decode_mailbox_name_utf7(name),
                         delimiter: delimiter.as_deref().and_then(|d| d.chars().next()),
                         attributes: name_attributes.iter().map(name_attribute_to_string).collect(),
                         special_use: role,
@@ -327,13 +337,25 @@ impl MailSession for ImapSession {
             // for every UID the caller already knows -- and the caller
             // reconciles. `modseq` is `None` throughout, as documented on
             // `Changes::flag_changes`.
-            let command = format!("UID FETCH {} (FLAGS)", known_uids.to_imap());
-            run_fetch_command(session, &command, |_seq, attrs| {
-                if let Some((uid, flags, _)) = flags_from_attrs(attrs) {
-                    flag_changes.push((uid, flags, None));
-                }
-            })
-            .await?;
+            //
+            // Batched, the same way `headers`/`raw` already are, rather
+            // than one `UID FETCH` naming every known uid on a single
+            // line: a mailbox with tens of thousands of non-contiguous
+            // uids (heavy deletion over time, or a resumed reset re-uses
+            // this same fallback while it warms back up) can build a
+            // sequence-set literal past a server's own line limit --
+            // Dovecot's default is 64 KB -- which comes back as a `BAD`
+            // this crate classifies as permanent, stalling the mailbox for
+            // good rather than merely being slow.
+            for batch in known_uids.chunks(FLAG_REFETCH_BATCH_SIZE) {
+                let command = format!("UID FETCH {} (FLAGS)", batch.to_imap());
+                run_fetch_command(session, &command, |_seq, attrs| {
+                    if let Some((uid, flags, _)) = flags_from_attrs(attrs) {
+                        flag_changes.push((uid, flags, None));
+                    }
+                })
+                .await?;
+            }
         }
 
         Ok(Changes { new_uids, flag_changes, vanished, uidvalidity_reset: false })
@@ -464,7 +486,8 @@ impl MailSession for ImapSession {
 
     async fn append(&mut self, mailbox: &str, raw: &[u8], flags: Flags) -> Result<Option<Uid>> {
         let flags_part = flags.to_imap_list().map(|f| format!(" {f}")).unwrap_or_default();
-        let command = format!("APPEND {}{flags_part} {{{}}}", quote_mailbox(mailbox), raw.len());
+        let command =
+            format!("APPEND {}{flags_part} {{{}}}", quote_imap_string(mailbox), raw.len());
         let session = self.session_mut()?;
 
         let id = session.run_command(&command).await.map_err(classify)?;
@@ -474,23 +497,31 @@ impl MailSession for ImapSession {
         // async-imap's own typed `append` does the same wait but is not
         // used here — it does not read the tagged response's `code`, so it
         // cannot hand back the `APPENDUID` this method exists to return.
-        match session.read_response().await.map_err(classify_io)? {
-            Some(resp) => match resp.parsed() {
-                ImapResponse::Continue { .. } => {}
-                ImapResponse::Done { status, code, information, .. } => {
+        //
+        // Looped, like `run_fetch_command`, rather than reading exactly one
+        // response: a legal untagged line can arrive before the
+        // continuation (`* 4 EXISTS` from another client's own concurrent
+        // append, `* OK [ALERT ...]`), and treating that as "not a
+        // continuation" turned an ordinary interleaving into a permanent
+        // `Protocol` error that reversed whatever the person was doing.
+        loop {
+            let Some(resp) = session.read_response().await.map_err(classify_io)? else {
+                return Err(MailError::Network("connection closed during APPEND".into()));
+            };
+            match resp.parsed() {
+                ImapResponse::Continue { .. } => break,
+                ImapResponse::Done { tag, status, code, information } if *tag == id => {
                     status_result(status, code.as_ref(), information.as_deref())
                         .map_err(classify)?;
                     return Err(MailError::Protocol(
                         "the server accepted APPEND without asking for the message".into(),
                     ));
                 }
-                other => {
-                    return Err(MailError::Protocol(format!(
-                        "unexpected response to APPEND: {other:?}"
-                    )));
-                }
-            },
-            None => return Err(MailError::Network("connection closed during APPEND".into())),
+                // An untagged line unrelated to this command's own
+                // continuation -- safe to ignore, same as
+                // `run_fetch_command`.
+                _ => {}
+            }
         }
 
         {
@@ -527,7 +558,13 @@ impl MailSession for ImapSession {
     async fn search_message_id(&mut self, mailbox: &str, message_id: &str) -> Result<Option<Uid>> {
         self.select(mailbox).await?;
         let session = self.session_mut()?;
-        let query = format!("HEADER Message-ID \"{message_id}\"");
+        // Escaped the same way `quote_imap_string` escapes a mailbox name --
+        // `message_id` is this crate's own minted id (see
+        // `crate::compose::build`) today, so there is no live exploit, but
+        // an unescaped interpolation into a quoted IMAP string is exactly
+        // the shape that stops being safe the moment anything else ever
+        // calls this with a value it did not mint itself.
+        let query = format!("HEADER Message-ID {}", quote_imap_string(message_id));
         let found: std::collections::HashSet<Uid> =
             session.uid_search(&query).await.map_err(classify)?;
         Ok(found.into_iter().next())
@@ -548,8 +585,23 @@ impl MailSession for ImapSession {
             let (wait, _interrupt) = handle.wait_with_timeout(IDLE_REISSUE);
             tokio::select! {
                 res = wait => {
+                    // `handle.done()` runs -- and, on success, is stored
+                    // back into `self.session` -- *before* `res`'s own
+                    // error (if any) is allowed to return early. The
+                    // previous order asked `?` on `res` first, which on an
+                    // errored `wait` returned straight out of this
+                    // `select!` arm with `handle` still holding the only
+                    // copy of the connection; dropping it there closed the
+                    // socket and left `self.session` `None`, leaking one
+                    // connection per idle failure and forcing the next
+                    // call to reconnect from scratch. See this method's
+                    // own regression test.
+                    let done = handle.done().await.map_err(classify);
+                    match done {
+                        Ok(session) => self.session = Some(session),
+                        Err(e) => return Err(e),
+                    }
                     let outcome = res.map_err(classify)?;
-                    self.session = Some(handle.done().await.map_err(classify)?);
                     use async_imap::extensions::idle::IdleResponse;
                     match outcome {
                         IdleResponse::Timeout | IdleResponse::ManualInterrupt => continue,
@@ -937,14 +989,24 @@ fn capabilities_from(raw: &async_imap::types::Capabilities) -> Capabilities {
     }
 }
 
-/// What a mailbox is for: `SPECIAL-USE` first, then — only for a Gmail
-/// account, and only when the attribute was somehow missing — the English
-/// names Gmail itself gives its folders.
+/// What a mailbox is for: `SPECIAL-USE` first, then a name-based fallback
+/// when the attribute was somehow missing -- Gmail's own English folder
+/// names for a Gmail account, or, for any other server, the common English
+/// names a server that predates RFC 6154 (`SPECIAL-USE`) still tends to
+/// use.
 ///
 /// Gmail folder rule (`docs/plans/mail.md`, "What the open questions were
 /// settled as"): the sync engine that will be built on this trait fetches
 /// `\All` instead of every labelled mailbox, so `Role::All` is the one this
 /// function most needs to get right.
+///
+/// The non-Gmail fallback matters for the same reason `Role::Sent` matters
+/// anywhere: [`crate::outbox`]'s own `append_sent_copy` reads a mailbox's
+/// role to know where to file a sent copy, and a server with no
+/// `SPECIAL-USE` and no attribute match at all would otherwise leave every
+/// folder `Role::Other` -- silently never filing anything in Sent, on a
+/// server old enough that this is exactly the kind of server most likely to
+/// need it.
 fn role_from_attributes(attrs: &[NameAttribute<'_>], name: &str, gmail: bool) -> Option<Role> {
     if name.eq_ignore_ascii_case("INBOX") {
         return Some(Role::Inbox);
@@ -963,7 +1025,35 @@ fn role_from_attributes(attrs: &[NameAttribute<'_>], name: &str, gmail: bool) ->
             return role;
         }
     }
-    if gmail { gmail_role_from_name(name) } else { None }
+    if gmail { gmail_role_from_name(name) } else { role_from_common_name(name) }
+}
+
+/// A folder's role guessed from its own name alone, for a server that
+/// advertises neither `SPECIAL-USE` (RFC 6154) nor `X-GM-EXT-1` -- checked
+/// only once `SPECIAL-USE` itself found nothing, so a server that *does*
+/// advertise it, and spells a folder differently from its own English
+/// default, is never second-guessed. Case insensitive: a server spelling
+/// `sent` is exactly as common as one spelling `Sent`.
+fn role_from_common_name(name: &str) -> Option<Role> {
+    const SENT: [&str; 3] = ["Sent", "Sent Items", "Sent Messages"];
+    const DRAFTS: [&str; 1] = ["Drafts"];
+    const TRASH: [&str; 3] = ["Trash", "Deleted Items", "Deleted Messages"];
+    const SPAM: [&str; 2] = ["Junk", "Spam"];
+    const ARCHIVE: [&str; 1] = ["Archive"];
+    let one_of = |names: &[&str]| names.iter().any(|n| name.eq_ignore_ascii_case(n));
+    if one_of(&SENT) {
+        Some(Role::Sent)
+    } else if one_of(&DRAFTS) {
+        Some(Role::Drafts)
+    } else if one_of(&TRASH) {
+        Some(Role::Trash)
+    } else if one_of(&SPAM) {
+        Some(Role::Spam)
+    } else if one_of(&ARCHIVE) {
+        Some(Role::Archive)
+    } else {
+        None
+    }
 }
 
 fn gmail_role_from_name(name: &str) -> Option<Role> {
@@ -998,23 +1088,110 @@ fn name_attribute_to_string(attr: &NameAttribute<'_>) -> String {
     }
 }
 
+/// Decode a mailbox name out of RFC 3501 §5.1.3's modified UTF-7 -- what
+/// `LIST` sends, and what neither `async-imap` nor `imap-proto` decodes on
+/// this crate's behalf, so a German or Japanese folder would otherwise show
+/// as `Gel&APY-schte Objekte` rather than `Gelöschte Objekte`. For display
+/// only -- see [`RemoteMailbox::display_name`]'s own docs for why `name`
+/// itself must stay the server's raw spelling for `SELECT`/`APPEND`.
+///
+/// Plain ASCII (everything outside a `&...-` run) decodes to itself
+/// unchanged, so calling this on a name that never needed encoding at all
+/// is always safe and always a no-op.
+pub fn decode_mailbox_name_utf7(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'&' {
+            // Every byte outside a shifted run is one of the printable
+            // ASCII characters RFC 3501's mailbox-name grammar allows, so
+            // this is exactly as safe as it looks even though `raw` was
+            // read as UTF-8.
+            out.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+        // `&-` is modified UTF-7's own escape for a literal `&`.
+        if bytes.get(i + 1) == Some(&b'-') {
+            out.push('&');
+            i += 2;
+            continue;
+        }
+        // A shifted run: modified base64 up to the first byte outside its
+        // alphabet, which -- for a well-formed name -- is the `-`
+        // terminator RFC 3501 asks for, consumed below rather than
+        // rendered.
+        let start = i + 1;
+        let mut end = start;
+        while end < bytes.len() && modified_base64_value(bytes[end]).is_some() {
+            end += 1;
+        }
+        let units = decode_modified_base64(&bytes[start..end]);
+        out.push_str(&String::from_utf16_lossy(&units));
+        i = end;
+        if bytes.get(i) == Some(&b'-') {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// One character of modified UTF-7's own base64 alphabet (RFC 3501
+/// §5.1.3): the standard alphabet with `,` in place of `/`, and no padding
+/// character at all.
+fn modified_base64_value(c: u8) -> Option<u8> {
+    match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b',' => Some(63),
+        _ => None,
+    }
+}
+
+/// Modified base64 to UTF-16BE code units -- a hand-rolled 6-bit
+/// accumulator rather than reaching for a `base64` dependency: nothing else
+/// in this crate needs general base64, and the modified alphabet (`,` for
+/// `/`, never padded) does not fit any alphabet a crate would already offer
+/// unmodified. Trailing bits short of a full byte (there are at most four,
+/// padding's whole job when it exists) are simply dropped, matching what
+/// padding would have discarded anyway.
+fn decode_modified_base64(chars: &[u8]) -> Vec<u16> {
+    let mut bits: u32 = 0;
+    let mut nbits: u32 = 0;
+    let mut bytes = Vec::new();
+    for &c in chars {
+        let Some(v) = modified_base64_value(c) else { continue };
+        bits = (bits << 6) | u32::from(v);
+        nbits += 6;
+        if nbits >= 8 {
+            nbits -= 8;
+            bytes.push(((bits >> nbits) & 0xFF) as u8);
+        }
+    }
+    bytes.chunks_exact(2).map(|pair| u16::from_be_bytes([pair[0], pair[1]])).collect()
+}
+
 /// IMAP string-literal quoting, matching `async-imap`'s own private `quote!`
 /// macro exactly (backslash and double-quote escaped, wrapped in quotes),
-/// needed here because [`ImapSession::append`] builds its `APPEND` command
-/// by hand rather than through a typed method.
-fn quote_mailbox(name: &str) -> String {
-    format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
+/// needed everywhere a command is built by hand rather than through a typed
+/// method: [`ImapSession::append`]'s mailbox name, [`gmail_label_list`]'s
+/// labels, and [`ImapSession::search_message_id`]'s `Message-ID` value.
+fn quote_imap_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// The parenthesised, space-separated label list an `X-GM-LABELS` `STORE`
 /// sends, e.g. `("\Inbox" "Work")` — Gmail's own system labels (`\Inbox`,
 /// `\Important`, `\Starred`) are atoms with a leading backslash and a
 /// person's own label can contain spaces, so every entry is quoted the same
-/// way [`quote_mailbox`] quotes a mailbox name; a system label's leading
+/// way [`quote_imap_string`] quotes a mailbox name; a system label's leading
 /// backslash survives that quoting untouched, which is exactly what Gmail's
 /// own `STORE` syntax expects.
 fn gmail_label_list(labels: &[String]) -> String {
-    format!("({})", labels.iter().map(|l| quote_mailbox(l)).collect::<Vec<_>>().join(" "))
+    format!("({})", labels.iter().map(|l| quote_imap_string(l)).collect::<Vec<_>>().join(" "))
 }
 
 /// Mirrors `async_imap::client::Connection::check_status_ok`, which is
@@ -1221,6 +1398,27 @@ mod tests {
         assert_eq!(role_from_attributes(&[], "[Gmail]/All Mail", false), None);
     }
 
+    /// Regression: a server with no `SPECIAL-USE` at all (common on
+    /// anything that predates RFC 6154) used to leave every folder but
+    /// `INBOX` as `Role::Other`, so `append_sent_copy` never ran and a
+    /// sent message was never filed anywhere.
+    #[test]
+    fn role_falls_back_to_common_english_names_off_gmail() {
+        assert_eq!(role_from_attributes(&[], "Sent", false), Some(Role::Sent));
+        assert_eq!(role_from_attributes(&[], "sent items", false), Some(Role::Sent));
+        assert_eq!(role_from_attributes(&[], "Deleted Items", false), Some(Role::Trash));
+        assert_eq!(role_from_attributes(&[], "Junk", false), Some(Role::Spam));
+        assert_eq!(role_from_attributes(&[], "Drafts", false), Some(Role::Drafts));
+        assert_eq!(role_from_attributes(&[], "Archive", false), Some(Role::Archive));
+        // A `SPECIAL-USE` server spelling its own folder differently from
+        // the English default must not be second-guessed by this fallback.
+        assert_eq!(
+            role_from_attributes(&[NameAttribute::Sent], "Ausgang", false),
+            Some(Role::Sent)
+        );
+        assert_eq!(role_from_attributes(&[], "Archives/2024", false), None);
+    }
+
     #[test]
     fn append_uid_reads_the_first_member() {
         let code = ResponseCode::AppendUid(12345, vec![UidSetMember::Uid(7)]);
@@ -1237,8 +1435,61 @@ mod tests {
     }
 
     #[test]
-    fn quote_mailbox_escapes_quotes_and_backslashes() {
-        assert_eq!(quote_mailbox("Sent"), "\"Sent\"");
-        assert_eq!(quote_mailbox("a\"b\\c"), "\"a\\\"b\\\\c\"");
+    fn quote_imap_string_escapes_quotes_and_backslashes() {
+        assert_eq!(quote_imap_string("Sent"), "\"Sent\"");
+        assert_eq!(quote_imap_string("a\"b\\c"), "\"a\\\"b\\\\c\"");
+    }
+
+    #[test]
+    fn search_message_id_escapes_its_query() {
+        // Not a real IMAP round trip -- just proving the query this method
+        // builds is escaped the same way `APPEND`'s mailbox name is, so a
+        // `Message-ID` containing a `"` cannot break out of the quoted
+        // string this crate sends. Escaping does not remove the quote
+        // character -- it prefixes it with a backslash so an IMAP parser
+        // reads it as data rather than the string's own terminator -- so
+        // this checks the exact escaped form, not merely "no bare quote
+        // survived".
+        let quoted = quote_imap_string("evil\" OR 1=1 \"");
+        assert_eq!(quoted, "\"evil\\\" OR 1=1 \\\"\"");
+    }
+
+    #[test]
+    fn decodes_plain_ascii_unchanged() {
+        assert_eq!(decode_mailbox_name_utf7("INBOX"), "INBOX");
+        assert_eq!(decode_mailbox_name_utf7("Archives/2024"), "Archives/2024");
+    }
+
+    #[test]
+    fn decodes_a_literal_ampersand() {
+        // `&-` is modified UTF-7's own escape for a literal `&`; a bare `&`
+        // never appears un-escaped in well-formed modified UTF-7, so this
+        // is the only form a real `LIST` response could ever send for a
+        // folder named e.g. "Fish & Chips".
+        assert_eq!(decode_mailbox_name_utf7("Fish &- Chips"), "Fish & Chips");
+        assert_eq!(decode_mailbox_name_utf7("A&-B"), "A&B");
+    }
+
+    /// "Gelöschte Objekte" ("Deleted Items"), the exact example this fix's
+    /// own bug report names, modified-UTF-7 encoded the way a real server's
+    /// `LIST` response would send it.
+    #[test]
+    fn decodes_a_german_folder_name() {
+        assert_eq!(decode_mailbox_name_utf7("Gel&APY-schte Objekte"), "Gelöschte Objekte");
+    }
+
+    /// A folder name needing a UTF-16 surrogate pair (a character outside
+    /// the Basic Multilingual Plane) round-trips through the same decoder.
+    #[test]
+    fn decodes_a_name_needing_a_surrogate_pair() {
+        // U+1F4E7 EMAIL SYMBOL, encoded by hand: UTF-16BE surrogate pair
+        // 0xD83D 0xDCE7 is bytes D8 3D DC E7, whose modified base64 (6 bits
+        // at a time, `,` for `/`) is `2D3c5w`.
+        assert_eq!(decode_mailbox_name_utf7("&2D3c5w-"), "\u{1f4e7}");
+    }
+
+    #[test]
+    fn decode_is_a_no_op_when_a_shifted_run_is_never_opened() {
+        assert_eq!(decode_mailbox_name_utf7(""), "");
     }
 }

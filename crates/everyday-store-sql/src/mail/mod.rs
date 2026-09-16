@@ -340,10 +340,61 @@ impl MailStore for SqlStore {
     }
 
     fn due_ops(&self, account: AccountId, now: Timestamp, limit: u32) -> Result<Vec<Op>> {
-        let mut sql = "SELECT id, data FROM ops \
-             WHERE account_id = ?1 AND state = 'pending' AND not_before_us <= ?2"
-            .to_string();
-        self.page(&mut sql, "not_before_us ASC", Some(limit), 0);
+        // `not_before_us` alone does not mean "creation order": the drain
+        // loop's own retry arm pushes a failed op's `not_before` forward by
+        // its backoff, which can easily land *after* a younger op's own
+        // `not_before` for the very same target -- an `Unlabel` queued a
+        // moment after a `Label` that just failed transiently is due
+        // *sooner* than the `Label` it must not race ahead of. The `NOT
+        // EXISTS` below holds an op back for as long as an *earlier-created*
+        // op against the same thread is still `pending` and not yet due
+        // itself -- so a target's own ops never drain out of the order they
+        // were queued in, no matter how their individual backoffs happen to
+        // fall. It does *not* hold an op back merely because an earlier
+        // sibling is *also* due this instant: both are then returned
+        // together (see the `ORDER BY` below for why that is still safe),
+        // exactly as before this existed, so two ops queued back to back
+        // against the same thread still drain in the same `drain_outbox`
+        // pass they always could. `id` is a UUIDv7
+        // ([`crate::id`]'s own `new`), whose textual form sorts exactly in
+        // creation order, so comparing it as ordinary text is enough; no
+        // separate "created at" column is needed for this.
+        //
+        // Only `thread_id` -- populated for `OpTarget::Thread` alone, see
+        // this file's own `Record for Op` impl -- can group ops by target
+        // in SQL without decrypting every row, so this ordering guarantee
+        // is thread-scoped: two ops against the same `Draft` (an
+        // `AppendDraft` racing a `DiscardDraft`, say) are not held back by
+        // each other here. `thread_id IS NULL` never matches itself in the
+        // `NOT EXISTS` subquery -- SQL's `NULL = NULL` is never true -- so
+        // a `Draft`-targeted op is always immediately eligible, exactly the
+        // pre-existing behaviour for those.
+        //
+        // Holding an op back only ever affects other ops sharing its own
+        // `thread_id`; an unrelated thread's ops are untouched by this
+        // clause and drain exactly as before, so one stuck target can never
+        // block the rest of the account's outbox.
+        let mut sql = "SELECT id, data FROM ops o \
+             WHERE o.account_id = ?1 AND o.state = 'pending' AND o.not_before_us <= ?2 \
+             AND NOT EXISTS ( \
+                 SELECT 1 FROM ops earlier \
+                 WHERE earlier.thread_id = o.thread_id \
+                   AND earlier.state = 'pending' \
+                   AND earlier.id < o.id \
+                   AND earlier.not_before_us > ?2 \
+             )"
+        .to_string();
+        // `id ASC`, not `not_before_us ASC`: once both an earlier- and a
+        // later-created op for the same thread are due in the same call
+        // (the case the `NOT EXISTS` above lets through on purpose), their
+        // `not_before` values alone can still be in the wrong order --
+        // exactly the `Label`/`Unlabel` backoff shape this whole method's
+        // docs describe -- while `id`, a creation-ordered UUIDv7, never is.
+        // Ordering the *whole* page by `id` rather than only breaking ties
+        // with it costs nothing else: `not_before_us <= ?2` has already
+        // decided *which* ops are due this call, so this only ever reorders
+        // ops that were already going to run in the same pass.
+        self.page(&mut sql, "id ASC", Some(limit), 0);
         let rows = self.read().records(&sql, &vals![account.to_string(), to_us(now)])?;
         self.collect(rows, op_aad)
     }

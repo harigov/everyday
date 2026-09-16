@@ -35,7 +35,7 @@
         "media-src": "'self' everyday: http://everyday.localhost data: blob:",
         "style-src": "'self' 'unsafe-inline'",
         "script-src": "'self'",
-        "connect-src": "'self' ipc: http://ipc.localhost",
+        "connect-src": "'self' ipc: http://ipc.localhost everyday: http://everyday.localhost",
         "frame-src": "'self'",
         "object-src": "'none'"
       },

@@ -58,9 +58,54 @@
 //! re-reading everything) on the writer's thread rather than a background
 //! one. A second, read-only process opening the same directory would still
 //! want `OnCommitWithDelay`, which is exactly what `watch` remains for.
+//!
+//! # Self-healing on open
+//!
+//! A field's tokenizer (`schema.rs`'s `subject` and `body_text` going from
+//! tantivy's default analyser to [`crate::tokenizer::CjkAwareTokenizer`] was
+//! the change that first exposed this) is part of the schema tantivy
+//! persists to `meta.json`, not something this crate's own version can
+//! silently migrate: [`Index::open_or_create`] compares the schema handed to
+//! it against the one already on disk and refuses to open at all when they
+//! differ. Before this section existed, that refusal fell into
+//! [`MailIndex::open`]'s existing "swallow it, leave `opened: None`"
+//! tolerance -- exactly right for a wrong key or a corrupt segment, both of
+//! which a rebuild already answers -- except *nothing ever called that
+//! rebuild automatically*. `MailSearch::rebuild_needed` stayed `true`, and
+//! stayed `true`, across every restart, for every vault that had ever synced
+//! mail before the schema changed: a permanent, silent outage with no path
+//! back for a person who does not know `rebuild_mail_index` exists.
+//!
+//! [`MailIndex::try_open`] closes that gap by treating a failure at
+//! [`Index::open_or_create`] itself as a signal that the sealed directory's
+//! *contents* cannot be trusted -- a schema mismatch above all, but a
+//! decrypt failure or a truncated meta file look identical at this layer,
+//! and every one of them is exactly the "derived structure, never the only
+//! copy of anything" case [`MailSearch::rebuild_needed`]'s own docs already
+//! describe -- and wiping the directory, the same way
+//! [`MailIndex::rebuild_empty`] already does, before trying once more
+//! against a schema that now matches trivially, because there is nothing
+//! left on disk to disagree with it. `open_index` in
+//! `everyday_service::mailsync::wiring` reads [`MailIndex::healed_on_open`]
+//! right after constructing the result and, when it is `true`, queues one
+//! full `rebuild_account` walk per account so the wipe's own emptiness does
+//! not simply become the new permanent outage.
+//!
+//! What this must never do is wipe a *healthy* index just because this
+//! particular process could not use it a moment ago. A live writer another
+//! process already holds the lock for is exactly that: nothing on disk is
+//! wrong, and the failure shows up one step later than a schema mismatch
+//! does -- at [`Index::writer_with_num_threads`], not
+//! [`Index::open_or_create`] -- which is what [`OpenOutcome`] exists to
+//! keep separate. Only a failure at the first step ever wipes; a failure at
+//! the second or third leaves the directory untouched and answers
+//! `rebuild_needed() == true`, precisely as an unopenable index always did
+//! before this section existed. Nothing downstream of
+//! [`Index::open_or_create`] succeeding is ever treated as reason enough to
+//! destroy data this process cannot prove is actually broken.
 
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, RwLock};
 
 use everyday_core::crypto::Cipher;
 use everyday_core::error::{Error, Result};
@@ -74,7 +119,9 @@ use tantivy::{DocId, Index, IndexReader, IndexWriter, ReloadPolicy, Score, Segme
 use crate::directory::SealedDirectory;
 use crate::query;
 use crate::schema::{self, Fields};
-use crate::tokenizer::{ADDRESS_TOKENIZER, AddressTokenizer};
+use crate::tokenizer::{
+    ADDRESS_TOKENIZER, AddressTokenizer, CJK_AWARE_TOKENIZER, CjkAwareTokenizer,
+};
 
 /// The indexing heap tantivy is given, per the one thread that uses it. Well
 /// above tantivy's own minimum (15 MB) and generous enough that a sync
@@ -87,7 +134,36 @@ pub const WRITER_HEAP_BYTES: usize = 64 * 1024 * 1024;
 /// tantivy's search, sealed. See the module docs.
 pub struct MailIndex {
     fields: Fields,
-    opened: Option<Opened>,
+    /// `None` when the index at `dir` could not be opened -- see
+    /// [`MailIndex::open`]'s own docs -- or after [`MailIndex::rebuild_empty`]
+    /// itself fails to reopen a fresh one. Behind a lock, rather than a
+    /// plain field, because [`MailSearch::rebuild_empty`] has to replace it
+    /// wholesale from behind `&self`: every [`MailSearch`] method takes
+    /// `&self`, not `&mut self`, since callers reach a `MailIndex` through
+    /// `Arc<dyn MailSearch>` shared across the session (see
+    /// `everyday_service::Service::mail_index`), not a handle any one
+    /// caller owns exclusively.
+    opened: RwLock<Option<Opened>>,
+    /// Kept so [`MailIndex::rebuild_empty`] can reopen fresh without a
+    /// caller having to hand the same three arguments back to it.
+    dir: PathBuf,
+    cipher: Arc<dyn Cipher>,
+    cache_bytes: usize,
+    /// Whether *this* call to [`MailIndex::open`] had to wipe and recreate
+    /// `dir` to get a usable index -- see the module docs' "self-healing on
+    /// open". Set once, at construction, and never touched again: a
+    /// `MailIndex` is opened exactly once per process per vault unlock (see
+    /// `everyday_service::mailsync::wiring::open`), so there is no later
+    /// moment this would need to change for, and no reason to pay for
+    /// interior mutability over a plain `bool`.
+    ///
+    /// `everyday_service::mailsync::wiring::open` reads this immediately
+    /// after construction to decide whether to queue a one-time
+    /// `rebuild_account` walk for every account: a wipe leaves `self`
+    /// genuinely empty, and nothing else in that crate ever re-populates an
+    /// index on its own (see that function's own docs for why the sync
+    /// passes cannot).
+    healed_on_open: bool,
 }
 
 struct Opened {
@@ -96,45 +172,143 @@ struct Opened {
     reader: IndexReader,
 }
 
+/// Where, exactly, [`MailIndex::open_once`] failed to produce an
+/// [`Opened`] -- see the module docs' "self-healing on open" for why the
+/// two cases below are treated so differently.
+enum OpenOutcome {
+    /// Boxed because it is the only variant carrying anything: an `Opened`
+    /// holds a whole tantivy `Index`, writer and reader, some three hundred
+    /// bytes against two empty variants, and an enum is as large as its
+    /// largest arm. One allocation on a path taken once per open is not
+    /// worth making every `OpenOutcome` that size.
+    Ready(Box<Opened>),
+    /// [`Index::open_or_create`] itself refused to hand back an `Index` --
+    /// no lock is taken this early, so this can only mean the directory's
+    /// own contents (its schema, its meta file, what a wrong key decrypts
+    /// to) disagree with what this build of the crate expects. This is the
+    /// one case [`MailIndex::try_open`] wipes for.
+    SchemaOrDataUnreadable,
+    /// `Index::open_or_create` succeeded, but building the writer or the
+    /// reader on top of it did not. This is deliberately *not* folded into
+    /// [`OpenOutcome::SchemaOrDataUnreadable`]: a live writer another
+    /// process already holds the lock for fails here, not above, and
+    /// nothing at this layer can tell that apart from a rarer, genuine
+    /// problem (a thread the OS refused to spawn, say) -- so, per the
+    /// module docs, neither is treated as reason to wipe anything.
+    WriterOrReaderUnavailable,
+}
+
 fn wrap_tantivy(e: tantivy::TantivyError) -> Error {
     Error::Backend(Box::new(e))
 }
 
 fn register_tokenizers(index: &Index) {
     index.tokenizers().register(ADDRESS_TOKENIZER, AddressTokenizer);
+    index.tokenizers().register(CJK_AWARE_TOKENIZER, CjkAwareTokenizer);
 }
 
 impl MailIndex {
-    /// Open (creating if necessary) the sealed index at `dir`.
+    /// Open (creating if necessary) the sealed index at `dir`, self-healing
+    /// it first if needed -- see the module docs' "self-healing on open".
     ///
     /// This does not fail merely because the index cannot be opened under
-    /// `cipher` — a wrong key or a missing/corrupt directory leaves
-    /// [`MailIndex::rebuild_needed`] `true` rather than propagating an
-    /// error, because the index is a derived structure a caller is
-    /// expected to recreate from the vault's own records, not a reason to
-    /// refuse to construct the object that would let it do so. See
-    /// [`MailSearch::rebuild_needed`]'s docs.
+    /// `cipher`, nor merely because self-healing itself could not produce a
+    /// usable index — either leaves [`MailIndex::rebuild_needed`] `true`
+    /// rather than propagating an error, because the index is a derived
+    /// structure a caller is expected to recreate from the vault's own
+    /// records, not a reason to refuse to construct the object that would
+    /// let it do so. See [`MailSearch::rebuild_needed`]'s docs. What this
+    /// still propagates is a hard filesystem failure — `dir` itself cannot
+    /// be created, or cannot be wiped — since no rebuild fixes that either.
     pub fn open(
         dir: impl Into<PathBuf>,
         cipher: Arc<dyn Cipher>,
         cache_bytes: usize,
     ) -> Result<Self> {
-        let (schema, fields) = schema::build();
-        let directory = SealedDirectory::open(dir, cipher, cache_bytes)?;
-        let opened = Index::open_or_create(directory, schema).ok().and_then(|index| {
-            register_tokenizers(&index);
-            let writer = index.writer_with_num_threads(1, WRITER_HEAP_BYTES).ok()?;
-            let reader =
-                index.reader_builder().reload_policy(ReloadPolicy::Manual).try_into().ok()?;
-            Some(Opened { index, writer: Mutex::new(writer), reader })
-        });
-        Ok(Self { fields, opened })
+        let dir = dir.into();
+        let (fields, opened, healed_on_open) = Self::try_open(&dir, cipher.clone(), cache_bytes)?;
+        Ok(Self { fields, opened: RwLock::new(opened), dir, cipher, cache_bytes, healed_on_open })
     }
 
-    fn require_opened(&self) -> Result<&Opened> {
-        self.opened
-            .as_ref()
-            .ok_or_else(|| Error::Invalid("the mail search index needs to be rebuilt".into()))
+    /// See [`Self::healed_on_open`]'s doc on the field this answers.
+    pub fn healed_on_open(&self) -> bool {
+        self.healed_on_open
+    }
+
+    /// One open attempt against `dir` as it stands right now, with no
+    /// wiping of its own -- [`MailIndex::try_open`] is what decides whether
+    /// a [`OpenOutcome::SchemaOrDataUnreadable`] result is worth retrying
+    /// after a wipe.
+    fn open_once(
+        dir: &Path,
+        cipher: Arc<dyn Cipher>,
+        cache_bytes: usize,
+        schema: tantivy::schema::Schema,
+    ) -> Result<OpenOutcome> {
+        let directory = SealedDirectory::open(dir, cipher, cache_bytes)?;
+        let index = match Index::open_or_create(directory, schema) {
+            Ok(index) => index,
+            Err(_) => return Ok(OpenOutcome::SchemaOrDataUnreadable),
+        };
+        register_tokenizers(&index);
+        let Ok(writer) = index.writer_with_num_threads(1, WRITER_HEAP_BYTES) else {
+            return Ok(OpenOutcome::WriterOrReaderUnavailable);
+        };
+        let Ok(reader) = index.reader_builder().reload_policy(ReloadPolicy::Manual).try_into()
+        else {
+            return Ok(OpenOutcome::WriterOrReaderUnavailable);
+        };
+        Ok(OpenOutcome::Ready(Box::new(Opened { index, writer: Mutex::new(writer), reader })))
+    }
+
+    /// The actual open attempt, self-healing included: propagates a hard
+    /// filesystem failure (`SealedDirectory::open` cannot even create
+    /// `dir`, or [`clear_dir`] cannot wipe it — permissions, a full disk,
+    /// not something a rebuild can fix), wipes `dir` and retries exactly
+    /// once when the first attempt fails at [`Index::open_or_create`]
+    /// itself (see the module docs), and otherwise swallows a failure into
+    /// `opened: None` — a busy writer lock, or a wipe-and-retry that still
+    /// could not produce a usable index — exactly as [`MailIndex::open`]'s
+    /// own docs describe. Shared with [`MailIndex::rebuild_empty`]'s own
+    /// reopen after wiping the directory, which propagates the same way: a
+    /// fresh, just-created directory failing for the *hard* reason is not
+    /// something silently leaving `opened` empty again would help with
+    /// either.
+    fn try_open(
+        dir: &Path,
+        cipher: Arc<dyn Cipher>,
+        cache_bytes: usize,
+    ) -> Result<(Fields, Option<Opened>, bool)> {
+        let (schema, fields) = schema::build();
+        match Self::open_once(dir, cipher.clone(), cache_bytes, schema.clone())? {
+            OpenOutcome::Ready(opened) => Ok((fields, Some(*opened), false)),
+            // Busy or otherwise indeterminate: leave the directory exactly
+            // as it was rather than guess. See `OpenOutcome`'s own docs.
+            OpenOutcome::WriterOrReaderUnavailable => Ok((fields, None, false)),
+            // The one case worth wiping for: nothing on disk can be trusted
+            // to agree with this build's schema, so there is nothing a
+            // second attempt against the same bytes could do differently.
+            // Wipe once, then try exactly once more against guaranteed-empty
+            // ground; a failure even then is treated the same tolerant way
+            // `MailIndex::open` always treated an unopenable index, per its
+            // own docs, rather than propagated.
+            OpenOutcome::SchemaOrDataUnreadable => {
+                clear_dir(dir)?;
+                match Self::open_once(dir, cipher, cache_bytes, schema)? {
+                    OpenOutcome::Ready(opened) => Ok((fields, Some(*opened), true)),
+                    OpenOutcome::SchemaOrDataUnreadable
+                    | OpenOutcome::WriterOrReaderUnavailable => Ok((fields, None, false)),
+                }
+            }
+        }
+    }
+
+    fn require_opened(&self) -> Result<std::sync::RwLockReadGuard<'_, Option<Opened>>> {
+        let guard = self.opened.read().unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            return Err(Error::Invalid("the mail search index needs to be rebuilt".into()));
+        }
+        Ok(guard)
     }
 
     fn build_document(&self, doc: &MailDoc) -> TantivyDocument {
@@ -195,7 +369,8 @@ impl MailSearch for MailIndex {
         if docs.is_empty() {
             return Ok(());
         }
-        let opened = self.require_opened()?;
+        let guard = self.require_opened()?;
+        let opened = guard.as_ref().expect("require_opened checked this is Some");
         let writer = opened.writer.lock().unwrap_or_else(|e| e.into_inner());
         for doc in docs {
             writer.delete_term(Term::from_field_text(self.fields.message_key, &doc.message_key));
@@ -208,7 +383,8 @@ impl MailSearch for MailIndex {
         if message_ids.is_empty() {
             return Ok(());
         }
-        let opened = self.require_opened()?;
+        let guard = self.require_opened()?;
+        let opened = guard.as_ref().expect("require_opened checked this is Some");
         let writer = opened.writer.lock().unwrap_or_else(|e| e.into_inner());
         for key in message_ids {
             writer.delete_term(Term::from_field_text(self.fields.message_key, key));
@@ -217,7 +393,8 @@ impl MailSearch for MailIndex {
     }
 
     fn delete_account(&self, account: &str) -> Result<()> {
-        let opened = self.require_opened()?;
+        let guard = self.require_opened()?;
+        let opened = guard.as_ref().expect("require_opened checked this is Some");
         let writer = opened.writer.lock().unwrap_or_else(|e| e.into_inner());
         // `account` is a `STRING` field -- see `schema::build` -- so the
         // whole lowercased value is one term, the same one `build_document`
@@ -228,7 +405,8 @@ impl MailSearch for MailIndex {
     }
 
     fn commit(&self) -> Result<()> {
-        let opened = self.require_opened()?;
+        let guard = self.require_opened()?;
+        let opened = guard.as_ref().expect("require_opened checked this is Some");
         let mut writer = opened.writer.lock().unwrap_or_else(|e| e.into_inner());
         writer.commit().map_err(wrap_tantivy)?;
         // See the module docs: reloading inline, rather than trusting the
@@ -246,7 +424,8 @@ impl MailSearch for MailIndex {
         cursor: Option<SearchCursor>,
     ) -> Result<SearchPage> {
         let limit = limit.max(1);
-        let opened = self.require_opened()?;
+        let guard = self.require_opened()?;
+        let opened = guard.as_ref().expect("require_opened checked this is Some");
         let now = Timestamp::now();
         let base = query::build(&opened.index, &self.fields, query, now);
         let full: Box<dyn Query> = match &cursor {
@@ -312,8 +491,67 @@ impl MailSearch for MailIndex {
     }
 
     fn rebuild_needed(&self) -> bool {
-        self.opened.is_none()
+        self.opened.read().unwrap_or_else(|e| e.into_inner()).is_none()
     }
+
+    fn rebuild_empty(&self) -> Result<()> {
+        // Close whatever is open right now before touching anything on
+        // disk: dropping `Opened` drops its `IndexWriter` and `IndexReader`,
+        // which is what releases tantivy's own writer lock file (see
+        // `directory.rs`'s own docs on how a *stale* one, left by a crash
+        // rather than a clean drop, still recovers) -- if this were left
+        // open while the directory underneath it was deleted, a
+        // half-active writer could re-create files a fresh
+        // `Index::open_or_create` would then have to fight with.
+        *self.opened.write().unwrap_or_else(|e| e.into_inner()) = None;
+
+        // Wipe every file the sealed directory holds -- corrupt segments,
+        // a stale lock, a key that no longer opens it, or nothing wrong at
+        // all -- so the fresh index below starts from nothing rather than
+        // layering a new index over whatever was already there. This is
+        // the step `rebuild_mail_index` needs and did not have before this
+        // fix: re-indexing into a `MailIndex` whose `opened` was `None`
+        // could never succeed, no matter how many messages were pushed
+        // through `index`, because nothing ever created a fresh index on
+        // disk for them to land in.
+        clear_dir(&self.dir)?;
+
+        // `try_open`'s own `healed_on_open` is not read here: `self.dir` was
+        // just wiped by this same call a few lines up, so `Index::exists`
+        // is false and `open_once` takes tantivy's `create` path rather
+        // than ever reaching `Index::open_or_create`'s mismatch check --
+        // there is nothing for `try_open`'s own wipe-and-retry to trigger
+        // on top of the wipe this method already did.
+        let (_, opened, _) = Self::try_open(&self.dir, self.cipher.clone(), self.cache_bytes)?;
+        let reopened = opened.is_some();
+        *self.opened.write().unwrap_or_else(|e| e.into_inner()) = opened;
+        if !reopened {
+            // The directory was just wiped and recreated -- if opening a
+            // brand new index still fails, that is not "needs a rebuild"
+            // any more, it is something actually wrong with this machine
+            // (disk full, permissions), and the caller needs to hear about
+            // it rather than see `rebuild_mail_index` report success into
+            // an index that is still silently dead.
+            return Err(Error::Invalid(
+                "rebuilding the mail search index failed to reopen a fresh index".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Remove everything [`SealedDirectory::open`] put at `dir` and recreate it
+/// empty -- the on-disk half of [`MailIndex::rebuild_empty`]. `dir` not
+/// existing at all is not an error: there is nothing to remove, and it is
+/// recreated regardless so the reopen right after this has somewhere to
+/// write to.
+fn clear_dir(dir: &Path) -> Result<()> {
+    match std::fs::remove_dir_all(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(Error::io(dir, e)),
+    }
+    std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))
 }
 
 fn schema_field_name(schema: &tantivy::schema::Schema, field: tantivy::schema::Field) -> &str {

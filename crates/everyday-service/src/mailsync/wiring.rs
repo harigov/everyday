@@ -83,26 +83,42 @@ pub struct MailState {
 /// "derived structure, not the only copy of anything" tolerance
 /// [`everyday_core::MailSearch::rebuild_needed`] already asks callers to
 /// have. Nothing about a vault's own records is at risk either way.
-pub(crate) fn open(svc: &Arc<Service>, vault: &Arc<Vault>) {
+///
+/// Returns the handle of the one-time reindex this call queues when
+/// [`everyday_mailindex::MailIndex::healed_on_open`] comes back `true` --
+/// see [`reindex_after_self_heal`]'s own docs. Every real caller
+/// (`Service::open_mail`) drops it, letting the work run detached exactly
+/// as intended; it is returned at all only so a test can await the very
+/// task a real unlock fires and forgets, rather than triggering a second,
+/// separate reindex just to have something to `await`.
+pub(crate) fn open(svc: &Arc<Service>, vault: &Arc<Vault>) -> Option<tokio::task::JoinHandle<()>> {
     let packs = match open_packs(vault) {
         Ok(p) => p,
         Err(e) => {
             tracing::error!(error = %e, "could not open the mail pack store");
             svc.set_mail_state(None);
-            return;
+            return None;
         }
     };
     let index = match open_index(vault) {
-        Ok(i) => Arc::new(i) as Arc<dyn everyday_core::MailSearch>,
+        Ok(i) => i,
         Err(e) => {
             tracing::error!(error = %e, "could not open the mail search index");
             svc.set_mail_state(None);
-            return;
+            return None;
         }
     };
+    // Read before `index` moves into the `Arc<dyn MailSearch>` below --
+    // `everyday_mailindex::MailIndex::healed_on_open`'s own docs promise
+    // this is the one moment it is worth checking. See
+    // `reindex_after_self_heal`'s own docs for what a `true` here means and
+    // why it is answered only once, right here, rather than on every sync
+    // pass.
+    let healed_on_open = index.healed_on_open();
+    let index: Arc<dyn everyday_core::MailSearch> = Arc::new(index);
     svc.set_mail_state(Some(MailState {
         packs,
-        index,
+        index: index.clone(),
         statuses: StatusRegistry::new(),
         unread_cache: Arc::new(crate::mailsync::unread_cache::UnreadCache::new()),
         // One small sealed row, read once here -- see `ContactIndex`'s own
@@ -112,7 +128,100 @@ pub(crate) fn open(svc: &Arc<Service>, vault: &Arc<Vault>) {
 
     if vault.is_writable() {
         register_account_tasks(svc, vault);
+        // Only when writable: reindexing writes nothing to the vault
+        // itself, only to `index`, but it is real disk-bound work (a full
+        // walk of every account's threads and bodies), and gating it the
+        // same way `register_account_tasks` already is keeps a second,
+        // read-only window (or `everyday-server`) from redoing the exact
+        // same walk the writable process is already about to run. See
+        // `reindex_after_self_heal`'s own docs for the rest of the
+        // reasoning, including the one race this does not close.
+        if healed_on_open {
+            return Some(reindex_after_self_heal(vault, index));
+        }
     }
+    None
+}
+
+/// Walk every account's threads and bodies back into a freshly self-healed
+/// `index`, once, off the calling thread.
+///
+/// # Why this exists at all
+///
+/// `everyday_mailindex::MailIndex::open` wiping and recreating the sealed
+/// index on a schema mismatch (see that crate's own module docs,
+/// "self-healing on open") fixes the *dead* half of the outage a persisted
+/// tokenizer change caused, but it also leaves `index` genuinely, silently
+/// empty. Nothing else in this crate ever re-populates it on its own: the
+/// body pass (`crate::mailsync::passes`) only calls `MailSearch::index` for
+/// messages it *newly* fetches this run, never for ones already sitting in
+/// storage from a previous sync. Without this function, a self-heal would
+/// trade "search answers with an error" for "search answers with nothing",
+/// which is not the fix `docs/plans/mail.md`'s search phase promises.
+/// `rebuild_account` (`crate::domains::mailsync`) already knows how to walk
+/// a vault's own storage back into an index -- this only decides *when* to
+/// call it automatically, the one moment `open` already knows the index
+/// just went from `rebuild_needed() == true` to `false` by itself.
+///
+/// # Once, not per pass
+///
+/// Called exactly once from [`open`], itself called exactly once per
+/// process per vault unlock -- never from inside a sync pass, and never on
+/// a timer -- because `everyday_mailindex::MailIndex::healed_on_open` is
+/// itself answered once, at construction, from the one `MailIndex` this
+/// call was handed. A later pass finding `rebuild_needed() == false` (which
+/// this reindex itself brings about) has no reason to call this again, and
+/// nothing in this module ever checks `healed_on_open` a second time for
+/// the same `MailIndex` to let it.
+///
+/// # Off the calling thread
+///
+/// [`open`] runs synchronously wherever `Service::unlocked` does -- today,
+/// directly on the async task the `unlock` command is already running on
+/// (see `domains::vault::unlock`), with no `blocking` wrapper around that
+/// call. A hundred-thousand-message vault's worth of `rebuild_account`
+/// walks is exactly the disk-bound work `service::blocking`'s own docs
+/// already warn would "stall every other task" run inline, so this hands
+/// the whole walk to `tokio::spawn` -- already this crate's pattern for
+/// fire-and-forget background work (see `mailview.rs`, `signin.rs`) -- and
+/// the walk itself still goes through `blocking` underneath, exactly like
+/// `rebuild_mail_index`'s own command handler.
+///
+/// # What this does not close
+///
+/// Two local processes racing to unlock the same on-disk vault at once
+/// could both observe `healed_on_open() == true` and both queue this walk
+/// -- harmless (the second `delete_account` before each account's own
+/// re-index makes the result idempotent either way), but wasted work.
+/// Nothing today coordinates across processes on that, the same as nothing
+/// coordinates their two `MailIndex`es' self-heal wipes racing each other
+/// a moment earlier; both are pre-existing properties of "every process
+/// that unlocks the vault opens its own index" (see the module docs), not
+/// something this fix introduces or was asked to solve.
+///
+/// Returns the spawned task's handle so a test can await the exact work a
+/// real caller lets run detached -- see [`open`]'s own call site.
+fn reindex_after_self_heal(
+    vault: &Arc<Vault>,
+    index: Arc<dyn everyday_core::MailSearch>,
+) -> tokio::task::JoinHandle<()> {
+    let vault = vault.clone();
+    tokio::spawn(async move {
+        let result = crate::service::blocking(move || {
+            let account_ids: Vec<AccountId> = vault.accounts()?.into_iter().map(|a| a.id).collect();
+            for account_id in account_ids {
+                crate::domains::mailsync::rebuild_account(&vault, index.as_ref(), account_id)?;
+            }
+            Ok(())
+        })
+        .await;
+        if let Err(e) = result {
+            tracing::error!(
+                error = %e,
+                "could not reindex mail after the search index self-healed"
+            );
+        }
+    })
 }
 
 /// Drop what [`open`] opened. See `Service::locked`/`Service::close` for the
@@ -251,5 +360,188 @@ pub async fn stop_account_task(svc: &Service, account_id: AccountId) {
     svc.supervisor().stop(&task_key(account_id)).await;
     if let Some(statuses) = svc.mail_statuses() {
         statuses.set_idle(account_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use everyday_core::MailQuery;
+    use everyday_core::account::{Account, Provider};
+    use everyday_core::id::{MailMessageId, MailboxId, PackId, ThreadId};
+    use everyday_core::mail::{
+        Address, Body, CategorySource, Mailbox, MailboxRole, Message, MessageFlags,
+    };
+    use everyday_core::packstore::PackRef;
+    use everyday_core::store::mail::IngestMessage;
+    use jiff::Timestamp;
+
+    fn test_vault() -> (tempfile::TempDir, everyday_core::Vault) {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = everyday_core::VaultConfig {
+            password: Some("correct horse battery".into()),
+            kdf: everyday_core::crypto::KdfParams::insecure_fast(),
+            ..Default::default()
+        };
+        let vault = everyday_vault::create(dir.path(), cfg).unwrap();
+        (dir, vault)
+    }
+
+    /// Ingests one findable message directly into the vault's own storage,
+    /// bypassing the sync engine entirely -- this test is about what
+    /// happens to a *previously synced* mailbox, not about syncing one.
+    fn seed_message(vault: &Vault, account: AccountId, mailbox: MailboxId, subject: &str) {
+        let id = MailMessageId::new();
+        let message = Message {
+            id,
+            account_id: account,
+            thread_id: ThreadId::new(),
+            message_id_header: format!("<{id}@wiring-test.example>"),
+            date: Timestamp::now(),
+            from: Address::bare("sender@example.com"),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            reply_to: Vec::new(),
+            subject: subject.to_string(),
+            snippet: String::new(),
+            flags: MessageFlags::default(),
+            labels: Vec::new(),
+            has_attachments: false,
+            size: 0,
+            category: None,
+            category_source: CategorySource::Rules,
+            pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
+            gmail: None,
+            invite: None,
+        };
+        vault
+            .ingest_mail(account, vec![IngestMessage { message: message.clone(), mailbox, uid: 1 }])
+            .unwrap();
+        vault
+            .save_body(&Body {
+                message_id: id,
+                html_sanitised: String::new(),
+                text: subject.to_string(),
+                quoted_ranges: Vec::new(),
+                signature_range: None,
+                parts: Vec::new(),
+                remote_images: Vec::new(),
+            })
+            .unwrap();
+    }
+
+    /// End-to-end proof of the two halves this fix put together: a schema
+    /// change makes `MailIndex::open` self-heal
+    /// (`everyday-mailindex::tests::reopening_with_a_different_schema_...`
+    /// covers that half, in isolation, with a real mismatched schema), and
+    /// *this* module is what has to notice the heal happened and drive
+    /// `rebuild_account` for it, without anything calling
+    /// `rebuild_mail_index` by hand.
+    ///
+    /// Simulates "the index cannot be opened as it stands" by corrupting
+    /// `meta.json` in place rather than writing a real mismatched schema:
+    /// `everyday-service` does not depend on `tantivy` (only
+    /// `everyday-mailindex` does, deliberately -- see that crate's own
+    /// module docs), and a schema mismatch and a corrupt meta file fail at
+    /// the exact same place, `Index::open_or_create`, for the exact same
+    /// reason -- see `everyday-mailindex`'s own module docs, "self-healing
+    /// on open". What this test is actually proving -- that `open` notices
+    /// the heal and queues `rebuild_account` for every account -- does not
+    /// depend on which of those two made the first open fail.
+    #[tokio::test]
+    async fn a_self_heal_on_open_triggers_one_automatic_reindex() {
+        let (_vdir, vault) = test_vault();
+        let mut account = Account::new(Provider::Custom, "me@example.com");
+        // Left off deliberately: `Account::new` defaults `services.mail` to
+        // `true`, which would have `register_account_tasks` below start a
+        // real IMAP sync task for a `Provider::Custom` account with no real
+        // server behind it. This test is about the reindex `open` queues
+        // for *every* account regardless of whether mail sync is currently
+        // switched on for it -- exactly what `rebuild_mail_index`'s own
+        // `args.id: None` case already does -- not about the sync task.
+        account.services.mail = false;
+        let account_id = account.id;
+        vault.save_account(&account).unwrap();
+        let mailbox = Mailbox::new(account_id, "INBOX", MailboxRole::Inbox);
+        vault.save_mailbox(&mailbox).unwrap();
+        seed_message(&vault, account_id, mailbox.id, "a message worth finding again");
+
+        let svc = Arc::new(Service::new());
+        // The first `set` opens mail against a brand new, empty,
+        // *correctly-schema'd* index -- exactly like unlocking a vault that
+        // has never synced mail before self-heal was ever a concern.
+        let vault = svc.set(vault);
+
+        // Populate the index the way a real sync would have, before the
+        // "upgrade" below: `rebuild_account` is the same walk
+        // `rebuild_mail_index` already drives by hand.
+        {
+            let index = svc.mail_index().unwrap();
+            crate::domains::mailsync::rebuild_account(&vault, index.as_ref(), account_id).unwrap();
+        }
+        assert_eq!(
+            svc.mail_index()
+                .unwrap()
+                .search(&MailQuery::parse("worth finding"), 10, None)
+                .unwrap()
+                .hits
+                .len(),
+            1,
+            "the test's own setup must actually be searchable before simulating the upgrade"
+        );
+
+        // Release the writer lock `open_index` above is still holding --
+        // `close`, the same call `Service::locked` makes -- before writing
+        // straight over the same directory below.
+        close(&svc);
+
+        // The "upgrade": corrupt tantivy's own commit manifest in place, at
+        // the exact path a real `open_index(&vault)` call will look again in
+        // a moment. See this test's own docs for why this, and not a real
+        // mismatched schema, is what an `everyday-service` test reaches
+        // for.
+        std::fs::write(index_dir(&vault).join("meta.json"), b"not a readable sealed meta file")
+            .unwrap();
+
+        // The moment under test: a fresh `open`, exactly like the next
+        // unlock after the upgrade. Nobody calls `rebuild_mail_index`.
+        let queued = open(&svc, &vault);
+        assert!(
+            !svc.mail_index().unwrap().rebuild_needed(),
+            "self-healing happens synchronously inside `MailIndex::open`, so by the time \
+             `open` returns the index must already be reopened -- just empty, not dead"
+        );
+        assert!(
+            svc.mail_index()
+                .unwrap()
+                .search(&MailQuery::parse("worth finding"), 10, None)
+                .unwrap()
+                .hits
+                .is_empty(),
+            "the self-healed index is genuinely empty until the reindex below runs -- the \
+             wipe erased the message the setup above had already indexed"
+        );
+
+        // `open` only *queues* the reindex (see `reindex_after_self_heal`'s
+        // own "off the calling thread" docs) rather than running it inline
+        // -- a real caller lets it run detached, but this test has to wait
+        // for that exact task before it can assert anything about the
+        // result, which is exactly what `open` returning its `JoinHandle`
+        // is for.
+        queued.expect("a self-heal on open must queue exactly one reindex").await.unwrap();
+
+        let index = svc.mail_index().unwrap();
+        assert!(
+            !index.rebuild_needed(),
+            "a self-healed index must end up genuinely populated, not merely reopened"
+        );
+        let hits = index.search(&MailQuery::parse("worth finding"), 10, None).unwrap();
+        assert_eq!(
+            hits.hits.len(),
+            1,
+            "the message a real sync had already found before the schema changed must be \
+             findable again without anyone calling rebuild_mail_index by hand"
+        );
     }
 }

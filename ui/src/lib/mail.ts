@@ -5,6 +5,7 @@
 import { friendlyDate, timeOfDay } from './format'
 import { isoDate } from './time'
 import type {
+  Draft,
   Mailbox,
   MailAddress,
   MailCategory,
@@ -51,36 +52,6 @@ export function threadListDate(instant: string): string {
   // `localDate` -- a message's `date` is a full instant, so it is narrowed
   // to the local day here before being handed over.
   return sameDay ? timeOfDay(d) : friendlyDate(isoDate(d))
-}
-
-// ── Reply-all recipient computation ────────────────────────────────────
-
-/**
- * Who a reply-all addresses: the original sender and every original
- * recipient, minus the account's own address and any duplicate, sender
- * first. The original Cc stays Cc; nobody who was already in To is repeated
- * in Cc.
- */
-export function replyAllRecipients(
-  message: { from: MailAddress; to: MailAddress[]; cc: MailAddress[] },
-  ownAddress: string,
-): { to: MailAddress[]; cc: MailAddress[] } {
-  const own = ownAddress.trim().toLowerCase()
-  const isSelf = (a: MailAddress) => a.email.trim().toLowerCase() === own
-  const dedupeAgainst = (list: MailAddress[], exclude: Set<string>) => {
-    const seen = new Set(exclude)
-    const out: MailAddress[] = []
-    for (const a of list) {
-      const key = a.email.trim().toLowerCase()
-      if (seen.has(key) || isSelf(a)) continue
-      seen.add(key)
-      out.push(a)
-    }
-    return out
-  }
-  const to = dedupeAgainst([message.from, ...message.to], new Set())
-  const cc = dedupeAgainst(message.cc, new Set(to.map((a) => a.email.trim().toLowerCase())))
-  return { to, cc }
 }
 
 // ── Marks from origin ───────────────────────────────────────────────────
@@ -232,6 +203,40 @@ export function snoozeChoices(now = new Date()): SnoozeChoice[] {
   return out
 }
 
+/**
+ * The instant the custom snooze picker's `<input type="date">` value means:
+ * 8am *local*, on the day the field shows.
+ *
+ * `new Date('2026-09-20')` parses a bare date as UTC midnight; calling
+ * `.setHours(8, ...)` on that then reads back 8am in whichever zone the
+ * reader is in, not the zone the date was meant to be read in -- west of
+ * Greenwich that silently lands on the *previous* day. Building the date
+ * from its parsed `year`/`month`/`day` parts instead means the local
+ * constructor picks local midnight for that calendar day, so `setHours`
+ * lands on the day the field actually shows.
+ */
+export function customSnoozeInstant(dateStr: string): Date {
+  const [year, month, day] = dateStr.split('-').map(Number)
+  const at = new Date(year!, (month ?? 1) - 1, day ?? 1)
+  at.setHours(8, 0, 0, 0)
+  return at
+}
+
+/**
+ * The earliest date the custom picker should offer: tomorrow, never today.
+ *
+ * Today's 8am may already be behind `now` by the time this is read -- an
+ * instant already past would release the thread almost immediately, which
+ * is not what picking "today" in a snooze picker means. `snoozeChoices`'s
+ * own "Later today" is what "later, today" is for; the custom picker only
+ * needs to cover days it does not.
+ */
+export function earliestSnoozeDate(now = new Date()): string {
+  const tomorrow = new Date(now)
+  tomorrow.setDate(tomorrow.getDate() + 1)
+  return isoDate(tomorrow)
+}
+
 // ── Sizing a message body without touching what the iframe renders ────
 
 /**
@@ -255,6 +260,21 @@ export function estimateBodyHeight(bodyHtml: string, widthPx: number): number {
   const lineHeightPx = 21
   const blockGapPx = 12
   return Math.min(2400, lines * lineHeightPx + blocks * blockGapPx + 24)
+}
+
+// ── Compose: is there anything here worth keeping? ──────────────────────
+
+/**
+ * A draft with no recipient, subject or body -- what `MailCompose.svelte`'s
+ * `discard()` treats as "never really started", deleting it outright rather
+ * than autosaving it. Pulled out as its own function because that same
+ * boolean also decides whether the sheet's autosave gets flushed or
+ * forgotten on the way out: `discardDraft` and a subsequent autosave write
+ * race, and the loser is either a wasted write or a draft the person just
+ * asked to throw away reappearing behind their back.
+ */
+export function isBlankDraft(draft: Pick<Draft, 'subject' | 'bodyHtml' | 'to'>): boolean {
+  return !draft.subject && !draft.bodyHtml.replace(/<[^>]*>/g, '').trim() && draft.to.length === 0
 }
 
 // ── (p) The split inbox: category tabs ─────────────────────────────────
@@ -288,6 +308,22 @@ export function stepCategoryTab(current: MailCategory | null, step: 1 | -1): Mai
  *  label, wherever there is no tab strip to have set it from. */
 export function mailboxHasTabs(mailbox: Pick<Mailbox, 'role'> | null | undefined): boolean {
   return mailbox?.role === 'inbox'
+}
+
+/**
+ * Is this the "Snoozed" pseudo-mailbox `MailNav` builds a row for -- the one
+ * place a mailbox listing needs to ask the backend *for* snoozed threads
+ * (`ThreadFilter.snoozed: true`) rather than hide them (`false` everywhere
+ * else, per `Thread.snoozedUntil`'s own docs: a snooze does not move a
+ * thread out of the mailbox it otherwise belongs to, so leaving `snoozed`
+ * unset there would show it in both places at once).
+ *
+ * Matched by name, the same way `MailNav.svelte`'s own `rowsFor` finds it:
+ * it is not a real IMAP mailbox (see `mock-mail.ts`'s own note on why), so
+ * there is no `role` of its own for either file to test instead.
+ */
+export function isSnoozedMailbox(mailbox: Pick<Mailbox, 'remoteName'> | null | undefined): boolean {
+  return mailbox?.remoteName === 'Snoozed'
 }
 
 // ── (i) Invitations ─────────────────────────────────────────────────

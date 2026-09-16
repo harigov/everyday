@@ -111,8 +111,10 @@ pub fn handle<R: Runtime>(
     // `everyday://mail/…` carries `mail` as the request's *host* --
     // `sanitize::sanitize` writes it that way -- which is what tells the
     // three mail routes apart from `everyday://localhost/<blob id>` without
-    // the two ever being able to collide on a path alone.
-    if request.uri().host() == Some("mail") {
+    // the two ever being able to collide on a path alone. See
+    // [`mail_path`] for the second shape the same address takes where a
+    // custom scheme has no host of its own to carry it.
+    if mail_path(&request).is_some() {
         tauri::async_runtime::spawn(async move {
             responder.respond(serve_mail(session, &request).await);
         });
@@ -202,8 +204,35 @@ enum MailRoute {
 /// URL taken straight from [`everyday_mail::sanitize::sanitize`]'s own
 /// output rather than one this file's tests would otherwise have to
 /// hand-assemble and hope stays in step with what the sanitiser writes.
-fn parse_mail_route(request: &Request<Vec<u8>>) -> Option<MailRoute> {
+/// The `body/…`, `part/…` or `img/…` remainder of a mail address, in
+/// whichever of its two shapes this platform's webview produced -- or
+/// `None` for a request that is not a mail address at all.
+///
+/// # Why there are two shapes
+///
+/// Everywhere a custom scheme is genuinely a scheme, `everyday://mail/body/x`
+/// arrives with `mail` as its host and `/body/x` as its path. On Windows and
+/// Android there is no such scheme: Tauri maps the whole of `everyday://`
+/// onto an ordinary `http://everyday.localhost` origin, so *every* address
+/// this handler serves shares one host and `mail` has nowhere left to ride
+/// but the first path segment -- `http://everyday.localhost/mail/body/x`.
+/// `ui/src/lib/mailview.ts` makes the same platform check when it builds
+/// these addresses, and `ui/src/lib/api.ts`'s `mediaUrl` has always made it
+/// for blobs.
+///
+/// A blob can never be mistaken for mail here: its path is a single
+/// content-addressed hex id, which has no `mail/` prefix and no second
+/// segment.
+fn mail_path(request: &Request<Vec<u8>>) -> Option<String> {
     let path = request.uri().path().trim_start_matches('/');
+    if request.uri().host() == Some("mail") {
+        return Some(path.to_string());
+    }
+    path.strip_prefix("mail/").map(str::to_string)
+}
+
+fn parse_mail_route(request: &Request<Vec<u8>>) -> Option<MailRoute> {
+    let path = mail_path(request)?;
     let mut segments = path.split('/');
     match (segments.next(), segments.next(), segments.next(), segments.next()) {
         (Some("body"), Some(id), None, None) => {
@@ -394,6 +423,27 @@ async fn serve_mail_remote(
 /// The `mail/body` response every path builds identically -- see
 /// `everyday-server/src/routes.rs`'s `get_mail_body` for the HTTP twin of
 /// this exact set of headers.
+///
+/// # Why this carries CORS headers at all
+///
+/// `everyday://mail/…` is a different origin from the app's own
+/// `tauri://localhost` (or `http://tauri.localhost` on Windows) document, so
+/// `ui/src/lib/mailview.ts`'s `fetch()` of this address is a cross-origin
+/// request even though both ends are this same application. Without
+/// `Access-Control-Allow-Origin` the browser's CORS check throws the
+/// response away before the caller ever sees it -- `tauri.conf.json`'s CSP
+/// only decides whether the fetch is *attempted*, not whether its answer may
+/// be *read*. `*` is safe here because nothing about the response depends on
+/// who is asking: the data is already gated on the vault being unlocked
+/// (see `serve_mail_local`, above), the scheme is local-only and never
+/// reachable from a real network origin, and there is no cookie or
+/// credential this response could leak that a `*` origin would expose. The
+/// custom `x-mail-images-hidden` header additionally needs
+/// `Access-Control-Expose-Headers` -- CORS hides every response header past
+/// the small always-allowed set unless the server names it explicitly, so
+/// without this line `res.headers.get('x-mail-images-hidden')` in
+/// `mailview.ts` would read `null` and the "Images hidden — Show" bar would
+/// never appear even once the fetch itself was unblocked.
 fn respond_body(doc: everyday_service::mailview::BodyDocument) -> Response<Vec<u8>> {
     Response::builder()
         .status(StatusCode::OK)
@@ -403,6 +453,8 @@ fn respond_body(doc: everyday_service::mailview::BodyDocument) -> Response<Vec<u
         // must never be believed from a cache.
         .header(header::CACHE_CONTROL, "no-store")
         .header("x-content-type-options", "nosniff")
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .header(header::ACCESS_CONTROL_EXPOSE_HEADERS, "x-mail-images-hidden")
         // Read by the interface's own `fetch()` of this address, never by
         // anything inside the sandboxed frame -- see `ui/src/lib/mailview.ts`.
         .header("x-mail-images-hidden", doc.images_hidden.to_string())
@@ -411,6 +463,12 @@ fn respond_body(doc: everyday_service::mailview::BodyDocument) -> Response<Vec<u
 }
 
 /// The `mail/part` and `mail/img` response both paths build identically.
+///
+/// Carries `Access-Control-Allow-Origin: *` for the same reason
+/// [`respond_body`]'s doc explains -- an `<img src>`/`<video src>` load does
+/// not need it (that is a "simple" cross-origin load, never subject to
+/// CORS), but `mailview.ts` also reads a proxied image's response the same
+/// way it reads a body's, so the same allowance applies.
 fn respond_bytes(
     content_type: String,
     bytes: Vec<u8>,
@@ -422,7 +480,8 @@ fn respond_bytes(
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CACHE_CONTROL, cache_control)
-        .header("x-content-type-options", "nosniff");
+        .header("x-content-type-options", "nosniff")
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
     if attachment {
         let name = filename.as_deref().unwrap_or("attachment");
         // A `"` in a stored filename must not close the quoted parameter

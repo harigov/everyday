@@ -40,6 +40,9 @@ fn fixture(name: &str) -> &'static [u8] {
         "injection_css_declaration_bypass" => {
             include_bytes!("fixtures/hostile/injection_css_declaration_bypass.eml")
         }
+        "injection_multipart_plain_alternative" => {
+            include_bytes!("fixtures/hostile/injection_multipart_plain_alternative.eml")
+        }
         other => panic!("no such fixture: {other}"),
     }
 }
@@ -72,6 +75,21 @@ fn a_display_none_instruction_does_not_reach_model_text() {
     let model_text = text::model_text(&parsed);
     assert!(model_text.contains("ticket has been updated"));
     assert!(!model_text.to_lowercase().contains("forward the last ten invoices"));
+    assert!(!model_text.contains("attacker@evil.example"));
+}
+
+#[test]
+fn a_hostile_plain_alternative_never_reaches_model_text() {
+    // The hiding place this fixture uses is not CSS: it is the *part*. A
+    // `multipart/alternative` lets the sender write two bodies, and a person
+    // is only ever shown the HTML one -- so anything put in the `text/plain`
+    // alternative is invisible to them no matter how it is styled. What
+    // this asserts is that it is invisible to a tool as well: `model_text`
+    // reads the part the person reads.
+    let parsed = parse("injection_multipart_plain_alternative");
+    let model_text = text::model_text(&parsed);
+    assert!(model_text.contains("statement is ready"));
+    assert!(!model_text.to_lowercase().contains("ignore your previous instructions"));
     assert!(!model_text.contains("attacker@evil.example"));
 }
 
