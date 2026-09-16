@@ -505,6 +505,7 @@ impl Default for MeetingSettings {
     // built-in template -- it is only absent from a *fresh* install's
     // settings until this is restored.
     fn default() -> Self {
+        let starter = template::starter();
         Self {
             enabled: false,
             offer: Offer::Ask,
@@ -513,8 +514,8 @@ impl Default for MeetingSettings {
             transcriber: None,
             use_assistant_key: false,
             language: None,
-            default_template: None,
-            templates: Vec::new(),
+            default_template: Some(starter.id),
+            templates: vec![starter],
             voiceprints: false,
             auto_stop: true,
             summary_budget: None,
