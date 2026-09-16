@@ -380,7 +380,9 @@
      the box width instead cost two thirds of an inch of line on every side.
      At least as tall as the canvas, so the prose can stretch to fill it and
      the day's tags and trackers sit at the bottom rather than straight under
-     the last line written. */
+     the last line written. The bottom padding keeps that last row clear of
+     the floating assistant button, which rises --fab-size + --sp-6 from the
+     window's foot and so stands 42px above the 30px status bar. */
   .page {
     flex: 1 0 auto;
     display: flex;
@@ -388,7 +390,7 @@
     width: 100%;
     max-width: calc(var(--measure) + var(--sp-8) * 2);
     margin: 0 auto;
-    padding: var(--sp-8) var(--sp-8) var(--sp-6);
+    padding: var(--sp-8) var(--sp-8) var(--fab-size);
   }
 
   /* The whole stretch is the editable surface, so a click anywhere in the
