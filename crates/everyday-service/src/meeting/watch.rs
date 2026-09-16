@@ -28,7 +28,7 @@
 use std::sync::Arc;
 
 use everyday_core::calendar::{Calendar, Event};
-use everyday_core::id::EventId;
+use everyday_core::id::CalendarId;
 use everyday_core::meeting::{CalendarFilter, Offer, detect};
 use everyday_core::store::calendars::EventQuery;
 use everyday_core::store::meetings::RecordingQuery;
@@ -104,6 +104,8 @@ fn tick_inner(svc: &Arc<Service>, vault: &Vault) -> CoreResult<()> {
 
         let offer = MeetingOffer {
             event_id: event.id,
+            calendar_id: event.calendar_id,
+            uid: event.uid.clone(),
             title: event.title.clone(),
             start: event.start,
             end: event.end,
@@ -180,17 +182,27 @@ fn already_recorded(vault: &Vault, event: &Event) -> CoreResult<bool> {
 /// `dismiss_meeting_offer`'s body: not offered again this session either
 /// way, and -- for "Never for this meeting" -- not ever again, on any
 /// session, for the whole series.
+///
+/// Takes `calendar_id` and `uid`, not an `EventId`: those are exactly what
+/// [`svc.meeting_offer_seen`](Service::meeting_offer_seen) and
+/// [`detect::series_key`] need, and both are durable across a feed resync
+/// in a way an `EventId` is not (see [`MeetingOffer`](crate::events::MeetingOffer)'s
+/// own doc). Deliberately does not look the event up at all: there is
+/// nothing here an `Event` row would answer that these two fields do not
+/// already carry, so a dismissal for an event a resync has since changed
+/// -- or even removed -- still works exactly as well as one for an event
+/// still sitting there unchanged.
 pub fn dismiss(
     svc: &Arc<Service>,
     vault: &Vault,
-    event_id: EventId,
+    calendar_id: CalendarId,
+    uid: &str,
     never: bool,
 ) -> CommandResult<()> {
-    let event = vault.event(event_id)?;
-    svc.meeting_offer_seen(event.calendar_id, &event.uid);
+    svc.meeting_offer_seen(calendar_id, uid);
     if never {
         let mut settings = vault.meeting_settings()?;
-        settings.skipped_series.insert(detect::series_key(&event.uid));
+        settings.skipped_series.insert(detect::series_key(uid));
         vault.save_meeting_settings(&settings)?;
     }
     Ok(())
@@ -201,7 +213,7 @@ mod tests {
     use super::*;
     use crate::events::EventSink;
     use everyday_core::calendar::{AccountCalendarSource, CalendarOrigin, EventStatus};
-    use everyday_core::id::{AccountId, CalendarId, TemplateId};
+    use everyday_core::id::{AccountId, EventId, TemplateId};
     use everyday_core::meeting::{EventRef, MeetingSettings, Recording};
     use jiff::civil::date;
     use std::sync::Mutex as StdMutex;
@@ -481,7 +493,7 @@ mod tests {
         let event = online_event(calendar.id, 0);
         seed_event(&vault, calendar.id, &event);
 
-        dismiss(&svc, &vault, event.id, false).unwrap();
+        dismiss(&svc, &vault, calendar.id, &event.uid, false).unwrap();
         tick(&svc, &vault);
 
         assert!(sink.offers.lock().unwrap().is_empty());
@@ -502,7 +514,7 @@ mod tests {
         let event = online_event(calendar.id, 0);
         seed_event(&vault, calendar.id, &event);
 
-        dismiss(&svc, &vault, event.id, true).unwrap();
+        dismiss(&svc, &vault, calendar.id, &event.uid, true).unwrap();
 
         assert!(
             vault
@@ -510,6 +522,28 @@ mod tests {
                 .unwrap()
                 .skipped_series
                 .contains(&detect::series_key(&event.uid))
+        );
+    }
+
+    /// The bug this whole change exists to fix: the old `dismiss` looked
+    /// the event up by its `EventId` before doing anything else, so a feed
+    /// resync between the offer being raised and the click landing --
+    /// which mints a *new* `EventId` for what is, by `uid`, the same
+    /// occurrence -- made "Never for this meeting" silently fail on a
+    /// `vault.event` lookup that could no longer find it. Deliberately
+    /// never seeds an `Event` row here at all: `dismiss` now needs nothing
+    /// but the calendar id and the uid the offer itself carried, so this
+    /// must succeed exactly as if the event were still sitting there.
+    #[test]
+    fn dismissing_never_survives_the_event_having_been_resynced_away() {
+        let (svc, vault, _dir) = env();
+        let calendar = account_calendar(&vault);
+        let uid = "evt-that-no-longer-exists@example.com";
+
+        dismiss(&svc, &vault, calendar.id, uid, true).unwrap();
+
+        assert!(
+            vault.meeting_settings().unwrap().skipped_series.contains(&detect::series_key(uid))
         );
     }
 

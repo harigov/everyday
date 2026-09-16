@@ -350,14 +350,18 @@ async fn rewrite_meeting_note(
 /// English word fragment ("Samantha", "Sam's") that must not be mangled by
 /// a careless find-and-replace across a note somebody wrote in their own
 /// words. See [`replace_label`].
-async fn name_speaker(
-    svc: Arc<Service>,
-    _ctx: Ctx,
-    args: NameSpeaker,
-) -> CommandResult<Transcript> {
+/// Relabelling a speaker changes two things a caller might have open at
+/// once -- the transcript itself, declared by this command's own `change:`
+/// in [`COMMANDS`], and, when a voiceprint was created or updated along the
+/// way, the voice list in Settings too. [`command::Command`]'s table only
+/// ever declares one `(Kind, Op)` per command, so the second is raised by
+/// hand here rather than through that mechanism -- the same pattern
+/// `domains::mail`'s `respond_to_invite` uses for a `Kind::Thread` change
+/// beside the one its own `change:` line already covers.
+async fn name_speaker(svc: Arc<Service>, ctx: Ctx, args: NameSpeaker) -> CommandResult<Transcript> {
     let vault = svc.require()?;
     let note_id = args.note_id;
-    blocking(move || {
+    let (transcript, voiceprint_id) = blocking(move || {
         let mut transcript = vault
             .transcript_for_note(note_id)?
             .ok_or_else(|| Error::not_found("transcript", note_id))?;
@@ -370,12 +374,14 @@ async fn name_speaker(
             .ok_or_else(|| Error::not_found("speaker", args.speaker_key))?;
         let old_label = transcript.speakers[idx].label.clone();
 
+        let mut voiceprint_id = None;
         if settings.voiceprints && !transcript.speakers[idx].centroid.is_empty() {
             let centroid = transcript.speakers[idx].centroid.clone();
             let model = transcript.speakers[idx].embedding_model.clone();
-            let voiceprint_id =
+            let id =
                 fold_named_voice(&vault, &args.name, args.email.as_deref(), &centroid, &model)?;
-            transcript.speakers[idx].voiceprint_id = Some(voiceprint_id);
+            transcript.speakers[idx].voiceprint_id = Some(id);
+            voiceprint_id = Some(id);
         }
 
         transcript.speakers[idx].label = args.name.clone();
@@ -398,9 +404,21 @@ async fn name_speaker(
             }
         }
 
-        Ok(transcript)
+        Ok((transcript, voiceprint_id))
     })
-    .await
+    .await?;
+
+    if let Some(id) = voiceprint_id {
+        svc.events().changed(crate::events::Change {
+            kind: crate::events::Kind::Voiceprint,
+            op: crate::events::Op::Updated,
+            id: Some(id.to_string()),
+            ids: Vec::new(),
+            origin: ctx.caller.origin().map(str::to_string),
+        });
+    }
+
+    Ok(transcript)
 }
 
 /// Find the voiceprint this name/email already names (by email first, then
@@ -534,6 +552,23 @@ fn enrol_embedding(kit: &speech::SpeechKit, samples: &[i16]) -> CommandResult<Ve
     Ok(mean)
 }
 
+/// Longest a clip [`enrol_voice`] tries to decode at all: 60 seconds at
+/// [`everyday_core::meeting::SAMPLE_RATE`], 16-bit mono, standard
+/// base64-encoded (four output characters per three input bytes, rounded up
+/// for padding). Generous next to what enrolling actually needs -- a few
+/// [`ENROL_WINDOW_MS`] windows -- but the point is refusing a clip many
+/// times too large before a decode and an allocation are spent on bytes
+/// this was always going to reject, the same reasoning
+/// `domains::meetings::max_chunk_pcm_base64_len` uses for a spooled chunk.
+#[cfg(feature = "speech")]
+const ENROL_MAX_SECONDS: u64 = 60;
+
+#[cfg(feature = "speech")]
+fn max_enrol_pcm_base64_len() -> usize {
+    let max_bytes = ENROL_MAX_SECONDS * u64::from(everyday_core::meeting::SAMPLE_RATE) * 2;
+    (max_bytes as usize).div_ceil(3) * 4
+}
+
 #[cfg(feature = "speech")]
 async fn enrol_voice(
     svc: Arc<Service>,
@@ -541,6 +576,12 @@ async fn enrol_voice(
     args: EnrolVoice,
 ) -> CommandResult<VoiceprintInfo> {
     use base64::Engine;
+    if args.pcm.len() > max_enrol_pcm_base64_len() {
+        return Err(CommandError::new(
+            codes::TOO_LARGE,
+            format!("a voice clip cannot be longer than {ENROL_MAX_SECONDS}s"),
+        ));
+    }
     let vault = svc.require()?;
     let bytes = base64::engine::general_purpose::STANDARD.decode(args.pcm.trim()).map_err(|e| {
         CommandError::new(codes::INVALID, format!("could not read that recording: {e}"))
@@ -646,6 +687,35 @@ pub static COMMANDS: &[crate::command::Command] = &[
 mod tests {
     use super::*;
 
+    // ---- enrol_voice's pre-decode size cap ---------------------------------
+
+    #[cfg(feature = "speech")]
+    #[test]
+    fn max_enrol_pcm_base64_len_matches_the_real_encoder() {
+        use base64::Engine;
+        let max_bytes =
+            (ENROL_MAX_SECONDS * u64::from(everyday_core::meeting::SAMPLE_RATE) * 2) as usize;
+        let buf = vec![0u8; max_bytes];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&buf);
+        assert_eq!(encoded.len(), max_enrol_pcm_base64_len());
+    }
+
+    /// Mirrors `domains::meetings`'s own
+    /// `append_recording_chunk_rejects_an_oversized_pcm_before_decoding_it`:
+    /// without this cap, a clip many times longer than
+    /// [`ENROL_MAX_SECONDS`] would still reach `base64`'s decoder before
+    /// `enrol_voice` had any opinion about it.
+    #[cfg(feature = "speech")]
+    #[tokio::test]
+    async fn enrol_voice_rejects_an_oversized_clip_before_decoding_it() {
+        let svc = Arc::new(Service::new());
+        let pcm = "A".repeat(max_enrol_pcm_base64_len() + 4);
+
+        let err = enrol_voice(svc, Ctx::local(), EnrolVoice { pcm }).await.unwrap_err();
+
+        assert_eq!(err.code, codes::TOO_LARGE);
+    }
+
     #[test]
     fn replace_label_only_matches_whole_words() {
         assert_eq!(replace_label("Sam said hi", "Sam", "Samir"), "Samir said hi");
@@ -670,5 +740,119 @@ mod tests {
         let t = sample_transcript();
         let present = present_in_order(&t);
         assert_eq!(present, vec!["You".to_string(), "Priya".to_string(), "Sam".to_string()]);
+    }
+
+    // ---- name_speaker raises a Voiceprint change too -----------------------
+
+    /// A service with a fresh, unlocked vault registered on it -- what
+    /// `svc.require()` inside `name_speaker` itself needs, unlike
+    /// `pipeline.rs`'s own `test_vault`, whose tests call their functions
+    /// with a bare `&Vault` and no `Service` at all.
+    fn test_service() -> (tempfile::TempDir, Arc<Service>, Arc<Vault>) {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = everyday_core::VaultConfig {
+            password: Some("correct horse battery".into()),
+            kdf: everyday_core::crypto::KdfParams::insecure_fast(),
+            ..Default::default()
+        };
+        let vault = everyday_vault::create(dir.path(), cfg).unwrap();
+        let svc = Arc::new(Service::new());
+        let vault = svc.set(vault);
+        (dir, svc, vault)
+    }
+
+    #[derive(Default, Clone)]
+    struct TestSink {
+        changes: Arc<std::sync::Mutex<Vec<crate::events::Change>>>,
+    }
+
+    impl crate::events::EventSink for TestSink {
+        fn changed(&self, change: crate::events::Change) {
+            self.changes.lock().unwrap().push(change);
+        }
+    }
+
+    fn transcript_with_unnamed_speaker(note_id: NoteId) -> Transcript {
+        let now = Timestamp::now();
+        Transcript {
+            id: everyday_core::TranscriptId::new(),
+            note_id,
+            recording_id: None,
+            language: None,
+            backend: "test".into(),
+            speakers: vec![Speaker {
+                key: 0,
+                label: "Unknown 1".into(),
+                email: None,
+                voiceprint_id: None,
+                how: Attribution::Unknown,
+                // Non-empty: what tells `name_speaker` there is a voice to
+                // fold into a voiceprint at all.
+                centroid: vec![1.0, 0.0],
+                embedding_model: "test-model".into(),
+            }],
+            segments: vec![everyday_core::meeting::Segment {
+                start_ms: 0,
+                end_ms: 1_000,
+                speaker: 0,
+                text: "hello".into(),
+            }],
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// The regression this guards: `name_speaker` folding a centroid into a
+    /// new or existing [`Voiceprint`] used to save that row without telling
+    /// any open window -- the voice list in Settings would not refresh
+    /// until something else happened to reload it. `change: Transcript /
+    /// Updated` on the command's own table entry (checked by
+    /// `tests/surface.rs`) says nothing about the voiceprint list, since a
+    /// command declares only one `(Kind, Op)` there; the fix is the
+    /// explicit `svc.events().changed(..)` in `name_speaker`'s own body,
+    /// which this calls directly to prove fires.
+    #[tokio::test]
+    async fn naming_a_speaker_with_a_voiceprint_also_raises_a_voiceprint_change() {
+        let (_dir, svc, vault) = test_service();
+        let mut settings = vault.meeting_settings().unwrap();
+        settings.voiceprints = true;
+        vault.save_meeting_settings(&settings).unwrap();
+
+        let note_id = NoteId::new();
+        let transcript = transcript_with_unnamed_speaker(note_id);
+        vault.save_transcript(&transcript).unwrap();
+
+        let sink = TestSink::default();
+        svc.set_events(Arc::new(sink.clone()));
+
+        let args = NameSpeaker { note_id, speaker_key: 0, name: "Priya".into(), email: None };
+        name_speaker(svc, Ctx::local(), args).await.unwrap();
+
+        let changes = sink.changes.lock().unwrap();
+        assert!(
+            changes.iter().any(|c| c.kind == crate::events::Kind::Voiceprint),
+            "expected a Voiceprint change among {changes:?}"
+        );
+    }
+
+    /// The other half: when there is no centroid to fold (voiceprints off,
+    /// or nothing to embed), `name_speaker` must not raise a phantom
+    /// `Voiceprint` change for a voice it never touched.
+    #[tokio::test]
+    async fn naming_a_speaker_without_a_voiceprint_raises_no_voiceprint_change() {
+        let (_dir, svc, vault) = test_service();
+        // Voiceprints left off: the default.
+        let note_id = NoteId::new();
+        let transcript = transcript_with_unnamed_speaker(note_id);
+        vault.save_transcript(&transcript).unwrap();
+
+        let sink = TestSink::default();
+        svc.set_events(Arc::new(sink.clone()));
+
+        let args = NameSpeaker { note_id, speaker_key: 0, name: "Priya".into(), email: None };
+        name_speaker(svc, Ctx::local(), args).await.unwrap();
+
+        let changes = sink.changes.lock().unwrap();
+        assert!(!changes.iter().any(|c| c.kind == crate::events::Kind::Voiceprint));
     }
 }

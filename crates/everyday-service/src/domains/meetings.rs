@@ -96,10 +96,15 @@ pub struct AppendRecordingChunk {
     pub pcm: String,
 }
 
+/// `calendarId` and `uid`, not an `eventId` -- see `MeetingOffer`'s own doc
+/// (`crate::events`) for why: an `EventId` is a feed event's own id, not
+/// stable across a resync, and the offer this dismisses already carries the
+/// pair that is.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DismissMeetingOffer {
-    pub event_id: EventId,
+    pub calendar_id: everyday_core::CalendarId,
+    pub uid: String,
     pub never: bool,
 }
 
@@ -524,6 +529,20 @@ async fn begin_recording(
     .await
 }
 
+/// Largest `pcm` may be, base64-encoded, before this even tries to decode
+/// it: enough for [`spool::MAX_CHUNK_SAMPLES`] 16-bit samples, standard
+/// base64 (four output characters per three input bytes, rounded up to the
+/// next multiple of four for padding). Checked on the string's own length
+/// first -- decoding a chunk this deliberately oversized would already have
+/// spent real CPU and an allocation on bytes `spool::append`'s own,
+/// already-decoded sample-count check was always going to refuse; there is
+/// no reason a client (malicious, or merely carrying a bug of its own) gets
+/// that for free.
+fn max_chunk_pcm_base64_len() -> usize {
+    let max_bytes = spool::MAX_CHUNK_SAMPLES * 2;
+    max_bytes.div_ceil(3) * 4
+}
+
 /// `pcm` is decoded here, off the async runtime -- a 30 s chunk is up to
 /// about 960 KB raw, 1.3 MB as the base64 this arrived over, comfortably
 /// under both the server's `MAX_JSON_BYTES` (32 MB, `everyday-server`'s
@@ -534,6 +553,17 @@ async fn append_recording_chunk(
     args: AppendRecordingChunk,
 ) -> CommandResult<()> {
     blocking(move || {
+        if args.pcm.len() > max_chunk_pcm_base64_len() {
+            return Err(CommandError::new(
+                codes::TOO_LARGE,
+                format!(
+                    "a chunk cannot hold more than {} samples ({}s at {}Hz)",
+                    spool::MAX_CHUNK_SAMPLES,
+                    everyday_core::meeting::CHUNK_SECONDS,
+                    everyday_core::meeting::SAMPLE_RATE,
+                ),
+            ));
+        }
         let bytes = base64::engine::general_purpose::STANDARD.decode(&args.pcm).map_err(|e| {
             CommandError::new(codes::INVALID, format!("pcm was not valid base64: {e}"))
         })?;
@@ -573,7 +603,7 @@ async fn dismiss_meeting_offer(
     args: DismissMeetingOffer,
 ) -> CommandResult<()> {
     let vault = svc.require()?;
-    blocking(move || watch::dismiss(&svc, &vault, args.event_id, args.never)).await
+    blocking(move || watch::dismiss(&svc, &vault, args.calendar_id, &args.uid, args.never)).await
 }
 
 pub static COMMANDS: &[crate::command::Command] = &[
@@ -691,7 +721,11 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "dismiss_meeting_offer", scope: Meetings, effect: Write,
         args: DismissMeetingOffer, returns: "void",
-        signature: &[("eventId", "EventId", true), ("never", "boolean", true)],
+        signature: &[
+            ("calendarId", "CalendarId", true),
+            ("uid", "string", true),
+            ("never", "boolean", true),
+        ],
         run: dismiss_meeting_offer,
     },
     command! {
@@ -728,6 +762,40 @@ mod tests {
 
     fn openai(model: &str) -> TranscriberConfig {
         TranscriberConfig::OpenAi { model: model.into() }
+    }
+
+    // ---- append_recording_chunk's pre-decode size cap ---------------------
+
+    #[test]
+    fn max_chunk_pcm_base64_len_matches_the_real_encoder() {
+        let max_bytes = spool::MAX_CHUNK_SAMPLES * 2;
+        let buf = vec![0u8; max_bytes];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&buf);
+        assert_eq!(encoded.len(), max_chunk_pcm_base64_len());
+    }
+
+    /// Without the cap this guards, a `pcm` string many times larger than
+    /// any real chunk would still be handed to `base64`'s decoder -- an
+    /// allocation and a decode `spool::append`'s own (already-decoded)
+    /// sample check was always going to throw away -- before this command
+    /// ever refuses it. Asserting `codes::TOO_LARGE` (not `codes::INVALID`,
+    /// which is what a merely malformed string gets) also pins the specific
+    /// error a remote client is meant to branch on.
+    #[tokio::test]
+    async fn append_recording_chunk_rejects_an_oversized_pcm_before_decoding_it() {
+        let svc = Arc::new(Service::new());
+        let pcm = "A".repeat(max_chunk_pcm_base64_len() + 4);
+        let args = AppendRecordingChunk {
+            id: RecordingId::new(),
+            track: Track::Mic,
+            seq: 0,
+            start_ms: 0,
+            pcm,
+        };
+
+        let err = append_recording_chunk(svc, Ctx::local(), args).await.unwrap_err();
+
+        assert_eq!(err.code, codes::TOO_LARGE);
     }
 
     #[test]

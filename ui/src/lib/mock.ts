@@ -4791,7 +4791,7 @@ export const mockInvoke = async <T>(
 
     case 'dismiss_meeting_offer':
       requireUnlocked()
-      mockDismissMeetingOffer(str(args.eventId), Boolean(args.never))
+      mockDismissMeetingOffer(str(args.uid), Boolean(args.never))
       return undefined as T
 
     // ── The shell's half: capture, called by name -- see `api.ts`'s

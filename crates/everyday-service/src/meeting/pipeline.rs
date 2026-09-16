@@ -41,6 +41,29 @@
 //! nothing in this crate's own tests exercises it directly -- they all hand
 //! `run_recording` [`FakeAudio`] instead, so a stage's logic is tested
 //! without a real spool directory on disk.
+//!
+//! # Saving a recording mid-pipeline
+//!
+//! Every save this module makes of a recording's row goes through
+//! `meeting::spool::mutate_recording`, not a bare `vault.recording` /
+//! `vault.save_recording` pair -- the same per-`RecordingId` lock `spool`'s
+//! own `append` and `finish` hold for theirs, so a chunk landing while this
+//! module is mid-stage can never be dropped by, or drop, a save this module
+//! makes at the same moment. [`transcribe_stage`] re-reads the chunk list
+//! under that lock on every pass for exactly this reason -- see its own doc.
+//!
+//! # `Stage::Done` is never overwritten
+//!
+//! [`do_summarise_and_write`] commits the note, the transcript and the
+//! recording's own `Stage::Done` row together, then clears the spool as a
+//! last, separate step. If that last step fails, the note already exists --
+//! so the failure is logged and swallowed rather than returned, which
+//! would otherwise reach [`fail`] and overwrite the `Done` row with
+//! `Failed { at: Summarising }`, orphaning the note a retry would then
+//! duplicate. [`fail`] itself refuses to touch a `Done` row regardless, as
+//! a second line of defence. See [`do_summarise_and_write`]'s own doc for
+//! the leftover spool directory this leaves, and
+//! `spool::expire_failed_tick`'s `sweep_orphaned_spool` for what clears it.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -422,35 +445,53 @@ fn turns_of(
 /// the recording after each one so a retry never pays twice -- per the
 /// plan's "Store results as `TrackSegment`s in `recording.partial`, mark
 /// `ChunkMeta::transcribed`, save after each chunk".
+///
+/// Re-reads the chunk list itself on every pass through the loop, rather
+/// than working off one snapshot taken at the top -- `spool::append` still
+/// accepts a chunk after `finish` has moved the recording out of
+/// `Stage::Recording` and into this one (see that function's own doc), and
+/// this is what lets a pass already in progress notice a chunk that landed
+/// moments after it started, instead of leaving it marked `transcribed:
+/// false` for ever with nothing left in the pipeline that will ever look at
+/// it again. Each iteration's "mark this chunk done" save goes through
+/// `spool::mutate_recording`, matched by `(track, seq)` rather than by
+/// index into whatever was last read, so it merges into whatever the row
+/// looks like *now* -- including a chunk `append` added while this one
+/// was being transcribed -- rather than overwriting it with a stale copy.
 async fn transcribe_stage(
     vault: &Arc<Vault>,
     source: &Arc<dyn AudioSource>,
     transcriber: &dyn Transcriber,
-    recording: &mut Recording,
+    id: RecordingId,
     hints: &Hints,
     #[cfg(feature = "speech")] kit: Option<Arc<SpeechKit>>,
 ) -> CommandResult<()> {
     let limits = transcriber.limits();
-    let pending: Vec<usize> =
-        (0..recording.chunks.len()).filter(|&i| !recording.chunks[i].transcribed).collect();
 
-    for i in pending {
-        let meta = recording.chunks[i].clone();
-        let id = recording.id;
+    loop {
+        let recording = {
+            let vault = vault.clone();
+            blocking(move || Ok(vault.recording(id)?)).await?
+        };
+        let Some(meta) = recording.chunks.iter().find(|c| !c.transcribed).cloned() else {
+            return Ok(());
+        };
+
         let source_for_read = source.clone();
         #[cfg(feature = "speech")]
         let kit_for_read = kit.clone();
-
+        let meta_for_read = meta.clone();
         let groups = blocking(move || {
-            let samples = source_for_read.read_chunk(id, meta.track, meta.seq)?;
+            let samples = source_for_read.read_chunk(id, meta_for_read.track, meta_for_read.seq)?;
             #[cfg(feature = "speech")]
             let turns = turns_of(&samples, kit_for_read.as_deref());
             #[cfg(not(feature = "speech"))]
             let turns = turns_of(&samples);
-            Ok(group_turns(&turns, &samples, meta.start_ms, limits))
+            Ok(group_turns(&turns, &samples, meta_for_read.start_ms, limits))
         })
         .await?;
 
+        let mut new_segments = Vec::new();
         for (gi, group) in groups.iter().enumerate() {
             let speech_chunk = SpeechChunk {
                 samples: group.samples.clone(),
@@ -460,7 +501,7 @@ async fn transcribe_stage(
             let raw: Vec<RawSegment> = transcriber.transcribe(&speech_chunk, hints).await?;
             for seg in raw {
                 let (start_ms, end_ms) = map_segment(&group.map, seg.start_ms, seg.end_ms);
-                recording.partial.push(TrackSegment {
+                new_segments.push(TrackSegment {
                     track: meta.track,
                     start_ms,
                     end_ms,
@@ -471,17 +512,20 @@ async fn transcribe_stage(
             }
         }
 
-        recording.chunks[i].transcribed = true;
-        recording.updated_at = Timestamp::now();
-        save_recording(vault, recording).await?;
+        let vault_for_save = vault.clone();
+        let key = (meta.track, meta.seq);
+        blocking(move || {
+            crate::meeting::spool::mutate_recording(&vault_for_save, id, move |r| {
+                if let Some(c) = r.chunks.iter_mut().find(|c| (c.track, c.seq) == key) {
+                    c.transcribed = true;
+                }
+                r.partial.extend(new_segments);
+                r.updated_at = Timestamp::now();
+                Ok(())
+            })
+        })
+        .await?;
     }
-    Ok(())
-}
-
-async fn save_recording(vault: &Arc<Vault>, recording: &Recording) -> CommandResult<()> {
-    let vault = vault.clone();
-    let recording = recording.clone();
-    blocking(move || Ok(vault.save_recording(&recording)?)).await
 }
 
 /// Read back the audio of `[start_ms, end_ms)` on `track`, spanning however
@@ -1041,6 +1085,15 @@ pub async fn run_recording(
 /// `Kind::Recording` change in [`do_summarise_and_write`]) would sit at its
 /// last-seen stage in every other window until something else happened to
 /// reload it.
+///
+/// Refuses to touch a row already at [`Stage::Done`] -- defence in depth
+/// alongside [`do_summarise_and_write`]'s own care not to call this at all
+/// once its note is committed: a stage that starts only after `Done` is
+/// reached has nothing left to fail *of*, and overwriting that row would
+/// orphan the note it already wrote (a retry recomputes from `partial`,
+/// which `Done` has already cleared -- see `spool::retry`'s own guard
+/// against exactly that). No change event is raised for a no-op refusal:
+/// nothing about the row actually changed for a window to reload.
 async fn fail(
     vault: &Arc<Vault>,
     id: RecordingId,
@@ -1050,17 +1103,27 @@ async fn fail(
 ) -> CommandResult<()> {
     let vault = vault.clone();
     let reason = crate::llm::friendly(&e.message);
-    blocking(move || {
-        let mut recording = vault.recording(id)?;
-        recording.stage = Stage::Failed { reason, at: Box::new(at) };
-        recording.updated_at = Timestamp::now();
-        vault.save_recording(&recording)?;
-        Ok(())
+    let recording = blocking(move || {
+        crate::meeting::spool::mutate_recording(&vault, id, move |recording| {
+            if matches!(recording.stage, Stage::Done) {
+                return Ok(());
+            }
+            recording.stage = Stage::Failed { reason, at: Box::new(at) };
+            recording.updated_at = Timestamp::now();
+            Ok(())
+        })
     })
     .await?;
-    let mut change = Change::new(Kind::Recording, Op::Updated);
-    change.id = Some(id.to_string());
-    events.changed(change);
+    if matches!(recording.stage, Stage::Failed { .. }) {
+        let mut change = Change::new(Kind::Recording, Op::Updated);
+        change.id = Some(id.to_string());
+        events.changed(change);
+    } else {
+        tracing::warn!(
+            recording = %id,
+            "meeting pipeline: refused to mark a `Done` recording as failed"
+        );
+    }
     Ok(())
 }
 
@@ -1069,7 +1132,7 @@ async fn do_transcribe(
     source: &Arc<dyn AudioSource>,
     id: RecordingId,
 ) -> CommandResult<()> {
-    let mut recording = {
+    let recording = {
         let vault = vault.clone();
         blocking(move || Ok(vault.recording(id)?)).await?
     };
@@ -1097,16 +1160,33 @@ async fn do_transcribe(
         vault,
         source,
         transcriber.as_ref(),
-        &mut recording,
+        id,
         &hints,
         #[cfg(feature = "speech")]
         kit,
     )
     .await?;
 
-    recording.stage = Stage::Identifying;
-    recording.updated_at = Timestamp::now();
-    save_recording(vault, &recording).await
+    // Locked, and re-checked: a chunk `append` accepted in the gap between
+    // `transcribe_stage`'s own last "nothing pending" reload and this save
+    // (see that function's doc) must not be silently skipped over. If one
+    // did land, the stage is left at `Transcribing` rather than advanced --
+    // `run_recording`'s own loop calls this function again as long as it
+    // reads that stage, so the chunk is picked up on the very next pass
+    // rather than stranded.
+    let vault = vault.clone();
+    blocking(move || {
+        crate::meeting::spool::mutate_recording(&vault, id, |recording| {
+            if recording.chunks.iter().any(|c| !c.transcribed) {
+                return Ok(());
+            }
+            recording.stage = Stage::Identifying;
+            recording.updated_at = Timestamp::now();
+            Ok(())
+        })
+    })
+    .await
+    .map(|_| ())
 }
 
 /// Compute the identifying stage's result and checkpoint the transition to
@@ -1127,7 +1207,7 @@ async fn do_identify(
     source: &Arc<dyn AudioSource>,
     id: RecordingId,
 ) -> CommandResult<()> {
-    let mut recording = {
+    let recording = {
         let vault = vault.clone();
         blocking(move || Ok(vault.recording(id)?)).await?
     };
@@ -1157,9 +1237,16 @@ async fn do_identify(
     )
     .await?;
 
-    recording.stage = Stage::Summarising;
-    recording.updated_at = Timestamp::now();
-    save_recording(vault, &recording).await
+    let vault = vault.clone();
+    blocking(move || {
+        crate::meeting::spool::mutate_recording(&vault, id, |recording| {
+            recording.stage = Stage::Summarising;
+            recording.updated_at = Timestamp::now();
+            Ok(())
+        })
+    })
+    .await
+    .map(|_| ())
 }
 
 fn build_transcript(
@@ -1267,28 +1354,52 @@ async fn do_summarise_and_write(
     transcript.segments.sort_by_key(|s| s.start_ms);
     transcript.updated_at = Timestamp::now();
 
-    let mut recording = recording;
-    recording.stage = Stage::Done;
-    recording.note_id = Some(note_id);
-    recording.chunks.clear();
-    recording.partial.clear();
-    recording.updated_at = Timestamp::now();
-
+    // The note, the transcript and the recording's own `Done` row commit
+    // together, in one `blocking` call -- `mutate_recording` for the row so
+    // it is still serialised against any other mutator of the same
+    // recording (see `spool::mutate_recording`'s own doc), even though
+    // nothing should legitimately be racing a recording that has already
+    // left `Transcribing`.
     {
         let vault = vault.clone();
         let note = note.clone();
         let transcript = transcript.clone();
-        let recording = recording.clone();
         blocking(move || {
             vault.save_note(&note, None)?;
             vault.save_transcript(&transcript)?;
-            vault.save_recording(&recording)?;
+            crate::meeting::spool::mutate_recording(&vault, id, |recording| {
+                recording.stage = Stage::Done;
+                recording.note_id = Some(note_id);
+                recording.chunks.clear();
+                recording.partial.clear();
+                recording.updated_at = Timestamp::now();
+                Ok(())
+            })?;
             Ok(())
         })
         .await?;
     }
 
-    source.remove_audio(id)?;
+    // The note is committed; everything from here on only tidies the spool,
+    // and a failure here must not be allowed to undo it. Unlike every
+    // `?` above, this is deliberately swallowed: propagating it would reach
+    // `run_recording`'s caller as an `Err`, which calls `fail` and would
+    // overwrite the `Done` row this function just wrote with `Failed { at:
+    // Summarising }` -- orphaning the note a retry would then duplicate
+    // with a second, near-empty one built from `partial`, which `Done`
+    // just cleared. `fail` itself now refuses that overwrite too, as a
+    // second line of defence, but the point is not to ask it to. Whatever
+    // is left of the spool directory is picked up by
+    // `spool::expire_failed_tick`'s `sweep_orphaned_spool`, which deletes a
+    // spool directory whose recording is `Done` on exactly this account.
+    if let Err(e) = source.remove_audio(id) {
+        tracing::warn!(
+            recording = %id,
+            error = %e.message,
+            "meeting pipeline: wrote the note but could not clear its spool; \
+             the hourly sweep will pick it up"
+        );
+    }
 
     let mut change = Change::new(Kind::Note, Op::Created);
     change.id = Some(note_id.to_string());
@@ -1912,20 +2023,26 @@ mod tests {
         id: RecordingId,
         transcriber: &dyn Transcriber,
     ) -> CommandResult<()> {
-        let mut recording = vault.recording(id)?;
         let hints = Hints::default();
         transcribe_stage(
             vault,
             source,
             transcriber,
-            &mut recording,
+            id,
             &hints,
             #[cfg(feature = "speech")]
             None,
         )
         .await?;
-        recording.stage = Stage::Identifying;
-        recording.updated_at = Timestamp::now();
-        save_recording(vault, &recording).await
+        let vault = vault.clone();
+        blocking(move || {
+            crate::meeting::spool::mutate_recording(&vault, id, |recording| {
+                recording.stage = Stage::Identifying;
+                recording.updated_at = Timestamp::now();
+                Ok(())
+            })
+        })
+        .await
+        .map(|_| ())
     }
 }

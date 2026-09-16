@@ -955,9 +955,14 @@
     {
       "args": [
         {
-          "name": "eventId",
+          "name": "calendarId",
           "required": true,
-          "type": "EventId"
+          "type": "CalendarId"
+        },
+        {
+          "name": "uid",
+          "required": true,
+          "type": "string"
         },
         {
           "name": "never",

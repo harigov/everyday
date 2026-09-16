@@ -200,9 +200,18 @@ export let onPalette: (handler: () => void) => void = () => {}
 // with nothing but a browser. See `meetings.svelte.ts`'s "mock capture" for
 // the trigger side.
 
-/** What `meeting-offer` carries. Not a stored record -- see the module doc. */
+/**
+ * What `meeting-offer` carries. Not a stored record -- see the module doc.
+ *
+ * `calendarId` and `uid` ride along beside `eventId` for `dismissMeetingOffer`
+ * to use: `eventId` is a feed event's own id, not stable across a resync, so
+ * a "Never for this meeting" click that lands after one would look up the
+ * wrong event, or none. `calendarId` and `uid` are what survives that.
+ */
 export interface MeetingOfferPayload {
   eventId: string
+  calendarId: string
+  uid: string
   title: string
   start: string
   end: string
@@ -589,8 +598,8 @@ export const api = {
   deleteSpeechModel: (id: string) => call('deleteSpeechModel', { id }),
   benchmarkSpeechModel: (id: string) => call('benchmarkSpeechModel', { id }),
 
-  dismissMeetingOffer: (eventId: string, never: boolean) =>
-    call('dismissMeetingOffer', { eventId, never }),
+  dismissMeetingOffer: (calendarId: string, uid: string, never: boolean) =>
+    call('dismissMeetingOffer', { calendarId, uid, never }),
 
   unlock: (password: string) => call('unlock', { password }),
   /**

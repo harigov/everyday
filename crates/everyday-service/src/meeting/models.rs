@@ -402,6 +402,31 @@ pub fn status(id: &str) -> Option<Status> {
     Some(Status { installed: is_installed(spec), progress: progress(id), error: last_error(id) })
 }
 
+/// Check whether `id` already has a download running and, if not, register
+/// a fresh [`Download`] for it and return that -- one lock acquisition, not
+/// two, which is what makes this the atomic "start unless already started"
+/// [`start_download`] needs. Two lock acquisitions -- check under one,
+/// insert under a second -- would let two overlapping callers both see
+/// nothing running and both register their own `Download`, so two downloads
+/// of the same model run at once, each streaming into the same `.partial`
+/// files. `None` means a download for `id` is already running and the
+/// caller has nothing more to do.
+fn register_download(id: &'static str, total: u64) -> Option<Arc<Download>> {
+    let mut map = registry().lock().unwrap();
+    if map.get(id).is_some_and(|dl| dl.running.load(Ordering::SeqCst)) {
+        return None;
+    }
+    let dl = Arc::new(Download {
+        total,
+        done: AtomicU64::new(0),
+        cancelled: AtomicBool::new(false),
+        running: AtomicBool::new(true),
+        error: Mutex::new(None),
+    });
+    map.insert(id, dl.clone());
+    Some(dl)
+}
+
 /// Start `id` downloading in the background. A no-op if it is already
 /// installed, or already downloading.
 pub fn start_download(id: &str) -> Result<(), String> {
@@ -409,23 +434,12 @@ pub fn start_download(id: &str) -> Result<(), String> {
     if is_installed(spec) {
         return Ok(());
     }
-    {
-        let map = registry().lock().unwrap();
-        if map.get(spec.id).is_some_and(|dl| dl.running.load(Ordering::SeqCst)) {
-            return Ok(());
-        }
-    }
-    let dl = Arc::new(Download {
-        total: spec.bytes(),
-        done: AtomicU64::new(0),
-        cancelled: AtomicBool::new(false),
-        running: AtomicBool::new(true),
-        error: Mutex::new(None),
-    });
-    registry().lock().unwrap().insert(spec.id, dl.clone());
+    let Some(dl) = register_download(spec.id, spec.bytes()) else {
+        return Ok(());
+    };
 
     tokio::spawn(async move {
-        let outcome = run_download(spec, &dl).await;
+        let outcome = run_download(spec, dl.clone()).await;
         dl.running.store(false, Ordering::SeqCst);
         match outcome {
             Ok(()) => {
@@ -469,7 +483,7 @@ enum Outcome {
     Failed(String),
 }
 
-async fn run_download(spec: &'static ModelSpec, dl: &Download) -> Result<(), Outcome> {
+async fn run_download(spec: &'static ModelSpec, dl: Arc<Download>) -> Result<(), Outcome> {
     let dir = spec.dir();
     std::fs::create_dir_all(&dir)
         .map_err(|e| Outcome::Failed(format!("could not create {}: {e}", dir.display())))?;
@@ -484,7 +498,7 @@ async fn run_download(spec: &'static ModelSpec, dl: &Download) -> Result<(), Out
             Source::File { url, file } => {
                 let dest = dir.join(file.dest);
                 let partial = dir.join(format!("{}.partial", file.dest));
-                stream_download(url, &partial, file.bytes, file.sha256, dl, base_offset).await?;
+                stream_download(url, &partial, file.bytes, file.sha256, &dl, base_offset).await?;
                 std::fs::rename(&partial, &dest)
                     .map_err(|e| Outcome::Failed(format!("could not finish {}: {e}", file.dest)))?;
                 installed_files.push((file.dest.to_string(), file.bytes));
@@ -492,10 +506,16 @@ async fn run_download(spec: &'static ModelSpec, dl: &Download) -> Result<(), Out
             }
             Source::Archive { url, sha256, bytes, members } => {
                 let archive_partial = dir.join(".partial-archive");
-                stream_download(url, &archive_partial, *bytes, sha256, dl, base_offset).await?;
+                stream_download(url, &archive_partial, *bytes, sha256, &dl, base_offset).await?;
                 base_offset += bytes;
-                extract_members(&archive_partial, &dir, members).await?;
+                // Whatever `extract_members` answers, the archive itself is
+                // no longer wanted -- including on `Cancelled` or `Failed`,
+                // when it would otherwise sit in the model's directory as
+                // an orphaned partial output, up to hundreds of megabytes,
+                // until the next successful install overwrites it.
+                let extracted = extract_members(&archive_partial, &dir, members, dl.clone()).await;
                 let _ = std::fs::remove_file(&archive_partial);
+                extracted?;
                 for (_, file) in *members {
                     installed_files.push((file.dest.to_string(), file.bytes));
                 }
@@ -503,10 +523,29 @@ async fn run_download(spec: &'static ModelSpec, dl: &Download) -> Result<(), Out
         }
     }
 
+    finalize_install(&dir, &dl, installed_files)
+}
+
+/// Commit the install: write the marker recording every file this model now
+/// has, so future calls skip straight to [`is_installed`]'s cheap `stat`.
+/// Checked here, not only at the top of each source's pass through
+/// [`run_download`]'s own loop, because a cancel can land after every byte
+/// has already arrived and every checksum has already passed -- the last
+/// gap left once [`extract_members`] started checking between members too.
+/// Without this, that race would silently finish installing a model the
+/// person had just told this module to stop fetching.
+fn finalize_install(
+    dir: &Path,
+    dl: &Download,
+    installed_files: Vec<(String, u64)>,
+) -> Result<(), Outcome> {
+    if dl.cancelled.load(Ordering::SeqCst) {
+        return Err(Outcome::Cancelled);
+    }
     let marker = Marker { files: installed_files };
     let text = serde_json::to_string(&marker)
         .map_err(|e| Outcome::Failed(format!("could not record the install: {e}")))?;
-    std::fs::write(marker_path(&dir), text)
+    std::fs::write(marker_path(dir), text)
         .map_err(|e| Outcome::Failed(format!("could not record the install: {e}")))?;
     Ok(())
 }
@@ -644,14 +683,26 @@ fn to_hex(bytes: &[u8]) -> String {
 /// in this module's own catalogue. An entry whose path is absolute, or
 /// carries a `..` component, is skipped like any other entry this call was
 /// not asked for; it is never joined onto `dir` or opened for writing.
+///
+/// # Cancellation
+///
+/// `dl` is checked between every entry the tar reader hands back --
+/// including the ones this call skips -- so a cancel lands within one
+/// member's worth of latency rather than waiting for the whole archive
+/// (the biggest of these, `whisperTurbo`'s encoder, is 674 MB on its own).
+/// Because the check runs *before* a member's own `.partial` file is
+/// created, a cancel never has to clean one up: extraction has either not
+/// started writing the next member yet, or it already finished the one it
+/// was on -- there is no half-written file in between for it to leave.
 async fn extract_members(
     archive: &Path,
     dir: &Path,
     members: &'static [(&'static str, ModelFile)],
+    dl: Arc<Download>,
 ) -> Result<(), Outcome> {
     let archive = archive.to_path_buf();
     let dir = dir.to_path_buf();
-    tokio::task::spawn_blocking(move || extract_members_blocking(&archive, &dir, members))
+    tokio::task::spawn_blocking(move || extract_members_blocking(&archive, &dir, members, &dl))
         .await
         .map_err(|e| Outcome::Failed(format!("extraction failed: {e}")))?
 }
@@ -669,6 +720,7 @@ fn extract_members_blocking(
     archive: &Path,
     dir: &Path,
     members: &'static [(&'static str, ModelFile)],
+    dl: &Download,
 ) -> Result<(), Outcome> {
     let file = std::fs::File::open(archive)
         .map_err(|e| Outcome::Failed(format!("could not open {}: {e}", archive.display())))?;
@@ -679,6 +731,9 @@ fn extract_members_blocking(
     let mut remaining: std::collections::HashSet<&str> =
         members.iter().map(|(path, _)| *path).collect();
     for entry in entries {
+        if dl.cancelled.load(Ordering::SeqCst) {
+            return Err(Outcome::Cancelled);
+        }
         let mut entry =
             entry.map_err(|e| Outcome::Failed(format!("could not read the archive: {e}")))?;
         let Ok(path) = entry.path() else { continue };
@@ -802,6 +857,41 @@ pub fn recogniser_paths(model: LocalModel) -> Option<RecogniserPaths> {
 mod tests {
     use super::*;
 
+    /// The bug `register_download` exists to close: `start_download` used to
+    /// check "is one already running?" under one lock acquisition and
+    /// insert the fresh `Download` under a second, separate one. Two
+    /// threads racing that gap could both see nothing running and both
+    /// register their own `Download` for the same model id, so two
+    /// downloads of it would run at once. Many real threads, lined up on a
+    /// `Barrier` so they all call in at effectively the same instant, is
+    /// what actually exercises that interleaving -- a sequential "call it
+    /// twice" test would pass whether or not the race was closed, since
+    /// there would be no genuine concurrency for it to catch.
+    ///
+    /// Run across several distinct ids, each with its own set of threads,
+    /// since one round passing is not proof the race is closed -- only that
+    /// this particular scheduling happened not to hit it.
+    #[test]
+    fn register_download_lets_only_one_caller_through_per_id_under_real_contention() {
+        const THREADS: usize = 16;
+        for round in 0..20 {
+            let id: &'static str =
+                Box::leak(format!("__test_race_model_{round}__").into_boxed_str());
+            let barrier = Arc::new(std::sync::Barrier::new(THREADS));
+            let handles: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        register_download(id, 100).is_some()
+                    })
+                })
+                .collect();
+            let winners = handles.into_iter().map(|h| h.join().unwrap()).filter(|&won| won).count();
+            assert_eq!(winners, 1, "round {round}: exactly one caller should have registered {id}");
+        }
+    }
+
     #[test]
     fn every_catalogue_id_is_unique_and_matches_local_model() {
         let mut seen = std::collections::HashSet::new();
@@ -887,6 +977,20 @@ mod tests {
         })
     }
 
+    /// A [`Download`] in the shape [`extract_members_blocking`] and
+    /// [`finalize_install`] expect: not cancelled, with whatever `total` the
+    /// test cares about (usually nothing, since these tests check
+    /// cancellation, not progress).
+    fn fresh_download() -> Download {
+        Download {
+            total: 0,
+            done: AtomicU64::new(0),
+            cancelled: AtomicBool::new(false),
+            running: AtomicBool::new(true),
+            error: Mutex::new(None),
+        }
+    }
+
     #[test]
     fn extraction_ignores_members_this_module_did_not_ask_for() {
         let members: &'static [(&'static str, ModelFile)] = leak_members(&[(
@@ -910,7 +1014,7 @@ mod tests {
             ],
         );
 
-        extract_members_blocking(&archive_path, dir.path(), members).unwrap();
+        extract_members_blocking(&archive_path, dir.path(), members, &fresh_download()).unwrap();
 
         assert_eq!(std::fs::read(dir.path().join("wanted.bin")).unwrap(), b"hello");
         assert!(!dir.path().join("unwanted.bin").exists());
@@ -937,7 +1041,8 @@ mod tests {
         let archive_path = dir.path().join("archive.tar.bz2");
         write_test_archive(&archive_path, &[("inner/something-else.bin", b"x".as_slice())]);
 
-        let err = extract_members_blocking(&archive_path, dir.path(), members).unwrap_err();
+        let err = extract_members_blocking(&archive_path, dir.path(), members, &fresh_download())
+            .unwrap_err();
         assert!(matches!(err, Outcome::Failed(_)));
     }
 
@@ -951,9 +1056,67 @@ mod tests {
         let archive_path = dir.path().join("archive.tar.bz2");
         write_test_archive(&archive_path, &[("inner/wanted.bin", b"hello".as_slice())]);
 
-        let err = extract_members_blocking(&archive_path, dir.path(), members).unwrap_err();
+        let err = extract_members_blocking(&archive_path, dir.path(), members, &fresh_download())
+            .unwrap_err();
         assert!(matches!(err, Outcome::Failed(_)));
         assert!(!dir.path().join("wanted.bin").exists());
+    }
+
+    /// The bug this exists to catch: without a cancellation check inside
+    /// `extract_members_blocking`'s own loop, a cancel set before extraction
+    /// starts would still be ignored until the *whole* archive had been
+    /// pulled apart -- for a real model, up to a further 674 MB of work
+    /// after the person asked this to stop. Setting `cancelled` before
+    /// calling in proves the check is live, not merely present in
+    /// `run_download`'s outer, once-per-source loop.
+    #[test]
+    fn extraction_stops_between_members_once_cancelled() {
+        let members: &'static [(&'static str, ModelFile)] = leak_members(&[
+            (
+                "inner/first.bin",
+                ModelFile { dest: "first.bin", sha256: sha256_hex(b"one"), bytes: 3 },
+            ),
+            (
+                "inner/second.bin",
+                ModelFile { dest: "second.bin", sha256: sha256_hex(b"two"), bytes: 3 },
+            ),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let archive_path = dir.path().join("archive.tar.bz2");
+        write_test_archive(
+            &archive_path,
+            &[("inner/first.bin", b"one".as_slice()), ("inner/second.bin", b"two".as_slice())],
+        );
+
+        let dl = fresh_download();
+        dl.cancelled.store(true, Ordering::SeqCst);
+        let err = extract_members_blocking(&archive_path, dir.path(), members, &dl).unwrap_err();
+
+        assert!(matches!(err, Outcome::Cancelled));
+        assert!(!dir.path().join("first.bin").exists(), "nothing should have been extracted");
+        assert!(!dir.path().join("second.bin").exists());
+    }
+
+    #[test]
+    fn finalize_install_refuses_to_write_the_marker_once_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let dl = fresh_download();
+        dl.cancelled.store(true, Ordering::SeqCst);
+
+        let err = finalize_install(dir.path(), &dl, vec![("one.bin".to_string(), 3)]).unwrap_err();
+
+        assert!(matches!(err, Outcome::Cancelled));
+        assert!(!marker_path(dir.path()).exists(), "a cancelled install must not look installed");
+    }
+
+    #[test]
+    fn finalize_install_writes_the_marker_when_not_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let dl = fresh_download();
+
+        finalize_install(dir.path(), &dl, vec![("one.bin".to_string(), 3)]).unwrap();
+
+        assert!(marker_path(dir.path()).exists());
     }
 
     /// Leaked rather than owned: [`ModelFile::sha256`] is `&'static str`,
