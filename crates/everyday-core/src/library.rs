@@ -352,7 +352,7 @@ pub fn default_kinds() -> Vec<Kind> {
         Kind::new("series", "Series", "Series")
             .with_icon("\u{1f4fa}")
             .with_verbs(Verbs::new("To watch", "Watching", "Watched", "watched"))
-            .with_source("itunes")
+            .with_source("tvmaze")
             .with_progress("episode")
             .with_fields(vec![
                 FieldDef::new("creator", "Created by", FieldType::Text),
@@ -362,7 +362,7 @@ pub fn default_kinds() -> Vec<Kind> {
         Kind::new("music", "Music", "Album")
             .with_icon("\u{1f3b5}")
             .with_verbs(Verbs::new("To hear", "Listening", "Heard", "listened to"))
-            .with_source("itunes")
+            .with_source("musicBrainz")
             .with_fields(vec![
                 FieldDef::new("artist", "Artist", FieldType::Text),
                 FieldDef::new("label", "Label", FieldType::Text),
@@ -371,7 +371,7 @@ pub fn default_kinds() -> Vec<Kind> {
         Kind::new("game", "Games", "Game")
             .with_icon("\u{1f3ae}")
             .with_verbs(Verbs::new("To play", "Playing", "Played", "played"))
-            .with_source("wikipedia")
+            .with_source("steam")
             .with_progress("hour")
             .with_fields(vec![
                 FieldDef::new("developer", "Developer", FieldType::Text),

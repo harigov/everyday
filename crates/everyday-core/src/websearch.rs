@@ -1,7 +1,7 @@
 //! Searching the web, and everything that happens to the answer.
 //!
 //! This is the whole of web search except the socket. It builds the request,
-//! it parses the response, it normalises five wildly different reply formats
+//! it parses the response, it normalises eight wildly different reply formats
 //! into one [`SearchResult`], and it maps that result onto an
 //! [`Item`](crate::library::Item). What it does not do — cannot do, by
 //! construction — is open a connection: [`everyday_core`](crate) has no async
@@ -48,6 +48,16 @@
 //! of this file that can be broken by somebody else's redesign —
 //! [`parse_duckduckgo`] is written to return nothing rather than nonsense
 //! when that happens.
+//!
+//! It is also why the obvious names are missing. The best film database on
+//! the internet is TMDB and the best games database is RAWG, and both are a
+//! free account and a key in a settings box away; the shelves they would
+//! serve are answered here by a catalogue that needs neither — iTunes for
+//! films, [`Source::TvMaze`] for television, [`Source::MusicBrainz`] for
+//! records, [`Source::Steam`] for games — with Wikipedia behind every one of
+//! them for what a catalogue does not carry. A source that needs a key is a
+//! source that is off until somebody sets it up, and this feature is meant
+//! to work on the first run.
 //!
 //! # What leaves the machine
 //!
@@ -108,14 +118,36 @@ pub enum Source {
     /// [`slug`](Self::slug) — and the slug is what a `Kind` stores.
     #[serde(rename = "itunes")]
     ITunes,
+    /// TVmaze. Television, and better at it than a shop is: the network,
+    /// the genres, the year it began and a portrait, for shows nobody sells
+    /// a season of.
+    #[serde(rename = "tvmaze")]
+    TvMaze,
+    /// MusicBrainz, with covers from the Cover Art Archive. Records, as a
+    /// catalogue rather than a shop — the original release year rather than
+    /// the year of the remaster somebody is currently selling.
+    MusicBrainz,
+    /// Steam's store search. Games, with the poster art the store holds at a
+    /// predictable address. Personal computers only, which is why
+    /// [`SearchRequest::attempts`] still has Wikipedia behind it: a console
+    /// exclusive is not in this catalogue and never will be.
+    Steam,
     /// OpenStreetMap's geocoder. Restaurants and places, with an address and
     /// often a cuisine and a telephone number.
     Nominatim,
 }
 
 impl Source {
-    pub const ALL: [Source; 5] =
-        [Source::Web, Source::Wikipedia, Source::OpenLibrary, Source::ITunes, Source::Nominatim];
+    pub const ALL: [Source; 8] = [
+        Source::Web,
+        Source::Wikipedia,
+        Source::OpenLibrary,
+        Source::ITunes,
+        Source::TvMaze,
+        Source::MusicBrainz,
+        Source::Steam,
+        Source::Nominatim,
+    ];
 
     /// The stable name a [`Kind`](crate::library::Kind) stores.
     pub fn slug(self) -> &'static str {
@@ -124,6 +156,9 @@ impl Source {
             Source::Wikipedia => "wikipedia",
             Source::OpenLibrary => "openLibrary",
             Source::ITunes => "itunes",
+            Source::TvMaze => "tvmaze",
+            Source::MusicBrainz => "musicBrainz",
+            Source::Steam => "steam",
             Source::Nominatim => "nominatim",
         }
     }
@@ -136,6 +171,9 @@ impl Source {
             Source::Wikipedia => "Wikipedia",
             Source::OpenLibrary => "Open Library",
             Source::ITunes => "iTunes",
+            Source::TvMaze => "TVmaze",
+            Source::MusicBrainz => "MusicBrainz",
+            Source::Steam => "Steam",
             Source::Nominatim => "OpenStreetMap",
         }
     }
@@ -149,6 +187,9 @@ impl Source {
             "wikipedia" => Source::Wikipedia,
             "openLibrary" | "openlibrary" => Source::OpenLibrary,
             "itunes" | "iTunes" => Source::ITunes,
+            "tvmaze" | "tvMaze" => Source::TvMaze,
+            "musicBrainz" | "musicbrainz" => Source::MusicBrainz,
+            "steam" => Source::Steam,
             "nominatim" => Source::Nominatim,
             _ => Source::Web,
         }
@@ -161,6 +202,25 @@ impl Source {
     /// not reflow under the cursor when the first cover lands.
     pub fn has_images(self) -> bool {
         !matches!(self, Source::Web | Source::Nominatim)
+    }
+
+    /// Is this a catalogue of *works* — a thing a shelf collects — rather
+    /// than a search of pages or of the ground?
+    ///
+    /// The one place it matters is [`SearchRequest::attempts`], which puts
+    /// Wikipedia behind a catalogue and nothing behind the other two. See
+    /// that method for the argument; it is written once here so that adding
+    /// a catalogue is one line rather than an edit to a fallback chain
+    /// somebody has to remember exists.
+    pub fn is_catalogue(self) -> bool {
+        matches!(
+            self,
+            Source::OpenLibrary
+                | Source::ITunes
+                | Source::TvMaze
+                | Source::MusicBrainz
+                | Source::Steam
+        )
     }
 
     /// Build the request for `req`. The only place a URL is constructed.
@@ -212,6 +272,31 @@ impl Source {
                     "application/json",
                 )
             }
+            // No limit parameter: the endpoint decides how many shows match
+            // and `search` truncates. Asking for a page of a list that is
+            // usually three long would be inventing a parameter.
+            Source::TvMaze => {
+                (format!("https://api.tvmaze.com/search/shows?q={q}"), "application/json")
+            }
+            // Release *groups*, not releases: one answer per record rather
+            // than one per pressing, which is the difference between eleven
+            // editions of the same album and the album.
+            Source::MusicBrainz => (
+                format!(
+                    "https://musicbrainz.org/ws/2/release-group\
+                     ?query={q}&fmt=json&limit={limit}"
+                ),
+                "application/json",
+            ),
+            // `cc` and `l` are the store's currency and language, and the
+            // endpoint answers with prices in them whether or not they are
+            // asked for. They are pinned rather than left to the caller's
+            // address so that the request says nothing about where the
+            // person is, and the price is dropped by the parser regardless.
+            Source::Steam => (
+                format!("https://store.steampowered.com/api/storesearch/?term={q}&cc=us&l=en"),
+                "application/json",
+            ),
             Source::Nominatim => (
                 format!(
                     "https://nominatim.openstreetmap.org/search?q={q}&format=jsonv2\
@@ -230,7 +315,47 @@ impl Source {
             Source::Wikipedia => parse_wikipedia(body),
             Source::OpenLibrary => parse_open_library(body),
             Source::ITunes => parse_itunes(body),
+            Source::TvMaze => parse_tvmaze(body),
+            Source::MusicBrainz => parse_musicbrainz(body),
+            Source::Steam => parse_steam(body),
             Source::Nominatim => parse_nominatim(body),
+        }
+    }
+
+    /// A second request, for the one result somebody actually chose.
+    ///
+    /// Most sources need none: what their search returns is everything they
+    /// have. Steam's does not — its store search answers with a name, an id
+    /// and a price, and everything a shelf wants about a game (who made it,
+    /// when it came out, what it is) is one request away at a different
+    /// address.
+    ///
+    /// Fetched on *pick* rather than for every hit, which is the whole
+    /// reason it is a separate step: eight results would be eight more
+    /// requests, for seven games nobody is adding. See
+    /// `websearch::apply_and_cover` in the service, which is where the one
+    /// request happens and where failing at it costs nothing.
+    pub fn detail(self, result: &SearchResult) -> Option<Request> {
+        match self {
+            Source::Steam => steam_app_id(&result.url).map(|id| Request {
+                url: format!("https://store.steampowered.com/api/appdetails?appids={id}&l=en"),
+                accept: "application/json",
+                source: self,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Fold a [`detail`](Self::detail) reply into the result it was for.
+    ///
+    /// Additive on purpose: it fills what the search left blank and never
+    /// contradicts what the search already said. A detail reply that is
+    /// unreadable, or about something else entirely, therefore leaves a
+    /// usable result rather than a damaged one.
+    pub fn merge_detail(self, result: &mut SearchResult, body: &str) -> Result<()> {
+        match self {
+            Source::Steam => merge_steam_detail(result, body),
+            _ => Ok(()),
         }
     }
 }
@@ -308,8 +433,8 @@ impl SearchRequest {
     /// both are needed, and turns the common failure from "here are some
     /// shops" into "here is the film".
     ///
-    /// It is inserted only after a *catalogue* — Open Library or iTunes —
-    /// and that limit is deliberate. Nominatim's misses are places, where
+    /// It is inserted only after a *catalogue* — see
+    /// [`Source::is_catalogue`] — and that limit is deliberate. Nominatim's misses are places, where
     /// what somebody actually wants next is the restaurant's own website and
     /// not an encyclopaedia article about the neighbourhood. A request that
     /// already prefers the web is an article or a recipe, which is a web page
@@ -322,7 +447,7 @@ impl SearchRequest {
     /// on the policy — the only difference between them is an `await`.
     pub fn attempts(&self) -> Vec<SearchRequest> {
         let mut out = vec![self.clone()];
-        if matches!(self.source, Source::OpenLibrary | Source::ITunes) {
+        if self.source.is_catalogue() {
             out.push(
                 SearchRequest::new(self.hinted_query())
                     .on(Source::Wikipedia)
@@ -399,6 +524,18 @@ pub struct SearchResult {
     pub rating: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rating_count: Option<u32>,
+    /// Whose score `rating` is, when it is not the source that answered.
+    ///
+    /// Steam repeats Metacritic's number, and a score is worth nothing
+    /// without the name of whoever gave it: "93 on Steam" would credit the
+    /// shop that quoted it. Empty means the obvious thing — the source that
+    /// answered is the source of the score.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub rating_source: String,
+    /// Where that score was published, when it is somebody else's and lives
+    /// somewhere other than [`SearchResult::url`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub rating_url: String,
     /// Kind-specific values, already keyed to match the field keys the
     /// seeded kinds use — `author`, `pages`, `director`, `cuisine`.
     ///
@@ -535,13 +672,17 @@ pub fn apply(result: &SearchResult, kind: &Kind, item: &mut Item, overwrite: boo
     }
 
     if let Some(score) = result.rating {
-        let label = Source::from_slug(&result.source).label().to_string();
-        let rating = ExternalRating {
-            source: label.clone(),
-            score,
-            count: result.rating_count,
-            url: result.url.clone(),
+        // Whoever gave the score, which is not always whoever answered.
+        let label = match result.rating_source.trim() {
+            "" => Source::from_slug(&result.source).label().to_string(),
+            named => named.to_string(),
         };
+        let url = match result.rating_url.trim() {
+            "" => result.url.clone(),
+            published => published.to_string(),
+        };
+        let rating =
+            ExternalRating { source: label.clone(), score, count: result.rating_count, url };
         match item.external.iter_mut().find(|r| r.source == label) {
             Some(existing) => *existing = rating,
             None => item.external.push(rating),
@@ -741,6 +882,7 @@ fn parse_open_library(body: &str) -> Result<Vec<SearchResult>> {
                 .and_then(|n| u32::try_from(n).ok()),
             facts,
             source: Source::OpenLibrary.slug().to_string(),
+            ..Default::default()
         });
     }
     Ok(out)
@@ -808,6 +950,288 @@ fn parse_itunes(body: &str) -> Result<Vec<SearchResult>> {
         });
     }
     Ok(out)
+}
+
+/// Pull shows out of TVmaze's search reply.
+///
+/// The endpoint answers with a list of `{score, show}` already ranked, so
+/// the order is kept as given. Everything a television shelf asks for is in
+/// the one reply — the network, the genres, the year it began, a portrait
+/// and the site's own rating — which is the whole reason this source is
+/// here rather than a shop's television section.
+fn parse_tvmaze(body: &str) -> Result<Vec<SearchResult>> {
+    let root: Value = serde_json::from_str(body)?;
+    let Some(hits) = root.as_array() else { return Ok(Vec::new()) };
+    let mut out = Vec::new();
+    for hit in hits {
+        // A search answers with the show wrapped in a score; the endpoints
+        // that return a show on its own do not. Accept both, so that a
+        // single-show reply is not silently no results.
+        let show = hit.get("show").unwrap_or(hit);
+        let title = string_at(show, "name");
+        if title.is_empty() {
+            continue;
+        }
+        let mut facts = BTreeMap::new();
+        // Broadcast or streamed: one field either way, because "where it is
+        // on" is one question however the industry files it.
+        let network = match show.pointer("/network/name").and_then(Value::as_str) {
+            Some(name) => name.to_string(),
+            None => show.pointer("/webChannel/name").and_then(Value::as_str).unwrap_or("").into(),
+        };
+        if !network.is_empty() {
+            facts.insert("network".to_string(), network.clone());
+        }
+        let genres: Vec<&str> = show
+            .get("genres")
+            .and_then(Value::as_array)
+            .map_or_else(Vec::new, |g| g.iter().filter_map(Value::as_str).collect());
+        if !genres.is_empty() {
+            facts.insert("genre".to_string(), genres.join(", "));
+        }
+        if let Some(minutes) = show
+            .get("averageRuntime")
+            .and_then(Value::as_i64)
+            .or_else(|| show.get("runtime").and_then(Value::as_i64))
+        {
+            facts.insert("runtime".to_string(), minutes.to_string());
+        }
+        out.push(SearchResult {
+            title,
+            subtitle: network,
+            // TVmaze names no creator in a search reply, and guessing one
+            // from the network would be worse than leaving it for the person
+            // who knows.
+            creator: String::new(),
+            // The summary is a fragment of HTML, always. Tags out, entities
+            // decoded, then cut — in that order, or a `&amp;` lands mid-cut.
+            summary: trim_summary(&decode_entities(&strip_tags(&string_at(show, "summary")))),
+            year: year_from_iso(&string_at(show, "premiered")),
+            url: http_url(&string_at(show, "url")).unwrap_or_default(),
+            image_url: show
+                .pointer("/image/original")
+                .or_else(|| show.pointer("/image/medium"))
+                .and_then(Value::as_str)
+                .and_then(|u| http_url(u).ok())
+                .unwrap_or_default(),
+            // TVmaze rates out of ten, and says nothing about how many
+            // people voted.
+            rating: show
+                .pointer("/rating/average")
+                .and_then(Value::as_f64)
+                .and_then(|score| normalize_rating(score, 10.0)),
+            rating_count: None,
+            facts,
+            source: Source::TvMaze.slug().to_string(),
+            ..Default::default()
+        });
+    }
+    Ok(out)
+}
+
+/// Pull records out of MusicBrainz's release-group search.
+///
+/// # Where the picture comes from
+///
+/// Not from this reply: MusicBrainz holds the facts and the Cover Art
+/// Archive holds the sleeves, and a search says nothing about whether one
+/// exists. The address is *derived* from the record's id, which the archive
+/// serves or answers 404 to, and a 404 here is a card with no artwork rather
+/// than a failed lookup — see `apply_and_cover` in the service, which treats
+/// the picture as best-effort for exactly this reason. The alternative was a
+/// second request per result, eight of them per search, to a rate-limited
+/// host, to find out something the card can live without.
+fn parse_musicbrainz(body: &str) -> Result<Vec<SearchResult>> {
+    let root: Value = serde_json::from_str(body)?;
+    let Some(groups) = root.get("release-groups").and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<(i64, SearchResult)> = Vec::new();
+    for group in groups {
+        let title = string_at(group, "title");
+        let id = string_at(group, "id");
+        if title.is_empty() || id.is_empty() {
+            continue;
+        }
+        // A credit is a list — "Simon & Garfunkel" is one artist, but a
+        // duet is two joined by a phrase the data carries. Joining on it is
+        // what turns three objects back into the line printed on the sleeve.
+        let artist = group
+            .get("artist-credit")
+            .and_then(Value::as_array)
+            .map(|credits| {
+                credits.iter().fold(String::new(), |mut line, credit| {
+                    line.push_str(&string_at(credit, "name"));
+                    line.push_str(credit.get("joinphrase").and_then(Value::as_str).unwrap_or(""));
+                    line
+                })
+            })
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let mut facts = BTreeMap::new();
+        if !artist.is_empty() {
+            facts.insert("artist".to_string(), artist.clone());
+        }
+        // "Album", "EP", "Single", and the secondary types that say a record
+        // is a compilation or a soundtrack rather than a record proper.
+        let mut descriptors: Vec<String> = Vec::new();
+        let primary = string_at(group, "primary-type");
+        if !primary.is_empty() {
+            descriptors.push(primary);
+        }
+        if let Some(secondary) = group.get("secondary-types").and_then(Value::as_array) {
+            descriptors.extend(secondary.iter().filter_map(Value::as_str).map(str::to_string));
+        }
+        out.push((
+            // Lucene's relevance, which the endpoint sorts by and which a
+            // parser has no business reordering. Kept explicitly so that it
+            // survives anything this function does to the list.
+            group.get("score").and_then(Value::as_i64).unwrap_or(0),
+            SearchResult {
+                title,
+                subtitle: descriptors.join(", "),
+                creator: artist,
+                summary: string_at(group, "disambiguation"),
+                year: year_from_iso(&string_at(group, "first-release-date")),
+                url: format!("https://musicbrainz.org/release-group/{id}"),
+                image_url: format!("https://coverartarchive.org/release-group/{id}/front-500"),
+                facts,
+                source: Source::MusicBrainz.slug().to_string(),
+                ..Default::default()
+            },
+        ));
+    }
+    out.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(out.into_iter().map(|(_, r)| r).collect())
+}
+
+/// Pull games out of Steam's store search.
+///
+/// Thin, as store replies go: a name, an id, a picture the size of a
+/// postage stamp and what it costs today. The id is the useful part — the
+/// store serves each game's poster at a fixed address built from it, which
+/// is how a card gets artwork worth looking at out of a reply that contains
+/// a 231-pixel thumbnail.
+///
+/// # Why the score is dropped
+///
+/// The reply carries a `metascore`, and it is Metacritic's, not Steam's.
+/// [`apply`] labels an [`ExternalRating`] with the source that answered, so
+/// keeping it would put "94 on Steam" beside a game — a number attributed to
+/// the shop that repeated it rather than the people who gave it. A rating
+/// with the wrong name on it is worse than no rating.
+fn parse_steam(body: &str) -> Result<Vec<SearchResult>> {
+    let root: Value = serde_json::from_str(body)?;
+    let Some(items) = root.get("items").and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let title = string_at(item, "name");
+        let Some(id) = item.get("id").and_then(Value::as_i64) else { continue };
+        if title.is_empty() {
+            continue;
+        }
+        let mut facts = BTreeMap::new();
+        // What it runs on, which is the only sense in which a store that
+        // sells nothing else can answer "platform".
+        let platforms: Vec<&str> = [("windows", "Windows"), ("mac", "macOS"), ("linux", "Linux")]
+            .iter()
+            .filter(|(key, _)| {
+                item.pointer(&format!("/platforms/{key}")).and_then(Value::as_bool).unwrap_or(false)
+            })
+            .map(|(_, name)| *name)
+            .collect();
+        if !platforms.is_empty() {
+            facts.insert("platform".to_string(), platforms.join(", "));
+        }
+        out.push(SearchResult {
+            title,
+            url: format!("https://store.steampowered.com/app/{id}/"),
+            // The tall library artwork rather than the wide banner: a shelf
+            // draws covers, and `header.jpg` in a poster's frame is a letter
+            // box with a logo in it.
+            image_url: format!(
+                "https://cdn.cloudflare.steamstatic.com/steam/apps/{id}/library_600x900.jpg"
+            ),
+            facts,
+            source: Source::Steam.slug().to_string(),
+            ..Default::default()
+        });
+    }
+    Ok(out)
+}
+
+/// Fill a Steam result in from the store's page for that one game.
+///
+/// The reply is keyed by the app id — `{"1145360":{"success":true,"data":…}}`
+/// — and `success` is `false` for a game that is not sold in the store's
+/// region, which is a blank rather than an error: the search result is still
+/// perfectly good, it just stays as thin as it arrived.
+fn merge_steam_detail(result: &mut SearchResult, body: &str) -> Result<()> {
+    let root: Value = serde_json::from_str(body)?;
+    let data = root
+        .as_object()
+        .and_then(|by_id| by_id.values().next())
+        .filter(|entry| entry.get("success").and_then(Value::as_bool).unwrap_or(false))
+        .and_then(|entry| entry.get("data"));
+    let Some(data) = data else { return Ok(()) };
+
+    if result.summary.trim().is_empty() {
+        let blurb = string_at(data, "short_description");
+        result.summary = trim_summary(&decode_entities(&strip_tags(&blurb)));
+    }
+    if result.year.is_none() {
+        // "Sep 17, 2020", "2020", "Q3 2026" — a store's own prose, in a
+        // format that has changed before. The year is the only part of it
+        // this app has a field for.
+        result.year = year_from_text(&string_at(data.get("release_date").unwrap_or(data), "date"));
+    }
+    for (key, field) in [("developer", "developers"), ("publisher", "publishers")] {
+        let who = first_string(data, field);
+        if !who.is_empty() {
+            result.facts.entry(key.to_string()).or_insert(who);
+        }
+    }
+    // Steam files a game under several genres and calls each one a
+    // description; the shelf has one line for them.
+    let genres: Vec<String> = data
+        .get("genres")
+        .and_then(Value::as_array)
+        .map_or_else(Vec::new, |all| all.iter().map(|g| string_at(g, "description")).collect());
+    let genres: Vec<String> = genres.into_iter().filter(|g| !g.is_empty()).collect();
+    if !genres.is_empty() {
+        result.facts.entry("genre".to_string()).or_insert_with(|| genres.join(", "));
+    }
+    if result.creator.trim().is_empty() {
+        result.creator = first_string(data, "developers");
+    }
+    // Metacritic's, out of a hundred, and credited to them — see
+    // `SearchResult::rating_source`.
+    if let Some(score) = data.pointer("/metacritic/score").and_then(Value::as_f64) {
+        if let Some(rating) = normalize_rating(score, 100.0) {
+            result.rating = Some(rating);
+            result.rating_source = "Metacritic".to_string();
+            result.rating_url = data
+                .pointer("/metacritic/url")
+                .and_then(Value::as_str)
+                .and_then(|u| http_url(u).ok())
+                .unwrap_or_default();
+        }
+    }
+    Ok(())
+}
+
+/// The app id inside a store address this file built, and nothing else.
+///
+/// Deliberately strict about the prefix: the id is about to be interpolated
+/// into a request, and the only addresses that may produce one are the ones
+/// [`parse_steam`] wrote.
+fn steam_app_id(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://store.steampowered.com/app/")?;
+    let id: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    (!id.is_empty()).then_some(id)
 }
 
 fn parse_nominatim(body: &str) -> Result<Vec<SearchResult>> {
@@ -988,6 +1412,26 @@ fn year_from_iso(date: &str) -> Option<i16> {
     date.get(..4)?.parse::<i64>().ok().and_then(to_year)
 }
 
+/// The year inside a line of prose — "Sep 17, 2020", "Q3 2026", "2020".
+///
+/// The first run of exactly four digits, which is the year in every shape a
+/// store has used so far and is not a day, a month or a price. A number
+/// longer than four digits is not a year at all, so a run of five is
+/// skipped rather than truncated.
+fn year_from_text(text: &str) -> Option<i16> {
+    let mut rest = text;
+    while let Some(start) = rest.find(|c: char| c.is_ascii_digit()) {
+        let digits: String = rest[start..].chars().take_while(char::is_ascii_digit).collect();
+        if digits.len() == 4 {
+            if let Some(year) = digits.parse::<i64>().ok().and_then(to_year) {
+                return Some(year);
+            }
+        }
+        rest = &rest[start + digits.len()..];
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1158,6 +1602,225 @@ mod tests {
         let hits = parse_wikipedia(body).unwrap();
         assert_eq!(hits[0].title, "Dune", "search rank was not honoured");
         assert_eq!(hits[1].image_url, "https://upload.example/dune.jpg");
+    }
+
+    #[test]
+    fn tvmaze_answers_with_the_show_rather_than_a_season_for_sale() {
+        // Shaped as the endpoint answers: the show inside a relevance score,
+        // a streamer rather than a network, and a blurb that is HTML.
+        let body = r#"[{"score":0.89,"show":{
+            "id":44933,"url":"https://www.tvmaze.com/shows/44933/severance",
+            "name":"Severance","genres":["Drama","Science-Fiction"],
+            "averageRuntime":49,"premiered":"2022-02-18","rating":{"average":7.6},
+            "network":null,"webChannel":{"id":310,"name":"Apple TV"},
+            "image":{"medium":"https://static.tvmaze.com/m.jpg",
+                     "original":"https://static.tvmaze.com/o.jpg"},
+            "summary":"<p>Mark Scout leads a team at Lumon &amp; co.</p>"
+        }}]"#;
+        let hits = parse_tvmaze(body).unwrap();
+        let hit = &hits[0];
+        assert_eq!(hit.title, "Severance");
+        assert_eq!(hit.year, Some(2022));
+        // The streamer stands in for the network, because "where it is on"
+        // is one question however the industry files it.
+        assert_eq!(hit.facts.get("network").map(String::as_str), Some("Apple TV"));
+        assert_eq!(hit.facts.get("genre").map(String::as_str), Some("Drama, Science-Fiction"));
+        assert_eq!(hit.facts.get("runtime").map(String::as_str), Some("49"));
+        // 7.6 out of ten, on the same hundred as everybody else's score.
+        assert_eq!(hit.rating, Some(76));
+        assert_eq!(hit.image_url, "https://static.tvmaze.com/o.jpg");
+        // Markup out and entities decoded, in that order.
+        assert_eq!(hit.summary, "Mark Scout leads a team at Lumon & co.");
+    }
+
+    #[test]
+    fn a_musicbrainz_cover_is_derived_from_the_records_id() {
+        // The search reply says nothing about artwork; the address is built
+        // from the id and the archive answers it or does not.
+        let body = r#"{"release-groups":[
+            {"id":"6f25f9fb","score":87,"title":"KID A MNESIA",
+             "primary-type":"Album","secondary-types":["Compilation"],
+             "first-release-date":"2021-11-05",
+             "artist-credit":[{"name":"Radiohead"}]},
+            {"id":"e75c0549","score":100,"title":"Kid A","primary-type":"Album",
+             "first-release-date":"2000-08-03",
+             "artist-credit":[{"name":"Radiohead"}]}
+        ]}"#;
+        let hits = parse_musicbrainz(body).unwrap();
+        // Relevance decides the order, not the order the reply happened to
+        // arrive in.
+        assert_eq!(hits[0].title, "Kid A");
+        assert_eq!(hits[0].creator, "Radiohead");
+        // The year the record came out, not the year of a remaster somebody
+        // is selling -- which is the whole reason this source is here.
+        assert_eq!(hits[0].year, Some(2000));
+        assert_eq!(hits[0].url, "https://musicbrainz.org/release-group/e75c0549");
+        assert_eq!(
+            hits[0].image_url,
+            "https://coverartarchive.org/release-group/e75c0549/front-500"
+        );
+        assert_eq!(hits[0].facts.get("artist").map(String::as_str), Some("Radiohead"));
+        assert_eq!(hits[1].subtitle, "Album, Compilation");
+    }
+
+    #[test]
+    fn a_split_artist_credit_is_joined_back_into_one_line() {
+        let body = r#"{"release-groups":[{"id":"x","title":"Watch the Throne",
+            "artist-credit":[{"name":"Jay-Z","joinphrase":" & "},{"name":"Kanye West"}]}]}"#;
+        let hits = parse_musicbrainz(body).unwrap();
+        assert_eq!(hits[0].creator, "Jay-Z & Kanye West");
+    }
+
+    #[test]
+    fn steam_builds_the_poster_from_the_app_id() {
+        let body = r#"{"total":2,"items":[
+            {"type":"app","name":"Hades","id":1145360,
+             "price":{"currency":"USD","final":2499},"metascore":"93",
+             "tiny_image":"https://shared.akamai.steamstatic.com/capsule_231x87.jpg",
+             "platforms":{"windows":true,"mac":true,"linux":false}},
+            {"type":"app","name":"No id here"}
+        ]}"#;
+        let hits = parse_steam(body).unwrap();
+        // The second has no id, so there is no address to build and no
+        // result to show; it is dropped rather than half-drawn.
+        assert_eq!(hits.len(), 1);
+        let hit = &hits[0];
+        assert_eq!(hit.title, "Hades");
+        assert_eq!(hit.url, "https://store.steampowered.com/app/1145360/");
+        // Not the 231-pixel thumbnail the reply carries.
+        assert_eq!(
+            hit.image_url,
+            "https://cdn.cloudflare.steamstatic.com/steam/apps/1145360/library_600x900.jpg"
+        );
+        assert_eq!(hit.facts.get("platform").map(String::as_str), Some("Windows, macOS"));
+        // Metacritic's number, arriving through a shop. Keeping it would put
+        // Steam's name on somebody else's score.
+        assert_eq!(hit.rating, None);
+    }
+
+    #[test]
+    fn a_chosen_steam_result_is_filled_in_from_the_games_own_page() {
+        let mut hit = parse_steam(
+            r#"{"items":[{"type":"app","name":"Hades","id":1145360,
+                "platforms":{"windows":true,"mac":false,"linux":false}}]}"#,
+        )
+        .unwrap()
+        .remove(0);
+        // Nothing worth putting on a card yet, which is the reason the
+        // second request exists.
+        assert_eq!(hit.year, None);
+        assert!(hit.summary.is_empty());
+
+        let request = Source::Steam.detail(&hit).expect("a store page to ask for");
+        assert_eq!(
+            request.url,
+            "https://store.steampowered.com/api/appdetails?appids=1145360&l=en"
+        );
+
+        let body = r#"{"1145360":{"success":true,"data":{
+            "name":"Hades","type":"game","developers":["Supergiant Games"],
+            "publishers":["Supergiant Games"],
+            "release_date":{"coming_soon":false,"date":"Sep 17, 2020"},
+            "metacritic":{"score":93,"url":"https://www.metacritic.com/game/pc/hades"},
+            "short_description":"Defy the god of the dead &amp; hack out of the Underworld.",
+            "genres":[{"id":"1","description":"Action"},{"id":"23","description":"Indie"}]
+        }}}"#;
+        Source::Steam.merge_detail(&mut hit, body).unwrap();
+        assert_eq!(hit.year, Some(2020));
+        assert_eq!(hit.creator, "Supergiant Games");
+        assert_eq!(hit.facts.get("developer").map(String::as_str), Some("Supergiant Games"));
+        assert_eq!(hit.facts.get("genre").map(String::as_str), Some("Action, Indie"));
+        assert_eq!(hit.summary, "Defy the god of the dead & hack out of the Underworld.");
+        // The platform the search found is not overwritten by the page.
+        assert_eq!(hit.facts.get("platform").map(String::as_str), Some("Windows"));
+
+        // The score is Metacritic's, and says so.
+        assert_eq!(hit.rating, Some(93));
+        assert_eq!(hit.rating_source, "Metacritic");
+        let mut item = Item::new(kind("game").id, "Hades");
+        apply(&hit, &kind("game"), &mut item, false);
+        let theirs = &item.external[0];
+        assert_eq!(theirs.source, "Metacritic", "a score keeps the name of whoever gave it");
+        assert_eq!(theirs.url, "https://www.metacritic.com/game/pc/hades");
+        // The link to the thing itself is still the shop's, because that is
+        // where the game is.
+        assert_eq!(item.links[0].label, "Steam");
+    }
+
+    #[test]
+    fn a_detail_reply_about_nothing_leaves_the_result_alone() {
+        let mut hit =
+            parse_steam(r#"{"items":[{"name":"Hades","id":1145360}]}"#).unwrap().remove(0);
+        let before = hit.clone();
+        // Not sold here: `success` is false and there is no `data` at all.
+        Source::Steam.merge_detail(&mut hit, r#"{"1145360":{"success":false}}"#).unwrap();
+        assert_eq!(hit, before);
+        // And a reply that is not JSON is an error, never a panic and never
+        // a half-filled card.
+        assert!(Source::Steam.merge_detail(&mut hit, "<html>nope").is_err());
+        assert_eq!(hit, before);
+    }
+
+    #[test]
+    fn a_source_with_nothing_more_to_say_asks_for_nothing() {
+        for source in Source::ALL.iter().filter(|s| **s != Source::Steam) {
+            let hit = SearchResult {
+                url: "https://store.steampowered.com/app/1145360/".into(),
+                ..Default::default()
+            };
+            assert!(source.detail(&hit).is_none(), "{source:?} invented a second request");
+        }
+        // Nor for a result whose address this file did not write: the id is
+        // about to go into a URL.
+        for url in [
+            "https://store.steampowered.com.evil.example/app/1/",
+            "http://store.steampowered.com/app/1/",
+            "https://store.steampowered.com/app/",
+        ] {
+            let hit = SearchResult { url: url.into(), ..Default::default() };
+            assert!(Source::Steam.detail(&hit).is_none(), "{url} produced a request");
+        }
+    }
+
+    #[test]
+    fn every_seeded_shelf_names_a_source_that_exists() {
+        for kind in crate::library::default_kinds() {
+            let source = Source::from_slug(&kind.source);
+            assert_eq!(
+                source.slug(),
+                kind.source,
+                "the {} shelf names {:?}, which degrades to a plain web search",
+                kind.slug,
+                kind.source,
+            );
+        }
+        // The three shelves the specialised catalogues were added for.
+        assert_eq!(Source::from_slug(&kind("series").source), Source::TvMaze);
+        assert_eq!(Source::from_slug(&kind("music").source), Source::MusicBrainz);
+        assert_eq!(Source::from_slug(&kind("game").source), Source::Steam);
+    }
+
+    #[test]
+    fn a_console_game_falls_through_steam_to_wikipedia() {
+        // Steam sells games for one machine. The shelf holds games for any
+        // of them, so the catalogue's miss has to land somewhere that knows
+        // what a Zelda is.
+        let games = SearchRequest::for_kind("breath of the wild", &kind("game"));
+        assert_eq!(
+            games.attempts().iter().map(|a| a.source).collect::<Vec<_>>(),
+            vec![Source::Steam, Source::Wikipedia, Source::Web],
+        );
+        for source in Source::ALL {
+            assert_eq!(
+                source.is_catalogue(),
+                SearchRequest::new("x")
+                    .on(source)
+                    .attempts()
+                    .iter()
+                    .any(|a| a.source == Source::Wikipedia && source != Source::Wikipedia),
+                "{source:?} disagrees with its own fallback chain",
+            );
+        }
     }
 
     #[test]

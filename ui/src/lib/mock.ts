@@ -3810,6 +3810,9 @@ export const mockInvoke = async <T>(
         { id: 'wikipedia', label: 'Wikipedia', hasImages: true },
         { id: 'openLibrary', label: 'Open Library', hasImages: true },
         { id: 'itunes', label: 'iTunes', hasImages: true },
+        { id: 'tvmaze', label: 'TVmaze', hasImages: true },
+        { id: 'musicBrainz', label: 'MusicBrainz', hasImages: true },
+        { id: 'steam', label: 'Steam', hasImages: true },
         { id: 'nominatim', label: 'OpenStreetMap', hasImages: false },
       ] satisfies SourceInfo[] as T
 

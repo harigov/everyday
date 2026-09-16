@@ -10,16 +10,36 @@
   import { article } from '../lib/format'
   import { focusOnMount } from '../lib/focus'
   import { library } from '../lib/library.svelte'
+  import { sourceLabel } from '../lib/websearch'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { colourItems } from '../lib/menus'
-  import type { Kind, KindInfo } from '../lib/types'
+  import { web } from '../lib/websearch'
+  import type { Kind, KindInfo, SourceInfo } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
 
   let creating = $state(false)
   let draft = $state('')
   let pendingDelete = $state<KindInfo | null>(null)
+
+  /**
+   * The catalogues a shelf can be looked up in.
+   *
+   * Asked for once, when the panel appears, because the menu below is built
+   * synchronously the instant somebody right-clicks and a submenu that is
+   * empty the first time you open it is one people conclude is broken. It
+   * costs nothing: the list is eight constants on the Rust side, the answer
+   * is cached for the session, and nothing leaves the machine to get it.
+   *
+   * It is here rather than in a settings screen for the reason the colour
+   * and the verbs are: a shelf is defined where it is seen. The default is
+   * right for the seeded shelves, so this is for the second case -- a Games
+   * shelf made before Steam was one of the answers, and every shelf somebody
+   * invented for themselves.
+   */
+  let sources = $state<SourceInfo[]>([])
+  void web.sources().then((all) => (sources = all))
 
   async function create() {
     const name = draft.trim()
@@ -96,6 +116,16 @@
         label: 'Colour',
         dot: kind.color,
         items: colourItems(kind.color, (color) => library.saveShelf({ ...shelfOnly(kind), color })),
+      },
+      sources.length > 0 && {
+        label: 'Look things up on',
+        icon: 'search' as const,
+        hint: sourceLabel(kind.source),
+        items: sources.map((source) => ({
+          label: source.label,
+          checked: kind.source === source.id,
+          run: () => library.saveShelf({ ...shelfOnly(kind), source: source.id }),
+        })),
       },
       {
         label: 'Show in this list',
