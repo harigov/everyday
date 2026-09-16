@@ -40,6 +40,8 @@
   let strip = $state<HTMLDivElement>()
   /** Whether the "record something else" popover is open. */
   let logging = $state(false)
+  /** Whether the open panel sits above its chip rather than below it. */
+  let up = $state(false)
 
   $effect(() => {
     void tracking.open(journalId, date)
@@ -86,6 +88,24 @@
     flip = !!bounds && chip.left - bounds.left > bounds.width - 280
     draft = String(tracker.defaultValue)
     open = tracker.id
+  }
+
+  /**
+   * Open upwards when the panel would run past the foot of the page and
+   * there is more room above. The strip sits at the bottom of a short entry,
+   * where a panel that drops down puts its field and buttons under the
+   * status bar. Measured from the chip, not from where the panel landed, so
+   * the answer does not depend on which way the last one opened.
+   */
+  function fitVertically(node: HTMLElement) {
+    const anchor = (node.offsetParent ?? node.parentElement)?.getBoundingClientRect()
+    if (!anchor) return
+    const view = node.closest('.scroll')?.getBoundingClientRect() ?? {
+      top: 0,
+      bottom: window.innerHeight,
+    }
+    const below = view.bottom - anchor.bottom
+    up = below < node.offsetHeight + 6 && anchor.top - view.top > below
   }
 
   /**
@@ -201,10 +221,12 @@
           <div
             class="panel"
             class:flip
+            class:up
             role="dialog"
             aria-label={tracker.name}
             style="--c: {tracker.color}"
             use:dismissable={{ onaway: () => (open = null), within: '.chip' }}
+            use:fitVertically
           >
             {#if tracker.kind === 'scale'}
               <p class="lead">How bad, out of {tracker.scaleMax}?</p>
@@ -318,9 +340,11 @@
       {#if logging}
         <div
           class="panel wide"
+          class:up
           role="dialog"
           aria-label="Record a reading"
           use:dismissable={{ onaway: () => (logging = false), within: '.add' }}
+          use:fitVertically
         >
           <LogReading
             {journalId}
@@ -453,6 +477,11 @@
   .panel.flip {
     left: auto;
     right: 0;
+  }
+
+  .panel.up {
+    top: auto;
+    bottom: calc(100% + 6px);
   }
 
   .lead {

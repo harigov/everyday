@@ -228,22 +228,26 @@
           {/if}
         </header>
 
-        <RichText
-          oneditor={(ed: TipTapEditor | null) => (editor = ed)}
-          docId={entry.id}
-          doc={() => app.entry?.body}
-          placeholder="What happened today?"
-          bindBody={(get: (() => RichDoc) | null) => app.bindBody(get)}
-          syncBody={() => app.syncBody()}
-          onedit={() => app.scheduleSave()}
-          onattach={attach}
-          onwords={(n: number) => (words = n)}
-          onstoring={(f: string | null) => (storing = f)}
-        />
+        <div class="body">
+          <RichText
+            oneditor={(ed: TipTapEditor | null) => (editor = ed)}
+            docId={entry.id}
+            doc={() => app.entry?.body}
+            placeholder="What happened today?"
+            bindBody={(get: (() => RichDoc) | null) => app.bindBody(get)}
+            syncBody={() => app.syncBody()}
+            onedit={() => app.scheduleSave()}
+            onattach={attach}
+            onwords={(n: number) => (words = n)}
+            onstoring={(f: string | null) => (storing = f)}
+          />
+        </div>
 
         <!-- Everything about the day that is not the writing, under it. The
              page opens on the title and then the prose, so the first thing a
-             blank entry offers is somewhere to type, not a row of chips. -->
+             blank entry offers is somewhere to type, not a row of chips. The
+             prose takes whatever height is left, which keeps this at the foot
+             of the window until the writing outgrows it. -->
         <section class="day" aria-label="About this day">
           <EntryMeta {entry} />
           <!-- What the day recorded in numbers, under what it recorded in
@@ -368,16 +372,38 @@
   }
   .canvas {
     flex: 1;
+    display: flex;
+    flex-direction: column;
   }
 
   /* --measure is the text column; the padding sits outside it. Setting it as
-     the box width instead cost two thirds of an inch of line on every side. */
-  /* --measure is the text column; the padding sits outside it. Setting it as
-     the box width instead cost two thirds of an inch of line on every side. */
+     the box width instead cost two thirds of an inch of line on every side.
+     At least as tall as the canvas, so the prose can stretch to fill it and
+     the day's tags and trackers sit at the bottom rather than straight under
+     the last line written. The bottom padding keeps that last row clear of
+     the floating assistant button, which rises --fab-size + --sp-6 from the
+     window's foot and so stands 42px above the 30px status bar. */
   .page {
+    flex: 1 0 auto;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
     max-width: calc(var(--measure) + var(--sp-8) * 2);
     margin: 0 auto;
-    padding: var(--sp-8) var(--sp-8) 30vh;
+    padding: var(--sp-8) var(--sp-8) var(--fab-size);
+  }
+
+  /* The whole stretch is the editable surface, so a click anywhere in the
+     empty space below the text lands in the entry. */
+  .body,
+  .body > :global(.prose) {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  .body :global(.ed-content) {
+    flex: 1;
+    min-height: 12em;
   }
 
   .head {
