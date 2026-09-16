@@ -1,17 +1,18 @@
 //! Meeting notes: settings, the recording history, transcripts and
-//! voiceprints. `everyday_core::meeting` decides what a call needs to be
-//! one; `everyday_core::vault::Vault` holds it; this is the surface a
-//! client -- the interface, the shell's capture code, the assistant --
-//! reaches both through.
+//! voiceprints, and -- since the spool work -- recording itself:
+//! `begin`/`append`/`finish`/`discard`/`retry` and `dismiss_meeting_offer`,
+//! each a thin wire wrapper over `everyday_service::meeting::spool` and
+//! `everyday_service::meeting::watch`, which hold the actual behaviour.
+//! `everyday_core::meeting` decides what a call needs to be one;
+//! `everyday_core::vault::Vault` holds it; this is the surface a client --
+//! the interface, the shell's capture code, the assistant -- reaches both
+//! through.
 //!
-//! What is *not* here: `begin`/`append`/`finish`/`discard`/`retry`
-//! recording, `name_speaker`, `rewrite_meeting_note`,
-//! `preview_meeting_template`, `enrol_voice`, the speech-model download
-//! commands, and `dismiss_meeting_offer`. Those need the pipeline, the
-//! transcribers and the speech kit, all of which are somebody else's file in
-//! this same change -- see `docs/plans/meeting-notes.md`. This module is
-//! the read side and the configuration, which is everything that can be
-//! built and tested without any of that existing yet.
+//! What is *still not* here: `name_speaker`, `rewrite_meeting_note`,
+//! `preview_meeting_template`, `enrol_voice`, and the speech-model download
+//! commands. Those need the pipeline, the transcribers and the speech kit,
+//! all of which are somebody else's file in this same change -- see
+//! `docs/plans/meeting-notes.md`.
 //!
 //! # A stub two files away
 //!
@@ -26,10 +27,14 @@
 use super::Nothing;
 use crate::command;
 use crate::ctx::Ctx;
-use crate::error::CommandResult;
+use crate::error::{CommandError, CommandResult};
+use crate::meeting::{spool, watch};
 use crate::service::{Service, blocking};
+use base64::Engine;
+use everyday_core::id::EventId;
 use everyday_core::meeting::{
-    MeetingSettings, NoteTemplate, Recording, Stage, TranscriberConfig, Transcript, Voiceprint,
+    MeetingSettings, NoteTemplate, Recording, Stage, Track, TranscriberConfig, Transcript,
+    Voiceprint,
 };
 use everyday_core::store::meetings::RecordingQuery;
 use everyday_core::{Error, NoteId, RecordingId, TemplateId, Vault, VoiceprintId};
@@ -67,6 +72,40 @@ pub struct RecordingRef {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BeginRecording {
+    #[serde(default)]
+    pub event_id: Option<EventId>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub template_id: Option<TemplateId>,
+    #[serde(default)]
+    pub automatic: bool,
+}
+
+/// One spooled chunk, over the wire. `pcm` is little-endian `i16` samples,
+/// base64-encoded -- `everyday-app`'s `capture::RecordingSink::send_once` is
+/// the one place that builds one of these, and it is the shape this struct
+/// exists to mirror exactly.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppendRecordingChunk {
+    pub id: RecordingId,
+    pub track: Track,
+    pub seq: u32,
+    pub start_ms: u64,
+    pub pcm: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DismissMeetingOffer {
+    pub event_id: EventId,
+    pub never: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetTranscript {
     pub note_id: NoteId,
 }
@@ -79,7 +118,13 @@ pub struct VoiceprintRef {
 
 /// A voice, without its vectors -- what a settings pane draws a list from.
 /// Mirrors the TS `VoiceprintInfo`.
-#[derive(Debug, Clone, Serialize)]
+///
+/// `Deserialize` too, not only `Serialize`: `everyday-app`'s `voice_enrol`
+/// command gets one of these back from the service command `enrol_voice`
+/// over the same JSON `Session::call` every other command answers through,
+/// and has to read it back out of the `Value` to hand it on to the
+/// interface typed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceprintInfo {
     pub id: VoiceprintId,
@@ -211,7 +256,15 @@ fn installation_state(transcriber: &TranscriberConfig) -> (bool, bool) {
 
 /// Build the view a settings pane draws: the settings themselves, plus
 /// everything derived from them and from the vault.
-fn view(vault: &Vault, settings: MeetingSettings) -> everyday_core::Result<MeetingSettingsView> {
+///
+/// `pub(crate)` rather than private: `everyday_service::meeting::spool::begin`
+/// reuses this exact check to refuse starting a recording the same way
+/// `save_meeting_settings` refuses turning the switch on -- see that
+/// module's own docs on why it does not reimplement [`usable`] by hand.
+pub(crate) fn view(
+    vault: &Vault,
+    settings: MeetingSettings,
+) -> everyday_core::Result<MeetingSettingsView> {
     let has_key = vault.has_transcriber_key()?;
     let assistant_key_available = vault.assistant_key_if_openai()?.is_some();
 
@@ -443,6 +496,85 @@ async fn delete_all_voiceprints(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) ->
     svc.on_vault(move |vault| vault.delete_all_voiceprints()).await
 }
 
+// ---- recording: begin / append / finish / discard / retry ----------------
+//
+// Thin wire wrappers over `everyday_service::meeting::spool`, which holds
+// the actual behaviour -- refusals, the spool cap, idempotency, recovery.
+// `blocking` rather than `svc.on_vault`, because every one of these needs
+// `svc` itself (to reach the pipeline seam and the session's append-time
+// tracking), not only the vault `on_vault`'s closure is handed.
+
+async fn begin_recording(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: BeginRecording,
+) -> CommandResult<Recording> {
+    blocking(move || {
+        spool::begin(
+            &svc,
+            spool::BeginArgs {
+                event_id: args.event_id,
+                title: args.title,
+                template_id: args.template_id,
+                automatic: args.automatic,
+            },
+        )
+    })
+    .await
+}
+
+/// `pcm` is decoded here, off the async runtime -- a 30 s chunk is up to
+/// about 960 KB raw, 1.3 MB as the base64 this arrived over, comfortably
+/// under both the server's `MAX_JSON_BYTES` (32 MB, `everyday-server`'s
+/// `routes.rs`) and the in-process path, which has no limit at all.
+async fn append_recording_chunk(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: AppendRecordingChunk,
+) -> CommandResult<()> {
+    blocking(move || {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&args.pcm)
+            .map_err(|e| CommandError::new("invalid", format!("pcm was not valid base64: {e}")))?;
+        if bytes.len() % 2 != 0 {
+            return Err(CommandError::new("invalid", "pcm must be an even number of bytes"));
+        }
+        let samples: Vec<i16> =
+            bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+        spool::append(&svc, args.id, args.track, args.seq, args.start_ms, &samples)
+    })
+    .await
+}
+
+async fn finish_recording(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: RecordingRef,
+) -> CommandResult<Recording> {
+    blocking(move || spool::finish(&svc, args.id)).await
+}
+
+async fn discard_recording(svc: Arc<Service>, _ctx: Ctx, args: RecordingRef) -> CommandResult<()> {
+    blocking(move || spool::discard(&svc, args.id)).await
+}
+
+async fn retry_recording(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: RecordingRef,
+) -> CommandResult<Recording> {
+    blocking(move || spool::retry(&svc, args.id)).await
+}
+
+async fn dismiss_meeting_offer(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: DismissMeetingOffer,
+) -> CommandResult<()> {
+    let vault = svc.require()?;
+    blocking(move || watch::dismiss(&svc, &vault, args.event_id, args.never)).await
+}
+
 pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "meeting_settings", scope: Meetings, effect: Read,
@@ -497,6 +629,69 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: RecordingRef, returns: "void",
         signature: &[("id", "RecordingId", true)],
         run: delete_recording,
+    },
+    command! {
+        name: "begin_recording", scope: Meetings, effect: Write,
+        // No `id:`: the id is minted inside `spool::begin`, not carried in
+        // the arguments -- see `command.rs`'s own doc on why `id`/`ids` can
+        // only ever read what a save or a delete's *arguments* already
+        // name. `subscribe_calendar` and the rest of this table's own
+        // `Created` commands are the same shape.
+        change: Recording / Created,
+        args: BeginRecording, returns: "Recording",
+        signature: &[
+            ("eventId", "EventId | null", false),
+            ("title", "string | null", false),
+            ("templateId", "TemplateId | null", false),
+            ("automatic", "boolean", false),
+        ],
+        run: begin_recording,
+    },
+    command! {
+        name: "append_recording_chunk", scope: Meetings, effect: Write,
+        // No `change:`: a chunk landing is not something any list reloads
+        // for -- `meetings.svelte.ts` polls the recordings list on its own
+        // timer while a call is live, per that module's own doc on why
+        // recordings are not yet in `ChangeKind`.
+        args: AppendRecordingChunk, returns: "void",
+        signature: &[
+            ("id", "RecordingId", true),
+            ("track", "Track", true),
+            ("seq", "number", true),
+            ("startMs", "number", true),
+            ("pcm", "string", true),
+        ],
+        run: append_recording_chunk,
+    },
+    command! {
+        name: "finish_recording", scope: Meetings, effect: Write,
+        change: Recording / Updated,
+        id: |a: &RecordingRef| Some(a.id.to_string()),
+        args: RecordingRef, returns: "Recording",
+        signature: &[("id", "RecordingId", true)],
+        run: finish_recording,
+    },
+    command! {
+        name: "discard_recording", scope: Meetings, effect: Destructive,
+        change: Recording / Deleted,
+        id: |a: &RecordingRef| Some(a.id.to_string()),
+        args: RecordingRef, returns: "void",
+        signature: &[("id", "RecordingId", true)],
+        run: discard_recording,
+    },
+    command! {
+        name: "retry_recording", scope: Meetings, effect: Write,
+        change: Recording / Updated,
+        id: |a: &RecordingRef| Some(a.id.to_string()),
+        args: RecordingRef, returns: "Recording",
+        signature: &[("id", "RecordingId", true)],
+        run: retry_recording,
+    },
+    command! {
+        name: "dismiss_meeting_offer", scope: Meetings, effect: Write,
+        args: DismissMeetingOffer, returns: "void",
+        signature: &[("eventId", "EventId", true), ("never", "boolean", true)],
+        run: dismiss_meeting_offer,
     },
     command! {
         name: "get_transcript", scope: Meetings, effect: Read,

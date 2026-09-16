@@ -98,6 +98,43 @@
         {
           "name": "id",
           "required": true,
+          "type": "RecordingId"
+        },
+        {
+          "name": "track",
+          "required": true,
+          "type": "Track"
+        },
+        {
+          "name": "seq",
+          "required": true,
+          "type": "number"
+        },
+        {
+          "name": "startMs",
+          "required": true,
+          "type": "number"
+        },
+        {
+          "name": "pcm",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "append_recording_chunk",
+      "orScope": null,
+      "returns": "void",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "ItemId"
         },
         {
@@ -229,6 +266,41 @@
       "orScope": null,
       "returns": "BegunSignIn",
       "scope": "accounts",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "eventId",
+          "required": false,
+          "type": "EventId | null"
+        },
+        {
+          "name": "title",
+          "required": false,
+          "type": "string | null"
+        },
+        {
+          "name": "templateId",
+          "required": false,
+          "type": "TemplateId | null"
+        },
+        {
+          "name": "automatic",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "changes": {
+        "kind": "recording",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "begin_recording",
+      "orScope": null,
+      "returns": "Recording",
+      "scope": "meetings",
       "sensitive": false,
       "streams": false
     },
@@ -806,6 +878,48 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "RecordingId"
+        }
+      ],
+      "changes": {
+        "kind": "recording",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "discard_recording",
+      "orScope": null,
+      "returns": "void",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "eventId",
+          "required": true,
+          "type": "EventId"
+        },
+        {
+          "name": "never",
+          "required": true,
+          "type": "boolean"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "dismiss_meeting_offer",
+      "orScope": null,
+      "returns": "void",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "handle",
           "required": true,
           "type": "string"
@@ -873,6 +987,26 @@
       "orScope": null,
       "returns": "string",
       "scope": "web",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "RecordingId"
+        }
+      ],
+      "changes": {
+        "kind": "recording",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "finish_recording",
+      "orScope": null,
+      "returns": "Recording",
+      "scope": "meetings",
       "sensitive": false,
       "streams": false
     },
@@ -2725,6 +2859,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "RecordingId"
+        }
+      ],
+      "changes": {
+        "kind": "recording",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "retry_recording",
+      "orScope": null,
+      "returns": "Recording",
+      "scope": "meetings",
       "sensitive": false,
       "streams": false
     },

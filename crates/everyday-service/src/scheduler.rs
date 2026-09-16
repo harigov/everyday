@@ -127,6 +127,23 @@ pub async fn tick(service: &Arc<Service>) {
     crate::mailai::categorize_tick(service).await;
     crate::mailai::auto_draft_tick(service).await;
 
+    // The meeting notes watcher -- "Take notes for Design sync?" -- and the
+    // failed-spool expiry sweep. Neither is a routine and neither needs the
+    // assistant, so both run here rather than waiting on
+    // `supports_routines` below; both are no-ops, cheaply, on a vault with
+    // meeting notes off. See `crate::meeting::watch` and
+    // `crate::meeting::spool::expire_failed_tick`.
+    {
+        let vault = vault.clone();
+        let service = service.clone();
+        let _ = blocking(move || {
+            crate::meeting::watch::tick(&service, &vault);
+            crate::meeting::spool::expire_failed_tick(&service, &vault);
+            Ok(())
+        })
+        .await;
+    }
+
     if !vault.supports_routines() {
         return;
     }

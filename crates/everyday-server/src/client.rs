@@ -481,6 +481,7 @@ pub enum ServerEvent {
     Notify(everyday_service::events::Notification),
     Changed(everyday_service::events::Change),
     LockState { locked: bool },
+    MeetingOffer(everyday_service::events::MeetingOffer),
 }
 
 // ---- the cache -----------------------------------------------------------

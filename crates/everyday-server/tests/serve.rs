@@ -650,6 +650,7 @@ async fn a_client_hears_what_the_server_says() {
                         }
                         ServerEvent::Notify(_) => "notify".into(),
                         ServerEvent::LockState { locked } => format!("lock:{locked}"),
+                        ServerEvent::MeetingOffer(_) => "meetingOffer".into(),
                     };
                     seen.lock().unwrap().push(name);
                 })
