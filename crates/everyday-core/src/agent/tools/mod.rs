@@ -93,6 +93,7 @@ macro_rules! tool {
 mod journals;
 mod library;
 mod mail;
+mod meetings;
 mod memory;
 mod notes;
 mod purpose;
@@ -163,13 +164,18 @@ pub enum Domain {
     /// permits them -- that [`available`] does not ask and [`available_for`]
     /// does; see that function and `agent::tools::mail::offered_to`.
     Mail,
+    /// Meeting notes: the recording history and the transcripts kept beside
+    /// them -- see `agent::tools::meetings`. Read-only: nothing here starts
+    /// a recording or names a speaker, both of which need the pipeline
+    /// `everyday_service::meeting` owns.
+    Meetings,
 }
 
 impl Domain {
     /// Every domain there is, in no particular order. Exists so a test that
     /// means "every domain" can say so, rather than enumerating them by hand
     /// and silently going stale the day one is added.
-    pub const ALL: [Domain; 10] = [
+    pub const ALL: [Domain; 11] = [
         Domain::Journals,
         Domain::Notes,
         Domain::Tasks,
@@ -180,6 +186,7 @@ impl Domain {
         Domain::Routines,
         Domain::Agent,
         Domain::Mail,
+        Domain::Meetings,
     ];
 
     fn available(self, vault: &Vault) -> bool {
@@ -195,6 +202,7 @@ impl Domain {
                 Domain::Routines => vault.supports_routines(),
                 Domain::Agent => vault.supports_agent(),
                 Domain::Mail => vault.supports_mail() && vault.supports_accounts(),
+                Domain::Meetings => vault.supports_meetings(),
             }
     }
 
@@ -231,7 +239,17 @@ impl Domain {
             // confirmation, and the refusal on an unattended run. Excluding
             // the whole domain would also remove the thing that makes those
             // gates worth having -- an assistant that can triage and draft.
-            | Domain::Mail => Sensitivity::Ordinary,
+            | Domain::Mail
+            // A transcript is every word somebody said on a call, which
+            // sounds like the argument for `Secret` -- but the assistant is
+            // specifically for reasoning about what was discussed, the same
+            // case `Purpose` already makes for the shape of somebody's life.
+            // What a voiceprint actually protects -- that biometric data
+            // never leaves the machine, and is never handed to a model at
+            // all -- is a guarantee this catalogue does not carry in the
+            // first place: no tool here returns one, or a `voiceprint_id`,
+            // or anything an embedding could be reconstructed from.
+            | Domain::Meetings => Sensitivity::Ordinary,
         }
     }
 }
@@ -746,6 +764,7 @@ fn all() -> &'static [Tool] {
             routines::TOOLS,
             memory::TOOLS,
             mail::TOOLS,
+            meetings::TOOLS,
         ]
         .concat()
     })

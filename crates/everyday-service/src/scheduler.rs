@@ -38,12 +38,15 @@
 use crate::agent::{AgentEvent, Turn};
 use crate::events::{Change, Kind, Notification, Op};
 use crate::service::{Service, blocking};
+use everyday_core::meeting::{Recording, Stage, identify};
 use everyday_core::routine::{Due, Outcome, Routine, RoutineRun, Trigger};
 use everyday_core::store::calendars::EventQuery;
+use everyday_core::store::meetings::RecordingQuery;
 use everyday_core::store::routines::RunQuery;
 use everyday_core::store::tasks::TaskQuery;
 use everyday_core::task::TaskStatus;
 use everyday_core::{Conversation, Vault};
+use jiff::Timestamp;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -372,10 +375,20 @@ fn subjects_for(vault: &Arc<Vault>, routine: &Routine, now: &jiff::Zoned) -> Vec
                 })
                 .filter(|e| e.status != everyday_core::EventStatus::Cancelled && e.busy)
                 .filter(|e| allowed.as_ref().is_none_or(|ids| ids.contains(&e.calendar_id)))
-                .map(|e| Subject {
-                    key: e.id.to_string(),
-                    label: e.title.clone(),
-                    detail: describe_event(&e),
+                .map(|e| {
+                    let mut detail = describe_event(&e);
+                    // "Last time with these people" -- see
+                    // `meeting_prep_detail`'s own doc. Appended to every
+                    // `BeforeEvent` subject, not only the "Meeting prep"
+                    // template: any routine set to run before a meeting
+                    // benefits from knowing there is a note from the last
+                    // one with the same people, the same way it already
+                    // gets the event's own attendees for free.
+                    if let Some(prep) = meeting_prep_detail(vault, &e, now) {
+                        detail.push_str("\n\n");
+                        detail.push_str(&prep);
+                    }
+                    Subject { key: e.id.to_string(), label: e.title.clone(), detail }
                 })
                 .collect()
         }
@@ -422,6 +435,106 @@ fn describe_event(event: &everyday_core::Event) -> String {
         out.push_str(&format!("\n\nThe invitation says:\n{}", event.description.trim()));
     }
     out
+}
+
+/// How far back [`meeting_prep_detail`] looks for a note from the same
+/// people. The same span `agent::tools::meetings::list_meeting_notes` uses
+/// as its own default window, so a routine's unasked answer and a person's
+/// own question agree on what "recently" means.
+const MEETING_PREP_DAYS: i64 = 90;
+
+/// Does any attendee in `a` name the same person as any attendee in `b`?
+///
+/// Pure, and the whole of the judgement call: matched by email when both
+/// sides give one for a pair, by name otherwise. Two different addresses for
+/// the same person are not found the same -- there is nothing in an
+/// attendee string alone to say so -- which is the right way for this to be
+/// wrong: a missed match costs a routine one unremarkable turn with no
+/// "last time" section, and a wrong match would put words about a stranger
+/// in front of somebody.
+fn attendees_overlap(a: &[String], b: &[String]) -> bool {
+    let a_keys: Vec<_> = a.iter().map(|s| identify::parse_attendee(s)).collect();
+    let b_keys: Vec<_> = b.iter().map(|s| identify::parse_attendee(s)).collect();
+    a_keys.iter().any(|(a_name, a_email)| {
+        b_keys.iter().any(|(b_name, b_email)| match (a_email, b_email) {
+            (Some(ae), Some(be)) => ae == be,
+            _ => matches!((a_name, b_name), (Some(an), Some(bn)) if an.eq_ignore_ascii_case(bn)),
+        })
+    })
+}
+
+/// The most recent finished meeting note, within [`MEETING_PREP_DAYS`] of
+/// `now`, whose own invited attendees overlap `attendees` -- or `None` when
+/// nothing in `recordings` qualifies: too old, no note, or nobody in common.
+///
+/// Pure and independent of a vault, so the selection itself -- which of
+/// several past calls counts as "with these people", and which loses to a
+/// more recent one -- is a test with a handful of [`Recording`] values
+/// rather than a fixture vault. [`meeting_prep_detail`] is the thin wrapper
+/// that actually reads one out of the store.
+fn recent_note_for_attendees<'a>(
+    recordings: &'a [Recording],
+    attendees: &[String],
+    now: Timestamp,
+    within_days: i64,
+) -> Option<&'a Recording> {
+    let cutoff = now.as_second() - within_days * 86_400;
+    recordings
+        .iter()
+        .filter(|r| r.stage.is_finished() && r.note_id.is_some())
+        .filter(|r| r.started_at.as_second() >= cutoff)
+        .filter(|r| r.event.as_ref().is_some_and(|e| attendees_overlap(&e.attendees, attendees)))
+        .max_by_key(|r| r.started_at)
+}
+
+/// "Last time with these people": a line for the prompt naming the most
+/// recent meeting note that shared attendees with `event`, when there is
+/// one to name.
+///
+/// Cheap on purpose -- this runs on every tick for every `BeforeEvent`
+/// subject -- so the vault is asked once, bounded to
+/// [`MEETING_PREP_DAYS`] and to finished recordings only, rather than
+/// walked in full; [`RecordingQuery::from`] does the bounding at the store,
+/// and [`recent_note_for_attendees`] does the rest in memory over whatever
+/// that query already narrowed down to. `None` when meetings are not
+/// supported at all, when the query itself fails, or when nothing
+/// qualifies -- every one of those is "say nothing", not an error a routine
+/// should stall over.
+fn meeting_prep_detail(
+    vault: &Vault,
+    event: &everyday_core::Event,
+    now: &jiff::Zoned,
+) -> Option<String> {
+    if !vault.supports_meetings() {
+        return None;
+    }
+    let cutoff = Timestamp::from_second(now.timestamp().as_second() - MEETING_PREP_DAYS * 86_400)
+        .unwrap_or(Timestamp::MIN);
+    let query = RecordingQuery {
+        stages: vec![Stage::Done.as_str().to_string()],
+        from: Some(cutoff),
+        // Belt and braces beside the date bound: a hard cap on rows read,
+        // independent of how many calls somebody actually recorded in the
+        // window -- the same reasoning `RECORDING_SCAN_CAP` gives in
+        // `agent::tools::meetings`.
+        limit: Some(200),
+        ..Default::default()
+    };
+    let recordings = vault.recordings(&query).ok()?;
+    let recording = recent_note_for_attendees(
+        &recordings,
+        &event.attendees,
+        now.timestamp(),
+        MEETING_PREP_DAYS,
+    )?;
+    let note_id = recording.note_id?;
+    let note = vault.note(note_id).ok()?;
+    let when = recording.started_at.to_zoned(now.time_zone().clone()).date();
+    Some(format!(
+        "Last time with these people: the note \"{}\", from {when}. Call get_transcript or \
+         read the note itself for what was actually said.",
+        note.display_title()
+    ))
 }
 
 fn describe_task(task: &everyday_core::Task) -> String {
@@ -761,5 +874,86 @@ mod tests {
         assert_eq!(pretty_minutes(3 * 3600), "3 hours");
         assert_eq!(pretty_minutes(3 * 86_400), "3 days");
         assert_eq!(pretty_minutes(-5), "0 minutes", "a clock that went backwards");
+    }
+
+    // ---- meeting prep: "last time with these people" ---------------------
+
+    use everyday_core::id::{CalendarId, NoteId, TemplateId};
+    use everyday_core::meeting::EventRef;
+
+    const NOW_SECS: i64 = 1_700_000_000;
+
+    fn strings(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// A finished, noted recording `days_ago` before [`NOW_SECS`], with
+    /// `attendees` on its event. `stage`/`note_id` are the defaults a real
+    /// finished recording would have; tests that need something else
+    /// override the field they care about.
+    fn recording(attendees: &[&str], days_ago: i64) -> Recording {
+        let event = EventRef {
+            calendar_id: CalendarId::new(),
+            uid: "call-1".into(),
+            title: "Design sync".into(),
+            start: Timestamp::from_second(NOW_SECS).unwrap(),
+            end: Timestamp::from_second(NOW_SECS + 3_600).unwrap(),
+            tz: "UTC".into(),
+            organizer: String::new(),
+            attendees: strings(attendees),
+            join_url: String::new(),
+            calendar_name: "Work".into(),
+        };
+        let mut r = Recording::new("Design sync", Some(event), TemplateId::new());
+        r.started_at = Timestamp::from_second(NOW_SECS - days_ago * 86_400).unwrap();
+        r.stage = Stage::Done;
+        r.note_id = Some(NoteId::new());
+        r
+    }
+
+    #[test]
+    fn attendees_overlap_matches_by_email_before_name() {
+        // Same address, spelled differently in case -- the address is what
+        // actually identifies the person, so this must match.
+        assert!(attendees_overlap(
+            &strings(&["Priya Raman <priya@x.com>"]),
+            &strings(&["P. Raman <PRIYA@X.COM>"])
+        ));
+        // No address on either side: falls back to the name, still
+        // case-insensitively.
+        assert!(attendees_overlap(&strings(&["Priya Raman"]), &strings(&["priya raman"])));
+        // Different people entirely.
+        assert!(!attendees_overlap(
+            &strings(&["priya@x.com"]),
+            &strings(&["sam@x.com", "Sam Okafor"])
+        ));
+    }
+
+    #[test]
+    fn recent_note_for_attendees_picks_the_newest_qualifying_one() {
+        let now = Timestamp::from_second(NOW_SECS).unwrap();
+        let older = recording(&["priya@x.com"], 10);
+        let newer = recording(&["priya@x.com"], 2);
+        let recordings = vec![older, newer.clone()];
+        let found = recent_note_for_attendees(&recordings, &strings(&["priya@x.com"]), now, 90);
+        assert_eq!(found.map(|r| r.started_at), Some(newer.started_at));
+    }
+
+    #[test]
+    fn recent_note_for_attendees_ignores_what_it_should() {
+        let now = Timestamp::from_second(NOW_SECS).unwrap();
+
+        let mut not_done = recording(&["priya@x.com"], 1);
+        not_done.stage = Stage::Recording;
+
+        let mut no_note = recording(&["priya@x.com"], 1);
+        no_note.note_id = None;
+
+        let too_old = recording(&["priya@x.com"], 200);
+        let different_people = recording(&["sam@x.com"], 1);
+
+        let recordings = vec![not_done, no_note, too_old, different_people];
+        let found = recent_note_for_attendees(&recordings, &strings(&["priya@x.com"]), now, 90);
+        assert!(found.is_none(), "{found:?}");
     }
 }

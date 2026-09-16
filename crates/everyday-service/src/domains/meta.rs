@@ -212,6 +212,10 @@ pub fn scope_of(domain: tools::Domain) -> Scope {
         // through the ordinary command surface must ask for it by name,
         // never inherit it from a broader grant.
         tools::Domain::Mail => Scope::Mail,
+        // Its own scope, for the reason `Scope::Meetings`'s own doc gives:
+        // a transcript is every word several people said, and a client
+        // that reads a diary has no business inheriting a way to read one.
+        tools::Domain::Meetings => Scope::Meetings,
     }
 }
 
@@ -527,5 +531,6 @@ mod tests {
         assert_eq!(scope_of(Domain::Routines), Scope::Agent);
         assert_eq!(scope_of(Domain::Agent), Scope::Agent);
         assert_eq!(scope_of(Domain::Mail), Scope::Mail);
+        assert_eq!(scope_of(Domain::Meetings), Scope::Meetings);
     }
 }
