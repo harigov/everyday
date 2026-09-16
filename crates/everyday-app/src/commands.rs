@@ -145,6 +145,7 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
         };
         match opened {
             Ok(vault) => {
+                service.remember(&path);
                 let vault = service.set(vault);
                 // If this machine has been told to, open it without asking.
                 // Best effort in every direction: a keychain that cannot be
@@ -310,6 +311,7 @@ pub async fn create_vault(
         })
         .await?
     };
+    service.remember(&path);
     let vault = service.set(created);
     Ok(vault.status())
 }
@@ -327,6 +329,7 @@ pub async fn open_vault(state: State<'_, AppState>, path: PathBuf) -> CommandRes
         let path = path.clone();
         blocking(move || everyday_vault::open(&path).map_err(CommandError::from)).await?
     };
+    service.remember(&path);
     let vault = service.set(opened);
     Ok(vault.status())
 }

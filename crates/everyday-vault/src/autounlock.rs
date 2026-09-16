@@ -56,6 +56,9 @@ fn account(vault: &Path) -> String {
 
 /// Is this vault set to open itself on this machine?
 pub fn enabled(vault: &Path) -> bool {
+    if crate::under_test() {
+        return false;
+    }
     keyring::Entry::new(SERVICE, &account(vault))
         .and_then(|e| e.get_password())
         .is_ok_and(|k| !k.is_empty())
@@ -68,6 +71,9 @@ pub fn enabled(vault: &Path) -> bool {
 /// Wrapped in [`KeyText`] rather than handed back as a `String`, so the copy
 /// this crate is responsible for is wiped when the caller drops it.
 pub fn recall(vault: &Path) -> Option<KeyText> {
+    if crate::under_test() {
+        return None;
+    }
     let text = keyring::Entry::new(SERVICE, &account(vault)).ok()?.get_password().ok()?;
     if text.is_empty() {
         return None;
@@ -76,12 +82,18 @@ pub fn recall(vault: &Path) -> Option<KeyText> {
 }
 
 pub fn remember(vault: &Path, key: &KeyText) -> Result<()> {
+    if crate::under_test() {
+        return Err(Error::Invalid("a test may not write to this computer's keychain".into()));
+    }
     let entry = keyring::Entry::new(SERVICE, &account(vault)).map_err(unavailable)?;
     entry.set_password(key.as_str()).map_err(unavailable)
 }
 
 /// Take it out again. Not an error if it was never there.
 pub fn forget(vault: &Path) -> Result<()> {
+    if crate::under_test() {
+        return Ok(());
+    }
     let Ok(entry) = keyring::Entry::new(SERVICE, &account(vault)) else { return Ok(()) };
     match entry.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),

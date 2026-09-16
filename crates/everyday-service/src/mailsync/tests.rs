@@ -532,12 +532,15 @@ fn raw_message(
 /// unencrypted for speed, the same combination `crate::mailsync::wiring`
 /// opens against a real one.
 struct TestEnv {
-    _dir: tempfile::TempDir,
     vault: Arc<Vault>,
     packs: Arc<dyn PackStore>,
     index: Arc<dyn MailSearch>,
     statuses: StatusRegistry,
     account_id: AccountId,
+    /// Last, because fields drop in order: the directory must go after the
+    /// vault and index that have files open in it, or the index can still be
+    /// writing while it is removed and the directory is left behind.
+    _dir: tempfile::TempDir,
 }
 
 impl TestEnv {
@@ -572,12 +575,12 @@ impl TestEnv {
             .unwrap();
 
         Self {
-            _dir: dir,
             vault,
             packs,
             index,
             statuses: StatusRegistry::new(),
             account_id: account.id,
+            _dir: dir,
         }
     }
 

@@ -75,6 +75,9 @@ pub fn forget(id: &str) -> CommandResult<()> {
     write(&connections)?;
     // Best-effort: the connection is gone from the picker either way, and a
     // token with nothing pointing at it cannot be used from here.
+    if everyday_vault::under_test() {
+        return Ok(());
+    }
     if let Ok(entry) = keyring::Entry::new(SERVICE, id) {
         let _ = entry.delete_credential();
     }
@@ -82,6 +85,7 @@ pub fn forget(id: &str) -> CommandResult<()> {
 }
 
 pub fn token(id: &str) -> CommandResult<String> {
+    refuse_under_test()?;
     let entry = keyring::Entry::new(SERVICE, id).map_err(keychain_unavailable)?;
     entry.get_password().map_err(|e| match e {
         keyring::Error::NoEntry => CommandError::new(
@@ -93,8 +97,21 @@ pub fn token(id: &str) -> CommandResult<String> {
 }
 
 fn put_token(id: &str, token: &str) -> CommandResult<()> {
+    refuse_under_test()?;
     let entry = keyring::Entry::new(SERVICE, id).map_err(keychain_unavailable)?;
     entry.set_password(token).map_err(keychain_unavailable)
+}
+
+/// A test does not reach this computer's keychain; see
+/// [`everyday_vault::under_test`].
+fn refuse_under_test() -> CommandResult<()> {
+    if everyday_vault::under_test() {
+        return Err(CommandError::new(
+            "no_keychain",
+            "a test may not use this computer's keychain",
+        ));
+    }
+    Ok(())
 }
 
 fn keychain_unavailable(e: keyring::Error) -> CommandError {

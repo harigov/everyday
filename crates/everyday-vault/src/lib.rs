@@ -73,6 +73,9 @@ pub fn validate_settings(backend: &str, settings: &BackendSettings) -> Result<()
 /// search index here and only its rows on the server -- so this is the path
 /// to point at when someone asks where their journal is.
 pub fn default_vault_dir() -> PathBuf {
+    if let Some(sandbox) = test_sandbox() {
+        return sandbox.join("data");
+    }
     directories::ProjectDirs::from("app", "Every Day", "EveryDay")
         .map(|d| d.data_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from(".everyday"))
@@ -87,9 +90,43 @@ pub fn default_vault_dir() -> PathBuf {
 /// copies a vault and a private key kept there would end up in every backup
 /// somebody ever made.
 pub fn config_dir() -> PathBuf {
+    if let Some(sandbox) = test_sandbox() {
+        return sandbox.join("config");
+    }
     directories::ProjectDirs::from("app", "Every Day", "EveryDay")
         .map(|d| d.config_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from(".everyday-config"))
+}
+
+/// Is this process a cargo test binary?
+///
+/// A test must never read or write the person's own vault, settings or
+/// keychain, and it cannot be left to each test to remember that -- the
+/// pointer to the last vault was overwritten by every test that opened a
+/// `Service` for a week before anybody noticed. `cfg(test)` does not reach
+/// across crates, so this asks where the running executable is instead:
+/// cargo, and nextest after it, put every unit and integration test binary
+/// in `target/<profile>/deps`, beside a `.fingerprint` directory, and nothing
+/// a person runs lives there.
+pub fn under_test() -> bool {
+    static UNDER_TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *UNDER_TEST.get_or_init(|| {
+        let Ok(exe) = std::env::current_exe() else { return false };
+        let Some(deps) = exe.parent() else { return false };
+        deps.file_name().is_some_and(|n| n == "deps")
+            && deps.parent().is_some_and(|profile| profile.join(".fingerprint").is_dir())
+    })
+}
+
+/// Where a test binary's "platform" directories are, in place of the real
+/// ones. `None` outside a test.
+///
+/// One fixed directory under the temporary directory rather than one per
+/// process, so that running the suite does not leave a directory behind
+/// every time; what lands in it is a pointer file and the odd settings file,
+/// and no test relies on being alone there.
+fn test_sandbox() -> Option<PathBuf> {
+    under_test().then(|| std::env::temp_dir().join("everyday-test-home"))
 }
 
 /// Where the shell records the vault it last had open.
@@ -100,8 +137,7 @@ pub fn config_dir() -> PathBuf {
 /// pointer and nothing else: it holds a path, never a key, a password or any
 /// entry content. The default location is public knowledge anyway.
 fn last_vault_pointer() -> Option<PathBuf> {
-    directories::ProjectDirs::from("app", "Every Day", "EveryDay")
-        .map(|d| d.config_dir().join("last-vault"))
+    Some(config_dir().join("last-vault"))
 }
 
 /// The vault the previous session left open, if one was recorded.

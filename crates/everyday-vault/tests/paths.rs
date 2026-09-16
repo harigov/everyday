@@ -5,7 +5,7 @@
 //! private functions this crate does not expose, so an integration test
 //! cannot reach them.
 
-use everyday_vault::{default_vault_dir, validate_password};
+use everyday_vault::{config_dir, default_vault_dir, under_test, validate_password};
 
 #[test]
 fn the_default_vault_directory_is_absolute_and_named() {
@@ -16,6 +16,17 @@ fn the_default_vault_directory_is_absolute_and_named() {
     // `%APPDATA%\\Every Day\\EveryDay` -- so match case-insensitively.
     let s = dir.to_string_lossy().to_lowercase().replace([' ', '-'], "");
     assert!(s.contains("everyday"), "got {dir:?}");
+}
+
+/// The guarantee every other test leans on: nothing run by `cargo test`
+/// resolves to the person's own vault or settings.
+#[test]
+fn a_test_never_sees_the_real_directories() {
+    assert!(under_test(), "this binary should know it is a test");
+    let sandbox = std::env::temp_dir();
+    for dir in [default_vault_dir(), config_dir()] {
+        assert!(dir.starts_with(&sandbox), "{dir:?} is outside {sandbox:?}");
+    }
 }
 
 #[test]

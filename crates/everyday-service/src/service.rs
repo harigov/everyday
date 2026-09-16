@@ -615,8 +615,13 @@ impl Service {
 
     // ---- the vault ------------------------------------------------------
 
+    /// Make `vault` the one this service is about.
+    ///
+    /// Does not record it as the vault to reopen: that pointer lives in the
+    /// user's own config directory, and every test that builds a `Service`
+    /// calls this. Only the desktop shell reopens a vault from the pointer, so
+    /// only the desktop shell writes it -- see [`Service::remember`].
     pub fn set(self: &Arc<Self>, vault: Vault) -> Arc<Vault> {
-        self.remember(vault.path());
         let vault = Arc::new(vault);
         *self.vault.write().unwrap() = Some(vault.clone());
         // An unencrypted vault -- and one an OS keychain unlocks moments

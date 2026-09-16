@@ -564,7 +564,7 @@ impl Registry {
     fn persist_last_seen_in_background(self: &Arc<Self>) {
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             let devices = lock(&self.devices);
-            if let Err(e) = self.save_locked(&devices) {
+            if let Err(e) = self.save_last_seen_locked(&devices) {
                 tracing::debug!(error = %e, "could not record a device's last use");
             }
             return;
@@ -584,10 +584,29 @@ impl Registry {
             // a line at the end so that a panic in `save_locked` cannot latch
             // the flag `true` and stop every later write for good.
             let _clear = ClearOnDrop(&registry.last_seen_write_pending);
-            if let Err(e) = registry.save_locked(&devices) {
+            if let Err(e) = registry.save_last_seen_locked(&devices) {
                 tracing::debug!(error = %e, "could not record a device's last use");
             }
         });
+    }
+
+    /// [`Registry::save_locked`], for a last-used stamp: never recreates a
+    /// directory that has gone.
+    ///
+    /// A device can only be authenticating because the list naming it was
+    /// written, so a missing directory was removed on purpose -- a settings
+    /// directory somebody deleted, or a test's temporary one dropped while
+    /// this write was still queued. Putting it back for the sake of a
+    /// timestamp would resurrect the one and leak the other.
+    fn save_last_seen_locked(&self, devices: &[Device]) -> CommandResult<()> {
+        if self
+            .path
+            .parent()
+            .is_some_and(|parent| !parent.as_os_str().is_empty() && !parent.is_dir())
+        {
+            return Ok(());
+        }
+        self.save_locked(devices)
     }
 
     pub fn revoke(&self, id: &str) -> CommandResult<bool> {

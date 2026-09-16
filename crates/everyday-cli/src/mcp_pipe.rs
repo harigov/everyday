@@ -516,11 +516,13 @@ mod tests {
     /// reads as "send this, expect that" rather than repeating the
     /// eight-line ritual of standing one up.
     ///
-    /// The two temporary directories are leaked with `.keep()` rather than
-    /// dropped at the end of this function: the listener they back runs on
-    /// a thread that outlives this call, and a `TempDir` dropped while
-    /// still in use would delete the vault out from under it.
-    fn start_test_mcp_listener() -> (reqwest::blocking::Client, String, String) {
+    /// The two temporary directories come back to the caller, which holds
+    /// them for the length of its test: the listener they back runs on a
+    /// thread that outlives this call, and a `TempDir` dropped here would
+    /// delete the vault out from under it. Leaking them instead left two
+    /// directories behind on every run.
+    fn start_test_mcp_listener()
+    -> (reqwest::blocking::Client, String, String, [tempfile::TempDir; 2]) {
         let vault_dir = tempfile::tempdir().unwrap();
         let vault = everyday_vault::create(
             vault_dir.path(),
@@ -536,7 +538,6 @@ mod tests {
         )
         .unwrap();
         vault.save_journal(&Journal::new("Journal")).unwrap();
-        let _ = vault_dir.keep();
 
         let service = std::sync::Arc::new(everyday_service::Service::new());
         service.set(vault);
@@ -551,7 +552,6 @@ mod tests {
             vec![everyday_service::Scope::All],
         )
         .unwrap();
-        let _ = config_dir.keep();
 
         // The listener runs on a runtime of its own, on a thread of its
         // own, deliberately: `mcp_pipe` uses a *blocking* client, which
@@ -583,7 +583,7 @@ mod tests {
 
         let client = reqwest::blocking::Client::new();
         let url = format!("http://{address}/mcp");
-        (client, url, token)
+        (client, url, token, [vault_dir, config_dir])
     }
 
     /// The test that proves the feature: a real `tools/list` call, sent as
@@ -592,7 +592,7 @@ mod tests {
     /// vault open in this process at all.
     #[test]
     fn a_real_tools_list_call_round_trips_through_the_pipe() {
-        let (client, url, token) = start_test_mcp_listener();
+        let (client, url, token, _dirs) = start_test_mcp_listener();
         let request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}\n";
         let mut output = Vec::new();
         mcp_pipe(&client, &url, &token, request.as_bytes(), &mut output).unwrap();
@@ -617,7 +617,7 @@ mod tests {
     /// `result` comes back, not that error.
     #[test]
     fn a_modern_era_tools_list_call_round_trips_through_the_pipe() {
-        let (client, url, token) = start_test_mcp_listener();
+        let (client, url, token, _dirs) = start_test_mcp_listener();
         let request = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 7,
@@ -650,7 +650,7 @@ mod tests {
     /// distinction is drawn correctly.
     #[test]
     fn a_notification_produces_no_line_on_stdout() {
-        let (client, url, token) = start_test_mcp_listener();
+        let (client, url, token, _dirs) = start_test_mcp_listener();
         let notification = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n";
         let mut output = Vec::new();
         mcp_pipe(&client, &url, &token, notification.as_bytes(), &mut output).unwrap();
@@ -666,7 +666,7 @@ mod tests {
     /// answer regardless of which one it was.
     #[test]
     fn an_unauthorised_request_answers_with_a_json_dash_rpc_error_not_a_blank_line() {
-        let (client, url, _token) = start_test_mcp_listener();
+        let (client, url, _token, _dirs) = start_test_mcp_listener();
         let request = "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/list\",\"params\":{}}\n";
         let mut output = Vec::new();
         mcp_pipe(&client, &url, "not-the-issued-token", request.as_bytes(), &mut output).unwrap();
@@ -718,7 +718,7 @@ mod tests {
     /// they never do.
     #[test]
     fn a_subscriptions_listen_ack_arrives_while_a_later_request_still_gets_its_answer() {
-        let (client, url, token) = start_test_mcp_listener();
+        let (client, url, token, _dirs) = start_test_mcp_listener();
         let listen = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
