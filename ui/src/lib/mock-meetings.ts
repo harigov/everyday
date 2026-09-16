@@ -717,9 +717,10 @@ export async function mockRewriteMeetingNote(noteId: string, templateId: string)
     .join('\n')
 }
 
-export function mockDismissMeetingOffer(uid: string, never: boolean): void {
-  if (never && !settings.skippedSeries.includes(uid)) {
-    settings = { ...settings, skippedSeries: [...settings.skippedSeries, uid] }
+export function mockDismissMeetingOffer(uid: string, series: string | null, never: boolean): void {
+  const key = series ?? uid
+  if (never && !settings.skippedSeries.includes(key)) {
+    settings = { ...settings, skippedSeries: [...settings.skippedSeries, key] }
   }
 }
 

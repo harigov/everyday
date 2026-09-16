@@ -2590,6 +2590,8 @@ export interface EventRef {
   attendees: string[]
   joinUrl: string
   calendarName: string
+  /** A durable series id, for sources whose per-occurrence `uid` is not. */
+  series?: string | null
 }
 
 export type Stage =

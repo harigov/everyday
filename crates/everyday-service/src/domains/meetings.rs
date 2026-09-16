@@ -99,12 +99,17 @@ pub struct AppendRecordingChunk {
 /// `calendarId` and `uid`, not an `eventId` -- see `MeetingOffer`'s own doc
 /// (`crate::events`) for why: an `EventId` is a feed event's own id, not
 /// stable across a resync, and the offer this dismisses already carries the
-/// pair that is.
+/// pair that is. `series` is the offer's own `MeetingOffer::series`,
+/// forwarded untouched -- see that field's own doc for why `uid` alone is
+/// not enough to key "never for this meeting" on for a recurring Google or
+/// Graph event.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DismissMeetingOffer {
     pub calendar_id: everyday_core::CalendarId,
     pub uid: String,
+    #[serde(default)]
+    pub series: Option<String>,
     pub never: bool,
 }
 
@@ -603,7 +608,17 @@ async fn dismiss_meeting_offer(
     args: DismissMeetingOffer,
 ) -> CommandResult<()> {
     let vault = svc.require()?;
-    blocking(move || watch::dismiss(&svc, &vault, args.calendar_id, &args.uid, args.never)).await
+    blocking(move || {
+        watch::dismiss(
+            &svc,
+            &vault,
+            args.calendar_id,
+            &args.uid,
+            args.series.as_deref(),
+            args.never,
+        )
+    })
+    .await
 }
 
 pub static COMMANDS: &[crate::command::Command] = &[
@@ -724,6 +739,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
         signature: &[
             ("calendarId", "CalendarId", true),
             ("uid", "string", true),
+            ("series", "string | null", false),
             ("never", "boolean", true),
         ],
         run: dismiss_meeting_offer,

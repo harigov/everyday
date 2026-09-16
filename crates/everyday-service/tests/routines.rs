@@ -524,6 +524,7 @@ fn a_meeting(svc: &Arc<Service>, minutes: i64, title: &str) -> everyday_core::Ev
         attendees: vec!["Sam Weatherby".into()],
         url: String::new(),
         busy: true,
+        series: None,
         updated_at: jiff::Timestamp::now(),
     };
     // Through the store rather than a vault method: writing events wholesale

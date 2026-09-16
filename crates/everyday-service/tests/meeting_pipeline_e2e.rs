@@ -436,6 +436,7 @@ async fn run_once(
         attendees: built.attendees.clone(),
         join_url: String::new(),
         calendar_name: "Work".into(),
+        series: None,
     };
     let mut recording = Recording::new("Design sync", Some(event), settings.template(None).id);
     recording.stage = Stage::Transcribing;

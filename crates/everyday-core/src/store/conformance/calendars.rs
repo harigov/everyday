@@ -64,6 +64,7 @@ pub(super) fn sample_event(cal: CalendarId, uid: &str, from: Date, to: Date) -> 
         attendees: Vec::new(),
         url: String::new(),
         busy: true,
+        series: None,
         updated_at: Timestamp::now(),
     }
 }

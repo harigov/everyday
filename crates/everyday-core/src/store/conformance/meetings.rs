@@ -97,6 +97,7 @@ fn event_ref(calendar_id: CalendarId, title: &str, start: Timestamp) -> EventRef
         attendees: Vec::new(),
         join_url: String::new(),
         calendar_name: String::new(),
+        series: None,
     }
 }
 

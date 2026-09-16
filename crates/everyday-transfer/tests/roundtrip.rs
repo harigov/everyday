@@ -122,6 +122,7 @@ fn fill(vault: &Vault) {
         attendees: Vec::new(),
         url: String::new(),
         busy: true,
+        series: None,
         updated_at: event_start,
     };
 

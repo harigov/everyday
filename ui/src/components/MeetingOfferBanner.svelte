@@ -39,11 +39,11 @@
   }
 
   function notNow() {
-    if (offer) void meetings.dismissOffer(offer.calendarId, offer.uid, false)
+    if (offer) void meetings.dismissOffer(offer.calendarId, offer.uid, offer.series ?? null, false)
   }
 
   function never() {
-    if (offer) void meetings.dismissOffer(offer.calendarId, offer.uid, true)
+    if (offer) void meetings.dismissOffer(offer.calendarId, offer.uid, offer.series ?? null, true)
   }
 </script>
 

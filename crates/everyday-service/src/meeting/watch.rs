@@ -87,7 +87,10 @@ fn tick_inner(svc: &Arc<Service>, vault: &Vault) -> CoreResult<()> {
         if !calendar_allowed(&settings.calendars, calendar) {
             continue;
         }
-        if settings.skipped_series.contains(&detect::series_key(&event.uid)) {
+        if settings
+            .skipped_series
+            .contains(&detect::series_key_of(&event.uid, event.series.as_deref()))
+        {
             continue;
         }
         if already_recorded(vault, &event)? {
@@ -106,6 +109,7 @@ fn tick_inner(svc: &Arc<Service>, vault: &Vault) -> CoreResult<()> {
             event_id: event.id,
             calendar_id: event.calendar_id,
             uid: event.uid.clone(),
+            series: event.series.clone(),
             title: event.title.clone(),
             start: event.start,
             end: event.end,
@@ -183,26 +187,32 @@ fn already_recorded(vault: &Vault, event: &Event) -> CoreResult<bool> {
 /// way, and -- for "Never for this meeting" -- not ever again, on any
 /// session, for the whole series.
 ///
-/// Takes `calendar_id` and `uid`, not an `EventId`: those are exactly what
-/// [`svc.meeting_offer_seen`](Service::meeting_offer_seen) and
-/// [`detect::series_key`] need, and both are durable across a feed resync
+/// Takes `calendar_id`, `uid` and `series`, not an `EventId`: those are
+/// exactly what [`svc.meeting_offer_seen`](Service::meeting_offer_seen) and
+/// [`detect::series_key_of`] need, and all are durable across a feed resync
 /// in a way an `EventId` is not (see [`MeetingOffer`](crate::events::MeetingOffer)'s
-/// own doc). Deliberately does not look the event up at all: there is
-/// nothing here an `Event` row would answer that these two fields do not
-/// already carry, so a dismissal for an event a resync has since changed
-/// -- or even removed -- still works exactly as well as one for an event
-/// still sitting there unchanged.
+/// own doc). `series` is the offer's own [`MeetingOffer::series`] --
+/// whatever the adapter that produced the event put on [`Event::series`],
+/// carried through untouched -- so the key this computes is exactly the one
+/// [`tick_inner`] checked the event against, including for a recurring
+/// Google or Graph event whose `uid` is only unique per occurrence.
+/// Deliberately does not look the event up at all: there is nothing here an
+/// `Event` row would answer that these fields do not already carry, so a
+/// dismissal for an event a resync has since changed -- or even removed --
+/// still works exactly as well as one for an event still sitting there
+/// unchanged.
 pub fn dismiss(
     svc: &Arc<Service>,
     vault: &Vault,
     calendar_id: CalendarId,
     uid: &str,
+    series: Option<&str>,
     never: bool,
 ) -> CommandResult<()> {
     svc.meeting_offer_seen(calendar_id, uid);
     if never {
         let mut settings = vault.meeting_settings()?;
-        settings.skipped_series.insert(detect::series_key(uid));
+        settings.skipped_series.insert(detect::series_key_of(uid, series));
         vault.save_meeting_settings(&settings)?;
     }
     Ok(())
@@ -288,6 +298,7 @@ mod tests {
             attendees: vec!["Bob <bob@example.com>".into()],
             url: String::new(),
             busy: true,
+            series: None,
             updated_at: now,
         }
     }
@@ -455,6 +466,7 @@ mod tests {
             attendees: Vec::new(),
             join_url: String::new(),
             calendar_name: calendar.name.clone(),
+            series: event.series.clone(),
         };
         let mut recording = Recording::new("Design sync", Some(event_ref), TemplateId::new());
         recording.started_at = event.start;
@@ -493,7 +505,7 @@ mod tests {
         let event = online_event(calendar.id, 0);
         seed_event(&vault, calendar.id, &event);
 
-        dismiss(&svc, &vault, calendar.id, &event.uid, false).unwrap();
+        dismiss(&svc, &vault, calendar.id, &event.uid, None, false).unwrap();
         tick(&svc, &vault);
 
         assert!(sink.offers.lock().unwrap().is_empty());
@@ -514,7 +526,7 @@ mod tests {
         let event = online_event(calendar.id, 0);
         seed_event(&vault, calendar.id, &event);
 
-        dismiss(&svc, &vault, calendar.id, &event.uid, true).unwrap();
+        dismiss(&svc, &vault, calendar.id, &event.uid, None, true).unwrap();
 
         assert!(
             vault
@@ -522,6 +534,41 @@ mod tests {
                 .unwrap()
                 .skipped_series
                 .contains(&detect::series_key(&event.uid))
+        );
+    }
+
+    /// The finding this guards: a recurring Google (`singleEvents=true`) or
+    /// Graph (`calendarView`) event hands back a fresh `uid` for every
+    /// occurrence, so keying "never for this meeting" on `uid` alone only
+    /// ever skipped the one occurrence it was pressed on. Once the adapter
+    /// populates `Event::series` with the durable series id, dismissing one
+    /// occurrence -- carrying that same `series` on the offer, exactly as
+    /// `MeetingOffer::series` does -- must also cover a later occurrence
+    /// whose `uid` is different but whose `series` is the same.
+    #[test]
+    fn dismissing_never_with_a_series_id_covers_a_later_occurrence_with_a_different_uid() {
+        let (svc, vault, _dir) = env();
+        let sink = TestSink::default();
+        svc.set_events(Arc::new(sink.clone()));
+        enable(&vault, Offer::Ask);
+        let calendar = account_calendar(&vault);
+
+        let mut first = online_event(calendar.id, 0);
+        first.uid = "google-instance-1".into();
+        first.series = Some("google-series-abc".into());
+
+        dismiss(&svc, &vault, calendar.id, &first.uid, first.series.as_deref(), true).unwrap();
+
+        let mut second = online_event(calendar.id, 0);
+        second.uid = "google-instance-2".into();
+        second.series = Some("google-series-abc".into());
+        seed_event(&vault, calendar.id, &second);
+
+        tick(&svc, &vault);
+
+        assert!(
+            sink.offers.lock().unwrap().is_empty(),
+            "a later occurrence of the same series must stay skipped"
         );
     }
 
@@ -540,7 +587,7 @@ mod tests {
         let calendar = account_calendar(&vault);
         let uid = "evt-that-no-longer-exists@example.com";
 
-        dismiss(&svc, &vault, calendar.id, uid, true).unwrap();
+        dismiss(&svc, &vault, calendar.id, uid, None, true).unwrap();
 
         assert!(
             vault.meeting_settings().unwrap().skipped_series.contains(&detect::series_key(uid))

@@ -34,16 +34,20 @@ use crate::tray::Tray;
 /// half is that function.
 pub const OFFER_EVENT: &str = "meeting-offer";
 
-/// Mirrors the TS `MeetingOfferPayload`, field for field. `calendarId` and
-/// `uid` ride along beside `eventId` for `dismissMeetingOffer` to use --
-/// see [`MeetingOffer`]'s own doc on why that command is keyed by the pair
-/// that survives a feed resync rather than by `eventId`, which does not.
+/// Mirrors the TS `MeetingOfferPayload`, field for field. `calendarId`,
+/// `uid` and `series` ride along beside `eventId` for `dismissMeetingOffer`
+/// to use -- see [`MeetingOffer`]'s own doc on why that command is keyed by
+/// the triple that survives a feed resync rather than by `eventId`, which
+/// does not, and `series`'s own doc on why `calendarId`/`uid` alone are not
+/// enough for a recurring Google or Graph event.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OfferPayload {
     event_id: EventId,
     calendar_id: CalendarId,
     uid: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    series: Option<String>,
     title: String,
     start: jiff::Timestamp,
     end: jiff::Timestamp,
@@ -59,6 +63,7 @@ impl From<MeetingOffer> for OfferPayload {
             event_id: offer.event_id,
             calendar_id: offer.calendar_id,
             uid: offer.uid,
+            series: offer.series,
             title: offer.title,
             start: offer.start,
             end: offer.end,
@@ -449,6 +454,7 @@ mod tests {
             event_id: EventId::new(),
             calendar_id: CalendarId::new(),
             uid: "evt-1@example.com".into(),
+            series: None,
             title: "Design sync".into(),
             start: jiff::Timestamp::now(),
             end: jiff::Timestamp::now(),

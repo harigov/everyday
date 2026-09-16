@@ -762,6 +762,12 @@ fn events_from_ics(
                 comp.entries.iter().find(|e| e.name == calcard::icalendar::ICalendarProperty::Transp),
                 Some(entry) if matches!(entry.values.first(), Some(calcard::icalendar::ICalendarValue::Transparency(calcard::icalendar::ICalendarTransparency::Transparent)))
             ),
+            // Not set: `uid` above is `href#start`, and `href` alone is
+            // already shared by every occurrence this resource expands to
+            // -- `detect::series_key`'s suffix-stripping fallback recovers
+            // it from the `#start` suffix the same way it does for a
+            // subscribed feed's `<uid>@<start>`.
+            series: None,
             updated_at: jiff::Timestamp::now(),
         });
     }

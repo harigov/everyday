@@ -84,6 +84,10 @@ pub struct EventRef {
     /// The calendar's name, for the details block.
     #[serde(default)]
     pub calendar_name: String,
+    /// Copied from [`Event::series`]. `#[serde(default)]` so an `EventRef`
+    /// sealed before this field existed still reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series: Option<String>,
 }
 
 impl EventRef {
@@ -99,13 +103,15 @@ impl EventRef {
             attendees: event.attendees.clone(),
             join_url: detect::join_link(event).unwrap_or_default(),
             calendar_name: calendar_name.to_string(),
+            series: event.series.clone(),
         }
     }
 
-    /// The UID with a recurrence suffix removed: what "never for this
-    /// meeting" remembers. See [`detect::series_key`].
+    /// The series key "never for this meeting" remembers: `series` itself
+    /// when the source gave one, or the UID with a recurrence suffix
+    /// removed otherwise. See [`detect::series_key`].
     pub fn series_key(&self) -> String {
-        detect::series_key(&self.uid)
+        detect::series_key_of(&self.uid, self.series.as_deref())
     }
 }
 

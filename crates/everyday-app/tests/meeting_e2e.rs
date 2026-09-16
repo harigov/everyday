@@ -528,6 +528,7 @@ fn online_event(calendar_id: CalendarId, offset_secs: i64, attendees: &[String])
         attendees: attendees.to_vec(),
         url: String::new(),
         busy: true,
+        series: None,
         updated_at: now,
     }
 }

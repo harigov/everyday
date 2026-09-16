@@ -327,9 +327,9 @@ class MeetingsState {
     this.offers = this.offers.filter((o) => !(o.calendarId === calendarId && o.uid === uid))
   }
 
-  async dismissOffer(calendarId: string, uid: string, never: boolean) {
+  async dismissOffer(calendarId: string, uid: string, series: string | null, never: boolean) {
     this.#dropOffer(calendarId, uid)
-    await api.dismissMeetingOffer(calendarId, uid, never)
+    await api.dismissMeetingOffer(calendarId, uid, series, never)
   }
 
   /**

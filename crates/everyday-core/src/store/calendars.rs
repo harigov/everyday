@@ -199,6 +199,7 @@ mod tests {
             attendees: Vec::new(),
             url: String::new(),
             busy: true,
+            series: None,
             updated_at: Timestamp::now(),
         }
     }

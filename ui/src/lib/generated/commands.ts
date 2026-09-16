@@ -229,7 +229,7 @@ export interface Commands {
   discardDraft: { args: { id: DraftId }; result: void }
   discardRecording: { args: { id: RecordingId }; result: void }
   dismissMeetingOffer: {
-    args: { calendarId: CalendarId; uid: string; never: boolean }
+    args: { calendarId: CalendarId; uid: string; series?: string | null; never: boolean }
     result: void
   }
   downloadSpeechModel: { args: { id: string }; result: void }

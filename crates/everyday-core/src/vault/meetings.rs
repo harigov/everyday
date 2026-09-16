@@ -250,11 +250,16 @@ impl Vault {
 /// deleted, so [`Vault::save_transcript`] and [`Vault::delete_transcript`]
 /// can share it, and so [`rebuild_meeting_index`] -- the unlock and
 /// `Vault::reindex` path -- can call the same function a single save does.
+/// [`Vault::save_note`] and `overwrite_note` share it too: a
+/// note is a document that autosaves and gets its body rewritten (by
+/// `name_speaker`, among others), and every one of those paths has to fold
+/// the transcript back in, not just the two above that were written with
+/// transcripts in mind.
 /// A note with no backend, or no longer there, is left alone or dropped from
 /// the index respectively; neither is an error, because a search index that
 /// cannot be rebuilt for a stale id would be worse than one that is briefly
 /// behind.
-fn reindex_note(u: &mut Unlocked, note_id: NoteId) {
+pub(super) fn reindex_note(u: &mut Unlocked, note_id: NoteId) {
     let Some(notes) = u.store.notes() else { return };
     let note = match notes.get_note(note_id) {
         Ok(note) => note,

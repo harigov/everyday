@@ -148,6 +148,21 @@ struct GoogleEvent {
     #[serde(rename = "htmlLink")]
     #[serde(default)]
     html_link: String,
+    /// Set on every instance of a recurring event, to the id of the
+    /// recurring event they all expand from -- stable across occurrences,
+    /// unlike `id` itself, which `singleEvents=true` mints fresh per
+    /// instance. Absent on a one-off event. See [`Event::series`]
+    /// (`everyday_core::calendar`) and `detect::series_key`'s own doc for
+    /// why "never for this meeting" needs this rather than `id`.
+    #[serde(rename = "recurringEventId")]
+    recurring_event_id: Option<String>,
+    /// The iCalendar UID, present on every event, recurring or not, and
+    /// also shared by every occurrence of a recurring one -- the fallback
+    /// when `recurringEventId` is absent (a one-off event has no series to
+    /// share a key with, so falling back to this is harmless: it is just
+    /// that event's own durable id).
+    #[serde(rename = "iCalUID")]
+    i_cal_uid: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -378,6 +393,7 @@ fn to_event(calendar_id: CalendarId, item: &GoogleEvent, default_tz: &str) -> Op
         attendees: item.attendees.iter().map(GoogleAttendee::label).collect(),
         url: item.html_link.clone(),
         busy: item.transparency != "transparent",
+        series: item.recurring_event_id.clone().or_else(|| item.i_cal_uid.clone()),
         updated_at: jiff::Timestamp::now(),
     })
 }
@@ -817,5 +833,64 @@ mod tests {
         let err = get_bytes(&url, "tok").await.unwrap_err();
         assert_eq!(err.code, codes::FORBIDDEN);
         assert_eq!(calls.load(Ordering::SeqCst), 1, "a bad credential is never retried");
+    }
+
+    // ---- Event::series mapping ----------------------------------------------
+
+    fn bare_google_event(id: &str) -> GoogleEvent {
+        GoogleEvent {
+            id: id.to_string(),
+            status: "confirmed".into(),
+            summary: "Weekly standup".into(),
+            description: String::new(),
+            location: String::new(),
+            start: Some(GoogleWhen {
+                date: None,
+                date_time: Some("2026-09-16T09:00:00Z".into()),
+                time_zone: Some("UTC".into()),
+            }),
+            end: Some(GoogleWhen {
+                date: None,
+                date_time: Some("2026-09-16T09:30:00Z".into()),
+                time_zone: Some("UTC".into()),
+            }),
+            transparency: String::new(),
+            organizer: None,
+            attendees: Vec::new(),
+            html_link: String::new(),
+            recurring_event_id: None,
+            i_cal_uid: None,
+        }
+    }
+
+    /// The finding this guards: `singleEvents=true` mints a fresh `id` per
+    /// occurrence of a recurring event, so two occurrences of the same
+    /// series must still map to the same `Event::series` -- here,
+    /// `recurringEventId`, which Google keeps stable across every instance.
+    #[test]
+    fn recurring_event_id_becomes_the_events_series() {
+        let mut item = bare_google_event("instance-1");
+        item.recurring_event_id = Some("master-abc".into());
+        item.i_cal_uid = Some("master-abc@google.com".into());
+        let event = to_event(CalendarId::new(), &item, "UTC").unwrap();
+        assert_eq!(event.series.as_deref(), Some("master-abc"), "recurringEventId wins");
+    }
+
+    /// `iCalUID` is present on every event, recurring or not, and is the
+    /// fallback when `recurringEventId` is absent -- a one-off event still
+    /// gets a `series`, harmlessly identical to its own durable id.
+    #[test]
+    fn i_cal_uid_is_the_series_when_there_is_no_recurring_event_id() {
+        let mut item = bare_google_event("evt-1");
+        item.i_cal_uid = Some("evt-1@google.com".into());
+        let event = to_event(CalendarId::new(), &item, "UTC").unwrap();
+        assert_eq!(event.series.as_deref(), Some("evt-1@google.com"));
+    }
+
+    #[test]
+    fn an_event_with_neither_field_has_no_series() {
+        let item = bare_google_event("evt-1");
+        let event = to_event(CalendarId::new(), &item, "UTC").unwrap();
+        assert_eq!(event.series, None);
     }
 }

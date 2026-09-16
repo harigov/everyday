@@ -129,6 +129,7 @@ fn stub_event(calendar: crate::id::CalendarId) -> crate::calendar::Event {
         attendees: Vec::new(),
         url: String::new(),
         busy: true,
+        series: None,
         updated_at: Timestamp::now(),
     }
 }

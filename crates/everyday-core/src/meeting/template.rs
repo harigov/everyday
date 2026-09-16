@@ -340,6 +340,7 @@ mod tests {
                 ],
                 join_url: "https://meet.google.com/abc-defg-hij".into(),
                 calendar_name: "Work".into(),
+                series: None,
             }),
             started_at: None,
             ended_at: None,

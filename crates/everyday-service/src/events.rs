@@ -258,6 +258,15 @@ pub struct MeetingOffer {
     pub event_id: EventId,
     pub calendar_id: CalendarId,
     pub uid: String,
+    /// The event's own `Event::series` (`everyday_core::calendar::Event`),
+    /// carried along so `dismiss_meeting_offer` can compute the same series
+    /// key `meeting::watch`'s own tick checked the event against, rather
+    /// than only ever being able to derive one from `uid` -- which, for a
+    /// recurring Google or Graph event, is unique per occurrence and would
+    /// only ever let "never for this meeting" skip the one occurrence it
+    /// was pressed on. See `detect::series_key_of`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series: Option<String>,
     pub title: String,
     pub start: Timestamp,
     pub end: Timestamp,

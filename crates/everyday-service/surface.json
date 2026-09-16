@@ -965,6 +965,11 @@
           "type": "string"
         },
         {
+          "name": "series",
+          "required": false,
+          "type": "string | null"
+        },
+        {
           "name": "never",
           "required": true,
           "type": "boolean"

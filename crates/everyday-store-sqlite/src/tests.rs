@@ -397,6 +397,7 @@ fn an_event(calendar_id: everyday_core::CalendarId, title: &str, location: &str)
         attendees: Vec::new(),
         url: String::new(),
         busy: true,
+        series: None,
         updated_at: jiff::Timestamp::now(),
     }
 }
@@ -1258,6 +1259,56 @@ fn deleting_a_note_takes_its_transcript_and_clears_the_recording_pointer() {
 
     let hits = vault.search("friday", SearchScope::Everything, 10).unwrap();
     assert!(hits.is_empty(), "deleted words must not still be findable");
+}
+
+#[test]
+fn an_autosave_keeps_the_note_s_transcript_searchable() {
+    // `save_note` used to reindex with the note's own words alone --
+    // `u.index.insert_note`, not `reindex_note` -- so an autosave, or
+    // `name_speaker` rewriting the body, threw the transcript half of the
+    // search entry away until the vault was next unlocked and
+    // `rebuild_meeting_index` ran. A plain save must go through the same
+    // path `save_transcript` does.
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = BackendRegistry::new();
+    registry.register(SqliteFactory);
+    let vault = Vault::create(dir.path(), VaultConfig::default(), Arc::new(registry)).unwrap();
+
+    let note = Note::new("Design sync");
+    vault.save_note(&note, None).unwrap();
+
+    let now = jiff::Timestamp::now();
+    let transcript = Transcript {
+        id: TranscriptId::new(),
+        note_id: note.id,
+        recording_id: None,
+        language: None,
+        backend: "local:parakeet-tdt-0.6b-v3".into(),
+        speakers: Vec::new(),
+        segments: vec![everyday_core::meeting::Segment {
+            start_ms: 0,
+            end_ms: 1_000,
+            speaker: 0,
+            text: "let's ship on friday".into(),
+        }],
+        created_at: now,
+        updated_at: now,
+    };
+    vault.save_transcript(&transcript).unwrap();
+    assert_eq!(vault.search("friday", SearchScope::Everything, 10).unwrap().len(), 1);
+
+    // An ordinary autosave of the note body, unrelated to the transcript --
+    // exactly the path that used to drop the transcript's words.
+    let mut edited = note.clone();
+    edited.body = RichDoc::from_plain_text("action items");
+    edited.updated_at = jiff::Timestamp::now();
+    vault.save_note(&edited, Some(note.updated_at)).unwrap();
+
+    assert_eq!(
+        vault.search("friday", SearchScope::Everything, 10).unwrap().len(),
+        1,
+        "a plain note save must not drop the transcript's words from search"
+    );
 }
 
 #[test]

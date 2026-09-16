@@ -920,6 +920,7 @@ mod tests {
             attendees: strings(attendees),
             join_url: String::new(),
             calendar_name: "Work".into(),
+            series: None,
         };
         let mut r = Recording::new("Design sync", Some(event), TemplateId::new());
         r.started_at = Timestamp::from_second(NOW_SECS - days_ago * 86_400).unwrap();

@@ -39,7 +39,13 @@ impl Vault {
         self.write(|u| {
             let notes = pick_domain(u.store.as_ref(), Domain::Notes, |s| s.notes())?;
             notes.put_note_if(note, expect)?;
-            u.index.insert_note(note);
+            // Not `u.index.insert_note(note)`: a note that is a meeting note
+            // has a transcript whose words belong in the same search entry,
+            // and only `reindex_note` knows to go and fetch them. See its
+            // doc, and `save_transcript`, for why the two must never drift
+            // apart -- an autosave is exactly the path that used to lose
+            // this.
+            super::meetings::reindex_note(u, note.id);
             Ok(())
         })
     }
@@ -52,7 +58,7 @@ impl Vault {
         self.write(|u| {
             let notes = pick_domain(u.store.as_ref(), Domain::Notes, |s| s.notes())?;
             notes.put_note(note)?;
-            u.index.insert_note(note);
+            super::meetings::reindex_note(u, note.id);
             Ok(())
         })
     }

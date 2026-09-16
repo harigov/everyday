@@ -203,15 +203,20 @@ export let onPalette: (handler: () => void) => void = () => {}
 /**
  * What `meeting-offer` carries. Not a stored record -- see the module doc.
  *
- * `calendarId` and `uid` ride along beside `eventId` for `dismissMeetingOffer`
- * to use: `eventId` is a feed event's own id, not stable across a resync, so
- * a "Never for this meeting" click that lands after one would look up the
- * wrong event, or none. `calendarId` and `uid` are what survives that.
+ * `calendarId`, `uid` and `series` ride along beside `eventId` for
+ * `dismissMeetingOffer` to use: `eventId` is a feed event's own id, not
+ * stable across a resync, so a "Never for this meeting" click that lands
+ * after one would look up the wrong event, or none. `calendarId` and `uid`
+ * are what survives that. `series` is needed too, and separately from
+ * `uid`: a recurring Google or Microsoft event hands back a fresh `uid` for
+ * every occurrence, so without a durable series id of its own, dismissing
+ * one occurrence could only ever skip that one, not the series.
  */
 export interface MeetingOfferPayload {
   eventId: string
   calendarId: string
   uid: string
+  series?: string | null
   title: string
   start: string
   end: string
@@ -598,8 +603,8 @@ export const api = {
   deleteSpeechModel: (id: string) => call('deleteSpeechModel', { id }),
   benchmarkSpeechModel: (id: string) => call('benchmarkSpeechModel', { id }),
 
-  dismissMeetingOffer: (calendarId: string, uid: string, never: boolean) =>
-    call('dismissMeetingOffer', { calendarId, uid, never }),
+  dismissMeetingOffer: (calendarId: string, uid: string, series: string | null, never: boolean) =>
+    call('dismissMeetingOffer', { calendarId, uid, series, never }),
 
   unlock: (password: string) => call('unlock', { password }),
   /**

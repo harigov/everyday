@@ -182,11 +182,20 @@ fn bare_host_token(rest: &str) -> Option<String> {
 ///
 /// Two shapes exist: a feed occurrence's UID ends `@<local start>`
 /// (`ics::materialise`, a `jiff::civil::DateTime`), and a CalDAV occurrence's
-/// ends `#<start>` (`accountcal::caldav`, a `jiff::Timestamp`). Google and
-/// Graph hand back an id that is already unique per occurrence, so there is
-/// no suffix to strip there and this is a no-op for them. Only a suffix that
-/// actually parses as the datetime it claims to be is stripped, so a UID
-/// that merely contains an `@` or a `#` of its own is left alone.
+/// ends `#<start>` (`accountcal::caldav`, a `jiff::Timestamp`). Only a suffix
+/// that actually parses as the datetime it claims to be is stripped, so a
+/// UID that merely contains an `@` or a `#` of its own is left alone.
+///
+/// This is a **fallback**, not the whole answer: Google (`singleEvents=true`)
+/// and Microsoft Graph (`calendarView`) both hand back a `uid` that is
+/// already unique *per occurrence*, with no shared suffix to strip, so this
+/// function alone would only ever skip the one occurrence "never for this
+/// meeting" was pressed on. [`series_key_of`] is what callers with an
+/// `Event` or an `EventRef` in hand should use instead -- it prefers the
+/// durable series id those two sources populate on [`Event::series`], and
+/// falls back to this function exactly when there isn't one, which is
+/// always, for CalDAV and a subscribed feed, because their own `uid`
+/// already carries a stable base this strips down to.
 pub fn series_key(uid: &str) -> String {
     if let Some(idx) = uid.rfind('@') {
         if uid[idx + 1..].parse::<jiff::civil::DateTime>().is_ok() {
@@ -199,6 +208,19 @@ pub fn series_key(uid: &str) -> String {
         }
     }
     uid.to_string()
+}
+
+/// The series key for a `uid`/`series` pair, wherever they came from: an
+/// `Event` (`series_key_of(&event.uid, event.series.as_deref())`), a wire
+/// payload that carries the two loose (an offer, a dismissal), or a test
+/// fixture. `series`, when non-empty, always wins over deriving one from
+/// `uid` -- see [`series_key`]'s own doc for why a derived key is not
+/// enough for every source.
+pub fn series_key_of(uid: &str, series: Option<&str>) -> String {
+    match series {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => series_key(uid),
+    }
 }
 
 #[cfg(test)]
@@ -228,6 +250,7 @@ mod tests {
             attendees: vec!["Bob <bob@example.com>".into()],
             url: String::new(),
             busy: true,
+            series: None,
             updated_at: Timestamp::now(),
         }
     }
@@ -388,5 +411,30 @@ mod tests {
         // stripping if it does not parse as a datetime.
         assert_eq!(series_key("google-event-id-xyz"), "google-event-id-xyz");
         assert_eq!(series_key("mailto:someone@example.com"), "mailto:someone@example.com");
+    }
+
+    #[test]
+    fn series_key_of_prefers_a_carried_series_id_over_deriving_one() {
+        // The whole point: two Google occurrences with different, per-
+        // instance uids but the same `recurringEventId` must resolve to the
+        // same key, so "never for this meeting" on one covers the other.
+        assert_eq!(
+            series_key_of("evt-1_20260916T090000Z", Some("evt-1")),
+            series_key_of("evt-2_20260923T090000Z", Some("evt-1")),
+            "two occurrences of the same series must share a key"
+        );
+    }
+
+    #[test]
+    fn series_key_of_falls_back_to_the_uid_when_there_is_no_series_id() {
+        assert_eq!(
+            series_key_of("abc123@example.com@2026-09-16T09:00:00", None),
+            "abc123@example.com"
+        );
+        assert_eq!(
+            series_key_of("abc123@example.com@2026-09-16T09:00:00", Some("")),
+            "abc123@example.com",
+            "an empty series id is treated as absent, not as the key"
+        );
     }
 }

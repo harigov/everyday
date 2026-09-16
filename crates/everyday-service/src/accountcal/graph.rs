@@ -236,6 +236,17 @@ struct GraphEvent {
     web_link: String,
     #[serde(rename = "@removed")]
     removed: Option<serde_json::Value>,
+    /// Set on every instance of a recurring event, to the id of the series
+    /// master they all expand from -- stable across occurrences, unlike
+    /// `id` itself. Absent on a one-off event. See [`Event::series`]
+    /// (`everyday_core::calendar`) and `detect::series_key`'s own doc.
+    #[serde(rename = "seriesMasterId")]
+    series_master_id: Option<String>,
+    /// The iCalendar UID, present on every event and shared by every
+    /// occurrence of a recurring one -- the fallback when
+    /// `seriesMasterId` is absent.
+    #[serde(rename = "iCalUId")]
+    i_cal_u_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -400,6 +411,7 @@ fn to_event(calendar_id: CalendarId, item: &GraphEvent) -> Option<Event> {
         attendees: item.attendees.iter().map(GraphAttendeeWrap::label).collect(),
         url: item.web_link.clone(),
         busy: !matches!(item.show_as.as_str(), "free" | "workingElsewhere"),
+        series: item.series_master_id.clone().or_else(|| item.i_cal_u_id.clone()),
         updated_at: jiff::Timestamp::now(),
     })
 }
@@ -903,5 +915,64 @@ mod tests {
              Graph reported no @removed at all"
         );
         assert_eq!(after_second[0].uid, "evt-a");
+    }
+
+    // ---- Event::series mapping ----------------------------------------------
+
+    fn bare_graph_event(id: &str) -> GraphEvent {
+        GraphEvent {
+            id: id.to_string(),
+            subject: "Weekly standup".into(),
+            body_preview: String::new(),
+            location: None,
+            start: Some(GraphWhen {
+                date_time: "2026-09-16T09:00:00.0000000".into(),
+                time_zone: "UTC".into(),
+            }),
+            end: Some(GraphWhen {
+                date_time: "2026-09-16T09:30:00.0000000".into(),
+                time_zone: "UTC".into(),
+            }),
+            is_all_day: false,
+            show_as: "busy".into(),
+            is_cancelled: false,
+            organizer: None,
+            attendees: Vec::new(),
+            web_link: String::new(),
+            removed: None,
+            series_master_id: None,
+            i_cal_u_id: None,
+        }
+    }
+
+    /// The finding this guards: `calendarView` mints a fresh `id` per
+    /// occurrence of a recurring event, so two occurrences of the same
+    /// series must still map to the same `Event::series` -- here,
+    /// `seriesMasterId`, which Graph keeps stable across every instance.
+    #[test]
+    fn series_master_id_becomes_the_events_series() {
+        let mut item = bare_graph_event("instance-1");
+        item.series_master_id = Some("master-abc".into());
+        item.i_cal_u_id = Some("040000008200...".into());
+        let event = to_event(CalendarId::new(), &item).unwrap();
+        assert_eq!(event.series.as_deref(), Some("master-abc"), "seriesMasterId wins");
+    }
+
+    /// `iCalUId` is present on every event and is the fallback when
+    /// `seriesMasterId` is absent -- a one-off event still gets a `series`,
+    /// harmlessly identical to its own durable id.
+    #[test]
+    fn i_cal_u_id_is_the_series_when_there_is_no_series_master_id() {
+        let mut item = bare_graph_event("evt-1");
+        item.i_cal_u_id = Some("040000008200...".into());
+        let event = to_event(CalendarId::new(), &item).unwrap();
+        assert_eq!(event.series.as_deref(), Some("040000008200..."));
+    }
+
+    #[test]
+    fn an_event_with_neither_field_has_no_series() {
+        let item = bare_graph_event("evt-1");
+        let event = to_event(CalendarId::new(), &item).unwrap();
+        assert_eq!(event.series, None);
     }
 }

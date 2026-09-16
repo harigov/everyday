@@ -344,12 +344,20 @@ async fn rewrite_meeting_note(
 /// Relabel a speaker, and fold their voice into a voiceprint when the vault
 /// keeps them.
 ///
-/// Also rewrites the note body: every *whole-word* occurrence of the old
-/// label ("Unknown 1", say) becomes the new name. Whole-word rather than a
-/// blind substring replace, because a label like "Sam" is also an ordinary
-/// English word fragment ("Samantha", "Sam's") that must not be mangled by
-/// a careless find-and-replace across a note somebody wrote in their own
-/// words. See [`replace_label`].
+/// Also rewrites the note body, but only the part of it this can rewrite
+/// safely: a generated placeholder ("Unknown 1", say), and only where it
+/// sits in a position that can be told apart from ordinary prose with
+/// certainty -- the details block's own `- **Spoke:**` line, or a turn
+/// attribution such as `"Unknown 1:"` or `"Unknown 1 said"`. A real label
+/// ("Sam", "Priya") or a generic one ("You", "Others") is never rewritten in
+/// the body at all, even in one of those positions: those are ordinary
+/// words as much as they are labels, and a note is prose somebody wrote in
+/// their own words, not a template this command owns. Renaming Sam to
+/// Samir must not turn "Samantha" or "(Sam's)" into nonsense, and renaming
+/// "You" would rewrite the word "you" wherever the model happened to use
+/// it. Whatever this cannot safely reach is left for the offered "Rewrite
+/// summary" to redo properly, with the model looking at the whole note
+/// rather than a pattern match. See [`replace_label`].
 /// Relabelling a speaker changes two things a caller might have open at
 /// once -- the transcript itself, declared by this command's own `change:`
 /// in [`COMMANDS`], and, when a voiceprint was created or updated along the
@@ -421,10 +429,25 @@ async fn name_speaker(svc: Arc<Service>, ctx: Ctx, args: NameSpeaker) -> Command
     Ok(transcript)
 }
 
-/// Find the voiceprint this name/email already names (by email first, then
-/// by name, among non-owner voiceprints of the same embedding model),
-/// fold `centroid` into it, and return its id -- or create one if none
-/// matched.
+/// Find the voiceprint this name/email already names, fold `centroid` into
+/// it, and return its id -- or create one if none matched.
+///
+/// The matching rule, in order, among non-owner voiceprints of the same
+/// embedding model:
+///
+/// - **An email was given: match on email alone**, case-insensitively.
+///   Never on name. Two people can share a name -- "Sam" the account
+///   manager and "Sam" the engineer -- and matching on name whenever an
+///   email happened to also be typed used to merge them into one voiceprint
+///   and overwrite whichever email lost the race, silently renaming a
+///   voice that belonged to someone else.
+/// - **No email was given: match on name**, but only when it cannot mean
+///   two different people -- either exactly one voiceprint has that name at
+///   all, or, among several, exactly one of them has no email on file
+///   already (an anonymous match is preferred over guessing which of
+///   several named, emailed voiceprints was meant). Anything more
+///   ambiguous than that falls through to creating a new voiceprint rather
+///   than risking the wrong one.
 fn fold_named_voice(
     vault: &Vault,
     name: &str,
@@ -433,12 +456,24 @@ fn fold_named_voice(
     model: &str,
 ) -> everyday_core::Result<VoiceprintId> {
     let voiceprints = vault.voiceprints()?;
-    let existing = voiceprints.iter().find(|v| {
-        !v.is_owner
-            && v.model == model
-            && (email.is_some_and(|e| v.email.as_deref() == Some(e))
-                || v.name.eq_ignore_ascii_case(name))
-    });
+    let candidates: Vec<&Voiceprint> =
+        voiceprints.iter().filter(|v| !v.is_owner && v.model == model).collect();
+
+    let existing: Option<&Voiceprint> = if let Some(email) = email {
+        candidates
+            .into_iter()
+            .find(|v| v.email.as_deref().is_some_and(|e| e.eq_ignore_ascii_case(email)))
+    } else {
+        let by_name: Vec<&Voiceprint> =
+            candidates.into_iter().filter(|v| v.name.eq_ignore_ascii_case(name)).collect();
+        if by_name.len() == 1 {
+            Some(by_name[0])
+        } else {
+            let without_email: Vec<&Voiceprint> =
+                by_name.into_iter().filter(|v| v.email.is_none()).collect();
+            if without_email.len() == 1 { Some(without_email[0]) } else { None }
+        }
+    };
 
     match existing {
         Some(found) => {
@@ -470,15 +505,63 @@ fn fold_named_voice(
     }
 }
 
-/// Replace every *whole-word* occurrence of `from` in `text` with `to`.
+/// Is `label` one of the placeholders [`identify`] generates for a voice
+/// nobody has matched -- `"Unknown 1"`, `"Unknown 2"`, and so on -- rather
+/// than a real name or a fixed label like `"You"`/`"Others"`?
+///
+/// The whole reason [`replace_label`] can rewrite anything at all: a
+/// generated placeholder is a string nobody chose and nothing else in a
+/// note would ever legitimately contain, so finding it is unambiguous in a
+/// way that finding "Sam" or "You" never is.
+fn is_generated_placeholder(label: &str) -> bool {
+    label
+        .strip_prefix("Unknown ")
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Does the whole-word match of a placeholder at `text[start..end]` sit
+/// somewhere this can be sure it names a speaker, rather than being part of
+/// a sentence about them?
+///
+/// Two positions qualify, both written by code rather than free prose:
+/// the details block's own `- **Spoke:** Unknown 1, Priya` line, and a
+/// turn attribution such as the transcript's own `"Unknown 1: ..."` or a
+/// summary's `"Unknown 1 said ..."`. Anything else -- "we asked Unknown 1
+/// to lead the review" -- is left alone; a false negative here costs
+/// nothing worse than an unrenamed placeholder, and the offered "Rewrite
+/// summary" catches it properly.
+fn is_attribution_position(text: &str, start: usize, end: usize) -> bool {
+    let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
+    if text[line_start..].starts_with("- **Spoke:**") {
+        return true;
+    }
+    let after = &text[end..];
+    if after.starts_with(':') {
+        return true;
+    }
+    if let Some(rest) = after.strip_prefix(" said")
+        && rest.chars().next().is_none_or(|c| !c.is_alphanumeric())
+    {
+        return true;
+    }
+    false
+}
+
+/// Replace every *whole-word* occurrence of `from` in `text` with `to`, but
+/// only when `from` is a generated placeholder ([`is_generated_placeholder`])
+/// sitting in a position this can identify as naming a speaker
+/// ([`is_attribution_position`]).
 ///
 /// "Whole word" here means the match is not immediately preceded or
-/// followed by an alphanumeric character -- so `"Sam"` matches the label on
-/// its own, in `"Sam:"` or `"(Sam)"`, but not inside `"Samantha"`. `from`
-/// itself may contain a space ("Unknown 1"), which is exactly the case this
-/// exists for; a regex dependency is not worth adding for one function.
+/// followed by an alphanumeric character -- so `"Unknown 1"` matches the
+/// label on its own, in `"Unknown 1:"` or `"(Unknown 1)"`, but not inside
+/// `"Unknown 10"`. `from` itself may contain a space ("Unknown 1"), which is
+/// exactly the case this exists for; a regex dependency is not worth adding
+/// for one function. A real name or a fixed label ("Sam", "You", "Others")
+/// fails the placeholder check and is returned untouched, whatever
+/// position it is in -- see [`name_speaker`]'s own doc for why.
 fn replace_label(text: &str, from: &str, to: &str) -> String {
-    if from.is_empty() {
+    if from.is_empty() || !is_generated_placeholder(from) {
         return text.to_string();
     }
     let mut out = String::with_capacity(text.len());
@@ -488,7 +571,7 @@ fn replace_label(text: &str, from: &str, to: &str) -> String {
             let before_ok = text[..i].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
             let after = i + from.len();
             let after_ok = text[after..].chars().next().is_none_or(|c| !c.is_alphanumeric());
-            if before_ok && after_ok {
+            if before_ok && after_ok && is_attribution_position(text, i, after) {
                 out.push_str(to);
                 i = after;
                 continue;
@@ -717,21 +800,53 @@ mod tests {
     }
 
     #[test]
-    fn replace_label_only_matches_whole_words() {
-        assert_eq!(replace_label("Sam said hi", "Sam", "Samir"), "Samir said hi");
-        assert_eq!(replace_label("Samantha said hi", "Sam", "Samir"), "Samantha said hi");
-        assert_eq!(replace_label("(Sam)", "Sam", "Priya"), "(Priya)");
-        assert_eq!(replace_label("Unknown 1: hello", "Unknown 1", "Priya"), "Priya: hello");
+    fn replace_label_never_touches_a_real_or_fixed_label() {
+        // "Sam" is a real name, and "You"/"Others" are the fixed labels the
+        // pipeline itself writes -- none of them is a generated
+        // placeholder, so the body must come back exactly as it went in,
+        // whatever position the word is in.
+        assert_eq!(replace_label("Sam said hi", "Sam", "Samir"), "Sam said hi");
+        assert_eq!(replace_label("Sam: hi", "Sam", "Samir"), "Sam: hi");
+        assert_eq!(replace_label("(Sam)", "Sam", "Priya"), "(Sam)");
+        assert_eq!(replace_label("You said hi", "You", "Priya"), "You said hi");
         assert_eq!(
-            replace_label("Unknown 10 said hi to Unknown 1", "Unknown 1", "Priya"),
-            "Unknown 10 said hi to Priya",
+            replace_label("- **Spoke:** You, Others", "Others", "Priya"),
+            "- **Spoke:** You, Others"
+        );
+    }
+
+    #[test]
+    fn replace_label_rewrites_a_placeholder_only_where_it_names_a_speaker() {
+        assert_eq!(replace_label("Unknown 1: hello", "Unknown 1", "Priya"), "Priya: hello");
+        assert_eq!(replace_label("Unknown 1 said hello", "Unknown 1", "Priya"), "Priya said hello");
+        assert_eq!(
+            replace_label("- **Spoke:** Unknown 1, Sam", "Unknown 1", "Priya"),
+            "- **Spoke:** Priya, Sam"
+        );
+        // Mentioned in the middle of a sentence, with neither a colon nor
+        // "said" right after it: not a position this can tell apart from
+        // ordinary prose, so it is left for "Rewrite summary" instead.
+        assert_eq!(
+            replace_label("We asked Unknown 1 to lead the review", "Unknown 1", "Priya"),
+            "We asked Unknown 1 to lead the review"
+        );
+    }
+
+    #[test]
+    fn replace_label_does_not_clip_a_longer_placeholder_sharing_a_prefix() {
+        assert_eq!(
+            replace_label("Unknown 10 said hi to Unknown 1: hi", "Unknown 1", "Priya"),
+            "Unknown 10 said hi to Priya: hi",
             "must not clip a longer label sharing the same prefix"
         );
     }
 
     #[test]
     fn replace_label_handles_repeats_and_an_empty_label() {
-        assert_eq!(replace_label("A A A", "A", "B"), "B B B");
+        assert_eq!(
+            replace_label("Unknown 1: a. Unknown 1: b. Unknown 1: c.", "Unknown 1", "Priya"),
+            "Priya: a. Priya: b. Priya: c."
+        );
         assert_eq!(replace_label("hello", "", "x"), "hello");
     }
 
@@ -854,5 +969,122 @@ mod tests {
 
         let changes = sink.changes.lock().unwrap();
         assert!(!changes.iter().any(|c| c.kind == crate::events::Kind::Voiceprint));
+    }
+
+    // ---- fold_named_voice's email-vs-name matching rule ---------------------
+
+    fn voiceprint_named(name: &str, email: Option<&str>) -> Voiceprint {
+        let now = Timestamp::now();
+        Voiceprint {
+            id: VoiceprintId::new(),
+            name: name.to_string(),
+            email: email.map(str::to_string),
+            is_owner: false,
+            model: "test-model".into(),
+            centroids: vec![vec![1.0, 0.0]],
+            samples: 1,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Two people can share a name. Giving `name_speaker` an email must
+    /// match only the voiceprint with that email, never fall through to a
+    /// same-named one that belongs to somebody else -- the regression this
+    /// guards is `fold_named_voice` matching on name whenever the `||`
+    /// let a wrong email through, merging the two and overwriting the
+    /// email the other one already had.
+    #[tokio::test]
+    async fn naming_a_speaker_with_an_email_never_merges_into_a_same_named_stranger() {
+        let (_dir, svc, vault) = test_service();
+        let mut settings = vault.meeting_settings().unwrap();
+        settings.voiceprints = true;
+        vault.save_meeting_settings(&settings).unwrap();
+
+        let sam_sales = voiceprint_named("Sam", Some("sam.sales@example.com"));
+        let sam_eng = voiceprint_named("Sam", Some("sam.eng@example.com"));
+        vault.save_voiceprint(&sam_sales).unwrap();
+        vault.save_voiceprint(&sam_eng).unwrap();
+
+        let note_id = NoteId::new();
+        let transcript = transcript_with_unnamed_speaker(note_id);
+        vault.save_transcript(&transcript).unwrap();
+
+        let args = NameSpeaker {
+            note_id,
+            speaker_key: 0,
+            name: "Sam".into(),
+            email: Some("sam.eng@example.com".into()),
+        };
+        name_speaker(svc, Ctx::local(), args).await.unwrap();
+
+        let after_sales = vault.voiceprint(sam_sales.id).unwrap();
+        assert_eq!(
+            after_sales.email.as_deref(),
+            Some("sam.sales@example.com"),
+            "the stranger who merely shares a name must be untouched"
+        );
+        assert_eq!(after_sales.samples, 1, "and never folded into");
+
+        let after_eng = vault.voiceprint(sam_eng.id).unwrap();
+        assert_eq!(after_eng.samples, 2, "the matching email is the one folded into");
+
+        let all = vault.voiceprints().unwrap();
+        assert_eq!(all.len(), 2, "no third voiceprint created for an unambiguous email match");
+    }
+
+    /// No email given, and the name matches more than one voiceprint that
+    /// each already has an email on file: too ambiguous to guess between
+    /// them, so a new voiceprint is created rather than merging into
+    /// either.
+    #[tokio::test]
+    async fn naming_a_speaker_by_name_alone_is_not_guessed_when_ambiguous() {
+        let (_dir, svc, vault) = test_service();
+        let mut settings = vault.meeting_settings().unwrap();
+        settings.voiceprints = true;
+        vault.save_meeting_settings(&settings).unwrap();
+
+        let sam_sales = voiceprint_named("Sam", Some("sam.sales@example.com"));
+        let sam_eng = voiceprint_named("Sam", Some("sam.eng@example.com"));
+        vault.save_voiceprint(&sam_sales).unwrap();
+        vault.save_voiceprint(&sam_eng).unwrap();
+
+        let note_id = NoteId::new();
+        let transcript = transcript_with_unnamed_speaker(note_id);
+        vault.save_transcript(&transcript).unwrap();
+
+        let args = NameSpeaker { note_id, speaker_key: 0, name: "Sam".into(), email: None };
+        name_speaker(svc, Ctx::local(), args).await.unwrap();
+
+        assert_eq!(vault.voiceprint(sam_sales.id).unwrap().samples, 1, "left alone");
+        assert_eq!(vault.voiceprint(sam_eng.id).unwrap().samples, 1, "left alone");
+        assert_eq!(
+            vault.voiceprints().unwrap().len(),
+            3,
+            "an ambiguous name match creates a new voiceprint rather than guessing"
+        );
+    }
+
+    /// No email given and exactly one voiceprint has that name: safe to
+    /// match by name alone, same as before this finding.
+    #[tokio::test]
+    async fn naming_a_speaker_by_name_alone_matches_a_single_candidate() {
+        let (_dir, svc, vault) = test_service();
+        let mut settings = vault.meeting_settings().unwrap();
+        settings.voiceprints = true;
+        vault.save_meeting_settings(&settings).unwrap();
+
+        let priya = voiceprint_named("Priya", None);
+        vault.save_voiceprint(&priya).unwrap();
+
+        let note_id = NoteId::new();
+        let transcript = transcript_with_unnamed_speaker(note_id);
+        vault.save_transcript(&transcript).unwrap();
+
+        let args = NameSpeaker { note_id, speaker_key: 0, name: "Priya".into(), email: None };
+        name_speaker(svc, Ctx::local(), args).await.unwrap();
+
+        assert_eq!(vault.voiceprint(priya.id).unwrap().samples, 2, "the only candidate is used");
+        assert_eq!(vault.voiceprints().unwrap().len(), 1, "no new voiceprint created");
     }
 }
