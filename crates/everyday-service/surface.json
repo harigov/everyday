@@ -222,6 +222,23 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "benchmark_speech_model",
+      "orScope": null,
+      "returns": "ModelBenchmark",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -246,6 +263,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "accounts",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "cancel_speech_model_download",
+      "orScope": null,
+      "returns": "void",
+      "scope": "meetings",
       "sensitive": false,
       "streams": false
     },
@@ -683,6 +720,26 @@
         {
           "name": "id",
           "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_speech_model",
+      "orScope": null,
+      "returns": "void",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "TaskId"
         }
       ],
@@ -735,6 +792,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "download_speech_model",
+      "orScope": null,
+      "returns": "void",
+      "scope": "meetings",
       "sensitive": false,
       "streams": false
     },
@@ -3600,6 +3677,17 @@
       "orScope": null,
       "returns": "Op[]",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "speech_models",
+      "orScope": null,
+      "returns": "SpeechModelInfo[]",
+      "scope": "meetings",
       "sensitive": false,
       "streams": false
     },

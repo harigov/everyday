@@ -10,7 +10,10 @@ authors.workspace = true
 [dependencies]
 everyday-core.workspace = true
 everyday-mcp.workspace = true
-everyday-service.workspace = true
+# `speech`: local VAD, recognition, diarisation and speaker embeddings
+# through sherpa-onnx -- a paired server still runs the pipeline. See
+# docs/plans/meeting-notes.md and `everyday-service`'s own feature doc.
+everyday-service = { workspace = true, features = ["speech"] }
 everyday-vault.workspace = true
 serde.workspace = true
 serde_json.workspace = true

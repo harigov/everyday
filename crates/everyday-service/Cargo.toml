@@ -12,7 +12,7 @@ authors.workspace = true
 # sherpa-onnx, which links a native library. On in the desktop app and the
 # server; off for the CLI and a plain `cargo test`. See
 # docs/plans/meeting-notes.md.
-speech = []
+speech = ["dep:sherpa-onnx"]
 
 [dependencies]
 everyday-core.workspace = true
@@ -123,6 +123,44 @@ roxmltree = "0.21"
 calcard = { version = "=0.3.13", default-features = false }
 chrono = "0.4"
 
+# ── Local speech (`meeting::models`, `meeting::speech`, phase 4 of
+# docs/plans/meeting-notes.md) ──────────────────────────────────────────────
+#
+# `meeting::models` is deliberately not behind the `speech` feature -- a
+# build without local recognition still has to answer "what would this need"
+# -- so `directories`, `sha2`, `tar` and `bzip2` are plain dependencies, not
+# optional ones. `directories` matches the pin `everyday-vault` already
+# carries for `ProjectDirs::from("app", "Every Day", "EveryDay")`; this
+# crate cannot depend on `everyday-vault` for it without a cycle risk this
+# phase does not need to take on, so `models_dir` is its own call of the same
+# constructor rather than a re-export.
+directories = "6"
+# The catalogue in `meeting::models` pins every downloadable model by
+# SHA-256, checked once after each download and recorded in a marker file --
+# see that module's doc. `blake3`, already in the tree, is *this*
+# application's own hash for its own records; a model's checksum is decided
+# by whoever publishes the model, and every sherpa-onnx release, and every
+# ASR model page anywhere, publishes SHA-256.
+sha2 = "0.10"
+# The pyannote segmentation model, and both local recognisers, are published
+# as a `.tar.bz2` alongside files this application does not want (Python
+# export scripts, licence text, test wavs) -- see `meeting::models`'
+# `Source::Archive`. `tar` is pure Rust already; `bzip2`'s default feature as
+# of 0.6 is `libbz2-rs-sys`, a pure-Rust reimplementation, so decompressing
+# an archive needs no C toolchain and no system `libbz2` either.
+tar = "0.4"
+bzip2 = "0.6"
+# VAD, local recognition, diarisation and speaker embeddings, all through one
+# native library -- see docs/plans/meeting-notes.md's "The libraries". Off by
+# default; the `speech` feature above turns it on. Pinned to the same minor
+# version documented in the plan; `default-features` stay on, which is the
+# crate's own "static" -- it links sherpa-onnx's static libraries rather than
+# looking for a shared one on the machine, and downloads a prebuilt archive
+# at build time unless `SHERPA_ONNX_LIB_DIR` or `SHERPA_ONNX_ARCHIVE_DIR` is
+# set. See `.github/workflows/check.yml` for how CI caches that archive
+# rather than re-downloading it every run.
+sherpa-onnx = { version = "1.13", optional = true }
+
 [dev-dependencies]
 base64 = "0.22"
 tempfile = "3"
@@ -151,3 +189,9 @@ everyday-vault = { workspace = true }
 # here is what makes that call available to a dev-only binary that does not
 # depend on `everyday-server`.
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+# `tests/speech_real.rs` (feature `speech`, `#[ignore]`, gated further by
+# `EVERYDAY_TEST_SPEECH=1`) reads the piper-synthesised WAV fixtures it is
+# handed real speech through. `hound` is the plan's own pick for WAV
+# (`docs/plans/meeting-notes.md`'s "The libraries") -- a test-only use here,
+# ahead of whichever module ends up depending on it for real.
+hound = "3"
