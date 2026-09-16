@@ -84,6 +84,37 @@ pub struct Device {
     pub scopes: Vec<Scope>,
     pub created: jiff::Timestamp,
     pub last_seen: jiff::Timestamp,
+    /// Whether this row was minted for an MCP client (`mcp::issue_token`,
+    /// which wraps [`Registry::issue`]) rather than an ordinary pairing
+    /// exchange ([`Registry::pair`]).
+    ///
+    /// This is what [`Registry::authenticate`] now bases a call's identity
+    /// on, instead of trusting whatever a request body claims about itself
+    /// -- see `everyday_service::domains::meta::WireCaller`'s module doc for
+    /// the bypass that relied on the body being the only source of truth.
+    /// An MCP-issued device must never be indistinguishable from the
+    /// vault's owner acting directly, no matter what a client sends.
+    ///
+    /// `#[serde(default = "default_mcp_unmarked")]`, not
+    /// `#[serde(default)]`: a `devices.json` written before this field
+    /// existed has no way to say which of its rows were MCP tokens, and the
+    /// two directions of getting that wrong are not equally bad. Guessing
+    /// "not MCP" for a row that actually was one silently restores exactly
+    /// the bypass this field exists to close, the moment this binary is
+    /// upgraded under an existing vault. Guessing "MCP" for a row that
+    /// was an ordinary paired device only narrows what it can do through
+    /// `run_tool`/`list_tools` -- the two commands this matters for -- until
+    /// it pairs again, which is inconvenient but never unsafe. So an
+    /// unmarked, pre-existing device is treated as MCP: fail closed rather
+    /// than fail open.
+    #[serde(default = "default_mcp_unmarked")]
+    pub mcp: bool,
+}
+
+/// See [`Device::mcp`]'s doc for why an unmarked row defaults to `true`
+/// rather than `false`.
+fn default_mcp_unmarked() -> bool {
+    true
 }
 
 impl Device {
@@ -364,7 +395,13 @@ impl Registry {
         // meant "everything", and a caller minting a token deliberately must
         // not have an empty list quietly widened the same way.
         let scopes = if scopes.iter().all(|s| !grantable(*s)) { vec![Scope::All] } else { scopes };
-        self.issue(name, scopes)
+        // `mcp: false` -- this is the ordinary pairing exchange, a phone or
+        // another desktop scanning a code shown on this machine, never an
+        // MCP client (see [`issue_mcp`]'s own doc for that path). Getting
+        // this wrong here would be the unsafe direction: a device marked
+        // `mcp: false` is trusted, on a call with no `caller` claimed, to be
+        // the vault's owner acting directly.
+        self.issue(name, scopes, false)
     }
 
     /// Mint a token for a client that has no code to present.
@@ -382,7 +419,22 @@ impl Registry {
     /// who was told a code. This is called from the desktop's own settings
     /// pane, on the machine holding the vault, where the person asking is the
     /// person at the keyboard.
-    pub fn issue(&self, name: &str, scopes: Vec<Scope>) -> CommandResult<(String, String)> {
+    ///
+    /// `mcp` marks the resulting row for [`Device::mcp`] -- `true` from
+    /// [`crate::mcp::issue_token`], the only caller that mints a token for a
+    /// client with no pairing code, `false` from [`Registry::pair`] above,
+    /// which is every other kind of client this application has. This is
+    /// the one fact about a device [`Registry::authenticate`] cannot afford
+    /// to get from anywhere but here: seeing it decided at the point of
+    /// minting, rather than inferred later from how a request happens to be
+    /// shaped, is what makes it something a request cannot talk its way out
+    /// of.
+    pub fn issue(
+        &self,
+        name: &str,
+        scopes: Vec<Scope>,
+        mcp: bool,
+    ) -> CommandResult<(String, String)> {
         let scopes: Vec<Scope> = scopes.into_iter().filter(|s| grantable(*s)).collect();
 
         // Refused rather than defaulted, and this is the whole reason the
@@ -409,6 +461,7 @@ impl Registry {
             scopes,
             created: now,
             last_seen: now,
+            mcp,
         };
         let id = device.id.clone();
         let mut devices = lock(&self.devices);
@@ -451,8 +504,20 @@ impl Registry {
             let worth_writing =
                 now.as_second() - device.last_seen.as_second() >= PERSIST_LAST_SEEN_EVERY;
             device.last_seen = now;
+            // The prefix, not `device.id` bare, is what makes this device's
+            // authenticated identity impossible for a request body to
+            // fake or omit its way around: `everyday_service::domains::
+            // meta::run_tool` derives whether a call may act as the vault's
+            // owner from this exact string, not from anything the request
+            // sent. See [`Device::mcp`] and
+            // `everyday_core::agent::tools::MCP_DEVICE_ID_PREFIX`.
+            let id = if device.mcp {
+                format!("{}{}", everyday_core::agent::tools::MCP_DEVICE_ID_PREFIX, device.id)
+            } else {
+                device.id.clone()
+            };
             let ctx = Ctx {
-                caller: Caller::Device(device.id.clone()),
+                caller: Caller::Device(id),
                 scopes: device.scopes.clone(),
                 proved_at: None,
                 request_id: None,
@@ -685,10 +750,16 @@ mod tests {
         // second screen to show one on -- but the same list, so revoking it
         // is the same act as revoking a paired phone.
         let (registry, _dir) = registry();
-        let (token, id) = registry.issue("Claude Code", vec![Scope::Tasks]).unwrap();
+        let (token, id) = registry.issue("Claude Code", vec![Scope::Tasks], true).unwrap();
 
         let ctx = registry.authenticate(&token).unwrap();
-        assert_eq!(ctx.caller, Caller::Device(id.clone()));
+        // Prefixed, not the bare id: this is exactly the row `mcp: true`
+        // exists to mark, and `Registry::authenticate` says so in the
+        // `Caller` it hands back -- see `Device::mcp`'s own doc.
+        assert_eq!(
+            ctx.caller,
+            Caller::Device(format!("{}{id}", everyday_core::agent::tools::MCP_DEVICE_ID_PREFIX))
+        );
         assert!(ctx.holds(Scope::Tasks));
         assert!(!ctx.holds(Scope::Journals), "an issued token must not widen to everything");
 
@@ -700,7 +771,7 @@ mod tests {
     #[test]
     fn issuing_a_token_strips_admin_like_pairing_does() {
         let (registry, _dir) = registry();
-        let (token, _) = registry.issue("Agent", vec![Scope::Admin, Scope::Notes]).unwrap();
+        let (token, _) = registry.issue("Agent", vec![Scope::Admin, Scope::Notes], true).unwrap();
         let ctx = registry.authenticate(&token).unwrap();
         assert!(!ctx.holds(Scope::Admin));
         assert!(ctx.holds(Scope::Notes));
@@ -716,7 +787,7 @@ mod tests {
         // "issue me the least you can" into a token that reads the diary.
         for asked in [vec![], vec![Scope::Admin], vec![Scope::Any], vec![Scope::Admin, Scope::Any]]
         {
-            let err = registry.issue("Agent", asked.clone()).unwrap_err();
+            let err = registry.issue("Agent", asked.clone(), true).unwrap_err();
             assert_eq!(err.code, "invalid", "issue({asked:?}) should refuse, not widen");
         }
 

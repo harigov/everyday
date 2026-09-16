@@ -26,8 +26,8 @@ use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use everyday_core::id::{AccountId, ThreadId};
-use everyday_core::mail::{Address, Thread};
-use everyday_core::{MailQuery, SearchCursor};
+use everyday_core::mail::{Address, Mailbox, Thread};
+use everyday_core::{Clause, MailQuery, QueryGroup, QueryOp, SearchCursor, Vault};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +76,114 @@ fn decode_cursor(raw: &str) -> Option<SearchCursor> {
     Some(SearchCursor { date, message_key: key.to_string() })
 }
 
+/// Resolve every `in:<name>` clause [`MailQuery::parse`] produced to the
+/// mailbox id(s) actually indexed under it.
+///
+/// `everyday-mailindex`'s query translation matches `Op::In` against the
+/// indexed `mailboxes` field as a raw term, and what gets indexed there
+/// (`crate::mailsync::passes::mail_doc`, in the sync passes) is a bare
+/// mailbox UUID -- never the folder name or role a person types. Left
+/// unresolved, `in:inbox` builds a query for the literal term `"inbox"`,
+/// which nothing was ever indexed as, and silently matches nothing.
+///
+/// Resolution is scoped to `query.accounts` -- the same accounts the search
+/// itself is restricted to, or every account `vault` has when
+/// unrestricted, matching `search_mail`'s own "every thread this caller may
+/// read" default -- and matches a name against either a mailbox's
+/// [`everyday_core::mail::MailboxRole`] (`"inbox"`, `"archive"`, ...) or its
+/// literal `remote_name`, lowercased, so both `in:inbox` and a custom
+/// folder or Gmail label's own name work.
+///
+/// A name matching more than one mailbox -- the same role, or the same
+/// folder name, across several accounts -- means a positive `in:` clause
+/// fans its whole group out into one OR'd copy per match, so `in:inbox`
+/// reaches every account's own inbox rather than only the first one this
+/// happened to find. A negated `-in:` clause instead grows in place, within
+/// the same group, into one negated clause per match: "not in any of them"
+/// is already what several `MustNot` clauses ANDed together mean, so there
+/// is nothing to duplicate. A name matching nothing at all is left as a
+/// literal string nothing was ever indexed under -- exactly today's
+/// behaviour for a name nobody recognises, just no longer wrong for one
+/// that does.
+///
+/// A message is only ever indexed under the *one* mailbox
+/// `mail_doc` was called with when it was last (re-)indexed, never every
+/// mailbox it is actually filed under -- see that function's own docs. On
+/// Gmail, where one message commonly carries several labels, this means
+/// `in:<label>` can still miss a message truly filed there if the copy the
+/// index kept happened to be indexed under a different one of its labels.
+/// Closing that needs the indexer itself to merge rather than replace on
+/// re-index, which is `crate::mailsync::passes`' own file, not this one's.
+fn resolve_mailbox_names(vault: &Vault, query: MailQuery) -> MailQuery {
+    let accounts: Vec<AccountId> = if query.accounts.is_empty() {
+        vault.accounts().map(|a| a.into_iter().map(|acc| acc.id).collect()).unwrap_or_default()
+    } else {
+        query.accounts.iter().filter_map(|s| s.parse().ok()).collect()
+    };
+    let mailboxes: Vec<Mailbox> =
+        accounts.iter().flat_map(|&id| vault.mailboxes(id).unwrap_or_default()).collect();
+
+    let resolve = |name: &str| -> Vec<String> {
+        let matches: Vec<String> = mailboxes
+            .iter()
+            .filter(|mb| mb.role.as_str() == name || mb.remote_name.to_lowercase() == name)
+            .map(|mb| mb.id.to_string())
+            .collect();
+        if matches.is_empty() { vec![name.to_string()] } else { matches }
+    };
+
+    let mut groups = Vec::with_capacity(query.any_of.len());
+    for group in query.any_of {
+        // Every clause in this group, fanned out into however many copies
+        // a positive `in:` match with more than one mailbox needs -- one
+        // list of clauses per eventual OR'd group; starts as a single
+        // empty one and only ever grows past that when such a clause is
+        // actually seen.
+        let mut expansions: Vec<Vec<Clause>> = vec![Vec::new()];
+        for clause in group.clauses {
+            match &clause.op {
+                QueryOp::In(name) => {
+                    let ids = resolve(name);
+                    if clause.negate {
+                        for expansion in &mut expansions {
+                            for id in &ids {
+                                expansion
+                                    .push(Clause { op: QueryOp::In(id.clone()), negate: true });
+                            }
+                        }
+                    } else if ids.len() <= 1 {
+                        let id = ids.into_iter().next().unwrap_or_else(|| name.clone());
+                        for expansion in &mut expansions {
+                            expansion.push(Clause { op: QueryOp::In(id.clone()), negate: false });
+                        }
+                    } else {
+                        expansions = ids
+                            .iter()
+                            .flat_map(|id| {
+                                expansions.iter().map(move |base| {
+                                    let mut next = base.clone();
+                                    next.push(Clause {
+                                        op: QueryOp::In(id.clone()),
+                                        negate: false,
+                                    });
+                                    next
+                                })
+                            })
+                            .collect();
+                    }
+                }
+                _ => {
+                    for expansion in &mut expansions {
+                        expansion.push(clause.clone());
+                    }
+                }
+            }
+        }
+        groups.extend(expansions.into_iter().map(|clauses| QueryGroup { clauses }));
+    }
+    MailQuery { any_of: groups, accounts: query.accounts }
+}
+
 /// Parse `args.query` in the interface's own syntax, search the sealed
 /// index, and load the thread each distinct result belongs to -- first hit
 /// per thread, in the order the index already ranked them, so two hits in
@@ -94,6 +202,7 @@ async fn search_mail(
     if let Some(ids) = &args.account_ids {
         query.accounts = ids.iter().map(ToString::to_string).collect();
     }
+    let query = resolve_mailbox_names(&vault, query);
     let cursor = args.cursor.as_deref().and_then(decode_cursor);
     let limit = args.limit.max(1) as usize;
 

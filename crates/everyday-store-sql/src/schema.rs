@@ -941,6 +941,32 @@ fn v9(d: Dialect) -> Vec<String> {
         // `attachment_blob_refs` would otherwise have to join `mailboxes`
         // to find.
         "CREATE INDEX IF NOT EXISTS mail_messages_by_account ON mail_messages (account_id)".into(),
+        // `remap_packs`' own lookup, once per moved frame during
+        // compaction: `WHERE account_id = ? AND pack_id = ? AND
+        // pack_offset = ? AND pack_len = ?`. Without this, only
+        // `mail_messages_by_account` narrows it at all, so compacting one
+        // pack -- tens of thousands of remapped frames -- means that many
+        // full scans of the account's every message, inside the one write
+        // transaction that also holds the vault's single writer. Version 9
+        // is unreleased (see this file's own module docs), so this lands in
+        // the same step that created the table rather than as a later
+        // migration.
+        "CREATE INDEX IF NOT EXISTS mail_messages_by_pack \
+         ON mail_messages (account_id, pack_id, pack_offset)"
+            .into(),
+        // `pending_bodies`' own filter, once per sync pass per mailbox:
+        // `WHERE mailbox membership AND pack_len = 0`, ordered by
+        // `date_us`. A *partial* index -- SQLite and Postgres both support
+        // one -- rather than a plain one on `pack_len` alone: a settled
+        // mailbox has zero pending bodies essentially always, so an index
+        // that only ever contains a pending message's row lets that common
+        // case cost nothing at all, instead of the `pack_len = 0` filter
+        // having to visit and reject every settled message in the mailbox
+        // (and sort whatever survived into a temp B-tree for `ORDER BY
+        // date_us`) on every single poll.
+        "CREATE INDEX IF NOT EXISTS mail_messages_pending_bodies \
+         ON mail_messages (date_us) WHERE pack_len = 0"
+            .into(),
         format!(
             "CREATE TABLE IF NOT EXISTS message_mailboxes (
                  message_id  TEXT NOT NULL,

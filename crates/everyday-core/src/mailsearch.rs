@@ -233,6 +233,27 @@ pub trait MailSearch: Send + Sync {
     /// is a derived structure, never the only copy of anything, so losing
     /// it is an inconvenience, not data loss.
     fn rebuild_needed(&self) -> bool;
+
+    /// Wipe this index down to nothing on disk and reopen it fresh and
+    /// empty, ready for a caller to [`MailSearch::index`] a full rebuild
+    /// into and [`MailSearch::commit`] it.
+    ///
+    /// This is the only way back from [`MailSearch::rebuild_needed`]
+    /// returning `true`. `index` and `commit` cannot heal a dead index by
+    /// writing into it — there is nothing on disk for them to write into in
+    /// the first place, which is exactly what made `rebuild_needed` answer
+    /// `true` — so a caller driving a rebuild (`rebuild_mail_index` in
+    /// `everyday_service::domains::mailsync`) must call this first whenever
+    /// that is the case, before indexing a single document.
+    ///
+    /// Also safe to call on a perfectly healthy index — it still ends empty
+    /// and freshly opened either way — but a caller rebuilding only *some*
+    /// accounts should not reach for this unconditionally: every account's
+    /// documents are gone once this returns, not only the ones about to be
+    /// re-indexed, so calling it only when [`MailSearch::rebuild_needed`]
+    /// is actually `true` is what keeps a one-account rebuild from erasing
+    /// every other account's search results along with it.
+    fn rebuild_empty(&self) -> Result<()>;
 }
 
 // ---------------------------------------------------------------------
@@ -549,7 +570,31 @@ fn parse_relative_date(value: &str) -> Option<DateBound> {
         return None;
     }
     let amount: i64 = digits.parse().ok()?;
-    Some(DateBound::Relative { amount, unit })
+    Some(DateBound::Relative { amount: clamp_relative_amount(amount, unit), unit })
+}
+
+/// Clamp `amount` to what jiff's `Span` can hold for `unit` without
+/// panicking.
+///
+/// `Span::days`/`months`/`years` (jiff is pinned at 0.2.35 -- see
+/// `Cargo.toml`) panic outside roughly ±7,304,484 days, ±239,976 months or
+/// ±19,998 years (see each method's own doc comment), and this crate builds
+/// with `panic = "abort"` in release, so any amount outside that range would
+/// kill the whole process the moment `everyday-mailindex` resolved it — not
+/// a hypothetical typo, since the search tool's schema advertises exactly
+/// this syntax to a model, which can and does try `older_than:10000000d`.
+/// `MailQuery::parse` is documented never to fail, so the fix belongs here,
+/// at parse time, rather than as a `Result` threaded through every caller:
+/// a query for "older than 20,000 years" and one for "older than a billion
+/// years" mean the same thing in practice -- everything -- so clamping loses
+/// nothing a person typing the query actually wanted.
+fn clamp_relative_amount(amount: i64, unit: RelUnit) -> i64 {
+    let bound: i64 = match unit {
+        RelUnit::Days => 7_300_000,
+        RelUnit::Months => 239_000,
+        RelUnit::Years => 19_990,
+    };
+    amount.clamp(-bound, bound)
 }
 
 #[cfg(test)]
@@ -752,6 +797,42 @@ mod tests {
 
     fn parse_relative_date_for_test(s: &str) -> Option<DateBound> {
         super::parse_relative_date(s)
+    }
+
+    /// Regression for a process-killing panic in `everyday-mailindex`:
+    /// `Span::days`/`months`/`years` (jiff 0.2.35) panic on an amount this
+    /// large, and `digits.parse::<i64>()` here never used to range-check
+    /// its result before building a `DateBound::Relative` with it.
+    /// `MailQuery::parse` is documented never to fail, so this crate must
+    /// clamp before the value ever reaches jiff.
+    #[test]
+    fn a_huge_relative_amount_in_every_unit_is_clamped_not_passed_through() {
+        for (suffix, unit) in [("d", RelUnit::Days), ("m", RelUnit::Months), ("y", RelUnit::Years)]
+        {
+            let parsed = parse_relative_date_for_test(&format!("10000000000{suffix}"));
+            let Some(DateBound::Relative { amount, unit: parsed_unit }) = parsed else {
+                panic!("expected a relative bound for suffix {suffix:?}, got {parsed:?}");
+            };
+            assert_eq!(parsed_unit, unit);
+            assert!(
+                amount.abs() < 10_000_000_000,
+                "an out-of-range amount must be clamped down, not passed through as-is"
+            );
+        }
+    }
+
+    #[test]
+    fn i64_max_and_min_are_clamped_to_finite_amounts() {
+        assert_eq!(clamp_relative_amount(i64::MAX, RelUnit::Days), 7_300_000);
+        assert_eq!(clamp_relative_amount(i64::MIN, RelUnit::Days), -7_300_000);
+        assert_eq!(clamp_relative_amount(i64::MAX, RelUnit::Months), 239_000);
+        assert_eq!(clamp_relative_amount(i64::MAX, RelUnit::Years), 19_990);
+    }
+
+    #[test]
+    fn an_ordinary_amount_is_left_exactly_as_parsed() {
+        assert_eq!(clamp_relative_amount(5, RelUnit::Days), 5);
+        assert_eq!(clamp_relative_amount(-3, RelUnit::Months), -3);
     }
 
     #[test]

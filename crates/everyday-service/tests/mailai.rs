@@ -21,7 +21,7 @@ use everyday_core::mail::{
     MessageFlags, Origin,
 };
 use everyday_core::packstore::PackRef;
-use everyday_core::store::mail::IngestMessage;
+use everyday_core::store::mail::{IngestMessage, ThreadFilter};
 use everyday_service::Service;
 use jiff::Timestamp;
 
@@ -30,6 +30,18 @@ use jiff::Timestamp;
 struct FakeModel {
     endpoint: String,
     _shutdown: tokio::sync::watch::Sender<bool>,
+    /// Every connection this model accepted -- one per `quick::run_prompt`
+    /// call -- for the tests that need to know not just *what* the model
+    /// was told but *how many times* it was ever asked at all (findings 4
+    /// and 5: a real, paid model call is exactly the thing the per-minute
+    /// budget exists to bound).
+    calls: Arc<std::sync::atomic::AtomicU32>,
+}
+
+impl FakeModel {
+    fn call_count(&self) -> u32 {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 /// A model that answers every connection it accepts with a tool call to
@@ -40,6 +52,8 @@ async fn fake_model(arguments_json: String) -> FakeModel {
     let port = listener.local_addr().unwrap().port();
     let (tx, mut rx) = tokio::sync::watch::channel(false);
     let arguments_json = Arc::new(arguments_json);
+    let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let calls_for_task = calls.clone();
 
     tokio::spawn(async move {
         loop {
@@ -49,6 +63,7 @@ async fn fake_model(arguments_json: String) -> FakeModel {
             };
             let Ok((mut socket, _)) = accepted else { break };
             let arguments_json = arguments_json.clone();
+            calls_for_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             tokio::spawn(async move {
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
                 let mut buf = vec![0u8; 64 * 1024];
@@ -64,7 +79,7 @@ async fn fake_model(arguments_json: String) -> FakeModel {
         }
     });
 
-    FakeModel { endpoint: format!("http://127.0.0.1:{port}/v1"), _shutdown: tx }
+    FakeModel { endpoint: format!("http://127.0.0.1:{port}/v1"), _shutdown: tx, calls }
 }
 
 /// A single, whole Chat Completions JSON response -- not the streamed
@@ -390,6 +405,15 @@ async fn categorize_tick_reasks_a_thread_once_a_new_message_arrives() {
 /// `threads_in_category` query `categorize_account` itself calls, does
 /// reach the older thread -- exactly what the *next* tick, whenever its own
 /// budget allows, would see.
+///
+/// Seeded to [`mailai::CATEGORIZE_PAGE`] rather than
+/// `Service::MAIL_CATEGORIZE_PER_MINUTE`: since the fix for finding 5 (one
+/// account's tick could spend the whole per-minute budget on a guess at its
+/// page size, starving every account after it), `categorize_account` reads
+/// a fixed-size page independent of the budget and only spends the budget
+/// on however many of that page turn out to need asking -- see that
+/// function's own comment. The page this test must overflow to prove
+/// anything is therefore the read's own cap, not the model-call budget.
 #[tokio::test]
 async fn categorize_tick_walks_past_an_already_asked_page_to_reach_older_threads() {
     let fake = fake_model(r#"{"labels":[{"index":1,"category":"important"}]}"#.to_string()).await;
@@ -398,11 +422,11 @@ async fn categorize_tick_walks_past_an_already_asked_page_to_reach_older_threads
     let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
     let vault = svc.get().unwrap();
 
-    // One page's worth of threads -- exactly `MAIL_CATEGORIZE_PER_MINUTE`,
-    // the cap a fresh per-minute budget hands one tick -- all already
+    // One page's worth of threads -- exactly `mailai::CATEGORIZE_PAGE`, the
+    // fixed size `categorize_account` itself reads per tick -- all already
     // marked asked at their current message count, plus one older thread
     // left unasked.
-    let page = Service::MAIL_CATEGORIZE_PER_MINUTE;
+    let page = everyday_service::mailai::CATEGORIZE_PAGE;
     let mut oldest_id = None;
     for i in 0..=page {
         let thread_id = ThreadId::new();
@@ -782,4 +806,132 @@ async fn auto_draft_reasks_a_thread_once_a_new_message_arrives() {
     everyday_service::mailai::auto_draft_tick(&svc).await;
     let drafts = svc.get().unwrap().drafts(account.id).unwrap();
     assert_eq!(drafts.len(), 1, "a new message makes the thread eligible again");
+}
+
+/// Finding 4: the model was told to say no more often than yes, and the
+/// budget used to be spent only on a *saved draft* -- so a tick where every
+/// eligible thread was declined spent nothing at all, no matter how many
+/// real, paid calls it made along the way. Seeded with more eligible
+/// threads than `Service::MAIL_AUTODRAFT_PER_MINUTE`, all answered `false`,
+/// this asserts the fake model was never actually called more times than
+/// the budget allows -- which the old rule could not promise, since
+/// `budget` only ever decremented on a save that a `reply: false` answer
+/// never produces.
+#[tokio::test]
+async fn auto_draft_never_calls_the_model_more_than_the_per_minute_budget_allows() {
+    let says_no = fake_model(r#"{"reply":false,"body_html":""}"#.to_string()).await;
+    let (svc, _dir) = env(&says_no.endpoint);
+    let account = seed_account(&svc, mail_ai(false, false, true));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+
+    // More eligible, never-yet-asked Important threads than one tick's
+    // budget could ever afford to ask about.
+    let candidates = Service::MAIL_AUTODRAFT_PER_MINUTE + 3;
+    for i in 0..candidates {
+        seed_message(
+            &svc,
+            account.id,
+            mailbox,
+            i + 1,
+            ThreadId::new(),
+            "friend@example.com",
+            &[account.address.as_str()],
+            "Dinner?",
+            "Are you free Friday for dinner?",
+            Some(Category::Important),
+        );
+    }
+
+    everyday_service::mailai::auto_draft_tick(&svc).await;
+
+    // `quick::run_prompt` costs up to `QUICK_MAX_TURNS_PER_CALL` raw
+    // connections per logical call -- one per turn the underlying agent
+    // framework's `MAX_TURNS` allows, since a tool call still gets a
+    // follow-up turn for the model's own closing reply -- so the bound to
+    // check the fake model's raw connection count against is scaled by
+    // that, not compared one to one against the budget. What matters is
+    // the comparison against the *uncapped* count: the old rule
+    // (decrementing only on a saved draft, which `reply: false` never
+    // produces) would have let every one of `candidates` threads reach a
+    // real call, so this must land well under `candidates *
+    // QUICK_MAX_TURNS_PER_CALL`.
+    const QUICK_MAX_TURNS_PER_CALL: u32 = 2;
+    let capped = Service::MAIL_AUTODRAFT_PER_MINUTE * QUICK_MAX_TURNS_PER_CALL;
+    let uncapped = candidates * QUICK_MAX_TURNS_PER_CALL;
+    assert!(
+        says_no.call_count() <= capped,
+        "the model was called {} times, more than the budget of {} should have allowed",
+        says_no.call_count(),
+        Service::MAIL_AUTODRAFT_PER_MINUTE
+    );
+    assert!(
+        says_no.call_count() < uncapped,
+        "the budget must actually have bounded something: {} calls out of an uncapped {}",
+        says_no.call_count(),
+        uncapped
+    );
+    assert!(says_no.call_count() > 0, "the budget should have allowed at least one real call");
+}
+
+/// Finding 5: taking a whole page's worth of tokens up front -- rather than
+/// only as many as this account's page actually turned out to need asking
+/// about -- let one account with a small, real backlog spend the *entire*
+/// per-minute categorisation budget on the strength of a guess, leaving
+/// nothing for any other account in the same tick. Two accounts, each with
+/// a single real candidate thread (well under the per-minute budget), must
+/// both be asked in the same tick: the first account's own small need must
+/// not starve the second's.
+#[tokio::test]
+async fn categorize_tick_does_not_let_one_accounts_small_backlog_starve_another_accounts() {
+    let fake = fake_model(r#"{"labels":[{"index":1,"category":"important"}]}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let vault = svc.get().unwrap();
+
+    let mut accounts = Vec::new();
+    for n in 0..2 {
+        let settings = vault.agent_settings().unwrap();
+        let mut account = Account::new(Provider::Custom, format!("me{n}@example.com"));
+        account.services.mail = true;
+        account.mail_ai = mail_ai(true, false, false);
+        account.assistant_provider_acknowledged =
+            Some(settings.provider_config.acknowledgement_name());
+        vault.save_account(&account).unwrap();
+        let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+        seed_message(
+            &svc,
+            account.id,
+            mailbox,
+            1,
+            ThreadId::new(),
+            "stranger@example.com",
+            &[account.address.as_str()],
+            "Hello",
+            "Just checking in.",
+            Some(Category::Other),
+        );
+        accounts.push(account);
+    }
+
+    everyday_service::mailai::categorize_tick(&svc).await;
+
+    for account in &accounts {
+        let (_thread, messages) = {
+            let threads = vault
+                .list_threads(
+                    vault.mailboxes(account.id).unwrap()[0].id,
+                    &ThreadFilter::default(),
+                    None,
+                    10,
+                )
+                .unwrap();
+            let thread = threads.threads.first().cloned().unwrap();
+            vault.thread(thread.id).unwrap()
+        };
+        assert_eq!(
+            messages[0].category,
+            Some(Category::Important),
+            "account {} was starved of the shared categorisation budget",
+            account.address
+        );
+    }
 }

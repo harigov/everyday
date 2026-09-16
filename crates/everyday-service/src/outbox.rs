@@ -62,15 +62,15 @@
 
 use std::sync::Arc;
 
-use everyday_core::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, ThreadId};
-use everyday_core::mail::{Draft, MailboxRole, Op, OpKind, OpState, OpTarget};
+use everyday_core::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
+use everyday_core::mail::{Draft, DraftState, MailboxRole, Op, OpKind, OpState, OpTarget};
 use everyday_mail::outbox::{
     ExecContext, Executed, Located, Lookups, Sender, execute, is_retryable,
 };
 use everyday_mail::session::{MailError, MailSession};
 use jiff::Timestamp;
 
-use crate::error::{CommandError, CommandResult};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 
 /// How many due ops one [`drain_outbox`] call fetches and runs. Bounded so
@@ -203,7 +203,22 @@ where
                 op.last_error = Some(message.clone());
                 op.transition_to(OpState::Failed { permanent: true, message })?;
                 persist_op(&vault, &op).await?;
-                on_permanent_failure(&vault, &op).await?;
+                if let Err(e) = on_permanent_failure(svc, &vault, &op).await {
+                    // A permanent failure's own reversal is best-effort on
+                    // the same reasoning `on_success`'s follow-up write
+                    // already is, a few lines above: the op itself is
+                    // already durable, and a local storage hiccup while
+                    // reverting it must never propagate up through this
+                    // `?` and take the whole account task down with it --
+                    // see this function's own module docs, and
+                    // `on_permanent_failure`'s, for exactly the crash this
+                    // used to be.
+                    tracing::warn!(
+                        error = %e,
+                        op = %op.id,
+                        "a mail op failed permanently but reverting its local effect failed too"
+                    );
+                }
                 report.failed += 1;
             }
         }
@@ -258,21 +273,93 @@ pub async fn recover_inflight_ops<S: MailSession>(
         op.transition_to(OpState::Pending)?;
         persist_op(&vault, &op).await?;
     }
+
+    reconcile_stranded_drafts(svc, &vault, account).await
+}
+
+/// The other half of recovering from a crash mid-drain, alongside
+/// [`recover_inflight_ops`]'s own `InFlight` sweep just above: an op is
+/// persisted [`OpState::Done`] (or `Failed { permanent: true }`) *before*
+/// its own follow-up write runs -- see this module's docs on why, and
+/// [`on_success`] and [`on_permanent_failure`] for those follow-up writes
+/// themselves -- so a crash in that gap leaves a draft still
+/// [`DraftState::Queued`] naming an op that has already, genuinely,
+/// finished. Nothing else ever moves a draft out of `Queued` again:
+/// [`everyday_core::Vault::queue_draft_send`] refuses a draft that is not
+/// `Editing`, and [`everyday_core::Vault::undo_send`] refuses one whose op
+/// is not `Pending`, so without this a restarted account task leaves the
+/// compose window showing "sending…" forever, with no send, no cancel and
+/// no retry able to touch it.
+///
+/// Called once per account, right alongside [`recover_inflight_ops`]'s own
+/// recovery (same call site, same crash), over every draft the account
+/// has -- there is no cheaper way to find "drafts named by a since-finished
+/// op" than by walking from the draft side, since an [`Op`] does not itself
+/// know whether the draft that named it has already moved on.
+async fn reconcile_stranded_drafts(
+    svc: &Arc<Service>,
+    vault: &Arc<everyday_core::Vault>,
+    account: AccountId,
+) -> CommandResult<()> {
+    let vault_for_list = vault.clone();
+    let drafts = blocking(move || Ok(vault_for_list.drafts(account)?)).await?;
+
+    for draft in drafts {
+        let DraftState::Queued { op: op_id } = draft.state else { continue };
+        let vault_for_op = vault.clone();
+        let op = match blocking(move || Ok(vault_for_op.op(op_id)?)).await {
+            Ok(op) => op,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    draft = %draft.id,
+                    op = %op_id,
+                    "could not read a queued draft's own op while reconciling a crash"
+                );
+                continue;
+            }
+        };
+        let outcome = match op.state {
+            OpState::Done => mark_draft_sent(svc, vault, draft.id).await,
+            OpState::Cancelled | OpState::Failed { permanent: true, .. } => {
+                revert_queued_send(svc, vault, draft.id, op_id).await
+            }
+            // `Pending` and `InFlight` -- genuinely still on its way, the
+            // latter already handled by the `InFlight` sweep above this
+            // call -- and `Failed { permanent: false }`, which goes back to
+            // `Pending` on its own next retry: the draft is right to still
+            // say `Queued` in every one of these.
+            OpState::Pending | OpState::InFlight | OpState::Failed { permanent: false, .. } => {
+                continue;
+            }
+        };
+        if let Err(e) = outcome {
+            tracing::warn!(
+                error = %e,
+                draft = %draft.id,
+                op = %op_id,
+                "could not reconcile a draft stranded `Queued` by a crash"
+            );
+        }
+    }
     Ok(())
 }
 
 /// Whether a recovered `Send` op's draft has already reached the server --
 /// asked of the server itself, via [`MailSession::search_message_id`],
 /// because local state is exactly what a crash mid-drain cannot be trusted
-/// to answer this from. Looks in Sent, or All Mail on Gmail (Sent is a
-/// label there, not a folder everything lands in the way a plain IMAP
-/// account's does -- the same split [`everyday_mail::smtp::needs_sent_append`]
-/// already draws). `false` -- "not found, or could not check" -- is the
-/// conservative answer either way: it sends again, which duplicates a
-/// message rather than silently dropping one, and a duplicate is the
-/// smaller mistake. A draft with no `message_id` yet was never actually
-/// built by [`everyday_mail::outbox::execute`] before the crash, so there
-/// is nothing a search could find; `false` without asking.
+/// to answer this from. Tried against every mailbox
+/// [`everyday_mail::outbox::search_roles`] names for this account, in
+/// order, stopping at the first hit -- see that function's own docs for why
+/// Sent alone is not enough off Gmail: the only thing that ever puts a sent
+/// copy there on a plain IMAP account is this crate's own Sent-append,
+/// which runs *after* the send, so a crash inside that gap leaves Sent
+/// empty even though the message went out. `false` -- "not found, or could
+/// not check" -- is the conservative answer either way: it sends again,
+/// which duplicates a message rather than silently dropping one, and a
+/// duplicate is the smaller mistake. A draft with no `message_id` yet was
+/// never actually built by [`everyday_mail::outbox::execute`] before the
+/// crash, so there is nothing a search could find; `false` without asking.
 async fn already_sent<S: MailSession>(
     vault: &Arc<everyday_core::Vault>,
     session: &mut S,
@@ -282,21 +369,25 @@ async fn already_sent<S: MailSession>(
     let draft = blocking(move || Ok(vault_for_draft.draft(draft_id)?)).await?;
     let Some(message_id) = draft.message_id else { return Ok(false) };
 
-    let role = if session.capabilities().gmail { MailboxRole::All } else { MailboxRole::Sent };
-    let Some(mailbox_name) = special_use(vault, draft.account_id, role).await? else {
-        return Ok(false);
-    };
-
-    match session.search_message_id(&mailbox_name, &message_id).await {
-        Ok(found) => Ok(found.is_some()),
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "could not check whether a recovered send already reached the server; sending again"
-            );
-            Ok(false)
+    for &role in everyday_mail::outbox::search_roles(session.capabilities().gmail) {
+        let Some(mailbox_name) = special_use(vault, draft.account_id, role).await? else {
+            continue;
+        };
+        match session.search_message_id(&mailbox_name, &message_id).await {
+            Ok(Some(_)) => return Ok(true),
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    mailbox = %mailbox_name,
+                    "could not check whether a recovered send already reached the server; \
+                     trying the next mailbox"
+                );
+                continue;
+            }
         }
     }
+    Ok(false)
 }
 
 async fn persist_op(vault: &Arc<everyday_core::Vault>, op: &Op) -> CommandResult<()> {
@@ -362,16 +453,19 @@ async fn on_success(
             };
             let vault = vault.clone();
             blocking(move || {
-                // Reloaded fresh rather than reusing whatever the caller
-                // holds: `AppendDraft` runs on the account task's own
-                // schedule, entirely separately from a person still typing,
-                // and only `server_copy` is this write's business -- every
-                // other field is whatever the draft's own record already
-                // says.
-                let mut draft = vault.draft(id)?;
-                draft.server_copy =
-                    Some(everyday_core::mail::DraftServerCopy { mailbox: drafts_mailbox, uid });
-                vault.save_draft(&draft)?;
+                // `Vault::with_draft`, not a bare read-modify-save: only
+                // `server_copy` is this write's business, but `AppendDraft`
+                // runs on the account task's own schedule, entirely
+                // separately from a person still typing, and a
+                // read-modify-save racing their own debounced autosave
+                // used to be able to win with a draft whose `server_copy`
+                // was still the *previous* value -- see `Vault::with_draft`'s
+                // own docs.
+                vault.with_draft(id, |draft| {
+                    draft.server_copy =
+                        Some(everyday_core::mail::DraftServerCopy { mailbox: drafts_mailbox, uid });
+                    true
+                })?;
                 Ok(())
             })
             .await
@@ -385,31 +479,47 @@ async fn on_success(
 }
 
 /// What a permanently failed op undoes: the batch actions' local effect for
-/// a thread-targeted op, and a queued send's draft state for `Send`.
+/// a thread-targeted op, and a queued send's draft state (plus, when it was
+/// an invite RSVP, the invitation's own `my_response`) for `Send`.
 /// `AppendDraft` made no optimistic local change to undo -- `save_draft`
 /// writes the person's own text regardless of whether the server copy
 /// ever lands -- so it is left alone.
-async fn on_permanent_failure(vault: &Arc<everyday_core::Vault>, op: &Op) -> CommandResult<()> {
+///
+/// Tolerant, throughout, of the one record a permanent failure names
+/// having already gone missing by the time this runs -- a thread merged
+/// into another, a draft deleted from under a `Send` that failed for
+/// reasons that had nothing to do with the server (see [`vault_err`]'s own
+/// docs on why a merely *local* failure -- a locked vault, a full disk --
+/// is retried rather than ever reaching here as `permanent` in the first
+/// place). `Error::NotFound` is logged and swallowed rather than
+/// `?`-propagated: there is nothing left to revert, which is not a reason
+/// to take the rest of the account's outbox down with it.
+async fn on_permanent_failure(
+    svc: &Arc<Service>,
+    vault: &Arc<everyday_core::Vault>,
+    op: &Op,
+) -> CommandResult<()> {
     match op.target {
         OpTarget::Thread(thread) => {
             let vault = vault.clone();
             let kind = op.kind.clone();
-            blocking(move || Ok(vault.revert_thread_op(thread, &kind)?)).await
-        }
-        OpTarget::Draft(id) if matches!(op.kind, OpKind::Send) => {
-            let vault = vault.clone();
             let op_id = op.id;
-            blocking(move || {
-                let mut draft = vault.draft(id)?;
-                if matches!(draft.state, everyday_core::mail::DraftState::Queued { op: queued } if queued == op_id)
-                {
-                    draft.state = everyday_core::mail::DraftState::Editing;
-                    draft.updated_at = Timestamp::now();
-                    vault.save_draft(&draft)?;
+            blocking(move || match vault.revert_thread_op(thread, &kind) {
+                Ok(()) => Ok(()),
+                Err(everyday_core::Error::NotFound { .. }) => {
+                    tracing::warn!(
+                        op = %op_id,
+                        thread = %thread,
+                        "a permanently failed op's own thread is already gone; nothing to revert"
+                    );
+                    Ok(())
                 }
-                Ok(())
+                Err(e) => Err(e.into()),
             })
             .await
+        }
+        OpTarget::Draft(id) if matches!(op.kind, OpKind::Send) => {
+            revert_queued_send(svc, vault, id, op.id).await
         }
         // `AppendDraft`, and a `Message`-targeted op -- nothing in phase 3's
         // command surface enqueues the latter; see the module docs on
@@ -417,6 +527,77 @@ async fn on_permanent_failure(vault: &Arc<everyday_core::Vault>, op: &Op) -> Com
         // shape a future caller would need.
         _ => Ok(()),
     }
+}
+
+/// Put a `Send`-queued draft back to [`DraftState::Editing`], and -- when it
+/// was an invite RSVP -- undo the optimistic
+/// [`everyday_core::mail::Invite::my_response`] `respond_to_invite` set
+/// before the reply ever reached anyone, via
+/// [`everyday_core::Vault::revert_invite_response`]. Shared between
+/// [`on_permanent_failure`] (the op just failed for good) and
+/// [`reconcile_stranded_drafts`] (a crash between that failure and this very
+/// write left the draft `Queued` regardless) -- both are "this `Send` is not
+/// going to happen after all", reached from different doors.
+///
+/// The draft's own `in_reply_to` is what names the invitation this RSVP
+/// answers -- the same field an ordinary reply threads under, and the field
+/// `respond_to_invite_inner` would need to set on its own RSVP draft for
+/// this to have anything to revert; that call site lives in
+/// `everyday_service::domains::mail`, outside this module.
+///
+/// Uses [`everyday_core::Vault::with_draft`] rather than a bare
+/// read-modify-write: this races the exact same debounced autosave that
+/// method's own docs describe, and a permanent failure landing between a
+/// person's own keystroke-driven save and this write must not be the write
+/// that wins by clobbering the other.
+async fn revert_queued_send(
+    svc: &Arc<Service>,
+    vault: &Arc<everyday_core::Vault>,
+    id: DraftId,
+    op_id: OpId,
+) -> CommandResult<()> {
+    let vault_for_draft = vault.clone();
+    let thread = blocking(move || {
+        let draft = match vault_for_draft.with_draft(id, |d| {
+            if matches!(d.state, DraftState::Queued { op: queued } if queued == op_id) {
+                d.state = DraftState::Editing;
+                true
+            } else {
+                false
+            }
+        }) {
+            Ok(draft) => draft,
+            Err(everyday_core::Error::NotFound { .. }) => {
+                tracing::warn!(
+                    op = %op_id,
+                    draft = %id,
+                    "a permanently failed send's own draft is already gone; nothing to revert"
+                );
+                return Ok(None);
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let Some(parent) = draft.in_reply_to else { return Ok(None) };
+        vault_for_draft.revert_invite_response(parent)?;
+        Ok(vault_for_draft.mail_message(parent).ok().map(|m| m.thread_id))
+    })
+    .await?;
+
+    // Best-effort: a client that never learns the RSVP was reverted still
+    // has the truthful `Invite::my_response` the moment it next reads the
+    // thread, which every mail command already re-fetches from the vault
+    // rather than trusting a cache -- this event only saves it the wait for
+    // that next read to happen on its own.
+    if let Some(thread) = thread {
+        svc.events().changed(crate::events::Change {
+            kind: crate::events::Kind::Thread,
+            op: crate::events::Op::Updated,
+            id: Some(thread.to_string()),
+            ids: Vec::new(),
+            origin: None,
+        });
+    }
+    Ok(())
 }
 
 /// Mark draft `id` [`everyday_core::mail::DraftState::Sent`] and teach the
@@ -431,11 +612,13 @@ async fn mark_draft_sent(
 ) -> CommandResult<()> {
     let vault_for_draft = vault.clone();
     let draft = blocking(move || {
-        let mut draft = vault_for_draft.draft(id)?;
-        draft.state = everyday_core::mail::DraftState::Sent;
-        draft.updated_at = Timestamp::now();
-        vault_for_draft.save_draft(&draft)?;
-        Ok(draft)
+        // `Vault::with_draft`, not a bare read-modify-save -- see its own
+        // docs for the autosave race a `Send` op's own success (or, from
+        // `recover_inflight_ops`, a crash-recovered one) must not lose to.
+        Ok(vault_for_draft.with_draft(id, |draft| {
+            draft.state = DraftState::Sent;
+            true
+        })?)
     })
     .await?;
     if let Some(contacts) = svc.mail_contacts() {
@@ -619,10 +802,20 @@ impl Lookups for VaultLookups {
         message_id: &str,
     ) -> everyday_mail::session::Result<()> {
         let vault = self.vault().map_err(lookup_err)?;
-        let mut draft = vault.draft(id).map_err(vault_err)?;
-        draft.message_id = Some(message_id.to_string());
-        draft.updated_at = Timestamp::now();
-        vault.save_draft(&draft).map_err(vault_err)
+        // `Vault::with_draft`, not a bare read-modify-save: this is the
+        // very write `Vault::with_draft`'s own docs name as the one whose
+        // loss duplicates a message on retry -- an autosave interleaving
+        // between the old read and the old save could win with a draft
+        // whose `message_id` was still `None`, so the next attempt minted
+        // a *second* id, skipped `already_delivered` entirely (it only
+        // ever checks a *retry*), and sent the message twice.
+        vault
+            .with_draft(id, |draft| {
+                draft.message_id = Some(message_id.to_string());
+                true
+            })
+            .map(|_| ())
+            .map_err(vault_err)
     }
 
     fn draft_server_copy(&self, id: DraftId) -> everyday_mail::session::Result<Option<Located>> {
@@ -660,10 +853,72 @@ impl Lookups for VaultLookups {
     }
 }
 
+/// Is `code` -- one of [`everyday_service::error::codes`](crate::error::codes)
+/// -- a *local* storage failure worth retrying rather than a genuinely wrong
+/// request? [`Error::Locked`](everyday_core::Error::Locked) (another writer
+/// holds the vault right now), an IO error (a full disk, a transient
+/// permission failure) and a backend error (whatever a Postgres connection
+/// pool exhausted looks like today) each say nothing about whether *this*
+/// op was ever going to succeed -- unlike `NotFound`, `Invalid` or
+/// `Decrypt`, which say the exact same thing every time this op is tried
+/// again. Read before every [`MailError`] this module mints from a vault
+/// read gone wrong, so a locked vault or a full disk backs off and tries
+/// again instead of reversing whatever the person just asked for and
+/// telling them it failed.
+fn is_transient_local_failure(code: &str) -> bool {
+    matches!(code, codes::LOCKED | codes::IO | codes::BACKEND)
+}
+
 fn lookup_err(e: CommandError) -> everyday_mail::session::MailError {
-    everyday_mail::session::MailError::Protocol(e.to_string())
+    if is_transient_local_failure(&e.code) {
+        // `MailError::Network` purely for `is_retryable`'s sake -- nothing
+        // here touched a socket, but "is this worth trying again" is
+        // exactly what that variant already means to the drain loop, and
+        // minting a new variant just to say the same thing would only give
+        // `is_retryable` a second case to keep in sync with this one.
+        everyday_mail::session::MailError::Network(e.to_string())
+    } else {
+        everyday_mail::session::MailError::Protocol(e.to_string())
+    }
 }
 
 fn vault_err(e: everyday_core::Error) -> everyday_mail::session::MailError {
-    everyday_mail::session::MailError::Protocol(e.to_string())
+    lookup_err(e.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use everyday_core::Error;
+
+    /// The regression for "every vault/storage error is classified as a
+    /// permanent server failure": a locked vault says nothing about
+    /// whether the op itself was ever going to succeed, so it must come
+    /// back retryable, not permanent.
+    #[test]
+    fn a_locked_vault_is_retried_not_treated_as_permanent() {
+        let err = vault_err(Error::Locked);
+        assert!(matches!(err, MailError::Network(_)), "{err:?}");
+        assert!(is_retryable(&err));
+    }
+
+    /// An IO error (a full disk, a transient permission failure) is the
+    /// same shape as a locked vault: local, and worth retrying.
+    #[test]
+    fn an_io_error_is_retried_not_treated_as_permanent() {
+        let io = std::io::Error::other("disk full");
+        let err = vault_err(Error::io("/tmp/example", io));
+        assert!(matches!(err, MailError::Network(_)), "{err:?}");
+        assert!(is_retryable(&err));
+    }
+
+    /// A record that genuinely does not exist is the opposite: trying
+    /// again would fail the exact same way every time, so this must stay
+    /// permanent.
+    #[test]
+    fn a_missing_record_stays_permanent() {
+        let err = vault_err(Error::not_found("draft", "some-id"));
+        assert!(matches!(err, MailError::Protocol(_)), "{err:?}");
+        assert!(!is_retryable(&err));
+    }
 }

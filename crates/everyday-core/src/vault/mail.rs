@@ -215,6 +215,39 @@ impl Vault {
         self.with_mail(|m| m.delete_draft(id))
     }
 
+    /// Read `id`'s current [`Draft`], let `f` mutate exactly the fields it
+    /// names, and write the result back -- all under the one write guard
+    /// [`Vault::write`] takes for the whole call, so nothing else saving
+    /// this same draft (a person's own debounced autosave, landing on the
+    /// blocking pool at the same moment, most often) can interleave between
+    /// this read and this write and lose either side's change.
+    ///
+    /// `f` returns whether it actually changed anything; a `false` skips
+    /// the write (and the `updated_at` bump that would otherwise
+    /// accompany it) entirely, which is what lets a caller check a
+    /// condition -- "is this draft still queued under the op I think it
+    /// is" -- and walk away cleanly when it no longer holds, exactly the
+    /// way the bare read-then-save each of `everyday_service::outbox`'s
+    /// `set_draft_message_id`, `on_success`'s `Appended` arm and
+    /// `mark_draft_sent` used to before this existed, and the very race
+    /// [`Vault::apply_thread_ops`], [`Vault::queue_draft_send`] and
+    /// [`Vault::undo_send`] already avoid by holding the same guard for
+    /// their own multi-step writes. Returns the draft either way -- a
+    /// caller that skipped the write often still wants to see what is
+    /// actually there.
+    pub fn with_draft(&self, id: DraftId, f: impl FnOnce(&mut Draft) -> bool) -> Result<Draft> {
+        self.writable()?;
+        self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mut draft = mail.get_draft(id)?;
+            if f(&mut draft) {
+                draft.updated_at = Timestamp::now();
+                mail.put_draft(&draft)?;
+            }
+            Ok(draft)
+        })
+    }
+
     /// Set message `id`'s [`crate::mail::Invite`] directly -- what
     /// `everyday_service::domains::mail::respond_to_invite` calls once the
     /// reply is queued, so [`crate::mail::Invite::my_response`] reflects the
@@ -227,6 +260,27 @@ impl Vault {
     ) -> Result<()> {
         self.writable()?;
         self.with_mail(move |m| m.set_message_invite(id, invite))
+    }
+
+    /// Undo `respond_to_invite`'s own optimistic write to `message_id`'s
+    /// [`crate::mail::Invite::my_response`], once the RSVP it queued has
+    /// failed permanently or been cancelled and the organiser was never
+    /// actually told. Clears the field back to `None` -- "not yet
+    /// responded" -- rather than restoring whatever it held before: nothing
+    /// durable remembers that earlier value (an [`Op`] is a table row with
+    /// no room for a snapshot of a message it does not even target), and
+    /// `None` is the truthful state once the one write that would have
+    /// justified anything else never reached the server. A message that
+    /// carries no invitation, or none any more, is left alone -- there is
+    /// nothing to revert, and this must never manufacture one.
+    pub fn revert_invite_response(&self, message_id: MailMessageId) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| {
+            let message = m.get_message(message_id)?;
+            let Some(mut invite) = message.invite else { return Ok(()) };
+            invite.my_response = None;
+            m.set_message_invite(message_id, Some(invite))
+        })
     }
 
     // ---- the outbox ----------------------------------------------------------
@@ -559,12 +613,42 @@ impl Vault {
         })
     }
 
-    /// Cancel a queued send, provided its op is still
-    /// [`OpState::Pending`] and its `not_before` has not yet passed --
-    /// undo send's whole implementation. Past that point the account task
-    /// may already be mid-send, so this refuses with [`Error::Invalid`]
+    /// Cancel a queued send, provided its op is still [`OpState::Pending`],
+    /// has never actually been attempted, and its `not_before` has not yet
+    /// passed -- undo send's whole implementation.
+    ///
+    /// "Never actually been attempted" is its own check, separate from the
+    /// window: the drain loop's retry arm
+    /// (`everyday_service::outbox::drain_outbox`) returns a `Send` op that
+    /// failed with a *retryable* error to exactly `Pending`, with
+    /// `not_before` pushed out by the backoff schedule (thirty seconds up
+    /// to an hour) -- so `state == Pending && now < not_before` alone would
+    /// reopen the undo-send window for up to an hour after an attempt that
+    /// may already have reached the SMTP server. `everyday_mail::outbox::send`'s
+    /// own docs explain why: a `Network` error after `DATA`'s final `.`
+    /// looks, from here, identical to one before the server ever saw a
+    /// byte, so an op with `attempts > 0` (bumped the moment any attempt
+    /// fails) or a draft that already carries a minted `message_id`
+    /// (stamped, and persisted, immediately before that same attempt) has
+    /// to be treated as "may have gone out" for good -- undo can no longer
+    /// promise the thing it promises. Past that point the account task may
+    /// already be mid-send anyway, so this refuses with [`Error::Invalid`]
     /// rather than risk racing it; the draft stays `Queued` and the caller
-    /// is told plainly that it is too late.
+    /// is told plainly why, with a distinct message for each reason a
+    /// person might otherwise mistake for "it's too late" -- an op that
+    /// simply failed and was never sent has nothing to undo, which is a
+    /// different thing to hear than "this may already be sent".
+    ///
+    /// `message_id` is deliberately left on `draft` when this *does*
+    /// succeed: the checks above already guarantee it is `None` whenever
+    /// undo is still possible (a `Send` op that has never been attempted
+    /// never reached the point in `send` that mints one), so there is
+    /// nothing to clear. Clearing it defensively here would cost the very
+    /// guarantee `docs/plans/mail.md`'s stable-`Message-ID` design exists
+    /// for: a *later* send of this same draft, after a genuine edit, still
+    /// deserves a fresh id of its own the first time `send` builds it, and
+    /// it gets one -- `send` only reuses `draft.message_id` when it is
+    /// already `Some`.
     pub fn undo_send(&self, draft_id: DraftId, now: Timestamp) -> Result<Draft> {
         self.writable()?;
         self.write(|u| {
@@ -574,11 +658,43 @@ impl Vault {
                 return Err(Error::Invalid("this draft is not queued to send".into()));
             };
             let mut op = mail.get_op(op_id)?;
-            if !matches!(op.state, OpState::Pending) || now >= op.not_before {
+
+            if !matches!(op.state, OpState::Pending) {
+                let message = match &op.state {
+                    OpState::InFlight => {
+                        "this message is being sent right now and cannot be undone"
+                    }
+                    OpState::Cancelled => "this send has already been cancelled",
+                    OpState::Failed { permanent: true, .. } => {
+                        "this send already failed and was never sent; there is nothing to undo"
+                    }
+                    // `Pending` is excluded by the outer `matches!`, and
+                    // `Failed { permanent: false }` never actually reaches
+                    // `Queued`'s own op -- a retryable failure goes back to
+                    // `Pending`, not `Failed` -- but a future caller of
+                    // `transition_to` is not this match's business to
+                    // predict, so it still gets a true answer rather than
+                    // a wildcard borrowing `Done`'s.
+                    OpState::Done => "this message has already been sent",
+                    OpState::Failed { permanent: false, .. } | OpState::Pending => {
+                        "the undo-send window has passed; this message may already be sent"
+                    }
+                };
+                return Err(Error::Invalid(message.into()));
+            }
+            if op.attempts > 0 || draft.message_id.is_some() {
+                return Err(Error::Invalid(
+                    "this message has already been attempted and may have reached the server; \
+                     it can no longer be undone"
+                        .into(),
+                ));
+            }
+            if now >= op.not_before {
                 return Err(Error::Invalid(
                     "the undo-send window has passed; this message may already be sent".into(),
                 ));
             }
+
             op.transition_to(OpState::Cancelled)?;
             mail.update_op(&op)?;
             draft.state = DraftState::Editing;
@@ -631,6 +747,26 @@ impl Vault {
         self.write(|u| {
             let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
             let mut draft = mail.get_draft(draft_id)?;
+            // A discard racing a still-pending `Send` must win: otherwise
+            // the op the person just asked to cancel by discarding drains
+            // anyway, mailing the very message they discarded, while the
+            // draft row itself already reads `Discarded`. This is exactly
+            // [`Vault::undo_send`]'s own `Pending` -> `Cancelled`
+            // transition, reached from a different door -- an op that has
+            // moved past `Pending` (already `InFlight`, or further) is left
+            // alone, on the same reasoning `undo_send` refuses past that
+            // point: the account task may already be mid-send, and racing
+            // it here would not stop anything. `send`'s own executor
+            // (`everyday_mail::outbox::send`) refuses to run at all against
+            // a `Discarded` draft regardless, as the last line of defence
+            // for exactly that race.
+            if let DraftState::Queued { op: op_id } = draft.state {
+                let mut queued = mail.get_op(op_id)?;
+                if matches!(queued.state, OpState::Pending) {
+                    queued.transition_to(OpState::Cancelled)?;
+                    mail.update_op(&queued)?;
+                }
+            }
             draft.state = DraftState::Discarded;
             draft.updated_at = Timestamp::now();
             mail.put_draft(&draft)?;

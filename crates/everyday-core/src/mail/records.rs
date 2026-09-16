@@ -801,9 +801,16 @@ pub struct Draft {
     /// person seeing it happen through compose -- set by `update_draft`
     /// (`everyday_core::agent::tools::mail`) when the caller is
     /// `Assistant` or `Mcp` and the call actually touched one of the three,
-    /// cleared the moment the person themselves saves from compose
-    /// (`everyday_service::domains::mail::save_draft`, always, whether or
-    /// not that particular save touched the recipients).
+    /// cleared by `everyday_service::domains::mail::save_draft` only when
+    /// that save itself changes one of the three.
+    ///
+    /// Clearing on *every* save, which this once did, emptied the field
+    /// before anything could read it: compose autosaves while a person
+    /// types and flushes once more immediately before sending, so a single
+    /// keystroke anywhere in the message erased the record of an address
+    /// somebody else had put on it. A person changing the recipients is
+    /// the event that genuinely retires the mark, because by then they
+    /// have looked at the addresses and said what they should be.
     ///
     /// What lets `send_draft`'s own confirmation card say "recipients
     /// changed by the assistant" for a draft whose `to`/`cc`/`bcc` an

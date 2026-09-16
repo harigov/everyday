@@ -510,7 +510,17 @@ mod tests {
             // has the updated `MailAttachment` back in the command's own
             // result and patches its copy of the thread directly.
             "fetch_attachment",
-            // Its effect is whatever tool it ran, which announces its own.
+            // Its effect is whatever tool it ran, which announces its own
+            // -- literally, now: `domains::meta::run_tool` raises the
+            // matching `Change` itself, off a table keyed by tool name
+            // (`domains::meta::mail_tool_change`), because this row's own
+            // `(Kind, Op)` cannot be fixed at the table the way every other
+            // row's can. Listed here anyway, not given a `change:`, because
+            // this test checks the table `Command::invoke` reads to decide
+            // *whether* to raise one -- `self.change`, always `None` for
+            // this row -- and that mechanism genuinely does not apply to a
+            // row whose actual effect depends on an argument rather than on
+            // which row it is.
             "run_tool",
             // Answers a question a turn is parked on. What follows is the
             // turn's own writes, each of which announces itself.

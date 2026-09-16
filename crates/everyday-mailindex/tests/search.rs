@@ -149,6 +149,47 @@ fn subject_word_and_phrase() {
     assert_eq!(keys(&phrase), ["m1"], "only the adjacent phrase should match");
 }
 
+/// Regression for a CJK subject being indexed with zero terms: tantivy's
+/// built-in `"default"` analyser tokenises a whole run of CJK characters as
+/// *one* token, since nothing in the script marks a word boundary, and then
+/// discards it outright once it reaches roughly 14 characters
+/// (`RemoveLongFilter::limit(40)` bytes). `schema.rs` now indexes `subject`
+/// and `body_text` with `CjkAwareTokenizer` instead, which bigrams a CJK
+/// run rather than treating it as one word -- this proves a substring of a
+/// long Japanese subject is actually findable end to end, through the real
+/// index and the real query translation, not merely at the tokenizer's own
+/// unit level.
+#[test]
+fn a_cjk_subject_is_findable_by_a_substring() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mi = open(tmp.path());
+    let mut d1 = Doc::new("m1", date_ts(2024, 1, 1));
+    d1.subject = "会議の議事録と来週の予定について";
+    let mut d2 = Doc::new("m2", date_ts(2024, 1, 2));
+    d2.subject = "hello world";
+    index_and_commit(&mi, vec![d1.build(), d2.build()]);
+
+    // A three-character substring of the subject, not the whole thing --
+    // exactly the shape "search for a word from a sentence" takes in a
+    // script with no spaces between words.
+    let hits = mi.search(&MailQuery::parse("subject:議事録"), 10, None).unwrap();
+    assert_eq!(keys(&hits), ["m1"]);
+
+    // Free text (no `subject:` operator) reaches the same field too.
+    let free = mi.search(&MailQuery::parse("議事録"), 10, None).unwrap();
+    assert_eq!(keys(&free), ["m1"]);
+
+    let miss = mi.search(&MailQuery::parse("subject:予定について"), 10, None).unwrap();
+    assert_eq!(keys(&miss), ["m1"], "a different substring of the same subject must also match");
+
+    let other = mi.search(&MailQuery::parse("subject:hello"), 10, None).unwrap();
+    assert_eq!(
+        keys(&other),
+        ["m2"],
+        "the CJK tokenizer must not swallow ordinary English subjects"
+    );
+}
+
 #[test]
 fn has_attachment() {
     let tmp = tempfile::tempdir().unwrap();
@@ -488,4 +529,62 @@ fn a_brand_new_mailbox_does_not_need_a_rebuild() {
     // asking the caller to rebuild something that never existed.
     let mi = open(tmp.path());
     assert!(!mi.rebuild_needed());
+}
+
+/// Regression for "the rebuild button returns the same error for ever":
+/// before `rebuild_empty` existed, nothing ever deleted or recreated the
+/// index directory, so `rebuild_needed() == true` was permanent -- every
+/// `index`/`commit` call into a dead `MailIndex` just failed the same way
+/// `require_opened` already did. This proves the actual recovery path
+/// `everyday_service::domains::mailsync::rebuild_mail_index` now calls:
+/// wipe, reopen, and end up genuinely usable.
+#[test]
+fn rebuild_empty_recovers_a_dead_index_and_reopens_it_fresh() {
+    let tmp = tempfile::tempdir().unwrap();
+    {
+        let mi = open(tmp.path());
+        index_and_commit(&mi, vec![Doc::new("m1", date_ts(2024, 1, 1)).build()]);
+    }
+    // Opened under the wrong key: the same dead shape
+    // `opening_with_the_wrong_key_fails_clearly` proves, standing in for
+    // any of the ways a real `MailIndex::open` can fail on what is already
+    // on disk -- a stale lock, a truncated segment, a key that rotated.
+    let wrong = MailIndex::open(
+        tmp.path(),
+        Arc::new(AeadCipher::new(&SecretKey::from_bytes([9u8; 32]))),
+        CACHE_BYTES,
+    )
+    .unwrap();
+    assert!(wrong.rebuild_needed());
+
+    wrong.rebuild_empty().unwrap();
+    assert!(!wrong.rebuild_needed(), "rebuild_empty must leave a healthy, reopened index behind");
+
+    // Fully usable afterwards, exactly like a fresh mailbox: the old,
+    // wrong-keyed data is gone (rebuild_empty wipes the directory), but
+    // indexing and searching into it now work rather than repeating the
+    // same "needs to be rebuilt" error forever.
+    index_and_commit(&wrong, vec![Doc::new("m2", date_ts(2024, 1, 2)).build()]);
+    let hits = wrong.search(&MailQuery::parse("hello"), 10, None).unwrap();
+    assert_eq!(keys(&hits), ["m2"]);
+}
+
+/// `rebuild_empty` is also safe to call on a perfectly healthy index -- it
+/// still ends up empty and freshly opened either way, which is what lets
+/// `rebuild_mail_index` share one code path rather than needing to know in
+/// advance whether the index it was handed was actually broken.
+#[test]
+fn rebuild_empty_on_a_healthy_index_still_leaves_it_usable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mi = open(tmp.path());
+    index_and_commit(&mi, vec![Doc::new("m1", date_ts(2024, 1, 1)).build()]);
+
+    mi.rebuild_empty().unwrap();
+    assert!(!mi.rebuild_needed());
+    let hits = mi.search(&MailQuery::parse("hello"), 10, None).unwrap();
+    assert!(hits.hits.is_empty(), "rebuild_empty always starts empty, healthy or not");
+
+    index_and_commit(&mi, vec![Doc::new("m2", date_ts(2024, 1, 2)).build()]);
+    let hits = mi.search(&MailQuery::parse("hello"), 10, None).unwrap();
+    assert_eq!(keys(&hits), ["m2"]);
 }

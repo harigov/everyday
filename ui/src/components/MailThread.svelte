@@ -26,7 +26,14 @@
   } from '../lib/mail'
   import * as mailApi from '../lib/mail-api'
   import { mail } from '../lib/mail.svelte'
-  import { applyDarkOverride, bodyDocument, loadBody, mockPartUrl, partUrl } from '../lib/mailview'
+  import {
+    applyDarkOverride,
+    applyPlatformOrigin,
+    bodyDocument,
+    loadBody,
+    mockPartUrl,
+    partUrl,
+  } from '../lib/mailview'
   // A static import, deliberately, though it is only ever read behind
   // `isMock` below -- see `mail-api.ts`'s old note on the same trade-off,
   // which this file inherits: a dynamic `import()` cannot stay synchronous
@@ -119,7 +126,7 @@
       )
       const loaded = await loadBody(source)
       bodies.set(message.id, {
-        html: applyDarkOverride(loaded.html, isDarkMode()),
+        html: applyPlatformOrigin(applyDarkOverride(loaded.html, isDarkMode())),
         imagesHidden: loaded.imagesHidden,
       })
     } catch {

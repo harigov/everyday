@@ -165,6 +165,17 @@ impl Default for CommitPacer {
 /// Discover `ctx.account_id`'s mailboxes and run [`sync_headers`] then
 /// [`bodies_pass`] over every one of them, inbox first. What one first sync
 /// and one steady-state wake both are, from the caller's side.
+///
+/// Reaping each mailbox's vanished uids ([`reap_vanished`]) is its own
+/// third phase, after every mailbox has ingested its own new headers --
+/// not folded into the same loop [`sync_headers`] runs in. A message moved
+/// from one mailbox to another between two passes is `vanished` in the
+/// first and a `new_uids` header in the second; reaping the first
+/// mailbox's copy before the second has had a chance to rematch it by
+/// `Message-ID` would delete the only row [`ingest::resolve_header`] could
+/// have rematched against, minting a fresh id -- and a fresh body
+/// download -- for a message this account already has in full. See
+/// [`sync_headers`]'s own docs.
 pub async fn sync_once<S: MailSession>(
     ctx: &SyncContext<'_>,
     session: &mut S,
@@ -172,8 +183,13 @@ pub async fn sync_once<S: MailSession>(
     threads: &mut ThreadIndex,
 ) -> SessionResult<Vec<SyncedMailbox>> {
     let mut mailboxes = discovery::discover(ctx.vault, ctx.account_id, session).await?;
+    let mut vanished_by_mailbox = Vec::with_capacity(mailboxes.len());
     for mailbox in &mut mailboxes {
-        sync_headers(ctx, session, mailbox, labels, threads).await?;
+        let vanished = sync_headers(ctx, session, mailbox, labels, threads).await?;
+        vanished_by_mailbox.push(vanished);
+    }
+    for (mailbox, vanished) in mailboxes.iter().zip(&vanished_by_mailbox) {
+        reap_vanished(ctx, mailbox, vanished);
     }
     for mailbox in &mailboxes {
         bodies_pass(ctx, session, mailbox).await?;
@@ -190,25 +206,66 @@ pub async fn sync_once<S: MailSession>(
 /// [`HEADER_BATCH_SIZE`], newest first, committing each batch as it lands.
 /// See the module docs for why "committing" needs no cursor field beyond
 /// what [`everyday_core::Vault::ingest`] itself already made durable.
+///
+/// Returns the uids `changes_since` reported vanished from `mailbox`,
+/// *not yet removed* -- see [`reap_vanished`], which [`sync_once`] calls
+/// once every mailbox in the round has ingested its own new headers, for
+/// why deleting them here, inline, would be too early.
 pub async fn sync_headers<S: MailSession>(
     ctx: &SyncContext<'_>,
     session: &mut S,
     mailbox: &mut SyncedMailbox,
     labels: &mut LabelMailboxes,
     threads: &mut ThreadIndex,
-) -> SessionResult<()> {
+) -> SessionResult<UidSet> {
     let state = session.select(&mailbox.remote_name).await?;
 
     // A `UIDVALIDITY` change: forget this mailbox's membership and start
     // fresh, rematching by `Message-ID` as headers arrive rather than
     // trusting a uid that now means something else -- see
     // `crate::mailsync::ingest`'s module docs.
-    let just_reset = mailbox.row.uidvalidity != 0 && mailbox.row.uidvalidity != state.uidvalidity;
+    //
+    // `just_reset` also has to stay `true` across a crash. The naive
+    // condition -- `mailbox.row.uidvalidity != 0 && ... != state.uidvalidity`
+    // -- is only ever true for the one attempt that *notices* the change;
+    // `reset_mailbox` durably zeroes `uidvalidity` (see its own docs), so a
+    // process killed anywhere in the headers loop below leaves the row's
+    // `UIDVALIDITY` at `0` on the very next attempt, which this naive
+    // condition cannot tell apart from a mailbox that has simply never
+    // been synced -- and a mailbox this function has never finished
+    // syncing gets `force_db_rematch = false`, silently minting a fresh id
+    // (and a fresh body download) for every message the crash left
+    // stranded, while the original row survives, orphaned, forever (see
+    // `resolve_header`'s own docs and this bug's regression test below).
+    //
+    // `resuming_an_interrupted_reset` closes that gap using only fields
+    // this row already has: `uidnext == 0` is otherwise true only for a
+    // mailbox that has never once reached this function's own completion
+    // at the bottom, which is the only place that ever writes a real,
+    // `IMAP`-legal `UIDNEXT` (never `0` for a mailbox that has ever been
+    // `SELECT`ed). Pairing that with `uidvalidity != 0` rules out "never
+    // synced" (whose `UIDVALIDITY` is still `0` too), leaving exactly "a
+    // reset started, stamped its new `UIDVALIDITY` right away, and this
+    // attempt never reached the bottom of this function to say it
+    // finished."
+    let uidvalidity_just_changed =
+        mailbox.row.uidvalidity != 0 && mailbox.row.uidvalidity != state.uidvalidity;
+    let resuming_an_interrupted_reset = mailbox.row.uidvalidity != 0 && mailbox.row.uidnext == 0;
+    let just_reset = uidvalidity_just_changed || resuming_an_interrupted_reset;
     if just_reset {
+        // Idempotent either way: a fresh reset wipes membership that is
+        // there to wipe, and a resumed one wipes membership `reset_mailbox`
+        // already emptied last time.
         let _ = ctx.vault.reset_mailbox(mailbox.row.id);
-        mailbox.row.uidvalidity = 0;
+        mailbox.row.uidvalidity = state.uidvalidity;
         mailbox.row.uidnext = 0;
         mailbox.row.highest_modseq = 0;
+        // Durable *now*, not deferred to this function's own save at the
+        // bottom: this is what keeps `uidnext == 0` (and so `just_reset`)
+        // true across a crash, right up until a full pass actually
+        // finishes and this function's own completion below writes a real
+        // `uidnext` over it.
+        let _ = ctx.vault.save_mailbox(&mailbox.row);
     }
     if mailbox.row.uidvalidity == 0 {
         mailbox.row.uidvalidity = state.uidvalidity;
@@ -226,31 +283,65 @@ pub async fn sync_headers<S: MailSession>(
         ctx.vault.mail_uid_set(mailbox.row.id).unwrap_or_default().into_iter().collect();
     let changes = session.changes_since(&cursor, &known).await?;
 
-    if !changes.vanished.is_empty() {
-        let uids: Vec<Uid> = changes.vanished.iter().collect();
-        if let Ok(removed) = ctx.vault.remove_mail_uids(mailbox.row.id, &uids) {
-            reap_dead_messages(ctx, &removed);
-        }
-    }
+    // Reaping `changes.vanished` happens later, once every mailbox in this
+    // round has had a chance to ingest its own new headers -- see
+    // `sync_once`'s own docs for why the order matters: a message moved to
+    // another mailbox between two passes is `vanished` here and `new_uids`
+    // there, and deleting it *here* first would mean the mailbox that is
+    // about to receive it has nothing left to rematch by `Message-ID`
+    // against, minting a fresh id (and a fresh body download) for a
+    // message this account already has in full.
+
+    // Every reported flag is written back only when it actually differs
+    // from what is already stored. Without `CONDSTORE` (see
+    // `ImapSession::changes_since`'s non-`CONDSTORE` branch),
+    // `flag_changes` is the *current* flags of every known uid, changed or
+    // not, so skipping an unchanged one is what keeps a mailbox that saw no
+    // real flag activity from paying for a full rewrite -- a decrypt, a
+    // re-seal, an upsert and a thread recompute per message -- on every
+    // single pass.
+    let mut any_flag_actually_changed = false;
     for &(uid, flags, _modseq) in &changes.flag_changes {
-        let _ = ctx.vault.update_message_flags(mailbox.row.id, uid, ingest::mail_flags(flags));
+        let new_flags = ingest::mail_flags(flags);
+        let unchanged = ctx
+            .vault
+            .message_by_uid(mailbox.row.id, uid)
+            .ok()
+            .flatten()
+            .is_some_and(|m| m.flags == new_flags);
+        if unchanged {
+            continue;
+        }
+        any_flag_actually_changed = true;
+        let _ = ctx.vault.update_message_flags(mailbox.row.id, uid, new_flags);
     }
 
     // Gmail labels, on All Mail: see `refresh_gmail_labels`'s own docs for
     // why a plain flag diff never notices a message archived, or
     // relabelled, in another client, and for the two mechanisms below.
+    // `gmail_labels_changed` feeds `changed` below: the fallback re-check
+    // exists precisely for changes `changes_since` said nothing about, so
+    // without this the unread cache would stay stale exactly when this
+    // fallback is the only thing that noticed anything at all.
+    let mut gmail_labels_changed = false;
     if session.capabilities().gmail && mailbox.row.role == MailboxRole::All {
-        let changed: UidSet = changes.flag_changes.iter().map(|&(uid, _, _)| uid).collect();
-        if !changed.is_empty() {
-            let _ = refresh_gmail_labels(ctx, session, mailbox, &changed, labels).await;
+        let changed_uids: UidSet = changes.flag_changes.iter().map(|&(uid, _, _)| uid).collect();
+        if !changed_uids.is_empty()
+            && let Ok(changed) =
+                refresh_gmail_labels(ctx, session, mailbox, &changed_uids, labels).await
+        {
+            gmail_labels_changed |= changed;
         }
 
         let mut newest: Vec<Uid> = known.iter().collect();
         newest.sort_unstable_by(|a, b| b.cmp(a));
         newest.truncate(GMAIL_LABEL_FALLBACK_N);
-        let fallback: UidSet = newest.into_iter().filter(|u| !changed.contains(*u)).collect();
-        if !fallback.is_empty() {
-            let _ = refresh_gmail_labels(ctx, session, mailbox, &fallback, labels).await;
+        let fallback: UidSet = newest.into_iter().filter(|u| !changed_uids.contains(*u)).collect();
+        if !fallback.is_empty()
+            && let Ok(changed) =
+                refresh_gmail_labels(ctx, session, mailbox, &fallback, labels).await
+        {
+            gmail_labels_changed |= changed;
         }
     }
 
@@ -307,7 +398,15 @@ pub async fn sync_headers<S: MailSession>(
             // selects a folder called Sent at all (everything physically
             // lives in All Mail -- see `discovery`'s own docs), so its own
             // `\Sent` label is the same signal there.
+            // Drafts are excluded outright: a Drafts folder (or, on Gmail,
+            // a message carrying `\Draft`) is full of messages *from* the
+            // account itself, and recording the person's own address as
+            // someone they correspond with would climb their own address
+            // straight up their own autocomplete.
+            let is_draft = mailbox.row.role == MailboxRole::Drafts
+                || header.gmail.as_ref().is_some_and(|g| g.labels.iter().any(|l| l == "\\Draft"));
             if resolved.is_new
+                && !is_draft
                 && let Some(contacts) = &ctx.contacts
             {
                 let msg = &resolved.message;
@@ -316,11 +415,20 @@ pub async fn sync_headers<S: MailSession>(
                         .gmail
                         .as_ref()
                         .is_some_and(|g| g.labels.iter().any(|l| l == "\\Sent"));
+                // Never the account's own address, on either side: a Sent
+                // message's own `To`/`Cc` can still name the account itself
+                // (a message someone sent to their own address on purpose),
+                // and a received message can arrive `From` an alias this
+                // very account also answers to.
+                let is_own_address =
+                    |email: &str| ctx.identities.iter().any(|i| i.eq_ignore_ascii_case(email));
                 if is_sent {
                     for addr in msg.to.iter().chain(msg.cc.iter()) {
-                        contacts.record_sent_to(&addr.email, &addr.name);
+                        if !is_own_address(&addr.email) {
+                            contacts.record_sent_to(&addr.email, &addr.name);
+                        }
                     }
-                } else {
+                } else if !is_own_address(&msg.from.email) {
                     contacts.record_received_from(&msg.from.email, &msg.from.name);
                 }
             }
@@ -344,7 +452,14 @@ pub async fn sync_headers<S: MailSession>(
             tracing::warn!(error = %e, "could not ingest a batch of headers");
         }
 
-        done += headers.len() as u64;
+        // `batch.len()`, not `headers.len()`: a uid the `SEARCH` at the top
+        // of this function saw but that vanished (an expunge racing this
+        // very sync) before the `FETCH` above ran is simply absent from
+        // `headers`, and counting only what came back would leave `done`
+        // permanently short of `total` -- a progress bar stuck just under
+        // 100%. Every uid this batch *asked for* is accounted for either
+        // way, ingested or not.
+        done += batch.len() as u64;
         ctx.statuses.set_phase(ctx.account_id, Phase::Headers, done, total);
         // Yields between batches, per the plan's throttling rule, so a
         // giant first sync never starves whatever else this runtime is
@@ -358,19 +473,40 @@ pub async fn sync_headers<S: MailSession>(
     }
     let _ = ctx.vault.save_mailbox(&mailbox.row);
 
-    // Any of these three can move a thread across the read/unread line --
-    // a new message, a flag another client changed, or one this account no
-    // longer has at all -- so the cached answer to `unread_counts` is
-    // stale the moment any of them is non-empty. See
-    // `crate::mailsync::unread_cache`'s module docs.
+    // Any of these can move a thread across the read/unread line -- a new
+    // message, a flag another client actually changed, one this account no
+    // longer has at all, or a Gmail label the fallback re-check above
+    // caught that `changes_since` itself said nothing about -- so the
+    // cached answer to `unread_counts` is stale the moment any of them is
+    // non-empty. See `crate::mailsync::unread_cache`'s module docs. Built
+    // from `any_flag_actually_changed`, not `!changes.flag_changes.is_empty()`:
+    // without `CONDSTORE`, that list is every known uid's *current* flags,
+    // changed or not, and invalidating on it regardless would mean the
+    // cache never survives a single non-`CONDSTORE` pass.
     let changed = !changes.new_uids.is_empty()
-        || !changes.flag_changes.is_empty()
-        || !changes.vanished.is_empty();
+        || any_flag_actually_changed
+        || !changes.vanished.is_empty()
+        || gmail_labels_changed;
     if changed && let Some(cache) = &ctx.unread_cache {
         cache.invalidate(ctx.account_id);
     }
 
-    Ok(())
+    Ok(changes.vanished)
+}
+
+/// Actually remove every uid [`sync_headers`] reported vanished from
+/// `mailbox`, once every mailbox in this round has had its own chance to
+/// ingest new headers first -- see [`sync_once`]'s own docs for why the
+/// order matters and [`sync_headers`]'s own docs for what deferring this
+/// closes.
+fn reap_vanished(ctx: &SyncContext<'_>, mailbox: &SyncedMailbox, vanished: &UidSet) {
+    if vanished.is_empty() {
+        return;
+    }
+    let uids: Vec<Uid> = vanished.iter().collect();
+    if let Ok(removed) = ctx.vault.remove_mail_uids(mailbox.row.id, &uids) {
+        reap_dead_messages(ctx, &removed);
+    }
 }
 
 /// The whole of `passes.rs`'s part in the split inbox: fill in `resolved`'s
@@ -457,14 +593,19 @@ fn categorize_new_message(
 /// function exists to fix, so it diffs the old label set against the new
 /// one and adds or removes the matching `message_mailboxes` row for each
 /// side of the difference.
+///
+/// Returns whether anything actually changed for any of `uids` -- what the
+/// two call sites in [`sync_headers`] OR together into `gmail_labels_changed`
+/// for the unread-cache invalidation at the bottom of that function.
 async fn refresh_gmail_labels<S: MailSession>(
     ctx: &SyncContext<'_>,
     session: &mut S,
     mailbox: &SyncedMailbox,
     uids: &UidSet,
     labels: &mut LabelMailboxes,
-) -> SessionResult<()> {
+) -> SessionResult<bool> {
     let headers = session.headers(uids).await?;
+    let mut changed_anything = false;
     for header in &headers {
         let Some(gmail) = &header.gmail else { continue };
         let Ok(Some(current)) = ctx.vault.message_by_uid(mailbox.row.id, header.uid) else {
@@ -477,16 +618,33 @@ async fn refresh_gmail_labels<S: MailSession>(
         if old == new {
             continue;
         }
+        // Computed as owned strings, up front, rather than kept as the
+        // `old`/`new` borrows of `current.labels`/`gmail.labels` above:
+        // `current` is about to be given its own corrected `labels` below,
+        // and the borrow checker will not allow that while `old` is still
+        // in scope borrowing the very field being replaced.
+        let removed_labels: Vec<String> = old.difference(&new).map(|s| s.to_string()).collect();
+        let added_labels: Vec<String> = new.difference(&old).map(|s| s.to_string()).collect();
+        changed_anything = true;
 
         let _ = ctx.vault.update_message_labels(mailbox.row.id, header.uid, gmail.labels.clone());
-        for removed_label in old.difference(&new) {
+        // The row this pass re-ingests under each *added* label must carry
+        // the label set `update_message_labels` just stored, not the one
+        // `current` was read with -- otherwise the ingest below overwrites
+        // the very write just above with the stale copy, reverting the
+        // label it was supposed to add and leaving this pass to repeat the
+        // same "change" forever. See this function's own regression test.
+        let mut current = current;
+        current.labels = gmail.labels.clone();
+
+        for removed_label in &removed_labels {
             let label_row = labels.resolve(ctx.vault, removed_label);
             if let Ok(removed) = ctx.vault.remove_mail_uids(label_row.id, &[header.uid]) {
                 reap_dead_messages(ctx, &removed);
             }
         }
-        for added in new.difference(&old) {
-            let label_row = labels.resolve(ctx.vault, added);
+        for added_label in &added_labels {
+            let label_row = labels.resolve(ctx.vault, added_label);
             let _ = ctx.vault.ingest_mail(
                 ctx.account_id,
                 vec![IngestMessage {
@@ -497,10 +655,10 @@ async fn refresh_gmail_labels<S: MailSession>(
             );
         }
     }
-    Ok(())
+    Ok(changed_anything)
 }
 
-/// What [`sync_headers`] and [`refresh_gmail_labels`] both call once
+/// What [`reap_vanished`] and [`refresh_gmail_labels`] both call once
 /// [`everyday_core::Vault::remove_mail_uids`] has told them which messages
 /// just became genuinely dead -- no mailbox names them any more, not merely
 /// the one this pass just touched (see that method's own docs). Marks each
@@ -609,28 +767,41 @@ pub async fn bodies_pass<S: MailSession>(
                     &identities,
                 ));
             }
+            // `message` in `processed` is the snapshot `pending_messages`
+            // took *before* the network fetch above -- for a big first
+            // sync, potentially long before it, since this batch may have
+            // sat behind others. Anything that landed locally in the
+            // meantime (a person reading the message, the model setting
+            // its category) is not on it. Re-reading each row fresh here
+            // and bringing forward only the four fields this pass actually
+            // owns -- `pack`, `snippet`, `has_attachments`, `invite` --
+            // rather than upserting the stale snapshot whole, is what
+            // stops that write from reverting `flags`, `labels`,
+            // `category` and `category_source` back to whatever the
+            // headers pass originally saw. See this function's own
+            // regression test.
+            let refreshed: Vec<(IngestMessage, MailDoc)> = processed
+                .iter()
+                .map(|(message, uid, body)| {
+                    let mut fresh =
+                        vault.mail_message(message.id).unwrap_or_else(|_| message.clone());
+                    fresh.pack = message.pack.clone();
+                    fresh.snippet = message.snippet.clone();
+                    fresh.has_attachments = message.has_attachments;
+                    fresh.invite = message.invite.clone();
+                    let doc = mail_doc(account_id, mailbox_id, &fresh, &body.model_text());
+                    (IngestMessage { message: fresh, mailbox: mailbox_id, uid: *uid }, doc)
+                })
+                .collect();
             // One upsert for the whole batch rather than one per message --
             // `everyday-store-sql`'s own `upsert_batched` is what keeps this
             // off the vault's single writer lock for the length of a giant
             // first sync, the same reasoning `MailStore::ingest`'s own docs
             // give for accepting a `Vec` rather than one message at a time.
-            let ingests: Vec<IngestMessage> = processed
-                .iter()
-                .map(|(message, uid, _)| IngestMessage {
-                    message: message.clone(),
-                    mailbox: mailbox_id,
-                    uid: *uid,
-                })
-                .collect();
+            let (ingests, docs): (Vec<IngestMessage>, Vec<MailDoc>) = refreshed.into_iter().unzip();
             let _ = vault.ingest_mail(account_id, ingests);
             let bodies: Vec<Body> = processed.iter().map(|(_, _, body)| body.clone()).collect();
             let _ = vault.save_bodies(&bodies);
-            let docs: Vec<MailDoc> = processed
-                .iter()
-                .map(|(message, _uid, body)| {
-                    mail_doc(account_id, mailbox_id, message, &body.model_text())
-                })
-                .collect();
             docs
         })
         .await
@@ -726,9 +897,37 @@ fn process_body(
                     .collect();
                 sanitised.html
             });
-            let plain = parsed.text.clone().unwrap_or_else(|| {
-                parsed.html.as_deref().map(everyday_mail::text::html_to_text).unwrap_or_default()
-            });
+            // The HTML part wins wherever there is one, even when the
+            // message also carried a `text/plain` alternative -- and it is
+            // read through `html_to_text` rather than taken as it stands.
+            //
+            // # Why the plain part is not simply preferred
+            //
+            // Whatever ends up here is what every reader that is not a
+            // person sees: the snippet, the search index, and -- through
+            // `Body::text` -- the assistant and MCP. A person sees
+            // `html_sanitised` in the frame. If those two come from
+            // different parts of the same message, a sender chooses what
+            // each of them reads, which is the whole of the attack: ship a
+            // benign `text/html` part and a hostile `text/plain` one, and
+            // the instruction the person can never see is the only thing
+            // the model is given. Deriving both from the same part closes
+            // that, and `html_to_text` is what makes the derived text agree
+            // with what the frame actually shows -- it drops
+            // `display:none`, white-on-white and commented-out text, none
+            // of which `sanitize` removes, because hiding text is not by
+            // itself an XSS risk and the frame is entitled to render a
+            // sender's own styling.
+            //
+            // The cost is that a carefully written `text/plain` alternative
+            // is passed over for a machine rendering of the HTML beside it.
+            // That is the right trade: the plain part is only better when
+            // the sender is honest, and it is precisely a dishonest sender
+            // this has to hold against.
+            let plain = match parsed.html.as_deref() {
+                Some(html) => everyday_mail::text::html_to_text(html),
+                None => parsed.text.clone().unwrap_or_default(),
+            };
 
             let mut parts = Vec::with_capacity(parsed.parts.len());
             let mut has_attachments = false;

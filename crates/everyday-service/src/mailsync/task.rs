@@ -72,7 +72,7 @@ use everyday_mail::session::{Credential, IdleEvent, MailError, MailSession};
 use tokio::sync::watch;
 
 use crate::error::CommandResult;
-use crate::mailsync::discovery::LabelMailboxes;
+use crate::mailsync::discovery::{LabelMailboxes, SyncedMailbox};
 use crate::mailsync::ingest::ThreadIndex;
 use crate::mailsync::sender::LazySmtpSender;
 use crate::mailsync::status::Phase;
@@ -170,28 +170,16 @@ where
         }
     };
 
+    // The credential IMAP just rejected may be a cached access token that
+    // is merely stale -- forgotten so the *next* attempt (after the person
+    // signs in again, or on this same account's next restart) resolves a
+    // genuinely fresh one rather than handing out the same bad token again.
+    // See `crate::mailsync::sender`'s module docs for the equivalent
+    // reasoning on the SMTP side.
     let mut session = match connect(account.clone(), credential).await {
         Ok(session) => session,
-        Err(MailError::Auth(reason)) => {
-            // The credential IMAP just rejected may be a cached access
-            // token that is merely stale -- forgotten so the *next* attempt
-            // (after the person signs in again, or on this same account's
-            // next restart) resolves a genuinely fresh one rather than
-            // handing out the same bad token again. See
-            // `crate::mailsync::sender`'s module docs for the equivalent
-            // reasoning on the SMTP side.
-            svc.token_cache().forget(&account_id.to_string()).await;
-            credential::mark_needs_sign_in(&vault, &account, &reason);
-            statuses.set_idle(account_id);
-            return Ok(Outcome::Done);
-        }
-        Err(MailError::Server(message)) => {
-            credential::mark_error(&vault, &account, &message);
-            return Err(message.into());
-        }
         Err(e) => {
-            statuses.set_error(account_id, e.to_string());
-            return Err(e.to_string().into());
+            return handle_session_error(&svc, &vault, &account, account_id, &statuses, e).await;
         }
     };
 
@@ -254,19 +242,9 @@ where
         let mailboxes = match passes::sync_once(&ctx, &mut session, &mut labels, &mut threads).await
         {
             Ok(mailboxes) => mailboxes,
-            Err(MailError::Auth(reason)) => {
-                svc.token_cache().forget(&account_id.to_string()).await;
-                credential::mark_needs_sign_in(&vault, &account, &reason);
-                statuses.set_idle(account_id);
-                return Ok(Outcome::Done);
-            }
-            Err(MailError::Server(message)) => {
-                credential::mark_error(&vault, &account, &message);
-                return Err(message.into());
-            }
             Err(e) => {
-                statuses.set_error(account_id, e.to_string());
-                return Err(e.to_string().into());
+                return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
+                    .await;
             }
         };
         credential::mark_ok(&vault, &account);
@@ -295,17 +273,27 @@ where
         // is shorter, so the mailboxes `IDLE` says nothing about still get
         // their `changes_since` sweep on a cadence, not only when the inbox
         // happens to change.
-        let can_idle = session.capabilities().idle
-            && mailboxes.iter().any(|m| {
-                matches!(
-                    m.row.role,
-                    everyday_core::mail::MailboxRole::Inbox | everyday_core::mail::MailboxRole::All
-                )
-            });
+        let idle_target = idle_mailbox(&mailboxes);
+        let can_idle = session.capabilities().idle && idle_target.is_some();
         if !can_idle {
             match wait_for_wake(&mut stop, &mut nudged, &outbox_notify, next_wake).await {
                 Wake::Stop => return Ok(Outcome::Done),
                 Wake::Nudge | Wake::OutboxNotify | Wake::Due | Wake::Poll => continue,
+            }
+        }
+
+        // `sync_once` above leaves the session `SELECT`ed on whichever
+        // mailbox its own last pass looked at -- almost never the inbox,
+        // since `discovery::discover` sorts it first and every mailbox
+        // after it is visited later. `IDLE` reports activity only for the
+        // mailbox currently selected, so without this, new inbox mail
+        // raises no `EXISTS` here at all and this task would sit `IDLE` on
+        // some other mailbox until `POLL_INTERVAL` came back around.
+        if let Some(target) = idle_target {
+            let remote_name = target.remote_name.clone();
+            if let Err(e) = session.select(&remote_name).await {
+                return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
+                    .await;
             }
         }
 
@@ -341,6 +329,56 @@ where
                 statuses.set_error(account_id, e.to_string());
                 return Err(e.to_string().into());
             }
+        }
+    }
+}
+
+/// The mailbox [`run_account_with`] should `IDLE` on: the inbox, or -- on
+/// Gmail, where the inbox is a label rather than a place a message
+/// physically lives, see `crate::mailsync::discovery`'s own module docs --
+/// All Mail. `None` when this account has neither (a server this crate
+/// could not classify at all), in which case the caller falls back to
+/// polling instead.
+fn idle_mailbox(mailboxes: &[SyncedMailbox]) -> Option<&SyncedMailbox> {
+    mailboxes.iter().find(|m| {
+        matches!(
+            m.row.role,
+            everyday_core::mail::MailboxRole::Inbox | everyday_core::mail::MailboxRole::All
+        )
+    })
+}
+
+/// What every fallible step of this task's live loop -- connecting, one
+/// `sync_once`, selecting the inbox before `IDLE` -- already wants done with
+/// a [`MailError`]: forget a now-stale cached token and ask the person to
+/// sign in again on [`MailError::Auth`], record the server's own text and
+/// keep the account's status in step on [`MailError::Server`], and fall
+/// through to an ordinary retried [`Err`] for anything else (a network
+/// blink, a protocol mismatch this crate's own bug). Written once here
+/// rather than three times inline, since all three call sites want exactly
+/// this and nothing else.
+async fn handle_session_error(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account: &Account,
+    account_id: AccountId,
+    statuses: &crate::mailsync::status::StatusRegistry,
+    e: MailError,
+) -> TaskResult {
+    match e {
+        MailError::Auth(reason) => {
+            svc.token_cache().forget(&account_id.to_string()).await;
+            credential::mark_needs_sign_in(vault, account, &reason);
+            statuses.set_idle(account_id);
+            Ok(Outcome::Done)
+        }
+        MailError::Server(message) => {
+            credential::mark_error(vault, account, &message);
+            Err(message.into())
+        }
+        e => {
+            statuses.set_error(account_id, e.to_string());
+            Err(e.to_string().into())
         }
     }
 }

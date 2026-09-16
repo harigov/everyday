@@ -225,6 +225,24 @@ pub fn strip_url(message: &str) -> String {
 /// supported Rust version (`docs/`'s own note that local `rustc` lags CI),
 /// and the ranges themselves are fixed by the RFCs regardless of which
 /// release of the standard library happens to name them.
+///
+/// Also refuses the address ranges that exist specifically to disguise a
+/// private or reserved address as something this filter would not
+/// recognise on sight: `0.0.0.0/8` ("this network"), `192.0.0.0/24` and
+/// `198.18.0.0/15` (both reserved by IANA for protocol testing and
+/// benchmarking, never a real host), the `224.0.0.0/4` multicast range up
+/// through `240.0.0.0/4` ("reserved for future use" -- neither is a unicast
+/// address a single server could answer from, so nothing legitimate is ever
+/// lost by refusing both), and three IPv6 shapes that carry an IPv4 address
+/// inside an IPv6 one: the deprecated "IPv4-compatible" form (`::a.b.c.d`,
+/// distinct from [`ipv4_mapped`]'s `::ffff:a.b.c.d` -- `::127.0.0.1` is
+/// this, not that), NAT64's well-known prefix (`64:ff9b::/96`,
+/// [RFC 6052](https://www.rfc-editor.org/rfc/rfc6052)), and 6to4
+/// (`2002::/16`, [RFC 3056](https://www.rfc-editor.org/rfc/rfc3056)). Each of
+/// the three is decoded to the `Ipv4Addr` it names and recursed into, the
+/// same as `ipv4_mapped` already did, rather than blocked outright -- a
+/// NAT64 gateway naming a public address must still be reachable, only the
+/// address it actually names has to be checked, the same as any other one.
 pub(crate) fn is_forbidden_address(ip: IpAddr, allow_loopback: bool) -> bool {
     match ip {
         IpAddr::V4(v4) => {
@@ -234,13 +252,16 @@ pub(crate) fn is_forbidden_address(ip: IpAddr, allow_loopback: bool) -> bool {
                 return false;
             }
             loopback
-                || o == [0, 0, 0, 0]
+                || o[0] == 0
                 || o == [255, 255, 255, 255]
                 || o[0] == 10
                 || (o[0] == 172 && (16..=31).contains(&o[1]))
                 || (o[0] == 192 && o[1] == 168)
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0)
                 || (o[0] == 169 && o[1] == 254)
                 || (o[0] == 100 && (64..=127).contains(&o[1]))
+                || (o[0] == 198 && (18..=19).contains(&o[1]))
+                || o[0] >= 224
         }
         IpAddr::V6(v6) => {
             let segments = v6.segments();
@@ -253,6 +274,15 @@ pub(crate) fn is_forbidden_address(ip: IpAddr, allow_loopback: bool) -> bool {
             }
             if let Some(mapped) = ipv4_mapped(&segments) {
                 return is_forbidden_address(IpAddr::V4(mapped), allow_loopback);
+            }
+            if let Some(embedded) = ipv4_compatible(&segments) {
+                return is_forbidden_address(IpAddr::V4(embedded), allow_loopback);
+            }
+            if let Some(embedded) = nat64_embedded(&segments) {
+                return is_forbidden_address(IpAddr::V4(embedded), allow_loopback);
+            }
+            if let Some(embedded) = six_to_four_embedded(&segments) {
+                return is_forbidden_address(IpAddr::V4(embedded), allow_loopback);
             }
             // `fe80::/10`, link-local, and `fc00::/7`, unique local -- the
             // IPv6 counterparts of `169.254.0.0/16` and the RFC 1918 ranges
@@ -272,6 +302,56 @@ fn ipv4_mapped(segments: &[u16; 8]) -> Option<std::net::Ipv4Addr> {
         let b = (segments[6] & 0xff) as u8;
         let c = (segments[7] >> 8) as u8;
         let d = (segments[7] & 0xff) as u8;
+        Some(std::net::Ipv4Addr::new(a, b, c, d))
+    } else {
+        None
+    }
+}
+
+/// `::a.b.c.d`, the deprecated "IPv4-compatible IPv6 address": the top 96
+/// bits are zero and the low 32 carry the address outright, with no `0xffff`
+/// marker segment the way [`ipv4_mapped`]'s shape has one. `::1` (IPv6's own
+/// loopback) and `::` (unspecified) both also have a zero top, but
+/// [`is_forbidden_address`] checks and returns for both before this ever
+/// runs, so this needs no special case for either.
+fn ipv4_compatible(segments: &[u16; 8]) -> Option<std::net::Ipv4Addr> {
+    if segments[0..6] == [0, 0, 0, 0, 0, 0] {
+        let a = (segments[6] >> 8) as u8;
+        let b = (segments[6] & 0xff) as u8;
+        let c = (segments[7] >> 8) as u8;
+        let d = (segments[7] & 0xff) as u8;
+        Some(std::net::Ipv4Addr::new(a, b, c, d))
+    } else {
+        None
+    }
+}
+
+/// `64:ff9b::/96`, NAT64's well-known prefix: the last 32 bits are the IPv4
+/// address a translating gateway is standing in for. See
+/// [`is_forbidden_address`]'s docs on why this is decoded and recursed into
+/// rather than the whole prefix simply being refused.
+fn nat64_embedded(segments: &[u16; 8]) -> Option<std::net::Ipv4Addr> {
+    if segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2..6] == [0, 0, 0, 0] {
+        let a = (segments[6] >> 8) as u8;
+        let b = (segments[6] & 0xff) as u8;
+        let c = (segments[7] >> 8) as u8;
+        let d = (segments[7] & 0xff) as u8;
+        Some(std::net::Ipv4Addr::new(a, b, c, d))
+    } else {
+        None
+    }
+}
+
+/// `2002::/16`, 6to4: the 32 bits right after the `2002` prefix are the IPv4
+/// address being tunnelled. See [`is_forbidden_address`]'s docs on why this
+/// is decoded and recursed into rather than the whole prefix simply being
+/// refused.
+fn six_to_four_embedded(segments: &[u16; 8]) -> Option<std::net::Ipv4Addr> {
+    if segments[0] == 0x2002 {
+        let a = (segments[1] >> 8) as u8;
+        let b = (segments[1] & 0xff) as u8;
+        let c = (segments[2] >> 8) as u8;
+        let d = (segments[2] & 0xff) as u8;
         Some(std::net::Ipv4Addr::new(a, b, c, d))
     } else {
         None
@@ -346,5 +426,73 @@ mod tests {
         let leaky = "error sending request for url \
              (https://html.duckduckgo.com/html/?q=my%20divorce%20lawyer): timed out";
         assert!(!strip_url(leaky).contains("divorce"));
+    }
+
+    // ---- finding 9: SSRF filter gaps ---------------------------------------
+
+    #[test]
+    fn the_newly_added_ipv4_ranges_are_forbidden() {
+        let forbidden = [
+            "0.0.0.0",
+            "0.1.2.3",
+            "192.0.0.1",
+            "198.18.0.1",
+            "198.19.255.255",
+            "224.0.0.1", // multicast
+            "240.0.0.1", // reserved
+            "255.255.255.255",
+        ];
+        for addr in forbidden {
+            let ip: IpAddr = addr.parse().unwrap();
+            assert!(is_forbidden_address(ip, false), "{addr} should be forbidden");
+        }
+        // 198.18.0.0/15's neighbours must not be caught by an off-by-one.
+        assert!(!is_forbidden_address("198.17.255.255".parse().unwrap(), false));
+        assert!(!is_forbidden_address("198.20.0.0".parse().unwrap(), false));
+    }
+
+    #[test]
+    fn an_ipv4_compatible_ipv6_loopback_is_forbidden() {
+        // `::127.0.0.1` -- distinct from `::ffff:127.0.0.1` (`ipv4_mapped`'s
+        // own shape) in that it carries no `0xffff` marker segment at all.
+        let ip: IpAddr = "::127.0.0.1".parse().unwrap();
+        assert!(is_forbidden_address(ip, false));
+    }
+
+    #[test]
+    fn an_ipv4_compatible_ipv6_public_address_is_not_forbidden() {
+        // The embedded address is decoded and checked on its own merits,
+        // not blocked just for being an IPv4-compatible IPv6 address.
+        let ip: IpAddr = "::93.184.216.34".parse().unwrap();
+        assert!(!is_forbidden_address(ip, false));
+    }
+
+    #[test]
+    fn a_nat64_embedded_private_address_is_forbidden() {
+        // `64:ff9b::7f00:1` -- NAT64's well-known prefix wrapping
+        // `127.0.0.1`.
+        let ip: IpAddr = "64:ff9b::7f00:1".parse().unwrap();
+        assert!(is_forbidden_address(ip, false));
+    }
+
+    #[test]
+    fn a_nat64_embedded_public_address_is_not_forbidden() {
+        // `93.184.216.34` == `5db8:d822`.
+        let ip: IpAddr = "64:ff9b::5db8:d822".parse().unwrap();
+        assert!(!is_forbidden_address(ip, false));
+    }
+
+    #[test]
+    fn a_6to4_embedded_private_address_is_forbidden() {
+        // `2002:0a00:0001::` embeds `10.0.0.1`.
+        let ip: IpAddr = "2002:a00:1::".parse().unwrap();
+        assert!(is_forbidden_address(ip, false));
+    }
+
+    #[test]
+    fn a_6to4_embedded_public_address_is_not_forbidden() {
+        // `2002:5db8:d822::` embeds `93.184.216.34`.
+        let ip: IpAddr = "2002:5db8:d822::".parse().unwrap();
+        assert!(!is_forbidden_address(ip, false));
     }
 }

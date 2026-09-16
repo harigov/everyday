@@ -1549,7 +1549,11 @@ export interface RemoteImageSettings {
 
 /** Which part of the sync an account's task is doing right now. Mirrors
  * `everyday_service::mailsync::status::Phase`. */
-export type MailSyncPhase = 'idle' | 'connecting' | 'headers' | 'bodies' | 'attachments' | 'idling'
+// No `attachments` phase: extracting them is folded into the bodies pass
+// rather than walking the mailbox again, so `Phase` in `mailsync/status.rs`
+// has nothing beyond `bodies` to report and this union must not offer a
+// value that can never arrive.
+export type MailSyncPhase = 'idle' | 'connecting' | 'headers' | 'bodies' | 'idling'
 
 /** One account's sync progress, as `sync_status` reports it. `total` is `0`
  * when it is not yet known, which reads as "in progress, indeterminate"

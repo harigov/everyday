@@ -326,12 +326,54 @@ pub fn forward_subject(subject: &str) -> String {
 }
 
 fn prefixed_subject(subject: &str, prefix: &str) -> String {
-    let trimmed = subject.trim();
-    if trimmed.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase()) {
+    if has_reply_or_forward_prefix(subject) {
         subject.to_string()
     } else {
         format!("{prefix} {subject}")
     }
+}
+
+/// Prefixes that mean "this subject already carries a reply or forward
+/// marker of some kind" -- the ones real mail clients actually send,
+/// including the ones localised by the system's own language rather than
+/// the message's, since Outlook and Apple Mail both do that.
+///
+/// A private copy of the same list `threading`'s own subject matching
+/// keeps (`REPLY_OR_FORWARD_PREFIXES` there): that copy is private to
+/// `threading`'s module and this file has no way to reach it without
+/// `threading` widening its own visibility, which is a change to a file
+/// this fix does not touch. Two lists this short, over the same handful of
+/// mail clients' own conventions, are cheap enough to keep in step by
+/// inspection.
+const REPLY_OR_FORWARD_PREFIXES: &[&str] =
+    &["re", "fw", "fwd", "aw", "sv", "antw", "rv", "odp", "tr", "wg"];
+
+/// Whether `subject` already starts with one of [`REPLY_OR_FORWARD_PREFIXES`],
+/// case-insensitively, optionally carrying a bracketed reply count on the
+/// word itself (`RE[2]:`, the way some clients count replies down a
+/// thread) -- what stops [`reply_subject`] and [`forward_subject`] from
+/// stacking a second marker in front of a subject that already carries
+/// one, however it spelled it.
+///
+/// Before this recognised only the exact spelling the caller was about to
+/// add -- `"Re:"` for a reply, `"Fwd:"` for a forward -- so replying to
+/// `"Fw: Budget"` produced `"Re: Fw: Budget"` and forwarding
+/// `"RE[2]: Budget"` produced `"Fwd: RE[2]: Budget"`: both already carried
+/// a marker, just not the one being checked for.
+fn has_reply_or_forward_prefix(subject: &str) -> bool {
+    let trimmed = subject.trim();
+    let Some(colon) = trimmed.find(':') else { return false };
+    let candidate = trimmed[..colon].trim();
+    // `RE[2]` names the same marker as `RE`; strip a trailing bracketed
+    // suffix off the *word* before comparing, not off the whole subject,
+    // so a subject that genuinely starts with an unrelated bracketed tag
+    // (`"[External] question"`, no colon inside the brackets at all) is
+    // never mistaken for one of these.
+    let word = match candidate.strip_suffix(']') {
+        Some(rest) => rest.split('[').next().unwrap_or(rest).trim(),
+        None => candidate,
+    };
+    REPLY_OR_FORWARD_PREFIXES.contains(&word.to_ascii_lowercase().as_str())
 }
 
 /// Wraps `sanitised_html` — the parent message's own sanitised body, exactly
@@ -602,6 +644,43 @@ mod tests {
     fn forward_subject_does_not_stack() {
         assert_eq!(forward_subject("Budget"), "Fwd: Budget");
         assert_eq!(forward_subject("Fwd: Budget"), "Fwd: Budget");
+    }
+
+    /// Finding 11: a mail client's own forward marker (`Fw:`, not this
+    /// application's `Fwd:`) must still be recognised as "already carries
+    /// one", not stacked under a second marker of a different spelling.
+    #[test]
+    fn reply_subject_does_not_stack_on_a_different_clients_own_spelling() {
+        assert_eq!(reply_subject("Fw: Budget"), "Fw: Budget");
+        assert_eq!(forward_subject("Fw: Budget"), "Fw: Budget");
+    }
+
+    /// Finding 11: a bracketed reply count some clients append to the word
+    /// itself must not be mistaken for new, un-prefixed content.
+    #[test]
+    fn a_bracketed_reply_count_is_recognised_as_the_same_marker() {
+        assert_eq!(reply_subject("RE[2]: Budget"), "RE[2]: Budget");
+        assert_eq!(forward_subject("FWD[3]: Budget"), "FWD[3]: Budget");
+    }
+
+    /// Finding 11: Outlook and Apple Mail localise `Re:`/`Fwd:` by the
+    /// system's own language, not the message's -- `threading`'s own
+    /// subject matching already lists the spellings that actually turn up.
+    #[test]
+    fn a_localised_prefix_is_recognised_too() {
+        assert_eq!(reply_subject("AW: Budget"), "AW: Budget");
+        assert_eq!(reply_subject("SV: Budget"), "SV: Budget");
+        assert_eq!(reply_subject("Antw: Budget"), "Antw: Budget");
+    }
+
+    /// A subject that merely starts with a bracketed tag of its own --
+    /// nothing like a reply or forward marker -- must not be swallowed by
+    /// the bracket-stripping [`has_reply_or_forward_prefix`] does for a
+    /// genuine `RE[2]`-shaped marker.
+    #[test]
+    fn an_unrelated_bracketed_subject_still_gets_prefixed() {
+        assert_eq!(reply_subject("[Ops] Budget"), "Re: [Ops] Budget");
+        assert_eq!(reply_subject("[Ops]: Budget"), "Re: [Ops]: Budget");
     }
 
     fn parent_with_id(message_id: &str, references: Vec<String>) -> ParsedMessage {

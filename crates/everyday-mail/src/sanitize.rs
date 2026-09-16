@@ -167,7 +167,20 @@ fn guard_style_urls(html: &str, scheme: &str) -> Result<String, lol_html::errors
     let scheme_for_attr = scheme.to_string();
     let style_attr = element!("[style]", move |el| {
         if let Some(style) = el.get_attribute("style") {
-            let guarded = scrub_css(&style, &mut |url| guard_one_url(url, &scheme_for_attr));
+            // Decoded for the same reason `rewrite_dangerous_refs`'s own
+            // `style_attr` handler decodes first: `get_attribute` hands back
+            // the attribute's *source* text, and by the time this second
+            // pass runs, that source text has already been through
+            // `set_attribute` once (in the first pass, writing a proxied
+            // `url("everyday://...")` back) and then through ammonia's own
+            // HTML parse-and-reserialise -- both of which HTML-escape a `"`
+            // inside an attribute value as `&quot;`. Without decoding here
+            // first, `is_safe_css_url` sees `&quot;everyday://...` instead
+            // of `everyday://...`, fails its `starts_with` check, and this
+            // guard blanks every proxied and inline image url it was built
+            // to keep -- see the module docs on why this pass exists at all.
+            let decoded = crate::entities::decode_entities(&style);
+            let guarded = scrub_css(&decoded, &mut |url| guard_one_url(url, &scheme_for_attr));
             el.set_attribute("style", &guarded)?;
         }
         Ok(())
@@ -443,6 +456,10 @@ const ALLOWED_STYLE_PROPERTIES: &[&str] = &[
     "color",
     "background",
     "background-color",
+    "background-image",
+    "background-size",
+    "background-repeat",
+    "background-position",
     "font",
     "font-family",
     "font-size",
@@ -490,7 +507,18 @@ fn ammonia_clean(html: &str, scheme: &str) -> String {
     let schemes = [scheme];
     let mut builder = ammonia::Builder::default();
     builder
-        .add_tags(&["style"])
+        // `picture` and `source` join `style` on the allow-list for the same
+        // reason: neither is one of ammonia's default tags, so without this
+        // both were being deleted wholesale after `rewrite_dangerous_refs`
+        // had already proxied a `<source srcset>`'s URLs into
+        // `remote_images` -- recording fetchable addresses for an element
+        // that never survived to be fetched from. Adding the tags, rather
+        // than making the rewrite pass stop recording them, is what makes
+        // `<picture>`'s actual point -- serving a smaller image to a
+        // narrower viewport -- work at all; the alternative would keep
+        // responsive images permanently broken in every message that uses
+        // them.
+        .add_tags(&["style", "picture", "source"])
         .rm_clean_content_tags(&["style"])
         .add_generic_attributes(&[
             "style",
@@ -587,33 +615,103 @@ fn looks_like_tracking_pixel(el: &Element) -> bool {
 
 /// Rewrites every `srcset` candidate, decoding each URL first for the same
 /// reason the `src`, `background` and `style` handlers all do -- see the
-/// `img_src` handler's own doc in [`rewrite_dangerous_refs`]. Decoding
-/// happens per candidate, after the list is split on `,`, because a decoded
-/// `&amp;` could otherwise be mistaken for punctuation the splitter itself
-/// looks for; nothing in the small entity table this crate decodes spells a
-/// comma or whitespace, but splitting first keeps that true by construction
-/// rather than by checking the table.
+/// `img_src` handler's own doc in [`rewrite_dangerous_refs`]. Splitting into
+/// candidates happens through [`parse_srcset_candidates`], never a plain
+/// `split(',')` -- see that function's own docs for why a comma is not a
+/// safe candidate separator on its own.
 fn rewrite_srcset(value: &str, shared: &Rc<RefCell<Shared>>) -> String {
-    value
-        .split(',')
-        .filter_map(|candidate| {
-            let candidate = candidate.trim();
-            if candidate.is_empty() {
-                return None;
+    parse_srcset_candidates(value)
+        .into_iter()
+        .map(|(url, descriptor)| {
+            let decoded = crate::entities::decode_entities(&url);
+            let replacement = shared.borrow_mut().classify(&decoded);
+            match descriptor {
+                Some(d) => format!("{replacement} {d}"),
+                None => replacement,
             }
-            Some(match candidate.split_once(char::is_whitespace) {
-                Some((url, descriptor)) => {
-                    let decoded = crate::entities::decode_entities(url);
-                    format!("{} {}", shared.borrow_mut().classify(&decoded), descriptor.trim())
-                }
-                None => {
-                    let decoded = crate::entities::decode_entities(candidate);
-                    shared.borrow_mut().classify(&decoded)
-                }
-            })
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Splits a `srcset` attribute value into `(url, descriptor)` candidates,
+/// following the shape of the HTML Standard's "parsing a srcset attribute"
+/// algorithm rather than a plain `split(',')`.
+///
+/// A comma is not a safe candidate separator on its own: a real image CDN's
+/// URL can carry one unescaped (Cloudinary's `/upload/w_300,h_200/…`
+/// transformation syntax being the most common shape in the wild), and a
+/// `data:` URI's base64 payload routinely does too. `split(',')` before this
+/// fix cut such a URL in two -- the first half got hashed, proxied and
+/// genuinely fetched as a truncated (and generally 404 or garbage-serving)
+/// address, and the second half survived as a mangled, dangling second
+/// candidate with no `classify` ever applied to it, since it no longer
+/// looked like a URL at all once it had lost its scheme.
+///
+/// The URL half of each candidate is instead everything up to the next
+/// ASCII whitespace -- valid per spec, since a URL inside a `srcset` may
+/// never itself contain unescaped whitespace, which is exactly what makes it
+/// safe to split on while a comma is not. What follows, once whitespace is
+/// skipped, is an optional descriptor (`1x`, `300w`) that runs to the next
+/// comma -- *that* comma, after a whitespace-delimited URL and its
+/// descriptor, is unambiguous. The one exception the spec itself carves out:
+/// a URL that ends in a comma has no descriptor at all -- the trailing
+/// comma(s) are stripped from the URL and parsing resumes at the next
+/// candidate immediately, which is what lets a plain comma-joined list with
+/// no descriptors (`a.png, b.png`) parse the same as it always did.
+fn parse_srcset_candidates(value: &str) -> Vec<(String, Option<String>)> {
+    let mut candidates = Vec::new();
+    let mut rest = value;
+
+    loop {
+        rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == ',');
+        if rest.is_empty() {
+            break;
+        }
+
+        let url_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let mut url = &rest[..url_end];
+        rest = &rest[url_end..];
+
+        // A URL ending in a comma (or several) carries no descriptor -- the
+        // comma(s) belong to the candidate list, not the URL.
+        if url.ends_with(',') {
+            url = url.trim_end_matches(',');
+            if !url.is_empty() {
+                candidates.push((url.to_string(), None));
+            }
+            continue;
+        }
+
+        rest = rest.trim_start_matches(|c: char| c.is_whitespace());
+
+        // The descriptor runs to the next comma that is not inside
+        // parentheses -- no defined descriptor syntax uses one today, but
+        // balancing them anyway costs nothing and matches the spec's own
+        // algorithm, which does the same for whatever a future descriptor
+        // might need.
+        let mut depth = 0i32;
+        let mut end = rest.len();
+        for (i, ch) in rest.char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth <= 0 => {
+                    end = i;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let descriptor = rest[..end].trim();
+        candidates.push((
+            url.to_string(),
+            if descriptor.is_empty() { None } else { Some(descriptor.to_string()) },
+        ));
+        rest = &rest[end..];
+    }
+
+    candidates
 }
 
 /// Scrubs the CSS-hazard surface shared by a `style=""` attribute and a
@@ -1149,6 +1247,115 @@ mod tests {
         assert!(out.html.contains("2x"));
     }
 
+    /// Finding 4: `ALLOWED_STYLE_PROPERTIES` had `background` and
+    /// `background-color` but not the longhands a lot of real HTML mail
+    /// actually uses -- ammonia's `filter_style_properties` deletes a
+    /// declaration outright when its property is not on the list, so
+    /// `background-image` was silently dropped before it ever reached
+    /// `guard_style_urls`, regardless of what that pass would have allowed.
+    #[test]
+    fn a_background_image_property_survives_ammonias_allow_list() {
+        let out = sanitize(
+            r#"<div style="background-image:url(https://cdn.example.com/hero.png)">hi</div>"#,
+            &rewrite(),
+        );
+        assert!(out.html.contains("background-image"), "{}", out.html);
+        assert_eq!(out.remote_images.len(), 1);
+        assert!(
+            out.html.contains(&format!(
+                "everyday://mail/img/msg-1@example.com/{}",
+                out.remote_images[0].token
+            )),
+            "{}",
+            out.html
+        );
+    }
+
+    // ---- finding 5: srcset splitting must not corrupt a URL with a comma --
+
+    #[test]
+    fn a_cloudinary_style_url_with_a_comma_survives_srcset_splitting() {
+        let out = sanitize(
+            r#"<img src="https://cdn.example.com/a.png" srcset="https://res.cloudinary.com/demo/image/upload/w_300,h_200/sample.jpg 300w, https://res.cloudinary.com/demo/image/upload/w_600,h_400/sample.jpg 600w">"#,
+            &rewrite(),
+        );
+        assert_eq!(out.remote_images.len(), 3, "{:?}", out.remote_images);
+        assert!(
+            out.remote_images.iter().any(|i| i.original_url
+                == "https://res.cloudinary.com/demo/image/upload/w_300,h_200/sample.jpg"),
+            "{:?}",
+            out.remote_images
+        );
+        assert!(
+            out.remote_images.iter().any(|i| i.original_url
+                == "https://res.cloudinary.com/demo/image/upload/w_600,h_400/sample.jpg"),
+            "{:?}",
+            out.remote_images
+        );
+        assert!(out.html.contains("300w"), "{}", out.html);
+        assert!(out.html.contains("600w"), "{}", out.html);
+    }
+
+    #[test]
+    fn a_data_uri_srcset_candidate_survives_its_own_commas() {
+        let candidates = parse_srcset_candidates(
+            "data:image/png;base64,iVBORw0KGgoAAAANSU= 1x, https://cdn.example.com/a@2x.png 2x",
+        );
+        assert_eq!(
+            candidates,
+            vec![
+                ("data:image/png;base64,iVBORw0KGgoAAAANSU=".to_string(), Some("1x".to_string())),
+                ("https://cdn.example.com/a@2x.png".to_string(), Some("2x".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_descriptorless_comma_joined_srcset_still_splits_on_commas() {
+        // The one case a plain `split(',')` got right: no descriptors at
+        // all, just URLs joined by bare commas. `parse_srcset_candidates`'s
+        // "a URL ending in a comma has no descriptor" rule is what keeps
+        // this working now that commas are no longer the primary separator.
+        let candidates =
+            parse_srcset_candidates("https://cdn.example.com/a.png, https://cdn.example.com/b.png");
+        assert_eq!(
+            candidates,
+            vec![
+                ("https://cdn.example.com/a.png".to_string(), None),
+                ("https://cdn.example.com/b.png".to_string(), None),
+            ]
+        );
+    }
+
+    // ---- finding 6: <picture>/<source> is no longer dead code --------------
+
+    #[test]
+    fn a_picture_elements_source_survives_and_is_proxied() {
+        let out = sanitize(
+            r#"<picture>
+                 <source srcset="https://cdn.example.com/wide.png" media="(min-width: 600px)">
+                 <img src="https://cdn.example.com/narrow.png">
+               </picture>"#,
+            &rewrite(),
+        );
+        assert!(out.html.contains("<picture"), "{}", out.html);
+        assert!(out.html.contains("<source"), "{}", out.html);
+        assert_eq!(out.remote_images.len(), 2, "{:?}", out.remote_images);
+        // Every url `remote_images` records must actually appear in the
+        // document -- the bug this guards against left a `<source>`'s
+        // proxied url recorded but the element itself deleted, so the
+        // address was fetchable but appeared nowhere in the html.
+        for image in &out.remote_images {
+            assert!(
+                out.html
+                    .contains(&format!("everyday://mail/img/msg-1@example.com/{}", image.token)),
+                "recorded image {:?} does not appear in {}",
+                image,
+                out.html
+            );
+        }
+    }
+
     #[test]
     fn tables_and_inline_formatting_survive() {
         let out = sanitize(
@@ -1286,5 +1493,46 @@ mod tests {
         .unwrap();
         assert!(out.contains("everyday://mail/img/msg/tok"), "{out}");
         assert!(out.contains("data:image/png"), "{out}");
+    }
+
+    /// The regression for finding 3: the test above fed `guard_style_urls`
+    /// an already-unescaped `url("everyday://...")`, which the real pipeline
+    /// never produces -- by the time this pass sees it, the first pass's own
+    /// `set_attribute` and ammonia's HTML parse-and-reserialise have both
+    /// already turned the `"` this pass's own first-pass `url("...")`
+    /// quoting writes into `&quot;`. Running the *whole* `sanitize()`
+    /// pipeline is what would have caught this pass failing to decode that
+    /// back before comparing against `everyday://` -- both a `style=""`
+    /// background image and a `cid:` inline attachment referenced the same
+    /// way, since both go through the identical `url("...")` round trip.
+    #[test]
+    fn a_style_background_image_survives_the_whole_pipeline() {
+        let out = sanitize(
+            r#"<div style="background-image:url(https://cdn.example.com/hero.png)">hi</div>"#,
+            &rewrite(),
+        );
+        assert_eq!(out.remote_images.len(), 1, "{}", out.html);
+        assert!(
+            out.html.contains(&format!(
+                "everyday://mail/img/msg-1@example.com/{}",
+                out.remote_images[0].token
+            )),
+            "the proxied url must survive to the final output: {}",
+            out.html
+        );
+    }
+
+    /// The `cid:` half of the same regression: an inline attachment
+    /// referenced from a `style=""` background must not be blanked by the
+    /// final guard either.
+    #[test]
+    fn a_style_background_cid_image_survives_the_whole_pipeline() {
+        let out =
+            sanitize(r#"<div style="background:url(cid:logo@example.com)">hi</div>"#, &rewrite());
+        assert!(
+            out.html.contains("everyday://mail/part/msg-1@example.com/logo@example.com"),
+            "{}",
+            out.html
+        );
     }
 }

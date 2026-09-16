@@ -98,10 +98,29 @@ pub fn model_text(parsed: &ParsedMessage) -> String {
     truncate_chars(kept.trim(), MODEL_TEXT_MAX_CHARS)
 }
 
+/// The one body a machine reads, taken from the same part a person is shown.
+///
+/// # Why an HTML part wins over a `text/plain` one beside it
+///
+/// A `multipart/alternative` message carries two bodies and lets the sender
+/// decide what goes in each. A person is shown the HTML; if this preferred
+/// the plain part, a sender could put something in it that no reader of the
+/// message could ever see, and that text -- not the text on screen -- is
+/// what [`model_text`] would hand a tool. Every hidden-content defence in
+/// this module would still pass, because nothing was hidden by CSS: it was
+/// hidden by being in the part nobody renders.
+///
+/// So the HTML is the source wherever there is HTML, read through
+/// [`html_to_text`], which is what drops `display:none`, white-on-white and
+/// commented-out content. The plain part is used only when it is the whole
+/// message. The cost is a machine rendering of HTML in place of a
+/// hand-written plain alternative -- worth paying, since the plain part is
+/// only the better text when the sender meant well, and a sender who meant
+/// well is not the case this has to hold against.
 fn plain_text_of(parsed: &ParsedMessage) -> String {
-    match &parsed.text {
-        Some(text) => text.clone(),
-        None => parsed.html.as_deref().map(html_to_text).unwrap_or_default(),
+    match parsed.html.as_deref() {
+        Some(html) => html_to_text(html),
+        None => parsed.text.clone().unwrap_or_default(),
     }
 }
 

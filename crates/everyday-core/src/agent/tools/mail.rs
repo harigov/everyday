@@ -321,10 +321,24 @@ pub(super) static TOOLS: &[Tool] = &[
         Outward,
         Mail,
         schema(
-            vec![(
-                "draft_id",
-                text("Id of an existing draft from draft_reply, draft_message or update_draft.")
-            )],
+            vec![
+                (
+                    "draft_id",
+                    text(
+                        "Id of an existing draft from draft_reply, draft_message or update_draft."
+                    )
+                ),
+                (
+                    "draft_fingerprint",
+                    text(
+                        "Optional. The `fingerprint` field from a recent read of this draft \
+                         (draft_reply, draft_message, update_draft or the confirmation card's \
+                         own text). If given and the draft's recipients or last-saved time have \
+                         since changed, the send is refused rather than sent against recipients \
+                         nobody just looked at."
+                    )
+                )
+            ],
             &["draft_id"]
         ),
         "Send a draft that already exists. Takes only its id \u{2014} this never composes \
@@ -570,12 +584,34 @@ fn own_addresses(account: &Account) -> HashSet<String> {
 fn parse_addresses(args: &Args<'_>, key: &str) -> Result<Vec<Address>> {
     let mut out = Vec::new();
     for raw in args.strings(key) {
-        if !raw.contains('@') {
+        if !is_plausible_email(&raw) {
             return Err(args.bad(format!("`{key}` must be email addresses, got {raw:?}")));
         }
         out.push(Address::bare(raw));
     }
     Ok(out)
+}
+
+/// A cheap, deliberately conservative check that `raw` at least has the
+/// shape of one email address -- not a full RFC 5321 parse. This crate has
+/// no dependency that does one and does not need one: `lettre`, in
+/// `everyday-mail`, is what actually has to get this right before a send
+/// leaves the building, and stays the real authority on validity.
+///
+/// What this exists to catch is narrower and much earlier: `raw.contains('@')`
+/// alone waved through anything with an `@` in it, including a value
+/// carrying a space, a CR or an LF -- which lettre still refuses (correctly:
+/// it never sends an envelope over a malformed address, and Bcc is never
+/// written as a header, so this was never an SMTP injection), but only once
+/// the draft was already saved and queued, surfacing as a baffling protocol
+/// error on a send rather than a correctable argument error on the call
+/// that should have refused it.
+fn is_plausible_email(raw: &str) -> bool {
+    if raw.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
+    let Some((local, domain)) = raw.split_once('@') else { return false };
+    !local.is_empty() && !domain.is_empty() && !domain.contains('@')
 }
 
 fn mailbox_role(args: &Args<'_>, key: &str) -> Result<MailboxRole> {
@@ -642,6 +678,12 @@ fn draft_result(action: &str, draft: &Draft, thread_id: Option<ThreadId>) -> Res
         if let Some(thread_id) = thread_id {
             map.insert("thread_id".into(), json!(thread_id.to_string()));
         }
+        // See `send_draft`'s own `draft_fingerprint` argument and
+        // `run_send_draft`'s comment: a caller that passes this straight
+        // back on a later `send_draft` call gets refused, rather than
+        // silently sent, if the recipients or this row's own save time
+        // moved between reading it here and sending it.
+        map.insert("fingerprint".into(), json!(draft_fingerprint(draft)));
     }
     Ok(out)
 }
@@ -857,11 +899,29 @@ fn run_draft_reply(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let mut draft = Draft::new(account.id, account.address.clone(), origin.clone());
     draft.in_reply_to = Some(message_id);
     draft.subject = compose::reply_subject(&parent.subject);
-    draft.to = vec![parent.from.clone()];
+    // RFC 5322 §3.6.2: `Reply-To`, when the sender set one, names where a
+    // reply is actually meant to go -- a mailing list, a ticketing system,
+    // a `no-reply@` address whose own `Reply-To` names a real mailbox --
+    // and takes priority over `From`, which this ignored entirely until
+    // now. See `domains::mail::new_draft`'s identical reasoning for a
+    // person's own click on "reply".
+    draft.to = if parent.reply_to.is_empty() {
+        vec![parent.from.clone()]
+    } else {
+        parent.reply_to.clone()
+    };
     if reply_all {
         let own = own_addresses(&account);
         for addr in parent.to.iter().chain(parent.cc.iter()) {
-            let already = draft.to.iter().any(|a| a.email.eq_ignore_ascii_case(&addr.email));
+            // Checked against `cc` as it fills too, not only against `to`:
+            // otherwise an address the parent listed in both `to` and `cc`
+            // was added to this draft's `cc` twice -- one RCPT TO for one
+            // recipient.
+            let already = draft
+                .to
+                .iter()
+                .chain(draft.cc.iter())
+                .any(|a| a.email.eq_ignore_ascii_case(&addr.email));
             if !already && !own.contains(&addr.email.to_lowercase()) {
                 draft.cc.push(addr.clone());
             }
@@ -955,9 +1015,14 @@ fn run_update_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 /// `to`/`cc`/`bcc` on `update_draft`: `Some` only when the field was
 /// actually named in the call, so an omitted one leaves the draft alone
 /// rather than being silently blanked -- `Args::strings` alone cannot tell
-/// "omitted" from "sent as an empty list".
+/// "omitted" from "sent as an empty list", since both decode to an empty
+/// `Vec`. [`Args::has_key`] asks the question this actually needs answered:
+/// was the key present at all, not what it happened to contain. Before this
+/// used `has_key`, `"bcc": []` -- an assistant deliberately clearing a
+/// wrong Bcc -- read as omitted, so the call answered success and the Bcc
+/// survived to the send.
 fn update_addresses(args: &Args<'_>, key: &str) -> Result<Option<Vec<Address>>> {
-    if args.opt_str(key).is_none() && args.strings(key).is_empty() {
+    if !args.has_key(key) {
         return Ok(None);
     }
     Ok(Some(parse_addresses(args, key)?))
@@ -978,6 +1043,24 @@ fn origin_label(origin: &Origin) -> &'static str {
         Origin::Mcp { .. } => "an MCP client",
         Origin::Routine { .. } => "a routine",
     }
+}
+
+/// A short fingerprint of exactly the parts of `draft` a confirmed send
+/// must not have changed underneath the confirmation: its recipients and
+/// its own [`Draft::updated_at`]. Not the subject or body -- a person who
+/// approved "send this" while the body kept autosaving a typo fix is not
+/// the race this exists to catch; a scheduled routine's `update_draft`
+/// widening `bcc` while the card is still on screen is (see this module's
+/// own doc on `Pending` being process-wide, and `run_send_draft`'s own
+/// comment for what checking this actually buys and does not).
+fn draft_fingerprint(draft: &Draft) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for addr in draft.to.iter().chain(draft.cc.iter()).chain(draft.bcc.iter()) {
+        hasher.update(addr.email.to_lowercase().as_bytes());
+        hasher.update(b"\0");
+    }
+    hasher.update(draft.updated_at.to_string().as_bytes());
+    hasher.finalize().to_hex()[..12].to_string()
 }
 
 /// `send_draft`'s confirmation card -- the one place a person actually
@@ -1021,6 +1104,12 @@ fn describe_send_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String>
             origin_label(changed_by)
         ));
     }
+    // See `run_send_draft`'s own comment for what passing this back as
+    // `draft_fingerprint` on the confirmed call actually buys: a send
+    // refused, rather than silently carried out, if anything this
+    // fingerprint covers moved between this card being built and the
+    // person answering it.
+    out.push_str(&format!(" (fingerprint {})", draft_fingerprint(&draft)));
     Some(out)
 }
 
@@ -1044,6 +1133,31 @@ fn run_send_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     require_permission(ctx, &account, Permission::Send, "send_draft")?;
     if draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() {
         return Err(Error::Invalid("send_draft: this draft has no recipients yet.".into()));
+    }
+    // Mitigates, rather than closes, the race `describe_send_draft`'s
+    // confirmation card and this send read the draft at two different
+    // moments: `Pending` (in `agent.rs`) holds a confirmation open across
+    // however long a person takes to answer it, process-wide, and nothing
+    // stops a scheduled routine's own `update_draft` -- a `Write`, so
+    // neither confirmed nor refused unattended -- from landing on this
+    // exact draft while the card is still on screen. A caller that passes
+    // back the fingerprint the card was built from gets that gap closed:
+    // if this draft's recipients or `updated_at` moved since, the send is
+    // refused rather than carried out against recipients nobody just
+    // looked at. Optional, and only as strong as whatever called this
+    // actually bothers to pass -- `everyday-server`'s `VaultHost` and a
+    // bare script never will, since neither ever saw a card -- so this is
+    // one layer, not the fix: the complete fix is `agent.rs`'s `ConfirmGate`
+    // capturing this call's own fingerprint when it builds the card and
+    // supplying it back here itself, which is outside this file's reach.
+    if let Some(expected) = args.opt_str("draft_fingerprint")
+        && expected != draft_fingerprint(&draft)
+    {
+        return Err(Error::Invalid(
+            "send_draft: this draft changed since it was last read (a recipient or a save \
+             landed in between). Read it again before sending."
+                .into(),
+        ));
     }
 
     let origin = origin_of(ctx);

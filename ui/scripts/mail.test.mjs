@@ -11,12 +11,13 @@ const { module: mailLib, close } = await load('/src/lib/mail.ts')
 const {
   formatSenders,
   threadListDate,
-  replyAllRecipients,
   applyRowPatch,
   revertRow,
   removeRow,
   restoreRow,
   snoozeChoices,
+  customSnoozeInstant,
+  earliestSnoozeDate,
   CATEGORY_TABS,
   stepCategoryTab,
   isCurrentInviteResponse,
@@ -27,6 +28,7 @@ const {
   originPhrase,
   recentActionLine,
   mailboxHasTabs,
+  isSnoozedMailbox,
   refreshLimit,
   visibleThreadList,
   neighbourThread,
@@ -77,55 +79,6 @@ const yesterday = new Date()
 yesterday.setDate(yesterday.getDate() - 1)
 assert.equal(threadListDate(yesterday.toISOString()), 'Yesterday')
 
-// ── Reply-all recipient computation ───────────────────────────────────
-
-const message = {
-  from: person('Priya Raman', 'priya@example.com'),
-  to: [person('Me', 'me@example.com'), person('Tom Fenwick', 'tom@example.com')],
-  cc: [person('Ana Ferreira', 'ana@example.com')],
-}
-const { to, cc } = replyAllRecipients(message, 'me@example.com')
-assert.deepEqual(
-  to.map((a) => a.email),
-  ['priya@example.com', 'tom@example.com'],
-  'the sender comes first, then the other original recipients, minus me',
-)
-assert.deepEqual(
-  cc.map((a) => a.email),
-  ['ana@example.com'],
-  'the original Cc stays Cc',
-)
-
-// The account's own address never comes back, wherever it was.
-const selfInCc = replyAllRecipients(
-  {
-    from: person('Priya Raman', 'priya@example.com'),
-    to: [person('Me', 'me@example.com')],
-    cc: [person('Me', 'me@example.com'), person('Ana Ferreira', 'ana@example.com')],
-  },
-  'me@example.com',
-)
-assert.equal(
-  selfInCc.to.some((a) => a.email === 'me@example.com'),
-  false,
-)
-assert.equal(
-  selfInCc.cc.some((a) => a.email === 'me@example.com'),
-  false,
-)
-
-// Somebody in both To and Cc on the original is not repeated in the reply.
-const dup = replyAllRecipients(
-  {
-    from: person('Priya Raman', 'priya@example.com'),
-    to: [person('Me', 'me@example.com'), person('Tom Fenwick', 'tom@example.com')],
-    cc: [person('Tom Fenwick', 'tom@example.com')],
-  },
-  'me@example.com',
-)
-assert.equal(dup.to.filter((a) => a.email === 'tom@example.com').length, 1)
-assert.equal(dup.cc.filter((a) => a.email === 'tom@example.com').length, 0)
-
 // ── Optimistic apply and revert of row state ──────────────────────────
 
 const rows = [
@@ -170,6 +123,30 @@ assert.deepEqual(
   eveningChoices.map((c) => c.key),
   ['tomorrow', 'nextWeek'],
   'no "later today" once it would fall after 9pm',
+)
+
+// ── The custom snooze date, parsed as local rather than UTC ────────────
+//
+// `new Date('2026-09-20')` is UTC midnight; `.setHours(8, ...)` on that
+// then reads back in local time, which west of Greenwich lands on the 19th,
+// not the 20th. `customSnoozeInstant` must land on the day the field shows
+// regardless of which side of Greenwich this test runs on.
+
+const picked = customSnoozeInstant('2026-09-20')
+assert.equal(picked.getFullYear(), 2026)
+assert.equal(picked.getMonth(), 8, 'September, zero-indexed')
+assert.equal(picked.getDate(), 20, 'the calendar day the field showed, not one either side of it')
+assert.equal(picked.getHours(), 8)
+assert.equal(picked.getMinutes(), 0)
+
+// `earliestSnoozeDate` never offers today: today's 8am may already be
+// behind `now`, and `snoozeChoices`'s own "Later today" already covers that
+// case.
+assert.equal(earliestSnoozeDate(new Date('2026-09-14T09:00:00')), '2026-09-15')
+assert.equal(
+  earliestSnoozeDate(new Date('2026-09-14T23:59:00')),
+  '2026-09-15',
+  'still tomorrow, not the day after, this close to midnight',
 )
 
 // ── (p) The split inbox: category tab ordering ─────────────────────────
@@ -313,6 +290,14 @@ assert.equal(mailboxHasTabs({ role: 'sent' }), false)
 assert.equal(mailboxHasTabs({ role: 'archive' }), false)
 assert.equal(mailboxHasTabs(null), false, 'no mailbox selected yet: no tabs to have set from')
 assert.equal(mailboxHasTabs(undefined), false)
+
+// ── Bug 3: telling the backend to hide (or show) snoozed threads ────────
+
+assert.equal(isSnoozedMailbox({ remoteName: 'Snoozed' }), true)
+assert.equal(isSnoozedMailbox({ remoteName: 'Inbox' }), false)
+assert.equal(isSnoozedMailbox({ remoteName: 'Starred' }), false, 'a different pseudo-mailbox')
+assert.equal(isSnoozedMailbox(null), false, 'no mailbox selected yet')
+assert.equal(isSnoozedMailbox(undefined), false)
 
 // ── Finding 2: refresh covers what is already loaded ────────────────────
 

@@ -24,15 +24,34 @@
   // than a bare `setInterval`, so it stops polling the moment nothing is
   // syncing instead of ticking forever in the background. See
   // `mail.svelte.ts`'s `refreshSyncStatus`/`syncNow`.
+  //
+  // Bug 8: `mail.start()` fetches the mailbox list exactly once, and nothing
+  // else ever asked for it again -- an account added, or first synced, after
+  // Mail had already been opened showed no mailboxes until a lock/unlock.
+  // `accounts.list` changing is the same signal `refreshSyncStatus` already
+  // reacts to here, so a newly-signed-in account's mailboxes show up the
+  // same beat its sync status does.
   $effect(() => {
     void accounts.list
     void mail.refreshSyncStatus()
+    void mail.refreshMailboxes()
   })
+  let wasSyncing = false
   $effect(() => {
     const active = mail.syncStatus.some((s) => s.phase !== 'idle' && s.phase !== 'idling')
-    if (!active) return
-    const timer = setTimeout(() => void mail.refreshSyncStatus(), 2000)
-    return () => clearTimeout(timer)
+    if (active) {
+      wasSyncing = true
+      const timer = setTimeout(() => void mail.refreshSyncStatus(), 2000)
+      return () => clearTimeout(timer)
+    }
+    // A sync that just finished may have discovered mailboxes that did not
+    // exist at the last fetch -- a newly-created label, a folder IMAP only
+    // reports once it holds something. Refreshed once, on the falling edge,
+    // rather than on every idle tick.
+    if (wasSyncing) {
+      wasSyncing = false
+      void mail.refreshMailboxes()
+    }
   })
 
   const ROLE_ORDER: MailboxRole[] = ['inbox', 'drafts', 'sent', 'archive', 'spam', 'trash']

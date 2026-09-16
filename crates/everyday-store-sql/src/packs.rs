@@ -102,7 +102,16 @@ impl PackStore for TablePacks<'_> {
         let mut conn = self.0.write();
         let mut tx = conn.begin()?;
         for r in refs {
-            tx.execute("DELETE FROM mail_packs WHERE id = ?1", &vals![r.pack.to_string()])?;
+            // Keyed by account as well as by id, for the same reason
+            // [`Self::read`] binds both into its AAD: a `PackRef` whose
+            // `account` and `pack` have drifted apart must delete nothing
+            // rather than another account's row. `read` fails closed
+            // already, because the wrong account's key cannot open the
+            // frame; a bare id-keyed `DELETE` had no such protection.
+            tx.execute(
+                "DELETE FROM mail_packs WHERE id = ?1 AND account_id = ?2",
+                &vals![r.pack.to_string(), r.account.clone()],
+            )?;
         }
         tx.commit()
     }
@@ -143,7 +152,7 @@ impl PackStore for TablePacks<'_> {
         Ok(CompactionResult::default())
     }
 
-    fn drop_packs(&self, _account: &str, packs: &[PackId]) -> Result<()> {
+    fn drop_packs(&self, account: &str, packs: &[PackId]) -> Result<()> {
         if packs.is_empty() {
             return Ok(());
         }
@@ -153,11 +162,18 @@ impl PackStore for TablePacks<'_> {
         // result computed against a different [`PackStore`] entirely. Rows
         // named by an id this table never held are simply not there to
         // delete, on the same "not an error" terms every other id-keyed
-        // delete in this crate already keeps.
+        // delete in this crate already keeps. That replay is exactly why
+        // `account_id` is bound too: a result computed against another
+        // store is the one case where the ids reaching this call have no
+        // established relationship to this account, and an id-keyed delete
+        // alone would take another account's row at its word.
         let mut conn = self.0.write();
         let mut tx = conn.begin()?;
         for pack in packs {
-            tx.execute("DELETE FROM mail_packs WHERE id = ?1", &vals![pack.to_string()])?;
+            tx.execute(
+                "DELETE FROM mail_packs WHERE id = ?1 AND account_id = ?2",
+                &vals![pack.to_string(), account],
+            )?;
         }
         tx.commit()
     }

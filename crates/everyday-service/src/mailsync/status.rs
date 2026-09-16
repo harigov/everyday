@@ -23,13 +23,15 @@ pub enum Phase {
     /// up, or between attempts under the supervisor's backoff.
     Idle,
     Connecting,
-    /// Discovering mailboxes and syncing headers -- the first of the three
+    /// Discovering mailboxes and syncing headers -- the first of the two
     /// first-sync passes, and the one that makes a mailbox list usable.
     Headers,
-    /// Fetching and indexing bodies -- the second pass.
+    /// Fetching and indexing bodies -- the second pass. There is no third
+    /// phase for attachments: `crate::mailsync::passes`'s own module docs
+    /// explain why extracting them is folded into this same pass rather
+    /// than a separate walk over the mailbox, so nothing ever reports a
+    /// phase beyond this one.
     Bodies,
-    /// Extracting attachments -- the third pass.
-    Attachments,
     /// Holding `IDLE` and polling the rest of the account's mailboxes.
     Idling,
 }

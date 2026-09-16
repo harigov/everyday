@@ -176,16 +176,40 @@ struct FakeMailSession {
     /// `a_notify_wakes_the_idle_loop_promptly_rather_than_waiting_for_the_poll`)
     /// need the alternative.
     block_idle: bool,
+    /// Every mailbox name that was selected -- see [`Self::selected`] --
+    /// at the moment [`FakeMailSession::idle`] was called, in order. A
+    /// real `ImapSession::idle` reports activity for whatever is
+    /// *currently* selected and never selects anything itself; this is
+    /// what lets a test tell whether `crate::mailsync::task::run_account_with`
+    /// pointed the session at the inbox first, the bug
+    /// `a_wake_selects_the_inbox_before_idling` is a regression for.
+    /// Shared behind an `Arc` (unlike `selected` above, which is per-clone
+    /// state a real session's own connection would not share either) so a
+    /// test can keep reading it after handing its own clone of this
+    /// session to a spawned task.
+    idle_selections: Arc<Mutex<Vec<Option<String>>>>,
 }
 
 impl FakeMailSession {
     fn new(server: Arc<Mutex<FakeServer>>) -> Self {
-        Self { server, selected: None, block_idle: false }
+        Self {
+            server,
+            selected: None,
+            block_idle: false,
+            idle_selections: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 
     fn blocking_idle(mut self) -> Self {
         self.block_idle = true;
         self
+    }
+
+    /// A clone of the shared record [`FakeMailSession::idle`] appends to,
+    /// readable after handing this session's own clone off to a spawned
+    /// task.
+    fn idle_selections(&self) -> Arc<Mutex<Vec<Option<String>>>> {
+        self.idle_selections.clone()
     }
 
     fn with_selected<T>(&self, f: impl FnOnce(&mut FakeMailbox) -> T) -> T {
@@ -231,6 +255,7 @@ impl MailSession for FakeMailSession {
             .iter()
             .map(|(name, mb)| RemoteMailbox {
                 name: name.clone(),
+                display_name: name.clone(),
                 delimiter: Some('/'),
                 attributes: Vec::new(),
                 special_use: mb.special_use,
@@ -308,6 +333,13 @@ impl MailSession for FakeMailSession {
     }
 
     async fn raw(&mut self, uids: &UidSet) -> SessionResult<RawStream<'_>> {
+        // A real fetch takes a moment; this fake never otherwise suspends
+        // at all, which would make it impossible for a test to land a
+        // concurrent local write inside the window `bodies_pass` actually
+        // has open between taking its snapshot and using it -- see
+        // `a_flag_change_during_the_bodies_pass_survives_it`, the one test
+        // that needs this yield to be real rather than instant.
+        tokio::task::yield_now().await;
         let items: Vec<(Uid, Vec<u8>)> = self.with_selected(|mb| {
             uids.iter()
                 .filter_map(|uid| mb.messages.get(&uid).map(|m| (uid, m.raw.clone())))
@@ -410,6 +442,7 @@ impl MailSession for FakeMailSession {
         &mut self,
         mut stop: tokio::sync::watch::Receiver<()>,
     ) -> SessionResult<IdleEvent> {
+        self.idle_selections.lock().unwrap().push(self.selected.clone());
         if self.block_idle {
             // Blocks until the caller's own wake signal fires -- see
             // `block_idle`'s own docs -- then ends cleanly, exactly the
@@ -722,6 +755,81 @@ async fn a_process_killed_mid_pass_resumes_without_duplicates() {
     }
 }
 
+/// Regression: `bodies_pass` used to upsert the whole `Message` snapshot
+/// `pending_messages` took *before* the network fetch, so a local write
+/// landing in the window between the headers pass creating a row and the
+/// bodies pass finally reaching it -- a person reading the message, or the
+/// model setting its category, during a big first sync -- was silently
+/// reverted back to whatever the headers pass originally saw. This drives
+/// `sync_headers` and `bodies_pass` separately (rather than through
+/// `sync_once`, which runs them back to back with nothing in between) so
+/// the write can land in exactly that window.
+#[tokio::test]
+async fn a_flag_change_during_the_bodies_pass_survives_it() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    {
+        let mut s = server.lock().unwrap();
+        s.append(
+            "INBOX",
+            raw_message(
+                "body-race@example.com",
+                None,
+                "a@example.com",
+                "Hi",
+                "01 Jan 2024 10:00:00 +0000",
+                "x",
+            ),
+            flags_seen(),
+            None,
+        );
+    }
+    let mut session = FakeMailSession::new(server);
+    let mut labels = LabelMailboxes::new(&env.vault, env.account_id);
+    let mut threads = ThreadIndex::new();
+    let mut mailboxes =
+        discovery::discover(&env.vault, env.account_id, &mut session).await.unwrap();
+    for mailbox in &mut mailboxes {
+        passes::sync_headers(&env.ctx(), &mut session, mailbox, &mut labels, &mut threads)
+            .await
+            .unwrap();
+    }
+    let inbox = mailboxes.iter().find(|m| m.row.role == MailboxRole::Inbox).unwrap();
+    let uid = env.vault.mail_uid_set(inbox.row.id).unwrap()[0];
+    let pending = env.vault.message_by_uid(inbox.row.id, uid).unwrap().unwrap();
+    assert!(super::ingest::is_pending(&pending.pack), "the body must not be fetched yet");
+
+    // The write this test's own regression is about has to land genuinely
+    // *during* the pass -- after `pending_messages`'s own snapshot at the
+    // top of `bodies_pass`, before the batch's ingest uses it -- not
+    // merely before this call starts, which the fix's own re-read would
+    // already see correctly either way. `tokio::join!` polls its two
+    // futures in order on a current-thread runtime: `bodies_pass` runs
+    // synchronously (this fake session never otherwise suspends) until
+    // `raw`'s own real `yield_now` -- see that method's own docs -- at
+    // which point the write closure below, having nothing of its own to
+    // await, runs to completion before `bodies_pass` is ever polled again.
+    let write_race = async {
+        env.vault
+            .update_message_flags(
+                inbox.row.id,
+                uid,
+                everyday_core::mail::MessageFlags { seen: true, ..Default::default() },
+            )
+            .unwrap();
+    };
+    let ctx = env.ctx();
+    let (result, ()) = tokio::join!(passes::bodies_pass(&ctx, &mut session, inbox), write_race);
+    result.unwrap();
+
+    let after = env.vault.message_by_uid(inbox.row.id, uid).unwrap().unwrap();
+    assert!(after.flags.seen, "a flag change during the bodies pass must survive it");
+    assert!(
+        !super::ingest::is_pending(&after.pack),
+        "the body must still have been fetched despite the concurrent write"
+    );
+}
+
 #[tokio::test]
 async fn a_flag_change_a_deletion_and_a_new_message_apply_incrementally() {
     let env = TestEnv::new();
@@ -801,6 +909,89 @@ async fn a_flag_change_a_deletion_and_a_new_message_apply_incrementally() {
         .unwrap()
         .expect("the new message should have arrived");
     assert!(!super::ingest::is_pending(&new_message.pack), "its body should have been fetched too");
+}
+
+/// Regression: every uid `changes_since` reported in `flag_changes` used
+/// to be written back unconditionally, even when the flags it reported
+/// already matched what was stored -- a full rewrite (decrypt, re-seal,
+/// upsert, thread recompute) for nothing. The fake session, like a real
+/// Gmail server on a label-only change, can bump a message's own `MODSEQ`
+/// without changing any of the five IMAP flags this crate tracks, so this
+/// also exercises the secondary bug: `changed` used to be driven by
+/// `flag_changes` being non-empty at all, which invalidated the unread
+/// cache on every such pass regardless of whether anything a person would
+/// notice actually happened.
+#[tokio::test]
+async fn an_unrelated_modseq_bump_with_unchanged_flags_skips_the_write_and_the_cache() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let server = plain_server();
+    let uid;
+    {
+        let mut s = server.lock().unwrap();
+        uid = s.append(
+            "INBOX",
+            raw_message(
+                "modseq-only@example.com",
+                None,
+                "a@example.com",
+                "Hi",
+                "01 Jan 2024 10:00:00 +0000",
+                "x",
+            ),
+            flags_seen(),
+            None,
+        );
+    }
+    let mut session = FakeMailSession::new(server.clone());
+    let statuses = svc.mail_statuses().unwrap();
+    let cache = svc.mail_unread_cache().unwrap();
+    let ctx = SyncContext {
+        vault: &vault,
+        account_id,
+        packs: svc.packs().unwrap(),
+        index: svc.mail_index().unwrap(),
+        statuses: &statuses,
+        attachment_cap_bytes: None,
+        index_commit: passes::CommitPacer::new(),
+        unread_cache: Some(cache.clone()),
+        contacts: svc.mail_contacts(),
+        identities: Vec::new(),
+    };
+    let mut labels = LabelMailboxes::new(&vault, account_id);
+    let mut threads = ThreadIndex::new();
+    passes::sync_once(&ctx, &mut session, &mut labels, &mut threads).await.unwrap();
+
+    let inbox_id = vault
+        .mailboxes(account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == MailboxRole::Inbox)
+        .unwrap()
+        .id;
+    let flags_before = vault.message_by_uid(inbox_id, uid).unwrap().unwrap().flags;
+
+    // Prime the cache with a sentinel this test controls -- keyed to
+    // `inbox_id` itself, so a later read that still sees the same sentinel
+    // proves nothing invalidated it in between.
+    let sentinel = vec![(inbox_id, 999)];
+    cache.get_or_compute(account_id, || Ok(sentinel.clone())).unwrap();
+
+    // Bump the message's own `MODSEQ` without touching any of its actual
+    // flags -- exactly what a Gmail label-only change, or a redundant
+    // `STORE`, does.
+    {
+        let mut s = server.lock().unwrap();
+        s.set_flags("INBOX", uid, flags_seen());
+    }
+    passes::sync_once(&ctx, &mut session, &mut labels, &mut threads).await.unwrap();
+
+    let flags_after = vault.message_by_uid(inbox_id, uid).unwrap().unwrap().flags;
+    assert_eq!(flags_before, flags_after, "flags did not actually change");
+
+    let cached = cache
+        .get_or_compute(account_id, || panic!("must not recompute: nothing actually changed"))
+        .unwrap();
+    assert_eq!(cached, sentinel);
 }
 
 /// Regression for "removed messages are never marked dead in the pack
@@ -919,6 +1110,173 @@ async fn a_uidvalidity_reset_rematches_without_refetching_raw() {
 
     let uids = env.vault.mail_uid_set(inbox2.row.id).unwrap();
     assert_eq!(uids.len(), 1, "membership was rebuilt under the new uid");
+}
+
+/// Regression: an interrupted `UIDVALIDITY` reset used to permanently
+/// duplicate every message the crash left stranded. `reset_mailbox` durably
+/// zeroes the row's own `UIDVALIDITY`, but the *new* one was only ever held
+/// in memory until `sync_headers`'s own completion at the very end -- so a
+/// crash any time before that (a dropped connection mid-batch, the task
+/// aborted) meant the very next attempt saw a mailbox indistinguishable
+/// from one that had simply never been synced, `force_db_rematch` came back
+/// `false`, and every remaining message was minted fresh under a new id
+/// with a fresh body download, while the original rows survived, orphaned,
+/// with no mailbox membership at all.
+///
+/// This drives the resume with a brand new [`ThreadIndex`] -- the one a
+/// freshly restarted task actually has -- rather than reusing the one the
+/// interrupted attempt would have been building up, since that in-memory
+/// map is exactly what a crash loses.
+#[tokio::test]
+async fn resuming_an_interrupted_uidvalidity_reset_does_not_duplicate_messages() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    let message_ids: Vec<String> = (0..3).map(|i| format!("reset{i}@example.com")).collect();
+    {
+        let mut s = server.lock().unwrap();
+        for id in &message_ids {
+            s.append(
+                "INBOX",
+                raw_message(id, None, "a@example.com", "Hi", "01 Jan 2024 10:00:00 +0000", "x"),
+                flags_seen(),
+                None,
+            );
+        }
+    }
+    let mut session = FakeMailSession::new(server.clone());
+    let inbox = env
+        .sync(&mut session)
+        .await
+        .into_iter()
+        .find(|m| m.row.role == MailboxRole::Inbox)
+        .unwrap();
+    let original_ids: std::collections::HashSet<_> = message_ids
+        .iter()
+        .map(|id| env.vault.message_by_message_id_header(env.account_id, id).unwrap().unwrap().id)
+        .collect();
+    assert_eq!(original_ids.len(), 3);
+
+    // Bump `UIDVALIDITY` on the server -- every uid this account remembers
+    // for `INBOX` is now meaningless.
+    {
+        let mut s = server.lock().unwrap();
+        s.bump_uidvalidity("INBOX");
+    }
+
+    // The crash this test stands in for: an earlier attempt got as far as
+    // `sync_headers`'s own durable reset write (`reset_mailbox`, plus
+    // stamping the new `UIDVALIDITY` with `uidnext` left at its `0`
+    // sentinel -- see that function's own docs) but never reached the
+    // headers loop at all, let alone its own completion.
+    let state = session.select("INBOX").await.unwrap();
+    env.vault.reset_mailbox(inbox.row.id).unwrap();
+    let mut interrupted_row = inbox.row.clone();
+    interrupted_row.uidvalidity = state.uidvalidity;
+    interrupted_row.uidnext = 0;
+    interrupted_row.highest_modseq = 0;
+    env.vault.save_mailbox(&interrupted_row).unwrap();
+
+    // The resume: rediscover the mailbox (picking the row back up exactly
+    // as the interrupted attempt left it) and run headers with a fresh
+    // `ThreadIndex`.
+    let mut labels = LabelMailboxes::new(&env.vault, env.account_id);
+    let mut threads = ThreadIndex::new();
+    let mut mailboxes2 =
+        discovery::discover(&env.vault, env.account_id, &mut session).await.unwrap();
+    let inbox2 = mailboxes2.iter_mut().find(|m| m.row.role == MailboxRole::Inbox).unwrap();
+    passes::sync_headers(&env.ctx(), &mut session, inbox2, &mut labels, &mut threads)
+        .await
+        .unwrap();
+
+    let uids_after = env.vault.mail_uid_set(inbox2.row.id).unwrap();
+    assert_eq!(uids_after.len(), 3, "still exactly three messages after resuming");
+    let resumed_ids: std::collections::HashSet<_> = uids_after
+        .iter()
+        .map(|&uid| env.vault.message_by_uid(inbox2.row.id, uid).unwrap().unwrap().id)
+        .collect();
+    assert_eq!(
+        resumed_ids, original_ids,
+        "each message must have been rematched to its original id, not minted fresh"
+    );
+}
+
+/// Regression: a message moved between mailboxes server-side (INBOX to
+/// Archive, say) used to be deleted and reborn under a fresh id the moment
+/// both sides of the move were noticed in the same sync round --
+/// `sync_headers`'s own vanished-uid reap ran inline, mailbox by mailbox,
+/// so the inbox's copy was already gone by the time Archive's headers pass
+/// got a chance to rematch it by `Message-ID`. `sync_once` now defers
+/// reaping until every mailbox in the round has ingested its own new
+/// headers first -- see that function's own docs.
+///
+/// Uses `sync_once` directly, twice, with the same `labels`/`threads`
+/// kept alive across both calls -- exactly the shape `run_account_with`'s
+/// own long-lived locals give a real account task across every wake -- so
+/// the in-memory half of rematching (`ThreadIndex::seen_by_message_id`)
+/// still has this message's id from the first round when the second round
+/// sees it reappear elsewhere.
+#[tokio::test]
+async fn a_message_moved_between_mailboxes_in_one_round_keeps_its_identity() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    let raw = raw_message(
+        "moved@example.com",
+        None,
+        "a@example.com",
+        "Moving day",
+        "01 Jan 2024 10:00:00 +0000",
+        "x",
+    );
+    let uid;
+    {
+        let mut s = server.lock().unwrap();
+        uid = s.append("INBOX", raw.clone(), flags_seen(), None);
+    }
+    let mut session = FakeMailSession::new(server.clone());
+    let mut labels = LabelMailboxes::new(&env.vault, env.account_id);
+    let mut threads = ThreadIndex::new();
+    passes::sync_once(&env.ctx(), &mut session, &mut labels, &mut threads).await.unwrap();
+
+    let original = env
+        .vault
+        .message_by_message_id_header(env.account_id, "moved@example.com")
+        .unwrap()
+        .expect("stored after the first round");
+    assert!(!super::ingest::is_pending(&original.pack), "its body must already be fetched");
+
+    {
+        let mut s = server.lock().unwrap();
+        s.remove("INBOX", uid);
+        s.append("Archive", raw, flags_seen(), None);
+    }
+    // Same `labels`/`threads` as the first round -- see this test's own
+    // docs.
+    passes::sync_once(&env.ctx(), &mut session, &mut labels, &mut threads).await.unwrap();
+
+    let moved = env
+        .vault
+        .message_by_message_id_header(env.account_id, "moved@example.com")
+        .unwrap()
+        .expect("still stored after the move");
+    assert_eq!(moved.id, original.id, "a message moved between mailboxes must keep its identity");
+    assert_eq!(moved.pack, original.pack, "and must not be re-downloaded");
+
+    let inbox = env
+        .vault
+        .mailboxes(env.account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == MailboxRole::Inbox)
+        .unwrap();
+    let archive = env
+        .vault
+        .mailboxes(env.account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == MailboxRole::Archive)
+        .unwrap();
+    assert!(env.vault.mail_uid_set(inbox.id).unwrap().is_empty(), "gone from the inbox");
+    assert_eq!(env.vault.mail_uid_set(archive.id).unwrap().len(), 1, "and filed under Archive");
 }
 
 #[tokio::test]
@@ -1309,6 +1667,88 @@ async fn a_label_change_with_no_modseq_bump_is_still_caught_by_the_fallback() {
     );
 }
 
+/// Regression: `refresh_gmail_labels`'s added-label branch used to
+/// re-ingest the message with its *pre-update* label set, reverting the
+/// very label this pass just added and leaving the next pass to "notice"
+/// the same difference again, forever. A message un-archived elsewhere
+/// (gains `\Inbox`) must land in the inbox label's list, and the row's own
+/// `labels` must actually say so -- not just the mailbox membership -- and
+/// stay that way after a second, otherwise-quiet sync.
+#[tokio::test]
+async fn un_archiving_in_another_client_adds_the_message_to_the_inbox_label_and_it_sticks() {
+    let env = TestEnv::new();
+    let server = gmail_server();
+    let uid;
+    {
+        let mut s = server.lock().unwrap();
+        uid = s.append(
+            "All Mail",
+            raw_message(
+                "unarchived-elsewhere@example.com",
+                None,
+                "a@example.com",
+                "Will be un-archived",
+                "01 Jan 2024 10:00:00 +0000",
+                "x",
+            ),
+            flags_seen(),
+            Some(GmailMeta { thrid: 3, msgid: 3, labels: Vec::new() }),
+        );
+    }
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+    // No `\Inbox` label mailbox exists at all yet -- it is minted the first
+    // time some message actually carries the label (see `LabelMailboxes`'s
+    // own docs), which has not happened yet for an account whose one
+    // message starts outside the inbox.
+    assert!(
+        env.vault.mailboxes(env.account_id).unwrap().iter().all(|m| m.role != MailboxRole::Inbox),
+        "no inbox label mailbox should exist before anything has ever carried \\Inbox"
+    );
+
+    // Un-archived elsewhere: `\Inbox` added, `MODSEQ` bumped -- the mirror
+    // image of the removal case above.
+    {
+        let mut s = server.lock().unwrap();
+        s.set_gmail_labels("All Mail", uid, vec!["\\Inbox".into()]);
+    }
+    env.sync(&mut session).await;
+
+    let inbox_label = env
+        .vault
+        .mailboxes(env.account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == MailboxRole::Inbox)
+        .expect("the addition must mint the inbox label mailbox");
+    let after = env.vault.list_threads(inbox_label.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert_eq!(
+        after.threads.len(),
+        1,
+        "the un-archived message must land in the inbox label's list"
+    );
+
+    let all_mail = env
+        .vault
+        .mailboxes(env.account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == MailboxRole::All)
+        .unwrap();
+    let stored = env.vault.message_by_uid(all_mail.id, uid).unwrap().unwrap();
+    assert_eq!(
+        stored.labels,
+        vec!["\\Inbox".to_string()],
+        "the row's own label set must reflect the addition, not the pre-update snapshot"
+    );
+
+    // A further, otherwise-quiet sync must not revert the addition again --
+    // exactly what the bug being regressed did, on every single pass.
+    env.sync(&mut session).await;
+    let stored_again = env.vault.message_by_uid(all_mail.id, uid).unwrap().unwrap();
+    assert_eq!(stored_again.labels, vec!["\\Inbox".to_string()]);
+}
+
 #[tokio::test]
 async fn an_auth_failure_sets_needs_sign_in_and_the_task_stops() {
     let dir = tempfile::tempdir().unwrap();
@@ -1469,6 +1909,100 @@ Content-Type: text/plain\r\n\r\nsounds good\r\n"
         "received-from must be learned: {suggestions:?}"
     );
     assert!(by_email.contains_key("bob@example.com"), "sent-to must be learned: {suggestions:?}");
+}
+
+/// Regression: the account's own address used to be recorded as a
+/// correspondent -- a message from oneself (received) or to oneself
+/// (sent, e.g. a BCC-to-self) climbing straight up one's own autocomplete
+/// -- and a Drafts folder, full of messages *from* the account itself, was
+/// fair game for "received from" too, drafts' own recipients included,
+/// since the whole contact-recording block ran regardless of which
+/// mailbox a header came from.
+#[tokio::test]
+async fn the_accounts_own_address_and_its_drafts_are_never_recorded_as_a_contact() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let server = plain_server();
+    {
+        let mut s = server.lock().unwrap();
+        s.mailbox("Drafts", Some(Role::Drafts));
+        // A real correspondent, both ways -- must still be learned.
+        s.append(
+            "INBOX",
+            raw_message(
+                "from-alice@example.com",
+                None,
+                "Alice <alice@example.com>",
+                "Hello",
+                "01 Jan 2024 10:00:00 +0000",
+                "hi",
+            ),
+            flags_seen(),
+            None,
+        );
+        // A note to self, landing in the inbox: `From` is the account's
+        // own address.
+        let received_from_self = b"Message-ID: <self-received@example.com>\r\n\
+From: me@example.com\r\n\
+To: me@example.com\r\n\
+Subject: Note to self\r\n\
+Date: 01 Jan 2024 10:01:00 +0000\r\n\
+Content-Type: text/plain\r\n\r\nremember this\r\n"
+            .to_vec();
+        s.append("INBOX", received_from_self, flags_seen(), None);
+        // A BCC-to-self style send: the account's own address is one of
+        // the `To` addresses of its own Sent copy.
+        let sent_to_self = b"Message-ID: <self-sent@example.com>\r\n\
+From: me@example.com\r\n\
+To: me@example.com\r\n\
+Subject: Reminder\r\n\
+Date: 01 Jan 2024 10:02:00 +0000\r\n\
+Content-Type: text/plain\r\n\r\nping\r\n"
+            .to_vec();
+        s.append("Sent", sent_to_self, flags_seen(), None);
+        // A draft: entirely from the account itself, to someone real --
+        // neither side should ever be recorded from a Drafts folder.
+        let draft = b"Message-ID: <draft-only@example.com>\r\n\
+From: me@example.com\r\n\
+To: someone-else@example.com\r\n\
+Subject: Draft\r\n\
+Date: 01 Jan 2024 10:03:00 +0000\r\n\
+Content-Type: text/plain\r\n\r\ndraft body\r\n"
+            .to_vec();
+        s.append("Drafts", draft, flags_seen(), None);
+    }
+    let mut session = FakeMailSession::new(server);
+    let statuses = svc.mail_statuses().unwrap();
+    let ctx = SyncContext {
+        vault: &vault,
+        account_id,
+        packs: svc.packs().unwrap(),
+        index: svc.mail_index().unwrap(),
+        statuses: &statuses,
+        attachment_cap_bytes: None,
+        index_commit: passes::CommitPacer::new(),
+        unread_cache: svc.mail_unread_cache(),
+        contacts: svc.mail_contacts(),
+        identities: vec!["me@example.com".to_string()],
+    };
+    let mut labels = LabelMailboxes::new(&vault, account_id);
+    let mut threads = ThreadIndex::new();
+    passes::sync_once(&ctx, &mut session, &mut labels, &mut threads).await.unwrap();
+
+    let index = svc.mail_contacts().unwrap();
+    let suggestions = index.suggest("", 10);
+    let emails: Vec<&str> = suggestions.iter().map(|a| a.email.as_str()).collect();
+    assert!(
+        emails.contains(&"alice@example.com"),
+        "a real correspondent must still be learned: {emails:?}"
+    );
+    assert!(
+        !emails.contains(&"me@example.com"),
+        "the account's own address must never be recorded as a contact: {emails:?}"
+    );
+    assert!(
+        !emails.contains(&"someone-else@example.com"),
+        "a draft's own recipient must not be recorded: {emails:?}"
+    );
 }
 
 #[tokio::test]
@@ -1679,6 +2213,85 @@ async fn recovering_a_send_already_on_the_server_is_not_resent() {
 
 fn s_message_count(server: &Arc<Mutex<FakeServer>>, mailbox: &str) -> usize {
     server.lock().unwrap().mailboxes[mailbox].messages.len()
+}
+
+/// Regression: `run_account_with` used to `IDLE` on whatever mailbox
+/// `sync_once`'s own last pass happened to leave selected -- never the
+/// inbox, since `discovery::discover` always sorts the inbox (All Mail, on
+/// Gmail) first and every other mailbox is therefore visited *after* it.
+/// Here, only Trash has a message of its own, so `bodies_pass`'s own
+/// `SELECT`, called once per mailbox with anything still pending, is
+/// issued for Trash and nothing after it -- exactly the shape that leaves
+/// a real IMAP session sitting on the wrong mailbox when `run_account_with`
+/// asks for `IDLE` without first pointing the session back at the inbox.
+#[tokio::test]
+async fn idle_is_issued_on_the_inbox_not_whatever_mailbox_was_selected_last() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let server = gmail_server();
+    {
+        let mut s = server.lock().unwrap();
+        s.append(
+            "All Mail",
+            raw_message(
+                "idle-target@example.com",
+                None,
+                "a@example.com",
+                "Hi",
+                "01 Jan 2024 10:00:00 +0000",
+                "x",
+            ),
+            flags_seen(),
+            Some(GmailMeta { thrid: 1, msgid: 1, labels: vec!["\\Inbox".into()] }),
+        );
+        // The only other mailbox with anything in it -- so it is the one
+        // `bodies_pass` reselects last, and (without the fix) the one
+        // `IDLE` would be issued on.
+        s.append(
+            "Trash",
+            raw_message(
+                "trash-target@example.com",
+                None,
+                "a@example.com",
+                "Bye",
+                "01 Jan 2024 10:00:00 +0000",
+                "x",
+            ),
+            flags_seen(),
+            None,
+        );
+    }
+    let session = FakeMailSession::new(server).blocking_idle();
+    let idle_selections = session.idle_selections();
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+
+    let svc_task = svc.clone();
+    let vault_task = vault.clone();
+    let handle = tokio::spawn(async move {
+        super::task::run_account_with(
+            svc_task,
+            vault_task,
+            account_id,
+            stop_rx,
+            move |_account, _credential| {
+                let session = session.clone();
+                async move { Ok(session) }
+            },
+            |_account, _svc, _vault| FakeSender::default(),
+        )
+        .await
+    });
+
+    settle(|| !idle_selections.lock().unwrap().is_empty()).await;
+    stop_tx.send(true).unwrap();
+    handle.await.unwrap().unwrap();
+
+    let selections = idle_selections.lock().unwrap();
+    assert_eq!(
+        selections.first().cloned().flatten().as_deref(),
+        Some("All Mail"),
+        "IDLE must be issued on All Mail, Gmail's own inbox-equivalent -- not Trash, \
+         which is where sync_once's own last pass would otherwise have left the session: {selections:?}"
+    );
 }
 
 #[tokio::test(start_paused = true)]

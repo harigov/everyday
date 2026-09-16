@@ -55,10 +55,14 @@ use crate::service::{Service, blocking};
 /// [`auto_draft_account`] both recognise one of these by.
 pub const AUTO_DRAFT_CONVERSATION: &str = "auto-draft";
 
-/// Threads sent to the quick model in one [`categorize_tick`] pass, across
-/// every eligible account — bounded again, per account, by
-/// [`Service::mail_categorize_take`]'s per-minute budget.
-const CATEGORIZE_PAGE: u32 = 25;
+/// How many `Other`-category threads [`categorize_account`] reads from the
+/// vault per account, per tick -- a fixed local read, independent of
+/// [`Service::mail_categorize_take`]'s per-minute budget, which instead
+/// bounds how many of *those* actually get sent to the quick model (see
+/// that function's own comment for why the two must not be conflated).
+/// `pub` so a test can seed a scenario that spans more than one page
+/// without hard-coding this number a second time.
+pub const CATEGORIZE_PAGE: u32 = 25;
 /// Candidate Important threads read per account in one [`auto_draft_tick`]
 /// pass, before eligibility narrows them down to however many are actually
 /// drafted.
@@ -171,17 +175,23 @@ async fn categorize_account(
     vault: &Arc<Vault>,
     account: &Account,
 ) -> CommandResult<()> {
-    let budget = service.mail_categorize_take(CATEGORIZE_PAGE);
-    if budget == 0 {
-        return Ok(());
-    }
     let account_id = account.id;
     let cursor = service.mail_categorize_cursor(account_id);
+    // Paged at a fixed size, never at whatever the budget happens to allow
+    // right now -- listing threads is a local read, not a model call, and
+    // has no business competing for the same per-minute allowance the
+    // model call itself is metered against. The budget is spent below,
+    // sized to what this tick actually turns out to need.
     let page = {
         let vault = vault.clone();
         let cursor = cursor.clone();
         blocking(move || {
-            Ok(vault.threads_in_category(account_id, Category::Other, cursor.as_deref(), budget)?)
+            Ok(vault.threads_in_category(
+                account_id,
+                Category::Other,
+                cursor.as_deref(),
+                CATEGORIZE_PAGE,
+            )?)
         })
         .await?
     };
@@ -199,7 +209,7 @@ async fn categorize_account(
     // is. A thread the model called "other" last time it was asked, with no
     // new message since, is exactly this: skipped, not re-asked, forever,
     // until a new message actually moves `message_count`.
-    let candidates: Vec<_> = page
+    let mut candidates: Vec<_> = page
         .threads
         .into_iter()
         .filter(|t| t.ai_categorize_asked_at_count != Some(t.message_count))
@@ -207,6 +217,28 @@ async fn categorize_account(
     if candidates.is_empty() {
         return Ok(());
     }
+
+    // Spend only what this tick will actually use -- one token per thread
+    // this call is really about to send, not a flat request for a whole
+    // page regardless of how much of it turned out to need asking. Taking
+    // `CATEGORIZE_PAGE` (25) up front, before any of the filtering above
+    // ran, let the first account with any backlog at all -- even one with
+    // far fewer than 25 real candidates -- spend the entire per-minute
+    // bucket (20) on the strength of a guess, leaving every account after
+    // it in this same tick's loop reading `budget == 0` and returning
+    // before its own cursor had ever moved: permanent starvation, not
+    // merely a slow tick, since the next tick's fresh 20 tokens would be
+    // spent by account #1 again before account #2 was ever asked.
+    let granted = service.mail_categorize_take(candidates.len() as u32) as usize;
+    if granted == 0 {
+        return Ok(());
+    }
+    // Fewer tokens than candidates: ask about as many as the budget covers
+    // rather than none at all. The rest stay `ai_categorize_asked_at_count`
+    // `None`, so a later tick -- this account's own next turn, or the one
+    // after the cursor wraps back around -- still reaches them; nothing
+    // here marks a thread as asked without actually asking.
+    candidates.truncate(granted);
 
     // Sender, subject and snippet only -- never a full body, per the plan's
     // own words for this feature.
@@ -494,6 +526,14 @@ async fn auto_draft_account(
     }
     let account_id = account.id;
     let cursor = service.mail_autodraft_cursor(account_id);
+    // Bounded by `budget`, not `AUTO_DRAFT_CANDIDATES`: the budget is what
+    // caps how many *model calls* this tick may make (see the loop below),
+    // and every thread this page hands back is a candidate that could turn
+    // into one, since the cheap, free, local eligibility checks the loop
+    // runs first cannot tell in advance which ones will. A page larger
+    // than the budget cannot buy anything -- the loop breaks once the
+    // budget is spent regardless -- and only risked the exact bug this is
+    // fixing: fetching 20 when only 5 calls could ever be paid for.
     let page = {
         let vault = vault.clone();
         let cursor = cursor.clone();
@@ -502,7 +542,7 @@ async fn auto_draft_account(
                 account_id,
                 Category::Important,
                 cursor.as_deref(),
-                AUTO_DRAFT_CANDIDATES,
+                budget,
             )?)
         })
         .await?
@@ -571,6 +611,15 @@ async fn auto_draft_account(
             CommandError::new(codes::QUICK, format!("could not reach the model: {e}"))
         })?;
         let user = auto_draft_user_prompt(&thread, eligible, &body_text, &examples);
+        // Spent here, on the call itself -- not below, on whether it led to
+        // a saved draft. Every check above this point is free and local;
+        // this is the one line in the loop that actually costs money and
+        // a request on the network, so it is the one line the budget must
+        // answer for. The system prompt tells the model to say no more
+        // often than yes, so gating the spend on a *saved draft* -- the
+        // rule this replaced -- let a tick that declined every candidate
+        // spend nothing at all, no matter how many real calls it made.
+        budget -= 1;
         let answer =
             crate::quick::run_prompt(client, &model, AUTO_DRAFT_SYSTEM, &user, auto_draft_schema())
                 .await?;
@@ -602,11 +651,11 @@ async fn auto_draft_account(
         // and does append), so an account nobody has looked at today never
         // fills a real Drafts folder with suggestions nobody asked to see
         // there. Never `queue_draft_send`: an auto-draft is never sent.
-        let result =
-            blocking(move || Ok(vault2.save_draft_and_append(&draft, false, origin)?)).await;
-        if result.is_ok() {
-            budget -= 1;
-        }
+        // Not `?`: a failed save here is this account's problem alone, not
+        // this whole tick's, on the same reasoning `mark_auto_draft_asked`
+        // already swallows a store error rather than letting it stop the
+        // pass over the rest of this page's candidates.
+        let _ = blocking(move || Ok(vault2.save_draft_and_append(&draft, false, origin)?)).await;
     }
     Ok(())
 }

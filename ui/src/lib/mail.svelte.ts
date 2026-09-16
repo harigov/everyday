@@ -23,6 +23,7 @@ import { registerApply, singleId, type ChangeWithIds } from './live-apply'
 import {
   applyInviteResponse,
   applyRowPatch,
+  isSnoozedMailbox,
   mailboxHasTabs,
   mergeSearchPage,
   neighbourThread,
@@ -45,8 +46,21 @@ import type {
   MailSyncProgress,
   Thread,
   ThreadDetail,
+  ThreadFilter,
   ThreadId,
 } from './types'
+
+/** How long an unread recount waits after the last optimistic action before
+ *  it actually asks the backend, per Bug 9: `openThreadById`'s auto-`markRead`
+ *  means holding `j` down a long list used to fire one `listThreads` per
+ *  mailbox for every row passed over it. */
+const UNREAD_DEBOUNCE_MS = 500
+
+/** How long a live thread change waits before the follow-up `refresh()`
+ *  Bug 4 needs -- see `#applyChanges`'s own note on why `#patchOne` alone
+ *  is not enough. Debounced so a batch of changes from one sync tick costs
+ *  one reload of the page, not one per thread. */
+const LIVE_REFRESH_DEBOUNCE_MS = 600
 
 /** How many threads a page loads at once. */
 const PAGE = 50
@@ -120,6 +134,10 @@ class MailState {
     if (this.#undoTimer) clearInterval(this.#undoTimer)
     this.#undoTimer = null
     this.sendingUndo = null
+    if (this.#unreadRefreshTimer) clearTimeout(this.#unreadRefreshTimer)
+    this.#unreadRefreshTimer = null
+    if (this.#liveRefreshTimer) clearTimeout(this.#liveRefreshTimer)
+    this.#liveRefreshTimer = null
     this.mailboxes = []
     this.threads = []
     this.nextCursor = null
@@ -160,13 +178,19 @@ class MailState {
   }
 
   /** Approximate unread counts for every mailbox currently listed. See the
-   *  module doc for why this is "good enough", not exact at scale. */
+   *  module doc for why this is "good enough", not exact at scale.
+   *
+   *  Filtered by `snoozed` the same way `refresh`/`loadMore` are (Bug 3): an
+   *  ordinary mailbox's badge must not count a thread hidden from its own
+   *  list because it is currently snoozed, and the Snoozed pseudo-mailbox's
+   *  badge is exactly the reverse -- only threads that are. */
   async refreshUnreadCounts() {
     try {
       const counts = new Map<MailboxId, number>()
       await Promise.all(
         this.mailboxes.map(async (mailbox) => {
-          const page = await mailApi.listThreads(mailbox.id, undefined, null, 200)
+          const filter: ThreadFilter = { snoozed: isSnoozedMailbox(mailbox) }
+          const page = await mailApi.listThreads(mailbox.id, filter, null, 200)
           counts.set(
             mailbox.id,
             page.threads.reduce((sum, t) => sum + t.unreadCount, 0),
@@ -177,6 +201,22 @@ class MailState {
     } catch (e) {
       await quietly(e)
     }
+  }
+
+  /**
+   * Debounced entry point for the unread recount every optimistic action
+   * asks for (Bug 9). `#act`/`#remove` used to call `refreshUnreadCounts`
+   * directly, and `openThreadById`'s auto-`markRead` means holding `j` down
+   * a mailbox fires one of those calls -- a 200-thread `listThreads` per
+   * mailbox -- for every row passed over, not just the one landed on.
+   */
+  #unreadRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  #scheduleUnreadRefresh() {
+    if (this.#unreadRefreshTimer) clearTimeout(this.#unreadRefreshTimer)
+    this.#unreadRefreshTimer = setTimeout(() => {
+      this.#unreadRefreshTimer = null
+      void this.refreshUnreadCounts()
+    }, UNREAD_DEBOUNCE_MS)
   }
 
   async refreshSyncStatus() {
@@ -247,9 +287,15 @@ class MailState {
       // own tabs -- sent elsewhere, it silently narrowed a mailbox with no
       // tab strip to have set it from.
       const category = mailboxHasTabs(this.mailbox) ? this.category : null
+      // Bug 3: `snoozed` was never sent at all, so a snoozed thread -- still
+      // a member of whatever mailbox it was snoozed from -- came straight
+      // back on the very next refresh. `false` everywhere except the
+      // Snoozed pseudo-mailbox itself, which wants nothing else.
+      const filter: ThreadFilter = { snoozed: isSnoozedMailbox(this.mailbox) }
+      if (category) filter.category = category
       const page = await mailApi.listThreads(
         this.selectedMailbox,
-        category ? { category } : undefined,
+        filter,
         null,
         refreshLimit(this.threads.length, PAGE),
       )
@@ -274,12 +320,11 @@ class MailState {
     const cursor = this.nextCursor
     try {
       const generation = this.#generation
-      const page = await mailApi.listThreads(
-        this.selectedMailbox,
-        this.category ? { category: this.category } : undefined,
-        cursor,
-        PAGE,
-      )
+      // Bug 3, the same as `refresh` above -- must agree with it, or
+      // scrolling to a second page would bring snoozed threads back.
+      const filter: ThreadFilter = { snoozed: isSnoozedMailbox(this.mailbox) }
+      if (this.category) filter.category = this.category
+      const page = await mailApi.listThreads(this.selectedMailbox, filter, cursor, PAGE)
       // A mailbox or category change while this page was on its way bumps
       // the generation; its rows belong to a list no longer showing.
       if (generation !== this.#generation || cursor !== this.nextCursor) return
@@ -455,7 +500,7 @@ class MailState {
     }
     try {
       await call(id)
-      void this.refreshUnreadCounts()
+      this.#scheduleUnreadRefresh()
     } catch (e) {
       if (before) this.threads = revertRow(this.threads, id, before)
       if (searchBefore) this.searchResults = revertRow(this.searchResults, id, searchBefore)
@@ -480,7 +525,7 @@ class MailState {
     this.searchResults = searchRows
     try {
       await call(id)
-      void this.refreshUnreadCounts()
+      this.#scheduleUnreadRefresh()
     } catch (e) {
       if (removed) this.threads = restoreRow(this.threads, removed)
       if (searchRemoved) this.searchResults = restoreRow(this.searchResults, searchRemoved)
@@ -630,37 +675,82 @@ class MailState {
    * compose sheet, which unmounts it, and a toast whose state lived on that
    * component would go with it before it had drawn a single frame. The
    * store outlives the sheet, so the toast does too.
+   *
+   * `at` is the real instant `sendDraft` was asked to fire at, computed from
+   * whichever of `delaySeconds`/`sendAt` this call itself passed -- not
+   * re-read from the server's answer, because there is nothing to re-read:
+   * `sendDraft` returns the `Draft`, whose `state` only names the queued
+   * op's id (`DraftState.Queued.op`), never the op's own `notBefore`, and
+   * nothing in the surface fetches an `Op` by id today. This is still
+   * exactly right, not a guess: for "send later" the backend uses `sendAt`
+   * verbatim (`send_draft` in `mail.rs`), and for an ordinary send this
+   * store only ever passes `UNDO_WINDOW_S` (`MailCompose.svelte`), already
+   * inside the backend's own 5-30s clamp (`undo_send_delay`) and so never
+   * altered by it.
    */
-  sendingUndo = $state<{ draft: Draft; secondsLeft: number } | null>(null)
+  sendingUndo = $state<{
+    draft: Draft
+    at: number
+    secondsLeft: number
+    scheduled: boolean
+  } | null>(null)
   #undoTimer: ReturnType<typeof setInterval> | null = null
 
-  async send(draft: Draft, delaySeconds: number) {
-    await mailApi.sendDraft(draft.id, delaySeconds)
+  async send(draft: Draft, delaySeconds?: number, sendAt?: string) {
+    try {
+      await mailApi.sendDraft(draft.id, delaySeconds, sendAt)
+    } catch (e) {
+      // The compose sheet is already gone by the time this runs (see
+      // `MailCompose.svelte`'s own `send`) -- without this, the backend's
+      // "a message needs at least one recipient" (or anything else it
+      // refuses for) vanished with no toast, no undo bar, and a draft the
+      // person had no idea was still sitting there, editable, in Drafts.
+      await handle(e)
+      return
+    }
     this.closeCompose()
     if (this.#undoTimer) clearInterval(this.#undoTimer)
-    this.sendingUndo = { draft, secondsLeft: delaySeconds }
-    this.#undoTimer = setInterval(() => {
-      if (!this.sendingUndo) return
-      const left = this.sendingUndo.secondsLeft - 1
-      if (left <= 0) {
+    const at = sendAt ? new Date(sendAt).getTime() : Date.now() + (delaySeconds ?? 0) * 1000
+    const scheduled = Boolean(sendAt)
+    // Recomputed from `at` on every tick rather than decremented, so the
+    // toast never drifts from what was actually asked for even if a tick is
+    // late -- and so a "send later" toast, `at` hours out, counts down to
+    // *that*, not to whatever `delaySeconds` would have meant for an
+    // ordinary send (Bug 11: it used to show `delaySeconds` verbatim,
+    // regardless of how it was actually going to be spent).
+    const tick = () => {
+      const secondsLeft = Math.max(0, Math.round((at - Date.now()) / 1000))
+      this.sendingUndo = { draft, at, secondsLeft, scheduled }
+      if (secondsLeft <= 0) {
         if (this.#undoTimer) clearInterval(this.#undoTimer)
         this.#undoTimer = null
         this.sendingUndo = null
-        return
       }
-      this.sendingUndo = { ...this.sendingUndo, secondsLeft: left }
-    }, 1000)
+    }
+    tick()
+    this.#undoTimer = setInterval(tick, 1000)
   }
 
   /** Reopens the draft in the compose sheet, exactly where sending left it. */
   async undoSend() {
     const pending = this.sendingUndo
     if (!pending) return
-    await mailApi.undoSend(pending.draft.id)
     if (this.#undoTimer) clearInterval(this.#undoTimer)
     this.#undoTimer = null
     this.sendingUndo = null
-    this.composing = pending.draft
+    try {
+      // `vault.undo_send` answers with the reverted `Draft`, not merely
+      // acknowledging -- reopening exactly that, rather than the `Draft` as
+      // it was before `send()` ran, is what makes a second edit made after
+      // `sendDraft`'s own local write (there is none today, but nothing rules
+      // one out) show up when Undo reopens the sheet.
+      this.composing = await mailApi.undoSend(pending.draft.id)
+    } catch (e) {
+      // The undo window can close a beat before the click lands -- the
+      // server then refuses, and the toast above is already down; all that
+      // is left is to say why the click did nothing.
+      await handle(e)
+    }
   }
 
   // ── search ───────────────────────────────────────────────────────
@@ -746,9 +836,36 @@ class MailState {
     }
     if (change.op === 'created' || change.op === 'updated') {
       void this.#patchOne(id)
+      // Bug 4: every backend command that can move a thread out of a
+      // mailbox from elsewhere -- archive, trash, snooze, an assistant or
+      // MCP action, another window's own click -- declares `Thread`/
+      // `Updated`, never `Deleted`, and `Thread` carries no mailbox id for
+      // `#patchOne` above to notice the row has left. Patching it in place
+      // is right as far as it goes -- the subject, the snippet, the flags
+      // are current -- but the row stays in a list it may no longer belong
+      // to until something re-asks the backend which threads are actually
+      // still here. A short, debounced refresh is that ask: harmless if the
+      // row still belongs (the page comes back the same), and what actually
+      // drops it if it does not, same as opening the mailbox fresh would.
+      // Debounced so a batch of changes from one sync tick costs one reload,
+      // and `refresh()`'s own `#generation` guard still applies, so a slow
+      // one cannot land after a newer list has replaced it.
+      //
+      // The real fix is a mailbox-scoped change event from the backend --
+      // out of scope for this pass.
+      this.#scheduleLiveRefresh()
       return true
     }
     return false
+  }
+
+  #liveRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  #scheduleLiveRefresh() {
+    if (this.#liveRefreshTimer) clearTimeout(this.#liveRefreshTimer)
+    this.#liveRefreshTimer = setTimeout(() => {
+      this.#liveRefreshTimer = null
+      void this.refresh()
+    }, LIVE_REFRESH_DEBOUNCE_MS)
   }
 
   async #patchOne(id: ThreadId) {
