@@ -36,6 +36,13 @@ pub struct AppState {
     sharing: Arc<Sharing>,
     /// Serving this vault's tools to an MCP client, when that is on.
     mcp: Arc<Mcp>,
+    /// A meeting being recorded, or being started, for the life of the
+    /// capture. See `capture.rs`'s `CaptureSlot` and `meeting.rs`'s
+    /// `begin_headless`, which reserves this with `CaptureSlot::Starting`
+    /// before it is ever `Some(CaptureSlot::Recording(_))` -- `meeting_start`
+    /// refuses a second recording while this is `Some` at all, whichever
+    /// variant.
+    capture: Mutex<Option<crate::capture::CaptureSlot>>,
     /// The one open handle onto `devices.json`, for the life of this
     /// process.
     ///
@@ -68,8 +75,16 @@ impl AppState {
             sink: RwLock::new(None),
             sharing: Arc::default(),
             mcp: Arc::default(),
+            capture: Mutex::new(None),
             registry: Mutex::new(None),
         }
+    }
+
+    /// The active (or starting) recording's slot -- what `meeting.rs`'s
+    /// commands take a handle out of (`meeting_stop`) or check the presence
+    /// of (`begin_headless`'s "already running" reservation, `meeting_status`).
+    pub fn capture(&self) -> &Mutex<Option<crate::capture::CaptureSlot>> {
+        &self.capture
     }
 
     pub fn sharing(&self) -> Arc<Sharing> {

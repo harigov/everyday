@@ -599,6 +599,21 @@ pub struct Event {
     /// faintly, because it should not read as a clash.
     #[serde(default = "yes")]
     pub busy: bool,
+    /// A durable identifier for the *series* this occurrence belongs to,
+    /// when the source gives one that is not simply `uid` itself: Google's
+    /// `recurringEventId` (falling back to `iCalUID`) and Graph's
+    /// `seriesMasterId` (falling back to `iCalUId`) both hand back a
+    /// per-occurrence `id`/`uid` that changes across a recurring series --
+    /// see [`crate::meeting::detect::series_key`]'s own doc for why that
+    /// broke "never for this meeting" for exactly those two sources. A
+    /// CalDAV resource or a subscribed feed's occurrence already writes a
+    /// `uid` whose base is shared by the whole series (`href#start`,
+    /// `<uid>@<start>`), so their adapters leave this `None` and the
+    /// existing suffix-stripping fallback in [`crate::meeting::detect::series_key`]
+    /// still applies. `#[serde(default)]` so an `Event` sealed before this
+    /// field existed still reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series: Option<String>,
     pub updated_at: Timestamp,
 }
 
@@ -851,6 +866,7 @@ mod tests {
             attendees: Vec::new(),
             url: String::new(),
             busy: false,
+            series: None,
             updated_at: Timestamp::now(),
         };
         // The bug this guards: a week query keyed on the start day alone,

@@ -19,6 +19,7 @@ import type {
   Bootstrap,
   Calendar,
   CalendarId,
+  CaptureStatus,
   ChangeEvent,
   Connected,
   Connection,
@@ -51,6 +52,7 @@ import type {
   MailboxId,
   MailMessageId,
   McpStatus,
+  MeetingSettings,
   Memory,
   MemoryId,
   Note,
@@ -63,6 +65,9 @@ import type {
   Reading,
   ReadingId,
   ReadingQuery,
+  Recording,
+  RecordingId,
+  RecordingQuery,
   Role,
   RoleId,
   Routine,
@@ -78,6 +83,7 @@ import type {
   TaskId,
   TaskQuery,
   TaskStatus,
+  TemplateId,
   ThreadFilter,
   ThreadId,
   TimeBlock,
@@ -86,6 +92,8 @@ import type {
   TrackerKind,
   TrayMenuItem,
   VaultStatus,
+  VoiceprintId,
+  VoiceprintInfo,
 } from './types'
 import { VaultError } from './types'
 import { COMMAND_NAMES, SERVICE_COMMANDS } from './generated/commands'
@@ -176,6 +184,52 @@ export let onLockState: (handler: (locked: boolean) => void) => void = () => {}
  */
 export let onPalette: (handler: () => void) => void = () => {}
 
+// ── Meeting capture, from the Tauri shell ───────────────────────────────
+//
+// Three events the native capture code raises, per `docs/plans/meeting-notes.md`
+// -- not vault writes, so they do not go through `onChange`. `meeting-status`
+// arrives about four times a second while a recording is live and carries
+// `null` the moment it stops; `meeting-still-on` is the "are you still on
+// the call?" prompt after a long silence; `meeting-offer` is the "take notes
+// for this?" banner, whether raised by a press (`automatic: false`) or
+// already recording because "Always" is on (`automatic: true`).
+//
+// Outside Tauri there is no capture to hear from, so these stay the
+// default no-ops -- except in mock mode, where `mock.ts` reassigns them to a
+// small in-page pub/sub so the pill and the offer banner can be exercised
+// with nothing but a browser. See `meetings.svelte.ts`'s "mock capture" for
+// the trigger side.
+
+/**
+ * What `meeting-offer` carries. Not a stored record -- see the module doc.
+ *
+ * `calendarId`, `uid` and `series` ride along beside `eventId` for
+ * `dismissMeetingOffer` to use: `eventId` is a feed event's own id, not
+ * stable across a resync, so a "Never for this meeting" click that lands
+ * after one would look up the wrong event, or none. `calendarId` and `uid`
+ * are what survives that. `series` is needed too, and separately from
+ * `uid`: a recurring Google or Microsoft event hands back a fresh `uid` for
+ * every occurrence, so without a durable series id of its own, dismissing
+ * one occurrence could only ever skip that one, not the series.
+ */
+export interface MeetingOfferPayload {
+  eventId: string
+  calendarId: string
+  uid: string
+  series?: string | null
+  title: string
+  start: string
+  end: string
+  calendarName: string
+  /** The shell has already started recording; this is a toast, not an ask. */
+  automatic: boolean
+  recordingId?: string | null
+}
+
+export let onMeetingStatus: (handler: (status: CaptureStatus | null) => void) => void = () => {}
+export let onMeetingStillOn: (handler: (recordingId: RecordingId) => void) => void = () => {}
+export let onMeetingOffer: (handler: (offer: MeetingOfferPayload) => void) => void = () => {}
+
 /**
  * Say something to the assistant, streaming what it says back.
  *
@@ -216,6 +270,17 @@ if (!MOCK) {
   onPalette = (handler) => {
     void listen('everyday://palette', () => handler())
   }
+  onMeetingStatus = (handler) => {
+    void listen<CaptureStatus | null>('meeting-status', (e) => handler(e.payload))
+  }
+  onMeetingStillOn = (handler) => {
+    // `capture.rs` emits the bare `RecordingId`, not `{ recordingId }` --
+    // see `STILL_ON_EVENT`'s one call site.
+    void listen<RecordingId>('meeting-still-on', (e) => handler(e.payload))
+  }
+  onMeetingOffer = (handler) => {
+    void listen<MeetingOfferPayload>('meeting-offer', (e) => handler(e.payload))
+  }
 
   const mod = await import('@tauri-apps/api/core')
   sendMessage = async (conversationId, prompt, context, onEvent) => {
@@ -253,8 +318,15 @@ if (!MOCK) {
     }
   }
 } else {
-  const { mockInvoke } = await import('./mock')
+  const { mockInvoke, mockOnMeetingOffer, mockOnMeetingStatus, mockOnMeetingStillOn } =
+    await import('./mock')
   invoke = mockInvoke
+  // A real backend emits these from native capture code; the mock has none,
+  // so it stands in with its own pub/sub, driven by `meetings.svelte.ts`'s
+  // "mock capture" simulation rather than by anything crossing a bridge.
+  onMeetingStatus = mockOnMeetingStatus
+  onMeetingStillOn = mockOnMeetingStillOn
+  onMeetingOffer = mockOnMeetingOffer
 }
 
 /**
@@ -322,18 +394,22 @@ function call<K extends keyof Commands>(
 /**
  * Call a command that is not yet in the generated surface, by its wire name.
  *
- * `mail-api.ts` is the one caller today: Phase 2-4 of `docs/plans/mail.md`
- * name a couple of dozen commands that other agents are still landing, and
- * `gen-api.mjs` cannot generate a typed method for one that does not exist
- * in `crates/everyday-service/surface.json` yet. This is the untyped escape
- * hatch `call` above is built from, kept to one call site rather than
- * reached for anywhere a rename would go unnoticed.
+ * Two callers today, for two different reasons. `mail-api.ts` is the
+ * "not yet" case: Phase 2-4 of `docs/plans/mail.md` name a couple of
+ * commands other agents are still landing, and `gen-api.mjs` cannot
+ * generate a typed method for one that does not exist in
+ * `crates/everyday-service/surface.json` yet -- once it does, that call
+ * site becomes a one-line typed method here instead, the same way every
+ * meeting-notes command did when the pipeline landed. `meetings.svelte.ts`'s
+ * "Dev-only mock triggers" are the other case, and never graduate: no
+ * `mock_trigger_meeting_offer` or `mock_trigger_still_on` command exists in
+ * a real build, or ever will, so there is nothing for `gen-api.mjs` to
+ * generate a typed method from.
  *
  * Mirrors what `call` does for a *known* command: under Tauri it always goes
  * through the shell's `call`, never by name directly, because a command this
  * build does not know about is never one of the handful the shell answers
- * itself. Once `gen-api.mjs` catches up, each call site becomes a one-line
- * typed method here instead, and this function's job shrinks back to zero.
+ * itself.
  */
 export function callCommand<T = unknown>(
   name: string,
@@ -452,6 +528,84 @@ export const api = {
    */
   hotkeyStatus: () => invoke<HotkeyStatus>('hotkey_status'),
   setHotkey: (on: boolean) => invoke<HotkeyStatus>('set_hotkey', { on }),
+
+  // ── Meeting capture, in the Tauri shell ────────────────────────────
+  //
+  // Native, not a service command: the webview has no microphone
+  // permission, and `capabilities/default.json` does not change that. These
+  // three are called by name, the same way `hotkeyStatus` above is, rather
+  // than through `call` -- see `docs/plans/meeting-notes.md`'s "Recording is
+  // native, in the Tauri shell". In mock mode `mock.ts` answers all three,
+  // so the pill still has something to poll in a browser.
+
+  meetingStart: (opts: {
+    eventId?: string | null
+    title?: string | null
+    templateId?: string | null
+  }) => invoke<Recording>('meeting_start', opts),
+  meetingStop: (discard: boolean) => invoke<void>('meeting_stop', { discard }),
+  meetingStatus: () => invoke<CaptureStatus | null>('meeting_status'),
+
+  /**
+   * Record a 20-second sample and turn it into a voiceprint, natively.
+   *
+   * Rejects if the capture engineer's build of this command has not landed
+   * yet -- `meetings.svelte.ts` turns that into "Voice enrolment isn't
+   * available in this build" rather than a raw Tauri error, per
+   * `docs/plans/meeting-notes.md`'s instruction to handle it gracefully.
+   */
+  voiceEnrol: (seconds = 20) => invoke<VoiceprintInfo>('voice_enrol', { seconds }),
+
+  // ── Meeting notes -- the service commands ──────────────────────────
+  //
+  // Everything about meeting notes that is an ordinary vault write, unlike
+  // the three above: settings, the recording history, transcripts, local
+  // speech models and voiceprints. This used to be `meetings-api.ts`'s own
+  // hand-rolled `callCommand` wrappers, kept apart from `surface.json`
+  // while the pipeline was still landing; now that it has, these are
+  // one-line forwards to `call` like everything else in this object.
+
+  meetingSettings: () => call('meetingSettings', {}),
+  saveMeetingSettings: (settings: MeetingSettings) => call('saveMeetingSettings', { settings }),
+  setTranscriberKey: (key: string | null) => call('setTranscriberKey', { key }),
+  newMeetingTemplate: () => call('newMeetingTemplate', {}),
+  lintMeetingTemplate: (body: string) => call('lintMeetingTemplate', { body }),
+  /** Renders with the real model -- may be slow, and may fail. */
+  previewMeetingTemplate: (body: string) => call('previewMeetingTemplate', { body }),
+  /** Probe the configured transcriber backend. Rejects with the failure text. */
+  testTranscriber: () => call('testTranscriber', {}),
+
+  listRecordings: (query: RecordingQuery = {}) => call('listRecordings', { query }),
+  getRecording: (id: RecordingId) => call('getRecording', { id }),
+  activeRecording: () => call('activeRecording', {}),
+  deleteRecording: (id: RecordingId) => call('deleteRecording', { id }),
+  retryRecording: (id: RecordingId) => call('retryRecording', { id }),
+  discardRecording: (id: RecordingId) => call('discardRecording', { id }),
+
+  getTranscript: (noteId: NoteId) => call('getTranscript', { noteId }),
+  nameSpeaker: (opts: {
+    noteId: NoteId
+    speakerKey: number
+    name: string
+    email?: string | null
+  }) => call('nameSpeaker', opts),
+  /** Proposed markdown body. The caller shows a diff and applies it itself. */
+  rewriteMeetingNote: (noteId: NoteId, templateId: TemplateId) =>
+    call('rewriteMeetingNote', { noteId, templateId }),
+
+  listVoiceprints: () => call('listVoiceprints', {}),
+  deleteVoiceprint: (id: VoiceprintId) => call('deleteVoiceprint', { id }),
+  deleteAllVoiceprints: () => call('deleteAllVoiceprints', {}),
+
+  speechModels: () => call('speechModels', {}),
+  downloadSpeechModel: (id: string) => call('downloadSpeechModel', { id }),
+  cancelSpeechModelDownload: (id: string) => call('cancelSpeechModelDownload', { id }),
+  deleteSpeechModel: (id: string) => call('deleteSpeechModel', { id }),
+  benchmarkSpeechModel: (id: string) => call('benchmarkSpeechModel', { id }),
+
+  dismissMeetingOffer: (calendarId: string, uid: string, series: string | null, never: boolean) =>
+    call('dismissMeetingOffer', { calendarId, uid, series, never }),
+
   unlock: (password: string) => call('unlock', { password }),
   /**
    * Check a password without opening or closing anything.

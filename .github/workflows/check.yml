@@ -77,7 +77,13 @@ jobs:
       # which means its tests and its lints run *nowhere* unless this job
       # installs the headers and asks for it by name. It is the crate holding
       # the only network code in the application, so that is worth a minute of
-      # apt.
+      # apt. The PipeWire headers are for `capture.rs`'s loopback track: see
+      # its module doc and `docs/plans/meeting-notes.md`. libclang is for
+      # `bindgen`, which `libspa-sys`/`pipewire-sys` (cpal's PipeWire host)
+      # run at build time to generate their own bindings against those
+      # headers -- ubuntu-latest ships the `clang` binary already, but not
+      # reliably the `libclang` dev headers `bindgen` actually links against,
+      # so this is asked for explicitly rather than assumed.
       - name: Build dependencies
         run: |
           set -euo pipefail
@@ -88,7 +94,10 @@ jobs:
             libsoup-3.0-dev \
             libgtk-3-dev \
             librsvg2-dev \
-            libayatana-appindicator3-dev
+            libayatana-appindicator3-dev \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
+            libclang-dev
 
       - uses: actions/cache@v4
         with:
@@ -117,6 +126,91 @@ jobs:
           set -euo pipefail
           cargo test
           cargo test -p everyday-app
+
+  rust-speech:
+    name: Rust (speech)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Local speech (`meeting::models`, `meeting::speech`,
+    # `meeting::transcribe::local`; see docs/plans/meeting-notes.md) is its
+    # own job rather than a step in `rust` above, for two reasons: it needs
+    # no Postgres service, and its one real cost -- `sherpa-onnx`'s prebuilt
+    # native library, a ~20 MB archive -- is worth caching on its own key
+    # rather than folded into `rust`'s `Cargo.lock`-keyed one, where it would
+    # be re-downloaded on every dependency bump unrelated to it. `rust`'s own
+    # `cargo test` stays feature-less, per this crate's own doc on why: a
+    # plain `cargo test` -- what anyone cloning the repo runs first -- must
+    # not need a 500 MB model download or a native toolchain it may not have.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --no-self-update \
+            --component rustfmt,clippy
+          rustup default stable
+          rustc --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: check-speech-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: check-speech-${{ runner.os }}-
+
+      # `sherpa-onnx-sys`'s build script downloads a prebuilt static-library
+      # archive matching its own crate version unless `SHERPA_ONNX_LIB_DIR`
+      # (an already-extracted `lib/`) or `SHERPA_ONNX_ARCHIVE_DIR` (a
+      # directory holding the still-compressed archive, by its exact
+      # filename) is set -- see that crate's build script, and this
+      # workspace's `sherpa-onnx` dependency comment in
+      # `crates/everyday-service/Cargo.toml`. Read from the committed
+      # `Cargo.lock` rather than hand-pinned here a second time, so a version
+      # bump in `Cargo.toml` cannot silently leave this step caching (and
+      # therefore validating nothing against) a stale archive.
+      - name: Resolve the sherpa-onnx version
+        id: sherpa
+        run: |
+          set -euo pipefail
+          version=$(awk '/^name = "sherpa-onnx"$/{getline; print; exit}' Cargo.lock | sed -E 's/version = "(.*)"/\1/')
+          if [ -z "$version" ]; then
+            echo "could not find sherpa-onnx in Cargo.lock" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "archive=sherpa-onnx-v${version}-linux-x64-static-lib.tar.bz2" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: sherpa-archive-cache
+        with:
+          path: ~/.cache/sherpa-onnx-archives
+          key: sherpa-onnx-archive-${{ steps.sherpa.outputs.archive }}
+
+      - name: Download the sherpa-onnx native library
+        if: steps.sherpa-archive-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.cache/sherpa-onnx-archives
+          curl -sSL --retry 3 -o "$HOME/.cache/sherpa-onnx-archives/${{ steps.sherpa.outputs.archive }}" \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${{ steps.sherpa.outputs.version }}/${{ steps.sherpa.outputs.archive }}"
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        env:
+          SHERPA_ONNX_ARCHIVE_DIR: /home/runner/.cache/sherpa-onnx-archives
+        run: cargo clippy -p everyday-service --all-targets --features speech -- -D warnings
+
+      - name: Tests
+        env:
+          SHERPA_ONNX_ARCHIVE_DIR: /home/runner/.cache/sherpa-onnx-archives
+        run: cargo test -p everyday-service --features speech
 
   ui:
     name: Interface

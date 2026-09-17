@@ -85,6 +85,7 @@ impl Remote {
                         }
                         sink_for_stream.lock_state(locked);
                     }
+                    ServerEvent::MeetingOffer(offer) => sink_for_stream.meeting_offer(offer),
                 });
 
                 // Raced against the stop signal, not merely checked before it.

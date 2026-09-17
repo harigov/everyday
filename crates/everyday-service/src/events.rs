@@ -30,7 +30,21 @@
 //!
 //! The vault locked or unlocked. Not a change to a record and not a
 //! notification: every client has to leave the screen it is on.
+//!
+//! # Meeting offers
+//!
+//! "Take notes for Design sync?" is neither a [`Change`] -- nothing has been
+//! written, and an "ask" offer may never be acted on -- nor a plain
+//! [`Notification`], which carries no structure for a listener to draw a
+//! banner from (a title, a time range, which calendar) or to act on (the
+//! desktop shell starting capture itself when "Always" chose for you). It
+//! gets its own event, [`MeetingOffer`], raised by
+//! `everyday_service::meeting::watch` alongside an ordinary [`Notification`]
+//! with [`Reach::User`] so the offer still reaches somebody who is not
+//! looking at the window.
 
+use everyday_core::id::{CalendarId, EventId};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 /// How loud a notification is. Mirrors `NotifyLevel` in the interface.
@@ -165,6 +179,13 @@ pub enum Kind {
     /// One run of it. What the count on the app bar is drawn from.
     RoutineRun,
     Memory,
+    /// A call being recorded, or the history row of one that was. See
+    /// `everyday_core::meeting`.
+    Recording,
+    /// What was said in a call, kept beside its note.
+    Transcript,
+    /// A voice the meetings feature can recognise.
+    Voiceprint,
     /// The vault's own settings: auto-lock, the assistant's configuration.
     Settings,
     /// One of [`crate::supervisor::Supervisor`]'s long-lived keyed tasks --
@@ -213,11 +234,53 @@ impl Change {
     }
 }
 
+/// "Take notes for Design sync?" -- a detected call starting now. Mirrors
+/// the TS `MeetingOfferPayload` in `ui/src/lib/api.ts`, minus the shell-only
+/// `recordingId` that type also carries: this event exists before any
+/// recording does, and the desktop shell is what fills that field in once
+/// (and if) one starts.
+///
+/// Raised by `everyday_service::meeting::watch`, never stored: a listener
+/// that missed one because no window was open missed nothing worth
+/// recovering, unlike a [`Change`] to a record.
+///
+/// Carries `calendar_id` and `uid` alongside `event_id` on purpose:
+/// `event_id` is what starts a recording (`begin_recording` looks the event
+/// up by it, to read its attendees and title), but it is a feed event's own
+/// id, not stable across a resync -- see `meeting::watch`'s own doc. A
+/// dismissal that arrived after a resync had changed it would look up the
+/// wrong event, or none. `dismiss_meeting_offer` is built against the pair
+/// that *is* durable instead, the same one `meeting::watch::already_recorded`
+/// already keys a recording's own history lookup by.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingOffer {
+    pub event_id: EventId,
+    pub calendar_id: CalendarId,
+    pub uid: String,
+    /// The event's own `Event::series` (`everyday_core::calendar::Event`),
+    /// carried along so `dismiss_meeting_offer` can compute the same series
+    /// key `meeting::watch`'s own tick checked the event against, rather
+    /// than only ever being able to derive one from `uid` -- which, for a
+    /// recurring Google or Graph event, is unique per occurrence and would
+    /// only ever let "never for this meeting" skip the one occurrence it
+    /// was pressed on. See `detect::series_key_of`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series: Option<String>,
+    pub title: String,
+    pub start: Timestamp,
+    pub end: Timestamp,
+    pub calendar_name: String,
+    /// Detected on a calendar set to "Always": the shell has already begun
+    /// recording, and this is a toast rather than a question.
+    pub automatic: bool,
+}
+
 /// Where the service's own remarks go.
 ///
 /// Implemented by the shell (window events), the server (server-sent events)
 /// and tests (a vector). The default implementations do nothing, so a
-/// listener that cares about one kind is not obliged to write three methods.
+/// listener that cares about one kind is not obliged to write four methods.
 pub trait EventSink: Send + Sync {
     fn notify(&self, notification: Notification) {
         let _ = notification;
@@ -229,6 +292,10 @@ pub trait EventSink: Send + Sync {
 
     fn lock_state(&self, locked: bool) {
         let _ = locked;
+    }
+
+    fn meeting_offer(&self, offer: MeetingOffer) {
+        let _ = offer;
     }
 }
 

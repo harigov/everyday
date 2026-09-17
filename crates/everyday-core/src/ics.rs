@@ -1090,6 +1090,10 @@ fn materialise(
         attendees: source.attendees.clone(),
         url: source.url.clone(),
         busy: source.busy && source.status != EventStatus::Cancelled,
+        // Not set: this `uid` already carries the series' own base (see the
+        // comment above) and `detect::series_key`'s suffix-stripping
+        // fallback already recovers it, the same way it does for CalDAV.
+        series: None,
         updated_at: Timestamp::now(),
     })
 }
@@ -1815,6 +1819,7 @@ mod tests {
             attendees: Vec::new(),
             url: String::new(),
             busy: true,
+            series: None,
             updated_at: start,
         }
     }

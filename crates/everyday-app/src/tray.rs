@@ -44,6 +44,9 @@ const SHOW_ID: &str = "everyday:show";
 const QUIT_ID: &str = "everyday:quit";
 const TRAY_ID: &str = "everyday";
 
+/// Chosen by the shell, not the interface -- see [`Tray::set_recording`].
+pub const STOP_RECORDING_ID: &str = "everyday:stop-recording";
+
 /// What the assistant is up to, in a line, or nothing to say.
 ///
 /// Nothing to say is the ordinary case: a vault with no routines on it has no
@@ -88,7 +91,7 @@ fn assistant_line(app: &AppHandle) -> Option<String> {
 /// registered globally on any of the three platforms, so displaying one
 /// would advertise a shortcut that does nothing unless the window already
 /// has focus.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum TrayItem {
     Action {
@@ -126,6 +129,16 @@ pub struct Tray {
     /// to a hidden window, and on a desktop that has nowhere to put one there
     /// is no way back at all.
     showing: Mutex<bool>,
+    /// The interface's own items from the last `show`, kept so
+    /// [`Tray::set_recording`] can rebuild the menu without the interface
+    /// having to resend them every time a recording starts or stops.
+    last_items: Mutex<Vec<TrayItem>>,
+    /// `Some(title)` while a meeting is being recorded. Not the interface's
+    /// to set -- see `capture.rs`, which is the one caller -- so it goes
+    /// through its own method rather than through [`Tray::show`]'s `items`,
+    /// the same way `SHOW_ID`/`QUIT_ID` are the shell's own rather than
+    /// something a quick action could collide with.
+    recording: Mutex<Option<String>>,
 }
 
 impl Tray {
@@ -140,7 +153,28 @@ impl Tray {
         for item in items {
             check_ids(item)?;
         }
+        *self.last_items.lock().unwrap() = items.to_vec();
+        self.rebuild(app, items)
+    }
 
+    /// Put a "Stop recording" item above "Open"/"Quit", and mark the
+    /// tooltip and title, while `title` is `Some`; take both away when it
+    /// is `None`. Rebuilds around whatever quick actions the interface last
+    /// sent, so starting or stopping a recording never depends on the
+    /// interface resending its own menu.
+    ///
+    /// A tray icon this asks to show one that was never shown -- an
+    /// automatic recording starting before Settings has ever called `show`
+    /// -- builds one with no quick actions rather than staying silent: the
+    /// stop button is the one thing in this menu that must always be
+    /// reachable while a microphone is live.
+    pub fn set_recording(&self, app: &AppHandle, title: Option<&str>) -> CommandResult<bool> {
+        *self.recording.lock().unwrap() = title.map(str::to_string);
+        let items = self.last_items.lock().unwrap().clone();
+        self.rebuild(app, &items)
+    }
+
+    fn rebuild(&self, app: &AppHandle, items: &[TrayItem]) -> CommandResult<bool> {
         // Built before either lock is taken. Every menu call here hops to the
         // main thread and blocks until it answers, so holding a lock across
         // one would deadlock against the click handler below -- which runs on
@@ -150,6 +184,20 @@ impl Tray {
         let mut all: Vec<&dyn IsMenuItem<Wry>> = quick.iter().map(Box::as_ref).collect();
 
         let separator = PredefinedMenuItem::separator(app).map_err(menu_error)?;
+        let recording = self.recording.lock().unwrap().clone();
+        let stop_recording = match &recording {
+            Some(title) => Some(
+                MenuItem::with_id(
+                    app,
+                    STOP_RECORDING_ID,
+                    format!("Stop recording \u{201c}{title}\u{201d}"),
+                    true,
+                    NO_ACCEL,
+                )
+                .map_err(menu_error)?,
+            ),
+            None => None,
+        };
         // Disabled, because it is a statement rather than a thing to press.
         let assistant = match assistant_line(app) {
             Some(line) => Some(MenuItem::new(app, line, false, NO_ACCEL).map_err(menu_error)?),
@@ -159,6 +207,9 @@ impl Tray {
             .map_err(menu_error)?;
         let quit = MenuItem::with_id(app, QUIT_ID, "Quit Every Day", true, NO_ACCEL)
             .map_err(menu_error)?;
+        if let Some(item) = &stop_recording {
+            all.push(item);
+        }
         if !all.is_empty() {
             all.push(&separator);
         }
@@ -170,10 +221,15 @@ impl Tray {
         let menu = Menu::with_items(app, &all).map_err(menu_error)?;
 
         *self.raise.lock().unwrap() = raise;
+        let tooltip = match &recording {
+            Some(title) => format!("Every Day \u{2014} Recording \u{201c}{title}\u{201d}"),
+            None => "Every Day".to_string(),
+        };
 
         let mut slot = self.icon.lock().unwrap();
         if let Some(tray) = slot.as_ref() {
             tray.set_menu(Some(menu)).map_err(menu_error)?;
+            tray.set_tooltip(Some(&tooltip)).map_err(menu_error)?;
             // Puts it back if the setting was switched off and on again.
             tray.set_visible(true).map_err(menu_error)?;
             *self.showing.lock().unwrap() = true;
@@ -185,7 +241,7 @@ impl Tray {
         // appends it to a process-wide list that nothing ever removes, so an
         // icon built a second time would leave every menu pick firing its
         // handler twice -- two journal entries from one click.
-        let mut builder = TrayIconBuilder::with_id(TRAY_ID).menu(&menu).tooltip("Every Day");
+        let mut builder = TrayIconBuilder::with_id(TRAY_ID).menu(&menu).tooltip(tooltip);
         // The application mark, not a monochrome silhouette of it. A macOS
         // template icon would be the more idiomatic choice in the menu bar,
         // but the mark is a filled tile and a template renders only its
@@ -320,6 +376,7 @@ pub fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     let id = event.id().as_ref();
     match id {
         SHOW_ID => raise_window(app),
+        STOP_RECORDING_ID => crate::meeting::stop_from_tray(app.clone()),
         QUIT_ID => {
             // A close *request*, not a teardown: it goes through the window's
             // own `CloseRequested` handler, so quitting from the tray saves

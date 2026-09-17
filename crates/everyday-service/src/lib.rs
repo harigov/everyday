@@ -53,6 +53,7 @@ pub mod llm;
 pub mod mailai;
 pub mod mailsync;
 pub mod mailview;
+pub mod meeting;
 pub mod outbox;
 pub mod quick;
 pub mod scheduler;

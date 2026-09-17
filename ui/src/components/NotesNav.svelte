@@ -7,13 +7,16 @@
   // two things at once. Pinned ones float to the top, which is the one kind
   // of emphasis this app has.
 
+  import { focusOnMount, trapFocus } from '../lib/focus'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { meetings } from '../lib/meetings.svelte'
   import { notes, SORTS } from '../lib/notes.svelte'
   import { plural } from '../lib/format'
   import type { NoteSummary } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
+  import RecordingCard from './RecordingCard.svelte'
 
   // Loaded when the sidebar appears rather than when the store is imported,
   // so a vault whose owner never opens this app never pays for the query.
@@ -21,6 +24,27 @@
   void notes.start()
 
   let pendingDelete = $state<NoteSummary | null>(null)
+
+  // ── Record a call ────────────────────────────────────────────────────
+
+  let recordSheet = $state(false)
+  let recordTitle = $state('')
+  let recordError = $state<string | null>(null)
+
+  // `meetings.starting` (not a local flag) gates the Start button below --
+  // see that field's own doc: this keeps a press here from racing a press
+  // of "Take notes" on `EventDetail`'s panel or `MeetingOfferBanner`'s
+  // offer, all three of which call the same `startCapture`.
+  async function startRecordCall() {
+    recordError = null
+    try {
+      await meetings.startCapture({ title: recordTitle.trim() || null })
+      recordSheet = false
+      recordTitle = ''
+    } catch (e) {
+      recordError = e instanceof Error ? e.message : String(e)
+    }
+  }
 
   const shown = $derived(notes.query.trim() ? [] : notes.list)
 
@@ -48,6 +72,9 @@
   function navMenu(): MenuItem[] {
     return tidyMenu([
       { label: 'New note', icon: 'plus', hint: 'Ctrl+N', run: () => void notes.create() },
+      ...(meetings.supported
+        ? [{ label: 'Record a call', icon: 'mic' as const, run: () => (recordSheet = true) }]
+        : []),
       SEP,
       ...SORTS.map((s) => ({
         label: s.label,
@@ -63,6 +90,12 @@
     if (note) await notes.remove(note.id)
   }
 </script>
+
+<svelte:window
+  onkeydown={(e: KeyboardEvent) => {
+    if (recordSheet && e.key === 'Escape') recordSheet = false
+  }}
+/>
 
 <nav class="scroll nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
   <div class="search">
@@ -103,10 +136,34 @@
         {plural(notes.list.length, 'note')}
       {/if}
     </span>
+    {#if meetings.supported}
+      <button
+        class="plus"
+        title="Record a call"
+        aria-label="Record a call"
+        onclick={() => (recordSheet = true)}
+      >
+        <Icon name="mic" size={15} />
+      </button>
+    {/if}
     <button class="plus" title="New note" aria-label="New note" onclick={() => void notes.create()}>
       <Icon name="plus" size={15} />
     </button>
   </div>
+
+  {#if !notes.query.trim() && meetings.recordingsError}
+    <p class="error recordings-error">
+      Couldn’t refresh call recordings: {meetings.recordingsError}
+    </p>
+  {/if}
+
+  {#if !notes.query.trim() && meetings.recordings.length > 0}
+    <div class="recordings">
+      {#each meetings.recordings as r (r.id)}
+        <RecordingCard recording={r} />
+      {/each}
+    </div>
+  {/if}
 
   {#if notes.query.trim()}
     {#if notes.searching && notes.results.length === 0}
@@ -159,6 +216,41 @@
     onconfirm={remove}
     oncancel={() => (pendingDelete = null)}
   />
+{/if}
+
+{#if recordSheet}
+  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+  <div class="scrim" onclick={() => (recordSheet = false)}></div>
+  <div class="sheet small" role="dialog" aria-modal="true" aria-label="Record a call" use:trapFocus>
+    <h2>Record a call</h2>
+    <p class="hint">
+      Starts recording now, on this computer. There is no calendar event behind it, so the note it
+      writes is titled whatever you give it here.
+    </p>
+    <form
+      class="row"
+      onsubmit={(e) => {
+        e.preventDefault()
+        void startRecordCall()
+      }}
+    >
+      <input
+        use:focusOnMount
+        bind:value={recordTitle}
+        placeholder="Title (optional)"
+        aria-label="Title"
+        spellcheck="false"
+      />
+      <button class="btn btn-primary" type="submit" disabled={meetings.starting}>
+        {meetings.starting ? 'Starting…' : 'Start'}
+      </button>
+    </form>
+    {#if recordError}<p class="error">{recordError}</p>{/if}
+    <div class="sheet-row">
+      <span class="spacer"></span>
+      <button class="btn" onclick={() => (recordSheet = false)}>Cancel</button>
+    </div>
+  </div>
 {/if}
 
 <style>
@@ -305,6 +397,32 @@
   .hint {
     padding: var(--sp-3) var(--sp-2);
     color: var(--fg-faint);
+    font-size: var(--text-sm);
+  }
+
+  .recordings {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    padding-top: var(--sp-2);
+  }
+
+  .row {
+    display: flex;
+    gap: var(--sp-2);
+    margin-top: var(--sp-3);
+  }
+  .row input {
+    flex: 1;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 6px var(--sp-2);
+    background: var(--bg-raised);
+    color: var(--fg);
+  }
+  .error {
+    margin-top: var(--sp-2);
+    color: var(--danger);
     font-size: var(--text-sm);
   }
 </style>

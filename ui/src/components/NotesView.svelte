@@ -12,6 +12,7 @@
   import { notes } from '../lib/notes.svelte'
   import { focusOnMount } from '../lib/focus'
   import { plural, relativeTime } from '../lib/format'
+  import { renderMarkdown } from '../lib/markdown'
   import RichText from './RichText.svelte'
   import Toolbar from './Toolbar.svelte'
   import type { Editor as TipTapEditor } from '@tiptap/core'
@@ -19,6 +20,7 @@
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
+  import TranscriptPanel from './TranscriptPanel.svelte'
   import type { Attachment, Purpose, QuickTaskDraft, RichDoc } from '../lib/types'
   import { api } from '../lib/api'
   import { purpose as purposeStore } from '../lib/purpose.svelte'
@@ -154,6 +156,22 @@
     confirmingDelete = false
     const id = notes.open?.id
     if (id) await notes.remove(id)
+  }
+
+  /**
+   * "Rewrite summary" replaces the whole body with the model's markdown.
+   *
+   * The note's body is TipTap JSON, not markdown, and there is no
+   * markdown → RichDoc step in this codebase -- so this reuses the one
+   * markdown renderer that exists (`renderMarkdown`, built for the
+   * assistant's replies) to get HTML, and hands that to the editor exactly
+   * the way a paste would arrive. `emitUpdate: true` is what makes this
+   * indistinguishable from typing it: `RichText`'s own `onedit` fires and
+   * marks the note dirty, same as every other edit on this page.
+   */
+  function replaceBodyFromMarkdown(markdown: string) {
+    if (!editor) return
+    editor.commands.setContent(renderMarkdown(markdown), { emitUpdate: true })
   }
 
   function onDragOver(e: DragEvent) {
@@ -320,6 +338,8 @@
           onwords={(n: number) => (words = n)}
           onstoring={(f: string | null) => (storing = f)}
         />
+
+        <TranscriptPanel noteId={note.id} onreplacebody={replaceBodyFromMarkdown} />
       </div>
     </div>
 

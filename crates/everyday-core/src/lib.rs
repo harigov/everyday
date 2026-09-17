@@ -20,6 +20,7 @@
 //!     +-- PurposeStore   optional (crate::store::purpose)
 //!     +-- RoutineStore   optional (crate::store::routines)
 //!     +-- AgentStore     optional (crate::store::agent)
+//!     +-- MeetingStore   optional (crate::store::meetings)
 //!     |
 //!   Cipher             trait: XChaCha20-Poly1305 or none (crate::crypto)
 //! ```
@@ -88,6 +89,7 @@ pub mod lockfile;
 pub mod mail;
 pub mod mailsearch;
 pub mod media;
+pub mod meeting;
 pub mod model;
 pub mod note;
 pub mod packstore;
@@ -119,7 +121,8 @@ pub use error::{Error, Result};
 pub use id::{
     AccountId, BlobId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId,
     ItemId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NoteId, OpId,
-    PackId, ProjectId, ReadingId, RoleId, RoutineId, RoutineRunId, TaskId, ThreadId, TrackerId,
+    PackId, ProjectId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId, TaskId, TemplateId,
+    ThreadId, TrackerId, TranscriptId, VoiceprintId,
 };
 pub use library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,
@@ -149,6 +152,7 @@ pub use store::agent::{AgentStore, ConversationQuery};
 pub use store::calendars::{CalendarStore, EventQuery};
 pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
 pub use store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
+pub use store::meetings::{MeetingStore, RecordingQuery};
 pub use store::notes::{NoteQuery, NoteSort, NoteStore};
 pub use store::purpose::{GoalQuery, PurposeStore, PurposeWindow};
 pub use store::routines::RunQuery;

@@ -196,7 +196,12 @@ impl Vault {
             Some(n) => n.all_notes()?,
             None => Vec::new(),
         };
-        let index = SearchIndex::build(&store.all_entries()?, &notes);
+        let mut index = SearchIndex::build(&store.all_entries()?, &notes);
+        // A transcript lives in its own table, reached through a
+        // recording's `note_id` rather than off the note itself, so the
+        // build above -- which only knows entries and notes -- cannot see
+        // one. See `super::meetings::rebuild_meeting_index`.
+        super::meetings::rebuild_meeting_index(store.as_ref(), &mut index)?;
 
         *self.state_write() = Some(Unlocked { store, index, cipher });
         self.touch();

@@ -8,12 +8,18 @@
 //! point is a library: Tauri builds iOS and Android targets from `run()` rather
 //! than from `main`.
 
+pub mod capture;
 mod commands;
 mod events;
 mod fanout;
 mod hotkey;
 mod listener;
 mod mcp;
+// `pub`: `meeting::begin_headless` is the window-free core of
+// `meeting_start`/`start_automatic` -- see its own doc -- and an E2E test
+// (`tests/meeting_e2e.rs`) drives a recording through it with no Tauri
+// window at all. Everything else in this module stays private.
+pub mod meeting;
 mod protocol;
 mod remote;
 mod remotes;
@@ -21,6 +27,11 @@ mod sharing;
 mod state;
 mod transfer;
 mod tray;
+
+// Re-exported, not the whole (otherwise private) `state` module: the one
+// piece of it `meeting::begin_headless`'s public signature needs a test to
+// be able to name. See that function's own doc.
+pub use state::SessionHandle;
 
 use state::AppState;
 use tauri::{Emitter, Manager, WindowEvent};
@@ -166,6 +177,12 @@ pub fn run() {
             commands::ready_to_close,
             commands::set_tray_menu,
             commands::hide_tray,
+            // Meeting notes: hearing a call. See `capture.rs` and
+            // `meeting.rs`.
+            meeting::meeting_start,
+            meeting::meeting_stop,
+            meeting::meeting_status,
+            meeting::voice_enrol,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

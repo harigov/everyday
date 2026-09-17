@@ -9,7 +9,7 @@
 
 use super::Vault;
 use super::session::Domain;
-use crate::agent::{AgentSettings, Conversation, MAX_MEMORIES, Memory, Message};
+use crate::agent::{AgentSettings, Conversation, MAX_MEMORIES, Memory, Message, Provider};
 use crate::error::{Error, Result};
 use crate::id::{ConversationId, MemoryId, MessageId};
 use crate::store::agent::{AgentStore, ConversationQuery};
@@ -107,6 +107,29 @@ impl Vault {
     pub fn mail_ai_credentials(&self) -> Result<(AgentSettings, Option<String>)> {
         let settings = self.agent_settings()?;
         self.raw_llm_credentials(settings)
+    }
+
+    /// The assistant's own key, if it is pointed at OpenAI's hosted endpoint
+    /// and one is stored -- for meeting notes' "use the assistant's key"
+    /// option, so the transcriber setting does not have to know how the
+    /// assistant is plumbed.
+    ///
+    /// A fourth door onto the credential, beside [`Vault::agent_credentials`],
+    /// [`Vault::quick_credentials`] and [`Vault::mail_ai_credentials`], and on
+    /// the loosest terms of the four: no gate on `enabled` or on a job being
+    /// allowed, because the assistant need not be switched on for meeting
+    /// notes to reuse its key. Answers `None` rather than failing when there
+    /// is nothing to reuse -- pointed somewhere other than OpenAI, or no key
+    /// stored -- so a caller can fall back to the transcriber's own key
+    /// without matching on an error first.
+    pub fn assistant_key_if_openai(&self) -> Result<Option<String>> {
+        let settings = self.agent_settings()?;
+        if !settings.has_key
+            || settings.provider_config.endpoint() != Provider::OpenAi.default_base_url()
+        {
+            return Ok(None);
+        }
+        self.with_agent(|a| a.secret())
     }
 
     fn raw_llm_credentials(

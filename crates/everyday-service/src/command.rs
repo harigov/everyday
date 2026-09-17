@@ -559,6 +559,27 @@ mod tests {
             // has that id, rather than through a `change:` this table could
             // declare ahead of running.
             "respond_to_invite",
+            // One chunk of a call still being recorded, roughly once every
+            // thirty seconds per track. Nothing draws a list from a single
+            // chunk landing -- the pill showing a call is live reads
+            // `meeting_status`, not a `Kind::Recording` change -- so this
+            // stays quiet while `begin_recording`, `finish_recording`,
+            // `retry_recording`, `discard_recording` and `delete_recording`
+            // announce `Kind::Recording` for the moments a list actually
+            // needs to notice, and the pipeline's own background stage
+            // moves (see `meeting::pipeline::fail` and
+            // `do_summarise_and_write`) raise it by hand once a call ends
+            // in `Done` or `Failed`.
+            "append_recording_chunk",
+            // "Not now" writes only session state (see
+            // `Service::meeting_offer_seen`), which is not a vault record at
+            // all; "Never for this meeting" does write `skipped_series` into
+            // `MeetingSettings`, but the caller already dropped the offer
+            // from its own list on the strength of the press, the same way
+            // `dismissOffer` in `meetings.svelte.ts` does before this
+            // command's answer is even back, so there is no list left
+            // waiting on a `Settings` change to notice it.
+            "dismiss_meeting_offer",
         ];
         for command in catalog() {
             if command.effect.is_write() && !INVISIBLE.contains(&command.name) {

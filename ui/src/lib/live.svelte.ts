@@ -23,6 +23,7 @@ import { calendar } from './calendar.svelte'
 import { library } from './library.svelte'
 import { mail } from './mail.svelte'
 import { assistant } from './assistant.svelte'
+import { meetings } from './meetings.svelte'
 import { applierFor, type ChangeWithIds } from './live-apply'
 import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
@@ -80,6 +81,11 @@ export const RELOAD = {
   // Settings that moved: the auto-lock, the assistant's configuration. What
   // draws them re-reads on open, so the useful thing is the status word.
   status: () => app.refreshStatus(),
+  // A recording's stage moved, or a voiceprint was learned or forgotten --
+  // another window's write, or this vault's own background pipeline
+  // finishing or failing a call. One target for both kinds; see
+  // `meetings.svelte.ts`'s own `liveRefresh`.
+  meetings: () => meetings.liveRefresh(),
 } satisfies Record<string, () => Promise<unknown> | void>
 
 /**
@@ -162,6 +168,19 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   // the currently visible page rather than the whole mailbox.
   thread: 'mail',
   draft: 'mail',
+  // A call recorded, and the voice a transcript's speaker was matched or
+  // named to. Both route to the one `meetings` target -- see `RELOAD`'s own
+  // comment on why the two kinds are not told apart.
+  recording: 'meetings',
+  voiceprint: 'meetings',
+  // What was said in a call. Not routed: the one place it is shown,
+  // `TranscriptPanel.svelte`, already reloads on its own whenever the note
+  // it sits under changes (`$effect(() => void load(noteId))`), and a
+  // transcript is never read anywhere a list is drawn from. A speaker
+  // renamed in another window while this one has the same transcript open
+  // is not disruptive enough to interrupt for -- the same call `conversation`
+  // and `memory` above make.
+  transcript: null,
 }
 
 /**

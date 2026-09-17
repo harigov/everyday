@@ -31,6 +31,7 @@ mod calendars;
 mod journal;
 mod library;
 mod mail;
+mod meetings;
 mod notes;
 mod purpose;
 mod routines;
@@ -43,6 +44,7 @@ pub use agent::run_agent_suite;
 pub use calendars::run_calendar_suite;
 pub use library::run_library_suite;
 pub use mail::run_mail_suite;
+pub use meetings::run_meeting_suite;
 pub use notes::run_note_suite;
 pub use purpose::run_purpose_suite;
 pub use routines::run_routine_suite;
@@ -171,6 +173,17 @@ pub fn run_all(store: &dyn JournalStore) {
         None => {
             eprintln!("backend {name:?} stores no per-record secrets; skipping the secret suite")
         }
+    }
+
+    // And meeting notes, on the same terms again. Handed the whole journal
+    // store rather than just its own trait, the same choice `routines` and
+    // `notes` make above, because meetings has no cascade of its own to
+    // check here -- the one that matters, a transcript's words following
+    // its note into and out of search, is `Vault`'s to keep and has no
+    // conformance suite of its own to run against.
+    match store.meetings() {
+        Some(_) => run_meeting_suite(store),
+        None => eprintln!("backend {name:?} stores no meetings; skipping the meeting suite"),
     }
 
     // And accounts, on the same terms again. Handed the whole journal store

@@ -102,6 +102,9 @@ impl Vault {
                 None => Vec::new(),
             };
             u.index = SearchIndex::build(&u.store.all_entries()?, &notes);
+            // See `super::meetings::rebuild_meeting_index`: a transcript is
+            // not reachable from `all_notes` alone.
+            super::meetings::rebuild_meeting_index(u.store.as_ref(), &mut u.index)?;
             Ok(u.index.len())
         })
     }

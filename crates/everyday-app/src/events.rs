@@ -15,8 +15,15 @@
 //! shell states the *facts* and `ui/src/lib/notify.svelte.ts` decides where
 //! they go. The plugin is registered so the webview can reach it; this side
 //! never posts directly.
+//!
+//! # The fourth event
+//!
+//! A meeting offer is not a fact this window merely states, unlike the
+//! three above: for an automatic ("Always") offer, this is also where the
+//! shell decides to start capturing, before the interface ever hears about
+//! it -- see [`crate::meeting::on_meeting_offer`].
 
-use everyday_service::events::{Change, EventSink, Notification};
+use everyday_service::events::{Change, EventSink, MeetingOffer, Notification};
 use tauri::{AppHandle, Emitter};
 
 /// A notification the interface should route. Its other half is
@@ -60,5 +67,9 @@ impl EventSink for WindowSink {
 
     fn lock_state(&self, locked: bool) {
         self.emit(LOCK_EVENT, locked);
+    }
+
+    fn meeting_offer(&self, offer: MeetingOffer) {
+        crate::meeting::on_meeting_offer(&self.app, offer);
     }
 }

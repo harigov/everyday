@@ -39,7 +39,13 @@ impl Vault {
         self.write(|u| {
             let notes = pick_domain(u.store.as_ref(), Domain::Notes, |s| s.notes())?;
             notes.put_note_if(note, expect)?;
-            u.index.insert_note(note);
+            // Not `u.index.insert_note(note)`: a note that is a meeting note
+            // has a transcript whose words belong in the same search entry,
+            // and only `reindex_note` knows to go and fetch them. See its
+            // doc, and `save_transcript`, for why the two must never drift
+            // apart -- an autosave is exactly the path that used to lose
+            // this.
+            super::meetings::reindex_note(u, note.id);
             Ok(())
         })
     }
@@ -52,17 +58,25 @@ impl Vault {
         self.write(|u| {
             let notes = pick_domain(u.store.as_ref(), Domain::Notes, |s| s.notes())?;
             notes.put_note(note)?;
-            u.index.insert_note(note);
+            super::meetings::reindex_note(u, note.id);
             Ok(())
         })
     }
 
+    /// Delete a note, its transcript if it had one, and the pointer a
+    /// finished recording kept back to it -- see
+    /// `super::meetings::detach_note_from_meetings`. A note carries no hint
+    /// of its own that it was ever a meeting note, so this cascade runs
+    /// unconditionally rather than only when one is expected; it is a no-op,
+    /// two cheap lookups, on every note that never had a recording behind
+    /// it.
     pub fn delete_note(&self, id: NoteId) -> Result<()> {
         self.writable()?;
         self.write(|u| {
             let notes = pick_domain(u.store.as_ref(), Domain::Notes, |s| s.notes())?;
             notes.delete_note(id)?;
             u.index.remove_note(id);
+            super::meetings::detach_note_from_meetings(u, id)?;
             Ok(())
         })
     }

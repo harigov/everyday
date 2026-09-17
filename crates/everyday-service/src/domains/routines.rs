@@ -238,7 +238,9 @@ fn templates(calendars: bool) -> Vec<Template> {
             name: "Meeting prep".into(),
             instructions: "Before this meeting, look through my journal, my tasks and my \
                  notes for anything about the people in it or the subject, and write me a \
-                 short note: who they are, what we last said, and what is outstanding."
+                 short note: who they are, what we last said, and what is outstanding. If \
+                 there is a note from the last meeting with the same people, read it -- or \
+                 call get_transcript for the dialogue itself -- before you write anything."
                 .into(),
             trigger: Trigger::BeforeEvent { lead_minutes: 60, role_id: None },
             note: "Who is coming, and what you last said to them.".into(),

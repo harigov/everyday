@@ -64,6 +64,9 @@ const KINDS = [
   'account',
   'thread',
   'draft',
+  'recording',
+  'voiceprint',
+  'transcript',
 ]
 
 for (const kind of KINDS) {
@@ -99,6 +102,12 @@ assert.deepEqual(new Set(targetsFor(['task', 'item'])), new Set(['todo', 'librar
 // A kind that deliberately reloads nothing contributes nothing.
 assert.deepEqual(targetsFor(['conversation', 'memory']), [])
 assert.deepEqual(targetsFor(['conversation', 'task']), ['todo'])
+assert.deepEqual(targetsFor(['transcript']), [])
+
+// A recording and a voiceprint share the one `meetings` target -- a call
+// finishing (or failing) in the background, and a voice learned or forgotten,
+// both just mean "re-read the lists `meetings.svelte.ts` owns".
+assert.deepEqual(targetsFor(['recording', 'voiceprint']), ['meetings'])
 
 // ── A purpose changes the reports without naming them ────────────────
 //

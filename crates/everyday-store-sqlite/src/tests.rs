@@ -7,17 +7,23 @@
 //! keeps in the clear, what it seals, and what its migrations do to a
 //! database written by an earlier version.
 
-use super::{DB_FILENAME, MEDIA_DIRNAME, SqliteStore};
+use super::{DB_FILENAME, MEDIA_DIRNAME, SqliteFactory, SqliteStore};
 use everyday_core::calendar::Event;
 use everyday_core::crypto::{AeadCipher, Cipher, NullCipher, SecretKey};
-use everyday_core::id::{AccountId, MailMessageId, ThreadId};
+use everyday_core::id::{AccountId, MailMessageId, TemplateId, ThreadId, TranscriptId};
 use everyday_core::mail::{Address, CategorySource, Mailbox, MailboxRole, Message, MessageFlags};
+use everyday_core::meeting::{
+    Attribution, Recording, Segment, Speaker, Stage, Transcript, Voiceprint,
+};
 use everyday_core::model::Entry;
 use everyday_core::note::Note;
 use everyday_core::packstore::{PackRef, PackStore, run_pack_store_suite};
+use everyday_core::search::SearchScope;
+use everyday_core::store::BackendRegistry;
 use everyday_core::store::calendars::{CalendarStore, EventQuery};
 use everyday_core::store::conformance;
 use everyday_core::store::mail::{IngestMessage, MailStore, ThreadFilter};
+use everyday_core::store::meetings::MeetingStore;
 use everyday_core::store::notes::NoteStore;
 use everyday_core::store::purpose::PurposeStore;
 use everyday_core::store::secrets::SecretStore;
@@ -26,6 +32,7 @@ use everyday_core::store::trackers::{ReadingQuery, TrackerStore};
 use everyday_core::store::{EntryQuery, JournalStore, SortOrder, StoreContext};
 use everyday_core::task::{Project, Task, TimeBlock};
 use everyday_core::tracker::{Aggregate, Reading, Tracker, TrackerKind};
+use everyday_core::{NoteId, Vault, VaultConfig, VoiceprintId};
 use everyday_core::{PackId, RichDoc, model::Journal};
 use everyday_store_sql::packs::TablePacks;
 use everyday_store_sql::schema::SCHEMA_VERSION;
@@ -390,6 +397,7 @@ fn an_event(calendar_id: everyday_core::CalendarId, title: &str, location: &str)
         attendees: Vec::new(),
         url: String::new(),
         busy: true,
+        series: None,
         updated_at: jiff::Timestamp::now(),
     }
 }
@@ -1198,4 +1206,179 @@ fn the_database_file_contains_no_readable_mail_text() {
     let page = store.list_threads(mailbox.id, &ThreadFilter::default(), None, 10).unwrap();
     assert_eq!(page.threads.len(), 1);
     assert_eq!(page.threads[0].subject, "A subject line nobody should see");
+}
+
+#[test]
+fn deleting_a_note_takes_its_transcript_and_clears_the_recording_pointer() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = BackendRegistry::new();
+    registry.register(SqliteFactory);
+    let vault = Vault::create(dir.path(), VaultConfig::default(), Arc::new(registry)).unwrap();
+
+    let note = Note::new("Design sync");
+    vault.save_note(&note, None).unwrap();
+
+    let mut recording = Recording::new("Design sync", None, TemplateId::new());
+    recording.stage = Stage::Done;
+    recording.note_id = Some(note.id);
+    vault.save_recording(&recording).unwrap();
+
+    let now = jiff::Timestamp::now();
+    let transcript = Transcript {
+        id: TranscriptId::new(),
+        note_id: note.id,
+        recording_id: Some(recording.id),
+        language: None,
+        backend: "local:parakeet-tdt-0.6b-v3".into(),
+        speakers: Vec::new(),
+        segments: vec![everyday_core::meeting::Segment {
+            start_ms: 0,
+            end_ms: 1_000,
+            speaker: 0,
+            text: "let's ship on friday".into(),
+        }],
+        created_at: now,
+        updated_at: now,
+    };
+    vault.save_transcript(&transcript).unwrap();
+
+    // Findable through the note before it is deleted -- the whole point of
+    // folding a transcript's words into its note's search entry.
+    let hits = vault.search("friday", SearchScope::Everything, 10).unwrap();
+    assert_eq!(hits.len(), 1, "the transcript's words must be searchable through the note");
+
+    vault.delete_note(note.id).unwrap();
+
+    assert!(vault.transcript(transcript.id).is_err(), "the transcript must go with the note");
+    assert!(
+        vault.transcript_for_note(note.id).unwrap().is_none(),
+        "and the note no longer has one"
+    );
+    let after = vault.recording(recording.id).unwrap();
+    assert_eq!(after.note_id, None, "the recording's pointer back to the note must be cleared");
+
+    let hits = vault.search("friday", SearchScope::Everything, 10).unwrap();
+    assert!(hits.is_empty(), "deleted words must not still be findable");
+}
+
+#[test]
+fn an_autosave_keeps_the_note_s_transcript_searchable() {
+    // `save_note` used to reindex with the note's own words alone --
+    // `u.index.insert_note`, not `reindex_note` -- so an autosave, or
+    // `name_speaker` rewriting the body, threw the transcript half of the
+    // search entry away until the vault was next unlocked and
+    // `rebuild_meeting_index` ran. A plain save must go through the same
+    // path `save_transcript` does.
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = BackendRegistry::new();
+    registry.register(SqliteFactory);
+    let vault = Vault::create(dir.path(), VaultConfig::default(), Arc::new(registry)).unwrap();
+
+    let note = Note::new("Design sync");
+    vault.save_note(&note, None).unwrap();
+
+    let now = jiff::Timestamp::now();
+    let transcript = Transcript {
+        id: TranscriptId::new(),
+        note_id: note.id,
+        recording_id: None,
+        language: None,
+        backend: "local:parakeet-tdt-0.6b-v3".into(),
+        speakers: Vec::new(),
+        segments: vec![everyday_core::meeting::Segment {
+            start_ms: 0,
+            end_ms: 1_000,
+            speaker: 0,
+            text: "let's ship on friday".into(),
+        }],
+        created_at: now,
+        updated_at: now,
+    };
+    vault.save_transcript(&transcript).unwrap();
+    assert_eq!(vault.search("friday", SearchScope::Everything, 10).unwrap().len(), 1);
+
+    // An ordinary autosave of the note body, unrelated to the transcript --
+    // exactly the path that used to drop the transcript's words.
+    let mut edited = note.clone();
+    edited.body = RichDoc::from_plain_text("action items");
+    edited.updated_at = jiff::Timestamp::now();
+    vault.save_note(&edited, Some(note.updated_at)).unwrap();
+
+    assert_eq!(
+        vault.search("friday", SearchScope::Everything, 10).unwrap().len(),
+        1,
+        "a plain note save must not drop the transcript's words from search"
+    );
+}
+
+#[test]
+fn the_database_file_contains_no_readable_meeting_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+
+    let mut recording =
+        Recording::new("A meeting title nobody should see", None, TemplateId::new());
+    recording.stage = Stage::Done;
+    store.put_recording(&recording).unwrap();
+
+    let now = jiff::Timestamp::now();
+    let transcript = Transcript {
+        id: TranscriptId::new(),
+        note_id: NoteId::new(),
+        recording_id: Some(recording.id),
+        language: None,
+        backend: "local:parakeet-tdt-0.6b-v3".into(),
+        speakers: vec![Speaker {
+            key: 0,
+            label: "A speaker name nobody should see".into(),
+            email: None,
+            voiceprint_id: None,
+            how: Attribution::Owner,
+            centroid: Vec::new(),
+            embedding_model: String::new(),
+        }],
+        segments: vec![Segment {
+            start_ms: 0,
+            end_ms: 1_000,
+            speaker: 0,
+            text: "a word nobody should see".into(),
+        }],
+        created_at: now,
+        updated_at: now,
+    };
+    store.put_transcript(&transcript).unwrap();
+
+    let voiceprint = Voiceprint {
+        id: VoiceprintId::new(),
+        name: "A voiceprint name nobody should see".into(),
+        email: None,
+        is_owner: false,
+        model: "3d-speaker".into(),
+        centroids: vec![vec![0.1, 0.2]],
+        samples: 1,
+        created_at: now,
+        updated_at: now,
+    };
+    store.put_voiceprint(&voiceprint).unwrap();
+    store.flush().unwrap();
+
+    // What is readable: a recording's `stage` -- checked directly, the same
+    // way the note suite checks `pinned`.
+    let stage: String =
+        raw(dir.path()).query_row("SELECT stage FROM recordings", [], |r| r.get(0)).unwrap();
+    assert_eq!(stage, "done", "the stage is an index column and stays in the clear");
+
+    let bytes = std::fs::read(dir.path().join(DB_FILENAME)).unwrap();
+    for needle in [
+        b"A meeting title nobody should see".as_slice(),
+        b"A speaker name nobody should see",
+        b"a word nobody should see",
+        b"A voiceprint name nobody should see",
+    ] {
+        assert!(
+            !bytes.windows(needle.len()).any(|w| w == needle),
+            "found {:?} in the database file",
+            String::from_utf8_lossy(needle)
+        );
+    }
 }

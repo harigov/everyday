@@ -20,7 +20,10 @@ tauri-build.workspace = true
 [dependencies]
 everyday-core.workspace = true
 everyday-vault.workspace = true
-everyday-service.workspace = true
+# `speech`: local VAD, recognition, diarisation and speaker embeddings
+# through sherpa-onnx -- the desktop build carries it. See
+# docs/plans/meeting-notes.md and `everyday-service`'s own feature doc.
+everyday-service = { workspace = true, features = ["speech"] }
 everyday-server.workspace = true
 # Chunks of an archive arrive from the service base64'd inside JSON; the
 # shell decodes them straight into the file the user picked.
@@ -56,6 +59,40 @@ jiff.workspace = true
 # manager and the XDG secret service. See `remotes.rs` for what happens where
 # there is none.
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# Two microphone-and-loopback streams, resampled and framed into 30 s chunks
+# and handed to the service. See `src/capture.rs` and
+# `docs/plans/meeting-notes.md`'s "Decisions already made". `build_input_stream`
+# on the *output* device is what gives loopback on every desktop: WASAPI
+# transparently enables its loopback mode, CoreAudio opens a process tap
+# (macOS 14.6+), and on Linux -- below -- the PipeWire host does the same
+# through the sink's monitor.
+cpal = "0.18"
+# Resampling whatever rate the device hands us (usually 44.1 or 48 kHz,
+# stereo) down to the 16 kHz mono every speech model in the plan wants. Pure
+# Rust, so it costs nothing on platforms this crate cannot test.
+rubato = "4"
+# rubato 4's `Resampler::process_into_buffer` reads and writes through this
+# crate's `Adapter`/`AdapterMut` traits rather than a bare slice; this is the
+# buffer-adapter crate rubato's own author publishes for exactly that, so
+# `capture.rs` isn't left implementing an unsafe trait by hand for one struct.
+audioadapter-buffers = "4"
+# WAV in and out for `capture::FileSink` -- the sink the capture spike
+# (`examples/capture.rs`) and `capture`'s own tests write chunks through
+# instead of the service. Not on the path anything shipped takes: the real
+# sink sends PCM straight to `append_recording_chunk`, never a file.
+hound = "3.5"
+
+# PipeWire is what makes the loopback trick work on Linux: cpal exposes a sink
+# node as a duplex device, and opening an *input* stream on it sets
+# `STREAM_CAPTURE_SINK`, handing back that sink's monitor. ALSA is not behind
+# a feature -- cpal always builds it as a target dependency on Linux -- so a
+# desktop with no PipeWire session still gets a working microphone, just no
+# system-audio track (`CaptureStatus::system_unavailable`). `pulseaudio` is
+# deliberately not enabled: its host needs a newer rustc than this workspace's
+# 1.85 MSRV. Building this feature wants PipeWire's development headers --
+# see `make setup` and `.github/workflows/check.yml`.
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { version = "0.18", features = ["pipewire"] }
 
 [dev-dependencies]
 # `protocol.rs`'s mail route tests build their URLs from a real
@@ -63,6 +100,20 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 # routing they check is the exact shape the sync engine seals into a body.
 # Test-only: nothing in the shipped binary parses a message's HTML itself.
 everyday-mail.workspace = true
+# The capture spike (`examples/capture.rs`) only; nothing shipped bails out
+# through `anyhow`.
+anyhow = "1"
+# `tests/meeting_e2e.rs` runs a tiny local OpenAI-compatible HTTP stub for
+# the assistant's chat-completions call, the same reason `everyday-service`
+# already carries this as a dev-dependency for its own transcriber tests.
+axum = { version = "0.8", features = ["multipart"] }
+# The library dependency above only enables `sync`/`time`; the E2E test
+# needs a full multi-thread runtime with `#[tokio::test]` to drive real
+# capture, a spawned axum server and the pipeline's own async work side by
+# side. Cargo unifies this with the library's own `tokio` dependency for
+# test builds, so nothing shipped gains these features.
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "process"] }
+tempfile = "3"
 
 [features]
 # Enabled by `tauri dev`/`tauri build`; keeps devtools out of releases.

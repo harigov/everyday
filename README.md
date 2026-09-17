@@ -74,7 +74,7 @@ of filters over the list below it. **Settings** and **Lock** are at the foot
 of the bar, under a rule, for the same reason: they belong to the vault
 rather than to whichever app is open.
 
-Settings is a dialog with tabs — General, About You, Assistant, Data, Vault — rather than a
+Settings is a dialog with tabs — General, About You, Accounts, Assistant, Meetings, Data, Vault — rather than a
 popover hanging out of the side of the bar. It outgrew the popover twice:
 once when it acquired an instructions box somebody is expected to write a
 paragraph into, and again when that box had to become a *second* dialog
@@ -260,18 +260,21 @@ Some care went into a feed's parts that are easy to get wrong:
 The network. This application has no telemetry, no update check, no crash
 reporter and no analytics. Two features from the very first version open a
 socket — refreshing a subscribed calendar, and looking up what a book is
-called — and both do it through one client in `crates/everyday-app/src/http.rs`,
-so the timeout, the redirect limit and the size cap are decided once.
-`everyday-core` still has no async runtime, no TLS stack and no way to reach
-the network at all, which is what keeps the difficult halves — RFC 5545,
-recurrence and zones on one side, five reply formats and five rating scales
-on the other — testable offline. The webview's own permissions are unchanged
-and remain none: its content security policy allows no outbound connection,
-so neither a feed's contents nor a search result can cause a request of
-their own.
+called — and both do it through one client in `crates/everyday-service/src/http.rs`,
+so the timeout, the redirect limit and the size cap are decided once. Every
+feature that has since joined that client — a calendar account's own sync,
+a remote image, sending a call's speech to a transcriber you configured — is
+decided by the same settings, and named below. `everyday-core` still has no
+async runtime, no TLS stack and no way to reach the network at all, which is
+what keeps the difficult halves — RFC 5545, recurrence and zones on one
+side, five reply formats and five rating scales on the other — testable
+offline. The webview's own permissions are unchanged and remain none: its
+content security policy allows no outbound connection, so neither a feed's
+contents nor a search result can cause a request of their own.
 
-Mail and account calendars open sockets of their own, and every host either
-can reach is named here rather than left to a packet capture to discover:
+Mail, account calendars and meeting notes open sockets of their own, and
+every host any of them can reach is named here rather than left to a packet
+capture to discover:
 
 - **The account's own IMAP and SMTP servers** — whatever you configured or a
   preset filled in — over TLS, for the mail a mail-enabled account fetches
@@ -291,9 +294,79 @@ can reach is named here rather than left to a packet capture to discover:
   separately switched on** — categorising, summaries, auto-drafts and the
   assistant's own mail tools each stay off until you turn them on, per
   account, and each says so at the switch.
+- **The transcriber you chose for [meeting notes](#meetings) — OpenAI,
+  Google, or a compatible server's base URL — and only while a call is being
+  recorded.** What travels there is speech, cut from silence locally first,
+  never a whole recording and never a voiceprint. Choosing "on this
+  computer" instead sends nothing anywhere; a call is transcribed with
+  nothing leaving the machine.
+- **The pinned address a local speech model is downloaded from, only while
+  you press Download.** Every byte is checked against a SHA-256 recorded in
+  this application's own source before it is trusted, and nothing is
+  fetched again once it is.
 
 Nothing above is contacted unless the account, the calendar, or the feature
 it belongs to is turned on — the same rule the two original sockets follow.
+
+## Meetings
+
+When a calendar event that looks like an online call starts — a join link
+from Zoom, Google Meet, Teams, Webex, a Slack huddle or a dozen other hosts,
+with at least one other attendee — the app asks *"Take notes for Design
+sync?"*. Nothing is recorded until you say yes. That is the **Ask** mode,
+and it is the default. **Always** records every detected call on the
+calendars, or the roles, you choose, without asking, and still shows the
+recording pill the whole time so it is never silent about it. **Off** never
+offers at all. *"Never for this meeting"* turns the offer off for that
+whole series, not just the occurrence that prompted it; *"Not now"* only
+skips it for the rest of this session. A call that is not on the calendar
+can be started the same way from the notes app.
+
+**Two tracks, from the moment recording starts.** The microphone is you.
+Whatever the computer plays is everybody else, captured as its own track
+rather than picked out of the microphone's echo of it — the cheapest
+speaker identification there is, and for a one-to-one call the only kind
+needed. Without headphones your own track ends up carrying the call too,
+and the pill notices and says so the first time it does: *"Using speakers?
+Headphones give cleaner notes."*
+
+**Where the audio goes depends on what you choose, and nothing is chosen
+for you.** The switch stays off until a transcriber is configured. Pick
+**on this computer** and a call never leaves the machine — a downloaded,
+checksummed local model does the recognising, entirely offline. Pick
+**OpenAI**, **Google**, or a compatible server's base URL (whisper.cpp's
+`server`, Speaches, anything else that speaks OpenAI's transcription API)
+and speech — never silence, cut out locally first — is uploaded in chunks
+as the call happens. Either way, the audio is deleted the instant the note
+is written; what stays is the transcript, with its timings and its
+speakers.
+
+**Voices are optional, biometric, and never leave the vault.** Off by
+default. Turned on, a voice heard on a call is matched against a
+*voiceprint* — yours, from a 20-second recording made once in the Meetings
+tab, and anyone else's you have since named — never uploaded, never shared
+between vaults, and deletable one at a time or all at once. A voice nobody
+recognises is labelled "Unknown 1" and shown as a chip reading *"Who is
+this?"*: pick an attendee or type a name, and every occurrence of that
+label in the note is relabelled with it, with the option to rewrite the
+summary now that the name is known.
+
+**The summary is written by the assistant's own model** — whatever is
+already configured in the Assistant tab, not a separate or cheaper one —
+against a template you edit in the Meetings tab: a heading is kept exactly
+as written, and the text beneath it is an instruction the model replaces
+with real content. The template can be checked for problems and previewed
+before you save it.
+
+Recording is native — the webview is never given microphone access — which
+is also why this is **desktop only**: there is nothing to record from a
+browser tab or a headless `everyday serve`, though a paired desktop client
+records the same way the machine holding the vault does. **Linux** needs a
+running PipeWire session for the call's own track (the microphone still
+works without one, just not the other side of the call); **macOS** needs
+14.6 or later, for its Core Audio process tap; **Windows** captures through
+WASAPI loopback. Linux is the only one of the three tested against a real
+call so far.
 
 ## Notes
 
@@ -482,14 +555,14 @@ Nothing above is private to the library. Searching the web is a core
 capability that any part of the app can reach for, in three layers:
 
 ```
-  everyday_core::websearch   builds every URL, parses all five reply
-                             formats, ranks and merges — and cannot open a
-                             socket, which is why it is all under test
-  everyday_app::websearch    opens the socket. Timeout, redirect limit and
-                             size cap shared with the calendar fetcher
-  ui/src/lib/websearch.ts    the `web` object components hold: debouncing,
-                             cancellation, caching, and an error you can
-                             render
+  everyday_core::websearch     builds every URL, parses all five reply
+                               formats, ranks and merges — and cannot open a
+                               socket, which is why it is all under test
+  everyday_service::websearch  opens the socket. Timeout, redirect limit and
+                               size cap shared with the calendar fetcher
+  ui/src/lib/websearch.ts      the `web` object components hold: debouncing,
+                               cancellation, caching, and an error you can
+                               render
 ```
 
 ```ts

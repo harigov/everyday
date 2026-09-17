@@ -44,6 +44,10 @@ export type KindId = string
 export type ItemId = string
 export type LogId = string
 export type AccountId = string
+export type RecordingId = string
+export type TranscriptId = string
+export type VoiceprintId = string
+export type TemplateId = string
 
 /** A ProseMirror document. Opaque to everything but the editor. */
 export type RichDoc = { type: 'doc'; content?: unknown[] }
@@ -2566,4 +2570,215 @@ export interface BegunSignIn {
  */
 export interface AwaitedSignIn {
   tokensSavedUnder: string
+}
+
+// ── Meeting notes ─────────────────────────────────────────────────────────
+// Mirrors `everyday_core::meeting`. See docs/plans/meeting-notes.md.
+
+/** Which side of a call audio came from: the microphone, or what the computer played. */
+export type Track = 'mic' | 'system'
+
+/** Which call a recording was of, copied out of the event when it began. */
+export interface EventRef {
+  calendarId: CalendarId
+  uid: string
+  title: string
+  start: string
+  end: string
+  tz: string
+  organizer: string
+  attendees: string[]
+  joinUrl: string
+  calendarName: string
+  /** A durable series id, for sources whose per-occurrence `uid` is not. */
+  series?: string | null
+}
+
+export type Stage =
+  | { type: 'recording' }
+  | { type: 'transcribing' }
+  | { type: 'identifying' }
+  | { type: 'summarising' }
+  | { type: 'done' }
+  | { type: 'failed'; reason: string; at: Stage }
+
+export interface ChunkMeta {
+  track: Track
+  seq: number
+  startMs: number
+  samples: number
+  transcribed: boolean
+}
+
+export interface TrackSegment {
+  track: Track
+  startMs: number
+  endMs: number
+  text: string
+  speakerHint?: string | null
+  hintScope: number
+}
+
+export interface Recording {
+  id: RecordingId
+  event?: EventRef | null
+  title: string
+  startedAt: string
+  endedAt?: string | null
+  stage: Stage
+  templateId: TemplateId
+  /** Started by "Always" rather than by a press. */
+  automatic: boolean
+  chunks: ChunkMeta[]
+  partial: TrackSegment[]
+  noteId?: NoteId | null
+  updatedAt: string
+}
+
+/** Filter for `listRecordings`. */
+export interface RecordingQuery {
+  /** `Stage.type` values; empty means any. */
+  stages?: string[]
+  calendarId?: CalendarId | null
+  /** Started at or after. */
+  from?: string | null
+  /** Started before. */
+  to?: string | null
+  limit?: number | null
+}
+
+export type Attribution =
+  | { type: 'owner' }
+  | { type: 'matched'; score: number }
+  | { type: 'inferred' }
+  | { type: 'named' }
+  | { type: 'unknown' }
+
+export interface Speaker {
+  key: number
+  label: string
+  email?: string | null
+  voiceprintId?: VoiceprintId | null
+  how: Attribution
+}
+
+export interface Segment {
+  startMs: number
+  endMs: number
+  speaker: number
+  text: string
+}
+
+export interface Transcript {
+  id: TranscriptId
+  noteId: NoteId
+  recordingId?: RecordingId | null
+  language?: string | null
+  backend: string
+  speakers: Speaker[]
+  segments: Segment[]
+  createdAt: string
+  updatedAt: string
+}
+
+/** A voice, without its vectors. */
+export interface VoiceprintInfo {
+  id: VoiceprintId
+  name: string
+  email?: string | null
+  isOwner: boolean
+  model: string
+  samples: number
+  createdAt: string
+  updatedAt: string
+}
+
+export type Offer = 'off' | 'ask' | 'always'
+
+export interface CalendarFilter {
+  calendarIds: CalendarId[]
+  roleIds: RoleId[]
+}
+
+export type LocalModel = 'parakeetV3' | 'whisperTurbo'
+
+export type TranscriberConfig =
+  | { type: 'local'; model: LocalModel }
+  | { type: 'openAi'; model: string }
+  | { type: 'google'; model: string }
+  | { type: 'compatible'; baseUrl: string; model: string }
+
+export interface NoteTemplate {
+  id: TemplateId
+  name: string
+  body: string
+}
+
+export interface MeetingSettings {
+  enabled: boolean
+  offer: Offer
+  calendars: CalendarFilter
+  skippedSeries: string[]
+  transcriber?: TranscriberConfig | null
+  useAssistantKey: boolean
+  language?: string | null
+  templates: NoteTemplate[]
+  defaultTemplate?: TemplateId | null
+  voiceprints: boolean
+  autoStop: boolean
+  summaryBudget?: number | null
+}
+
+/** What `meetingSettings` answers: the settings, and what they add up to. */
+export interface MeetingSettingsView {
+  settings: MeetingSettings
+  /** A transcription key is stored. The key itself never leaves the vault. */
+  hasKey: boolean
+  /** The transcriber is chosen and can run; the switch may be turned on. */
+  usable: boolean
+  /** Why not, in words, when `usable` is false. */
+  problem?: string | null
+  /** The assistant talks to api.openai.com with a key, so it could be reused. */
+  assistantKeyAvailable: boolean
+  /** Audio leaves this machine with the chosen transcriber. */
+  remote: boolean
+  /** Local speech is compiled into this build. */
+  localSpeech: boolean
+}
+
+/** A downloadable local model: a recogniser, or the speech kit. */
+export interface SpeechModelInfo {
+  /** `LocalModel` for a recogniser, or `"speechKit"`. */
+  id: string
+  name: string
+  description: string
+  languages: string
+  bytes: number
+  installed: boolean
+  /** Present while a download is running. */
+  progress?: { done: number; total: number } | null
+  /** The last download's failure, if it failed. */
+  error?: string | null
+}
+
+export interface ModelBenchmark {
+  /** Seconds of audio transcribed per second of work. */
+  realtimeFactor: number
+}
+
+/** Live state of the shell's capture, for the recording pill. */
+export interface CaptureStatus {
+  recordingId: RecordingId
+  title: string
+  automatic: boolean
+  elapsedMs: number
+  /** 0..1, recent RMS. */
+  micLevel: number
+  systemLevel: number
+  /** The call track has been flat this long while the mic was live. */
+  systemSilentMs: number
+  /** System audio could not be opened on this machine; mic only. */
+  systemUnavailable?: string | null
+  /** When auto-stop will act, if armed. */
+  autoStopAt?: string | null
 }

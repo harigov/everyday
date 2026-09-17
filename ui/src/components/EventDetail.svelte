@@ -20,6 +20,8 @@
     timeOfDay,
     toLocalTimeValue,
   } from '../lib/format'
+  import { eventInProgress, looksLikeOnlineCall } from '../lib/meeting-hosts'
+  import { meetings } from '../lib/meetings.svelte'
   import { minutesBetween, offsetInDay } from '../lib/time'
   import { menu } from '../lib/menu.svelte'
   import { blockMenu, calendarTaskMenu, eventMenu } from '../lib/menus'
@@ -28,6 +30,21 @@
   import type { CalendarEvent, Task, TimeBlock } from '../lib/types'
 
   let pendingDelete = $state<TimeBlock | null>(null)
+  let startNotesError = $state<string | null>(null)
+
+  // `meetings.starting` (not a local flag) is what disables the button
+  // below -- see that field's own doc: a press here must also disable
+  // `MeetingOfferBanner`'s and `NotesNav`'s own "take notes" controls, and
+  // vice versa, so the three surfaces cannot race each other into starting
+  // two recordings at once.
+  async function takeNotes(ev: CalendarEvent) {
+    startNotesError = null
+    try {
+      await meetings.startCapture({ eventId: ev.id, title: ev.title })
+    } catch (e) {
+      startNotesError = e instanceof Error ? e.message : String(e)
+    }
+  }
 
   const selected = $derived(calendar.selected)
   const block = $derived(
@@ -248,7 +265,14 @@
           <Icon name="play" size={14} />
           I'm in it now
         </button>
+        {#if meetings.supported && !meetings.capture && looksLikeOnlineCall(event) && eventInProgress(event)}
+          <button class="btn" disabled={meetings.starting} onclick={() => void takeNotes(event)}>
+            <Icon name="mic" size={14} />
+            {meetings.starting ? 'Starting…' : 'Take notes'}
+          </button>
+        {/if}
       </div>
+      {#if startNotesError}<p class="notes-error">{startNotesError}</p>{/if}
     </div>
   {:else}
     <div class="panel scroll">
@@ -521,6 +545,11 @@
   }
   .actions .btn {
     justify-content: flex-start;
+  }
+  .notes-error {
+    margin: var(--sp-2) 0 0;
+    color: var(--danger);
+    font-size: var(--text-xs);
   }
 
   /* ── The unscheduled list ───────────────────────────────────────────── */

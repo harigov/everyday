@@ -879,6 +879,13 @@ fn written(ran: &[Ran]) -> Vec<(Kind, Vec<String>)> {
             tools::Domain::Routines => Kind::Routine,
             tools::Domain::Agent => Kind::Memory,
             tools::Domain::Mail => Kind::Thread,
+            // Read-only today -- `agent::tools::meetings` starts and ends
+            // at `list_meeting_notes`/`get_transcript` -- but the match has
+            // to cover the type, not just the tools that currently write.
+            // A meeting note is a note (`docs/plans/meeting-notes.md`'s
+            // Phase 3), so this is the same `Kind` a write through
+            // `update_note` would already report for the same row.
+            tools::Domain::Meetings => Kind::Note,
         };
         match out.iter_mut().find(|(k, _)| *k == kind) {
             Some((_, ids)) => ids.extend(entry.ids.iter().cloned()),
