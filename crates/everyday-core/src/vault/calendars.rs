@@ -15,6 +15,7 @@ use super::session::Domain;
 use crate::calendar::{AccountSyncCursor, Calendar, CalendarOrigin, Event, SyncReport};
 use crate::error::{Error, Result};
 use crate::id::{AccountId, CalendarId, EventId};
+use crate::record::RecordKind;
 use crate::store::calendars::{CalendarStore, EventQuery};
 
 impl Vault {
@@ -47,13 +48,19 @@ impl Vault {
         if calendar.origin.url().is_some() {
             calendar.fetch_url()?;
         }
-        self.with_calendars(|c| c.put_calendar(calendar))
+        self.with_calendars(|c| c.put_calendar(calendar))?;
+        self.wrote(RecordKind::Calendar, calendar.id);
+        Ok(())
     }
 
-    /// Unsubscribe: the calendar and every event that came from it.
+    /// Unsubscribe: the calendar and every event that came from it. Only the
+    /// calendar itself is recorded as touched -- the events it cascades away
+    /// have no ids in hand here to name individually.
     pub fn delete_calendar(&self, id: CalendarId) -> Result<()> {
         self.writable()?;
-        self.with_calendars(|c| c.delete_calendar(id))
+        self.with_calendars(|c| c.delete_calendar(id))?;
+        self.wrote(RecordKind::Calendar, id);
+        Ok(())
     }
 
     pub fn events(&self, query: &EventQuery) -> Result<Vec<Event>> {
@@ -101,6 +108,9 @@ impl Vault {
         let (events, skipped) = crate::ics::events_for(&calendar, &feed, window, default_tz);
 
         self.with_calendars(|c| c.replace_events(id, &events))?;
+        for event in &events {
+            self.wrote(RecordKind::Event, event.id);
+        }
 
         calendar.mark_synced();
         // A calendar that never had a name of its own takes the publisher's,
@@ -112,6 +122,7 @@ impl Vault {
             calendar.name = name.to_string();
         }
         self.with_calendars(|c| c.put_calendar(&calendar))?;
+        self.wrote(RecordKind::Calendar, id);
 
         Ok(SyncReport {
             calendar_id: Some(id),
@@ -126,7 +137,9 @@ impl Vault {
         self.writable()?;
         let mut calendar = self.calendar(id)?;
         calendar.mark_failed(why);
-        self.with_calendars(|c| c.put_calendar(&calendar))
+        self.with_calendars(|c| c.put_calendar(&calendar))?;
+        self.wrote(RecordKind::Calendar, id);
+        Ok(())
     }
 
     /// Every calendar reading from `account`, whichever source it uses.
@@ -168,9 +181,13 @@ impl Vault {
             ));
         }
         self.with_calendars(|c| c.upsert_events(id, upsert, remove))?;
+        for event in upsert {
+            self.wrote(RecordKind::Event, event.id);
+        }
         calendar.account_sync = cursor;
         calendar.mark_synced();
         self.with_calendars(|c| c.put_calendar(&calendar))?;
+        self.wrote(RecordKind::Calendar, id);
         Ok(SyncReport {
             calendar_id: Some(id),
             events: upsert.len() as u64,

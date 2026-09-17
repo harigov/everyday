@@ -12,6 +12,7 @@ use crate::proposal::{
     DeclineReason, MAX_PENDING_PROPOSALS, Outcome, Payload, Proposal, ProposalKind, ProposedRecord,
 };
 use crate::purpose::Purpose;
+use crate::record::RecordKind;
 use crate::routine::RoutineKind;
 use crate::store::proposals::{ProposalQuery, ProposalStore};
 use crate::task::BlockSubject;
@@ -60,12 +61,16 @@ impl Vault {
                 )));
             }
         }
-        self.with_proposals(|p| p.put_proposal(proposal))
+        self.with_proposals(|p| p.put_proposal(proposal))?;
+        self.wrote(RecordKind::Proposal, proposal.id);
+        Ok(())
     }
 
     pub fn delete_proposal(&self, id: ProposalId) -> Result<()> {
         self.writable()?;
-        self.with_proposals(|p| p.delete_proposal(id))
+        self.with_proposals(|p| p.delete_proposal(id))?;
+        self.wrote(RecordKind::Proposal, id);
+        Ok(())
     }
 
     /// How many proposals are waiting for an answer.
@@ -82,13 +87,21 @@ impl Vault {
     /// Mark proposals as looked at. An empty list means every pending one.
     pub fn mark_proposals_seen(&self, ids: &[ProposalId]) -> Result<()> {
         self.writable()?;
-        self.with_proposals(|p| p.mark_proposals_seen(ids))
+        self.with_proposals(|p| p.mark_proposals_seen(ids))?;
+        for id in ids {
+            self.wrote(RecordKind::Proposal, *id);
+        }
+        Ok(())
     }
 
     /// Close every pending proposal whose time has passed.
     pub fn expire_proposals(&self, now: Timestamp) -> Result<Vec<ProposalId>> {
         self.writable()?;
-        self.with_proposals(|p| p.expire_proposals(now))
+        let expired = self.with_proposals(|p| p.expire_proposals(now))?;
+        for id in &expired {
+            self.wrote(RecordKind::Proposal, *id);
+        }
+        Ok(expired)
     }
 
     /// Accept a proposal: validate it, check what it refers to still exists,

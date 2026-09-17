@@ -290,13 +290,149 @@ impl Command {
         {
             vault.touch();
         }
-        let out = (self.run)(svc.clone(), ctx, args).await?;
+        // See `crate::touched`'s own doc: everything `blocking` does inside
+        // `self.run`, however many times it calls it, lands in `touched`
+        // here -- collected on whichever blocking-pool thread actually did
+        // the writing, carried back across each `.await` by the task-local
+        // scope this opens, never by anything thread-affine.
+        let (result, touched) = crate::touched::scope((self.run)(svc.clone(), ctx, args)).await;
+        let out = result?;
         if let Some((kind, op)) = self.change {
+            #[cfg(any(debug_assertions, test))]
+            assert_declared_matches_touched(self.name, kind, &touched, out.id.as_deref(), &out.ids);
             svc.events().changed(Change { kind, op, id: out.id, ids: out.ids, origin });
         }
         Ok(out.value)
     }
 }
+
+/// Debug/test-only: what [`Command::invoke`] declares for a write --
+/// `change:`'s `Kind` and the `id`/`ids` its own args closures computed --
+/// checked against what the collector actually saw land in the vault while
+/// the command ran. See `docs/plans/architecture-refactor.md`'s Phase 7.
+///
+/// Never fails the *build*: this runs, but proves nothing, in release,
+/// where `debug_assertions` is off and a vault crash is worse than a stale
+/// window. It is a regression net for review and CI, not a runtime guard.
+///
+/// Deliberately one-directional -- every id the command declares must be
+/// among what was touched, but the collector is allowed to have seen *more*.
+/// That asymmetry is not slack in the check; it is what a cascade, a
+/// second write the command makes on purpose (`accept_proposal`'s own
+/// record beside the `Proposal` it closes), or a coarser `Kind` than
+/// `RecordKind` (`Kind::Thread` covers a mail message and an `Op` too --
+/// see `Kind`'s own `TryFrom` impls) actually look like from here. A
+/// command that touched *nothing* the declaration named, by contrast, is
+/// always a bug: either the declaration is wrong, or this vault method
+/// still needs its own `wrote` call.
+#[cfg(any(debug_assertions, test))]
+fn assert_declared_matches_touched(
+    name: &str,
+    kind: Kind,
+    touched: &[(everyday_core::record::RecordKind, String)],
+    id: Option<&str>,
+    ids: &[String],
+) {
+    use everyday_core::record::RecordKind;
+
+    // Not a record at all -- the vault's own settings, or a supervisor
+    // task's status -- so there is nothing in `touched` that could ever
+    // name one. See `Kind`'s own `TryFrom<Kind> for RecordKind`.
+    if matches!(kind, Kind::Settings | Kind::BackgroundTask) {
+        return;
+    }
+    if KNOWN_MISMATCHES.contains(&name) {
+        return;
+    }
+
+    // `Kind` is coarser than `RecordKind` in exactly the two places
+    // `TryFrom<RecordKind> for Kind`'s own doc names: a mail message and an
+    // `Op` both surface as `Kind::Thread`, and the assistant's own message
+    // surfaces as `Kind::Conversation`.
+    fn kind_covers(kind: Kind, record: RecordKind) -> bool {
+        match kind {
+            Kind::Thread => {
+                matches!(record, RecordKind::Thread | RecordKind::MailMessage | RecordKind::Op)
+            }
+            Kind::Conversation => {
+                matches!(record, RecordKind::Conversation | RecordKind::Message)
+            }
+            other => RecordKind::try_from(other) == Ok(record),
+        }
+    }
+
+    let relevant: Vec<&str> =
+        touched.iter().filter(|(k, _)| kind_covers(kind, *k)).map(|(_, id)| id.as_str()).collect();
+
+    if let Some(id) = id {
+        assert!(
+            relevant.contains(&id),
+            "{name}: declares {kind:?}/{id:?}, but the collector never saw a matching write \
+             (touched: {touched:?})"
+        );
+    }
+    for wanted in ids {
+        assert!(
+            relevant.contains(&wanted.as_str()),
+            "{name}: declares {kind:?} for {wanted}, but the collector never saw a matching \
+             write (touched: {touched:?})"
+        );
+    }
+    if id.is_none() && ids.is_empty() {
+        assert!(
+            !relevant.is_empty(),
+            "{name}: declares {kind:?} but the collector saw nothing of that kind at all \
+             (touched: {touched:?})"
+        );
+    }
+}
+
+/// Commands whose declared `change:` this assertion cannot check against the
+/// collector, each for a reason recorded beside it rather than in this list
+/// alone -- see the doc on the vault method or the command each one names.
+#[cfg(any(debug_assertions, test))]
+const KNOWN_MISMATCHES: &[&str] = &[
+    // Declares `Role/Created` unconditionally because it cannot know ahead
+    // of running whether the vault already has roles -- `Vault::seed_roles`
+    // is a no-op, touching nothing, on every call after the first. This
+    // command has fired its event on an empty seed since long before this
+    // phase; the assertion is what is new, not the behaviour.
+    "seed_roles",
+    // Declares `Thread/Updated` with the clicked threads' own ids, but its
+    // body (`Vault::correct_mail_category`) never touches a `Thread` row at
+    // all: it rewrites the sender's `CategoryRules` (no `RecordKind` of its
+    // own) and sweeps `MailMessage.category` for every message from that
+    // sender, which can be a different, larger set than the threads a
+    // person actually clicked. The declared ids are the plan's own choice
+    // -- "as a batch, to that sender's existing threads" -- not a byproduct
+    // of what got written; see `set_thread_category`'s own doc.
+    "set_thread_category",
+    // Declares `Draft/Created` with no id at all -- unlike `new_journal`,
+    // `new_task` and every other `new_*`, which are plain reads that mint a
+    // record in memory for the caller to fill in and `save_*` later.
+    // `new_draft` fires its event without ever writing one: nothing calls
+    // `Vault::save_draft` until the person's own first autosave does. The
+    // coarse, id-less `change:` is what tells a drafts list to show the
+    // in-progress compose window before that first save lands, and has
+    // fired on every call since long before this phase.
+    "new_draft",
+    // "An empty list means every pending one" -- `Vault::mark_proposals_seen`
+    // takes the same `&[ProposalId]` its `ids:` closure reads straight off
+    // the args, so calling it with none named touches every pending
+    // proposal in the store but records nothing here: there is no id in
+    // hand to `wrote` for "all of them" without a second read this method
+    // has no reason to make otherwise. `run_routine`'s `mark_runs_seen`
+    // shares the exact shape (see that command's own doc) but happens not
+    // to be exercised empty by any test that also asserts here.
+    "mark_proposals_seen",
+    // Declares `RoutineRun/Created` unconditionally, but its body refuses to
+    // queue a second run behind one that has not finished yet -- "pressing
+    // it twice does not pay for two model calls" -- and answers the
+    // already-waiting run instead of minting and saving a new one. Nothing
+    // is touched on that path, the same shape `seed_roles` already
+    // documents above.
+    "run_routine",
+];
 
 /// Deserialise a command's arguments, saying which command and which field.
 ///

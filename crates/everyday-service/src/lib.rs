@@ -62,6 +62,7 @@ pub mod service;
 pub mod signin;
 pub mod supervisor;
 pub mod token_cache;
+pub mod touched;
 pub mod transfers;
 pub mod websearch;
 

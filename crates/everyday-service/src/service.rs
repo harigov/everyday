@@ -1063,14 +1063,22 @@ impl Service {
 /// word, stamping activity against an atomic, or minting a record in memory
 /// for a caller to fill in -- where a hop to another thread and back would cost
 /// more than the work.
+///
+/// Also where every [`everyday_core::vault::touched::touch`] call `f` makes
+/// is collected and handed to [`crate::touched::merge`] -- see that module's
+/// doc for why the collecting has to happen here, on the blocking-pool
+/// thread, rather than around the `.await` below.
 pub async fn blocking<T, F>(f: F) -> CommandResult<T>
 where
     F: FnOnce() -> CommandResult<T> + Send + 'static,
     T: Send + 'static,
 {
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|e| CommandError::new(codes::PANIC, format!("background task failed: {e}")))?
+    let (result, touched) =
+        tokio::task::spawn_blocking(move || everyday_core::vault::touched::collect(f))
+            .await
+            .map_err(|e| CommandError::new(codes::PANIC, format!("background task failed: {e}")))?;
+    crate::touched::merge(touched);
+    result
 }
 
 /// A run this process has taken, released when it is dropped.

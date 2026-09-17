@@ -9,6 +9,7 @@ use super::Vault;
 use crate::error::Result;
 use crate::id::{EntryId, JournalId};
 use crate::model::{Entry, EntrySummary, Journal};
+use crate::record::RecordKind;
 use crate::store::EntryQuery;
 use jiff::Timestamp;
 
@@ -36,11 +37,19 @@ impl Vault {
             tracker.normalize();
         }
         journal.trackers.retain(|t| !t.name.is_empty());
-        self.write(|u| u.store.put_journal(&journal))
+        let id = journal.id;
+        self.write(|u| u.store.put_journal(&journal))?;
+        self.wrote(RecordKind::Journal, id);
+        Ok(())
     }
 
     /// Delete a journal, every entry inside it, and every reading its
     /// trackers made.
+    ///
+    /// Only the journal itself is recorded as touched -- the entry sweep
+    /// below is for the search index, and the readings it detaches are
+    /// still there afterwards, just unfiled, so neither is a write a
+    /// listener needs telling about on its own.
     pub fn delete_journal(&self, id: JournalId) -> Result<()> {
         self.writable()?;
         self.write(|u| {
@@ -64,7 +73,9 @@ impl Vault {
                 t.detach_readings_in(id)?;
             }
             u.store.delete_journal(id)
-        })
+        })?;
+        self.wrote(RecordKind::Journal, id);
+        Ok(())
     }
 
     pub fn entries(&self, query: &EntryQuery) -> Result<Vec<EntrySummary>> {
@@ -98,7 +109,9 @@ impl Vault {
             u.store.put_entry_if(entry, expect)?;
             u.index.insert(entry);
             Ok(())
-        })
+        })?;
+        self.wrote(RecordKind::Entry, entry.id);
+        Ok(())
     }
 
     /// Save `entry` regardless of what is already stored.
@@ -114,7 +127,9 @@ impl Vault {
             u.store.put_entry(entry)?;
             u.index.insert(entry);
             Ok(())
-        })
+        })?;
+        self.wrote(RecordKind::Entry, entry.id);
+        Ok(())
     }
 
     pub fn delete_entry(&self, id: EntryId) -> Result<()> {
@@ -123,6 +138,8 @@ impl Vault {
             u.store.delete_entry(id)?;
             u.index.remove(id);
             Ok(())
-        })
+        })?;
+        self.wrote(RecordKind::Entry, id);
+        Ok(())
     }
 }

@@ -33,6 +33,7 @@ use super::session::{Domain, Unlocked, pick_domain};
 use crate::error::Result;
 use crate::id::{NoteId, RecordingId, TranscriptId, VoiceprintId};
 use crate::meeting::{MeetingSettings, Recording, Stage, Transcript, Voiceprint};
+use crate::record::RecordKind;
 use crate::store::meetings::{MeetingStore, RecordingQuery};
 use crate::store::secrets::SecretStore;
 
@@ -149,7 +150,9 @@ impl Vault {
 
     pub fn save_recording(&self, recording: &Recording) -> Result<()> {
         self.writable()?;
-        self.with_meetings(|m| m.put_recording(recording))
+        self.with_meetings(|m| m.put_recording(recording))?;
+        self.wrote(RecordKind::Recording, recording.id);
+        Ok(())
     }
 
     /// Delete one history row. Not for a recording still in progress -- the
@@ -159,7 +162,9 @@ impl Vault {
     /// `Vault::delete_run` and its own caller make.
     pub fn delete_recording(&self, id: RecordingId) -> Result<()> {
         self.writable()?;
-        self.with_meetings(|m| m.delete_recording(id))
+        self.with_meetings(|m| m.delete_recording(id))?;
+        self.wrote(RecordKind::Recording, id);
+        Ok(())
     }
 
     // ---- transcripts --------------------------------------------------------
@@ -186,7 +191,9 @@ impl Vault {
             meetings.put_transcript(transcript)?;
             reindex_note(u, note_id);
             Ok(())
-        })
+        })?;
+        self.wrote(RecordKind::Transcript, transcript.id);
+        Ok(())
     }
 
     /// Delete a transcript, and drop its words back out of search.
@@ -200,7 +207,9 @@ impl Vault {
             meetings.delete_transcript(id)?;
             reindex_note(u, note_id);
             Ok(())
-        })
+        })?;
+        self.wrote(RecordKind::Transcript, id);
+        Ok(())
     }
 
     // ---- voiceprints --------------------------------------------------------
@@ -215,7 +224,9 @@ impl Vault {
 
     pub fn save_voiceprint(&self, voiceprint: &Voiceprint) -> Result<()> {
         self.writable()?;
-        self.with_meetings(|m| m.put_voiceprint(voiceprint))
+        self.with_meetings(|m| m.put_voiceprint(voiceprint))?;
+        self.wrote(RecordKind::Voiceprint, voiceprint.id);
+        Ok(())
     }
 
     /// Delete a voice.
@@ -234,12 +245,19 @@ impl Vault {
     /// stale id changes nothing anybody sees.
     pub fn delete_voiceprint(&self, id: VoiceprintId) -> Result<()> {
         self.writable()?;
-        self.with_meetings(|m| m.delete_voiceprint(id))
+        self.with_meetings(|m| m.delete_voiceprint(id))?;
+        self.wrote(RecordKind::Voiceprint, id);
+        Ok(())
     }
 
     pub fn delete_all_voiceprints(&self) -> Result<()> {
         self.writable()?;
-        self.with_meetings(|m| m.delete_all_voiceprints())
+        let existing = self.voiceprints()?;
+        self.with_meetings(|m| m.delete_all_voiceprints())?;
+        for v in existing {
+            self.wrote(RecordKind::Voiceprint, v.id);
+        }
+        Ok(())
     }
 }
 

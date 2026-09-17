@@ -9,6 +9,7 @@ use super::Vault;
 use super::session::Domain;
 use crate::error::{Error, Result};
 use crate::id::{ReadingId, TrackerId};
+use crate::record::RecordKind;
 use crate::store::trackers::{ReadingQuery, TrackerDay, TrackerStore};
 use crate::tracker::{Reading, Tracker};
 use jiff::Timestamp;
@@ -43,7 +44,10 @@ impl Vault {
             return Err(Error::Invalid("a tracker needs a name".into()));
         }
         tracker.updated_at = Timestamp::now();
-        self.with_trackers(|t| t.put_tracker(&tracker))
+        let id = tracker.id;
+        self.with_trackers(|t| t.put_tracker(&tracker))?;
+        self.wrote(RecordKind::Tracker, id);
+        Ok(())
     }
 
     /// Delete a tracker and every reading it ever made.
@@ -61,7 +65,9 @@ impl Vault {
     /// `if let`.
     pub fn delete_tracker(&self, id: TrackerId) -> Result<u64> {
         self.writable()?;
-        self.with_trackers(|t| t.delete_tracker(id))
+        let count = self.with_trackers(|t| t.delete_tracker(id))?;
+        self.wrote(RecordKind::Tracker, id);
+        Ok(count)
     }
 
     /// Fold one tracker into another, keeping both histories.
@@ -83,6 +89,11 @@ impl Vault {
             t.get_tracker(into)
         })?;
         let moved = self.with_trackers(|t| t.merge_trackers(from, into))?;
+        // `from` is what the store's own merge removes; `into` is written
+        // too (its reading count changes) but its own edit is not one this
+        // vault method has a fresh copy of to name beyond its id.
+        self.wrote(RecordKind::Tracker, from);
+        self.wrote(RecordKind::Tracker, into);
         for mut journal in self.journals()? {
             if !journal.shows(from) {
                 continue;
@@ -129,12 +140,17 @@ impl Vault {
         if let Some(at) = reading.at {
             reading.local_date = crate::model::local_date_in(at, &reading.tz);
         }
-        self.with_trackers(|t| t.put_reading(&reading))
+        let id = reading.id;
+        self.with_trackers(|t| t.put_reading(&reading))?;
+        self.wrote(RecordKind::Reading, id);
+        Ok(())
     }
 
     pub fn delete_reading(&self, id: ReadingId) -> Result<()> {
         self.writable()?;
-        self.with_trackers(|t| t.delete_reading(id))
+        self.with_trackers(|t| t.delete_reading(id))?;
+        self.wrote(RecordKind::Reading, id);
+        Ok(())
     }
 
     /// Move the tracker definitions a pre-v7 vault kept inside its journals

@@ -218,6 +218,19 @@ impl Vault {
     ) -> Result<T> {
         self.read(|u| pick(u.store.as_ref()).unwrap_or(Err(Error::Unsupported(domain.message()))))
     }
+
+    /// Record that a write just landed for `kind`'s row `id` -- see
+    /// [`super::touched`] for who reads this and why it costs nothing when
+    /// nobody is.
+    ///
+    /// A short name and a method on `Vault` rather than a free function
+    /// call at each of the ~110 sites that need it, so `self.wrote(...)`
+    /// reads the same as the `self.writable()?` already at the top of every
+    /// one of them. Not `touch`: [`Vault::touch`] already means "defer the
+    /// idle timeout", a different fact about a different moment.
+    pub(super) fn wrote(&self, kind: crate::record::RecordKind, id: impl std::fmt::Display) {
+        super::touched::touch(kind, id);
+    }
 }
 
 #[cfg(test)]
