@@ -17,6 +17,7 @@
     proposal,
     compact = false,
     color = null,
+    confirm = false,
     onopen,
     onaccepted,
     children,
@@ -26,6 +27,13 @@
     compact?: boolean
     /** The record's own colour, drawn faded. */
     color?: string | null
+    /**
+     * Accept means "that is true", not merely "put that there" -- the memory
+     * list's own gesture on an inferred memory. Additive: every other caller
+     * leaves this off and gets the ordinary accept. See `proposals.accept`
+     * and docs/plans/dreaming.md's open question on the two gestures.
+     */
+    confirm?: boolean
     /** Open the record in its app's own editor. Saving there is accept-with-edits. */
     onopen?: () => void
     onaccepted?: (p: Proposal) => void
@@ -37,7 +45,7 @@
 
   async function accept(e: Event) {
     e.stopPropagation()
-    const closed = await proposals.accept(proposal)
+    const closed = await proposals.accept(proposal, null, confirm)
     if (closed) onaccepted?.(closed)
   }
 

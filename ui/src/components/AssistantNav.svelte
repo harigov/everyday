@@ -9,6 +9,7 @@
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { assistant, PANES, PANE_LABELS, type Pane } from '../lib/assistant.svelte'
+  import { proposals } from '../lib/proposals.svelte'
   import { app } from '../lib/state.svelte'
   import type { IconName } from '../lib/icons'
   import type { RoutineInfo } from '../lib/types'
@@ -21,12 +22,27 @@
     runs: 'inbox',
     routines: 'clock',
     memory: 'sparkle',
+    proposals: 'tick',
   }
 
-  const shown = $derived(PANES.filter((p) => p !== 'routines' || app.supportsRoutines))
+  /** The badge on a pane's row. Only `runs` and `proposals` carry one. */
+  const PANE_COUNTS: Partial<Record<Pane, () => number>> = {
+    runs: () => assistant.unseen,
+    proposals: () => proposals.unseen,
+  }
 
+  const shown = $derived(
+    PANES.filter((p) => p !== 'routines' || app.supportsRoutines).filter(
+      (p) => p !== 'proposals' || app.supportsProposals,
+    ),
+  )
+
+  /**
+   * A dream cannot be deleted by hand -- the application owns it, and
+   * switching dreaming off is how it goes away. See `docs/plans/dreaming.md`.
+   */
   function routineMenu(routine: RoutineInfo): MenuItem[] {
-    return tidyMenu([
+    const items: MenuItem[] = [
       { label: 'Edit', icon: 'pencil', run: () => assistant.edit(routine) },
       { label: 'Run now', icon: 'play', run: () => void assistant.runNow(routine.id) },
       {
@@ -34,14 +50,16 @@
         icon: routine.enabled ? 'stop' : 'play',
         run: () => void assistant.toggle(routine),
       },
-      SEP,
-      {
+    ]
+    if (routine.kind?.type !== 'dream') {
+      items.push(SEP, {
         label: 'Delete routine…',
         icon: 'trash',
         danger: true,
         run: () => (pendingDelete = routine),
-      },
-    ])
+      })
+    }
+    return tidyMenu(items)
   }
 
   function navMenu(): MenuItem[] {
@@ -69,8 +87,8 @@
     <button class="row" class:sel={assistant.pane === pane} onclick={() => assistant.setPane(pane)}>
       <span class="icon"><Icon name={PANE_ICONS[pane]} /></span>
       <span class="text">{PANE_LABELS[pane]}</span>
-      {#if pane === 'runs' && assistant.unseen > 0}
-        <span class="count">{assistant.unseen}</span>
+      {#if PANE_COUNTS[pane]?.() ?? 0}
+        <span class="count">{PANE_COUNTS[pane]!()}</span>
       {/if}
     </button>
   {/each}

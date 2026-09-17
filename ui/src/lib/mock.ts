@@ -98,6 +98,7 @@ import type {
   ProposedRecord,
 } from './types'
 import { DEFAULT_COLORS } from './colors'
+import { DIGEST_MARKER, ordinal } from './dream'
 import type { Draft, MailCategory } from './types'
 import {
   mockAllowRemoteImagesOnce,
@@ -1268,6 +1269,28 @@ const runs: RoutineRun[] = [
     seen: true,
     steps: 0,
   },
+  // The nightly dream's own run, so the transcript fold and the "N
+  // proposals" reading on an expanded routine have something to show. Its id
+  // is `DREAM_RUN` below, which several of the seeded proposals point back
+  // at through `madeBy`. See docs/plans/dreaming.md.
+  {
+    id: 'run-dream-1',
+    routineId: 'ro-dream-day',
+    routineName: 'Nightly dream',
+    slot: iso(0),
+    startedAt: iso(0),
+    finishedAt: iso(0),
+    outcome: 'done',
+    reason: '',
+    summary: '3 proposals, 1 memory revised.',
+    conversationId: 'c-dream-1',
+    // Already looked at: the pending proposals it left are their own count,
+    // on their own pane, and are what should read as unseen here -- not the
+    // run that made them. Keeping this `true` also leaves `unseen_runs`
+    // matching what `assistant.test.mjs` has always asserted.
+    seen: true,
+    steps: 4,
+  },
 ]
 
 /** The trigger in words. The real one derives this in Rust; see `Trigger`. */
@@ -1276,6 +1299,10 @@ function describeTrigger(t: Trigger): string {
   if (t.type === 'taskDue')
     return t.leadDays === 1 ? 'The day before a task is due' : 'When a task falls due'
   if (t.type === 'beforeEvent') return `${t.leadMinutes} minutes before a meeting`
+  // The monthly dream's own shape: a day of the month rather than of the
+  // week. See `monthlySchedule` in `dream.ts`, which the interface also
+  // computes for itself so this is not the only place it can come from.
+  if (t.dayOfMonth != null) return `Monthly on the ${ordinal(t.dayOfMonth)} at ${t.at}`
   const days = t.days
   if (days.length === 0 || days.length === 7) return `Every day at ${t.at}`
   const weekdays = ['mon', 'tue', 'wed', 'thu', 'fri']
@@ -2503,6 +2530,64 @@ function blockProposalAt(daysAhead: number, hour: number, minutes: number): Time
 }
 
 const DREAM_RUN = 'run-dream-1'
+const DREAM_CONVERSATION = 'c-dream-1'
+
+// The nightly dream's own transcript: a digest as its opening *user* message,
+// folded in the rail behind "What it looked at" -- see `splitDigest` in
+// `dream.ts` and the run this belongs to, `DREAM_RUN`, above.
+conversations.push({
+  id: DREAM_CONVERSATION,
+  title: 'Nightly dream',
+  createdAt: iso(0),
+  updatedAt: iso(0),
+})
+agentMessages.push(
+  {
+    id: 'am-dream-1',
+    conversationId: DREAM_CONVERSATION,
+    role: 'user',
+    content: [
+      'Here is what yesterday looked like.',
+      DIGEST_MARKER,
+      '## Tasks',
+      '- 2 completed, 1 rescheduled',
+      '- Overdue: **Book the dentist** (mentioned in two journal entries this week)',
+      '',
+      '## Time',
+      '5.5 hours logged: 3h work, 1.5h home, 1h health. Work ran forty minutes over plan.',
+      '',
+      '## Readings',
+      'Runs: a three-day streak kept.',
+      '',
+      '## Calendar',
+      'One meeting: the one-to-one with Priya, two o’clock. No meeting note.',
+      '',
+      '## Notes',
+      '“Weekly review” touched.',
+      '',
+      '## Mail',
+      '14 threads, 3 awaiting a reply.',
+      '',
+      '## Proposals pending',
+      '2, against a cap of 40.',
+    ].join('\n'),
+    toolCalls: [],
+    toolCallId: null,
+    failed: false,
+    createdAt: iso(0),
+  },
+  {
+    id: 'am-dream-2',
+    conversationId: DREAM_CONVERSATION,
+    role: 'assistant',
+    content:
+      'The dentist has come up twice and is not on your list, and tomorrow morning is clear for the insurance claim. Left three proposals and revised one memory about when you run.',
+    toolCalls: [],
+    toolCallId: null,
+    failed: false,
+    createdAt: iso(0),
+  },
+)
 
 const proposals: Proposal[] = [
   {
@@ -4638,8 +4723,17 @@ export const mockInvoke = async <T>(
       // sets it when it adds a fact, and can clear it again.
       const memory = args.memory as Memory
       const i = memories.findIndex((m) => m.id === memory.id)
-      if (i >= 0) memories[i] = memory
-      else memories.push(memory)
+      const previous = i >= 0 ? memories[i] : null
+      // Editing an inferred memory's text is a person standing behind it --
+      // the same rule `Vault::save_memory` applies in the real vault. See
+      // docs/plans/dreaming.md's memory-provenance phase.
+      const origin: MemoryOrigin | undefined =
+        previous?.origin === 'inferred' && previous.text !== memory.text
+          ? 'confirmed'
+          : memory.origin
+      const saved = { ...memory, origin }
+      if (i >= 0) memories[i] = saved
+      else memories.push(saved)
       // Answers with the whole list, so a caller can redraw without a second
       // call. Nothing is evicted here; the cap is the real one's business.
       return [...memories] as T

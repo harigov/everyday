@@ -16,6 +16,7 @@
 
   import { app, type Section } from '../lib/state.svelte'
   import { assistant } from '../lib/assistant.svelte'
+  import { proposals } from '../lib/proposals.svelte'
   import { meetings } from '../lib/meetings.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
@@ -69,6 +70,13 @@
    * apart at the foot of the bar, above the vault's own controls.
    */
   const ASSISTANT: AppEntry = { id: 'assistant', label: 'Assistant', icon: 'sparkle' }
+
+  /**
+   * What has not been looked at: runs, and proposals waiting for an answer.
+   * Two counts because two stores keep them, one badge because nobody
+   * arriving at this button needs to know which kind it is before opening it.
+   */
+  const unseen = $derived(assistant.unseen + proposals.unseen)
 
   /**
    * A tray entry as a menu row.
@@ -169,8 +177,8 @@
           <!-- How anybody finds out the assistant did something while they
                were away. A number rather than a stream of banners: work
                done overnight is a queue, not an interruption. -->
-          {#if assistant.unseen > 0}
-            <span class="badge">{assistant.unseen > 9 ? '9+' : assistant.unseen}</span>
+          {#if unseen > 0}
+            <span class="badge">{unseen > 9 ? '9+' : unseen}</span>
           {/if}
         </span>
         <span class="barlabel">{ASSISTANT.label}</span>

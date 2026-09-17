@@ -15,6 +15,7 @@
 
   import { onDestroy } from 'svelte'
   import { agent } from '../lib/agent.svelte'
+  import { splitDigest } from '../lib/dream'
   import { renderMarkdown } from '../lib/markdown'
   import { panels } from '../lib/panels.svelte'
   import { pref } from '../lib/prefs'
@@ -369,7 +370,22 @@
       {#each agent.turns as turn (turn.id)}
         <article class="turn {turn.role}">
           {#if turn.role === 'user'}
-            <p class="said">{turn.text}</p>
+            <!-- A dream's opening message is its digest wearing a sentence.
+                 The words ahead of the marker are drawn as any other turn;
+                 what follows it is data the person did not write and would
+                 not otherwise see, so it is folded rather than dropped -- see
+                 `splitDigest` and docs/plans/dreaming.md. -->
+            {@const { text, digest } = splitDigest(turn.text)}
+            {#if text}<p class="said">{text}</p>{/if}
+            {#if digest}
+              <details class="digest">
+                <summary>What it looked at</summary>
+                <!-- Safe by the same construction as the reply below: see the
+                     note on `renderMarkdown` there. -->
+                <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                <div class="reply md">{@html renderMarkdown(digest)}</div>
+              </details>
+            {/if}
           {:else}
             {#each turn.cards as card (card.callId)}
               <ToolCardView
@@ -612,6 +628,30 @@
     line-height: var(--leading-normal);
     color: var(--fg);
     overflow-wrap: anywhere;
+  }
+
+  /* The digest a dream was given, folded under its opening message. Aligned
+     with the reply below rather than with the person's own bubble, since it
+     is the assistant's material even though it arrived on a `user` turn. */
+  .digest {
+    align-self: flex-start;
+    max-width: 100%;
+    font-size: var(--text-sm);
+  }
+  .digest summary {
+    color: var(--fg-faint);
+    cursor: pointer;
+    user-select: none;
+  }
+  .digest summary:hover {
+    color: var(--fg-muted);
+  }
+  .digest[open] summary {
+    margin-bottom: var(--sp-2);
+  }
+  .digest .reply {
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
   }
 
   /* Quiet, and only there once the pointer is on the turn: a copy button on

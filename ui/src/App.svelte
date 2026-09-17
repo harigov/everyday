@@ -16,6 +16,7 @@
   import { library } from './lib/library.svelte'
   import './lib/mail.svelte'
   import { assistant } from './lib/assistant.svelte'
+  import { proposals } from './lib/proposals.svelte'
   import { purpose } from './lib/purpose.svelte'
   import { quick } from './lib/quick.svelte'
   import { tracking } from './lib/tracking.svelte'
@@ -107,6 +108,9 @@
     // every app, so it must not cost a query per app; the Assistant app loads
     // the rest when it is opened.
     void assistant.refreshCount()
+    // The other half of that same badge -- see `proposals.svelte.ts` and the
+    // app bar, which adds the two together.
+    void proposals.refreshCount()
     // Which quick jobs are on. Every capture box in the application reads
     // this to decide whether to offer anything, so loading it on first use
     // would mean the first shelf, the first task and the first note of every

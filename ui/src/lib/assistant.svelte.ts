@@ -10,19 +10,21 @@
 // be pressed would leave a number that nobody could get rid of by reading.
 
 import { api } from './api'
+import { proposals } from './proposals.svelte'
 import { app, handle, isLocked } from './state.svelte'
 import type { Memory, RoutineId, RoutineInfo, RoutineRun, RoutineRunId, Template } from './types'
 
 /** How many runs the log shows. A log, not a database. */
 const PAGE = 200
 
-export const PANES = ['runs', 'routines', 'memory'] as const
+export const PANES = ['runs', 'routines', 'memory', 'proposals'] as const
 export type Pane = (typeof PANES)[number]
 
 export const PANE_LABELS: Record<Pane, string> = {
   runs: 'What it did',
   routines: 'Routines',
   memory: 'What it remembers',
+  proposals: 'Waiting for you',
 }
 
 class AssistantState {
@@ -68,15 +70,23 @@ class AssistantState {
     this.loading = true
     try {
       await this.refresh()
+      await proposals.refresh()
       this.templates = app.supportsRoutines ? await api.routineTemplates() : []
     } finally {
       this.loading = false
     }
+    // Opens on "Waiting for you" when there is something waiting and the run
+    // log has nothing fresher to say -- a run just finished outranks a
+    // proposal that has been sitting there all week either way.
+    if (this.pane === 'runs' && proposals.unseen > 0 && this.unseen === 0) {
+      this.pane = 'proposals'
+    }
     // *After* the load, and unconditional. Reading is what clears the count,
-    // and the Runs pane is the one this app opens on -- so arriving here by
-    // pressing Assistant never goes through `setPane` and would otherwise
-    // leave a badge that no amount of reading could clear.
+    // and the pane just chosen is the one this app opens on -- so arriving
+    // here by pressing Assistant never goes through `setPane` and would
+    // otherwise leave a badge that no amount of reading could clear.
     if (this.pane === 'runs') await this.markSeen()
+    else if (this.pane === 'proposals') await proposals.markSeen(proposals.pending)
   }
 
   async refresh() {
@@ -112,6 +122,12 @@ class AssistantState {
   setPane(pane: Pane) {
     this.pane = pane
     if (pane === 'runs') void this.markSeen()
+    else if (pane === 'proposals') void proposals.markSeen(proposals.pending)
+  }
+
+  /** A routine's run log, shown or hidden under its card. */
+  toggleExpanded(id: RoutineId) {
+    this.expanded = this.expanded === id ? null : id
   }
 
   /**
