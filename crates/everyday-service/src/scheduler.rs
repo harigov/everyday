@@ -135,8 +135,9 @@ pub async fn tick(service: &Arc<Service>) {
     {
         let vault = vault.clone();
         let service = service.clone();
+        let now = service.now();
         let _ = blocking(move || {
-            if vault.supports_proposals() && sweep_proposals(&vault, Timestamp::now()) {
+            if vault.supports_proposals() && sweep_proposals(&vault, now) {
                 service.events().changed(Change::new(Kind::Proposal, Op::Updated));
             }
             Ok(())
@@ -803,7 +804,7 @@ async fn skip_queued(
 ) {
     run.outcome = Outcome::Skipped;
     run.reason = reason.to_string();
-    run.finished_at = Some(jiff::Timestamp::now());
+    run.finished_at = Some(service.now());
     run.seen = true;
     save_run(vault, &run).await;
     service.events().changed(run_change());
@@ -949,7 +950,7 @@ async fn resume(
     if let Some(reason) = unusable.unwrap_or_else(|e| Err(e.to_string())).err() {
         run.outcome = Outcome::Skipped;
         run.reason = reason;
-        run.finished_at = Some(jiff::Timestamp::now());
+        run.finished_at = Some(service.now());
         run.seen = true;
         save_run(vault, &run).await;
         if let Some(slot) = run.slot {
