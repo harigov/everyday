@@ -36,6 +36,8 @@
     color: string
     kind: 'planned' | 'actual' | 'event' | 'task' | 'reading'
     muted?: boolean
+    /** A pending proposal rather than a real record -- drawn as a small ghost chip. */
+    ghost?: boolean
     onopen: () => void
     /**
      * The same menus the week grid raises, on the same things.
@@ -95,6 +97,7 @@
     const timed: (Row & { at: number })[] = []
     for (const slot of calendar.slotsOn(iso)) {
       const start = slot.block?.start ?? slot.event?.start ?? slot.reading?.at
+      const proposal = slot.proposal
       timed.push({
         key: slot.key,
         label: slot.reading ? `${slot.title} · ${slot.subtitle}` : slot.title,
@@ -102,8 +105,12 @@
         color: slot.color,
         kind: slot.kind,
         muted: slot.cancelled,
-        onopen: () => calendar.select(slot),
-        menu: () => slotMenu(slot),
+        ghost: !!proposal,
+        // A ghost opens its own proposal pane; a right-click on it does the
+        // same, rather than raising the ordinary block menu -- there is no
+        // row on disk yet for "delete" or "rename" to act on.
+        onopen: proposal ? () => calendar.selectProposal(proposal) : () => calendar.select(slot),
+        menu: proposal ? () => [] : () => slotMenu(slot),
         at: slot.start,
       })
     }
@@ -170,8 +177,9 @@
             <button
               class="row {row.kind}"
               class:muted={row.muted}
+              class:ghost={row.ghost}
               style="--c: {row.color}"
-              title={row.label}
+              title={row.ghost ? `Proposed: ${row.label}` : row.label}
               onclick={row.onopen}
               oncontextmenu={(e) => menu.show(e, row.menu())}
             >
@@ -343,6 +351,19 @@
     border-color: transparent;
     background: var(--c);
     box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--c) 30%, transparent);
+  }
+
+  /* A pending proposal: a dashed outline rather than a filled or hollow dot,
+     the same "not yet real" it draws everywhere else in the app. */
+  .row.ghost {
+    opacity: 0.75;
+  }
+  .row.ghost .dot {
+    background: none;
+    border-style: dashed;
+  }
+  .row.ghost .what {
+    font-style: italic;
   }
 
   .at {

@@ -1,6 +1,7 @@
 //! The assistant half of the conformance suite.
 
 use super::*;
+use crate::agent::MemoryOrigin;
 
 /// The assistant half of the suite. Called by [`run_all`] when the backend
 /// has an [`AgentStore`]; public so a backend under construction can run it
@@ -21,6 +22,7 @@ pub fn run_agent_suite(store: &dyn AgentStore) {
     deleting_a_conversation_takes_its_messages(store);
     listing_conversations_is_newest_first_and_pages(store);
     memory_round_trips_and_outlives_its_conversation(store);
+    memory_round_trips_its_origin_and_last_supported_date(store);
     unicode_survives_an_agent_round_trip(store);
 
     agent_cleanup(store);
@@ -350,6 +352,34 @@ fn memory_round_trips_and_outlives_its_conversation(store: &dyn AgentStore) {
     store.delete_memory(m.id).unwrap();
     store.delete_memory(second.id).unwrap();
     assert!(store.list_memories().unwrap().is_empty());
+}
+
+/// Provenance and the day it was last supported are just more fields on the
+/// record, but they are the two this whole phase is about -- a backend that
+/// silently dropped either would leave every inferred memory reading as
+/// `Told` with no way back.
+fn memory_round_trips_its_origin_and_last_supported_date(store: &dyn AgentStore) {
+    let m = Memory::inferred("Reads before bed most nights", date(2026, 9, 1));
+    store.put_memory(&m).unwrap();
+
+    let back = store.list_memories().unwrap();
+    let back = back.iter().find(|x| x.id == m.id).expect("the memory just written");
+    assert_eq!(back.origin, MemoryOrigin::Inferred);
+    assert_eq!(back.last_supported, Some(date(2026, 9, 1)));
+
+    // A dream moving the date forward, or a person confirming it and
+    // clearing it, are both just another write to the same row.
+    let mut confirmed = back.clone();
+    confirmed.origin = MemoryOrigin::Confirmed;
+    confirmed.last_supported = None;
+    store.put_memory(&confirmed).unwrap();
+
+    let back = store.list_memories().unwrap();
+    let back = back.iter().find(|x| x.id == m.id).expect("the memory just written");
+    assert_eq!(back.origin, MemoryOrigin::Confirmed);
+    assert_eq!(back.last_supported, None, "confirming clears what supported the guess");
+
+    store.delete_memory(m.id).unwrap();
 }
 
 fn unicode_survives_an_agent_round_trip(store: &dyn AgentStore) {

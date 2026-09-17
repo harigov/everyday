@@ -14,6 +14,7 @@ import { api } from './api'
 import { Autosave } from './autosave'
 import { purpose } from './purpose.svelte'
 import { pref } from './prefs'
+import { proposals, recordAs } from './proposals.svelte'
 import { app, handle } from './state.svelte'
 import { debounce } from './store/debounce'
 import { FocusRequest } from './store/focus-request'
@@ -27,8 +28,10 @@ import {
   moveCard,
   numberOrder,
   planDrop,
+  proposalBelongsInScope,
   sectionPatch,
   type GroupBy,
+  type ProposalScope,
   type Zone,
 } from './tasklist'
 import type {
@@ -36,6 +39,8 @@ import type {
   Priority,
   Project,
   ProjectId,
+  Proposal,
+  ProposalId,
   TagCount,
   Task,
   TaskId,
@@ -144,6 +149,16 @@ class TodoState {
   filter = $state('')
 
   selectedTask = $state<TaskId | null>(null)
+  /**
+   * The pending task proposal open in the detail pane, by id -- not the
+   * `Proposal` itself, so that accepting or declining it *anywhere* (a ghost
+   * row's own buttons, the Assistant app's Proposals list, another window)
+   * closes this pane too, the moment it drops out of `proposals.pending`,
+   * rather than leaving it open over a proposal that no longer exists to
+   * answer. The two are mutually exclusive with a real task -- opening one
+   * closes the other -- because the pane is one rail, not two.
+   */
+  #selectedProposalId = $state<ProposalId | null>(null)
   /** Time booked against the open task. Loaded when it is opened. */
   detailBlocks = $state<TimeBlock[]>([])
   /**
@@ -187,6 +202,10 @@ class TodoState {
     app.onLock(() => this.reset())
     // ...and must not throw away what the reset is about to drop.
     app.onFlush(() => this.flush())
+    // This window's own accept does not come back as a change event -- see
+    // `proposals.svelte.ts` -- so the store that just gained a row tells
+    // itself to reload.
+    proposals.onAccepted('task', () => this.refresh())
   }
 
   /** Register (or with `null`, retire) the capture line's focus. */
@@ -210,6 +229,7 @@ class TodoState {
     this.tasks = []
     this.detailBlocks = []
     this.selectedTask = null
+    this.#selectedProposalId = null
     this.#collapsed = new Set()
     this.stats = null
     this.tags = []
@@ -224,6 +244,10 @@ class TodoState {
     this.#started = true
     const view = viewPref.get()
     if (view) this.view = view
+    // The proposals store is loaded once, after unlock, by whichever app
+    // opens first -- WP5's wiring does this too, but idempotently, so it is
+    // safe to ask again here rather than hope the todo app is never first.
+    if (!proposals.loaded) await proposals.refresh()
     await this.refresh()
   }
 
@@ -797,6 +821,7 @@ class TodoState {
 
   async open(id: TaskId | null) {
     this.selectedTask = id
+    this.#selectedProposalId = null
     this.detailBlocks = []
     if (!id) return
     try {
@@ -804,6 +829,78 @@ class TodoState {
     } catch (e) {
       await handle(e)
     }
+  }
+
+  /**
+   * The pending task proposal open in the detail pane, or `null` once it has
+   * been answered from anywhere -- see `#selectedProposalId`'s own doc.
+   */
+  get selectedProposal(): Proposal | null {
+    return this.#selectedProposalId
+      ? (proposals.pending.find((p) => p.id === this.#selectedProposalId) ?? null)
+      : null
+  }
+
+  /** Open a pending task proposal in the detail pane, in place of a real task. */
+  openProposal(p: Proposal) {
+    this.selectedTask = null
+    this.detailBlocks = []
+    this.#selectedProposalId = p.id
+  }
+
+  closeProposal() {
+    this.#selectedProposalId = null
+  }
+
+  // ── proposals ────────────────────────────────────────────────────────
+  //
+  // Ghosts: pending task proposals drawn where the task they would create
+  // would land, at the foot of the section it would join. See
+  // `tasklist.ts`'s `proposalBelongsInScope` and `sectionKeyOf` for the
+  // pure arithmetic; this is just the scope this view is currently showing.
+
+  /** This view's scope, reduced to what a ghost's placement needs. */
+  get proposalScope(): ProposalScope {
+    switch (this.scope.kind) {
+      case 'upcoming':
+        return { kind: 'upcoming', to: addDays(todayIso(), UPCOMING_DAYS) }
+      case 'project':
+        return { kind: 'project', id: this.scope.id }
+      default:
+        return { kind: this.scope.kind }
+    }
+  }
+
+  /**
+   * Pending `create` proposals for a task that would land in what is on
+   * screen right now -- the inbox, this project, or (in a date-based smart
+   * list) on a due date within it.
+   */
+  get ghostTasks(): Proposal[] {
+    const today = todayIso()
+    const scope = this.proposalScope
+    return proposals.forKind('task').filter((p) => {
+      if (p.payload.type !== 'create') return false
+      const rec = recordAs(p, 'task')
+      return !!rec && proposalBelongsInScope(scope, rec, today)
+    })
+  }
+
+  /** The pending `replace` proposal for a task, drawn beneath its row. */
+  replaceProposalFor(id: TaskId): Proposal | null {
+    return (
+      proposals
+        .forKind('task')
+        .find((p) => p.payload.type === 'replace' && recordAs(p, 'task')?.id === id) ?? null
+    )
+  }
+
+  /** The pending `delete` proposal for a task, drawn as a chip on its row. */
+  deleteProposalFor(id: TaskId): Proposal | null {
+    return (
+      proposals.forKind('task').find((p) => p.payload.type === 'delete' && p.payload.id === id) ??
+      null
+    )
   }
 
   /** Minutes booked against the open task, split by plan and record. */

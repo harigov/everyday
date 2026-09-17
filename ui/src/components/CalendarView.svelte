@@ -9,6 +9,7 @@
   import { onMount } from 'svelte'
   import { calendar, type Layer, type View } from '../lib/calendar.svelte'
   import { dateFormat, dayHeading, formatMinutes, monthYear } from '../lib/format'
+  import { proposals } from '../lib/proposals.svelte'
   import Icon from './Icon.svelte'
   import TimeGrid from './TimeGrid.svelte'
   import MonthGrid from './MonthGrid.svelte'
@@ -21,6 +22,15 @@
   // to the calendar is the moment this store can learn about them. `start`
   // only runs once in a session; this runs every time the app is shown.
   onMount(() => void calendar.refreshReadings())
+
+  // Every pending block proposal in the window on screen -- the week grid's
+  // ghosts and the month grid's chips both come from here -- is seen the
+  // moment it is drawn.
+  $effect(() => {
+    const [from, to] = calendar.range
+    const shown = proposals.inRange(from, to, 'block')
+    if (shown.length > 0) void proposals.markSeen(shown)
+  })
 
   const VIEWS: { id: View; label: string; icon: IconName; key: string }[] = [
     { id: 'day', label: 'Day', icon: 'day', key: 'D' },

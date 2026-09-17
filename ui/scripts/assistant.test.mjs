@@ -28,7 +28,7 @@ const { PANES, PANE_LABELS } = assistant
 
 // ── Every pane has a name, and the names are what the sidebar draws ────
 
-assert.deepEqual(PANES, ['runs', 'routines', 'memory'])
+assert.deepEqual(PANES, ['runs', 'routines', 'memory', 'proposals'])
 for (const pane of PANES) {
   assert.ok(PANE_LABELS[pane], `${pane} has no label`)
 }

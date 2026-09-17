@@ -8,6 +8,7 @@
 import type {
   Account,
   AccountId,
+  DeclineReason,
   AgentCallerKind,
   AgentEvent,
   AgentMailAccess,
@@ -55,6 +56,7 @@ import type {
   MeetingSettings,
   Memory,
   MemoryId,
+  MemoryOrigin,
   Note,
   NoteId,
   NoteQuery,
@@ -62,6 +64,9 @@ import type {
   Profile,
   Project,
   ProjectId,
+  ProposalId,
+  ProposalQuery,
+  ProposedRecord,
   Reading,
   ReadingId,
   ReadingQuery,
@@ -712,6 +717,24 @@ export const api = {
   unseenRuns: () => call('unseenRuns', {}),
   routineTemplates: () => call('routineTemplates', {}),
 
+  /** Work the assistant prepared. See `proposals.svelte.ts`. */
+  proposals: (query: ProposalQuery = {}) => call('listProposals', { query }),
+  proposal: (id: ProposalId) => call('getProposal', { id }),
+  /**
+   * Say yes. `edited` is the record as changed before accepting; `confirm`
+   * is for a memory accepted as true from the memory list.
+   */
+  acceptProposal: (id: ProposalId, edited: ProposedRecord | null = null, confirm = false) =>
+    call('acceptProposal', { id, edited, confirm }),
+  declineProposal: (id: ProposalId, reason: DeclineReason | null = null) =>
+    call('declineProposal', { id, reason }),
+  /** Mark proposals as looked at. An empty list means every pending one. */
+  markProposalsSeen: (ids: ProposalId[] = []) => call('markProposalsSeen', { ids }),
+  /** Pending proposals nobody has looked at. Half the number on the app bar. */
+  unseenProposals: () => call('unseenProposals', {}),
+  /** Confirm an inferred memory, or strike it out as rejected. */
+  setMemoryOrigin: (id: MemoryId, origin: MemoryOrigin) => call('setMemoryOrigin', { id, origin }),
+
   notes: (query: NoteQuery = {}) => call('listNotes', { query }),
   note: (id: NoteId) => call('getNote', { id }),
   newNote: () => call('newNote', {}),
@@ -1064,9 +1087,13 @@ export const api = {
    * Answer a confirmation the assistant is waiting on. False means nothing
    * was waiting any more -- a turn cancelled between the question and the
    * click -- which the panel treats as a dismissal rather than an error.
+   *
+   * `later` parks the call as a proposal instead of running or refusing it;
+   * `approved` keeps its old meaning either way, for a card that never
+   * offered "later" at all. See `docs/plans/dreaming.md`'s Phase 5.
    */
-  confirmToolCall: (callId: string, approved: boolean) =>
-    call('confirmToolCall', { callId, approved }),
+  confirmToolCall: (callId: string, approved: boolean, later = false) =>
+    call('confirmToolCall', { callId, approved, later }),
 
   memories: () => call('listMemories', {}),
 

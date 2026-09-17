@@ -44,6 +44,19 @@
 //! That ceiling is deliberate and enforced ([`MAX_MEMORIES`]). An assistant
 //! that may remember without limit eventually spends its whole context
 //! recalling, and no one ever prunes it.
+//!
+//! # Three groups, one list
+//!
+//! [`MemoryOrigin`] splits that list into three groups the prompt treats
+//! differently, rather than three separate documents -- see
+//! `docs/plans/dreaming.md`. Told and confirmed memories are standing
+//! instructions, capped at [`MAX_MEMORIES`] and evicted oldest first.
+//! Inferred memories are a dream's own guesses, capped separately at
+//! [`MAX_INFERRED`] and evicted oldest-*supported* first, because the one
+//! yesterday's data confirmed is the one worth keeping. Rejected memories are
+//! kept, not deleted, so a later dream cannot re-learn what was already
+//! struck out; they are capped at [`MAX_REJECTED`] for the same reason
+//! everything here is capped -- the prompt has to stay a fixed size.
 
 pub mod tools;
 
@@ -459,6 +472,27 @@ pub struct AgentSettings {
     /// chose.
     #[serde(default)]
     pub web: bool,
+    /// Whether the assistant dreams: reads the day overnight, revises what it
+    /// has inferred about the person, and leaves proposals to accept or
+    /// decline. Off until somebody turns it on, because it reads the journal.
+    /// See `docs/plans/dreaming.md`.
+    #[serde(default)]
+    pub dreaming: bool,
+    /// Which kinds of record the assistant may propose.
+    #[serde(default)]
+    pub proposals: crate::proposal::ProposalPolicy,
+    /// Whether a scheduled routine, finding nobody there to confirm a delete
+    /// or a send, leaves a proposal instead of giving up on the spot.
+    ///
+    /// Off by default: a routine that leaves deletions waiting is a
+    /// different promise from one that refuses them, and the difference is
+    /// worth its own sentence rather than folding into
+    /// [`confirm_destructive`](Self::confirm_destructive), which is about
+    /// whether anybody is asked at all. See `docs/plans/dreaming.md`'s
+    /// Phase 5 -- this is the same park-instead-of-decline the rail's own
+    /// "later" answer uses, offered here for a run nobody is watching.
+    #[serde(default)]
+    pub park_unattended: bool,
     /// Whether a key is stored. Never the key itself.
     #[serde(default)]
     pub has_key: bool,
@@ -480,6 +514,9 @@ impl Default for AgentSettings {
             remember: true,
             timezone: None,
             web: false,
+            dreaming: false,
+            proposals: crate::proposal::ProposalPolicy::default(),
+            park_unattended: false,
             has_key: false,
         }
     }
@@ -883,14 +920,59 @@ pub struct Memory {
     /// typed themselves.
     #[serde(default)]
     pub pinned: bool,
+    /// Who stands behind it. Everything written before this field existed
+    /// was told, which is what the default says.
+    #[serde(default)]
+    pub origin: MemoryOrigin,
+    /// The last day the data still supported an inferred memory. A dream
+    /// moves it forward or lets it lapse; eviction among inferred memories
+    /// is oldest-supported first. Meaningless for any other origin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_supported: Option<jiff::civil::Date>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
+
+/// Where a memory came from, and so how much weight it carries.
+///
+/// Told and confirmed memories are standing instructions. An inferred one is
+/// an observation a dream made, used lightly and under a heading that says
+/// it may be wrong. A rejected one is kept, as "do not assume", so that a
+/// later dream cannot learn it again. See `docs/plans/dreaming.md`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryOrigin {
+    /// The person said it, or the assistant was asked to keep it.
+    #[default]
+    Told,
+    /// A dream noticed it.
+    Inferred,
+    /// Inferred, and then the person agreed or rewrote it.
+    Confirmed,
+    /// Inferred, and then the person struck it out.
+    Rejected,
+}
+
+/// How many inferred memories are kept, on top of [`MAX_MEMORIES`].
+///
+/// Smaller than the told list, and evicted oldest-supported first: the one
+/// yesterday's data confirmed is the one to keep.
+pub const MAX_INFERRED: usize = 24;
 
 /// How many memories are kept, and how many are loaded into a prompt.
 ///
 /// See the module docs for why this is small and fixed.
 pub const MAX_MEMORIES: usize = 64;
+
+/// How many rejected memories are kept, so a later dream cannot re-learn what
+/// somebody already struck out.
+///
+/// A "do not assume" list has the same reason to be bounded as the other
+/// two: it is loaded into every prompt, and the prompt must stay a fixed
+/// size whatever the origin of the line. Evicted oldest first, same as the
+/// told and confirmed group, and a pinned memory is never the one dropped --
+/// see [`Vault::save_memory`](crate::vault::Vault::save_memory).
+pub const MAX_REJECTED: usize = 32;
 
 /// Longest a single memory may be. A sentence, not a document — anything
 /// longer belongs in an entry, which the assistant can also write.
@@ -904,6 +986,8 @@ impl Memory {
             text: text.into(),
             source_id: None,
             pinned: false,
+            origin: MemoryOrigin::Told,
+            last_supported: None,
             created_at: now,
             updated_at: now,
         }
@@ -911,6 +995,11 @@ impl Memory {
 
     pub fn from_conversation(text: impl Into<String>, source: ConversationId) -> Self {
         Self { source_id: Some(source), ..Self::new(text) }
+    }
+
+    /// A memory a dream inferred, supported by the data as of `on`.
+    pub fn inferred(text: impl Into<String>, on: jiff::civil::Date) -> Self {
+        Self { origin: MemoryOrigin::Inferred, last_supported: Some(on), ..Self::new(text) }
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -923,6 +1012,28 @@ impl Memory {
             )));
         }
         Ok(())
+    }
+}
+
+/// Render one group of memories under its heading, capped, newest kept last.
+///
+/// Shared by all three groups in [`system_prompt`] so the "keep the newest
+/// when there are too many" rule -- and the "say nothing for an empty group"
+/// rule -- are written once rather than three times with a chance to drift.
+/// `mems` is assumed to already be in the order eviction would keep, oldest
+/// first; what "oldest" means differs by group; see the call sites.
+fn push_memory_group(out: &mut String, heading: &str, mems: &[&Memory], cap: usize) {
+    if mems.is_empty() {
+        return;
+    }
+    out.push_str("\n\n");
+    out.push_str(heading);
+    out.push('\n');
+    let skip = mems.len().saturating_sub(cap);
+    for m in mems.iter().skip(skip) {
+        out.push_str("- ");
+        out.push_str(m.text.trim());
+        out.push('\n');
     }
 }
 
@@ -1005,25 +1116,48 @@ pub fn system_prompt(
         now.time_zone().iana_name().unwrap_or("an unknown time zone"),
     ));
 
-    if !memories.is_empty() {
-        out.push_str(
-            "\n\nThings you have been asked to remember, most recent last. \
-             Treat them as standing instructions:\n",
-        );
-        // The newest, not the first. `memories` arrives oldest-first -- the
-        // order they are read in, so that a later instruction wins -- and the
-        // list can exceed the cap even though the vault trims on write,
-        // because pinned memories are never evicted. Taking from the front
-        // would drop the newest facts, including the one just remembered,
-        // which is the single most surprising thing an assistant's memory
-        // could do.
-        let skip = memories.len().saturating_sub(MAX_MEMORIES);
-        for m in memories.iter().skip(skip) {
-            out.push_str("- ");
-            out.push_str(m.text.trim());
-            out.push('\n');
-        }
-    }
+    // Told and confirmed memories are standing instructions, in the order
+    // they were written -- `memories` arrives oldest-first, so that a later
+    // instruction wins.
+    let told_and_confirmed: Vec<&Memory> = memories
+        .iter()
+        .filter(|m| matches!(m.origin, MemoryOrigin::Told | MemoryOrigin::Confirmed))
+        .collect();
+    push_memory_group(
+        &mut out,
+        "Things you have been asked to remember, most recent last. \
+         Treat them as standing instructions:",
+        &told_and_confirmed,
+        MAX_MEMORIES,
+    );
+
+    // Inferred memories are a dream's own guesses, ordered by how recently
+    // the data still supported one rather than by when it was written -- the
+    // one confirmed by yesterday is the one that should read last, whatever
+    // order it happened to be typed in.
+    let mut inferred: Vec<&Memory> =
+        memories.iter().filter(|m| m.origin == MemoryOrigin::Inferred).collect();
+    inferred.sort_by(|a, b| {
+        a.last_supported.cmp(&b.last_supported).then_with(|| a.created_at.cmp(&b.created_at))
+    });
+    push_memory_group(
+        &mut out,
+        "Things you have noticed about this person, which may be wrong. \
+         Act on them lightly and do not repeat them back as facts:",
+        &inferred,
+        MAX_INFERRED,
+    );
+
+    // Rejected memories are kept, not deleted, precisely so a later dream
+    // cannot re-learn what was already struck out.
+    let rejected: Vec<&Memory> =
+        memories.iter().filter(|m| m.origin == MemoryOrigin::Rejected).collect();
+    push_memory_group(
+        &mut out,
+        "Do not assume any of the following about this person:",
+        &rejected,
+        MAX_REJECTED,
+    );
 
     // What the person is looking at. Appended last, and labelled, because it
     // is the one part of the prompt that changes between two otherwise
@@ -1048,6 +1182,8 @@ mod tests {
         assert!(!s.enabled, "the assistant must not be on before anyone asks for it");
         assert!(!s.is_usable());
         assert!(s.confirm_destructive, "destructive calls must confirm by default");
+        assert!(!s.dreaming, "dreaming reads the journal and must not begin on its own");
+        assert!(!s.park_unattended, "a routine must give up on the spot until this is turned on");
     }
 
     #[test]
@@ -1390,6 +1526,149 @@ mod tests {
     }
 
     #[test]
+    fn each_origin_reaches_the_prompt_under_its_own_heading() {
+        let told = Memory::new("Plans the week on Sunday evening");
+        let confirmed = Memory {
+            origin: MemoryOrigin::Confirmed,
+            ..Memory::inferred("Prefers short replies", date(2026, 9, 1))
+        };
+        let inferred = Memory::inferred("Seems to work late on Thursdays", date(2026, 9, 7));
+        let rejected = Memory {
+            origin: MemoryOrigin::Rejected,
+            ..Memory::new("Is not actually a morning person")
+        };
+        let memories = vec![told, confirmed, inferred, rejected];
+
+        let prompt = system_prompt(
+            &AgentSettings::default(),
+            &crate::profile::Profile::default(),
+            &memories,
+            &at(9, 0, "UTC"),
+            None,
+        );
+
+        let told_heading = prompt.find("Things you have been asked to remember").unwrap();
+        let noticed_heading = prompt.find("Things you have noticed about this person").unwrap();
+        let assume_heading = prompt.find("Do not assume").unwrap();
+        assert!(told_heading < noticed_heading, "told and confirmed come first");
+        assert!(noticed_heading < assume_heading, "then noticed, then rejected");
+
+        // Told and confirmed share the first heading.
+        let told_section = &prompt[told_heading..noticed_heading];
+        assert!(told_section.contains("Plans the week on Sunday evening"));
+        assert!(told_section.contains("Prefers short replies"), "confirmed joins told");
+        assert!(!told_section.contains("Seems to work late"), "inferred is not a standing order");
+
+        let noticed_section = &prompt[noticed_heading..assume_heading];
+        assert!(noticed_section.contains("Seems to work late on Thursdays"));
+        assert!(
+            !noticed_section.contains("Prefers short replies"),
+            "confirmed is not repeated here"
+        );
+
+        let assume_section = &prompt[assume_heading..];
+        assert!(assume_section.contains("Is not actually a morning person"));
+    }
+
+    #[test]
+    fn a_group_with_nothing_in_it_gets_no_heading() {
+        let memories = vec![Memory::new("Plans the week on Sunday evening")];
+        let prompt = system_prompt(
+            &AgentSettings::default(),
+            &crate::profile::Profile::default(),
+            &memories,
+            &at(9, 0, "UTC"),
+            None,
+        );
+        assert!(prompt.contains("Things you have been asked to remember"));
+        assert!(
+            !prompt.contains("Things you have noticed"),
+            "an empty inferred group must add nothing"
+        );
+        assert!(!prompt.contains("Do not assume"), "an empty rejected group must add nothing");
+
+        let none = system_prompt(
+            &AgentSettings::default(),
+            &crate::profile::Profile::default(),
+            &[],
+            &at(9, 0, "UTC"),
+            None,
+        );
+        assert!(!none.contains("Things you have been asked to remember"));
+        assert!(!none.contains("Things you have noticed"));
+        assert!(!none.contains("Do not assume"));
+    }
+
+    #[test]
+    fn inferred_memories_are_ordered_newest_supported_last_and_capped() {
+        // Order here is by `last_supported`, not by when it was written --
+        // the fact confirmed by the most recent data should read last,
+        // whatever order the dream happened to write them in.
+        let early = Memory::inferred("early", date(2026, 1, 1));
+        let late = Memory::inferred("late", date(2026, 6, 1));
+        let never_reconfirmed =
+            Memory { last_supported: None, ..Memory::inferred("stale", date(2026, 3, 1)) };
+        let memories = vec![late.clone(), early.clone(), never_reconfirmed];
+
+        let prompt = system_prompt(
+            &AgentSettings::default(),
+            &crate::profile::Profile::default(),
+            &memories,
+            &at(9, 0, "UTC"),
+            None,
+        );
+        let none_pos = prompt.find("- stale").unwrap();
+        let early_pos = prompt.find("- early").unwrap();
+        let late_pos = prompt.find("- late").unwrap();
+        assert!(none_pos < early_pos, "no last_supported date counts as the oldest");
+        assert!(early_pos < late_pos, "the most recently supported guess reads last");
+
+        // And the cap applies the same way: drop the oldest-supported first.
+        let mut many: Vec<Memory> = (0..MAX_INFERRED + 3)
+            .map(|i| Memory::inferred(format!("guess {i}"), date(2026, 1, 1 + i as i8)))
+            .collect();
+        many.reverse(); // written in no particular order
+        let prompt = system_prompt(
+            &AgentSettings::default(),
+            &crate::profile::Profile::default(),
+            &many,
+            &at(9, 0, "UTC"),
+            None,
+        );
+        assert!(
+            prompt.contains(&format!("guess {}", MAX_INFERRED + 2)),
+            "the newest-supported must survive"
+        );
+        assert!(!prompt.contains("- guess 0\n"), "the oldest-supported is the one dropped");
+        assert_eq!(
+            prompt.matches("\n- guess ").count(),
+            MAX_INFERRED,
+            "exactly the cap should reach the prompt"
+        );
+    }
+
+    #[test]
+    fn rejected_memories_are_capped_too() {
+        let many: Vec<Memory> = (0..MAX_REJECTED + 2)
+            .map(|i| Memory { origin: MemoryOrigin::Rejected, ..Memory::new(format!("nope {i}")) })
+            .collect();
+        let prompt = system_prompt(
+            &AgentSettings::default(),
+            &crate::profile::Profile::default(),
+            &many,
+            &at(9, 0, "UTC"),
+            None,
+        );
+        assert!(prompt.contains(&format!("nope {}", MAX_REJECTED + 1)), "the newest must survive");
+        assert!(!prompt.contains("- nope 0\n"), "the oldest is the one dropped");
+        assert_eq!(
+            prompt.matches("\n- nope ").count(),
+            MAX_REJECTED,
+            "exactly the cap should reach the prompt"
+        );
+    }
+
+    #[test]
     fn blank_context_and_instructions_add_no_empty_sections() {
         let s = AgentSettings { instructions: "   \n ".into(), ..Default::default() };
         let prompt = system_prompt(
@@ -1409,6 +1688,23 @@ mod tests {
         assert!(Memory::new("  ").validate().is_err());
         assert!(Memory::new("x".repeat(MAX_MEMORY_CHARS + 1)).validate().is_err());
         assert!(Memory::new("Calls the deck project 'the deck'").validate().is_ok());
+    }
+
+    #[test]
+    fn a_memory_sealed_before_origin_existed_reads_as_told() {
+        // Every memory sealed before this field existed must keep reading
+        // exactly as it always did -- a person's standing instructions must
+        // not turn into unsupported guesses the day this ships.
+        let old = serde_json::json!({
+            "id": MemoryId::new().to_string(),
+            "text": "Plans the week on Sunday evening",
+            "pinned": false,
+            "createdAt": Timestamp::now().to_string(),
+            "updatedAt": Timestamp::now().to_string(),
+        });
+        let m: Memory = serde_json::from_value(old).unwrap();
+        assert_eq!(m.origin, MemoryOrigin::Told);
+        assert_eq!(m.last_supported, None);
     }
 
     #[test]

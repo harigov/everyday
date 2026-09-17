@@ -196,6 +196,7 @@ fn due_now(svc: &Arc<Service>, instructions: &str) -> Routine {
         Trigger::Schedule {
             at: jiff::civil::time(local.hour(), local.minute(), 0, 0),
             days: vec![],
+            day_of_month: None,
         },
     );
     // Made before its moment, or the slot would predate the routine and be
@@ -303,6 +304,93 @@ async fn a_scheduled_run_may_not_delete_anything() {
     assert_eq!(run.summary, "It needs deleting and I could not do it.");
 }
 
+// ── park_unattended: docs/plans/dreaming.md's Phase 5 ───────────────────
+
+#[tokio::test]
+async fn park_unattended_off_leaves_todays_behaviour_alone() {
+    // The default: a routine's delete is still refused on the spot, and no
+    // proposal appears either -- switching a setting on is the only thing
+    // that may change this.
+    let (svc, _dir) = service("http://127.0.0.1:1/v1");
+    let vault = svc.get().unwrap();
+    let task = everyday_core::Task::new("Book the dentist");
+    vault.save_task(&task).unwrap();
+
+    let model = fake_model(calls(
+        "delete_task",
+        serde_json::json!({ "task_id": task.id.to_string() }).to_string(),
+        "It needs deleting and I could not do it.",
+    ))
+    .await;
+    let mut settings = vault.agent_settings().unwrap();
+    settings.provider_config.base_url = Some(model.endpoint.clone());
+    assert!(!settings.park_unattended, "off by default");
+    vault.save_agent_settings(&settings).unwrap();
+    due_now(&svc, "Tidy up.");
+
+    everyday_service::scheduler::tick(&svc).await;
+
+    assert!(vault.task(task.id).is_ok(), "not deleted");
+    assert!(
+        vault.proposals(&Default::default()).unwrap().is_empty(),
+        "and nothing was parked either -- today's behaviour is unchanged"
+    );
+    let run = &vault.runs(&RunQuery::default()).unwrap()[0];
+    assert_eq!(run.outcome, Outcome::Done);
+}
+
+#[tokio::test]
+async fn park_unattended_on_saves_the_delete_as_a_proposal_from_this_run() {
+    let (svc, _dir) = service("http://127.0.0.1:1/v1");
+    let vault = svc.get().unwrap();
+    let task = everyday_core::Task::new("Book the dentist");
+    vault.save_task(&task).unwrap();
+
+    let model = fake_model(calls(
+        "delete_task",
+        serde_json::json!({ "task_id": task.id.to_string() }).to_string(),
+        "I have left it for you to decide.",
+    ))
+    .await;
+    let mut settings = vault.agent_settings().unwrap();
+    settings.provider_config.base_url = Some(model.endpoint.clone());
+    settings.park_unattended = true;
+    vault.save_agent_settings(&settings).unwrap();
+    let routine = due_now(&svc, "Tidy up.");
+
+    everyday_service::scheduler::tick(&svc).await;
+
+    assert!(vault.task(task.id).is_ok(), "parked, not deleted");
+    let pending = vault.proposals(&Default::default()).unwrap();
+    assert_eq!(pending.len(), 1, "exactly one proposal was left");
+    let proposal = &pending[0];
+    assert_eq!(proposal.kind, everyday_core::ProposalKind::Task);
+    match &proposal.payload {
+        everyday_core::Payload::Delete { kind, id } => {
+            assert_eq!(*kind, everyday_core::ProposalKind::Task);
+            assert_eq!(id, &task.id.to_string());
+        }
+        other => panic!("expected a Delete payload, got {other:?}"),
+    }
+
+    let run = &vault.runs(&RunQuery::for_routine(routine.id)).unwrap()[0];
+    assert_eq!(
+        proposal.made_by,
+        Some(everyday_core::ProposalSource::Run { run_id: run.id }),
+        "made by this run, not the rail"
+    );
+    assert_eq!(run.outcome, Outcome::Done);
+
+    // The transcript's own tool result says so, in words the model can act
+    // on -- this is what it actually read on the next turn, if there is one.
+    let messages = vault.messages(run.conversation_id.unwrap()).unwrap();
+    let result = messages
+        .iter()
+        .find(|m| m.role == everyday_core::MessageRole::Tool)
+        .expect("the delete's own tool result is in the transcript");
+    assert!(result.content.to_lowercase().contains("saved"), "got {:?}", result.content);
+}
+
 #[tokio::test]
 async fn a_locked_vault_runs_nothing_at_all() {
     let model = fake_model(says("should never be said")).await;
@@ -354,6 +442,7 @@ async fn a_moment_missed_by_more_than_its_grace_is_recorded_rather_than_run_late
         Trigger::Schedule {
             at: jiff::civil::time(local.hour(), local.minute(), 0, 0),
             days: vec![],
+            day_of_month: None,
         },
     );
     routine.created_at = then - jiff::SignedDuration::from_hours(1);
@@ -473,7 +562,11 @@ async fn a_routine_the_assistant_was_asked_to_make_is_a_routine() {
     assert_eq!(routines[0].name, "Weekly plan");
     assert_eq!(
         routines[0].trigger,
-        Trigger::Schedule { at: jiff::civil::time(19, 0, 0, 0), days: vec![Weekday::Sun] }
+        Trigger::Schedule {
+            at: jiff::civil::time(19, 0, 0, 0),
+            days: vec![Weekday::Sun],
+            day_of_month: None,
+        }
     );
 }
 
@@ -691,4 +784,105 @@ async fn a_routine_deleted_while_it_ran_stays_deleted() {
         vault.routine(routine.id).is_err(),
         "the stamp must not resurrect a routine that was deleted while it ran"
     );
+}
+
+// ── dream routines: the command layer refuses what the vault refuses ────
+
+#[tokio::test]
+async fn the_delete_routine_command_refuses_a_dream() {
+    let model = fake_model(says("should never be said")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let dreams = vault.set_dreaming(true).unwrap();
+    let nightly = &dreams[0];
+
+    let err = svc
+        .call(
+            everyday_service::ctx::Ctx::local(),
+            "delete_routine",
+            serde_json::json!({ "id": nightly.id.to_string() }),
+        )
+        .await
+        .expect_err("a dream is not somebody's to delete by hand");
+    assert!(err.message.contains("dream"), "got {:?}", err.message);
+    assert!(vault.routine(nightly.id).is_ok(), "still there");
+}
+
+#[tokio::test]
+async fn the_save_routine_command_lists_a_dream_with_its_kind_and_next_run() {
+    let model = fake_model(says("should never be said")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    vault.set_dreaming(true).unwrap();
+
+    let listed = svc
+        .call(everyday_service::ctx::Ctx::local(), "list_routines", serde_json::json!({}))
+        .await
+        .expect("list_routines");
+    let rows = listed.as_array().unwrap();
+    let nightly = rows
+        .iter()
+        .find(|r| r["name"] == "Nightly dream")
+        .expect("the nightly dream is listed like any other routine");
+    assert_eq!(nightly["kind"]["type"], "dream");
+    assert_eq!(nightly["kind"]["scope"], "day");
+    assert!(nightly["nextDue"].is_string(), "a clock trigger still says when it runs next");
+}
+
+#[tokio::test]
+async fn turning_dreaming_on_and_off_through_settings_makes_and_stops_the_dreams() {
+    let model = fake_model(says("should never be said")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let dreams = |vault: &everyday_core::Vault| -> Vec<everyday_core::Routine> {
+        vault.routines().unwrap().into_iter().filter(|r| r.kind.is_dream()).collect()
+    };
+    assert!(dreams(&vault).is_empty(), "a new vault has no dreams");
+
+    let mut settings = vault.agent_settings().unwrap();
+    settings.dreaming = true;
+    svc.call(
+        everyday_service::ctx::Ctx::local(),
+        "save_agent_settings",
+        serde_json::json!({ "settings": settings }),
+    )
+    .await
+    .expect("save_agent_settings");
+    let on = dreams(&vault);
+    assert_eq!(on.len(), 3, "the switch makes the three dreams");
+    assert!(on.iter().all(|r| r.enabled));
+
+    settings.dreaming = false;
+    svc.call(
+        everyday_service::ctx::Ctx::local(),
+        "save_agent_settings",
+        serde_json::json!({ "settings": settings }),
+    )
+    .await
+    .expect("save_agent_settings");
+    let off = dreams(&vault);
+    assert_eq!(off.len(), 3, "turning it off keeps them");
+    assert!(off.iter().all(|r| !r.enabled), "and stops them");
+}
+
+#[tokio::test]
+async fn a_dream_with_nothing_added_can_be_switched_off_from_the_editor() {
+    let model = fake_model(says("should never be said")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let mut nightly = vault.set_dreaming(true).unwrap().remove(0);
+    assert!(nightly.instructions.is_empty());
+
+    nightly.enabled = false;
+    nightly.grace_minutes = 600;
+    svc.call(
+        everyday_service::ctx::Ctx::local(),
+        "save_routine",
+        serde_json::json!({ "routine": nightly }),
+    )
+    .await
+    .expect("an empty paragraph is not a reason to refuse the save");
+    let saved = vault.routine(nightly.id).unwrap();
+    assert!(!saved.enabled);
+    assert_eq!(saved.grace_minutes, 600);
 }

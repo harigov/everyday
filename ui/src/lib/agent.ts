@@ -32,7 +32,7 @@ export interface ToolCard {
   callId: string
   name: string
   arguments: unknown
-  state: 'running' | 'waiting' | 'done' | 'failed' | 'declined'
+  state: 'running' | 'waiting' | 'done' | 'failed' | 'declined' | 'later'
   /** What the tool said about itself, once it has said anything. */
   summary: string
   /** What is about to be destroyed, on a card waiting to be told. */
@@ -44,6 +44,11 @@ export interface ToolCard {
    * decision entirely. See `ConfirmKind`.
    */
   confirmKind: ConfirmKind | null
+  /**
+   * Whether a `waiting` card may offer "later" beside confirm and decline.
+   * See `docs/plans/dreaming.md`'s Phase 5.
+   */
+  canPark: boolean
   /** The thread a mail write named itself, once it has finished. See
    *  [[MailLink]]. */
   mailLink: MailLink | null
@@ -99,6 +104,7 @@ export function applyEvent(turn: Turn, event: AgentEvent): void {
           summary: '',
           subject: '',
           confirmKind: null,
+          canPark: false,
           mailLink: null,
         })
       break
@@ -113,13 +119,19 @@ export function applyEvent(turn: Turn, event: AgentEvent): void {
         summary: '',
         subject: event.subject,
         confirmKind: event.kind,
+        canPark: event.canPark,
         mailLink: null,
       })
       break
 
     case 'toolFinished': {
       const card = turn.cards.find((c) => c.callId === event.callId)
-      if (card) {
+      // A card already answered `declined` or `later` is not overwritten:
+      // the backend still fires this event for a skipped call -- the model
+      // has to be told why, and this is that telling -- but the person has
+      // already had their answer drawn, and it must not flip to `failed`
+      // moments after they read it.
+      if (card && card.state !== 'declined' && card.state !== 'later') {
         card.state = event.ok ? 'done' : 'failed'
         card.summary = event.summary
         card.mailLink = event.mailLink ?? null
@@ -176,6 +188,7 @@ export function replay(messages: AgentMessage[]): Turn[] {
           summary: '',
           subject: '',
           confirmKind: null,
+          canPark: false,
           mailLink: null,
         })),
       })

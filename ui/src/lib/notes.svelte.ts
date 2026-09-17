@@ -17,11 +17,12 @@
 import { api, newRequestId } from './api'
 import { Autosave } from './autosave'
 import { registerApply, singleId, type ChangeWithIds } from './live-apply'
+import { proposals, recordAs } from './proposals.svelte'
 import { app, handle, isConflict, isLocked } from './state.svelte'
 import { debounce } from './store/debounce'
 import { DocBinding } from './store/doc-binding'
 import { latest } from './store/latest'
-import type { Note, NoteHit, NoteId, NoteSort, NoteSummary } from './types'
+import type { Note, NoteHit, NoteId, NoteSort, NoteSummary, Proposal, ProposalId } from './types'
 
 /** How many notes a list loads at once. A drawer, not a database. */
 const PAGE = 500
@@ -42,6 +43,12 @@ class NotesState {
   /** The note in the editor, whole. `null` when nothing is open. */
   open = $state<Note | null>(null)
   selected = $state<NoteId | null>(null)
+  /**
+   * The pending note proposal open in place of a real one, by id -- so
+   * answering it anywhere closes this pane too. See `todo`'s
+   * `#selectedProposalId`.
+   */
+  #selectedProposalId = $state<ProposalId | null>(null)
   sort = $state<NoteSort>('updatedDesc')
   /** `null` is every note; a tag narrows the list to notes carrying it. */
   tag = $state<string | null>(null)
@@ -133,6 +140,10 @@ class NotesState {
     // a change from another window patches this list instead of reloading it
     // whole.
     registerApply('notes', (changes) => this.#applyChanges(changes))
+    // This window's own accept does not come back as a change event -- see
+    // `proposals.svelte.ts` -- so the store that just gained a note tells
+    // itself to reload.
+    proposals.onAccepted('note', () => this.refresh())
   }
 
   reset() {
@@ -141,6 +152,7 @@ class NotesState {
     this.list = []
     this.open = null
     this.selected = null
+    this.#selectedProposalId = null
     this.tag = null
     this.tags = []
     this.clearSearch()
@@ -158,6 +170,8 @@ class NotesState {
    */
   async start() {
     if (!app.supportsNotes) return
+    // See `todo.start` for why this is idempotent and safe to ask twice.
+    if (!proposals.loaded) await proposals.refresh()
     this.loading = true
     try {
       await this.refresh()
@@ -271,6 +285,7 @@ class NotesState {
     // document, or a save taken inside the autosave window lands against the
     // note that has just been closed.
     await this.flush()
+    this.#selectedProposalId = null
     try {
       const note = await api.note(id)
       this.open = note
@@ -472,9 +487,62 @@ class NotesState {
     if (note.title.trim()) return note.title.trim()
     return 'Untitled note'
   }
+
+  // ── proposals ────────────────────────────────────────────────────────
+  //
+  // Ghosts sit at the top of the list, not the foot -- a note is written
+  // forward from nothing, so there is no "section" for a proposed one to
+  // join the way a task joins a due date. See `docs/plans/dreaming.md`.
+
+  /** Pending `create` proposals for a note. */
+  get ghostNotes(): Proposal[] {
+    return proposals.forKind('note').filter((p) => p.payload.type === 'create')
+  }
+
+  /** The pending `replace` proposal for a note, drawn beneath its row. */
+  replaceProposalFor(id: NoteId): Proposal | null {
+    return (
+      proposals
+        .forKind('note')
+        .find((p) => p.payload.type === 'replace' && recordAs(p, 'note')?.id === id) ?? null
+    )
+  }
+
+  /** The pending `delete` proposal for a note, drawn as a chip on its row. */
+  deleteProposalFor(id: NoteId): Proposal | null {
+    return (
+      proposals.forKind('note').find((p) => p.payload.type === 'delete' && p.payload.id === id) ??
+      null
+    )
+  }
+
+  /**
+   * The pending note proposal open in the pane, or `null` once it has been
+   * answered from anywhere -- see `#selectedProposalId`'s own doc.
+   */
+  get selectedProposal(): Proposal | null {
+    return this.#selectedProposalId
+      ? (proposals.pending.find((p) => p.id === this.#selectedProposalId) ?? null)
+      : null
+  }
+
+  /** Open a pending note proposal in the pane, in place of a real note. */
+  openProposal(p: Proposal) {
+    this.selected = null
+    this.#selectedProposalId = p.id
+  }
+
+  closeProposal() {
+    this.#selectedProposalId = null
+  }
 }
 
 export const notes = new NotesState()
+
+/** Plain text out of a note's rich body -- what a read-only preview draws. */
+export function previewText(body: Note['body']): string {
+  return plainText(body)
+}
 
 /**
  * The list's condensed shape, computed from a record fetched whole.

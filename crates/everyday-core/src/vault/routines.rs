@@ -2,10 +2,19 @@
 
 use super::Vault;
 use super::session::Domain;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::id::{RoutineId, RoutineRunId};
-use crate::routine::{Routine, RoutineRun, Trigger};
+use crate::routine::{DreamScope, Routine, RoutineRun, Trigger};
 use crate::store::routines::{RoutineStore, RunQuery};
+use jiff::Timestamp;
+
+/// What `Vault::save_routine` says when somebody tries to make or unmake a
+/// dream by hand. One sentence, used from both directions -- a new routine
+/// whose kind is `Dream`, and an existing one whose kind would change either
+/// way -- because the person's fix is the same either way: the switch in
+/// Settings, not this form.
+const DREAM_IS_THE_APPLICATIONS: &str =
+    "a dream belongs to the application; turn dreaming off in Settings instead";
 
 impl Vault {
     /// Does this vault's backend hold routines at all?
@@ -31,8 +40,32 @@ impl Vault {
     /// cannot: a `BeforeEvent` trigger naming a role that does not exist would
     /// be a routine that silently never fires. There is no foreign key to
     /// `roles`, for the reason `goals` has none, so it is checked here.
+    ///
+    /// Refuses a *new* routine whose kind is [`RoutineKind::Dream`](crate::routine::RoutineKind::Dream)
+    /// -- those three are made only by [`Vault::set_dreaming`] -- and refuses
+    /// changing an existing routine's kind in either direction. A dream's
+    /// schedule, grace and instructions (the person's own paragraph, added to
+    /// the app's prompt) are ordinary edits and go through unchanged.
     pub fn save_routine(&self, routine: &Routine) -> Result<()> {
         self.writable()?;
+        let previous_kind = self.routine(routine.id).ok().map(|r| r.kind);
+        match previous_kind {
+            None if routine.kind.is_dream() => {
+                return Err(Error::Invalid(DREAM_IS_THE_APPLICATIONS.into()));
+            }
+            Some(previous) if previous != routine.kind => {
+                return Err(Error::Invalid(DREAM_IS_THE_APPLICATIONS.into()));
+            }
+            _ => {}
+        }
+        self.put_routine_unchecked(routine)
+    }
+
+    /// The write [`Vault::save_routine`] does, without the dream-kind
+    /// refusal -- the one path [`Vault::set_dreaming`] uses to create and
+    /// enable the three routines that refusal exists to stop anybody else
+    /// from making.
+    fn put_routine_unchecked(&self, routine: &Routine) -> Result<()> {
         routine.validate()?;
         if let Trigger::BeforeEvent { role_id: Some(role), .. } = &routine.trigger {
             self.role(*role)?;
@@ -46,8 +79,15 @@ impl Vault {
     /// the agent store, so the cascade is here. What is *not* touched is
     /// anything the routine ever made -- a task written by a routine that has
     /// since been deleted is still a task somebody has to do.
+    ///
+    /// Refuses a dream: it is not somebody's to delete by hand, only to turn
+    /// off.
     pub fn delete_routine(&self, id: RoutineId) -> Result<()> {
         self.writable()?;
+        let routine = self.routine(id)?;
+        if routine.kind.is_dream() {
+            return Err(Error::Invalid(DREAM_IS_THE_APPLICATIONS.into()));
+        }
         let runs = self.with_routines(|r| r.list_runs(&RunQuery::for_routine(id)))?;
         for run in &runs {
             if let Some(conversation) = run.conversation_id {
@@ -57,6 +97,38 @@ impl Vault {
             }
         }
         self.with_routines(|r| r.delete_routine(id))
+    }
+
+    /// Switch dreaming on or off.
+    ///
+    /// On first enable, creates the three routines the application owns --
+    /// see [`Routine::dream`] for their schedules and graces -- through
+    /// [`Vault::put_routine_unchecked`], the one path that may give a routine
+    /// a `Dream` kind. Thereafter, and on every call, this only flips
+    /// `enabled` on the three: their schedule, grace and instructions are
+    /// the person's to edit once they exist, through the ordinary
+    /// [`Vault::save_routine`].
+    ///
+    /// Idempotent either way -- switching on twice creates nothing a second
+    /// time, and switching off twice just leaves them off -- and returns the
+    /// three routines as saved, so a caller can draw them without a second
+    /// read.
+    pub fn set_dreaming(&self, on: bool) -> Result<Vec<Routine>> {
+        self.writable()?;
+        let existing = self.routines()?;
+        let mut out = Vec::with_capacity(DreamScope::ALL.len());
+        for scope in DreamScope::ALL {
+            let mut routine = existing
+                .iter()
+                .find(|r| r.kind.dream_scope() == Some(scope))
+                .cloned()
+                .unwrap_or_else(|| Routine::dream(scope));
+            routine.enabled = on;
+            routine.updated_at = Timestamp::now();
+            self.put_routine_unchecked(&routine)?;
+            out.push(routine);
+        }
+        Ok(out)
     }
 
     pub fn runs(&self, query: &RunQuery) -> Result<Vec<RoutineRun>> {

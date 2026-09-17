@@ -18,9 +18,11 @@
   import { agent } from '../lib/agent.svelte'
   import { app } from '../lib/state.svelte'
   import { assistant } from '../lib/assistant.svelte'
+  import { PROPOSAL_KIND_LABELS } from '../lib/dream'
   import { panels } from '../lib/panels.svelte'
   import { quick } from '../lib/quick.svelte'
-  import type { AgentSettings, LLMModelConfig, QuickJobRow } from '../lib/types'
+  import { PROPOSAL_KINDS } from '../lib/types'
+  import type { AgentSettings, LLMModelConfig, ProposalKind, QuickJobRow } from '../lib/types'
   import Icon from './Icon.svelte'
   import MailActionsList from './MailActionsList.svelte'
 
@@ -118,6 +120,25 @@
   }
 
   /**
+   * Whether a kind of proposal is switched off.
+   *
+   * `denied` names what is refused rather than what is allowed, so a kind
+   * added in a later build starts allowed -- the same reason `QuickPolicy`
+   * is shaped this way. See `docs/plans/dreaming.md`.
+   */
+  function isDenied(kind: ProposalKind): boolean {
+    return draft?.proposals?.denied?.includes(kind) ?? false
+  }
+
+  function toggleKind(kind: ProposalKind, allowed: boolean) {
+    if (!draft) return
+    const denied = new Set(draft.proposals?.denied ?? [])
+    if (allowed) denied.delete(kind)
+    else denied.add(kind)
+    draft.proposals = { denied: [...denied] }
+  }
+
+  /**
    * A job switch, saved on the spot rather than with the pane.
    *
    * These are twenty checkboxes somebody flicks one at a time, and
@@ -152,6 +173,7 @@
     noticeTimer = null
     notice = null
     saving = true
+    const wasDreaming = agent.settings?.dreaming === true
     try {
       await agent.saveSettings($state.snapshot(draft))
       if (key.trim()) {
@@ -159,6 +181,11 @@
         key = ''
       }
       draft = structuredClone($state.snapshot(agent.settings!))
+      // The three dream routines are made the moment dreaming is switched on
+      // -- see `Vault::set_dreaming` -- so the routines pane has to be told
+      // to go and look, or "Dreams" would not appear until something else
+      // happened to reload it.
+      if (draft.dreaming && !wasDreaming) await assistant.refresh()
       confirm('Saved.')
     } catch (e) {
       notice = e instanceof Error ? e.message : String(e)
@@ -403,6 +430,68 @@
         How many times it may call a tool before giving up on one request. A ceiling, not a target.
       </p>
     </section>
+
+    {#if app.supportsProposals}
+      <section>
+        <span class="eyebrow">Dreaming</span>
+        <label class="toggle">
+          <input
+            type="checkbox"
+            checked={draft.dreaming ?? false}
+            onchange={(e) => draft && (draft.dreaming = e.currentTarget.checked)}
+          />
+          <span>
+            <b>Let it dream</b>
+            <small>
+              Overnight, the assistant reads yesterday's journal entries, tasks, calendar, time,
+              readings, notes, meeting notes and mail headers, revises what it has noticed about
+              you, and leaves proposals for you to accept or decline. All of that is sent to the
+              assistant's model.
+            </small>
+          </span>
+        </label>
+
+        {#if draft.dreaming}
+          <div class="jobs">
+            <div class="group">
+              <span class="group-name">What it may propose</span>
+              {#each PROPOSAL_KINDS as kind (kind)}
+                <label class="job">
+                  <input
+                    type="checkbox"
+                    checked={!isDenied(kind)}
+                    onchange={(e) => toggleKind(kind, e.currentTarget.checked)}
+                  />
+                  <span class="job-text">
+                    <span class="job-label">{PROPOSAL_KIND_LABELS[kind]}</span>
+                  </span>
+                </label>
+              {/each}
+            </div>
+          </div>
+          <p class="hint">
+            Switched off, a kind is never proposed -- the assistant behaves as though it had nothing
+            to say about it. The three dream routines themselves are edited from the Assistant app,
+            under Routines.
+          </p>
+        {/if}
+
+        <label class="toggle">
+          <input
+            type="checkbox"
+            checked={draft.parkUnattended ?? false}
+            onchange={(e) => draft && (draft.parkUnattended = e.currentTarget.checked)}
+          />
+          <span>
+            <b>Save a routine's deletions and sends for me to decide</b>
+            <small>
+              When a routine runs with nobody watching and wants to delete something or send mail,
+              it leaves a proposal instead of giving up.
+            </small>
+          </span>
+        </label>
+      </section>
+    {/if}
 
     <section>
       <span class="eyebrow">Your time zone</span>

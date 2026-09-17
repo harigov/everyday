@@ -27,7 +27,7 @@
 
 use crate::id::{RoleId, RoutineId, RoutineRunId};
 use crate::{ConversationId, Error, Result};
-use jiff::civil::{Time, Weekday as CivilWeekday};
+use jiff::civil::{Time, Weekday as CivilWeekday, time};
 use jiff::{Timestamp, Zoned};
 use serde::{Deserialize, Serialize};
 
@@ -144,6 +144,11 @@ pub enum Trigger {
         at: Time,
         #[serde(default)]
         days: Vec<Weekday>,
+        /// Only on this day of the month, `1..=28`, as well as on `days`.
+        /// `None` is every day `days` allows. Added for the monthly dream;
+        /// capped at 28 so that every month has the day.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        day_of_month: Option<u8>,
     },
     /// Before an event on the calendar starts.
     ///
@@ -178,8 +183,14 @@ impl Trigger {
     /// disagree.
     pub fn describe(&self) -> String {
         match self {
-            Trigger::Schedule { at, days } => {
+            Trigger::Schedule { at, days, day_of_month } => {
                 let when = format!("{:02}:{:02}", at.hour(), at.minute());
+                // The day of the month wins over `days`: the two are not
+                // meant to be combined, and a monthly dream sets `days` to
+                // empty anyway. See the module doc's table of cases.
+                if let Some(dom) = day_of_month {
+                    return format!("Monthly on the {} at {when}", ordinal(*dom));
+                }
                 if days.is_empty() {
                     return format!("Every day at {when}");
                 }
@@ -209,6 +220,20 @@ impl Trigger {
     }
 }
 
+/// "1st", "2nd", "3rd", "4th" -- the ordinal suffix a day of the month is
+/// read with. The teens are all "th", including the ones whose last digit
+/// would otherwise say "st" or "nd" or "rd".
+fn ordinal(n: u8) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
+}
+
 fn capitalise(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
@@ -230,6 +255,62 @@ pub enum Due {
     Later,
 }
 
+/// Whose routine this is.
+///
+/// A dream is a routine the application owns: it is made when dreaming is
+/// switched on, it cannot be deleted by hand, and its instructions field is
+/// the person's paragraph *added to* an app-owned prompt rather than the
+/// prompt itself. See `docs/plans/dreaming.md`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum RoutineKind {
+    #[default]
+    Custom,
+    Dream {
+        scope: DreamScope,
+    },
+}
+
+impl RoutineKind {
+    pub fn is_dream(self) -> bool {
+        matches!(self, RoutineKind::Dream { .. })
+    }
+
+    pub fn dream_scope(self) -> Option<DreamScope> {
+        match self {
+            RoutineKind::Dream { scope } => Some(scope),
+            RoutineKind::Custom => None,
+        }
+    }
+}
+
+/// How far back a dream reads.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DreamScope {
+    /// Yesterday, from the records. The default because it is the smallest
+    /// unit dreaming comes in -- a `Digest` with nothing else set describes
+    /// one night, not a week or a month.
+    #[default]
+    Day,
+    /// The last seven days, from the nightly dreams' outputs.
+    Week,
+    /// The last month, from the weekly dreams' outputs.
+    Month,
+}
+
+impl DreamScope {
+    pub const ALL: [DreamScope; 3] = [DreamScope::Day, DreamScope::Week, DreamScope::Month];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DreamScope::Day => "day",
+            DreamScope::Week => "week",
+            DreamScope::Month => "month",
+        }
+    }
+}
+
 /// Standing work.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -243,6 +324,10 @@ pub struct Routine {
     #[serde(default = "default_grace")]
     pub grace_minutes: u32,
     pub enabled: bool,
+    /// Written by a person, or owned by the application. A person's routine
+    /// is the default, and everything saved before this field existed.
+    #[serde(default)]
+    pub kind: RoutineKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_at: Option<Timestamp>,
     pub created_at: Timestamp,
@@ -263,10 +348,47 @@ impl Routine {
             trigger,
             grace_minutes: DEFAULT_GRACE_MINUTES,
             enabled: true,
+            kind: RoutineKind::Custom,
             last_run_at: None,
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// The application-owned routine for one dream scope, as first created
+    /// when dreaming is switched on. See `Vault::set_dreaming`.
+    ///
+    /// Instructions start empty -- that box is the person's paragraph,
+    /// appended to `crate::dream::instructions` rather than replacing it --
+    /// and the routine starts disabled, because `set_dreaming` is what turns
+    /// it on, in the same call that makes it.
+    pub fn dream(scope: DreamScope) -> Self {
+        let (name, trigger, grace_minutes) = match scope {
+            DreamScope::Day => (
+                "Nightly dream",
+                Trigger::Schedule { at: time(3, 0, 0, 0), days: Vec::new(), day_of_month: None },
+                20 * 60,
+            ),
+            DreamScope::Week => (
+                "Weekly dream",
+                Trigger::Schedule {
+                    at: time(3, 30, 0, 0),
+                    days: vec![Weekday::Sun],
+                    day_of_month: None,
+                },
+                44 * 60,
+            ),
+            DreamScope::Month => (
+                "Monthly dream",
+                Trigger::Schedule { at: time(4, 0, 0, 0), days: Vec::new(), day_of_month: Some(1) },
+                6 * 24 * 60,
+            ),
+        };
+        let mut routine = Routine::new(name, "", trigger);
+        routine.grace_minutes = grace_minutes;
+        routine.kind = RoutineKind::Dream { scope };
+        routine.enabled = false;
+        routine
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -278,7 +400,11 @@ impl Routine {
                 "a routine's name must be under {MAX_NAME_BYTES} bytes"
             )));
         }
-        if self.instructions.trim().is_empty() {
+        // A person's routine is a prompt and needs one. A dream's is the
+        // app's own prompt with the person's paragraph merely appended --
+        // see `crate::dream::instructions` -- so an empty box beside it is
+        // not an empty routine.
+        if matches!(self.kind, RoutineKind::Custom) && self.instructions.trim().is_empty() {
             return Err(Error::Invalid(
                 "a routine needs instructions: what should it do when it runs?".into(),
             ));
@@ -289,6 +415,14 @@ impl Routine {
                 self.instructions.len()
             )));
         }
+        if let Trigger::Schedule { day_of_month: Some(dom), .. } = &self.trigger
+            && !(1..=28).contains(dom)
+        {
+            return Err(Error::Invalid(
+                "a monthly schedule's day must be between 1 and 28, so that every month has it"
+                    .into(),
+            ));
+        }
         Ok(())
     }
 
@@ -298,13 +432,23 @@ impl Routine {
     /// whose days do not include the last seven -- which cannot happen, since
     /// an empty list means every day, but is expressed rather than assumed.
     pub fn slot_at_or_before(&self, now: &Zoned) -> Option<Timestamp> {
-        let Trigger::Schedule { at, days } = &self.trigger else { return None };
+        let Trigger::Schedule { at, days, day_of_month } = &self.trigger else { return None };
         // Walk back a week a day at a time. Cheap, and it is the only way to
         // be right across a zone whose offset changed in the middle: each
         // candidate is built in the local calendar and converted, so a slot
         // is the wall-clock time it says it is.
-        for back in 0..=7 {
+        //
+        // A monthly routine's grace can run to six days, which is why this
+        // walks back further than a weekly one ever needs to: the search has
+        // to still be looking on the last day its grace allows.
+        let back_days = if day_of_month.is_some() { 35 } else { 7 };
+        for back in 0..=back_days {
             let day = now.date().checked_sub(jiff::Span::new().days(back)).ok()?;
+            if let Some(dom) = day_of_month
+                && day.day() != *dom as i8
+            {
+                continue;
+            }
             if !days.is_empty() && !days.contains(&Weekday::from_civil(day.weekday())) {
                 continue;
             }
@@ -352,9 +496,15 @@ impl Routine {
         if !self.enabled {
             return None;
         }
-        let Trigger::Schedule { at, days } = &self.trigger else { return None };
-        for ahead in 0..=7 {
+        let Trigger::Schedule { at, days, day_of_month } = &self.trigger else { return None };
+        let ahead_days = if day_of_month.is_some() { 35 } else { 7 };
+        for ahead in 0..=ahead_days {
             let day = now.date().checked_add(jiff::Span::new().days(ahead)).ok()?;
+            if let Some(dom) = day_of_month
+                && day.day() != *dom as i8
+            {
+                continue;
+            }
             if !days.is_empty() && !days.contains(&Weekday::from_civil(day.weekday())) {
                 continue;
             }
@@ -523,7 +673,7 @@ mod tests {
         let mut r = Routine::new(
             "Morning brief",
             "Say what is due today.",
-            Trigger::Schedule { at: time(7, 0, 0, 0), days: days.to_vec() },
+            Trigger::Schedule { at: time(7, 0, 0, 0), days: days.to_vec(), day_of_month: None },
         );
         r.created_at = date(2026, 9, 1).at(0, 0, 0, 0).in_tz("UTC").unwrap().timestamp();
         r
@@ -612,7 +762,7 @@ mod tests {
         // reckoned in the local calendar rather than by adding 86 400
         // seconds to yesterday.
         let mut r = morning(&[]);
-        r.trigger = Trigger::Schedule { at: time(1, 30, 0, 0), days: vec![] };
+        r.trigger = Trigger::Schedule { at: time(1, 30, 0, 0), days: vec![], day_of_month: None };
         r.created_at = at(2026, 10, 30, 0, 0, "America/Los_Angeles").timestamp();
 
         let after = at(2026, 11, 1, 4, 0, "America/Los_Angeles");
@@ -630,7 +780,7 @@ mod tests {
         // routine set for 02:30 still has to have a moment that day, and it
         // is the first instant that does exist.
         let mut r = morning(&[]);
-        r.trigger = Trigger::Schedule { at: time(2, 30, 0, 0), days: vec![] };
+        r.trigger = Trigger::Schedule { at: time(2, 30, 0, 0), days: vec![], day_of_month: None };
         r.created_at = at(2026, 3, 7, 0, 0, "America/Los_Angeles").timestamp();
 
         let after = at(2026, 3, 8, 9, 0, "America/Los_Angeles");
@@ -654,16 +804,30 @@ mod tests {
     fn a_trigger_says_when_it_runs_in_words() {
         let seven = time(7, 0, 0, 0);
         let cases = [
-            (Trigger::Schedule { at: seven, days: vec![] }, "Every day at 07:00"),
             (
-                Trigger::Schedule { at: seven, days: Weekday::WEEKDAYS.to_vec() },
+                Trigger::Schedule { at: seven, days: vec![], day_of_month: None },
+                "Every day at 07:00",
+            ),
+            (
+                Trigger::Schedule {
+                    at: seven,
+                    days: Weekday::WEEKDAYS.to_vec(),
+                    day_of_month: None,
+                },
                 "Weekdays at 07:00",
             ),
             (
-                Trigger::Schedule { at: seven, days: vec![Weekday::Sat, Weekday::Sun] },
+                Trigger::Schedule {
+                    at: seven,
+                    days: vec![Weekday::Sat, Weekday::Sun],
+                    day_of_month: None,
+                },
                 "Weekends at 07:00",
             ),
-            (Trigger::Schedule { at: seven, days: vec![Weekday::Wed] }, "Wed at 07:00"),
+            (
+                Trigger::Schedule { at: seven, days: vec![Weekday::Wed], day_of_month: None },
+                "Wed at 07:00",
+            ),
             (Trigger::TaskDue { lead_days: 1 }, "The day before a task is due"),
             (Trigger::Manual, "Only when you ask"),
         ];
@@ -694,6 +858,100 @@ mod tests {
         r.name = "Brief".into();
         r.instructions = String::new();
         assert!(r.validate().is_err(), "a routine with no instructions is an empty prompt");
+    }
+
+    /// A monthly routine's day of the month.
+    fn monthly(dom: u8, grace_minutes: u32) -> Routine {
+        let mut r = Routine::new(
+            "Monthly dream",
+            "Look back over the month.",
+            Trigger::Schedule { at: time(4, 0, 0, 0), days: vec![], day_of_month: Some(dom) },
+        );
+        r.grace_minutes = grace_minutes;
+        r.created_at = date(2026, 8, 1).at(0, 0, 0, 0).in_tz("UTC").unwrap().timestamp();
+        r
+    }
+
+    #[test]
+    fn a_monthly_routine_on_the_first_is_due_on_the_first_and_not_the_second() {
+        let r = monthly(1, 60);
+        assert!(
+            matches!(r.is_due(&at(2026, 9, 1, 4, 5, "UTC")), Due::Now { .. }),
+            "the first, within grace"
+        );
+        let mut ran = r.clone();
+        let Due::Now { slot } = ran.is_due(&at(2026, 9, 1, 4, 5, "UTC")) else {
+            panic!("should be due")
+        };
+        ran.last_run_at = Some(slot);
+        assert_eq!(
+            ran.is_due(&at(2026, 9, 2, 4, 5, "UTC")),
+            Due::Later,
+            "the second is not the first"
+        );
+    }
+
+    #[test]
+    fn a_monthly_routine_crosses_the_month_boundary() {
+        let mut r = monthly(1, 60);
+        // Last ran on 1 August; 1 September is a fresh slot even though it
+        // is only one calendar day after the routine's own creation month.
+        r.last_run_at = Some(at(2026, 8, 1, 4, 0, "UTC").timestamp());
+        assert!(matches!(r.is_due(&at(2026, 9, 1, 4, 5, "UTC")), Due::Now { .. }));
+    }
+
+    #[test]
+    fn a_monthly_routines_grace_can_span_several_days() {
+        // The monthly dream's own grace: six days. Checked on the fourth,
+        // three days late, it is still the first's slot and still due.
+        let r = monthly(1, 6 * 24 * 60);
+        assert!(
+            matches!(r.is_due(&at(2026, 9, 4, 9, 0, "UTC")), Due::Now { .. }),
+            "three days late is within a six-day grace"
+        );
+        // Eight days late is past it.
+        assert!(matches!(r.is_due(&at(2026, 9, 9, 4, 5, "UTC")), Due::Missed { .. }));
+    }
+
+    #[test]
+    fn a_monthly_schedule_refuses_a_day_outside_the_first_28() {
+        let mut r = monthly(1, 60);
+        r.validate().expect("day 1 is fine");
+        r.trigger =
+            Trigger::Schedule { at: time(4, 0, 0, 0), days: vec![], day_of_month: Some(29) };
+        assert!(r.validate().is_err(), "the 29th does not exist in every month");
+        r.trigger = Trigger::Schedule { at: time(4, 0, 0, 0), days: vec![], day_of_month: Some(0) };
+        assert!(r.validate().is_err());
+    }
+
+    #[test]
+    fn a_trigger_says_monthly_with_the_right_ordinal() {
+        let cases = [(1u8, "1st"), (2, "2nd"), (3, "3rd"), (4, "4th"), (11, "11th"), (21, "21st")];
+        for (dom, want) in cases {
+            let trigger =
+                Trigger::Schedule { at: time(4, 0, 0, 0), days: vec![], day_of_month: Some(dom) };
+            assert_eq!(trigger.describe(), format!("Monthly on the {want} at 04:00"));
+        }
+    }
+
+    #[test]
+    fn a_dreams_kind_and_defaults_are_the_applications() {
+        for scope in DreamScope::ALL {
+            let r = Routine::dream(scope);
+            assert_eq!(r.kind, RoutineKind::Dream { scope });
+            assert!(!r.enabled, "set_dreaming is what turns it on");
+            // Empty instructions must not fail validation for a dream: the
+            // box is the person's optional paragraph, not the whole prompt.
+            r.validate().expect("a dream with nothing added yet is still valid");
+        }
+    }
+
+    #[test]
+    fn a_custom_routine_still_needs_instructions() {
+        let mut r = Routine::new("Brief", "", Trigger::Manual);
+        assert!(r.validate().is_err());
+        r.kind = RoutineKind::Dream { scope: DreamScope::Day };
+        r.validate().expect("a dream may have nothing added");
     }
 
     #[test]

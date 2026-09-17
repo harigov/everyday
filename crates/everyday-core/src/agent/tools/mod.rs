@@ -51,27 +51,37 @@ use serde_json::{Value, json};
 use std::sync::OnceLock;
 
 use crate::error::{Error, Result};
-use crate::id::ConversationId;
+use crate::id::{ConversationId, GoalId, RoleId};
+use crate::purpose::Purpose;
 use crate::vault::Vault;
 use jiff::civil::Date;
 
 /// Declare one entry in a domain's `TOOLS` slice.
 ///
-/// The six-argument form is every tool that destroys nothing, or that has
-/// nothing worth saying about what it would destroy; the seven-argument form
-/// adds a `describe` function for a destructive tool the confirmation gate
-/// needs to name a subject for. Splitting on arity rather than always
-/// asking for the seventh argument keeps the common case -- most tools --
-/// free of a `None` nobody reads.
+/// The six-argument form is every tool that destroys nothing and cannot be
+/// proposed while dreaming, or that has nothing worth saying about what it
+/// would destroy; the seven-argument form adds a `describe` function for a
+/// destructive tool the confirmation gate needs to name a subject for; the
+/// eight-argument form adds a `build` function on top, for a tool that
+/// [`dispatch`] may turn into a [`crate::proposal::Proposal`] instead of
+/// running -- see [`Built`]. A tool with a `build` but nothing to `describe`
+/// passes `None` explicitly in the seventh position rather than gaining a
+/// ninth arity, since arity alone cannot tell "no describe" from "no build"
+/// apart once both are optional. Splitting on arity rather than always
+/// asking for every argument keeps the common case -- most tools have
+/// neither -- free of the `None, None` nobody reads.
 ///
 /// Defined before the domain modules below so that each of them can call it
 /// by name: a `macro_rules!` macro is only visible to code that comes after
 /// it textually, including a `mod` declared afterwards.
 macro_rules! tool {
     ($name:literal, $effect:ident, $domain:ident, $schema:expr, $desc:literal, $run:expr) => {
-        tool!($name, $effect, $domain, $schema, $desc, $run, None)
+        tool!($name, $effect, $domain, $schema, $desc, $run, None, None)
     };
     ($name:literal, $effect:ident, $domain:ident, $schema:expr, $desc:literal, $run:expr, $describe:expr) => {
+        tool!($name, $effect, $domain, $schema, $desc, $run, $describe, None)
+    };
+    ($name:literal, $effect:ident, $domain:ident, $schema:expr, $desc:literal, $run:expr, $describe:expr, $build:expr) => {
         Tool {
             name: $name,
             description: $desc,
@@ -86,6 +96,7 @@ macro_rules! tool {
             schema: || $schema,
             run: $run,
             describe: $describe,
+            build: $build,
         }
     };
 }
@@ -301,6 +312,32 @@ pub struct Tool {
     /// convention -- the same argument [`Effect::Destructive`] makes for
     /// itself, applied to the one thing about it that used to live apart.
     describe: Option<fn(&ToolContext<'_>, &Args<'_>) -> Option<String>>,
+    /// Parse this call's arguments and construct the finished record --  or,
+    /// for a deletion or a send, the payload that names what it would act
+    /// on -- without saving anything. `None` for a tool [`dispatch`] cannot
+    /// turn into a proposal: while drafting, calling one refuses outright
+    /// rather than running it or silently doing nothing. See [`Built`] and
+    /// `docs/plans/dreaming.md`.
+    build: Option<fn(&ToolContext<'_>, &Args<'_>) -> Result<Built>>,
+}
+
+/// What a tool's builder produced, on its way to becoming a
+/// [`crate::proposal::Proposal`].
+///
+/// Everything a proposal needs beyond what [`crate::proposal::Proposal::new`]
+/// already works out from the payload -- the caption a confirmation card
+/// would have shown, and what the call was reacting to, if anything.
+pub struct Built {
+    pub payload: crate::proposal::Payload,
+    /// The sentence [`describe`] would have shown for this call, or its own
+    /// equivalent for a tool that does not delete anything -- "Create task:
+    /// Book the dentist", "Change task: …", "Delete task: …".
+    pub caption: String,
+    /// What this reacts to, if it acts on a record that already exists:
+    /// the task or note or memory an update or delete names, or -- for a
+    /// planned block -- the task it was for. `None` for a call that makes
+    /// something with nothing behind it yet.
+    pub about: Option<crate::proposal::About>,
 }
 
 impl Tool {
@@ -308,6 +345,14 @@ impl Tool {
     /// function-calling API wants.
     pub fn parameters(&self) -> Value {
         (self.schema)()
+    }
+
+    /// Whether this tool can become a [`crate::proposal::Proposal`] instead
+    /// of running, while drafting. A tool with no builder refuses outright
+    /// rather than running for real or silently doing nothing -- see
+    /// [`dispatch`].
+    pub fn can_propose(&self) -> bool {
+        self.build.is_some()
     }
 }
 
@@ -467,6 +512,52 @@ pub struct ToolContext<'a> {
     /// the tool refuses with "not available right now" rather than
     /// panicking on a missing hook.
     pub invite_responder: Option<&'a InviteResponder<'a>>,
+    /// Set when this call is part of work nobody asked for -- today, a dream.
+    ///
+    /// While it is set, a `Write` or `Destructive` tool builds its record and
+    /// hands it to the vault as a [`crate::proposal::Proposal`] instead of
+    /// saving it. `None` for everyone else, which is every caller that
+    /// existed before dreaming did. See `docs/plans/dreaming.md`.
+    pub drafting: Option<Drafting>,
+}
+
+/// How a drafting call is made. See [`ToolContext::drafting`].
+#[derive(Debug, Clone, Default)]
+pub struct Drafting {
+    /// Who the proposals are recorded as made by.
+    pub source: Option<crate::proposal::ProposalSource>,
+    /// Tools that run for real even while drafting -- a dream's one note.
+    /// The caller is responsible for any budget on them.
+    pub direct: Vec<&'static str>,
+    /// How many proposals this source may make in total. `None` is no cap
+    /// beyond the vault's own on pending proposals.
+    pub max_proposals: Option<usize>,
+}
+
+/// The name of the optional argument every writing tool accepts while
+/// drafting: one line on why the proposal is being made.
+pub const WHY_ARG: &str = "why";
+
+impl Tool {
+    /// The tool's argument schema as offered to a caller that is drafting:
+    /// the same, plus an optional [`WHY_ARG`] on every tool that writes.
+    pub fn parameters_for(&self, drafting: bool) -> Value {
+        let mut schema = self.parameters();
+        if drafting
+            && self.effect != Effect::Read
+            && let Some(props) = schema.get_mut("properties").and_then(Value::as_object_mut)
+        {
+            props.insert(
+                WHY_ARG.to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "One short sentence, shown to the person beside the \
+                        proposal: why you are proposing this, with the evidence."
+                }),
+            );
+        }
+        schema
+    }
 }
 
 impl<'a> ToolContext<'a> {
@@ -596,6 +687,19 @@ impl<'a> Args<'a> {
 
     pub fn date(&self, key: &str) -> Result<Date> {
         self.opt_date(key)?.ok_or_else(|| self.bad(format!("`{key}` is required")))
+    }
+
+    /// A time of day, as `HH:MM` in 24-hour time -- the same shape
+    /// `create_time_block`'s `start_time` and `end_time` already ask for.
+    pub fn opt_time(&self, key: &str) -> Result<Option<jiff::civil::Time>> {
+        let Some(raw) = self.opt_str(key) else { return Ok(None) };
+        raw.trim()
+            .parse::<jiff::civil::Time>()
+            // `09:00` is what the schema asks for and has no seconds; the
+            // parser wants them, so the common form is tried with them added.
+            .or_else(|_| format!("{}:00", raw.trim()).parse::<jiff::civil::Time>())
+            .map(Some)
+            .map_err(|_| self.bad(format!("`{key}` must be a time like 09:30, got {raw:?}")))
     }
 
     /// Parse an id, saying what kind was wanted.
@@ -735,6 +839,48 @@ fn limit_arg() -> (&'static str, Value) {
     ("limit", number("Most rows to return. Defaults to 50, capped at 200."))
 }
 
+/// Read `goal_id`/`role_id` off a call into the [`Purpose`] it names,
+/// checking that whichever was given still exists before anything is built
+/// against it -- the same reasoning `tasks::resolve_project` gives for a
+/// project id. Shared by every tool that lets a model file a record against
+/// a goal or a role directly: `create_task`, `update_task` and
+/// `create_time_block`.
+///
+/// `Ok(None)` when neither is given, which the caller reads as "leave the
+/// purpose alone" on an update and "no purpose" on a create.
+fn resolve_purpose(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Option<Purpose>> {
+    let goal_id: Option<GoalId> = args.opt_id("goal_id", "goal")?;
+    let role_id: Option<RoleId> = args.opt_id("role_id", "role")?;
+    match (goal_id, role_id) {
+        (Some(_), Some(_)) => Err(args.bad("give only one of `goal_id` or `role_id`")),
+        (Some(id), None) => {
+            ctx.vault.goal(id).map_err(|_| {
+                Error::Invalid(format!(
+                    "no goal with id {id}. Call list_goals and use an id from it."
+                ))
+            })?;
+            Ok(Some(Purpose::Goal { id }))
+        }
+        (None, Some(id)) => {
+            ctx.vault.role(id).map_err(|_| {
+                Error::Invalid(format!(
+                    "no role with id {id}. Call list_roles and use an id from it."
+                ))
+            })?;
+            Ok(Some(Purpose::Role { id }))
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+/// Cut a string to at most `max` characters -- never bytes, since a
+/// multi-byte character sliced in half is not a shorter string but a
+/// corrupt one. Shared by every cap on what a model writes freehand: a
+/// proposal's `why` today.
+fn truncate_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
 /// What a mutating tool says when it worked.
 ///
 /// Uniform on purpose. The model has to tell the person what happened, and a
@@ -849,6 +995,14 @@ pub fn describe(ctx: &ToolContext<'_>, name: &str, arguments: &Value) -> Option<
 /// deeper with a message about storage backends, and refuses an unknown name
 /// with the list of real ones — which is what a model that has invented a
 /// tool needs in order to recover on the next turn.
+///
+/// While [`ToolContext::drafting`] is set, a call whose [`Effect`] is not
+/// [`Effect::Read`] and whose name is not in [`Drafting::direct`] is turned
+/// into a [`crate::proposal::Proposal`] instead of being run -- see
+/// [`dispatch_drafting`] -- except for the two mail tools that write a
+/// draft, which run for real and gain a second, linked proposal to send it.
+/// See `agent::tools::mail`'s own module docs for why that pair is the one
+/// documented exception rather than a rule this function has to guess at.
 pub fn dispatch(ctx: &ToolContext<'_>, name: &str, arguments: &Value) -> Result<Value> {
     let tool = find(name).ok_or_else(|| {
         Error::Invalid(format!(
@@ -866,7 +1020,181 @@ pub fn dispatch(ctx: &ToolContext<'_>, name: &str, arguments: &Value) -> Result<
         ));
     }
 
-    (tool.run)(ctx, &Args::new(tool.name, arguments))
+    let args = Args::new(tool.name, arguments);
+
+    if let Some(drafting) = &ctx.drafting
+        && tool.effect != Effect::Read
+        && !drafting.direct.contains(&tool.name)
+    {
+        if mail::writes_a_draft(tool.name) {
+            return mail::run_drafting_write(ctx, tool, &args, drafting);
+        }
+        return dispatch_drafting(ctx, tool, &args, drafting);
+    }
+
+    (tool.run)(ctx, &args)
+}
+
+/// The drafting half of [`dispatch`]: build the record this call would have
+/// saved, and record it as a [`crate::proposal::Proposal`] instead of
+/// saving it.
+fn dispatch_drafting(
+    ctx: &ToolContext<'_>,
+    tool: &Tool,
+    args: &Args<'_>,
+    drafting: &Drafting,
+) -> Result<Value> {
+    let Some(build) = tool.build else {
+        return Err(Error::Invalid(format!(
+            "while dreaming you can only propose tasks, time on the calendar, memories, \
+             routines and notes, or write a mail draft; {:?} is not something you can \
+             propose; mention it in your note instead.",
+            tool.name
+        )));
+    };
+    let built = build(ctx, args)?;
+    propose(ctx, drafting, args, built)
+}
+
+/// Turn a [`Built`] call into a saved, pending [`crate::proposal::Proposal`],
+/// after the two checks every proposal passes regardless of which tool made
+/// it: the policy, and the run's own budget.
+///
+/// Shared with `agent::tools::mail::run_drafting_write`, which reaches this
+/// after writing a real `Draft` -- the one call that both does something and
+/// proposes something in the same turn.
+fn propose(
+    ctx: &ToolContext<'_>,
+    drafting: &Drafting,
+    args: &Args<'_>,
+    built: Built,
+) -> Result<Value> {
+    check_policy(ctx, built.payload.kind())?;
+    check_cap(ctx, drafting)?;
+
+    let why =
+        args.opt_str(WHY_ARG).map(|s| truncate_chars(s.trim(), crate::proposal::MAX_WHY_CHARS));
+    finish_proposal(ctx, built, why, drafting.source)
+}
+
+/// Build the record `name`'s tool call would have saved, and record it as a
+/// pending [`crate::proposal::Proposal`] made by `source`, instead of running
+/// the call at all.
+///
+/// The entry point for parking a call that was never drafting in the first
+/// place: the rail's "later" answer on a confirmation card, and an
+/// unattended run's own park-instead-of-decline, both in
+/// `everyday_service::agent::ConfirmGate` -- see `docs/plans/dreaming.md`'s
+/// Phase 5. Reuses the tool's own `build`, the same function
+/// [`dispatch_drafting`] calls, so a parked call and a dreamed one are saved
+/// through identical code; refuses outright, in words that can be repeated
+/// back to the model or shown to a person, when the tool has no builder at
+/// all -- `dispatch_drafting`'s own refusal, restated for a caller with no
+/// [`Drafting`] to read it off.
+///
+/// Checks [`check_policy`] before saving. There is no run budget here:
+/// [`check_cap`] is a dream's own per-run limit, and neither caller of this
+/// function is one -- the vault's ceiling on pending proposals is
+/// [`crate::vault::Vault::save_proposal`]'s to enforce regardless, exactly as
+/// it already does for a dream.
+pub fn propose_call(
+    ctx: &ToolContext<'_>,
+    name: &str,
+    arguments: &Value,
+    source: crate::proposal::ProposalSource,
+) -> Result<Value> {
+    let tool =
+        find(name).ok_or_else(|| Error::Invalid(format!("there is no tool called {name:?}")))?;
+    let Some(build) = tool.build else {
+        return Err(Error::Invalid(format!(
+            "{} cannot be saved for later; it has no proposal form",
+            tool.name
+        )));
+    };
+    let args = Args::new(tool.name, arguments);
+    let built = build(ctx, &args)?;
+    check_policy(ctx, built.payload.kind())?;
+    finish_proposal(ctx, built, None, Some(source))
+}
+
+/// The part of [`propose`] and [`propose_call`] that is neither a policy nor
+/// a budget: build the [`crate::proposal::Proposal`] itself and save it.
+fn finish_proposal(
+    ctx: &ToolContext<'_>,
+    built: Built,
+    why: Option<String>,
+    source: Option<crate::proposal::ProposalSource>,
+) -> Result<Value> {
+    let now = jiff::Timestamp::now();
+    let mut p = crate::proposal::Proposal::new(built.payload, built.caption, now, ctx.tz)
+        .with_about(built.about);
+    if let Some(why) = why {
+        p = p.with_why(why);
+    }
+    if let Some(source) = source {
+        p = p.made_by(source);
+    }
+    ctx.vault.save_proposal(&p)?;
+
+    Ok(json!({
+        "ok": true,
+        "action": "proposed",
+        "kind": p.kind.as_str(),
+        "name": p.caption,
+        "id": p.id.to_string(),
+        "note": "Not done yet: the person will accept or decline it.",
+    }))
+}
+
+/// Refuse up front when the vault's own ceiling on pending proposals has been
+/// reached. [`crate::vault::Vault::save_proposal`] enforces the same
+/// ceiling, but only at the end; a caller that writes something real
+/// *before* it proposes -- `run_drafting_write` -- has to know first, or
+/// every refused attempt leaves its real write behind.
+fn check_pending_room(ctx: &ToolContext<'_>) -> Result<()> {
+    let pending = ctx.vault.pending_proposals()?;
+    if pending >= crate::proposal::MAX_PENDING_PROPOSALS {
+        return Err(Error::Invalid(format!(
+            "{pending} proposals are already waiting for an answer; make no more \
+             until some are accepted or declined"
+        )));
+    }
+    Ok(())
+}
+
+/// Refuse a kind of proposal the person has switched off, in words a model
+/// can act on: not "forbidden", but which knob to stop reaching for.
+fn check_policy(ctx: &ToolContext<'_>, kind: crate::proposal::ProposalKind) -> Result<()> {
+    let settings = ctx.vault.agent_settings()?;
+    if !settings.proposals.allows(kind) {
+        return Err(Error::Invalid(format!(
+            "the person has switched off proposals of {}",
+            kind.as_str()
+        )));
+    }
+    Ok(())
+}
+
+/// Refuse past a run's own budget on how many proposals it may make -- see
+/// `crate::proposal::max_per_run`. `None` on either half of [`Drafting`]
+/// means no cap beyond the vault's own on pending proposals, which
+/// [`crate::vault::Vault::save_proposal`] already enforces.
+fn check_cap(ctx: &ToolContext<'_>, drafting: &Drafting) -> Result<()> {
+    let Some(max) = drafting.max_proposals else { return Ok(()) };
+    let Some(crate::proposal::ProposalSource::Run { run_id }) = drafting.source else {
+        return Ok(());
+    };
+    let made = ctx.vault.proposals(&crate::store::proposals::ProposalQuery {
+        run_id: Some(run_id),
+        ..Default::default()
+    })?;
+    if made.len() >= max {
+        return Err(Error::Invalid(format!(
+            "this run may make at most {max} proposals and has already made that many; \
+             say what is left in your note instead"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1100,5 +1428,86 @@ mod tests {
         let (name, v) = args(json!({}));
         let err = Args::new(name, &v).str("title").unwrap_err().to_string();
         assert!(err.contains("`title` is required"), "got {err}");
+    }
+
+    // ---- drafting ---------------------------------------------------------
+
+    /// While drafting, a model must be able to say *why* it is proposing a
+    /// write -- but there is nothing to explain about a call that changes
+    /// nothing, so a read tool's schema is left exactly as it is.
+    #[test]
+    fn a_write_tools_schema_gains_why_while_drafting_and_a_read_tools_does_not() {
+        let create_task = find("create_task").expect("create_task is in the catalogue");
+        let plain = create_task.parameters();
+        assert!(
+            plain["properties"].get(WHY_ARG).is_none(),
+            "the ordinary schema should not carry it"
+        );
+        let drafting = create_task.parameters_for(true);
+        assert!(drafting["properties"].get(WHY_ARG).is_some(), "{drafting}");
+        assert!(!drafting["required"].as_array().unwrap().iter().any(|v| v == WHY_ARG), "optional");
+
+        // `parameters_for(false)` is exactly `parameters()` -- no `why`
+        // appears just because a caller asked the drafting question.
+        assert_eq!(create_task.parameters_for(false), plain);
+
+        let list_tasks = find("list_tasks").expect("list_tasks is in the catalogue");
+        assert_eq!(list_tasks.effect, Effect::Read);
+        assert_eq!(
+            list_tasks.parameters_for(true),
+            list_tasks.parameters(),
+            "a read tool gains nothing while drafting"
+        );
+    }
+
+    // ---- propose_call -------------------------------------------------
+    //
+    // The building-and-saving half of this is exercised end to end against a
+    // real backend in `crates/everyday-vault/tests/propose_call.rs` -- the
+    // in-memory store this crate tests against on its own holds no proposals
+    // at all (see `crate::testing::MemStore`, deliberately minimal so
+    // `the_assistant_is_offered_only_the_tools_the_backend_can_serve` has a
+    // backend poorer than the others to test against). What is worth a test
+    // here, with no vault write involved, is the refusal: a tool with no
+    // `build` is turned away before anything is touched.
+
+    #[test]
+    fn propose_call_refuses_a_tool_with_no_builder_before_touching_the_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = crate::vault::Vault::create(
+            dir.path(),
+            crate::vault::VaultConfig {
+                name: "Test".into(),
+                backend: "memory".into(),
+                password: None,
+                ..Default::default()
+            },
+            crate::testing::registry(),
+        )
+        .unwrap();
+        let ctx = ToolContext {
+            vault: &v,
+            today: Date::constant(2026, 9, 16),
+            tz: "UTC",
+            conversation: None,
+            unattended: false,
+            caller: None,
+            mail_search: None,
+            assistant_provider: None,
+            mail_rate_limit: None,
+            after_mail_write: None,
+            invite_responder: None,
+            drafting: None,
+        };
+        // `delete_entry` is a `Destructive` tool with no `build` -- see
+        // `agent::tools::journals`, where nothing is ever proposable.
+        let err = propose_call(
+            &ctx,
+            "delete_entry",
+            &json!({ "entry_id": "not-a-real-id" }),
+            crate::proposal::ProposalSource::Run { run_id: crate::id::RoutineRunId::new() },
+        )
+        .expect_err("a journal entry has no proposal form");
+        assert!(err.to_string().contains("no proposal form"), "got {err}");
     }
 }

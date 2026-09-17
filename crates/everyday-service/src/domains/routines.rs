@@ -114,7 +114,11 @@ async fn list_routines(
 /// secure context the packaged shell does not always have -- and would mint
 /// v4 where everything else in this vault is v7.
 async fn new_routine(_svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Routine> {
-    Ok(Routine::new("", "", Trigger::Schedule { at: time(7, 0, 0, 0), days: Vec::new() }))
+    Ok(Routine::new(
+        "",
+        "",
+        Trigger::Schedule { at: time(7, 0, 0, 0), days: Vec::new(), day_of_month: None },
+    ))
 }
 
 async fn save_routine(svc: Arc<Service>, _ctx: Ctx, args: SaveRoutine) -> CommandResult<Routine> {
@@ -197,7 +201,11 @@ fn templates(calendars: bool) -> Vec<Template> {
                  <today's date>\" with the three or four things that actually matter, and \
                  say plainly if there is nothing much on."
                 .into(),
-            trigger: Trigger::Schedule { at: time(7, 0, 0, 0), days: Weekday::WEEKDAYS.to_vec() },
+            trigger: Trigger::Schedule {
+                at: time(7, 0, 0, 0),
+                days: Weekday::WEEKDAYS.to_vec(),
+                day_of_month: None,
+            },
             note: "What is on today, before you open anything.".into(),
             available: true,
         },
@@ -208,7 +216,11 @@ fn templates(calendars: bool) -> Vec<Template> {
                  their cadence, and what is still open from last week. Write it up as a \
                  note. Be honest about the roles that got nothing."
                 .into(),
-            trigger: Trigger::Schedule { at: time(17, 0, 0, 0), days: vec![Weekday::Fri] },
+            trigger: Trigger::Schedule {
+                at: time(17, 0, 0, 0),
+                days: vec![Weekday::Fri],
+                day_of_month: None,
+            },
             note: "An honest account of the week, written down.".into(),
             available: true,
         },
@@ -219,7 +231,11 @@ fn templates(calendars: bool) -> Vec<Template> {
                  shape for Saturday and Sunday and block out time for two or three things \
                  worth doing. Leave plenty of the day unbooked."
                 .into(),
-            trigger: Trigger::Schedule { at: time(18, 0, 0, 0), days: vec![Weekday::Thu] },
+            trigger: Trigger::Schedule {
+                at: time(18, 0, 0, 0),
+                days: vec![Weekday::Thu],
+                day_of_month: None,
+            },
             note: "Something planned for the weekend, before it arrives.".into(),
             available: true,
         },
@@ -230,7 +246,11 @@ fn templates(calendars: bool) -> Vec<Template> {
                  already there that fit what I seem to be interested in at the moment, and \
                  write me a note saying why each one."
                 .into(),
-            trigger: Trigger::Schedule { at: time(20, 0, 0, 0), days: vec![Weekday::Sun] },
+            trigger: Trigger::Schedule {
+                at: time(20, 0, 0, 0),
+                days: vec![Weekday::Sun],
+                day_of_month: None,
+            },
             note: "A nudge towards what is already on the shelf.".into(),
             available: true,
         },

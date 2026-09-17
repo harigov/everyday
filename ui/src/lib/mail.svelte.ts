@@ -20,6 +20,7 @@
 import * as mailApi from './mail-api'
 import { accounts } from './accounts.svelte'
 import { registerApply, singleId, type ChangeWithIds } from './live-apply'
+import { proposals } from './proposals.svelte'
 import {
   applyInviteResponse,
   applyRowPatch,
@@ -118,6 +119,10 @@ class MailState {
   constructor() {
     app.onLock(() => this.reset())
     registerApply('mail', (changes) => this.#applyChanges(changes))
+    // This window's own accept does not come back as a change event -- see
+    // `proposals.svelte.ts` -- so the store that just sent a draft tells
+    // itself to reload.
+    proposals.onAccepted('mail', () => this.refresh())
   }
 
   reset() {
@@ -152,6 +157,8 @@ class MailState {
   async start() {
     if (!app.supportsMail || this.#loaded) return
     this.#loaded = true
+    // See `todo.start` for why this is idempotent and safe to ask twice.
+    if (!proposals.loaded) await proposals.refresh()
     await this.refreshMailboxes()
     await this.refreshSyncStatus()
   }

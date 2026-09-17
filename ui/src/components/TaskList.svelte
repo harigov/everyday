@@ -11,63 +11,106 @@
   import { dueBucket, purposeKey, type Bucket } from '../lib/tasklist'
   import { menu } from '../lib/menu.svelte'
   import { purpose } from '../lib/purpose.svelte'
+  import { proposals, recordAs } from '../lib/proposals.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import EmptyState from './EmptyState.svelte'
   import TaskRow from './TaskRow.svelte'
+  import TaskGhostRow from './TaskGhostRow.svelte'
   import { rovingFocus } from '../lib/roving'
   import type { TaskNode } from '../lib/todo.svelte'
   import { priorityRank } from '../lib/types'
+  import type { Proposal, Task } from '../lib/types'
   import { STATUS_LABELS, PRIORITY_LABELS } from '../lib/labels'
 
   interface Group extends Bucket {
     nodes: TaskNode[]
+    /** Pending task proposals that would join this section, at its foot. */
+    ghosts: Proposal[]
+  }
+
+  /** The same bucket a real task's row would fall into, for a ghost's task too. */
+  function bucketOf(task: Task, today: string): Bucket {
+    if (todo.groupBy === 'due') return dueBucket(task, today)
+    if (todo.groupBy === 'purpose') {
+      // The resolved purpose, not the task's own: a task under a filed
+      // project belongs in that project's section, which is the whole
+      // point of inheritance. Unfiled work sorts last rather than first —
+      // there is usually a lot of it, and it is not the answer anyone
+      // opened this grouping to see.
+      const resolved = task.purpose ?? todo.projectOf(task.projectId)?.purpose ?? null
+      const label = purpose.describe(resolved)
+      return resolved
+        ? { key: purposeKey(resolved), label: label.name, order: 0 }
+        : { key: 'none', label: 'Not filed', order: 9 }
+    }
+    if (todo.groupBy === 'status') {
+      const key = task.status
+      return {
+        key,
+        label: STATUS_LABELS[key] ?? key,
+        order: ['backlog', 'todo', 'doing', 'blocked', 'done', 'cancelled'].indexOf(key),
+      }
+    }
+    const key = task.priority
+    return {
+      key,
+      label: PRIORITY_LABELS[key] ?? key,
+      // Most important first, and "unprioritised" at the bottom rather
+      // than at the top where `none` would otherwise sort.
+      order: key === 'none' ? 9 : 4 - priorityRank(key),
+    }
   }
 
   const groups = $derived.by((): Group[] => {
     const roots = todo.tree
     const today = todayIso()
-    if (todo.groupBy === 'none') {
-      return [{ key: 'all', label: '', order: 0, nodes: roots }]
-    }
-
     const out = new Map<string, Group>()
+
+    const bucketFor = (task: Task): Bucket =>
+      todo.groupBy === 'none' ? { key: 'all', label: '', order: 0 } : bucketOf(task, today)
+
     for (const node of roots) {
-      let bucket: Bucket
-      if (todo.groupBy === 'due') {
-        bucket = dueBucket(node.task, today)
-      } else if (todo.groupBy === 'purpose') {
-        // The resolved purpose, not the task's own: a task under a filed
-        // project belongs in that project's section, which is the whole
-        // point of inheritance. Unfiled work sorts last rather than first —
-        // there is usually a lot of it, and it is not the answer anyone
-        // opened this grouping to see.
-        const resolved = node.task.purpose ?? todo.projectOf(node.task.projectId)?.purpose ?? null
-        const label = purpose.describe(resolved)
-        bucket = resolved
-          ? { key: purposeKey(resolved), label: label.name, order: 0 }
-          : { key: 'none', label: 'Not filed', order: 9 }
-      } else if (todo.groupBy === 'status') {
-        const key = node.task.status
-        bucket = {
-          key,
-          label: STATUS_LABELS[key] ?? key,
-          order: ['backlog', 'todo', 'doing', 'blocked', 'done', 'cancelled'].indexOf(key),
-        }
-      } else {
-        const key = node.task.priority
-        bucket = {
-          key,
-          label: PRIORITY_LABELS[key] ?? key,
-          // Most important first, and "unprioritised" at the bottom rather
-          // than at the top where `none` would otherwise sort.
-          order: key === 'none' ? 9 : 4 - priorityRank(key),
-        }
-      }
-      const group = out.get(bucket.key) ?? { ...bucket, nodes: [] }
+      const bucket = bucketFor(node.task)
+      const group = out.get(bucket.key) ?? { ...bucket, nodes: [], ghosts: [] }
       group.nodes.push(node)
       out.set(bucket.key, group)
     }
+    // Ghosts join the same section a real task with their fields would --
+    // even one with no real task in it yet, such as "Deep work tomorrow"
+    // proposed for a day nothing else is due.
+    for (const p of todo.ghostTasks) {
+      const task = recordAs(p, 'task')
+      if (!task) continue
+      const bucket = bucketFor(task)
+      const group = out.get(bucket.key) ?? { ...bucket, nodes: [], ghosts: [] }
+      group.ghosts.push(p)
+      out.set(bucket.key, group)
+    }
     return [...out.values()].sort((a, b) => a.order - b.order || a.key.localeCompare(b.key))
+  })
+
+  /** The `replace` and `delete` ghosts riding on rows that are on screen. */
+  const rowGhosts = $derived.by((): Proposal[] => {
+    const ids = new Set<string>()
+    const collect = (n: TaskNode) => {
+      ids.add(n.task.id)
+      n.children.forEach(collect)
+    }
+    for (const g of groups) g.nodes.forEach(collect)
+    const out: Proposal[] = []
+    for (const id of ids) {
+      const r = todo.replaceProposalFor(id)
+      if (r) out.push(r)
+      const d = todo.deleteProposalFor(id)
+      if (d) out.push(d)
+    }
+    return out
+  })
+
+  /** Every ghost drawn on screen, across every section -- what gets marked seen. */
+  const shownGhosts = $derived([...groups.flatMap((g) => g.ghosts), ...rowGhosts])
+  $effect(() => {
+    if (shownGhosts.length > 0) void proposals.markSeen(shownGhosts)
   })
 
   const GROUPS = $derived.by((): { id: GroupBy; label: string }[] => [
@@ -147,7 +190,7 @@
        bar has narrowed to nothing is a different thing to be told than a
        scope that is genuinely empty, and saying "no tasks yet" over a list
        somebody has just filtered is how a filter looks like a bug. -->
-  {#if todo.visible.length === 0}
+  {#if todo.visible.length === 0 && shownGhosts.length === 0}
     <!-- The two narrowings are told apart, because only one of them can be
          counted. The text filter is applied by the backend, so `tasks` is
          already down to what matched it -- offering "there are 0 tasks here
@@ -196,6 +239,12 @@
       {/if}
       {#each group.nodes as node (node.task.id)}
         <TaskRow {node} section={group.key} />
+      {/each}
+      <!-- Ghosts never count toward the group total above, and always sit
+           at the foot -- never counted, never reordered, never mistaken for
+           real work. -->
+      {#each group.ghosts as p (p.id)}
+        <TaskGhostRow proposal={p} />
       {/each}
     {/each}
   {/if}

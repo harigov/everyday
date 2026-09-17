@@ -49,7 +49,16 @@ pub fn ctx(vault: &Vault) -> ToolContext<'_> {
         mail_rate_limit: None,
         after_mail_write: None,
         invite_responder: None,
+        drafting: None,
     }
+}
+
+/// As [`ctx`], but with dreaming's own leash on: every `Write` or
+/// `Destructive` tool call `dispatch`s into a [`tools::Drafting`] proposal
+/// instead of saving. What `crates/everyday-vault/tests/drafting.rs` runs
+/// the catalogue through.
+pub fn ctx_drafting(vault: &Vault, drafting: tools::Drafting) -> ToolContext<'_> {
+    ToolContext { drafting: Some(drafting), ..ctx(vault) }
 }
 
 pub fn call(vault: &Vault, tool: &str, args: serde_json::Value) -> serde_json::Value {

@@ -256,19 +256,21 @@ class AgentState {
   }
 
   /**
-   * Answer a confirmation.
+   * Answer a confirmation: confirm, decline, or -- for a card that offers it
+   * -- park the call as a proposal for later. See `docs/plans/dreaming.md`'s
+   * Phase 5.
    *
    * A false result means nothing was waiting any more — the turn was
    * cancelled between the question and the click — so the card is marked
    * rather than left with buttons that do nothing.
    */
-  async confirm(callId: string, approved: boolean) {
+  async confirm(callId: string, answer: 'confirm' | 'decline' | 'later') {
     const card = this.turns.flatMap((t) => t.cards).find((c) => c.callId === callId)
     if (!card || card.state !== 'waiting') return
     // Marked before the round trip so a second click cannot answer twice.
-    card.state = approved ? 'running' : 'declined'
+    card.state = answer === 'confirm' ? 'running' : answer === 'later' ? 'later' : 'declined'
     try {
-      const answered = await api.confirmToolCall(callId, approved)
+      const answered = await api.confirmToolCall(callId, answer === 'confirm', answer === 'later')
       if (!answered) card.state = 'failed'
     } catch (e) {
       await handle(e)

@@ -27,6 +27,7 @@ import { meetings } from './meetings.svelte'
 import { applierFor, type ChangeWithIds } from './live-apply'
 import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
+import { proposals } from './proposals.svelte'
 import { purpose } from './purpose.svelte'
 import { panels } from './panels.svelte'
 import { app } from './state.svelte'
@@ -67,6 +68,7 @@ export const RELOAD = {
   calendar: () => calendar.refresh(),
   notes: () => notes.refresh(),
   assistant: () => assistant.refresh(),
+  proposals: () => proposals.refresh(),
   shelves: () => library.refreshKinds(),
   library: () => library.refresh(),
   // `thread` and `draft` below route here for anything `mail.svelte.ts`'s
@@ -150,6 +152,9 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   // same reload.
   routine: 'assistant',
   routineRun: 'assistant',
+  // Work the assistant prepared. Drawn in several apps from one list, which
+  // also holds half the count on the app bar -- see `proposals.svelte.ts`.
+  proposal: 'proposals',
   // The assistant's own thread. The panel reads it when it is opened, and a
   // reply arriving on another machine is not something to interrupt this one
   // with -- so nothing reloads, and the event exists for a future history

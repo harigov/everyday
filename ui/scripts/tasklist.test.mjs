@@ -20,6 +20,8 @@ const {
   numberOrder,
   moveCard,
   ORDER_STEP,
+  proposalBelongsInScope,
+  sectionKeyOf,
 } = lib
 
 const { check, finish } = makeCheck()
@@ -276,6 +278,78 @@ check(
     projectPurpose: { type: 'role', id: 'r1' },
   }),
   null,
+)
+
+// ── ghost proposals ──────────────────────────────────────────────────
+
+// Which scope a proposed task's ghost row would join -- the same question
+// `TodoState.query` answers for a real one, asked of a record that has not
+// been saved yet. See `docs/plans/dreaming.md`.
+
+check(
+  'the inbox takes an unfiled task, not a filed one',
+  [
+    proposalBelongsInScope({ kind: 'inbox' }, task('t', { projectId: null }), TODAY),
+    proposalBelongsInScope({ kind: 'inbox' }, task('t', { projectId: 'p1' }), TODAY),
+  ],
+  [true, false],
+)
+check(
+  'a project takes only its own',
+  [
+    proposalBelongsInScope({ kind: 'project', id: 'p1' }, task('t', { projectId: 'p1' }), TODAY),
+    proposalBelongsInScope({ kind: 'project', id: 'p1' }, task('t', { projectId: 'p2' }), TODAY),
+  ],
+  [true, false],
+)
+check(
+  'today takes anything due by today, including overdue',
+  [
+    proposalBelongsInScope({ kind: 'today' }, task('t', { dueDate: TODAY }), TODAY),
+    proposalBelongsInScope({ kind: 'today' }, task('t', { dueDate: '2026-09-01' }), TODAY),
+    proposalBelongsInScope({ kind: 'today' }, task('t', { dueDate: '2026-09-20' }), TODAY),
+    proposalBelongsInScope({ kind: 'today' }, task('t', { dueDate: null }), TODAY),
+  ],
+  [true, true, false, false],
+)
+check(
+  'upcoming is bounded on both ends',
+  [
+    proposalBelongsInScope(
+      { kind: 'upcoming', to: '2026-09-21' },
+      task('t', { dueDate: '2026-09-15' }),
+      TODAY,
+    ),
+    proposalBelongsInScope(
+      { kind: 'upcoming', to: '2026-09-21' },
+      task('t', { dueDate: '2026-09-01' }),
+      TODAY,
+    ),
+    proposalBelongsInScope(
+      { kind: 'upcoming', to: '2026-09-21' },
+      task('t', { dueDate: '2026-10-01' }),
+      TODAY,
+    ),
+  ],
+  [true, false, false],
+)
+check('all takes everything', proposalBelongsInScope({ kind: 'all' }, task('t'), TODAY), true)
+check(
+  'goals draws no task list at all',
+  proposalBelongsInScope({ kind: 'goals' }, task('t'), TODAY),
+  false,
+)
+
+check(
+  'a ghost falls into the same section a real task with its fields would',
+  [
+    sectionKeyOf('due', task('t', { dueDate: TODAY }), ctx),
+    sectionKeyOf('status', task('t', { status: 'blocked' }), ctx),
+    sectionKeyOf('priority', task('t', { priority: 'high' }), ctx),
+    sectionKeyOf('purpose', task('t', { purpose: { type: 'goal', id: 'g1' } }), ctx),
+    sectionKeyOf('none', task('t'), ctx),
+  ],
+  ['today', 'blocked', 'high', 'goal:g1', 'all'],
 )
 
 await close()

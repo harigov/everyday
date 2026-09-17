@@ -13,9 +13,11 @@
   import { meetings } from '../lib/meetings.svelte'
   import { notes, SORTS } from '../lib/notes.svelte'
   import { plural } from '../lib/format'
+  import { proposals, recordAs } from '../lib/proposals.svelte'
   import type { NoteSummary } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
+  import ProposalGhost from './ProposalGhost.svelte'
   import RecordingCard from './RecordingCard.svelte'
 
   // Loaded when the sidebar appears rather than when the store is imported,
@@ -47,6 +49,14 @@
   }
 
   const shown = $derived(notes.query.trim() ? [] : notes.list)
+
+  // Ghosts are only worth drawing over the plain list -- a search is asking
+  // "where did I write about X", and a proposal that has not been saved
+  // anywhere yet cannot be an answer to that.
+  const ghosts = $derived(notes.query.trim() ? [] : notes.ghostNotes)
+  $effect(() => {
+    if (ghosts.length > 0) void proposals.markSeen(ghosts)
+  })
 
   function noteMenu(note: NoteSummary): MenuItem[] {
     return tidyMenu([
@@ -184,24 +194,58 @@
         </button>
       {/each}
     {/if}
-  {:else if shown.length === 0}
+  {:else if shown.length === 0 && ghosts.length === 0}
     <p class="hint">No notes yet.</p>
   {:else}
+    <!-- Ghosts at the top: a note is written forward, so there is no due
+         date or column for a proposed one to join the foot of the way a
+         task or a block does. See `notes.ghostNotes`. -->
+    {#each ghosts as p (p.id)}
+      {@const note = recordAs(p, 'note')}
+      {#if note}
+        <ProposalGhost proposal={p} color="var(--accent)" onopen={() => notes.openProposal(p)}>
+          <span class="text">
+            <span class="title">{note.title || 'Untitled note'}</span>
+          </span>
+        </ProposalGhost>
+      {/if}
+    {/each}
     {#each shown as note (note.id)}
-      <button
-        class="row"
+      {@const replaceProposal = notes.replaceProposalFor(note.id)}
+      {@const deleteProposal = notes.deleteProposalFor(note.id)}
+      <!-- A `div`, not a button: with a proposed deletion on it this row
+           carries two controls (open, and the chip's own accept/decline),
+           and a button cannot contain a button. -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="row noterow"
         class:sel={notes.selected === note.id}
-        onclick={() => void notes.openNote(note.id)}
         oncontextmenu={(e) => menu.show(e, noteMenu(note))}
       >
-        {#if note.pinned}
-          <span class="pin"><Icon name="pin" size={12} /></span>
+        <button class="rowbody" onclick={() => void notes.openNote(note.id)}>
+          {#if note.pinned}
+            <span class="pin"><Icon name="pin" size={12} /></span>
+          {/if}
+          <span class="text">
+            <span class="title">{note.title}</span>
+            <span class="sub">{note.excerpt}</span>
+          </span>
+        </button>
+        {#if deleteProposal}
+          <span class="delete-chip">
+            <ProposalGhost proposal={deleteProposal} compact color="var(--danger)">
+              Proposed: delete
+            </ProposalGhost>
+          </span>
         {/if}
-        <span class="text">
-          <span class="title">{note.title}</span>
-          <span class="sub">{note.excerpt}</span>
-        </span>
-      </button>
+      </div>
+      {#if replaceProposal}
+        <ProposalGhost
+          proposal={replaceProposal}
+          color="var(--accent)"
+          onopen={() => notes.openProposal(replaceProposal)}
+        />
+      {/if}
     {/each}
   {/if}
 </nav>
@@ -361,6 +405,33 @@
   .row.sel {
     background: var(--bg-active);
     color: var(--fg);
+  }
+
+  /* The note row proper is a `div`, not a button -- see the template's own
+     comment -- so its padding moves to the button inside it and the row
+     itself keeps only the hover and selected backgrounds above. */
+  .row.noterow {
+    padding: 0;
+  }
+  .rowbody {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-2);
+    padding: var(--sp-2);
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .delete-chip {
+    display: flex;
+    align-items: center;
+    flex: none;
+    padding-right: var(--sp-2);
   }
 
   .pin {

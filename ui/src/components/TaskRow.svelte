@@ -33,6 +33,7 @@
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import ProgressPie from './ProgressPie.svelte'
+  import ProposalGhost from './ProposalGhost.svelte'
   import QuickAdd from './QuickAdd.svelte'
   import Self from './TaskRow.svelte'
 
@@ -65,6 +66,10 @@
   /** The parent this row is drawn under, which is not always its record's. */
   const drawnParent = $derived(depth === 0 ? null : (task.parentId ?? null))
   const over = $derived(drag.over?.id === task.id ? drag.over.zone : null)
+
+  /** A pending change to *this* task, if a dream proposed one. */
+  const replaceProposal = $derived(todo.replaceProposalFor(task.id))
+  const deleteProposal = $derived(todo.deleteProposalFor(task.id))
 
   function rowMenu() {
     return taskMenu(task, {
@@ -245,6 +250,17 @@
       </button>
     {/if}
 
+    {#if deleteProposal}
+      <!-- A dream wants this gone. Shown as a chip rather than folded into
+           the row's own menu, because "somebody proposed deleting this" is
+           not a thing you want to notice only after opening a menu. -->
+      <div class="delete-chip">
+        <ProposalGhost proposal={deleteProposal} compact color="var(--danger)">
+          Proposed: delete
+        </ProposalGhost>
+      </div>
+    {/if}
+
     <!-- On hover, or when the keyboard is in the row: the things done to a
          task often enough to be worth one click rather than a right-click. -->
     <div class="actions" class:held={menu.at !== null && menuOwner.id === task.id}>
@@ -304,6 +320,19 @@
       </button>
     {/if}
   </div>
+
+  {#if replaceProposal}
+    <!-- The proposed after-image, directly under the row it would replace.
+         No `children`: the caption alone says what changed ("Update task:
+         …"), and opening it is what shows the whole draft. -->
+    <div class="replace-ghost">
+      <ProposalGhost
+        proposal={replaceProposal}
+        color={project?.color}
+        onopen={() => todo.openProposal(replaceProposal)}
+      />
+    </div>
+  {/if}
 
   <!-- `node.children.length` and not just `open`: subtasks are expanded by
        default now, so a task with none would otherwise draw an empty
@@ -594,6 +623,17 @@
   .act.danger:hover {
     background: color-mix(in oklab, var(--danger) 12%, transparent);
     color: var(--danger);
+  }
+
+  /* Always shown, not just on hover -- a proposed deletion is not the kind
+     of thing a row should hide until you happen to point at it. */
+  .delete-chip {
+    flex: none;
+    margin-top: 1px;
+  }
+
+  .replace-ghost {
+    margin: 2px 0 var(--sp-2) 26px;
   }
 
   .kids {

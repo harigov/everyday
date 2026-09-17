@@ -14,7 +14,10 @@
   import { mail } from '../lib/mail.svelte'
   import Icon from './Icon.svelte'
 
-  let { card, onanswer }: { card: ToolCard; onanswer: (approved: boolean) => void } = $props()
+  let {
+    card,
+    onanswer,
+  }: { card: ToolCard; onanswer: (answer: 'confirm' | 'decline' | 'later') => void } = $props()
 
   /**
    * The tool's name as a phrase.
@@ -72,14 +75,19 @@
       <span class="said bad">{card.summary || 'failed'}</span>
     {:else if card.state === 'declined'}
       <span class="said">declined</span>
+    {:else if card.state === 'later'}
+      <span class="said">saved for later</span>
     {/if}
   </div>
 
   {#if card.state === 'waiting'}
     <p class="ask">{ask}</p>
     <div class="answer">
-      <button class="no" onclick={() => onanswer(false)}>Don't</button>
-      <button class="yes" class:outward onclick={() => onanswer(true)}>
+      <button class="no" onclick={() => onanswer('decline')}>Don't</button>
+      {#if card.canPark}
+        <button class="later" onclick={() => onanswer('later')}>Later</button>
+      {/if}
+      <button class="yes" class:outward onclick={() => onanswer('confirm')}>
         <Icon name={outward ? 'mail' : 'trash'} size={13} />
         {outward ? 'Send' : 'Delete'}
       </button>
@@ -214,6 +222,17 @@
     color: var(--fg);
   }
   .no:hover {
+    background: var(--bg-hover);
+  }
+  /* The quiet third answer: no border colour of its own, so it never reads
+     as urgently as "don't" or as committing as "delete"/"send". */
+  .later {
+    flex: none;
+    border: 1px solid transparent;
+    background: none;
+    color: var(--fg-muted);
+  }
+  .later:hover {
     background: var(--bg-hover);
   }
   .yes {

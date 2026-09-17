@@ -11,9 +11,16 @@
   import { accounts } from '../lib/accounts.svelte'
   import { mail } from '../lib/mail.svelte'
   import { panels } from '../lib/panels.svelte'
+  import { proposals } from '../lib/proposals.svelte'
   import type { Mailbox, MailboxRole } from '../lib/types'
   import Icon from './Icon.svelte'
   import type { IconName } from '../lib/icons'
+
+  /** At least one draft a dream wrote is waiting to be sent. Not scoped to
+   *  an account: a `sendMail` proposal names a draft, not an account, and a
+   *  hint that something is waiting in Drafts is worth more here than the
+   *  plumbing a precise per-account count would cost. */
+  const pendingSends = $derived(proposals.forKind('mail').length)
 
   void accounts.load()
   void mail.start()
@@ -72,6 +79,7 @@
     sel: boolean
     count: number
     pseudo?: boolean
+    role?: MailboxRole
   }
 
   /** One account's rows: the eight fixed ones (skipping any role the
@@ -114,6 +122,7 @@
       sel: mail.selectedMailbox === box.id,
       count: mail.unreadCounts.get(box.id) ?? 0,
       pseudo,
+      role: box.role,
     }
   }
 
@@ -194,6 +203,14 @@
           ><Icon name={row.icon} size={15} filled={row.pseudo && row.icon === 'star'} /></span
         >
         <span class="text">{row.label}</span>
+        {#if row.role === 'drafts' && pendingSends > 0}
+          <span
+            class="ghost-badge"
+            title="{pendingSends} {pendingSends === 1 ? 'draft' : 'drafts'} proposed to send"
+          >
+            <Icon name="sparkle" size={11} />
+          </span>
+        {/if}
         {#if row.count > 0}<span class="count">{row.count}</span>{/if}
       </button>
     {/each}
@@ -323,6 +340,11 @@
     font-size: var(--text-xs);
     color: var(--fg-faint);
     font-variant-numeric: tabular-nums;
+  }
+  .ghost-badge {
+    display: flex;
+    color: var(--accent);
+    opacity: 0.85;
   }
   .row.sel .count {
     color: var(--fg-muted);

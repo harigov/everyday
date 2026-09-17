@@ -219,6 +219,79 @@ export function planDrop(
   return { parentId, order }
 }
 
+// ── proposals ────────────────────────────────────────────────────────────
+//
+// A pending task proposal is drawn as a ghost row at the foot of the section
+// its `create` payload would join if it were accepted. Working out which
+// section that is has to be the same arithmetic a real task's own row would
+// use -- see `docs/plans/dreaming.md`, "Proposals are drawn in place" -- so
+// it lives here beside `dueBucket` and `sectionPatch` rather than in the
+// component, and `scripts/tasklist.test.mjs` checks it without a browser.
+
+/** The scope a todo view is showing, reduced to what a ghost's placement needs. */
+export type ProposalScope =
+  | { kind: 'today' }
+  | { kind: 'upcoming'; to: string }
+  | { kind: 'inbox' }
+  | { kind: 'all' }
+  | { kind: 'project'; id: string }
+  | { kind: 'goals' }
+
+/**
+ * Does a proposed task belong in this scope, the way `TodoState.query` would
+ * have asked the backend for it had it already been saved?
+ */
+export function proposalBelongsInScope(
+  scope: ProposalScope,
+  task: Pick<Task, 'projectId' | 'dueDate'>,
+  today: string,
+): boolean {
+  switch (scope.kind) {
+    case 'today':
+      return !!task.dueDate && task.dueDate <= today
+    case 'upcoming':
+      return !!task.dueDate && task.dueDate >= today && task.dueDate <= scope.to
+    case 'inbox':
+      return !task.projectId
+    case 'project':
+      return task.projectId === scope.id
+    case 'all':
+      return true
+    case 'goals':
+      // The goals pane draws no task list at all.
+      return false
+  }
+}
+
+/**
+ * The section key a task falls in under a grouping -- the same key a real
+ * task's own bucket would carry, so a ghost lands in the group a real task
+ * with its fields would join rather than getting a bucket of its own.
+ *
+ * Only the key: the label and sort order for a bucket that has no real task
+ * in it yet are the view's business, because "purpose" needs `purpose.name`
+ * from the purpose store to say what a filed goal is called, which is not
+ * pure enough to belong in this file.
+ */
+export function sectionKeyOf(
+  groupBy: GroupBy,
+  task: Task,
+  ctx: { today: string; projectPurpose: Purpose | null },
+): string {
+  switch (groupBy) {
+    case 'none':
+      return 'all'
+    case 'due':
+      return dueBucket(task, ctx.today).key
+    case 'purpose':
+      return purposeKey(task.purpose ?? ctx.projectPurpose)
+    case 'status':
+      return task.status
+    case 'priority':
+      return task.priority
+  }
+}
+
 /** The fields a top-level drop into another section rewrites. */
 export type SectionPatch = Partial<{
   status: TaskStatus

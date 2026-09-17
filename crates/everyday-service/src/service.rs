@@ -977,6 +977,8 @@ impl Service {
             // Somebody is sitting in front of this one, so a destructive call
             // stops and asks them.
             unattended: None,
+            // Only a dream drafts. This is somebody typing in the rail.
+            drafting: None,
         })
         .await?;
         let origin = ctx.caller.origin().map(str::to_string);

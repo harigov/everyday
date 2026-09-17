@@ -25,6 +25,7 @@
   import { minutesBetween, offsetInDay } from '../lib/time'
   import { menu } from '../lib/menu.svelte'
   import { blockMenu, calendarTaskMenu, eventMenu } from '../lib/menus'
+  import BlockProposalDetail from './BlockProposalDetail.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import type { CalendarEvent, Task, TimeBlock } from '../lib/types'
@@ -89,7 +90,9 @@
 </script>
 
 <aside class="rail">
-  {#if block}
+  {#if calendar.selectedProposal}
+    <BlockProposalDetail proposal={calendar.selectedProposal} />
+  {:else if block}
     {@const colour = calendar.colorOfBlock(block)}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div

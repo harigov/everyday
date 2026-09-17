@@ -85,6 +85,16 @@ export const NEEDS = [
   'notes',
   /** Events and blocks for today, and the running timer. */
   'today',
+  /**
+   * Pending proposals -- a dream's task and block drafts.
+   *
+   * Not one of the reads `refresh`'s `Promise.all` fetches: the proposals
+   * store already loads and reloads itself, the way `todo` and `calendar` do,
+   * because every app that draws a ghost needs it too. Declaring the need
+   * here is what makes "Plan for tomorrow" ask it to, the same one line
+   * every other widget's need asks for its own read.
+   */
+  'proposals',
 ] as const
 export type Need = (typeof NEEDS)[number]
 
@@ -156,6 +166,15 @@ export const WIDGETS = {
     size: 'large',
     sizes: ['medium', 'large'],
     needs: ['trackerDays'],
+  },
+  planTomorrow: {
+    label: 'Plan for tomorrow',
+    note: "Tomorrow's proposed tasks and time, so you can answer them all before bed.",
+    group: 'Today',
+    icon: 'sparkle',
+    size: 'medium',
+    sizes: ['medium', 'large'],
+    needs: ['proposals'],
   },
 
   // ── Your time ──────────────────────────────────────────────────────
@@ -482,6 +501,26 @@ export function trackerWindow(list: Widget[], floor = 120): number {
       specOf(w.type).needs.includes('trackerDays') ? Math.max(most, w.days ?? 0) : most,
     floor,
   )
+}
+
+/**
+ * Order items so the one with the earliest time sorts first, and one with no
+ * time at all -- a task proposed with a due date but no due *time* -- sorts
+ * after every timed one rather than before it, which `''` would otherwise do
+ * by plain string comparison. What "Plan for tomorrow" draws its rows in.
+ *
+ * `timeOf` answers a `HH:MM` (or any lexically comparable clock string) or
+ * `null`; ties keep their original order, since `Array.prototype.sort` is
+ * stable and nothing here needs a second key to break one.
+ */
+export function byTimeOrLast<T>(items: T[], timeOf: (item: T) => string | null): T[] {
+  return [...items].sort((a, b) => {
+    const ta = timeOf(a)
+    const tb = timeOf(b)
+    if (ta === null) return tb === null ? 0 : 1
+    if (tb === null) return -1
+    return ta < tb ? -1 : ta > tb ? 1 : 0
+  })
 }
 
 // ── Storage ──────────────────────────────────────────────────────────────

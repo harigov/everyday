@@ -30,6 +30,7 @@ import type {
   Conversation,
   ConversationId,
   ConversationSummary,
+  DeclineReason,
   Draft,
   DraftId,
   Entry,
@@ -74,6 +75,7 @@ import type {
   MeetingSettingsView,
   Memory,
   MemoryId,
+  MemoryOrigin,
   ModelBenchmark,
   Note,
   NoteId,
@@ -85,6 +87,10 @@ import type {
   Profile,
   Project,
   ProjectId,
+  Proposal,
+  ProposalId,
+  ProposalQuery,
+  ProposedRecord,
   ProviderInfo,
   QuickBackfillPick,
   QuickEventDraft,
@@ -155,6 +161,10 @@ export const PROTOCOL = 1
 
 /** What each command takes and gives back. */
 export interface Commands {
+  acceptProposal: {
+    args: { id: ProposalId; edited?: ProposedRecord | null; confirm?: boolean }
+    result: Proposal
+  }
   accountPresets: { args: Record<string, never>; result: MailProviderInfo[] }
   activeRecording: { args: Record<string, never>; result: Recording | null }
   addItem: { args: { kindId: KindId; title: string; lookup: boolean }; result: AddedItem }
@@ -201,8 +211,9 @@ export interface Commands {
   changePassword: { args: { current: string; next: string }; result: void }
   clearAgentKey: { args: Record<string, never>; result: void }
   collectGarbage: { args: Record<string, never>; result: number }
-  confirmToolCall: { args: { callId: string; approved: boolean }; result: boolean }
+  confirmToolCall: { args: { callId: string; approved: boolean; later?: boolean }; result: boolean }
   conversationMessages: { args: { id: ConversationId }; result: AgentMessage[] }
+  declineProposal: { args: { id: ProposalId; reason?: DeclineReason | null }; result: Proposal }
   deleteAccount: { args: { id: AccountId }; result: void }
   deleteAllVoiceprints: { args: Record<string, never>; result: void }
   deleteBlock: { args: { id: BlockId }; result: void }
@@ -246,6 +257,7 @@ export interface Commands {
   getGoal: { args: { id: GoalId }; result: Goal }
   getItem: { args: { id: ItemId }; result: Item }
   getNote: { args: { id: NoteId }; result: Note }
+  getProposal: { args: { id: ProposalId }; result: Proposal }
   getRecording: { args: { id: RecordingId }; result: Recording }
   getRun: { args: { id: RoutineRunId }; result: RoutineRun }
   getTask: { args: { id: TaskId }; result: Task }
@@ -281,6 +293,7 @@ export interface Commands {
   listNotes: { args: { query?: NoteQuery }; result: NoteSummary[] }
   listParts: { args: Record<string, never>; result: PartInfo[] }
   listProjects: { args: Record<string, never>; result: Project[] }
+  listProposals: { args: { query?: ProposalQuery }; result: Proposal[] }
   listReadings: { args: { query: ReadingQuery }; result: Reading[] }
   listRecordings: { args: { query?: RecordingQuery }; result: Recording[] }
   listRemoteImageAllowances: { args: Record<string, never>; result: RemoteImageSettings }
@@ -321,6 +334,7 @@ export interface Commands {
     args: { kind: string; limit?: number | null; cursor?: string | null }
     result: MailActionByOrigin[]
   }
+  markProposalsSeen: { args: { ids?: ProposalId[] }; result: void }
   markRead: { args: { threads: ThreadId[] }; result: Op[] }
   markRunsSeen: { args: { ids?: RoutineRunId[] }; result: void }
   markUnread: { args: { threads: ThreadId[] }; result: Op[] }
@@ -483,6 +497,7 @@ export interface Commands {
     result: Item
   }
   setItemStatus: { args: { id: ItemId; status: ItemStatus; log: boolean }; result: Item }
+  setMemoryOrigin: { args: { id: MemoryId; origin: MemoryOrigin }; result: Memory }
   setQuickJob: { args: { name: string; on: boolean }; result: QuickJobRow[] }
   setThreadCategory: { args: { threads: ThreadId[]; category: MailCategory }; result: void }
   setTranscriberKey: { args: { key?: string | null }; result: MeetingSettingsView }
@@ -510,6 +525,7 @@ export interface Commands {
   undoSend: { args: { draftId: DraftId }; result: Draft }
   unlabel: { args: { threads: ThreadId[]; label: string }; result: Op[] }
   unlock: { args: { password: string }; result: VaultStatus }
+  unseenProposals: { args: Record<string, never>; result: number }
   unseenRuns: { args: Record<string, never>; result: number }
   unsnooze: { args: { threads: ThreadId[] }; result: void }
   unstar: { args: { threads: ThreadId[] }; result: Op[] }
@@ -521,6 +537,7 @@ export interface Commands {
 
 /** The name each method sends over the wire. */
 export const COMMAND_NAMES = {
+  acceptProposal: 'accept_proposal',
   accountPresets: 'account_presets',
   activeRecording: 'active_recording',
   addItem: 'add_item',
@@ -542,6 +559,7 @@ export const COMMAND_NAMES = {
   collectGarbage: 'collect_garbage',
   confirmToolCall: 'confirm_tool_call',
   conversationMessages: 'conversation_messages',
+  declineProposal: 'decline_proposal',
   deleteAccount: 'delete_account',
   deleteAllVoiceprints: 'delete_all_voiceprints',
   deleteBlock: 'delete_block',
@@ -582,6 +600,7 @@ export const COMMAND_NAMES = {
   getGoal: 'get_goal',
   getItem: 'get_item',
   getNote: 'get_note',
+  getProposal: 'get_proposal',
   getRecording: 'get_recording',
   getRun: 'get_run',
   getTask: 'get_task',
@@ -611,6 +630,7 @@ export const COMMAND_NAMES = {
   listNotes: 'list_notes',
   listParts: 'list_parts',
   listProjects: 'list_projects',
+  listProposals: 'list_proposals',
   listReadings: 'list_readings',
   listRecordings: 'list_recordings',
   listRemoteImageAllowances: 'list_remote_image_allowances',
@@ -627,6 +647,7 @@ export const COMMAND_NAMES = {
   logReading: 'log_reading',
   lookupMetadata: 'lookup_metadata',
   mailActionsByOrigin: 'mail_actions_by_origin',
+  markProposalsSeen: 'mark_proposals_seen',
   markRead: 'mark_read',
   markRunsSeen: 'mark_runs_seen',
   markUnread: 'mark_unread',
@@ -728,6 +749,7 @@ export const COMMAND_NAMES = {
   setForgetKey: 'set_forget_key',
   setItemProgress: 'set_item_progress',
   setItemStatus: 'set_item_status',
+  setMemoryOrigin: 'set_memory_origin',
   setQuickJob: 'set_quick_job',
   setThreadCategory: 'set_thread_category',
   setTranscriberKey: 'set_transcriber_key',
@@ -755,6 +777,7 @@ export const COMMAND_NAMES = {
   undoSend: 'undo_send',
   unlabel: 'unlabel',
   unlock: 'unlock',
+  unseenProposals: 'unseen_proposals',
   unseenRuns: 'unseen_runs',
   unsnooze: 'unsnooze',
   unstar: 'unstar',
@@ -776,6 +799,7 @@ export const COMMAND_NAMES = {
  * cannot drift out of step with the Rust.
  */
 export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
+  'accept_proposal',
   'account_presets',
   'active_recording',
   'add_item',
@@ -797,6 +821,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'collect_garbage',
   'confirm_tool_call',
   'conversation_messages',
+  'decline_proposal',
   'delete_account',
   'delete_all_voiceprints',
   'delete_block',
@@ -837,6 +862,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'get_goal',
   'get_item',
   'get_note',
+  'get_proposal',
   'get_recording',
   'get_run',
   'get_task',
@@ -866,6 +892,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_notes',
   'list_parts',
   'list_projects',
+  'list_proposals',
   'list_readings',
   'list_recordings',
   'list_remote_image_allowances',
@@ -882,6 +909,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'log_reading',
   'lookup_metadata',
   'mail_actions_by_origin',
+  'mark_proposals_seen',
   'mark_read',
   'mark_runs_seen',
   'mark_unread',
@@ -982,6 +1010,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_forget_key',
   'set_item_progress',
   'set_item_status',
+  'set_memory_origin',
   'set_quick_job',
   'set_thread_category',
   'set_transcriber_key',
@@ -1009,6 +1038,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'undo_send',
   'unlabel',
   'unlock',
+  'unseen_proposals',
   'unseen_runs',
   'unsnooze',
   'unstar',
@@ -1026,6 +1056,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
  * `everyday_service::idempotency`.
  */
 export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
+  'accept_proposal',
   'add_item',
   'allow_remote_images',
   'append_recording_chunk',
@@ -1040,6 +1071,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'clear_agent_key',
   'collect_garbage',
   'confirm_tool_call',
+  'decline_proposal',
   'delete_account',
   'delete_all_voiceprints',
   'delete_block',
@@ -1076,6 +1108,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'label',
   'lock',
   'log_reading',
+  'mark_proposals_seen',
   'mark_read',
   'mark_runs_seen',
   'mark_unread',
@@ -1128,6 +1161,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_forget_key',
   'set_item_progress',
   'set_item_status',
+  'set_memory_origin',
   'set_quick_job',
   'set_thread_category',
   'set_transcriber_key',
@@ -1150,6 +1184,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
 
 /** What a listener should reload after a command succeeds. */
 export const CHANGE_KINDS = {
+  accept_proposal: 'proposal',
   add_item: 'item',
   allow_remote_images: 'settings',
   apply_metadata: 'item',
@@ -1159,6 +1194,7 @@ export const CHANGE_KINDS = {
   cancel_speech_model_download: 'settings',
   change_password: 'settings',
   clear_agent_key: 'settings',
+  decline_proposal: 'proposal',
   delete_account: 'account',
   delete_all_voiceprints: 'voiceprint',
   delete_block: 'block',
@@ -1190,6 +1226,7 @@ export const CHANGE_KINDS = {
   import_calendar: 'calendar',
   label: 'thread',
   log_reading: 'reading',
+  mark_proposals_seen: 'proposal',
   mark_read: 'thread',
   mark_runs_seen: 'routineRun',
   mark_unread: 'thread',
@@ -1236,6 +1273,7 @@ export const CHANGE_KINDS = {
   set_forget_key: 'settings',
   set_item_progress: 'item',
   set_item_status: 'item',
+  set_memory_origin: 'memory',
   set_quick_job: 'settings',
   set_thread_category: 'thread',
   set_transcriber_key: 'settings',

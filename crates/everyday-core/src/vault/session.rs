@@ -48,6 +48,8 @@ pub(super) enum Domain {
     Trackers,
     Agent,
     Routines,
+    /// Work the assistant prepared -- see [`crate::proposal`].
+    Proposals,
     Notes,
     /// Per-record secrets -- see [`crate::store::secrets`]. Accounts are the
     /// first, and so far the only, caller.
@@ -74,6 +76,7 @@ impl Domain {
             Domain::Trackers => "tracking (this vault's backend stores journals only)",
             Domain::Agent => "the assistant (this vault's backend stores journals only)",
             Domain::Routines => "routines (this vault's backend stores journals only)",
+            Domain::Proposals => "proposals (this vault's backend stores journals only)",
             Domain::Notes => "notes (this vault's backend stores journals only)",
             Domain::Secrets => "per-record secrets (this vault's backend stores journals only)",
             Domain::Accounts => "accounts (this vault's backend stores journals only)",

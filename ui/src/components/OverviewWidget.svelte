@@ -15,12 +15,13 @@
   // todo app, the timer stops -- because a number you cannot act on is a
   // number people stop reading.
 
-  import { formatMinutes, plural, relativeTime } from '../lib/format'
+  import { formatClock, formatMinutes, plural, relativeTime, timeOfDay } from '../lib/format'
   import { calendar } from '../lib/calendar.svelte'
   import { api } from '../lib/api'
   import { overview } from '../lib/overview.svelte'
   import { ask, quick } from '../lib/quick.svelte'
   import { purpose } from '../lib/purpose.svelte'
+  import { proposals, recordAs } from '../lib/proposals.svelte'
   import { app } from '../lib/state.svelte'
   import { todo } from '../lib/todo.svelte'
   import { tracking } from '../lib/tracking.svelte'
@@ -29,11 +30,13 @@
   import { describeStreak } from '../lib/habits'
   import { addDays, localeWeekStart, startOfWeek, todayIso } from '../lib/time'
   import { formatValue } from '../lib/tracker'
-  import type { Widget } from '../lib/dashboard'
+  import { byTimeOrLast, type Widget } from '../lib/dashboard'
+  import type { Proposal } from '../lib/types'
   import BalanceBars from './BalanceBars.svelte'
   import ColumnChart from './ColumnChart.svelte'
   import HabitHeatmap from './HabitHeatmap.svelte'
   import Meter from './Meter.svelte'
+  import ProposalGhost from './ProposalGhost.svelte'
   import ShareBar from './ShareBar.svelte'
   import StatTile from './StatTile.svelte'
   import TrackerIcon from './TrackerIcon.svelte'
@@ -247,6 +250,30 @@
     purpose.selected = id
     await todo.setScope({ kind: 'goals' })
   }
+
+  // ── Plan for tomorrow ────────────────────────────────────────────────
+  //
+  // Tomorrow's pending task and block proposals, in the order the day would
+  // run -- so answering them here is answering them in the order you would
+  // hit them tomorrow, not the order a dream happened to write them in.
+
+  /** A clock string sortable against a block's, or `null` for "no time". */
+  function timeOf(p: Proposal): string | null {
+    if (p.kind === 'block') return recordAs(p, 'block')?.start.slice(11, 19) ?? null
+    if (p.kind === 'task') return recordAs(p, 'task')?.dueTime ?? null
+    return null
+  }
+
+  const tomorrowProposals = $derived(
+    byTimeOrLast(
+      proposals.forDate(overview.tomorrow).filter((p) => p.kind === 'task' || p.kind === 'block'),
+      timeOf,
+    ),
+  )
+
+  $effect(() => {
+    if (tomorrowProposals.length > 0) void proposals.markSeen(tomorrowProposals)
+  })
 </script>
 
 {#if widget.type === 'onNow'}
@@ -311,6 +338,34 @@
         </button>
       {/each}
     </div>
+  {/if}
+
+  <!-- ── Plan for tomorrow ─────────────────────────────────────────── -->
+{:else if widget.type === 'planTomorrow'}
+  {#if tomorrowProposals.length === 0}
+    <p class="dim">Nothing proposed for tomorrow.</p>
+  {:else}
+    <ul class="plain plan-list">
+      {#each tomorrowProposals as p (p.id)}
+        {@const task = recordAs(p, 'task')}
+        {@const block = recordAs(p, 'block')}
+        <li>
+          <ProposalGhost
+            proposal={p}
+            color={p.kind === 'block' ? calendar.colorOfSubject(block!.subject) : 'var(--accent)'}
+          >
+            <span class="plan-time">
+              {#if block}{timeOfDay(new Date(block.start))}{:else if task?.dueTime}{formatClock(
+                  task.dueTime,
+                )}{:else}All day{/if}
+            </span>
+            <span class="plan-title">
+              {task?.title ?? (block ? calendar.titleOfBlock(block) : p.caption)}
+            </span>
+          </ProposalGhost>
+        </li>
+      {/each}
+    </ul>
   {/if}
 
   <!-- ── Where the week went ───────────────────────────────────────── -->
@@ -542,6 +597,21 @@
     margin: 0;
     padding: 0;
     list-style: none;
+  }
+
+  .plan-list li {
+    display: flex;
+  }
+  .plan-time {
+    flex: none;
+    margin-right: var(--sp-2);
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-faint);
+  }
+  .plan-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .meters {

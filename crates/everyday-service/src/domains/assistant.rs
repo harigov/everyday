@@ -67,6 +67,13 @@ pub struct ConversationRef {
 pub struct Confirm {
     pub call_id: String,
     pub approved: bool,
+    /// Park the call as a proposal instead of running or refusing it. Added
+    /// after `approved`, and defaulted, so an older client that has never
+    /// heard of "later" keeps sending exactly what it always has and
+    /// `approved` keeps its old meaning. See `docs/plans/dreaming.md`'s
+    /// Phase 5 and `everyday_service::agent::ConfirmAnswer`.
+    #[serde(default)]
+    pub later: bool,
 }
 
 #[derive(Deserialize)]
@@ -79,6 +86,13 @@ pub struct SaveMemory {
 #[serde(rename_all = "camelCase")]
 pub struct MemoryRef {
     pub id: MemoryId,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryOriginArgs {
+    pub id: MemoryId,
+    pub origin: everyday_core::MemoryOrigin,
 }
 
 /// What a turn needs. Not reachable through `call` -- see the module docs --
@@ -108,7 +122,7 @@ async fn save_agent_settings(
     args: SaveSettings,
 ) -> CommandResult<AgentSettings> {
     let vault = svc.require()?;
-    let (settings, cleared) = blocking(move || {
+    let (settings, cleared, dreams) = blocking(move || {
         let previous = vault.agent_settings()?;
         // Compared before the write below overwrites `previous`, on
         // `acknowledgement_name`'s own rule -- the endpoint actually
@@ -117,6 +131,7 @@ async fn save_agent_settings(
         // as a change.
         let provider_changed = previous.provider_config.acknowledgement_name()
             != args.settings.provider_config.acknowledgement_name();
+        let dreaming_before = previous.dreaming;
         vault.save_agent_settings(&args.settings)?;
 
         // A provider change must *visibly* clear mail access, not merely
@@ -139,10 +154,24 @@ async fn save_agent_settings(
             }
         }
 
+        // The dream routines. `set_dreaming` is idempotent, so it is only
+        // worth calling when something might actually change: the switch
+        // moved, or dreaming is on but the three are somehow missing --
+        // which happens the very first time anybody turns it on, since
+        // nothing else in this application ever creates them.
+        let mut dreams = Vec::new();
+        if vault.supports_routines() {
+            let missing_while_on =
+                args.settings.dreaming && !vault.routines()?.iter().any(|r| r.kind.is_dream());
+            if dreaming_before != args.settings.dreaming || missing_while_on {
+                dreams = vault.set_dreaming(args.settings.dreaming)?;
+            }
+        }
+
         // Read back rather than echoing what was sent: `has_key` is derived
         // from the secret table, so the pane must be told what is true rather
         // than what it asked for.
-        Ok((vault.agent_settings()?, cleared))
+        Ok((vault.agent_settings()?, cleared, dreams))
     })
     .await?;
 
@@ -155,6 +184,15 @@ async fn save_agent_settings(
             op: Op::Updated,
             id: None,
             ids: cleared,
+            origin: ctx.caller.origin().map(str::to_string),
+        });
+    }
+    if !dreams.is_empty() {
+        svc.events().changed(Change {
+            kind: Kind::Routine,
+            op: Op::Updated,
+            id: None,
+            ids: dreams.into_iter().map(|r| r.id.to_string()).collect(),
             origin: ctx.caller.origin().map(str::to_string),
         });
     }
@@ -224,7 +262,14 @@ async fn delete_conversation(
 /// between the question and the click leaves a card on screen with nothing
 /// behind it, and the panel dismisses it rather than showing an error.
 async fn confirm_tool_call(svc: Arc<Service>, _ctx: Ctx, args: Confirm) -> CommandResult<bool> {
-    Ok(svc.pending().answer(&args.call_id, args.approved))
+    let answer = if args.later {
+        crate::agent::ConfirmAnswer::Later
+    } else if args.approved {
+        crate::agent::ConfirmAnswer::Confirm
+    } else {
+        crate::agent::ConfirmAnswer::Decline
+    };
+    Ok(svc.pending().answer(&args.call_id, answer))
 }
 
 async fn list_memories(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<Memory>> {
@@ -251,8 +296,58 @@ async fn new_memory(_svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandRes
 /// flag when it adds one, and can clear it again. Forcing it here meant a
 /// person could not unpin a fact they had pinned by accident, and meant the
 /// pane's own switch did nothing.
+///
+/// Who stands behind a memory is not this command's to change. That is
+/// `set_memory_origin`'s job, and it refuses what this must refuse too: a
+/// struck-out memory quietly becoming a standing instruction again, or a
+/// person's own fact being relabelled as something a dream noticed. So the
+/// origin, and the date an inference was last supported, are taken from
+/// what is stored -- whatever the request says -- with one exception and one
+/// default, both about *who this request is* rather than about storage:
+///
+/// - If what is stored was `Inferred` and the text arriving now differs, the
+///   save becomes `Confirmed`. Rewriting what a dream noticed is standing
+///   behind it, which is a stronger claim than the dream itself made.
+/// - If nothing is stored under this id yet, it is `Told`, whatever it
+///   arrived as. Only a dream infers, and only a person's answer to a dream
+///   confirms or rejects; a fact typed into the pane is exactly what `Told`
+///   means. Coerced rather than refused, so the pane never has to retype it.
 async fn save_memory(svc: Arc<Service>, _ctx: Ctx, args: SaveMemory) -> CommandResult<Vec<Memory>> {
-    svc.on_vault(move |vault| vault.save_memory(&args.memory)).await
+    svc.on_vault(move |vault| {
+        let mut memory = args.memory;
+        let stored = vault.memories()?.into_iter().find(|m| m.id == memory.id);
+        let (origin, last_supported) = provenance_for_save(stored.as_ref(), &memory);
+        memory.origin = origin;
+        memory.last_supported = last_supported;
+        vault.save_memory(&memory)
+    })
+    .await
+}
+
+/// The origin and last-supported date a hand-made save may carry. See
+/// `save_memory`.
+fn provenance_for_save(
+    stored: Option<&Memory>,
+    incoming: &Memory,
+) -> (everyday_core::MemoryOrigin, Option<jiff::civil::Date>) {
+    use everyday_core::MemoryOrigin;
+    match stored {
+        None => (MemoryOrigin::Told, None),
+        Some(old) if old.origin == MemoryOrigin::Inferred && old.text != incoming.text => {
+            (MemoryOrigin::Confirmed, old.last_supported)
+        }
+        Some(old) => (old.origin, old.last_supported),
+    }
+}
+
+/// Confirm an inferred memory, or strike it out. See
+/// `everyday_core::agent::MemoryOrigin`.
+async fn set_memory_origin(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: MemoryOriginArgs,
+) -> CommandResult<Memory> {
+    svc.on_vault(move |vault| vault.set_memory_origin(args.id, args.origin)).await
 }
 
 async fn delete_memory(svc: Arc<Service>, _ctx: Ctx, args: MemoryRef) -> CommandResult<()> {
@@ -334,7 +429,11 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "confirm_tool_call", scope: Agent, effect: Write,
         args: Confirm, returns: "boolean",
-        signature: &[("callId", "string", true), ("approved", "boolean", true)],
+        signature: &[
+            ("callId", "string", true),
+            ("approved", "boolean", true),
+            ("later", "boolean", false),
+        ],
         run: confirm_tool_call,
     },
     command! {
@@ -356,6 +455,14 @@ pub static COMMANDS: &[crate::command::Command] = &[
         run: save_memory,
     },
     command! {
+        name: "set_memory_origin", scope: Agent, effect: Write,
+        change: Memory / Updated,
+        id: |a: &MemoryOriginArgs| Some(a.id.to_string()),
+        args: MemoryOriginArgs, returns: "Memory",
+        signature: &[("id", "MemoryId", true), ("origin", "MemoryOrigin", true)],
+        run: set_memory_origin,
+    },
+    command! {
         name: "delete_memory", scope: Agent, effect: Destructive,
         change: Memory / Deleted,
         id: |a: &MemoryRef| Some(a.id.to_string()),
@@ -364,3 +471,53 @@ pub static COMMANDS: &[crate::command::Command] = &[
         run: delete_memory,
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::provenance_for_save;
+    use everyday_core::{Memory, MemoryOrigin};
+
+    #[test]
+    fn a_hand_save_never_changes_who_stands_behind_a_memory() {
+        let day = jiff::civil::date(2026, 9, 15);
+        let incoming = |origin| Memory { origin, ..Memory::new("Runs on Tuesdays") };
+
+        // New: always told, whatever it claims.
+        for claimed in [
+            MemoryOrigin::Told,
+            MemoryOrigin::Inferred,
+            MemoryOrigin::Confirmed,
+            MemoryOrigin::Rejected,
+        ] {
+            assert_eq!(provenance_for_save(None, &incoming(claimed)), (MemoryOrigin::Told, None));
+        }
+
+        // Stored and rejected: stays rejected, even when sent as told.
+        let rejected = Memory { origin: MemoryOrigin::Rejected, ..Memory::new("Runs on Tuesdays") };
+        assert_eq!(
+            provenance_for_save(Some(&rejected), &incoming(MemoryOrigin::Told)),
+            (MemoryOrigin::Rejected, None)
+        );
+
+        // Stored and told: cannot be relabelled as inferred.
+        let told = Memory::new("Runs on Tuesdays");
+        assert_eq!(
+            provenance_for_save(Some(&told), &incoming(MemoryOrigin::Inferred)),
+            (MemoryOrigin::Told, None)
+        );
+
+        // Stored and inferred: unchanged text keeps it inferred, with its date.
+        let inferred = Memory::inferred("Runs on Tuesdays", day);
+        assert_eq!(
+            provenance_for_save(Some(&inferred), &incoming(MemoryOrigin::Told)),
+            (MemoryOrigin::Inferred, Some(day))
+        );
+        // ...and rewritten text confirms it.
+        let rewritten =
+            Memory { text: "Runs on Tuesday mornings".into(), ..incoming(MemoryOrigin::Told) };
+        assert_eq!(
+            provenance_for_save(Some(&inferred), &rewritten),
+            (MemoryOrigin::Confirmed, Some(day))
+        );
+    }
+}

@@ -9,10 +9,14 @@
 
 use super::Vault;
 use super::session::Domain;
-use crate::agent::{AgentSettings, Conversation, MAX_MEMORIES, Memory, Message, Provider};
+use crate::agent::{
+    AgentSettings, Conversation, MAX_INFERRED, MAX_MEMORIES, MAX_REJECTED, Memory, MemoryOrigin,
+    Message, Provider,
+};
 use crate::error::{Error, Result};
 use crate::id::{ConversationId, MemoryId, MessageId};
 use crate::store::agent::{AgentStore, ConversationQuery};
+use jiff::Timestamp;
 
 impl Vault {
     /// Does this vault's backend hold conversations at all?
@@ -210,41 +214,133 @@ impl Vault {
         self.with_agent(|a| a.list_memories())
     }
 
-    /// Write a memory, trimming the oldest if the ceiling has been reached.
+    /// Write a memory, trimming its group if the ceiling has been reached.
     ///
     /// The trim happens here rather than being left to the assistant because
     /// an agent asked to tidy up after itself does not, and the cost of not
     /// doing it is paid on every request forever: memories are loaded into
     /// the system prompt in full. Pinned memories -- the ones a person wrote
     /// or edited by hand -- are never the ones dropped, which is the whole
-    /// reason that flag exists.
+    /// reason that flag exists, and the memory just written is never the one
+    /// dropped either, which is what would otherwise happen at a ceiling of
+    /// one.
     ///
-    /// Returns the memories evicted, so a caller can say what it forgot.
+    /// Told and confirmed memories are one group, capped at [`MAX_MEMORIES`]
+    /// and evicted oldest-written first, exactly as before this method
+    /// learned about origins. Inferred memories are a second group, capped
+    /// at [`MAX_INFERRED`] and evicted oldest-*supported* first -- a `None`
+    /// counts as the oldest, and ties are broken by when it was written --
+    /// because the one yesterday's data confirmed is the one worth keeping.
+    /// Rejected memories are a third group, capped at [`MAX_REJECTED`] and
+    /// evicted oldest-written first, so the "do not assume" list stays a
+    /// fixed size without forgetting a rejection the moment a newer one
+    /// arrives.
+    ///
+    /// Returns every memory evicted, across all three groups, so a caller
+    /// can say what it forgot.
     pub fn save_memory(&self, memory: &Memory) -> Result<Vec<Memory>> {
         self.writable()?;
         memory.validate()?;
         self.with_agent(|a| a.put_memory(memory))?;
 
         let existing = self.memories()?;
-        if existing.len() <= MAX_MEMORIES {
+
+        // Oldest-written first, which is the order `memories()` already
+        // returns -- filtering preserves it.
+        let told_and_confirmed: Vec<Memory> = existing
+            .iter()
+            .filter(|m| matches!(m.origin, MemoryOrigin::Told | MemoryOrigin::Confirmed))
+            .cloned()
+            .collect();
+        let mut evicted = self.evict_over_cap(told_and_confirmed, MAX_MEMORIES, memory.id)?;
+
+        // Oldest-*supported* first, not oldest-written. `None` sorts before
+        // any `Some`, which is exactly "a memory nothing has confirmed yet
+        // counts as the oldest".
+        let mut inferred: Vec<Memory> =
+            existing.iter().filter(|m| m.origin == MemoryOrigin::Inferred).cloned().collect();
+        inferred.sort_by(|a, b| {
+            a.last_supported.cmp(&b.last_supported).then_with(|| a.created_at.cmp(&b.created_at))
+        });
+        evicted.extend(self.evict_over_cap(inferred, MAX_INFERRED, memory.id)?);
+
+        let rejected: Vec<Memory> =
+            existing.iter().filter(|m| m.origin == MemoryOrigin::Rejected).cloned().collect();
+        evicted.extend(self.evict_over_cap(rejected, MAX_REJECTED, memory.id)?);
+
+        Ok(evicted)
+    }
+
+    /// Delete whatever in `group` is over `cap`, oldest first as `group` is
+    /// already ordered, skipping anything pinned and `keep`. Shared by the
+    /// three groups [`Vault::save_memory`] trims -- each passes its own
+    /// notion of "oldest first" in and gets the same arithmetic back.
+    fn evict_over_cap(
+        &self,
+        group: Vec<Memory>,
+        cap: usize,
+        keep: MemoryId,
+    ) -> Result<Vec<Memory>> {
+        if group.len() <= cap {
             return Ok(Vec::new());
         }
-        // Oldest first is the order they come back in, so the ones to drop
-        // are at the front -- skipping anything pinned and the row just
-        // written, which would otherwise be evictable by a ceiling of one.
-        let over = existing.len() - MAX_MEMORIES;
+        let over = group.len() - cap;
         let mut evicted = Vec::new();
-        for m in existing {
+        for m in group {
             if evicted.len() == over {
                 break;
             }
-            if m.pinned || m.id == memory.id {
+            if m.pinned || m.id == keep {
                 continue;
             }
             self.with_agent(|a| a.delete_memory(m.id))?;
             evicted.push(m);
         }
         Ok(evicted)
+    }
+
+    /// Change who stands behind a memory: confirm an inferred one, agree
+    /// with it, strike it out, or put a confirmed one back to a plain told
+    /// fact. Stamps `updated_at` and saves through [`Vault::save_memory`] so
+    /// the usual caps apply, and returns the memory as saved.
+    ///
+    /// `Inferred` is refused whatever the memory's current origin: only a
+    /// dream infers, and a hand-set "inferred" fact would be an instruction
+    /// wearing the one heading that tells the model it might be wrong.
+    /// `Told` is only accepted coming from `Confirmed` or `Told` itself,
+    /// because a memory that was actually inferred or already struck out
+    /// has no "back to told" -- the dream never told it anything, and
+    /// letting a rejection quietly become a standing instruction would
+    /// defeat the point of rejecting it.
+    pub fn set_memory_origin(&self, id: MemoryId, origin: MemoryOrigin) -> Result<Memory> {
+        self.writable()?;
+        let mut memory = self
+            .memories()?
+            .into_iter()
+            .find(|m| m.id == id)
+            .ok_or_else(|| Error::NotFound { kind: "memory", id: id.to_string() })?;
+
+        match origin {
+            MemoryOrigin::Inferred => {
+                return Err(Error::Invalid(
+                    "a memory's origin cannot be set to inferred by hand; only a dream infers"
+                        .into(),
+                ));
+            }
+            MemoryOrigin::Told
+                if !matches!(memory.origin, MemoryOrigin::Confirmed | MemoryOrigin::Told) =>
+            {
+                return Err(Error::Invalid(
+                    "a memory can only be set back to told from confirmed or told".into(),
+                ));
+            }
+            MemoryOrigin::Told | MemoryOrigin::Confirmed | MemoryOrigin::Rejected => {}
+        }
+
+        memory.origin = origin;
+        memory.updated_at = Timestamp::now();
+        self.save_memory(&memory)?;
+        Ok(memory)
     }
 
     pub fn delete_memory(&self, id: MemoryId) -> Result<()> {

@@ -35,7 +35,9 @@
     snap,
     todayIso,
   } from '../lib/time'
+  import type { Proposal, TimeBlock } from '../lib/types'
   import Icon from './Icon.svelte'
+  import ProposalGhost from './ProposalGhost.svelte'
   import TrackerIcon from './TrackerIcon.svelte'
 
   let { days }: { days: string[] } = $props()
@@ -68,6 +70,12 @@
         grabbed: number
         /** Where it began, so a click that moved nothing writes nothing. */
         from: { day: string; start: number }
+        /**
+         * Set when the row being moved is a ghost rather than a real block:
+         * which proposal to accept, and the record it would save, on drop.
+         */
+        proposal?: Proposal
+        ghostBlock?: TimeBlock
       }
     | {
         mode: 'resize'
@@ -145,6 +153,11 @@
    * another is two answers to the same question.
    */
   function onSlotContextMenu(e: MouseEvent, slot: Slot) {
+    // A ghost is not on disk yet, so the ordinary block menu -- rename,
+    // delete, "this is what happened" -- has nothing to act on. Its own
+    // detail pane offers the only two things that make sense: accept and
+    // decline, and a right-click opens it exactly as a left one does.
+    if (slot.proposal) return void calendar.selectProposal(slot.proposal)
     // `select` is total and knows which of the four kinds of slot have a
     // panel behind them: a reading and the live timer have none, and asking
     // for one deselects rather than selecting something else.
@@ -195,6 +208,27 @@
       return
     }
     e.stopPropagation()
+
+    if (slot.proposal) {
+      // A ghost only ever moves; there is nothing on disk to resize, and
+      // resizing before it exists would be editing a record that is not
+      // there yet. Its length is changed in the detail pane instead.
+      calendar.selectProposal(slot.proposal)
+      const el = (e.currentTarget as HTMLElement).parentElement!
+      drag = {
+        mode: 'move',
+        id: slot.block.id,
+        day: iso,
+        start: slot.start,
+        length: Math.max(MIN_BLOCK_MINUTES, slot.end - slot.start),
+        grabbed: minutesAt(el, e.clientY) - slot.start,
+        from: { day: iso, start: slot.start },
+        proposal: slot.proposal,
+        ghostBlock: slot.block,
+      }
+      return
+    }
+
     calendar.select(slot)
     const el = (e.currentTarget as HTMLElement).parentElement!
     const box = (e.currentTarget as HTMLElement).getBoundingClientRect()
@@ -258,7 +292,18 @@
       // that must not queue a write of identical values -- which would bump
       // `updatedAt` on every glance and make "recently changed" meaningless.
       if (gesture.day !== gesture.from.day || gesture.start !== gesture.from.start) {
-        calendar.moveBlock(gesture.id, gesture.day, gesture.start)
+        if (gesture.proposal && gesture.ghostBlock) {
+          // A ghost has nothing on disk to move -- dragging it *is* accepting
+          // it, at the time it was dropped.
+          await calendar.acceptGhostMove(
+            gesture.proposal,
+            gesture.ghostBlock,
+            gesture.day,
+            gesture.start,
+          )
+        } else {
+          calendar.moveBlock(gesture.id, gesture.day, gesture.start)
+        }
       }
     } else if (gesture.end - gesture.start !== gesture.from.length) {
       calendar.resizeBlock(gesture.id, gesture.end - gesture.start)
@@ -434,45 +479,70 @@
           {#each hours as h (h)}<div class="rule" style="top: {h * HOUR}px"></div>{/each}
 
           {#each place(iso) as p (p.slot.key)}
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class="slot {p.slot.kind}"
-              class:cancelled={p.slot.cancelled}
-              class:free={p.slot.free}
-              class:live={p.slot.live}
-              class:sel={p.slot.block
-                ? calendar.selection?.kind === 'block' && calendar.selection.id === p.slot.block.id
-                : calendar.selection?.kind === 'event' &&
-                  calendar.selection.id === p.slot.event?.id}
-              style="top: {p.top}px; height: {p.height}px; left: {p.left}%; width: {p.width}%; --c: {p
-                .slot.color}"
-              onpointerdown={(e) => onSlotPointerDown(e, p, iso)}
-              oncontextmenu={(e) => onSlotContextMenu(e, p.slot)}
-            >
-              {#if p.slot.tracker}
-                <!-- A tracked span is usually short -- 30 minutes is 23px --
-                     so it says everything on one line, with the tracker's
-                     own mark instead of a start time. The pips on the rail
-                     beside it are the same glyph, which is what ties the two
-                     halves of this layer together. -->
-                <span class="slotline">
-                  <TrackerIcon
-                    name={p.slot.tracker.icon}
-                    color={p.slot.color}
-                    size={12}
-                    tile={false}
-                  />
-                  <span class="slottitle">{p.slot.title} · {p.slot.subtitle}</span>
-                </span>
-              {:else}
-                <span class="slottime">{clockOf(p.slot.start)}</span>
-                <span class="slottitle">{p.slot.title}</span>
-                {#if p.height > 42 && p.slot.subtitle}
-                  <span class="slotsub">{p.slot.subtitle}</span>
+            {#if p.slot.proposal}
+              <!-- A dream's plan: dashed, faded, and drawn through the shared
+                   ghost shell rather than the ordinary slot, so accept and
+                   decline are the same two buttons every ghost in the app
+                   offers. Still positioned exactly like a real block, and
+                   still draggable to a new time -- see `onSlotPointerDown`. -->
+              <div
+                class="slotwrap"
+                style="top: {p.top}px; height: {p.height}px; left: {p.left}%; width: {p.width}%"
+                onpointerdown={(e) => onSlotPointerDown(e, p, iso)}
+                oncontextmenu={(e) => onSlotContextMenu(e, p.slot)}
+              >
+                <ProposalGhost
+                  proposal={p.slot.proposal}
+                  compact
+                  color={p.slot.color}
+                  onopen={() => calendar.selectProposal(p.slot.proposal!)}
+                >
+                  <span class="slottime">{clockOf(p.slot.start)}</span>
+                  <span class="slottitle">{p.slot.title}</span>
+                </ProposalGhost>
+              </div>
+            {:else}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class="slot {p.slot.kind}"
+                class:cancelled={p.slot.cancelled}
+                class:free={p.slot.free}
+                class:live={p.slot.live}
+                class:sel={p.slot.block
+                  ? calendar.selection?.kind === 'block' &&
+                    calendar.selection.id === p.slot.block.id
+                  : calendar.selection?.kind === 'event' &&
+                    calendar.selection.id === p.slot.event?.id}
+                style="top: {p.top}px; height: {p.height}px; left: {p.left}%; width: {p.width}%; --c: {p
+                  .slot.color}"
+                onpointerdown={(e) => onSlotPointerDown(e, p, iso)}
+                oncontextmenu={(e) => onSlotContextMenu(e, p.slot)}
+              >
+                {#if p.slot.tracker}
+                  <!-- A tracked span is usually short -- 30 minutes is 23px --
+                       so it says everything on one line, with the tracker's
+                       own mark instead of a start time. The pips on the rail
+                       beside it are the same glyph, which is what ties the two
+                       halves of this layer together. -->
+                  <span class="slotline">
+                    <TrackerIcon
+                      name={p.slot.tracker.icon}
+                      color={p.slot.color}
+                      size={12}
+                      tile={false}
+                    />
+                    <span class="slottitle">{p.slot.title} · {p.slot.subtitle}</span>
+                  </span>
+                {:else}
+                  <span class="slottime">{clockOf(p.slot.start)}</span>
+                  <span class="slottitle">{p.slot.title}</span>
+                  {#if p.height > 42 && p.slot.subtitle}
+                    <span class="slotsub">{p.slot.subtitle}</span>
+                  {/if}
                 {/if}
-              {/if}
-              {#if p.slot.movable}<span class="handle"></span>{/if}
-            </div>
+                {#if p.slot.movable}<span class="handle"></span>{/if}
+              </div>
+            {/if}
           {/each}
 
           <!-- Tracked moments, on a rail down the left of the column.
@@ -763,6 +833,18 @@
       0 0 0 2px var(--c),
       var(--shadow);
     z-index: 4;
+  }
+
+  /* A ghost's own shell fills the same rectangle a real block would. */
+  .slotwrap {
+    position: absolute;
+    overflow: hidden;
+    cursor: grab;
+  }
+  .slotwrap :global(.ghost) {
+    height: 100%;
+    box-sizing: border-box;
+    border-radius: 5px;
   }
 
   .slottime {

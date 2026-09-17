@@ -104,6 +104,88 @@ const { applyEvent, emptyTurn, isLoopback, replay, settle } = agent
   assert.equal(turn.cards[0].subject, 'Order the timber', 'and keeps what it was about')
 }
 
+// A card carries whether it may offer "later", from the event that raised
+// it -- `false` for something with no proposal form, such as the search
+// taint, which the backend never sets it true for.
+{
+  const turn = emptyTurn('assistant', 'x')
+  applyEvent(turn, {
+    type: 'confirmationRequired',
+    callId: 'c1',
+    name: 'delete_task',
+    subject: 'Order the timber',
+    arguments: {},
+    kind: 'destructive',
+    canPark: true,
+  })
+  assert.equal(turn.cards[0].canPark, true)
+
+  applyEvent(turn, {
+    type: 'confirmationRequired',
+    callId: 'c2',
+    name: 'web_search',
+    subject: 'alice@example.com',
+    arguments: {},
+    kind: 'search',
+    canPark: false,
+  })
+  assert.equal(turn.cards[1].canPark, false)
+}
+
+// docs/plans/dreaming.md's Phase 5: parking a call as a proposal is a third
+// answer beside confirm and decline, and the card that says so must keep
+// saying so. The backend still fires a `toolFinished` for the skipped call
+// -- the model has to be told why -- and that must not flip a card that has
+// already told the person "saved for later" into one that reads "failed".
+// The same holds for an ordinary decline, which used to make exactly this
+// mistake: a fast enough reply drew "declined" for an instant and then
+// silently became "failed".
+{
+  const turn = emptyTurn('assistant', 'x')
+  applyEvent(turn, {
+    type: 'confirmationRequired',
+    callId: 'c1',
+    name: 'delete_task',
+    subject: 'Order the timber',
+    arguments: {},
+    kind: 'destructive',
+    canPark: true,
+  })
+  // What the panel does the moment the person clicks "later" -- see
+  // `agent.svelte.ts`'s own `confirm` -- set here directly because this
+  // file tests `applyEvent` in isolation.
+  turn.cards[0].state = 'later'
+
+  applyEvent(turn, {
+    type: 'toolFinished',
+    callId: 'c1',
+    name: 'delete_task',
+    ok: false,
+    summary: 'Not done. It has been saved as a proposal for the person to decide later...',
+  })
+  assert.equal(turn.cards[0].state, 'later', 'the answer already given is not overwritten')
+
+  const declined = emptyTurn('assistant', 'y')
+  applyEvent(declined, {
+    type: 'confirmationRequired',
+    callId: 'd1',
+    name: 'delete_task',
+    subject: 'Order the timber',
+    arguments: {},
+    kind: 'destructive',
+    canPark: true,
+  })
+  declined.cards[0].state = 'declined'
+  applyEvent(declined, {
+    type: 'toolFinished',
+    callId: 'd1',
+    name: 'delete_task',
+    ok: false,
+    summary: 'The person declined this.',
+  })
+  assert.equal(declined.cards[0].state, 'declined', 'nor is a decline')
+}
+
 // Two calls in one turn is ordinary. Their results must not be swapped:
 // this is the check that stops "deleted" landing on the card that listed.
 {

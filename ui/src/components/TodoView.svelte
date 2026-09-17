@@ -14,6 +14,7 @@
   import TaskList from './TaskList.svelte'
   import TaskBoard from './TaskBoard.svelte'
   import TaskDetail from './TaskDetail.svelte'
+  import TaskProposalDetail from './TaskProposalDetail.svelte'
   import type { GroupBy } from '../lib/todo.svelte'
   import type { Priority } from '../lib/types'
 
@@ -234,7 +235,11 @@
       {/if}
     </div>
 
-    <TaskDetail />
+    {#if todo.selectedProposal}
+      <TaskProposalDetail proposal={todo.selectedProposal} />
+    {:else}
+      <TaskDetail />
+    {/if}
   </main>
 {/if}
 

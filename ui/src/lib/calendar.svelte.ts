@@ -23,6 +23,7 @@ import { notify } from './notify.svelte'
 import { ask, quick } from './quick.svelte'
 import { Autosave } from './autosave'
 import { pref } from './prefs'
+import { edited, proposals, recordAs } from './proposals.svelte'
 import { app, errorMessage, handle, isLocked, quietly } from './state.svelte'
 import { latest } from './store/latest'
 import { todo } from './todo.svelte'
@@ -54,6 +55,8 @@ import type {
   EntrySummary,
   Project,
   ProjectId,
+  Proposal,
+  ProposalId,
   Reading,
   RoleId,
   Task,
@@ -111,6 +114,15 @@ export interface Slot {
   movable: boolean
   block?: TimeBlock
   event?: CalendarEvent
+  /**
+   * Set when this slot is a pending `block` proposal, not a real one.
+   *
+   * `block` is still filled in -- with the record the proposal would save --
+   * so the grid's existing packing, colouring and drag maths all work
+   * unchanged; only the drop at the end of a drag differs, and only because
+   * there is no row on disk yet to move.
+   */
+  proposal?: Proposal
   /** Set on a `reading` slot: something recorded, and what recorded it. */
   reading?: Reading
   tracker?: Tracker
@@ -210,6 +222,13 @@ class CalendarState {
   readings = $state<Reading[]>([])
 
   selection = $state<Selection>(null)
+  /**
+   * The pending `block` proposal open in the rail, by id -- not the
+   * `Proposal` itself, for the reason `todo`'s `#selectedProposalId` gives:
+   * so answering it anywhere closes this pane too. Mutually exclusive with
+   * `selection`.
+   */
+  #selectedProposalId = $state<ProposalId | null>(null)
   loading = $state(false)
   syncing = $state(false)
   /** Set after a manual refresh, cleared on the next navigation. */
@@ -271,6 +290,10 @@ class CalendarState {
     // session on disk without ever writing it as a block. Costs a
     // `localStorage` read; touches no vault and nothing decrypted.
     this.timer = readTimer()
+    // This window's own accept does not come back as a change event -- see
+    // `proposals.svelte.ts` -- so the store that just gained a block tells
+    // itself to reload.
+    proposals.onAccepted('block', () => this.refresh())
   }
 
   reset() {
@@ -295,6 +318,7 @@ class CalendarState {
     this.entryDays = new Set()
     this.readings = []
     this.selection = null
+    this.#selectedProposalId = null
     this.syncNote = null
     // The timer is deliberately *not* cleared: it is a note to self held in
     // local storage, it names no decrypted content, and a lock taken during
@@ -317,6 +341,8 @@ class CalendarState {
   async #start() {
     const view = viewPref.get()
     if (view) this.view = view
+    // See `todo.start` for why this is idempotent and safe to ask twice.
+    if (!proposals.loaded) await proposals.refresh()
 
     // The clock only runs while something needs it: a per-second re-render
     // of the whole grid for the sake of a "now" line nobody is watching is
@@ -537,6 +563,7 @@ class CalendarState {
 
     if (this.layer !== 'actual') out.push(...this.blockSlots(iso, 'planned'))
     if (this.layer !== 'planned') out.push(...this.blockSlots(iso, 'actual'))
+    out.push(...this.ghostBlockSlots(iso))
     // A reading is a record of something that happened, so it belongs with
     // the record layer and disappears under Plan. That falls out of what the
     // toggle already means rather than being a rule of its own.
@@ -679,6 +706,42 @@ class CalendarState {
   }
 
   /**
+   * Pending `block` proposals as ghosts, at the time they would book.
+   *
+   * Drawn through the same `Slot` shape as a real block -- packed into the
+   * same lanes, coloured the way the block's subject would be -- so nothing
+   * about the grid's layout has to know a ghost is not yet real. Only the
+   * layer toggle is respected the way `blockSlots` respects it: a plan
+   * proposed for a day already has the shape of `Layer` to answer to.
+   */
+  private ghostBlockSlots(iso: string): Slot[] {
+    const out: Slot[] = []
+    for (const p of proposals.forKind('block')) {
+      if (p.payload.type !== 'create') continue
+      const block = recordAs(p, 'block')
+      if (!block || block.allDay) continue
+      if (this.layer === 'planned' && block.kind !== 'planned') continue
+      if (this.layer === 'actual' && block.kind !== 'actual') continue
+      const start = offsetInDay(block.start, iso)
+      const end = offsetInDay(block.end, iso)
+      if (end <= 0 || start >= 24 * 60) continue
+      out.push({
+        key: `proposal:${p.id}`,
+        kind: block.kind,
+        title: this.titleOfBlock(block),
+        subtitle: this.subtitleOfBlock(block),
+        color: this.colorOfBlock(block),
+        start: Math.max(0, start),
+        end: Math.min(24 * 60, Math.max(end, start + MIN_BLOCK_MINUTES)),
+        movable: true,
+        block,
+        proposal: p,
+      })
+    }
+    return out
+  }
+
+  /**
    * The block being tracked right now, drawn but not stored.
    *
    * It has no id, cannot be dragged and is not in `blocks`, because it does
@@ -764,10 +827,50 @@ class CalendarState {
     // until it is stopped. Selecting nothing is the honest answer to both,
     // and testing for what a slot *has* is what keeps this total for every
     // caller rather than one `!` away from a crash.
+    this.#selectedProposalId = null
     if (!slot?.block && !slot?.event) return void (this.selection = null)
     this.selection = slot.block
       ? { kind: 'block', id: slot.block.id }
       : { kind: 'event', id: slot.event!.id }
+  }
+
+  /**
+   * The pending block proposal open in the rail, or `null` once it has been
+   * answered from anywhere -- see `#selectedProposalId`'s own doc.
+   */
+  get selectedProposal(): Proposal | null {
+    return this.#selectedProposalId
+      ? (proposals.pending.find((p) => p.id === this.#selectedProposalId) ?? null)
+      : null
+  }
+
+  /** Open a pending block proposal in the rail, in place of a real one. */
+  selectProposal(p: Proposal) {
+    this.selection = null
+    this.#selectedProposalId = p.id
+  }
+
+  closeProposal() {
+    this.#selectedProposalId = null
+  }
+
+  /**
+   * Move a ghost to a new time by accepting it there, rather than by writing
+   * to a block that does not exist yet. `block` is the record the proposal
+   * carries -- its length is kept, only the start moves.
+   */
+  async acceptGhostMove(p: Proposal, block: TimeBlock, day: string, startMinutes: number) {
+    const length = minutesBetween(block.start, block.end)
+    const start = instantAt(day, startMinutes)
+    const end = instantAt(day, startMinutes + length)
+    // `block` is read out of `proposals.pending`, a `$state` array, so it and
+    // everything nested in it are reactive proxies -- `$state.snapshot` is
+    // what turns the whole tree back into plain objects the transport this
+    // call goes over can actually clone.
+    return proposals.accept(
+      p,
+      edited('block', $state.snapshot({ ...block, start, end, localDate: day })),
+    )
   }
 
   // ── writing ──────────────────────────────────────────────────────────

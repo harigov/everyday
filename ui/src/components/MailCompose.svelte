@@ -23,11 +23,31 @@
   import * as mailApi from '../lib/mail-api'
   import { isBlankDraft } from '../lib/mail'
   import { mail } from '../lib/mail.svelte'
+  import { DECLINE_REASONS, proposals } from '../lib/proposals.svelte'
   import { toLocalInputValue } from '../lib/format'
   import type { Draft, MailAddress } from '../lib/types'
   import Icon from './Icon.svelte'
 
   let { draft, onclose }: { draft: Draft; onclose: () => void } = $props()
+
+  /**
+   * A dream wrote this and asked to send it. Found by id rather than held as
+   * a prop: the sheet reads `draft` once (see `working`, below), so a
+   * proposal answered while it is open -- from the Assistant app's own
+   * Proposals list, say -- has to be noticed some other way, and the pending
+   * list is reactive where the prop is not.
+   */
+  const proposal = $derived(
+    proposals
+      .forKind('mail')
+      .find((p) => p.payload.type === 'sendMail' && p.payload.draftId === draft.id) ?? null,
+  )
+  const proposalBusy = $derived(proposal ? proposals.isBusy(proposal.id) : false)
+  let choosingReason = $state(false)
+
+  $effect(() => {
+    if (proposal) void proposals.markSeen([proposal])
+  })
 
   /**
    * A working copy, so a keystroke redraws chips without a round trip, and
@@ -218,6 +238,35 @@
     await send(new Date(sendAt).toISOString())
   }
 
+  /**
+   * Accept the proposal: flush whatever was edited here first -- a typo
+   * fixed before sending is still the person's own change, saved through the
+   * ordinary draft autosave rather than `edited(...)`, since a `sendMail`
+   * proposal carries only the draft's id and never a record to overwrite it
+   * with -- then let `accept` hand the draft to the outbox exactly as an
+   * ordinary send would.
+   */
+  async function acceptProposal() {
+    const p = proposal
+    if (!p) return
+    commitTyped('to', toText)
+    commitTyped('cc', ccText)
+    commitTyped('bcc', bccText)
+    syncBody()
+    await saver.flush()
+    const closed = await proposals.accept(p)
+    if (closed) onclose()
+  }
+
+  /** Decline, but leave the draft and the sheet exactly as they were --
+   *  declining a proposal to send is not a request to throw the draft away. */
+  async function declineProposal(reason: (typeof DECLINE_REASONS)[number]['reason'] | null) {
+    const p = proposal
+    if (!p) return
+    choosingReason = false
+    await proposals.decline(p, reason)
+  }
+
   async function discard() {
     syncBody()
     if (isBlankDraft(working)) {
@@ -241,7 +290,7 @@
   function onKeydown(e: KeyboardEvent) {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault()
-      void send()
+      void (proposal ? acceptProposal() : send())
     }
     if (e.key === 'Escape') {
       // Not a bare `onclose()`: that dropped whatever autosave had not yet
@@ -283,7 +332,11 @@
 <div class="sheet compose" role="dialog" aria-modal="true" aria-label="Compose" use:trapFocus>
   <div class="head">
     <h2>{working.subject || 'New message'}</h2>
-    {#if working.origin.type === 'assistant'}
+    {#if proposal}
+      <span class="assistant-mark proposal-mark" title={proposal.why || proposal.caption}
+        ><Icon name="sparkle" size={12} /> Proposed to send — review before accepting</span
+      >
+    {:else if working.origin.type === 'assistant'}
       <span class="assistant-mark"
         ><Icon name="sparkle" size={12} /> Drafted by the assistant — review before sending</span
       >
@@ -423,7 +476,32 @@
       <input type="file" multiple hidden onchange={(e) => void onFiles(e.currentTarget.files)} />
     </label>
     <span class="spacer"></span>
-    {#if sendingLater}
+    {#if proposal}
+      <!-- A dream's send, not the person's own: the two ordinary send paths
+           give way to accept and decline, the same pair every ghost in the
+           app offers, because a proposal answered from in here is still
+           answered through `proposals.accept`/`decline` and not `mail.send`. -->
+      <div class="decline-wrap">
+        <button
+          class="btn"
+          disabled={proposalBusy}
+          onclick={() => (choosingReason = !choosingReason)}
+        >
+          Decline
+        </button>
+        {#if choosingReason}
+          <div class="reasons" role="menu">
+            <button role="menuitem" onclick={() => declineProposal(null)}>Just decline</button>
+            {#each DECLINE_REASONS as r (r.label)}
+              <button role="menuitem" onclick={() => declineProposal(r.reason)}>{r.label}</button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+      <button class="btn btn-primary" disabled={proposalBusy} onclick={() => void acceptProposal()}>
+        Send <span class="hint">(Mod+Enter)</span>
+      </button>
+    {:else if sendingLater}
       <input type="datetime-local" bind:value={sendAt} />
       <button class="btn" onclick={() => void sendLater()}>Schedule</button>
       <button class="btn" onclick={() => (sendingLater = false)}>Cancel</button>
@@ -467,6 +545,10 @@
     background: var(--bg-hover);
     color: var(--accent);
     font-size: var(--text-xs);
+  }
+  .proposal-mark {
+    border: 1px dashed color-mix(in oklab, var(--accent) 55%, var(--border));
+    background: color-mix(in oklab, var(--accent) 8%, transparent);
   }
   .close {
     display: grid;
@@ -618,5 +700,38 @@
     padding: 4px var(--sp-2);
     background: var(--bg-raised);
     color: var(--fg);
+  }
+
+  .decline-wrap {
+    position: relative;
+  }
+  .reasons {
+    position: absolute;
+    right: 0;
+    bottom: 100%;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    min-width: 160px;
+    margin-bottom: 4px;
+    padding: var(--sp-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-raised);
+    box-shadow: var(--shadow);
+  }
+  .reasons button {
+    padding: var(--sp-1) var(--sp-2);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--fg);
+    font: inherit;
+    font-size: var(--text-sm);
+    text-align: left;
+    cursor: pointer;
+  }
+  .reasons button:hover {
+    background: var(--bg-hover);
   }
 </style>

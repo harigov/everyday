@@ -29,6 +29,7 @@ import { load, makeCheck } from './harness.mjs'
 const { module: dashboard, close } = await load('/src/lib/dashboard.ts')
 const {
   addWidget,
+  byTimeOrLast,
   defaultLayout,
   moveWidget,
   needsOf,
@@ -177,7 +178,7 @@ check(
 // The whole catalogue at once is still a handful of queries, not one per card.
 ok(
   'the union of every need is bounded',
-  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 10,
+  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 11,
 )
 
 // The readings window is the longest any *tracker* card asks for, never
@@ -292,6 +293,31 @@ check('an empty list means nobody has arranged one', parseLayout('[]'), null)
     'medium',
   )
   check('a page survives a round trip', parseLayout(JSON.stringify(page)), page)
+}
+
+// ── "Plan for tomorrow" ordering ─────────────────────────────────────
+//
+// The widget draws tomorrow's proposals in the order the day runs; a task
+// due sometime with no due *time* has to sort after every timed one, not
+// before it the way an empty string would under plain comparison.
+
+{
+  const items = [
+    { id: 'no-time', at: null },
+    { id: 'late', at: '17:00:00' },
+    { id: 'early', at: '09:00:00' },
+    { id: 'also-no-time', at: null },
+  ]
+  check(
+    'timed rows sort by clock, untimed rows sort last and keep their order',
+    byTimeOrLast(items, (i) => i.at).map((i) => i.id),
+    ['early', 'late', 'no-time', 'also-no-time'],
+  )
+  check(
+    'an empty list is an empty list',
+    byTimeOrLast([], () => null),
+    [],
+  )
 }
 
 await close()

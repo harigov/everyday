@@ -21,6 +21,7 @@
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import TranscriptPanel from './TranscriptPanel.svelte'
+  import NoteProposalPreview from './NoteProposalPreview.svelte'
   import type { Attachment, Purpose, QuickTaskDraft, RichDoc } from '../lib/types'
   import { api } from '../lib/api'
   import { purpose as purposeStore } from '../lib/purpose.svelte'
@@ -182,7 +183,9 @@
   }
 </script>
 
-{#if !note}
+{#if notes.selectedProposal}
+  <NoteProposalPreview proposal={notes.selectedProposal} />
+{:else if !note}
   <div class="empty">
     <EmptyState lead="Nothing open">
       {#snippet icon()}<Icon name="quote" size={34} weight={1.4} />{/snippet}

@@ -36,6 +36,7 @@ use crate::store::library::LibraryStore;
 use crate::store::mail::MailStore;
 use crate::store::meetings::MeetingStore;
 use crate::store::notes::NoteStore;
+use crate::store::proposals::ProposalStore;
 use crate::store::purpose::PurposeStore;
 use crate::store::routines::RoutineStore;
 use crate::store::secrets::SecretStore;
@@ -114,6 +115,12 @@ pub struct Capabilities {
     /// works: talking to it needs nothing from here.
     #[serde(default)]
     pub routines: bool,
+    /// Backend implements [`proposals::ProposalStore`], so the assistant can
+    /// leave work it prepared for the person to accept or decline.
+    ///
+    /// False hides dreaming and every ghost. See `docs/plans/dreaming.md`.
+    #[serde(default)]
+    pub proposals: bool,
     /// Backend implements [`agent::AgentStore`], so the assistant has
     /// somewhere to keep its settings, its threads and its memory.
     ///
@@ -518,6 +525,13 @@ pub trait JournalStore: Send + Sync {
         None
     }
 
+    /// Storage for proposals -- work the assistant prepared and did not do --
+    /// if this backend has any. Same shape and same reasoning as
+    /// [`JournalStore::tasks`]. See [`proposals`](crate::store::proposals).
+    fn proposals(&self) -> Option<&dyn ProposalStore> {
+        None
+    }
+
     /// Storage for the assistant's own domain, if this backend has any.
     ///
     /// Same shape and same reasoning as [`JournalStore::tasks`]. See
@@ -912,6 +926,7 @@ pub mod library;
 pub mod mail;
 pub mod meetings;
 pub mod notes;
+pub mod proposals;
 pub mod purpose;
 pub mod routines;
 pub mod secrets;

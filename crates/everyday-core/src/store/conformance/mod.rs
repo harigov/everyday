@@ -33,6 +33,7 @@ mod library;
 mod mail;
 mod meetings;
 mod notes;
+mod proposals;
 mod purpose;
 mod routines;
 mod secrets;
@@ -46,6 +47,7 @@ pub use library::run_library_suite;
 pub use mail::run_mail_suite;
 pub use meetings::run_meeting_suite;
 pub use notes::run_note_suite;
+pub use proposals::run_proposal_suite;
 pub use purpose::run_purpose_suite;
 pub use routines::run_routine_suite;
 pub use secrets::run_secret_suite;
@@ -159,6 +161,16 @@ pub fn run_all(store: &dyn JournalStore) {
     match store.routines() {
         Some(_) => run_routine_suite(store),
         None => eprintln!("backend {name:?} stores no routines; skipping the routine suite"),
+    }
+
+    // And proposals, on the same terms again. Handed the whole journal
+    // store, the same choice `routines` and `notes` make above, on the same
+    // reasoning: there is no cascade of its own to check here, but the
+    // suite is one call either way and every other domain is written this
+    // way.
+    match store.proposals() {
+        Some(_) => run_proposal_suite(store),
+        None => eprintln!("backend {name:?} stores no proposals; skipping the proposal suite"),
     }
 
     // And the assistant, on the same terms again.

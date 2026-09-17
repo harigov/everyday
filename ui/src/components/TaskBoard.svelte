@@ -16,11 +16,26 @@
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { taskMenu } from '../lib/menus'
+  import { proposals, recordAs } from '../lib/proposals.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
+  import TaskGhostRow from './TaskGhostRow.svelte'
   import QuickAdd from './QuickAdd.svelte'
   import type { Task, TaskStatus } from '../lib/types'
   import { STATUS_LABELS as LABELS } from '../lib/labels'
+
+  /** Pending task-create proposals for one column, at its foot. Never counted
+   *  in the column's own total -- a ghost is not yet a card. */
+  function ghostsFor(status: TaskStatus) {
+    return todo.ghostTasks.filter((p) => recordAs(p, 'task')?.status === status)
+  }
+
+  // Every ghost across every column is "on screen" the moment the board is,
+  // since the board (unlike the list) never scrolls a column out of view.
+  const allGhosts = $derived(todo.columns.flatMap((s) => ghostsFor(s)))
+  $effect(() => {
+    if (allGhosts.length > 0) void proposals.markSeen(allGhosts)
+  })
 
   let dragging = $state<Task | null>(null)
   /** Where the card would land: the column and the slot within it. */
@@ -208,6 +223,14 @@
             <Icon name="plus" size={13} /> Add
           </button>
         {/if}
+
+        <!-- Ghosts always sit at the foot of the column, after every real
+             card -- never part of the column's own count above. -->
+        {#each ghostsFor(status) as p (p.id)}
+          <div class="ghost-card">
+            <TaskGhostRow proposal={p} />
+          </div>
+        {/each}
       </div>
     </section>
   {/each}
@@ -388,5 +411,9 @@
   .empty:hover {
     color: var(--fg-muted);
     background: var(--bg-hover);
+  }
+
+  .ghost-card {
+    display: flex;
   }
 </style>

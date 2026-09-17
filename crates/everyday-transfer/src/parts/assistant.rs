@@ -25,12 +25,16 @@
 //! What is here is therefore a *reading* copy: a folder of transcripts you
 //! can search with `grep`, and a page saying what the thing knows about you,
 //! which is the question anybody wants answered about an assistant they have
-//! been talking to for a year.
+//! been talking to for a year. That page groups its memories by
+//! `MemoryOrigin` -- what it was told, what it has noticed (dated, since a
+//! dream's guess is only as good as the day it was last supported), and what
+//! it was asked not to assume -- because "the assistant thinks this" and "a
+//! person said this" are different claims and the page should not blur them.
 
 use crate::text::{FrontMatter, safe_name};
 use crate::{Files, Options, Portable, Spec};
 use everyday_core::Result;
-use everyday_core::agent::Role;
+use everyday_core::agent::{MemoryOrigin, Role};
 use everyday_core::store::JournalStore;
 use everyday_core::store::agent::ConversationQuery;
 use std::fmt::Write as _;
@@ -137,10 +141,49 @@ impl Portable for AssistantPart {
         let memories = agent.list_memories()?;
         if !memories.is_empty() {
             let mut body = String::from("# What the assistant remembers\n\n");
-            for memory in &memories {
-                let pin = if memory.pinned { " *(yours)*" } else { "" };
-                let _ = writeln!(body, "- {}{pin}", memory.text.trim());
+
+            // Told and confirmed read as one group -- both are things the
+            // assistant stands behind, whether because it was told or
+            // because a guess was agreed with. Inferred and rejected each
+            // get their own heading, so a page you did not write yourself
+            // still says plainly which of these it merely noticed and which
+            // it was asked to hold.
+            let told: Vec<_> = memories
+                .iter()
+                .filter(|m| matches!(m.origin, MemoryOrigin::Told | MemoryOrigin::Confirmed))
+                .collect();
+            if !told.is_empty() {
+                let _ = writeln!(body, "## What it was told\n");
+                for memory in told {
+                    let pin = if memory.pinned { " *(yours)*" } else { "" };
+                    let _ = writeln!(body, "- {}{pin}", memory.text.trim());
+                }
+                body.push('\n');
             }
+
+            let inferred: Vec<_> =
+                memories.iter().filter(|m| m.origin == MemoryOrigin::Inferred).collect();
+            if !inferred.is_empty() {
+                let _ = writeln!(body, "## What it has noticed\n");
+                for memory in inferred {
+                    let as_of = memory
+                        .last_supported
+                        .map(|d| format!(" *(as of {d})*"))
+                        .unwrap_or_default();
+                    let _ = writeln!(body, "- {}{as_of}", memory.text.trim());
+                }
+                body.push('\n');
+            }
+
+            let rejected: Vec<_> =
+                memories.iter().filter(|m| m.origin == MemoryOrigin::Rejected).collect();
+            if !rejected.is_empty() {
+                let _ = writeln!(body, "## What not to assume\n");
+                for memory in rejected {
+                    let _ = writeln!(body, "- {}", memory.text.trim());
+                }
+            }
+
             out.records("memories.md", body, memories.len() as u64)?;
         }
         Ok(())

@@ -40,6 +40,7 @@ mod maintenance;
 mod meetings;
 mod notes;
 mod profile;
+mod proposals;
 mod purpose;
 mod routines;
 mod session;

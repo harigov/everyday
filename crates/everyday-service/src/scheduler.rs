@@ -38,14 +38,19 @@
 use crate::agent::{AgentEvent, Turn};
 use crate::events::{Change, Kind, Notification, Op};
 use crate::service::{Service, blocking};
+use everyday_core::agent::tools::Drafting;
+use everyday_core::dream;
 use everyday_core::meeting::{Recording, Stage, identify};
-use everyday_core::routine::{Due, Outcome, Routine, RoutineRun, Trigger};
+use everyday_core::proposal::{ProposalSource, max_per_run};
+use everyday_core::routine::{DreamScope, Due, Outcome, Routine, RoutineRun, Trigger};
 use everyday_core::store::calendars::EventQuery;
 use everyday_core::store::meetings::RecordingQuery;
 use everyday_core::store::routines::RunQuery;
 use everyday_core::store::tasks::TaskQuery;
 use everyday_core::task::TaskStatus;
-use everyday_core::{Conversation, Vault};
+use everyday_core::{
+    Conversation, ConversationId, MemoryOrigin, MessageRole, ProposalQuery, RoutineRunId, Vault,
+};
 use jiff::Timestamp;
 use std::sync::Arc;
 use std::time::Duration;
@@ -120,6 +125,23 @@ pub async fn tick(service: &Arc<Service>) {
     // and a real failure here should not also cost this tick its routines.
     if let Err(e) = crate::outbox::release_due_snoozes(service).await {
         tracing::warn!(error = %e, "could not release due snoozes");
+    }
+
+    // Proposals: the expiry sweep, beside the snooze release just above and
+    // independent of whether this vault has routines at all, on the same
+    // reasoning -- a vault without proposals answers `false` immediately
+    // (`supports_proposals` is the only read it does), and a real failure
+    // here should not also cost this tick its routines.
+    {
+        let vault = vault.clone();
+        let service = service.clone();
+        let _ = blocking(move || {
+            if vault.supports_proposals() && sweep_proposals(&vault, Timestamp::now()) {
+                service.events().changed(Change::new(Kind::Proposal, Op::Updated));
+            }
+            Ok(())
+        })
+        .await;
     }
 
     // The two model-assisted mail features that run unasked, on their own
@@ -337,7 +359,16 @@ pub async fn tick(service: &Arc<Service>) {
         .await
         .unwrap_or(None);
         let Some(routine) = routine else { continue };
-        resume(service, &vault, &routine, run).await;
+        // A dream asked for by hand is still a dream: the same digest, the
+        // same drafting turn, the same bookkeeping. Run as an ordinary turn it
+        // would have been handed an empty prompt and the whole catalogue
+        // with nothing held back.
+        if let Some(scope) = routine.kind.dream_scope() {
+            run_dream(service, &vault, &routine, None, scope, Some(run)).await;
+            continue;
+        }
+        let prompt = routine.instructions.clone();
+        resume(service, &vault, &routine, run, prompt, None).await;
     }
 }
 
@@ -612,7 +643,8 @@ async fn about(service: &Arc<Service>, vault: &Arc<Vault>, routine: &Routine, su
     })
     .await;
     let Ok(run) = saved else { return };
-    resume(service, vault, &about, run).await;
+    let prompt = about.instructions.clone();
+    resume(service, vault, &about, run, prompt, None).await;
 }
 
 /// Everything about one run, from the row to the notification.
@@ -622,6 +654,11 @@ async fn execute(
     routine: &Routine,
     slot: Option<jiff::Timestamp>,
 ) {
+    if let Some(scope) = routine.kind.dream_scope() {
+        run_dream(service, vault, routine, slot, scope, None).await;
+        return;
+    }
+
     let saved = blocking({
         let vault = vault.clone();
         let routine = routine.clone();
@@ -633,7 +670,251 @@ async fn execute(
     })
     .await;
     let Ok(run) = saved else { return };
-    resume(service, vault, routine, run).await;
+    resume(service, vault, routine, run, routine.instructions.clone(), None).await;
+}
+
+/// Everything about a dream's run: whether it may start at all, the digest
+/// that becomes its first message, the drafting turn, and the bookkeeping
+/// once it is done. Ordinary routines never reach this function.
+///
+/// # The idle guard
+///
+/// "No conversation turn in flight" -- [`crate::agent::turn_in_flight`] -- is
+/// the cheap definition of idle, read exactly as the module doc for that
+/// function states. A dream that finds one running does not stamp its slot,
+/// so `Routine::is_due` says the same thing on the very next tick and it is
+/// tried again inside its own grace, the same as a tick that found the vault
+/// briefly unwritable. A queued run found busy stays queued, for the same
+/// reason.
+///
+/// `queued` is the row "run now" already wrote, when that is how this dream
+/// was asked for. A skip then closes that row rather than writing a second.
+async fn run_dream(
+    service: &Arc<Service>,
+    vault: &Arc<Vault>,
+    routine: &Routine,
+    slot: Option<jiff::Timestamp>,
+    scope: DreamScope,
+    queued: Option<RoutineRun>,
+) {
+    let skip_this = |reason: &'static str| {
+        let queued = queued.clone();
+        async move {
+            match queued {
+                Some(run) => skip_queued(service, vault, run, reason).await,
+                None => skip_dream(service, vault, routine, slot, reason).await,
+            }
+        }
+    };
+    let (settings, supports_proposals) = blocking({
+        let vault = vault.clone();
+        move || Ok((vault.agent_settings().unwrap_or_default(), vault.supports_proposals()))
+    })
+    .await
+    .unwrap_or_default();
+
+    if !settings.dreaming {
+        skip_this("dreaming is switched off in Settings").await;
+        return;
+    }
+    if !supports_proposals {
+        skip_this("this vault's backend does not support proposals").await;
+        return;
+    }
+
+    if crate::agent::turn_in_flight() {
+        return;
+    }
+
+    let now = settings.now();
+    let Ok(digest) = blocking({
+        let vault = vault.clone();
+        move || Ok(dream::digest(&vault, scope, &now)?)
+    })
+    .await
+    else {
+        skip_this("could not build tonight's digest").await;
+        return;
+    };
+
+    // Only the day scope is ever skipped for having nothing to say: the
+    // week and month digests read other dreams' own words, and a dream that
+    // never runs the loop that reads its own outcomes.
+    if scope == DreamScope::Day && digest.is_empty() {
+        skip_this("nothing happened yesterday").await;
+        return;
+    }
+
+    let saved = match queued {
+        Some(run) => Ok(run),
+        None => {
+            blocking({
+                let vault = vault.clone();
+                let routine = routine.clone();
+                move || {
+                    let run = RoutineRun::new(&routine, slot);
+                    vault.save_run(&run)?;
+                    Ok(run)
+                }
+            })
+            .await
+        }
+    };
+    let Ok(run) = saved else { return };
+    let run_id = run.id;
+    let as_of = digest.as_of;
+
+    // The contract the interface reads a dream's digest back out of a
+    // transcript by: the app's own instructions, then the person's paragraph
+    // if they added one, then the exact line `--- digest ---`, then the
+    // digest itself. Nothing else in this application may emit that line.
+    let mut prompt = dream::instructions(scope).to_string();
+    let extra = routine.instructions.trim();
+    if !extra.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(extra);
+    }
+    prompt.push_str("\n\n--- digest ---\n\n");
+    prompt.push_str(&digest.to_markdown());
+
+    let drafting = Drafting {
+        source: Some(ProposalSource::Run { run_id }),
+        direct: vec!["create_note"],
+        max_proposals: Some(max_per_run(scope)),
+    };
+
+    resume(service, vault, routine, run, prompt, Some(drafting)).await;
+
+    let vault = vault.clone();
+    let _ = blocking(move || {
+        finish_dream_bookkeeping(&vault, run_id, as_of);
+        Ok(())
+    })
+    .await;
+}
+
+/// Close a dream somebody queued by hand as skipped, with the reason. The
+/// row already exists, so it is this one that says why -- not a second.
+async fn skip_queued(
+    service: &Arc<Service>,
+    vault: &Arc<Vault>,
+    mut run: RoutineRun,
+    reason: &str,
+) {
+    run.outcome = Outcome::Skipped;
+    run.reason = reason.to_string();
+    run.finished_at = Some(jiff::Timestamp::now());
+    run.seen = true;
+    save_run(vault, &run).await;
+    service.events().changed(run_change());
+}
+
+/// Record a dream as skipped, stamp its slot so it is not reported again on
+/// the next tick, and raise the change every other skip raises.
+async fn skip_dream(
+    service: &Arc<Service>,
+    vault: &Arc<Vault>,
+    routine: &Routine,
+    slot: Option<jiff::Timestamp>,
+    reason: &str,
+) {
+    let reason = reason.to_string();
+    let _ = blocking({
+        let vault = vault.clone();
+        let routine = routine.clone();
+        move || {
+            skip(&vault, &routine, slot, reason);
+            if let Some(slot) = slot {
+                stamp(&vault, &routine, slot);
+            }
+            Ok(())
+        }
+    })
+    .await;
+    service.events().changed(run_change());
+}
+
+/// After a dream's turn finishes: prefix its summary with what it actually
+/// did, and apply any memories its final message confirmed. A no-op for a
+/// run that did not finish `Done` -- a failed or timed-out dream has nothing
+/// to count and nothing to confirm.
+fn finish_dream_bookkeeping(vault: &Vault, run_id: RoutineRunId, as_of: jiff::civil::Date) {
+    let Ok(mut run) = vault.run(run_id) else { return };
+    if run.outcome != Outcome::Done {
+        return;
+    }
+
+    let proposals = vault
+        .proposals(&ProposalQuery { run_id: Some(run_id), ..Default::default() })
+        .unwrap_or_default();
+    let (notes, memories) = tool_counts(vault, run.conversation_id);
+    // Read from the model's own text, before it is prefixed below -- the
+    // confirmation section is part of that text, not of the counts this
+    // function is about to add in front of it.
+    let confirmed = dream::parse_confirmed_memory_ids(&run.summary);
+
+    let counts = counts_sentence(proposals.len(), memories, notes);
+    let original = run.summary.trim();
+    run.summary =
+        if original.is_empty() { format!("{counts}.") } else { format!("{counts}. {original}") };
+    let _ = vault.save_run(&run);
+
+    for id in confirmed {
+        let Ok(all) = vault.memories() else { continue };
+        let Some(mut memory) = all.into_iter().find(|m| m.id == id) else { continue };
+        // Confirming is not the same act as a person agreeing something is
+        // true from the memory list -- that sets `Confirmed` through a
+        // different door -- so `origin` is left exactly as it was; only the
+        // evidence date moves.
+        if matches!(memory.origin, MemoryOrigin::Inferred | MemoryOrigin::Confirmed) {
+            memory.last_supported = Some(as_of);
+            let _ = vault.save_memory(&memory);
+        }
+    }
+}
+
+/// How many of this run's tool calls were a successful `create_note` or a
+/// successful `remember` -- the two things a dream's summary line counts
+/// besides proposals. Read from the transcript rather than from `Turned`,
+/// which `resume` does not thread this far: the run is reloaded from the
+/// vault by the time this runs, and the transcript is the one record of
+/// what actually happened that survives that.
+fn tool_counts(vault: &Vault, conversation_id: Option<ConversationId>) -> (usize, usize) {
+    let Some(conversation_id) = conversation_id else { return (0, 0) };
+    let Ok(messages) = vault.messages(conversation_id) else { return (0, 0) };
+    let mut names = std::collections::HashMap::new();
+    for m in &messages {
+        for call in &m.tool_calls {
+            names.insert(call.id.clone(), call.name.clone());
+        }
+    }
+    let mut notes = 0;
+    let mut memories = 0;
+    for m in &messages {
+        if m.role != MessageRole::Tool || m.failed {
+            continue;
+        }
+        let Some(id) = &m.tool_call_id else { continue };
+        match names.get(id).map(String::as_str) {
+            Some("create_note") => notes += 1,
+            Some("remember") => memories += 1,
+            _ => {}
+        }
+    }
+    (notes, memories)
+}
+
+fn counts_sentence(proposals: usize, memories: usize, notes: usize) -> String {
+    format!(
+        "{proposals} proposal{}, {memories} memor{}, {notes} note{}",
+        plural(proposals),
+        if memories == 1 { "y" } else { "ies" },
+        plural(notes),
+    )
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
 }
 
 /// Carry a `Running` row through to an outcome.
@@ -646,6 +927,8 @@ async fn resume(
     vault: &Arc<Vault>,
     routine: &Routine,
     mut run: RoutineRun,
+    prompt: String,
+    drafting: Option<Drafting>,
 ) {
     // Claimed for as long as this call is on the stack, so the sweep above can
     // tell a run this process is carrying out from one a dead process left.
@@ -699,13 +982,14 @@ async fn resume(
         vault: vault.clone(),
         pending: service.pending(),
         conversation: conversation.id,
-        prompt: routine.instructions.clone(),
+        prompt,
         context: None,
         // Nothing is listening: there is no window on the other end of a
         // scheduled run. The events are dropped rather than buffered, and what
         // is kept is the transcript in the vault.
         channel: Arc::new(|_: AgentEvent| {}),
         unattended: Some(run.id),
+        drafting,
     };
 
     let mut wrote = Vec::new();
@@ -878,6 +1162,56 @@ fn pretty_minutes(seconds: i64) -> String {
         return format!("{hours} hours");
     }
     format!("{} days", (hours + 12) / 24)
+}
+
+/// Close whatever a pending proposal's own clock, or an event only mail can
+/// raise, has already decided -- called from `tick`, beside
+/// `release_due_snoozes`. Returns whether anything closed, so the caller
+/// knows whether to raise a `Change`.
+///
+/// [`everyday_core::Vault::expire_proposals`] handles every kind's own
+/// deadline. A `SendMail` proposal has a second way to go stale that no
+/// deadline alone can see -- its draft sent by hand, discarded, or gone
+/// altogether -- so that is swept here too, in the same pass. Every failure
+/// is logged and skipped rather than propagated: one bad row must not stop
+/// the rest of the sweep, the way one routine's trouble does not stop
+/// another's in the loop above.
+fn sweep_proposals(vault: &Vault, now: Timestamp) -> bool {
+    use everyday_core::proposal::{Payload, ProposalKind};
+    use everyday_core::store::proposals::ProposalQuery;
+
+    let mut closed = false;
+    match vault.expire_proposals(now) {
+        Ok(ids) => closed |= !ids.is_empty(),
+        Err(e) => tracing::warn!(error = %e, "could not expire due proposals"),
+    }
+
+    let pending = match vault.proposals(&ProposalQuery::pending_of(ProposalKind::Mail)) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not list pending mail proposals");
+            return closed;
+        }
+    };
+    for mut proposal in pending {
+        let Payload::SendMail { draft_id } = &proposal.payload else { continue };
+        let draft_id = *draft_id;
+        let stale = match vault.draft(draft_id) {
+            Ok(draft) => !matches!(draft.state, everyday_core::mail::DraftState::Editing),
+            // Gone altogether reads the same as no longer editing: either
+            // way there is nothing left to send.
+            Err(_) => true,
+        };
+        if !stale {
+            continue;
+        }
+        proposal.close(everyday_core::proposal::Outcome::Expired { at: now }, now);
+        match vault.save_proposal(&proposal) {
+            Ok(()) => closed = true,
+            Err(e) => tracing::warn!(error = %e, "could not close a stale mail proposal"),
+        }
+    }
+    closed
 }
 
 #[cfg(test)]

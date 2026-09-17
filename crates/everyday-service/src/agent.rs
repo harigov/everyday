@@ -47,16 +47,17 @@
 use crate::events::Kind;
 use crate::service::Service;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use everyday_core::RoutineRunId;
-use everyday_core::agent::tools::{self, Caller as ToolCaller, Effect, ToolContext};
+use everyday_core::agent::tools::{self, Caller as ToolCaller, Drafting, Effect, ToolContext};
 use everyday_core::agent::{
     AgentSettings, Conversation, MailLink, Message as VaultMessage, Role, ToolCall,
 };
 use everyday_core::mail::Origin as MailOrigin;
 use everyday_core::model::system_tz;
+use everyday_core::proposal::ProposalSource;
 use everyday_core::{ConversationId, Vault};
 use rig_agent::agent::hook::{
     ToolCall as HookToolCall, ToolCallAction, ToolResultAction, ToolResultEvent,
@@ -70,6 +71,44 @@ use serde_json::Value;
 use tokio::sync::oneshot;
 
 use crate::error::{CommandError, CommandResult, codes, mail_rate_limit_error};
+
+/// How many turns -- the rail's or a routine's -- are running right now, in
+/// this process.
+///
+/// A process-wide counter rather than a field on [`Service`], so a dream
+/// deciding whether to start (`everyday_service::scheduler::execute`) can
+/// ask the cheap question -- "is anybody typing" -- without the scheduler
+/// having to reach back into a `Service` field it does not otherwise touch.
+/// It counts every turn, not only interactive ones, but that is never a
+/// problem in practice: the scheduler already runs routines one at a time
+/// within a tick, so by the time a dream's own check runs, the only turn
+/// that can still be live is the rail's.
+static LIVE_TURNS: AtomicU32 = AtomicU32::new(0);
+
+/// Whether any turn is running right now. What the dream's idle guard reads;
+/// see `everyday_service::scheduler::execute`'s own doc for why "no
+/// conversation in flight" is the cheap definition of idle this uses.
+pub fn turn_in_flight() -> bool {
+    LIVE_TURNS.load(Ordering::SeqCst) > 0
+}
+
+/// Counts one turn in, and back out again on drop -- including an early
+/// return from [`run_turn`], which is exactly the case a bare
+/// increment/decrement pair would be easy to get wrong.
+struct LiveTurnGuard;
+
+impl LiveTurnGuard {
+    fn start() -> Self {
+        LIVE_TURNS.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for LiveTurnGuard {
+    fn drop(&mut self) {
+        LIVE_TURNS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 /// Where a turn's events go.
 ///
@@ -145,12 +184,35 @@ pub enum AgentEvent {
         /// `'static` field cannot be produced from bytes that live only as
         /// long as the line they arrived on.
         kind: String,
+        /// Whether the card may offer "later" beside confirm and decline --
+        /// [`everyday_core::agent::tools::Tool::can_propose`], plus
+        /// `send_draft`, which already has a builder of its own. `false` for
+        /// `"search"`: `web_search` is not in the core catalogue at all, so
+        /// it has no proposal form to park into. See
+        /// `docs/plans/dreaming.md`'s Phase 5 and [`ConfirmGate::park`].
+        can_park: bool,
     },
     /// The turn is over. Sent exactly once, whatever else happened, so the
     /// panel always has something to stop its spinner on.
     Finished { message_id: String },
     /// The turn ended badly. Also terminal.
     Failed { message: String },
+}
+
+/// How a person answered a confirmation card.
+///
+/// A third answer beside confirm and decline: [`Self::Later`] parks the call
+/// as a [`everyday_core::proposal::Proposal`] instead of running it or giving
+/// up on it -- see [`ConfirmGate::park`] and `docs/plans/dreaming.md`'s Phase
+/// 5. Wire-compatible with the older, boolean-only shape: `confirm_tool_call`
+/// still takes `approved`, and gains an `later` flag that defaults to false,
+/// so a client that has not been told about "later" keeps working exactly as
+/// it did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmAnswer {
+    Confirm,
+    Decline,
+    Later,
 }
 
 /// Confirmations waiting on a person, and the vault they belong to.
@@ -161,12 +223,12 @@ pub enum AgentEvent {
 /// thing for a model to emit, and a bare "yes" could not be routed.
 #[derive(Default)]
 pub struct Pending {
-    waiting: Mutex<HashMap<String, oneshot::Sender<bool>>>,
+    waiting: Mutex<HashMap<String, oneshot::Sender<ConfirmAnswer>>>,
 }
 
 impl Pending {
     /// Register a call and hand back the half that waits for the answer.
-    fn register(&self, call_id: &str) -> oneshot::Receiver<bool> {
+    fn register(&self, call_id: &str) -> oneshot::Receiver<ConfirmAnswer> {
         let (tx, rx) = oneshot::channel();
         self.waiting.lock().unwrap().insert(call_id.to_string(), tx);
         rx
@@ -175,9 +237,9 @@ impl Pending {
     /// Answer a waiting call. False if nothing was waiting -- which happens
     /// when a turn was cancelled between the question and the click, and is
     /// not an error worth showing anybody.
-    pub fn answer(&self, call_id: &str, approved: bool) -> bool {
+    pub fn answer(&self, call_id: &str, answer: ConfirmAnswer) -> bool {
         match self.waiting.lock().unwrap().remove(call_id) {
-            Some(tx) => tx.send(approved).is_ok(),
+            Some(tx) => tx.send(answer).is_ok(),
             None => false,
         }
     }
@@ -230,6 +292,26 @@ struct ConfirmGate {
     vault: Arc<Vault>,
     today: jiff::civil::Date,
     tz: String,
+    /// The thread this turn belongs to. `ProposalSource::Conversation`'s own
+    /// id when the rail's "later" answer parks a call -- see [`Self::park`].
+    conversation: ConversationId,
+    /// The endpoint the assistant is actually configured to use, for
+    /// `send_draft`'s own permission check -- see
+    /// [`everyday_core::agent::tools::ToolContext::assistant_provider`].
+    /// Needed only by [`Self::park`]; `describe` never reads it, because
+    /// naming what a call is about to act on never needs to check whether it
+    /// may.
+    assistant_provider: String,
+    /// The run this turn is, if it is a scheduled one -- `ProposalSource::
+    /// Run`'s own id when an unattended call is parked instead of declined.
+    /// `None` for the rail, where [`Self::conversation`] is the source
+    /// instead.
+    run_id: Option<RoutineRunId>,
+    /// Mirrors [`AgentSettings::park_unattended`](everyday_core::agent::AgentSettings::park_unattended):
+    /// whether an unattended destructive or outward call that would
+    /// otherwise be declined on the spot is parked as a proposal instead.
+    /// See `on_tool_call`'s own `self.unattended` branch.
+    park_unattended: bool,
     /// What ran this turn, in call order, so the thread is written down with
     /// its tool calls rather than only its prose. See `run_turn`.
     ledger: Arc<Mutex<Vec<Ran>>>,
@@ -243,6 +325,14 @@ struct ConfirmGate {
     /// and has to be read and written from the same closures that read and
     /// write `ledger`.
     mail_read_this_turn: Arc<AtomicBool>,
+    /// How many more times `create_note` may run for real this turn. `Some`
+    /// only while drafting -- see [`Turn::drafting`] -- and always started at
+    /// one: a dream may write at most one note, and `direct` on
+    /// [`everyday_core::agent::tools::Drafting`] is what lets it write for
+    /// real at all rather than becoming a proposal. Enforced here, not in
+    /// the core, because the core has no notion of "this many calls into a
+    /// run" -- it sees one call at a time.
+    note_budget: Option<Arc<AtomicU32>>,
 }
 
 /// One tool call and what it returned, kept for the record.
@@ -314,6 +404,29 @@ impl AgentHook for ConfirmGate {
             mail_link: None,
         });
 
+        // The dream's one note. Checked before anything else -- a call over
+        // budget is refused whatever `must_confirm` would otherwise say,
+        // because there is no "ask first" for a dream: nobody is watching.
+        if name == "create_note"
+            && let Some(budget) = &self.note_budget
+            && budget
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_err()
+        {
+            (self.channel)(AgentEvent::ToolFinished {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                ok: false,
+                summary: "declined: a dream may write one note per run".into(),
+                mail_link: None,
+            });
+            return ToolCallAction::Skip(
+                "You have already written this run's one note. Do not write another -- say \
+                 whatever else is left in your final reply instead."
+                    .into(),
+            );
+        }
+
         // `web_search` is not in the core catalogue -- `tools::find` answers
         // `None` for it -- so it reaches this hook exactly like every other
         // tool and is singled out here rather than by a second hook. See the
@@ -331,13 +444,44 @@ impl AgentHook for ConfirmGate {
         // registering a waiter would park a scheduled run on a question nobody
         // will ever see, every night, until its own timeout.
         //
-        // The wording is the refusal a person's "Don't" produces, deliberately.
-        // The model is told plainly that it was not done and why, so it can say
-        // so in its report rather than trying again. Somebody who wants a
-        // routine to delete things turns the confirmation off, having read the
-        // sentence beside the switch -- `outward` and `search` have no such
-        // switch and are refused unattended regardless.
+        // Unless `park_unattended` is on and this call can become a
+        // proposal, in which case it is parked instead of given up on --
+        // see [`Self::park`] and `docs/plans/dreaming.md`'s Phase 5. A
+        // `search` confirmation is never parked: `web_search` is not in the
+        // core catalogue and has no proposal form, and the whole point of
+        // stopping to ask is that nothing has been sent to a search
+        // provider yet, which a proposal could not change. A tool the
+        // policy or the pending cap has just refused falls through to the
+        // ordinary decline below rather than leaving the call unrecorded.
         if self.unattended {
+            if kind != "search"
+                && self.park_unattended
+                && let Some(run_id) = self.run_id
+                && tools::find(&name).is_some_and(tools::Tool::can_propose)
+                && self.park(&name, &arguments, ProposalSource::Run { run_id }).is_ok()
+            {
+                (self.channel)(AgentEvent::ToolFinished {
+                    call_id,
+                    name,
+                    ok: false,
+                    summary: "saved as a proposal for the person to decide".into(),
+                    mail_link: None,
+                });
+                return ToolCallAction::Skip(
+                    "Not done. It has been saved as a proposal for the person to decide \
+                     later from the Assistant app. Do not try it again or work around it \
+                     -- say in your reply that it is waiting there for them."
+                        .into(),
+                );
+            }
+
+            // The wording below is the refusal a person's "Don't" produces,
+            // deliberately. The model is told plainly that it was not done
+            // and why, so it can say so in its report rather than trying
+            // again. Somebody who wants a routine to delete things turns the
+            // confirmation off, having read the sentence beside the switch
+            // -- `outward` and `search` have no such switch and are refused
+            // unattended regardless.
             (self.channel)(AgentEvent::ToolFinished {
                 call_id,
                 name,
@@ -370,6 +514,9 @@ impl AgentHook for ConfirmGate {
         } else {
             self.describe(&name, &arguments)
         };
+        // `search` has no proposal form -- see `park`'s own doc -- so it is
+        // never offered "later", whatever the tool it taints happens to be.
+        let can_park = kind != "search" && tools::find(&name).is_some_and(tools::Tool::can_propose);
         let waiter = self.pending.register(&call_id);
         self.issued.lock().unwrap().push(call_id.clone());
         (self.channel)(AgentEvent::ConfirmationRequired {
@@ -378,21 +525,42 @@ impl AgentHook for ConfirmGate {
             subject,
             arguments: arguments.clone(),
             kind: kind.to_string(),
+            can_park,
         });
 
         // A dropped sender means the turn was cancelled or the window went
         // away. Treated as a refusal, because the alternative is deleting
         // something nobody was left to agree to.
         match waiter.await {
-            Ok(true) => {
+            Ok(ConfirmAnswer::Confirm) => {
                 (self.channel)(AgentEvent::ToolStarted { call_id, name, arguments });
                 ToolCallAction::Run
             }
-            Ok(false) => ToolCallAction::Skip(
+            Ok(ConfirmAnswer::Decline) => ToolCallAction::Skip(
                 "The person declined this. Do not try it again or work around it; \
                  tell them it was not done and ask what they would like instead."
                     .into(),
             ),
+            Ok(ConfirmAnswer::Later) => {
+                let conversation = self.conversation;
+                match self.park(
+                    &name,
+                    &arguments,
+                    ProposalSource::Conversation { conversation_id: conversation },
+                ) {
+                    Ok(_) => ToolCallAction::Skip(
+                        "Not done. It has been saved as a proposal for the person to \
+                         decide later from the Assistant app. Do not try it again or \
+                         work around it."
+                            .into(),
+                    ),
+                    Err(e) => ToolCallAction::Skip(format!(
+                        "This could not be saved for later ({e}). It was not done. Do \
+                         not try it again or work around it; tell them it still needs \
+                         doing."
+                    )),
+                }
+            }
             Err(_) => ToolCallAction::Skip("This was not confirmed and has not been done.".into()),
         }
     }
@@ -478,8 +646,43 @@ impl ConfirmGate {
             mail_rate_limit: None,
             after_mail_write: None,
             invite_responder: None,
+            drafting: None,
         };
         tools::describe(&ctx, name, arguments).unwrap_or_default()
+    }
+
+    /// Build `name`'s call and save it as a pending proposal instead of
+    /// running it -- the rail's "later" answer, and `on_tool_call`'s own
+    /// `unattended` branch when [`Self::park_unattended`](Self) is on. See
+    /// `docs/plans/dreaming.md`'s Phase 5 and
+    /// [`everyday_core::agent::tools::propose_call`], which does the actual
+    /// building and saving.
+    ///
+    /// Unlike [`Self::describe`], this needs `caller` and
+    /// `assistant_provider` set: `send_draft`'s own builder checks the
+    /// account's permission before it will propose a send, the same check
+    /// `run_send_draft` makes before it actually sends one.
+    fn park(
+        &self,
+        name: &str,
+        arguments: &Value,
+        source: ProposalSource,
+    ) -> everyday_core::error::Result<Value> {
+        let ctx = ToolContext {
+            vault: &self.vault,
+            today: self.today,
+            tz: &self.tz,
+            conversation: Some(self.conversation),
+            unattended: self.unattended,
+            caller: Some(ToolCaller::Assistant { conversation: self.conversation }),
+            mail_search: None,
+            assistant_provider: Some(self.assistant_provider.clone()),
+            mail_rate_limit: None,
+            after_mail_write: None,
+            invite_responder: None,
+            drafting: None,
+        };
+        tools::propose_call(&ctx, name, arguments, source)
     }
 }
 
@@ -549,6 +752,11 @@ struct TurnMeta {
     /// per-turn budget resets between one prompt and the next rather than
     /// accumulating for the life of the whole conversation.
     turn_id: String,
+    /// Set when this turn is drafting -- see [`Turn::drafting`]. Carried
+    /// through to every [`ToolContext`] this turn builds, and read by
+    /// [`build`] to decide which tool schemas to offer and whether
+    /// `web_search` is offered at all.
+    drafting: Option<Drafting>,
 }
 
 /// Wrap the core catalogue as rig tools and assemble the agent.
@@ -593,6 +801,14 @@ fn build(
     // `tools::available_for` and `agent::tools::mail`.
     let zone = zone_name(settings);
     let assistant_provider = settings.provider_config.acknowledgement_name();
+    // Whether this is a dream. It changes exactly two things about the
+    // catalogue: every writing tool's schema grows the `why` argument (see
+    // `Tool::parameters_for`), and `web_search` is not offered at all --
+    // a dream reads the vault, not the web. It does *not* change which
+    // tools are on offer otherwise: `dispatch` is what turns a write into a
+    // proposal, or refuses one it cannot draft, and it does that whatever
+    // the catalogue handed the model.
+    let is_dream = meta.drafting.is_some();
     let wrap = |tool: &'static tools::Tool| {
         let vault = vault.clone();
         let meta = meta.clone();
@@ -602,7 +818,7 @@ fn build(
         PortableDynamicTool::new(
             tool.name,
             tool.description,
-            tool.parameters(),
+            tool.parameters_for(is_dream),
             move |arguments: serde_json::Value| {
                 let vault = vault.clone();
                 let meta = meta.clone();
@@ -629,7 +845,7 @@ fn build(
     for tool in rest {
         builder = builder.portable_dynamic_tool(wrap(tool));
     }
-    if settings.web {
+    if settings.web && !is_dream {
         builder = builder.portable_dynamic_tool(web_search_tool());
     }
 
@@ -783,6 +999,7 @@ async fn run_tool(
             mail_rate_limit: Some(&rate_limit),
             after_mail_write: Some(&after_mail_write),
             invite_responder: Some(&invite_responder),
+            drafting: meta.drafting.clone(),
         };
         tools::dispatch(&ctx, name, &arguments)
     })
@@ -818,10 +1035,23 @@ pub struct Turn {
     /// it needs and carries on.
     ///
     /// What does *not* change is the tool catalogue: a run is offered exactly
-    /// what the rail is offered. Everything the assistant can make already
-    /// lives in this application, and a routine that could read a shelf but
-    /// not add to it would be a secretary who could only take notes.
+    /// what the rail is offered, with one exception -- see [`Turn::drafting`].
+    /// Everything the assistant can make already lives in this application,
+    /// and a routine that could read a shelf but not add to it would be a
+    /// secretary who could only take notes.
     pub unattended: Option<RoutineRunId>,
+    /// Set when this turn is a dream: everything it writes becomes a
+    /// [`everyday_core::proposal::Proposal`] instead of a real record, except
+    /// the tools named in [`Drafting::direct`], which still run for real
+    /// (and are the caller's to put a budget on -- see
+    /// `everyday_service::scheduler` and this file's own `create_note`
+    /// budget in [`ConfirmGate`]). `None` for every turn that is not a dream,
+    /// which is every turn there was before dreaming existed.
+    ///
+    /// While this is set, every writing tool's schema also grows the `why`
+    /// argument (see [`tools::Tool::parameters_for`]) and `web_search` is not
+    /// offered at all -- see [`build`].
+    pub drafting: Option<Drafting>,
 }
 
 /// What a turn did, for a caller that has to write it down.
@@ -905,7 +1135,20 @@ fn written(ran: &[Ran]) -> Vec<(Kind, Vec<String>)> {
 ///
 /// [`AgentStore::put_message`]: everyday_core::store::agent::AgentStore::put_message
 pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
-    let Turn { service, vault, pending, conversation, prompt, context, channel, unattended } = turn;
+    // Counted in for the whole of this function, including every early
+    // return below -- see [`turn_in_flight`] and its doc.
+    let _live = LiveTurnGuard::start();
+    let Turn {
+        service,
+        vault,
+        pending,
+        conversation,
+        prompt,
+        context,
+        channel,
+        unattended,
+        drafting,
+    } = turn;
 
     let (settings, key) = vault.agent_credentials()?;
 
@@ -937,11 +1180,17 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     let context = unattended_context.or(context);
 
     let unattended_run = unattended.is_some();
+    // A dream may write at most one note for real -- see `ConfirmGate`'s own
+    // field and `Turn::drafting`'s doc. Started at one whatever `Drafting`
+    // says about which tools are direct: today that is always exactly
+    // `["create_note"]`, and the cap is fixed at one regardless.
+    let note_budget = drafting.is_some().then(|| Arc::new(AtomicU32::new(1)));
     let meta = TurnMeta {
         service,
         conversation,
         unattended: unattended_run,
         turn_id: reply.id.to_string(),
+        drafting,
     };
     let agent = build(&meta, vault.clone(), &settings, key, context.as_deref())?;
     let ledger: Arc<Mutex<Vec<Ran>>> = Arc::default();
@@ -955,8 +1204,13 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         vault: vault.clone(),
         today: settings.now().date(),
         tz: zone_name(&settings),
+        conversation,
+        assistant_provider: settings.provider_config.acknowledgement_name(),
+        run_id: unattended,
+        park_unattended: settings.park_unattended,
         ledger: ledger.clone(),
         mail_read_this_turn: Arc::default(),
+        note_budget,
     };
 
     let outcome =
@@ -1218,5 +1472,111 @@ mod tests {
         let id = "0192f8b2-0000-7000-8000-000000000000";
         let out = written(&[ran_with_id("archive_thread", Some(id))]);
         assert_eq!(out, vec![(Kind::Thread, vec![id.to_string()])]);
+    }
+
+    // ---- ConfirmAnswer / Pending -------------------------------------------
+    //
+    // There is no harness for driving an interactive turn through a real
+    // confirmation card -- `tests/routines.rs` and `tests/dream.rs` only ever
+    // run unattended, since their fake model has no way to pause mid-stream
+    // for a click. So the enum a person's answer becomes, and the proposal
+    // "later" builds, are each exercised at the lowest level that touches
+    // them: `Pending` on its own, and `ConfirmGate::park` against a real
+    // vault, without a turn or a model anywhere in it.
+
+    #[test]
+    fn pending_delivers_the_answer_it_was_given_to_the_call_that_asked() {
+        let pending = Pending::default();
+        let mut rx = pending.register("call-1");
+        assert!(pending.answer("call-1", ConfirmAnswer::Later));
+        assert_eq!(rx.try_recv(), Ok(ConfirmAnswer::Later));
+    }
+
+    #[test]
+    fn answering_a_call_nobody_registered_says_so_rather_than_panicking() {
+        let pending = Pending::default();
+        assert!(!pending.answer("nothing-waiting", ConfirmAnswer::Confirm));
+    }
+
+    /// A vault with nothing on `Later`'s subject: a bare, unencrypted
+    /// SQLite file, the way `crates/everyday-vault/tests/support::vault`
+    /// builds one for the tools tests this method is a service-side
+    /// counterpart of.
+    fn test_vault() -> (Arc<Vault>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = everyday_vault::create(
+            dir.path(),
+            everyday_core::VaultConfig { password: None, ..Default::default() },
+        )
+        .unwrap();
+        (Arc::new(vault), dir)
+    }
+
+    /// A gate with nobody watching turned off and nothing wired that
+    /// `park` itself does not read -- see its own doc for exactly which
+    /// fields those are.
+    fn test_gate(vault: Arc<Vault>, conversation: ConversationId) -> ConfirmGate {
+        ConfirmGate {
+            pending: Arc::default(),
+            issued: Arc::default(),
+            channel: Arc::new(|_| {}),
+            enabled: true,
+            unattended: false,
+            vault,
+            today: jiff::civil::date(2026, 9, 16),
+            tz: "UTC".into(),
+            conversation,
+            assistant_provider: String::new(),
+            run_id: None,
+            park_unattended: false,
+            ledger: Arc::default(),
+            mail_read_this_turn: Arc::default(),
+            note_budget: None,
+        }
+    }
+
+    #[test]
+    fn park_builds_and_saves_a_proposal_made_by_the_conversation() {
+        let (vault, _dir) = test_vault();
+        let task = everyday_core::Task::new("Book the dentist");
+        vault.save_task(&task).unwrap();
+
+        let conversation = ConversationId::new();
+        let gate = test_gate(vault.clone(), conversation);
+
+        let result = gate
+            .park(
+                "delete_task",
+                &serde_json::json!({ "task_id": task.id.to_string() }),
+                ProposalSource::Conversation { conversation_id: conversation },
+            )
+            .expect("delete_task has a builder and can be parked");
+        assert_eq!(result["action"], "proposed");
+        assert!(vault.task(task.id).is_ok(), "later means later -- it is not deleted yet");
+
+        let pending = vault.proposals(&Default::default()).unwrap();
+        assert_eq!(pending.len(), 1, "exactly one proposal was left");
+        assert_eq!(
+            pending[0].made_by,
+            Some(ProposalSource::Conversation { conversation_id: conversation }),
+            "made by the rail's own thread, not a run"
+        );
+    }
+
+    #[test]
+    fn park_refuses_a_tool_with_no_proposal_form() {
+        let (vault, _dir) = test_vault();
+        vault.save_journal(&everyday_core::Journal::new("Journal")).unwrap();
+        let conversation = ConversationId::new();
+        let gate = test_gate(vault.clone(), conversation);
+
+        let err = gate
+            .park(
+                "delete_entry",
+                &serde_json::json!({ "entry_id": "nope" }),
+                ProposalSource::Conversation { conversation_id: conversation },
+            )
+            .expect_err("a journal entry has no proposal form");
+        assert!(err.to_string().contains("no proposal form"), "got {err}");
     }
 }

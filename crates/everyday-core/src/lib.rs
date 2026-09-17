@@ -80,6 +80,7 @@ pub mod agent;
 pub mod blobstore;
 pub mod calendar;
 pub mod crypto;
+pub mod dream;
 pub mod error;
 pub mod fsutil;
 pub mod ics;
@@ -94,6 +95,7 @@ pub mod model;
 pub mod note;
 pub mod packstore;
 pub mod profile;
+pub mod proposal;
 pub mod purpose;
 pub mod quick;
 pub mod richtext;
@@ -112,8 +114,8 @@ pub use account::{
     EndpointSecurity, Identity, Permission as MailPermission, Preset as AccountPreset, Services,
 };
 pub use agent::{
-    AgentSettings, Conversation, LLMModelConfig, LLMProviderConfig, Memory, Message, Provider,
-    Role as MessageRole, ToolCall,
+    AgentSettings, Conversation, LLMModelConfig, LLMProviderConfig, Memory, MemoryOrigin, Message,
+    Provider, Role as MessageRole, ToolCall,
 };
 pub use blobstore::FileBlobStore;
 pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatus, SyncReport};
@@ -121,8 +123,8 @@ pub use error::{Error, Result};
 pub use id::{
     AccountId, BlobId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId,
     ItemId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NoteId, OpId,
-    PackId, ProjectId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId, TaskId, TemplateId,
-    ThreadId, TrackerId, TranscriptId, VoiceprintId,
+    PackId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId, TaskId,
+    TemplateId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
 };
 pub use library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,
@@ -141,12 +143,15 @@ pub use mailsearch::{
 pub use model::{Attachment, Entry, EntrySummary, Journal, Location, MediaKind, Weather};
 pub use note::{Note, NoteSummary};
 pub use profile::Profile;
+pub use proposal::{
+    Payload, Proposal, ProposalKind, ProposalPolicy, ProposalSource, ProposalState, ProposedRecord,
+};
 pub use purpose::{
     Goal, GoalActivity, GoalStatus, Purpose, PurposeMinutes, Role, RoleEventMinutes,
 };
 pub use quick::{Prompt as QuickPrompt, QuickApp, QuickContext, QuickJob, QuickPolicy};
 pub use richtext::RichDoc;
-pub use routine::{Due, Outcome, Routine, RoutineRun, Trigger, Weekday};
+pub use routine::{DreamScope, Due, Outcome, Routine, RoutineKind, RoutineRun, Trigger, Weekday};
 pub use store::accounts::AccountStore;
 pub use store::agent::{AgentStore, ConversationQuery};
 pub use store::calendars::{CalendarStore, EventQuery};
@@ -154,6 +159,7 @@ pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
 pub use store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
 pub use store::meetings::{MeetingStore, RecordingQuery};
 pub use store::notes::{NoteQuery, NoteSort, NoteStore};
+pub use store::proposals::{ProposalQuery, ProposalStore};
 pub use store::purpose::{GoalQuery, PurposeStore, PurposeWindow};
 pub use store::routines::RunQuery;
 pub use store::tasks::{BlockQuery, ParentScope, ProjectScope, TaskQuery, TaskSort, TaskStore};

@@ -46,6 +46,7 @@ import {
 import { summarise, type HabitSummary } from './habits'
 import { purpose } from './purpose.svelte'
 import { pref } from './prefs'
+import { proposals } from './proposals.svelte'
 import { app, handle } from './state.svelte'
 import { latest } from './store/latest'
 import { addDays, isoDate, localeWeekStart, minutesBetween, startOfWeek, todayIso } from './time'
@@ -154,6 +155,16 @@ class OverviewState {
   }
 
   // ── derived, for the widgets ─────────────────────────────────────────
+
+  /**
+   * Tomorrow, local -- not `addDays(todayIso(), 1)` inlined at every call
+   * site, and not UTC: an evening west of Greenwich is not one arithmetic on
+   * `Date.prototype.toISOString()` gets right. What "Plan for tomorrow"
+   * reads `proposals.forDate` against.
+   */
+  get tomorrow(): string {
+    return addDays(todayIso(), 1)
+  }
 
   /** The balance report, folded into one row per role. */
   get roles(): RoleTotals[] {
@@ -341,6 +352,10 @@ class OverviewState {
     // now" card would otherwise sit frozen, which is the exact failure
     // `watchClock` exists to prevent.
     if (needs.has('today')) calendar.watchClock()
+    // The proposals store loads and reloads itself -- see `todo.start` for
+    // why this is idempotent -- so "Plan for tomorrow" only has to ask once,
+    // the same as every other app view does on its own way in.
+    if (needs.has('proposals') && !proposals.loaded) await proposals.refresh()
 
     try {
       const today = todayIso()

@@ -3,10 +3,11 @@
 use serde_json::{Value, json};
 
 use super::{
-    Args, Tool, ToolContext, done, empty_schema, flag, limit_arg, list, number, schema, text,
+    Args, Built, Tool, ToolContext, done, empty_schema, flag, limit_arg, list, number, schema, text,
 };
 use crate::error::{Error, Result};
 use crate::id::RoutineId;
+use crate::proposal::{About, AboutKind, Payload, ProposalKind, ProposedRecord};
 use crate::routine::{Routine, RoutineRun, Trigger, Weekday};
 use crate::store::routines::RunQuery;
 
@@ -58,7 +59,9 @@ pub(super) static TOOLS: &[Tool] = &[
          Use this when they say they want something to happen regularly \u{2014} \"every \
          Sunday evening, plan my week\". Say what you have set up and when it will first \
          run; they can see it and change it in the Assistant app.",
-        run_create_routine
+        run_create_routine,
+        None,
+        Some(build_create_routine)
     ),
     tool!(
         "update_routine",
@@ -78,7 +81,9 @@ pub(super) static TOOLS: &[Tool] = &[
         ),
         "Change a routine. Every field is optional and omitted fields are left alone. To \
          stop one without losing it, set enabled to false.",
-        run_update_routine
+        run_update_routine,
+        None,
+        Some(build_update_routine)
     ),
     tool!(
         "delete_routine",
@@ -88,7 +93,8 @@ pub(super) static TOOLS: &[Tool] = &[
         "Permanently delete a routine, its run log and the transcripts of those runs. \
          Anything it made \u{2014} notes, tasks \u{2014} is left alone. There is no undo.",
         run_delete_routine,
-        Some(describe_delete_routine)
+        Some(describe_delete_routine),
+        Some(build_delete_routine)
     ),
     tool!(
         "run_routine",
@@ -162,7 +168,7 @@ fn schedule_from(args: &Args<'_>) -> Result<Trigger> {
     let at = raw.trim().parse::<jiff::civil::Time>().map_err(|_| {
         args.bad(format!("{raw:?} is not a time of day. Use 24-hour HH:MM, for example 07:00."))
     })?;
-    Ok(Trigger::Schedule { at, days: parse_days(args)? })
+    Ok(Trigger::Schedule { at, days: parse_days(args)?, day_of_month: None })
 }
 
 /// The `days` argument, deduplicated in the order they were given.
@@ -184,6 +190,22 @@ fn parse_days(args: &Args<'_>) -> Result<Vec<Weekday>> {
     Ok(days)
 }
 
+/// Everything `create_routine` does to build the record, without saving it
+/// or checking who is asking -- the half `run_create_routine` and
+/// `build_create_routine` share. The unattended refusal lives in
+/// `run_create_routine` alone: drafting mode exists precisely to bypass it,
+/// the way `docs/plans/dreaming.md` says a proposal is the safe form of the
+/// call it stands in for.
+fn routine_from_create_args(args: &Args<'_>) -> Result<Routine> {
+    let trigger = schedule_from(args)?;
+    let mut routine = Routine::new(args.str("name")?, args.str("instructions")?, trigger);
+    if let Some(grace) = args.opt_u32("grace_minutes") {
+        routine.grace_minutes = grace;
+    }
+    routine.validate()?;
+    Ok(routine)
+}
+
 fn run_create_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     // The one recursion this refuses. A routine that makes routines, running
     // unattended every morning, is a way to wake up owning forty of them --
@@ -196,12 +218,7 @@ fn run_create_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
                 .into(),
         ));
     }
-    let trigger = schedule_from(args)?;
-    let mut routine = Routine::new(args.str("name")?, args.str("instructions")?, trigger);
-    if let Some(grace) = args.opt_u32("grace_minutes") {
-        routine.grace_minutes = grace;
-    }
-    routine.validate()?;
+    let routine = routine_from_create_args(args)?;
     ctx.vault.save_routine(&routine)?;
 
     let now = ctx.now();
@@ -217,10 +234,19 @@ fn run_create_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     Ok(out)
 }
 
-fn run_update_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: RoutineId = args.id("routine_id", "routine")?;
-    let mut routine = ctx.vault.routine(id)?;
+fn build_create_routine(_ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
+    let routine = routine_from_create_args(args)?;
+    let caption = format!("Create routine: {}", routine.name);
+    Ok(Built {
+        payload: Payload::Create { record: ProposedRecord::Routine(routine) },
+        caption,
+        about: None,
+    })
+}
 
+/// Everything `update_routine` does to the loaded record, without saving it
+/// -- the half `run_update_routine` and `build_update_routine` share.
+fn apply_update_routine_args(args: &Args<'_>, mut routine: Routine) -> Result<Routine> {
     if let Some(name) = args.opt_str("name") {
         routine.name = name.to_string();
     }
@@ -235,16 +261,19 @@ fn run_update_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if args.get("at").is_some() {
         let named = schedule_from(args)?;
         routine.trigger = match (named, &routine.trigger) {
-            (Trigger::Schedule { at, days }, Trigger::Schedule { days: was, .. })
-                if args.get("days").is_none() =>
-            {
-                Trigger::Schedule { at, days: if days.is_empty() { was.clone() } else { days } }
-            }
+            (
+                Trigger::Schedule { at, days, .. },
+                Trigger::Schedule { days: was, day_of_month, .. },
+            ) if args.get("days").is_none() => Trigger::Schedule {
+                at,
+                days: if days.is_empty() { was.clone() } else { days },
+                day_of_month: *day_of_month,
+            },
             (next, _) => next,
         };
     } else if args.get("days").is_some() {
-        if let Trigger::Schedule { at, .. } = routine.trigger {
-            routine.trigger = Trigger::Schedule { at, days: parse_days(args)? };
+        if let Trigger::Schedule { at, day_of_month, .. } = routine.trigger {
+            routine.trigger = Trigger::Schedule { at, days: parse_days(args)?, day_of_month };
         } else {
             return Err(Error::Invalid(
                 "update_routine: this routine does not run on a schedule, so it has no \
@@ -261,6 +290,13 @@ fn run_update_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     }
     routine.updated_at = jiff::Timestamp::now();
     routine.validate()?;
+    Ok(routine)
+}
+
+fn run_update_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let id: RoutineId = args.id("routine_id", "routine")?;
+    let routine = ctx.vault.routine(id)?;
+    let routine = apply_update_routine_args(args, routine)?;
     ctx.vault.save_routine(&routine)?;
 
     let now = ctx.now();
@@ -274,12 +310,67 @@ fn run_update_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     Ok(out)
 }
 
+/// A dream proposing to change itself is refused rather than parked as a
+/// proposal: its schedule and grace are the person's to edit directly (see
+/// `docs/plans/dreaming.md`'s Phase 3), and a routine's own run is not the
+/// person who should be asked to approve a change to it.
+fn refuse_if_dream(routine: &Routine) -> Result<()> {
+    if routine.kind.is_dream() {
+        return Err(Error::Invalid(
+            "a dream's schedule and grace can be changed directly in Settings; it cannot be \
+             proposed as a change for somebody to accept."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn build_update_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
+    let id: RoutineId = args.id("routine_id", "routine")?;
+    let original = ctx.vault.routine(id)?;
+    refuse_if_dream(&original)?;
+    let expected_updated_at = original.updated_at;
+    let routine = apply_update_routine_args(args, original)?;
+    let caption = format!("Change routine: {}", routine.name);
+    Ok(Built {
+        payload: Payload::Replace { record: ProposedRecord::Routine(routine), expected_updated_at },
+        caption,
+        about: Some(About { kind: AboutKind::Routine, id: id.to_string() }),
+    })
+}
+
+/// A dream cannot be deleted by hand, in either mode: it is set up by the
+/// application when dreaming is switched on, and the way to remove it is to
+/// switch dreaming off, not to delete one of the three routines it made.
+fn refuse_delete_if_dream(routine: &Routine) -> Result<()> {
+    if routine.kind.is_dream() {
+        return Err(Error::Invalid(
+            "a dream is set up by the application when dreaming is switched on and cannot be \
+             deleted on its own; turn dreaming off in Settings to remove it."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 fn run_delete_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let id: RoutineId = args.id("routine_id", "routine")?;
     // Read it first, so the confirmation card and the reply can name what went.
     let routine = ctx.vault.routine(id)?;
+    refuse_delete_if_dream(&routine)?;
     ctx.vault.delete_routine(id)?;
     done("deleted", "routine", &routine.name, id.to_string())
+}
+
+fn build_delete_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
+    let id: RoutineId = args.id("routine_id", "routine")?;
+    let routine = ctx.vault.routine(id)?;
+    refuse_delete_if_dream(&routine)?;
+    Ok(Built {
+        payload: Payload::Delete { kind: ProposalKind::Routine, id: id.to_string() },
+        caption: format!("Delete routine: {}", routine.name),
+        about: Some(About { kind: AboutKind::Routine, id: id.to_string() }),
+    })
 }
 
 fn run_run_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {

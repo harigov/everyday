@@ -27,6 +27,7 @@ export type EntryId = string
 export type NoteId = string
 export type RoutineId = string
 export type RoutineRunId = string
+export type ProposalId = string
 export type BlobId = string
 export type ProjectId = string
 export type TaskId = string
@@ -452,7 +453,7 @@ export type Weekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun'
  */
 export type Trigger =
   /** A time of day, on the given days. An empty list means every day. */
-  | { type: 'schedule'; at: string; days: Weekday[] }
+  | { type: 'schedule'; at: string; days: Weekday[]; dayOfMonth?: number | null }
   /** Before a calendar event starts. Answered by a query on each tick. */
   | { type: 'beforeEvent'; leadMinutes: number; roleId?: RoleId | null }
   /** Before a task falls due. Also a query. */
@@ -481,10 +482,22 @@ export interface Routine {
    */
   graceMinutes: number
   enabled: boolean
+  /**
+   * A person's routine, or one the application owns. A dream cannot be
+   * deleted by hand, and its `instructions` are the person's paragraph added
+   * to an app-owned prompt. Absent on a routine saved before dreaming existed.
+   */
+  kind?: RoutineKind
   lastRunAt?: string | null
   createdAt: string
   updatedAt: string
 }
+
+export const DREAM_SCOPES = ['day', 'week', 'month'] as const
+/** How far back a dream reads: yesterday, the week, the month. */
+export type DreamScope = (typeof DREAM_SCOPES)[number]
+
+export type RoutineKind = { type: 'custom' } | { type: 'dream'; scope: DreamScope }
 
 /** How a run ended. */
 export type Outcome = 'running' | 'done' | 'failed' | 'skipped'
@@ -690,6 +703,11 @@ export interface Capabilities {
    * nothing from there.
    */
   routines: boolean
+  /**
+   * Backend carries proposals: work the assistant prepared for the person to
+   * accept or decline. False hides dreaming and every ghost.
+   */
+  proposals?: boolean
   /**
    * Backend carries the assistant's own domain, so its settings, threads and
    * memory have somewhere to live.
@@ -2243,6 +2261,22 @@ export interface AgentSettings {
    * happens between here and the model endpoint they configured.
    */
   web: boolean
+  /**
+   * Whether the assistant dreams: reads the day overnight, revises what it
+   * has noticed about the person, and leaves proposals. Off by default,
+   * because it reads the journal. Turning it on creates the three dream
+   * routines; turning it off disables them.
+   */
+  dreaming?: boolean
+  /** Which kinds of record the assistant may propose. */
+  proposals?: ProposalPolicy
+  /**
+   * Whether a scheduled routine, finding nobody there to confirm a delete or
+   * a send, leaves a proposal instead of giving up on the spot. Off by
+   * default -- a routine that leaves deletions waiting is a different
+   * promise from one that refuses them.
+   */
+  parkUnattended?: boolean
   /** Whether a key is stored. Never the key. */
   hasKey: boolean
 }
@@ -2409,8 +2443,121 @@ export interface Memory {
   sourceId: ConversationId | null
   /** Written or edited by hand, so the assistant's own trimming leaves it. */
   pinned: boolean
+  /** Who stands behind it. Absent means `'told'`. */
+  origin?: MemoryOrigin
+  /** `YYYY-MM-DD`. The last day the data supported an inferred memory. */
+  lastSupported?: string | null
   createdAt: string
   updatedAt: string
+}
+
+export const MEMORY_ORIGINS = ['told', 'inferred', 'confirmed', 'rejected'] as const
+/**
+ * Told and confirmed memories are standing instructions. Inferred ones were
+ * noticed by a dream and may be wrong. Rejected ones are kept as "do not
+ * assume" so a later dream cannot learn them again.
+ */
+export type MemoryOrigin = (typeof MEMORY_ORIGINS)[number]
+
+// ── Proposals ────────────────────────────────────────────────────────────
+//
+// Work the assistant prepared and did not do. Mirrors
+// `everyday_core::proposal`. A proposal carries a whole record, never a tool
+// call, so it reads the same after an upgrade. See docs/plans/dreaming.md.
+
+export const PROPOSAL_KINDS = ['task', 'block', 'memory', 'routine', 'note', 'mail'] as const
+export type ProposalKind = (typeof PROPOSAL_KINDS)[number]
+
+export type ProposedRecord =
+  | { kind: 'task'; value: Task }
+  | { kind: 'block'; value: TimeBlock }
+  | { kind: 'memory'; value: Memory }
+  | { kind: 'routine'; value: Routine }
+  | { kind: 'note'; value: Note }
+
+export type ProposalPayload =
+  /** Save a record that does not exist yet. */
+  | { type: 'create'; record: ProposedRecord }
+  /** Overwrite a record, only if it has not changed since `expectedUpdatedAt`. */
+  | { type: 'replace'; record: ProposedRecord; expectedUpdatedAt: string }
+  /** Remove a record. `id` is the record's own id. */
+  | { type: 'delete'; kind: ProposalKind; id: string }
+  /** Send a mail draft the assistant already wrote. */
+  | { type: 'sendMail'; draftId: DraftId }
+
+export const ABOUT_KINDS = [
+  'task',
+  'block',
+  'event',
+  'note',
+  'entry',
+  'thread',
+  'memory',
+  'routine',
+  'goal',
+] as const
+export type AboutKind = (typeof ABOUT_KINDS)[number]
+
+export interface ProposalAbout {
+  kind: AboutKind
+  id: string
+}
+
+export type ProposalSource =
+  { type: 'run'; runId: RoutineRunId } | { type: 'conversation'; conversationId: ConversationId }
+
+/** Why somebody said no. Optional, and one tap. */
+export type DeclineReason =
+  | { type: 'notNow' }
+  | { type: 'wrongTime' }
+  | { type: 'neverThis' }
+  | { type: 'other'; text: string }
+
+export type ProposalOutcome =
+  | { type: 'pending' }
+  | { type: 'accepted'; at: string; savedAs: string; edited: boolean }
+  | { type: 'declined'; at: string; reason?: DeclineReason | null }
+  | { type: 'expired'; at: string }
+
+export const PROPOSAL_STATES = ['pending', 'accepted', 'declined', 'expired'] as const
+export type ProposalState = (typeof PROPOSAL_STATES)[number]
+
+export interface Proposal {
+  id: ProposalId
+  kind: ProposalKind
+  payload: ProposalPayload
+  /** The sentence to draw on the row: "Create task: Book the dentist". */
+  caption: string
+  /** One line from the assistant: why this is here. */
+  why: string
+  about?: ProposalAbout | null
+  madeBy?: ProposalSource | null
+  /** `YYYY-MM-DD`: the day this is drawn on, for a task or a block. */
+  targetDate?: string | null
+  madeAt: string
+  expiresAt: string
+  outcome: ProposalOutcome
+  seen: boolean
+  updatedAt: string
+}
+
+export interface ProposalQuery {
+  kinds?: ProposalKind[]
+  states?: ProposalState[]
+  /** `YYYY-MM-DD`, inclusive. Proposals with no day are excluded when set. */
+  from?: string | null
+  to?: string | null
+  madeSince?: string | null
+  aboutKind?: AboutKind | null
+  aboutId?: string | null
+  runId?: RoutineRunId | null
+  unseen?: boolean | null
+  limit?: number | null
+}
+
+/** Which kinds may be proposed. Everything but what is denied. */
+export interface ProposalPolicy {
+  denied?: ProposalKind[]
 }
 
 /**
@@ -2451,6 +2598,12 @@ export type AgentEvent =
       arguments: unknown
       /** Why this is being asked -- see `ConfirmKind` below. */
       kind: ConfirmKind
+      /**
+       * Whether the card may offer "later" beside confirm and decline: the
+       * tool has a proposal form to park into. `false` for `'search'`,
+       * which has none. See `docs/plans/dreaming.md`'s Phase 5.
+       */
+      canPark: boolean
     }
   | { type: 'finished'; messageId: MessageId }
   | { type: 'failed'; message: string }
