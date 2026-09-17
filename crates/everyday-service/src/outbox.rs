@@ -69,7 +69,6 @@ use everyday_mail::outbox::{
     ExecContext, Executed, Located, Lookups, Sender, execute, is_retryable,
 };
 use everyday_mail::session::{MailError, MailSession};
-use jiff::Timestamp;
 
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
@@ -131,7 +130,7 @@ where
     T: Sender,
 {
     let vault = svc.require()?;
-    let now = Timestamp::now();
+    let now = svc.now();
     let ops = blocking({
         let vault = vault.clone();
         move || Ok(vault.due_ops(account, now, DRAIN_BATCH)?)
@@ -200,7 +199,7 @@ where
                 let backoff = outbox_table().delay_for(op.attempts);
                 op.attempts += 1;
                 op.last_error = Some(reason.clone());
-                op.not_before = Timestamp::now() + backoff;
+                op.not_before = svc.now() + backoff;
                 op.transition_to(OpState::Pending)?;
                 persist_op(&vault, &op).await?;
                 mark_account_needs_sign_in(svc, &vault, account, &reason).await;
@@ -212,7 +211,7 @@ where
                 let backoff = outbox_table().delay_for(op.attempts);
                 op.attempts += 1;
                 op.last_error = Some(err.to_string());
-                op.not_before = Timestamp::now() + backoff;
+                op.not_before = svc.now() + backoff;
                 op.transition_to(OpState::Pending)?;
                 persist_op(&vault, &op).await?;
                 report.retried += 1;
@@ -685,7 +684,7 @@ pub async fn release_due_snoozes(svc: &Arc<Service>) -> CommandResult<usize> {
     if !vault.is_writable() || !vault.supports_mail() {
         return Ok(0);
     }
-    let now = Timestamp::now();
+    let now = svc.now();
     let due = blocking({
         let vault = vault.clone();
         move || Ok(vault.due_snoozed_threads(now, 200)?)
