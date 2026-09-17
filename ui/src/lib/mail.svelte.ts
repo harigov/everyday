@@ -19,7 +19,7 @@
 
 import * as mailApi from './mail-api'
 import { accounts } from './accounts.svelte'
-import { registerApply, singleId, type ChangeWithIds } from './live-apply'
+import { registerApply, type ChangeWithIds } from './live-apply'
 import { proposals } from './proposals.svelte'
 import {
   applyInviteResponse,
@@ -37,6 +37,8 @@ import {
   visibleThreadList,
 } from './mail'
 import { app, handle, quietly } from './state.svelte'
+import { applySingleChange } from './store/live-patch'
+import { guardedRefresh } from './store/refresh'
 import type {
   AccountId,
   Draft,
@@ -112,8 +114,25 @@ class MailState {
   unreadCounts = $state<Map<MailboxId, number>>(new Map())
   syncStatus = $state<MailSyncProgress[]>([])
 
-  /** Which load is current, so a slow one cannot land after a newer one. */
+  /**
+   * Which load is current, so a slow one cannot land after a newer one.
+   *
+   * A raw counter, the way `purpose.svelte.ts`'s is, and for the same
+   * reason: `loadMore` below reads it without minting a token of its own --
+   * it is guarded against racing *itself* by `loadingMore`, and simply asks
+   * whether a `refresh` has started since its own page went out, which is a
+   * question a peek answers correctly and a fresh mint would not: minting
+   * inside `loadMore` would let it invalidate a `refresh` that was already
+   * in flight when `loadMore` began, which never happened before and is not
+   * this migration's to introduce. `#refreshGeneration` wraps this same
+   * field in `Generation`'s shape for `refresh` alone, which does mint one
+   * token per call, the way `++` already did by hand.
+   */
   #generation = 0
+  #refreshGeneration = {
+    next: (): number => ++this.#generation,
+    isCurrent: (token: number): boolean => token === this.#generation,
+  }
   #loaded = false
 
   constructor() {
@@ -286,38 +305,37 @@ class MailState {
    * page-one-only check was mistaking it for.
    */
   async refresh() {
-    if (!this.selectedMailbox) return
-    const generation = ++this.#generation
-    this.loading = true
-    try {
-      // Finding 1: a category filter only means anything for the inbox's
-      // own tabs -- sent elsewhere, it silently narrowed a mailbox with no
-      // tab strip to have set it from.
-      const category = mailboxHasTabs(this.mailbox) ? this.category : null
-      // Bug 3: `snoozed` was never sent at all, so a snoozed thread -- still
-      // a member of whatever mailbox it was snoozed from -- came straight
-      // back on the very next refresh. `false` everywhere except the
-      // Snoozed pseudo-mailbox itself, which wants nothing else.
-      const filter: ThreadFilter = { snoozed: isSnoozedMailbox(this.mailbox) }
-      if (category) filter.category = category
-      const page = await mailApi.listThreads(
-        this.selectedMailbox,
-        filter,
-        null,
-        refreshLimit(this.threads.length, PAGE),
-      )
-      if (generation !== this.#generation) return
-      this.threads = page.threads
-      this.nextCursor = page.nextCursor ?? null
-      if (this.selectedThread && !this.threads.some((t) => t.id === this.selectedThread)) {
-        this.selectedThread = null
-        this.openThread = null
-      }
-    } catch (e) {
-      await handle(e)
-    } finally {
-      if (generation === this.#generation) this.loading = false
-    }
+    const mailboxId = this.selectedMailbox
+    if (!mailboxId) return
+    await guardedRefresh(
+      this.#refreshGeneration,
+      async (isCurrent) => {
+        // Finding 1: a category filter only means anything for the inbox's
+        // own tabs -- sent elsewhere, it silently narrowed a mailbox with no
+        // tab strip to have set it from.
+        const category = mailboxHasTabs(this.mailbox) ? this.category : null
+        // Bug 3: `snoozed` was never sent at all, so a snoozed thread --
+        // still a member of whatever mailbox it was snoozed from -- came
+        // straight back on the very next refresh. `false` everywhere except
+        // the Snoozed pseudo-mailbox itself, which wants nothing else.
+        const filter: ThreadFilter = { snoozed: isSnoozedMailbox(this.mailbox) }
+        if (category) filter.category = category
+        const page = await mailApi.listThreads(
+          mailboxId,
+          filter,
+          null,
+          refreshLimit(this.threads.length, PAGE),
+        )
+        if (!isCurrent()) return
+        this.threads = page.threads
+        this.nextCursor = page.nextCursor ?? null
+        if (this.selectedThread && !this.threads.some((t) => t.id === this.selectedThread)) {
+          this.selectedThread = null
+          this.openThread = null
+        }
+      },
+      { setLoading: (v) => (this.loading = v), onError: (e) => handle(e) },
+    )
   }
 
   /** `VirtualList`'s `onEndReached`: the next keyset page. */
@@ -818,52 +836,47 @@ class MailState {
   // ── live-apply ───────────────────────────────────────────────────
 
   #applyChanges(changes: ChangeWithIds[]): boolean {
-    if (changes.length !== 1) return false
-    const change = changes[0]!
-    const id = singleId(change)
-    if (!id) return false
-    if (change.kind === 'draft') {
+    return applySingleChange(changes, {
       // Nothing in the visible thread list or the sync-status line reads a
       // draft directly today -- the compose sheet owns its own working copy
       // and autosaves it, so another window's edit to the *same* draft is
       // not something this window should clobber mid-keystroke. Handled as
       // "nothing to do" rather than falling through to `RELOAD.mail`, which
       // would otherwise reload the thread list for every autosave tick.
-      return true
-    }
-    if (change.op === 'deleted') {
-      // Finding 5: a thread deleted from another window or by the assistant
-      // must not stay open here just because nothing removed it from
-      // `openThread` -- `#advanceIfOpen` does what archiving already does,
-      // moving on to the neighbour, before the row disappears from under it.
-      this.#advanceIfOpen(id)
-      this.threads = this.threads.filter((t) => t.id !== id)
-      this.searchResults = this.searchResults.filter((t) => t.id !== id)
-      return true
-    }
-    if (change.op === 'created' || change.op === 'updated') {
-      void this.#patchOne(id)
-      // Bug 4: every backend command that can move a thread out of a
-      // mailbox from elsewhere -- archive, trash, snooze, an assistant or
-      // MCP action, another window's own click -- declares `Thread`/
-      // `Updated`, never `Deleted`, and `Thread` carries no mailbox id for
-      // `#patchOne` above to notice the row has left. Patching it in place
-      // is right as far as it goes -- the subject, the snippet, the flags
-      // are current -- but the row stays in a list it may no longer belong
-      // to until something re-asks the backend which threads are actually
-      // still here. A short, debounced refresh is that ask: harmless if the
-      // row still belongs (the page comes back the same), and what actually
-      // drops it if it does not, same as opening the mailbox fresh would.
-      // Debounced so a batch of changes from one sync tick costs one reload,
-      // and `refresh()`'s own `#generation` guard still applies, so a slow
-      // one cannot land after a newer list has replaced it.
-      //
-      // The real fix is a mailbox-scoped change event from the backend --
-      // out of scope for this pass.
-      this.#scheduleLiveRefresh()
-      return true
-    }
-    return false
+      skip: (change) => change.kind === 'draft',
+      onDeleted: (id) => {
+        // Finding 5: a thread deleted from another window or by the
+        // assistant must not stay open here just because nothing removed it
+        // from `openThread` -- `#advanceIfOpen` does what archiving already
+        // does, moving on to the neighbour, before the row disappears from
+        // under it.
+        this.#advanceIfOpen(id)
+        this.threads = this.threads.filter((t) => t.id !== id)
+        this.searchResults = this.searchResults.filter((t) => t.id !== id)
+      },
+      onUpserted: (id) => {
+        void this.#patchOne(id)
+        // Bug 4: every backend command that can move a thread out of a
+        // mailbox from elsewhere -- archive, trash, snooze, an assistant or
+        // MCP action, another window's own click -- declares `Thread`/
+        // `Updated`, never `Deleted`, and `Thread` carries no mailbox id for
+        // `#patchOne` above to notice the row has left. Patching it in place
+        // is right as far as it goes -- the subject, the snippet, the flags
+        // are current -- but the row stays in a list it may no longer belong
+        // to until something re-asks the backend which threads are actually
+        // still here. A short, debounced refresh is that ask: harmless if
+        // the row still belongs (the page comes back the same), and what
+        // actually drops it if it does not, same as opening the mailbox
+        // fresh would. Debounced so a batch of changes from one sync tick
+        // costs one reload, and `refresh()`'s own generation guard still
+        // applies, so a slow one cannot land after a newer list has
+        // replaced it.
+        //
+        // The real fix is a mailbox-scoped change event from the backend --
+        // out of scope for this pass.
+        this.#scheduleLiveRefresh()
+      },
+    })
   }
 
   #liveRefreshTimer: ReturnType<typeof setTimeout> | null = null
@@ -875,6 +888,16 @@ class MailState {
     }, LIVE_REFRESH_DEBOUNCE_MS)
   }
 
+  /**
+   * Left hand-written rather than composing `patchOneFromChange`: that
+   * helper treats a lock specially, the way `notes` and `accounts` both do
+   * -- skip the fallback, let `handle` send the window to the lock screen
+   * from wherever else is watching. This one does not; a lock here falls
+   * into the same bare `catch` as any other failure and calls `refresh()`,
+   * which is what actually reaches the lock screen, through its own
+   * `handle`. Routing it through the helper would skip that call on a lock
+   * and change what happens, not merely how it is spelled.
+   */
   async #patchOne(id: ThreadId) {
     try {
       const detail = await mailApi.getThread(id)
