@@ -340,6 +340,18 @@ fn assert_declared_matches_touched(
     id: Option<&str>,
     ids: &[String],
 ) {
+    // A command that wrote nothing at all is a no-op write, not a wrong
+    // declaration: `save_tasks` with an empty array, `mark_runs_seen` with
+    // the empty "all of them" list when nothing is unseen, `seed_roles` on a
+    // vault that already has roles. Every one of those still announces its
+    // `change:`, as it did long before this assertion existed -- the event is
+    // harmlessly coarse, and a client reloading a list it did not need to is
+    // not a bug worth panicking a debug build over. What this function is
+    // actually looking for is a command that *did* write and whose
+    // declaration names none of it, which is the case below.
+    if touched.is_empty() {
+        return;
+    }
     // Not a record at all -- the vault's own settings, or a supervisor
     // task's status -- so there is nothing in `touched` that could ever
     // name one. See `Kind`'s own `TryFrom<Kind> for RecordKind`.
