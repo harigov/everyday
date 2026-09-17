@@ -26,8 +26,12 @@
 > - **The three transient-error classifiers stayed separate** (Phase 9.3).
 >   They give opposite verdicts on every code either names, which a pinning
 >   test now proves. Only the delay schedules were unified.
-> - **`everyday-app`'s reconnect backoff stayed hand-written**, since sharing
->   `RetryPolicy` would have made it public API.
+> - **`everyday-app`'s reconnect backoff now shares `RetryPolicy` too.**
+>   Sharing it meant making the type `pub`, which the plan below originally
+>   ruled out for this reason alone; only the delay math moved, pinned by a
+>   test first, and the banner state machine it interleaves with
+>   (`told`/`QUIET_FAILURES`, deciding when a failure is finally worth
+>   telling the user about) stayed exactly as hand-written as it always was.
 > - **Phase 9.5 left `remote_image_once` on `Service`** because `close()`
 >   clears it in the middle of the routine fields, before `stop_all()`;
 >   moving it would have needed a second out-of-band call. `locked()` and

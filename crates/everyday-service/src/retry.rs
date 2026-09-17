@@ -26,6 +26,21 @@
 //! math, so a delay sequence pinned in `tests` before this module existed
 //! keeps meaning the same thing after.
 //!
+//! # A fifth schedule, outside this crate
+//!
+//! `everyday-app`'s remote reconnect loop (`crates/everyday-app/src/remote.rs`)
+//! was the fifth place this idea was reimplemented, and was left out of the
+//! first pass because sharing [`RetryPolicy`] would have meant making it
+//! public API, which this crate had no other reason to do. It still doesn't,
+//! for anything but this: [`RetryPolicy`] is `pub` (the type only -- this
+//! module stays free to add or change constructors, since a constructor is
+//! not part of the type), and `remote.rs`'s own `remote_reconnect` builds one
+//! from [`RetryPolicy::exponential`] exactly the way `supervisor_backoff` and
+//! the rest do. The banner state machine that loop interleaves its backoff
+//! with -- when a failure is finally worth telling the user about, and what
+//! a reconnect resets -- is not part of this and stayed exactly as
+//! hand-written as it always was.
+//!
 //! # The three classifiers stay three
 //!
 //! Phase 9.3 also asks for "one `is_transient`" -- a single classification
@@ -68,8 +83,15 @@ use std::time::Duration;
 /// Cheap to construct and to clone (`delay` is one `Arc`), so a caller that
 /// wants one per call -- `pipeline_transient`'s `base` varies per test, for
 /// instance -- does not need to cache it.
+///
+/// The type is `pub` so `everyday-app`'s remote reconnect loop can build one
+/// too (see this module's own doc, "A fifth schedule, outside this crate");
+/// only [`exponential`](Self::exponential) and [`delay_for`](Self::delay_for)
+/// go with it, because that is all that caller needs -- `from_fn` and
+/// `gives_up_after` stay `pub(crate)` until something outside this crate
+/// actually needs them too.
 #[derive(Clone)]
-pub(crate) struct RetryPolicy {
+pub struct RetryPolicy {
     delay: Arc<dyn Fn(u32) -> Duration + Send + Sync>,
     /// Total attempts allowed before giving up, counting the first (not
     /// just the retries). `None` means this schedule never gives up on its
@@ -92,7 +114,7 @@ impl RetryPolicy {
     /// reason, not every caller's -- `accountcal` and `meeting::pipeline`
     /// both pass `jitter: false`, because stampeding is not their failure
     /// mode (see each constructor's own doc for why).
-    pub(crate) fn exponential(
+    pub fn exponential(
         base: Duration,
         cap: Duration,
         jitter: bool,
@@ -126,7 +148,7 @@ impl RetryPolicy {
         Self { delay: Arc::new(delay), max_attempts }
     }
 
-    pub(crate) fn delay_for(&self, attempt: u32) -> Duration {
+    pub fn delay_for(&self, attempt: u32) -> Duration {
         (self.delay)(attempt)
     }
 

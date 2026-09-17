@@ -55,23 +55,30 @@ const RECONNECT_MAX: Duration = Duration::from_secs(30);
 /// time.
 const QUIET_FAILURES: u32 = 3;
 
+/// This loop's own schedule, as a [`everyday_service::retry::RetryPolicy`]
+/// -- capped exponential backoff, unjittered (unlike the supervisor's own;
+/// see [`RetryPolicy::exponential`](everyday_service::retry::RetryPolicy::exponential)'s
+/// doc for why jitter exists there and not here: one desktop client
+/// reconnecting to one server is not the stampede a jittered schedule
+/// guards against), and no give-up -- only the session being replaced ends
+/// [`Remote::start`]'s loop, never this schedule. Phase 9.3 of
+/// `docs/plans/architecture-refactor.md`'s fifth schedule, brought in once
+/// `RetryPolicy` went `pub` for exactly this (see that type's own doc).
+fn remote_reconnect() -> everyday_service::retry::RetryPolicy {
+    everyday_service::retry::RetryPolicy::exponential(RECONNECT_MIN, RECONNECT_MAX, false, None)
+}
+
 /// The delay to wait once `failures` attempts in a row have failed --
-/// `RECONNECT_MIN`, doubling each additional failure, capped at
-/// `RECONNECT_MAX`. `failures` is 1-indexed the way [`Remote::start`]'s loop
-/// counts it: the value passed is the count *after* the failure this delay
-/// is waited out for, so `reconnect_delay(1)` is what the loop waits after
-/// the very first one.
+/// `failures` is 1-indexed the way [`Remote::start`]'s loop counts it: the
+/// value passed is the count *after* the failure this delay is waited out
+/// for, so `reconnect_delay(1)` is what the loop waits after the very first
+/// one.
 ///
 /// Named and pulled out of the loop, rather than a `delay` variable doubled
-/// in place, so it can be pinned in `tests` below -- see that test's own doc
-/// for why: this is the fifth schedule Phase 9.3 of
-/// `docs/plans/architecture-refactor.md` left hand-written.
+/// in place, so it can be pinned in `tests` below -- see that test's own
+/// doc for why.
 fn reconnect_delay(failures: u32) -> Duration {
-    let mut delay = RECONNECT_MIN;
-    for _ in 1..failures {
-        delay = (delay * 2).min(RECONNECT_MAX);
-    }
-    delay
+    remote_reconnect().delay_for(failures)
 }
 
 /// Whether the `failures`th failure in a row is the one that should finally
@@ -258,17 +265,20 @@ pub async fn resume(id: &str) -> CommandResult<RemoteClient> {
 mod tests {
     use super::*;
 
-    /// Phase 9.3's pinning step for the fifth schedule, before it is
-    /// rewritten to go through a shared `RetryPolicy`: `reconnect_delay` is
-    /// not exercised through `Remote::start` itself here -- that loop's
-    /// `client` is a real `everyday_server::client::RemoteClient`, which has
-    /// no in-process fake and would need a real socket to drive, which this
-    /// crate's tests do not open (see `capture.rs` and `meeting.rs` for the
-    /// same rule applied to a microphone and a vault). Pinning the named
-    /// function the loop calls at its one delay-computing call site is the
-    /// same technique `supervisor::backoff_delay` and
-    /// `meeting::pipeline::retry::pipeline_transient` were pinned with
-    /// before their own Phase 9.3 rewrite.
+    /// Phase 9.3's pinning step for the fifth schedule, fixed here before
+    /// `reconnect_delay` was rewritten to go through a shared `RetryPolicy`
+    /// (now `remote_reconnect`) and left in place unchanged afterwards, to
+    /// prove the rewrite is the same sequence expressed differently.
+    /// `reconnect_delay` is not exercised through `Remote::start` itself
+    /// here -- that loop's `client` is a real
+    /// `everyday_server::client::RemoteClient`, which has no in-process fake
+    /// and would need a real socket to drive, which this crate's tests do
+    /// not open (see `capture.rs` and `meeting.rs` for the same rule applied
+    /// to a microphone and a vault). Pinning the named function the loop
+    /// calls at its one delay-computing call site is the same technique
+    /// `supervisor::backoff_delay` and `meeting::pipeline::retry::
+    /// pipeline_transient` were pinned with before their own Phase 9.3
+    /// rewrite.
     #[test]
     fn reconnect_delay_doubles_from_one_second_and_caps_at_thirty() {
         assert_eq!(reconnect_delay(1), Duration::from_secs(1));

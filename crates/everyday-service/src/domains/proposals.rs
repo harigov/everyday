@@ -8,7 +8,7 @@ use super::Nothing;
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
-use crate::events::{Kind, Op};
+use crate::events::{Change, Kind, Op};
 use crate::service::{Service, blocking};
 use everyday_core::id::DraftId;
 use everyday_core::proposal::{
@@ -110,18 +110,17 @@ async fn accept_proposal(svc: Arc<Service>, ctx: Ctx, args: Accept) -> CommandRe
         }
     };
 
-    if let Some((kind, op)) = change_for_accept(&accepted) {
-        // The record `accepted.outcome` names as `saved_as` is exactly what
-        // the collector saw the vault call above write -- `try_accept`
-        // always goes through the domain's own `save_*`/`delete_*`, every
-        // one of which now reports itself -- so this reads the same id back
-        // out of `touched` rather than trusting `saved_as` a second time.
-        // Filtered to `kind` so the `Proposal` this same command's own
-        // `change:` row already raised (also in `touched` by now, from
-        // closing the proposal) is never mistaken for the second change.
+    if let Some((kind, op, saved_as)) = change_for_accept(&accepted) {
+        // The id comes from `accepted.outcome`'s own `saved_as`, as it did
+        // before the collector existed, and deliberately not from `touched`.
+        // Reading it back out of the collector looked equivalent and is not:
+        // `save_memory` evicts over the cap by *deleting* rows, and each
+        // deletion reports itself, so a scrape of every `Memory` the command
+        // touched announces the evicted memories as though this accept had
+        // created them. What this event is for is the one record the
+        // proposal saved, which is exactly what `saved_as` names.
         let origin = ctx.caller.origin().map(str::to_string);
-        let touched = crate::touched::current();
-        crate::events::emit_touched(svc.events().as_ref(), origin, &touched, kind, op);
+        svc.events().changed(Change { kind, op, id: Some(saved_as), ids: Vec::new(), origin });
     }
     Ok(accepted)
 }
@@ -130,10 +129,8 @@ async fn accept_proposal(svc: Arc<Service>, ctx: Ctx, args: Accept) -> CommandRe
 /// the record the proposal actually saved or removed -- `None` for anything
 /// that did not finish `Accepted` (there is nothing to report for a decline
 /// raised from inside the vault call, which answers `Err` instead).
-fn change_for_accept(proposal: &Proposal) -> Option<(Kind, Op)> {
-    if !matches!(proposal.outcome, Outcome::Accepted { .. }) {
-        return None;
-    }
+fn change_for_accept(proposal: &Proposal) -> Option<(Kind, Op, String)> {
+    let Outcome::Accepted { saved_as, .. } = &proposal.outcome else { return None };
     let kind = match proposal.kind {
         ProposalKind::Task => Kind::Task,
         ProposalKind::Block => Kind::Block,
@@ -150,7 +147,7 @@ fn change_for_accept(proposal: &Proposal) -> Option<(Kind, Op)> {
         // queued; nothing is created.
         Payload::SendMail { .. } => Op::Updated,
     };
-    Some((kind, op))
+    Some((kind, op, saved_as.clone()))
 }
 
 /// Accept a `SendMail` proposal: send the draft it points at, then close the
