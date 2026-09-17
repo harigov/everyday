@@ -76,6 +76,20 @@ pub(crate) struct MailRuntime {
 }
 
 impl MailRuntime {
+    /// Re-seed both token buckets to `now`.
+    ///
+    /// For [`Service::set_clock`](crate::service::Service::set_clock) only.
+    /// A bucket remembers when it last refilled, and
+    /// [`TokenBucket::refill`] deliberately refuses to refill from a moment
+    /// earlier than that one -- so a service handed a clock set in the past
+    /// would spend its initial capacity and then hand out nothing for the
+    /// rest of the run, silently. Re-seeding is what makes a fake clock
+    /// behave like a freshly-built service rather than a stuck one.
+    pub(crate) fn reseed_budgets(&self, now: Timestamp) {
+        self.categorize_budget.lock().unwrap().reseed(now);
+        self.autodraft_budget.lock().unwrap().reseed(now);
+    }
+
     pub(crate) fn new(
         now: Timestamp,
         categorize_per_minute: u32,

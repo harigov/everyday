@@ -343,7 +343,15 @@ impl Service {
     /// service behaviour (a proposal's expiry, a routine's due check) is
     /// proven without an actual sleep.
     pub fn set_clock(&self, clock: Arc<dyn Clock>) {
+        let now = clock.now();
         *self.clock.write().unwrap() = clock;
+        // The mail budgets were seeded from whichever clock was current when
+        // this service was built, and a token bucket will not refill from a
+        // moment earlier than the one it last saw. Left alone, a clock set in
+        // the past would let the categorise and auto-draft passes spend their
+        // opening capacity and then hand out nothing for the rest of the run,
+        // with no error to explain why the work stopped.
+        self.mail.reseed_budgets(now);
     }
 
     pub fn clock(&self) -> Arc<dyn Clock> {

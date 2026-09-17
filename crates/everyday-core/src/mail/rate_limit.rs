@@ -47,6 +47,19 @@ impl TokenBucket {
         }
     }
 
+    /// Start again from `now`, full.
+    ///
+    /// For a caller that has replaced its notion of the clock underneath a
+    /// bucket already seeded from the old one -- a test swapping in a fake
+    /// clock, in the only case there is today. [`refill`](Self::refill)
+    /// refuses to refill from a moment before `updated`, so without this a
+    /// bucket seeded from the real clock and then read on a clock set in the
+    /// past never refills again.
+    pub fn reseed(&mut self, now: Timestamp) {
+        self.tokens = self.capacity;
+        self.updated = now;
+    }
+
     fn refill(&mut self, now: Timestamp) {
         let elapsed_secs = now.as_second() as f64 - self.updated.as_second() as f64
             + (now.subsec_nanosecond() as f64 - self.updated.subsec_nanosecond() as f64) / 1e9;

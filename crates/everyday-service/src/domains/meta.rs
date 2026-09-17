@@ -35,7 +35,7 @@ use crate::events::{Kind, Op};
 use crate::service::{PROTOCOL, Service, blocking};
 use everyday_core::agent::tools::{self, Caller as ToolCaller};
 use everyday_core::mail::Origin as MailOrigin;
-use everyday_core::model::{system_tz, today_local};
+use everyday_core::model::{local_date_in, system_tz};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -400,7 +400,12 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
         // instead. `assistant_provider` stays unset too -- only the chat
         // assistant's own acknowledgement gate reads it, and the chat
         // assistant never reaches this function; see this function's own doc.
-        let mut ctx = tools::ToolContext::new(&vault, today_local(), &tz)
+        // Today through the service's own clock, the way `agent::run_turn`
+        // builds its context: a tool run from a script, the palette or MCP
+        // and the same tool run from chat must agree about what day it is,
+        // and a proposal minted here gets an `expires_at` the scheduler
+        // later judges against that same clock.
+        let mut ctx = tools::ToolContext::new(&vault, local_date_in(svc.now(), &tz), &tz)
             .with_mail_search(mail_index.as_deref())
             .with_mail_rate_limit(&rate_limit)
             .with_after_mail_write(&after_mail_write)

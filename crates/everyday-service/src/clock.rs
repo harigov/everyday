@@ -33,6 +33,41 @@
 //! scope for this clock (see `docs/plans/architecture-refactor.md`, phase
 //! 9.2): a routine's due-check is therefore not made fake-clock-testable by
 //! this module, only the call sites inside `everyday-service` itself are.
+//!
+//! # Comparisons that still straddle two clocks
+//!
+//! A handful of checks read this clock on one side and a timestamp stamped
+//! by the real one on the other, because the stamping half lives in
+//! `everyday-core` or in the meeting pipeline, which is deliberately not
+//! wired to a `Service` at all. Under [`SystemClock`] the two halves are the
+//! same clock and every one of these behaves exactly as it always has --
+//! which is why they were left alone. They matter only to a test that swaps
+//! in a fake, and a fake set far from real time will read them as nonsense
+//! in one direction or the other:
+//!
+//! - `meeting::spool::expire_failed` ages a recording against
+//!   `Recording::updated_at`, stamped by `meeting::pipeline::failure::fail`
+//!   and friends. A fake clock ahead of real time makes a recording that
+//!   failed seconds ago look days old, and the expiry *deletes* its audio.
+//! - `mailsync::task::next_pending_wake` sleeps until an op's `not_before`,
+//!   which `outbox` writes from this clock. A fake clock behind real time
+//!   means the sleep returns at once while `due_ops` still says "not due",
+//!   which is a hot loop running a real sync pass each time round.
+//! - `domains::calendars`'s `is_due` compares against `last_synced_at`,
+//!   which `Calendar::mark_synced` stamps in core: a fake clock ahead
+//!   re-fetches every feed every tick, behind refreshes nothing ever.
+//! - `domains::library::set_item_progress` takes its dates from
+//!   `today_local()` while stamping `updated_at` from this clock.
+//! - [`Clock::instant`] is honoured where a monotonic moment is *stored*
+//!   (`runtime::meeting`'s append tracker) but the reads still use
+//!   `Instant::elapsed`, so a fake monotonic clock would not be believed.
+//!   `FakeClock::instant` returns the real `Instant::now()` today, which is
+//!   what keeps that consistent.
+//!
+//! So: a fake clock is safe for a test that stays near real time (the
+//! proposal-expiry test moves days, not years) and for anything that only
+//! reads this clock on both sides. A test that needs one of the pairs above
+//! should convert the stamping half first rather than work around it.
 use std::sync::Arc;
 use std::time::Instant;
 
