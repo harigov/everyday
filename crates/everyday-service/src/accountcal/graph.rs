@@ -537,6 +537,31 @@ async fn get_json_full_url<T: serde::de::DeserializeOwned>(
     }
 }
 
+/// This source's [`super::CalendarProvider`] -- see `caldav.rs`'s own
+/// `CalDavProvider` for why this thin wrapper exists.
+pub(crate) struct GraphProvider;
+
+impl super::CalendarProvider for GraphProvider {
+    fn discover<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+    ) -> super::BoxFuture<'a, CommandResult<Vec<RemoteCalendar>>> {
+        Box::pin(discover(svc, vault, account))
+    }
+
+    fn sync<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+    ) -> super::BoxFuture<'a, CommandResult<SyncReport>> {
+        Box::pin(sync(svc, vault, account, calendar))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

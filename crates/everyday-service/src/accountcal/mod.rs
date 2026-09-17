@@ -67,6 +67,8 @@ pub mod graph;
 pub mod tokens;
 
 use std::collections::HashSet;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -99,6 +101,58 @@ pub struct RemoteCalendar {
     pub source: AccountCalendarSource,
 }
 
+/// A boxed, `Send` future -- hand-rolled the same way
+/// `crate::meeting::transcribe::BoxFuture` is, so a trait object can return
+/// an `async fn`'s future without `#[async_trait]` or naming it.
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// One calendar source behind a common interface, shaped like
+/// [`crate::meeting::transcribe::Transcriber`]: [`discover`] and [`sync`]
+/// used to `match` on [`Provider`] and [`AccountCalendarSource`] directly
+/// and call straight into `caldav`, `google` or `graph`; this trait is that
+/// match, given a name, so [`provider_for`] is the one place the three
+/// sources are chosen between.
+pub trait CalendarProvider: Send + Sync {
+    fn discover<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+    ) -> BoxFuture<'a, CommandResult<Vec<RemoteCalendar>>>;
+
+    fn sync<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+    ) -> BoxFuture<'a, CommandResult<SyncReport>>;
+}
+
+/// The [`CalendarProvider`] for one of the three sources -- the single
+/// factory [`discover`] and [`sync`] both go through, in place of the
+/// `match` each used to have of its own.
+fn provider_for(source: AccountCalendarSource) -> Box<dyn CalendarProvider> {
+    match source {
+        AccountCalendarSource::CalDav => Box::new(caldav::CalDavProvider),
+        AccountCalendarSource::Google => Box::new(google::GoogleProvider),
+        AccountCalendarSource::Graph => Box::new(graph::GraphProvider),
+    }
+}
+
+/// Which source an account's own calendars come from, before any of them
+/// has been subscribed to and so has no [`AccountCalendarSource`] of its
+/// own yet on a [`CalendarOrigin::Account`] -- see the module doc's table.
+fn source_for_provider(provider: Provider) -> AccountCalendarSource {
+    match provider {
+        Provider::Google => AccountCalendarSource::Google,
+        Provider::Microsoft => AccountCalendarSource::Graph,
+        Provider::ICloud | Provider::Fastmail | Provider::Yahoo | Provider::Custom => {
+            AccountCalendarSource::CalDav
+        }
+    }
+}
+
 /// Discover the calendars `account` offers, over whichever source its
 /// provider and CalDAV address say to use.
 ///
@@ -114,13 +168,8 @@ pub async fn discover(
     if !account.services.calendar {
         return Ok(Vec::new());
     }
-    let result = match account.provider {
-        Provider::Google => google::discover(svc, vault, account).await,
-        Provider::Microsoft => graph::discover(svc, vault, account).await,
-        Provider::ICloud | Provider::Fastmail | Provider::Yahoo | Provider::Custom => {
-            caldav::discover(svc, vault, account).await
-        }
-    };
+    let source = source_for_provider(account.provider);
+    let result = provider_for(source).discover(svc, vault, account).await;
     note_if_credential_is_bad(vault, account, &result).await;
     result
 }
@@ -169,11 +218,7 @@ pub async fn sync(
     let vault_for_account = vault.clone();
     let account = blocking(move || Ok(vault_for_account.account(account_id)?)).await?;
 
-    let result = match source {
-        AccountCalendarSource::CalDav => caldav::sync(svc, vault, &account, calendar).await,
-        AccountCalendarSource::Google => google::sync(svc, vault, &account, calendar).await,
-        AccountCalendarSource::Graph => graph::sync(svc, vault, &account, calendar).await,
-    };
+    let result = provider_for(source).sync(svc, vault, &account, calendar).await;
     note_if_credential_is_bad(vault, &account, &result).await;
 
     // Only a genuine, permission-shaped failure (`FORBIDDEN`, already

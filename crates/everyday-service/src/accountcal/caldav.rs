@@ -907,6 +907,34 @@ fn attendees_of(comp: &calcard::icalendar::ICalendarComponent) -> Vec<String> {
         .collect()
 }
 
+/// This source's [`super::CalendarProvider`] -- a thin wrapper so
+/// [`super::provider_for`] can hand back CalDAV's [`discover`] and [`sync`]
+/// without a caller matching on [`AccountCalendarSource`] itself. See
+/// `crate::meeting::transcribe::openai::OpenAiTranscriber` for the same
+/// shape elsewhere.
+pub(crate) struct CalDavProvider;
+
+impl super::CalendarProvider for CalDavProvider {
+    fn discover<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+    ) -> super::BoxFuture<'a, CommandResult<Vec<RemoteCalendar>>> {
+        Box::pin(discover(svc, vault, account))
+    }
+
+    fn sync<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+    ) -> super::BoxFuture<'a, CommandResult<SyncReport>> {
+        Box::pin(sync(svc, vault, account, calendar))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -524,6 +524,31 @@ fn urlencoding_light(s: &str) -> String {
     out
 }
 
+/// This source's [`super::CalendarProvider`] -- see `caldav.rs`'s own
+/// `CalDavProvider` for why this thin wrapper exists.
+pub(crate) struct GoogleProvider;
+
+impl super::CalendarProvider for GoogleProvider {
+    fn discover<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+    ) -> super::BoxFuture<'a, CommandResult<Vec<RemoteCalendar>>> {
+        Box::pin(discover(svc, vault, account))
+    }
+
+    fn sync<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+    ) -> super::BoxFuture<'a, CommandResult<SyncReport>> {
+        Box::pin(sync(svc, vault, account, calendar))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
