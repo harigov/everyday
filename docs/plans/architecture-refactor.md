@@ -89,7 +89,7 @@ literally, one line per value, with no derivation from enum names:
 
 - each `events::Kind` and `Op` serialised
 - a sample `Change` with `id`, with `ids`, and with `origin`
-- `Capabilities::default()` and a fully-true `Capabilities`
+- an all-false `Capabilities` (the type has no `Default`) and a fully-true one
 - `CommandError` codes (`codes::ALL`)
 
 0.3 **A frozen old vault.** Build one encrypted and one plaintext SQLite vault
