@@ -227,6 +227,52 @@ async fn the_sweep_expires_a_pending_proposal_past_its_own_deadline() {
     assert!(matches!(closed.outcome, ProposalOutcome::Expired { .. }));
 }
 
+/// The same sweep, proven with a fake clock instead of a backdated
+/// `expires_at` -- the payoff of giving `Service` an injected clock
+/// (`docs/plans/architecture-refactor.md`, phase 9.2): this drives the same
+/// `scheduler::tick` a person's minute-by-minute wait would, through
+/// `Service::now()`, rather than pre-forging a `Proposal` already past its
+/// own deadline. A day short of a note proposal's own week-long expiry
+/// (`everyday_core::proposal::expiry_for`), a tick leaves it pending; moved a
+/// day past it, the very same tick closes it -- with nothing here ever
+/// actually sleeping, or touching the real wall clock at all.
+#[tokio::test]
+async fn a_fake_clock_proves_the_sweep_without_waiting_a_week_or_backdating_anything() {
+    let (svc, _dir) = service();
+    let vault = svc.get().unwrap();
+
+    let made_at: Timestamp = "2026-01-01T00:00:00Z".parse().unwrap();
+    let clock = Arc::new(support::clock::FakeClock::at(made_at));
+    svc.set_clock(clock.clone());
+
+    let proposal = Proposal::new(
+        Payload::Create { record: ProposedRecord::Note(Note::written("Due next week", "x")) },
+        "Create note",
+        made_at,
+        "UTC",
+    );
+    vault.save_proposal(&proposal).unwrap();
+
+    // A day short of the week-long expiry `expiry_for` gives a Note: still
+    // pending.
+    clock.set(made_at + jiff::SignedDuration::from_hours(24 * 6));
+    scheduler::tick(&svc).await;
+    assert!(
+        vault.proposal(proposal.id).unwrap().is_pending(),
+        "six days into a seven-day expiry, the proposal must still be pending"
+    );
+
+    // A day past it: the same tick closes it.
+    clock.set(made_at + jiff::SignedDuration::from_hours(24 * 8));
+    scheduler::tick(&svc).await;
+    let closed = vault.proposal(proposal.id).unwrap();
+    assert!(
+        matches!(closed.outcome, ProposalOutcome::Expired { .. }),
+        "eight days into a seven-day expiry, the proposal must have been swept: {:?}",
+        closed.outcome
+    );
+}
+
 #[tokio::test]
 async fn the_sweep_expires_a_mail_proposal_whose_draft_is_no_longer_editing() {
     let (svc, _dir) = service();
