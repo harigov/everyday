@@ -258,8 +258,39 @@ async fn new_memory(_svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandRes
 /// flag when it adds one, and can clear it again. Forcing it here meant a
 /// person could not unpin a fact they had pinned by accident, and meant the
 /// pane's own switch did nothing.
+///
+/// Two corrections happen here rather than in the vault, because they are
+/// about *who this request is* rather than about storage limits:
+///
+/// - If what is stored under this id was `Inferred` and the text arriving
+///   now differs from it, the save becomes `Confirmed`. Rewriting what a
+///   dream noticed is standing behind it, which is a stronger claim than the
+///   dream itself ever made.
+/// - If there is nothing stored under this id yet and it arrives as
+///   `Inferred`, it is coerced to `Told` rather than refused. Only a dream
+///   infers -- see `set_memory_origin` -- but refusing outright would just
+///   make whoever sent this retype the same fact with a different label, and
+///   a freshly typed fact that nobody was told by a dream is exactly what
+///   `Told` means.
 async fn save_memory(svc: Arc<Service>, _ctx: Ctx, args: SaveMemory) -> CommandResult<Vec<Memory>> {
-    svc.on_vault(move |vault| vault.save_memory(&args.memory)).await
+    svc.on_vault(move |vault| {
+        let mut memory = args.memory;
+        let stored = vault.memories()?.into_iter().find(|m| m.id == memory.id);
+        match &stored {
+            None if memory.origin == everyday_core::MemoryOrigin::Inferred => {
+                memory.origin = everyday_core::MemoryOrigin::Told;
+            }
+            Some(old)
+                if old.origin == everyday_core::MemoryOrigin::Inferred
+                    && old.text != memory.text =>
+            {
+                memory.origin = everyday_core::MemoryOrigin::Confirmed;
+            }
+            _ => {}
+        }
+        vault.save_memory(&memory)
+    })
+    .await
 }
 
 /// Confirm an inferred memory, or strike it out. See
