@@ -33,8 +33,10 @@ const TRANSIENT_RETRY_CAP: Duration = Duration::from_secs(4 * 60);
 /// similar name: that classifier disagrees with this one on every code
 /// either of them names (see its own pinning test) -- one is about a
 /// provider or the network, the other about local vault storage, and
-/// unioning them would make each wrong for the other's domain.
-fn is_transient(code: &str) -> bool {
+/// unioning them would make each wrong for the other's domain. See
+/// `retry::tests::pipeline_and_outbox_classifiers_disagree_by_design` for
+/// the decision, checked directly against both functions.
+pub(crate) fn is_transient(code: &str) -> bool {
     matches!(code, codes::NETWORK | codes::TIMED_OUT | codes::RATE_LIMITED | codes::PROVIDER)
 }
 

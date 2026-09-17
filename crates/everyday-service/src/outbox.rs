@@ -900,7 +900,11 @@ impl Lookups for VaultLookups {
 /// read gone wrong, so a locked vault or a full disk backs off and tries
 /// again instead of reversing whatever the person just asked for and
 /// telling them it failed.
-fn is_transient_local_failure(code: &str) -> bool {
+///
+/// Not merged with `meeting::pipeline::retry::is_transient` -- see
+/// `crate::retry::tests::pipeline_and_outbox_classifiers_disagree_by_design`
+/// for the decision, checked directly against both functions.
+pub(crate) fn is_transient_local_failure(code: &str) -> bool {
     matches!(code, codes::LOCKED | codes::IO | codes::BACKEND)
 }
 

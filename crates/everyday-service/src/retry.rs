@@ -25,6 +25,40 @@
 //! second pass already ruled out. What moves here is only the schedule
 //! math, so a delay sequence pinned in `tests` before this module existed
 //! keeps meaning the same thing after.
+//!
+//! # The three classifiers stay three
+//!
+//! Phase 9.3 also asks for "one `is_transient`" -- a single classification
+//! function replacing `meeting::pipeline::retry::is_transient`,
+//! `outbox::is_transient_local_failure` and
+//! `meeting::pipeline::adapters::looks_like_network_error`, but "only where
+//! the verdicts are identical for every input the pinning tests cover...
+//! if two classifiers disagree on some input, KEEP them separate and
+//! document why; do not 'fix' either."
+//!
+//! They disagree. `is_transient` and `is_transient_local_failure` both
+//! classify a `CommandError::code`, which makes them look like the same
+//! question, but they answer opposite domains: the first is about reaching
+//! a transcription or assistant provider over the network (`NETWORK`,
+//! `TIMED_OUT`, `RATE_LIMITED`, `PROVIDER`); the second is about a *local*
+//! vault write failing (`LOCKED`, `IO`, `BACKEND`). Neither set is a subset
+//! of the other, and each says `false` for every code the other says `true`
+//! for -- `tests::pipeline_and_outbox_classifiers_disagree_by_design` checks
+//! this directly, against both functions, rather than trusting their
+//! separate pinning tests to stay in agreement by accident. Unioning them
+//! would make a locked vault (worth retrying) look permanent to the
+//! pipeline, or a refused API key (never worth retrying) look transient to
+//! the outbox.
+//!
+//! `looks_like_network_error` is not even the same *kind* of classifier: it
+//! sniffs a rendered error message for a handful of substrings, because the
+//! assistant call it guards (`meeting::pipeline::adapters::AssistantSummariser`)
+//! turns whatever the model client failed with into prose
+//! (`crate::llm::friendly`) before minting a `CommandError`, and by then the
+//! specific transport failure this classifier looks for is text, not a
+//! `code` worth comparing against `is_transient`'s. It stays exactly what
+//! it is: one extra retry, no backoff at all, and no relation to a
+//! `RetryPolicy`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -184,5 +218,46 @@ mod tests {
             RetryPolicy::exponential(Duration::from_secs(1), Duration::from_secs(1), false, None);
         assert!(!unbounded.gives_up_after(1_000_000));
         assert_eq!(unbounded.max_attempts(), None);
+    }
+
+    /// Phase 9.3's step three, checked directly rather than trusted from
+    /// each classifier's own pinning test: `meeting::pipeline::retry::
+    /// is_transient` and `outbox::is_transient_local_failure` must
+    /// disagree on every code either of them names, which is exactly the
+    /// module doc's evidence for keeping them separate instead of unioning
+    /// them into "one `is_transient`". If this test ever starts failing
+    /// because the two have started *agreeing*, that is grounds to revisit
+    /// the decision -- but that revisit is a deliberate choice to make,
+    /// not a refactor to sleepwalk into.
+    #[test]
+    fn pipeline_and_outbox_classifiers_disagree_by_design() {
+        use crate::error::codes;
+
+        let pipeline_transient_codes =
+            [codes::NETWORK, codes::TIMED_OUT, codes::RATE_LIMITED, codes::PROVIDER];
+        let outbox_transient_codes = [codes::LOCKED, codes::IO, codes::BACKEND];
+
+        for code in pipeline_transient_codes {
+            assert!(
+                crate::meeting::pipeline::retry::is_transient(code),
+                "{code} must be transient to the pipeline"
+            );
+            assert!(
+                !crate::outbox::is_transient_local_failure(code),
+                "{code} must NOT be a transient local failure to the outbox -- \
+                 that is the disagreement that keeps these two separate"
+            );
+        }
+        for code in outbox_transient_codes {
+            assert!(
+                crate::outbox::is_transient_local_failure(code),
+                "{code} must be a transient local failure to the outbox"
+            );
+            assert!(
+                !crate::meeting::pipeline::retry::is_transient(code),
+                "{code} must NOT be transient to the pipeline -- \
+                 that is the disagreement that keeps these two separate"
+            );
+        }
     }
 }
