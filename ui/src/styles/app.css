@@ -183,6 +183,12 @@ button {
     box-shadow var(--fast) var(--ease);
   user-select: text;
 }
+/* A textarea sizes by its `rows`; the input height above would pin every
+   one of them to a single line. */
+textarea.field {
+  height: auto;
+  padding: var(--sp-2) var(--sp-3);
+}
 .field::placeholder {
   color: var(--fg-faint);
 }

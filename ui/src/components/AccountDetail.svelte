@@ -601,7 +601,12 @@
 {/if}
 
 <style>
+  /* Centred rather than hung from the shared sheet's 22%: a form this long
+     would otherwise run off the bottom of the window before its own
+     max-height ever made it scroll. */
   .wide {
+    top: 50%;
+    translate: -50% -50%;
     width: min(560px, calc(100vw - var(--sp-8)));
     max-height: calc(100vh - var(--sp-8));
     overflow-y: auto;

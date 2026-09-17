@@ -136,7 +136,7 @@
     <span class="eyebrow">About you</span>
     <textarea
       class="field area"
-      rows="7"
+      rows="12"
       placeholder="Your work, your family, what you are trying to do this year, what you care about. Written as you would say it."
       bind:value={draft.about}
       oninput={touched}

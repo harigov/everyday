@@ -93,7 +93,14 @@
 </script>
 
 <section>
-  <span class="eyebrow">Mailboxes signed in</span>
+  <!-- The button up here, and solid: below the list it read as a stray line
+       of text, and a long list pushed it out of sight. -->
+  <div class="head">
+    <span class="eyebrow">Mailboxes signed in</span>
+    <button class="btn btn-primary" disabled={!writable} onclick={() => (adding = true)}>
+      <Icon name="plus" size={13} /> Add account
+    </button>
+  </div>
   <p class="hint">
     An account holds how to reach a mailbox and how to sign in to it. Mail and the calendar both ask
     it for a service rather than holding a credential of their own, so signing in once here is
@@ -150,12 +157,6 @@
       </li>
     {/each}
   </ul>
-
-  <div>
-    <button class="btn" disabled={!writable} onclick={() => (adding = true)}>
-      <Icon name="plus" size={13} /> Add account
-    </button>
-  </div>
 </section>
 
 {#if app.supportsMail}
@@ -213,6 +214,13 @@
   section {
     display: flex;
     flex-direction: column;
+    gap: var(--sp-3);
+  }
+
+  .head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     gap: var(--sp-3);
   }
 

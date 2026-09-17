@@ -481,12 +481,15 @@
     z-index: 60;
     background: rgb(0 0 0 / 0.28);
   }
+  /* Centred by margin, not `translate`: a translated box becomes the
+     containing block for every `position: fixed` sheet opened inside it
+     (Add account, an account's details), which then sit inside this
+     dialog and are clipped by its `overflow: hidden`. */
   .dialog {
     position: fixed;
     z-index: 61;
-    top: 50%;
-    left: 50%;
-    translate: -50% -50%;
+    inset: 0;
+    margin: auto;
     display: flex;
     flex-direction: column;
     width: min(720px, calc(100vw - var(--sp-8)));
