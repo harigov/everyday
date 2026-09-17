@@ -143,10 +143,18 @@ async fn a_recording_is_appended_to_and_finished_through_the_command_layer() {
     assert_eq!(finished.stage, Stage::Transcribing);
     assert!(finished.ended_at.is_some());
 
-    // Finished: no more audio may be appended.
-    let message =
-        fails(&svc, "append_recording_chunk", json!({ "id": id, "track": "mic", "seq": 3, "startMs": 90_000, "pcm": pcm_base64(&[0; 10]) }))
-            .await;
+    // Past transcribing, no more audio may be appended. Not asked of `id`:
+    // a chunk is still accepted while it is `Transcribing` (see
+    // `spool::append`), and how soon the pipeline moves it on is a race this
+    // test would only sometimes win. A recording already `Identifying` has
+    // no such race.
+    let identifying = seed(&svc, Stage::Identifying);
+    let message = fails(
+        &svc,
+        "append_recording_chunk",
+        json!({ "id": identifying, "track": "mic", "seq": 0, "startMs": 0, "pcm": pcm_base64(&[0; 10]) }),
+    )
+    .await;
     assert!(message.contains("cannot take more audio"), "{message}");
 }
 
