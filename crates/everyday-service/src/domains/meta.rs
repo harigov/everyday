@@ -395,25 +395,19 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
                 origin,
             )
         };
-        let ctx = tools::ToolContext {
-            vault: &vault,
-            today: today_local(),
-            tz: &tz,
-            conversation: None,
-            // A script, a palette entry or MCP -- never a scheduled run,
-            // which goes through `agent::run_turn` instead.
-            unattended: false,
-            caller,
-            mail_search: mail_index.as_deref(),
-            // Only the chat assistant's own acknowledgement gate reads
-            // this, and the chat assistant never reaches this function --
-            // see `run_tool`'s own doc.
-            assistant_provider: None,
-            mail_rate_limit: Some(&rate_limit),
-            after_mail_write: Some(&after_mail_write),
-            invite_responder: Some(&invite_responder),
-            drafting: None,
-        };
+        // `unattended` stays the default `false`: a script, a palette entry
+        // or MCP, never a scheduled run, which goes through `agent::run_turn`
+        // instead. `assistant_provider` stays unset too -- only the chat
+        // assistant's own acknowledgement gate reads it, and the chat
+        // assistant never reaches this function; see this function's own doc.
+        let mut ctx = tools::ToolContext::new(&vault, today_local(), &tz)
+            .with_mail_search(mail_index.as_deref())
+            .with_mail_rate_limit(&rate_limit)
+            .with_after_mail_write(&after_mail_write)
+            .with_invite_responder(&invite_responder);
+        if let Some(caller) = caller {
+            ctx = ctx.with_caller(caller);
+        }
         let result =
             tools::dispatch(&ctx, &args.name, &args.arguments).map_err(CommandError::from)?;
         // See `mail_tool_change`'s own doc: this is `run_tool`'s equivalent
