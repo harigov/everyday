@@ -591,18 +591,15 @@ impl Service {
         self.sign_ins.clear();
         self.token_cache.try_clear();
         self.reported_feeds.write().unwrap().clear();
-        self.routines.forget_reported();
-        self.routines.forget_claimed();
-        self.routines.forget_running();
+        self.routines.on_lock();
         self.remote_image_once.write().unwrap().clear();
+        // Nothing to do, today -- see `MeetingRuntime::on_lock`'s own doc
+        // for why meeting session state outlives a close, and why this is
+        // called anyway.
+        self.meetings.on_lock();
         self.supervisor().stop_all().await;
         self.close_mail();
-        self.mail.forget_notify();
-        self.mail.forget_draft_debounce();
-        self.mail.forget_rate_limits();
-        self.mail.forget_summary_cache();
-        self.mail.forget_categorize_cursor();
-        self.mail.forget_autodraft_cursor();
+        self.mail.on_lock();
         let previous = self.vault.write().unwrap().take();
         if let Some(vault) = &previous {
             // Drop the key and the decrypted index now rather than whenever the

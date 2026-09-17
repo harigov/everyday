@@ -61,21 +61,30 @@ impl RoutineRuntime {
 
     // ---- what a full vault close clears ----------------------------------
     //
-    // `Service::close` calls these three by hand, in this order: reported
-    // failures, then claimed runs, then the running routine's name. Not
-    // called by `Service::locked` -- a lock screen leaves a routine's claim
-    // and the "already reported" flags alone, only a full close resets
-    // them. See `tests/runtime_lifecycle.rs`.
+    // `on_lock` bundles these three, in this order: reported failures, then
+    // claimed runs, then the running routine's name. Not called by
+    // `Service::locked` -- a lock screen leaves a routine's claim and the
+    // "already reported" flags alone, only a full close resets them. See
+    // `tests/runtime_lifecycle.rs`.
 
-    pub(crate) fn forget_reported(&self) {
+    fn forget_reported(&self) {
         self.reported.write().unwrap().clear();
     }
 
-    pub(crate) fn forget_claimed(&self) {
+    fn forget_claimed(&self) {
         self.claimed.write().unwrap().clear();
     }
 
-    pub(crate) fn forget_running(&self) {
+    fn forget_running(&self) {
         self.running.write().unwrap().take();
+    }
+
+    /// Called once, by [`Service::close`](crate::service::Service::close),
+    /// in place of the three `forget_*` calls above written out by hand,
+    /// in the exact order they happened there.
+    pub(crate) fn on_lock(&self) {
+        self.forget_reported();
+        self.forget_claimed();
+        self.forget_running();
     }
 }

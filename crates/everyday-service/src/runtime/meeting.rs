@@ -2,7 +2,8 @@
 //!
 //! Unlike [`crate::runtime::mail::MailRuntime`] and
 //! [`crate::runtime::routine::RoutineRuntime`], nothing here is cleared
-//! when the vault locks or closes -- see `tests/runtime_lifecycle.rs`'s
+//! when the vault locks or closes -- see [`MeetingRuntime::on_lock`]'s own
+//! doc for why, and `tests/runtime_lifecycle.rs`'s
 //! `close_and_locked_never_clear_meeting_session_state` for the test that
 //! pins it.
 
@@ -90,4 +91,17 @@ impl MeetingRuntime {
     pub(crate) fn expiry_warn_once(&self, id: RecordingId) -> bool {
         self.expiry_warned.write().unwrap().insert(id)
     }
+
+    /// Deliberately empty. `close()` clears `MailRuntime`'s and
+    /// `RoutineRuntime`'s session bookkeeping through their own `on_lock`;
+    /// this session's meeting bookkeeping is not part of that today, on
+    /// purpose -- "not now" should not have to be said again just because
+    /// the screen relocked, and unlock recovery already treats a missing
+    /// `last_append` entry the same as a stale one, which is what a real
+    /// process restart (as opposed to a lock) leaves behind anyway. Kept as
+    /// an explicit no-op, and called from the same place in `close()` the
+    /// other two runtimes' `on_lock` is, so that this is a decision visible
+    /// in `close()`'s own body rather than an absence a reader has to
+    /// notice on their own.
+    pub(crate) fn on_lock(&self) {}
 }

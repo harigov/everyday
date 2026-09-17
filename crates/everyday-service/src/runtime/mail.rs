@@ -2,11 +2,10 @@
 //! belongs to is unlocked, plus the bookkeeping around it that lives for
 //! the whole process regardless. See [`Service::open_mail`](crate::service::Service::open_mail)/
 //! [`Service::close_mail`](crate::service::Service::close_mail) for the two
-//! moments the state itself opens and drops, and the `forget_*` methods
-//! near the bottom of this file for the extra clearing only a full vault
-//! close does -- `locked()` (a lock screen; the same vault is still the one
-//! to reopen) does not call them, and that gap is deliberate. See
-//! `tests/runtime_lifecycle.rs`.
+//! moments the state itself opens and drops, and [`MailRuntime::on_lock`]
+//! for the extra clearing only a full vault close does -- `locked()` (a
+//! lock screen; the same vault is still the one to reopen) does not call
+//! it, and that gap is deliberate. See `tests/runtime_lifecycle.rs`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -52,8 +51,8 @@ pub(crate) struct MailRuntime {
     /// model per rolling minute, across every account, per the plan's own
     /// words ("at most N threads per minute"). Session state, on the same
     /// terms every other mail limiter here is -- a restart simply starts a
-    /// fresh minute's budget. Deliberately *not* cleared when a vault
-    /// closes -- see the `forget_*` methods near the bottom of this file.
+    /// fresh minute's budget. Deliberately *not* cleared by
+    /// [`MailRuntime::on_lock`] -- see that method's own doc.
     categorize_budget: Mutex<TokenBucket>,
     /// As [`MailRuntime::categorize_budget`], for the auto-draft background
     /// pass.
@@ -220,36 +219,51 @@ impl MailRuntime {
 
     // ---- the extra clearing a full vault close does ---------------------
     //
-    // `Service::close` calls each of these by hand, in this order, right
-    // after it closes mail's pack store and index -- unlike `locked()`
-    // (a lock screen; the same vault is still the one to reopen), which
-    // calls none of them. Deliberately not `categorize_budget`/
-    // `autodraft_budget`: a spent budget staying spent across a close is
-    // what "a restart starts a fresh minute's budget" (their own field
-    // docs) is contrasted against -- a *process* restart, not this.
+    // `on_lock` bundles these six, called in this order, right after
+    // `Service::close` closes mail's pack store and index -- unlike
+    // `locked()` (a lock screen; the same vault is still the one to
+    // reopen), which calls `on_lock` at all. Deliberately not
+    // `categorize_budget`/`autodraft_budget`: a spent budget staying spent
+    // across a close is what "a restart starts a fresh minute's budget"
+    // (their own field docs) is contrasted against -- a *process* restart,
+    // not this.
 
-    pub(crate) fn forget_notify(&self) {
+    fn forget_notify(&self) {
         self.notify.lock().unwrap().clear();
     }
 
-    pub(crate) fn forget_draft_debounce(&self) {
+    fn forget_draft_debounce(&self) {
         self.draft_debounce.lock().unwrap().clear();
     }
 
-    pub(crate) fn forget_rate_limits(&self) {
+    fn forget_rate_limits(&self) {
         self.rate_limits.lock().unwrap().clear();
     }
 
-    pub(crate) fn forget_summary_cache(&self) {
+    fn forget_summary_cache(&self) {
         self.summary_cache.lock().unwrap().clear();
     }
 
-    pub(crate) fn forget_categorize_cursor(&self) {
+    fn forget_categorize_cursor(&self) {
         self.categorize_cursor.lock().unwrap().clear();
     }
 
-    pub(crate) fn forget_autodraft_cursor(&self) {
+    fn forget_autodraft_cursor(&self) {
         self.autodraft_cursor.lock().unwrap().clear();
+    }
+
+    /// Called once, by [`Service::close`](crate::service::Service::close),
+    /// in place of the six `forget_*` calls above written out by hand.
+    /// **Not** called by `Service::locked` -- see this module's own doc for
+    /// why that gap is deliberate, and `tests/runtime_lifecycle.rs` for the
+    /// test that pins it.
+    pub(crate) fn on_lock(&self) {
+        self.forget_notify();
+        self.forget_draft_debounce();
+        self.forget_rate_limits();
+        self.forget_summary_cache();
+        self.forget_categorize_cursor();
+        self.forget_autodraft_cursor();
     }
 }
 
