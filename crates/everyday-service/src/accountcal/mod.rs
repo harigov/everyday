@@ -347,6 +347,19 @@ pub(crate) fn short_backoff(attempt: u32) -> Duration {
     BASE.saturating_mul(1u32 << exponent).min(CAP)
 }
 
+/// This module's own schedule for a rate-limited HTTP retry, as a
+/// [`crate::retry::RetryPolicy`] -- wraps [`short_backoff`] exactly, and is
+/// the one place `google.rs`'s and `graph.rs`'s HTTP loops now read their
+/// give-up point from. Both used to carry their own constant for it
+/// (`google.rs`'s `MAX_RATE_LIMIT_ATTEMPTS`, `graph.rs`'s
+/// `MAX_RETRY_ATTEMPTS`) with a comment on each saying the other was "the
+/// same number, for the same reason" -- four attempts, generous enough that
+/// a brief burst clears inside one sync, small enough that a sustained
+/// limit does not hold up a background poll for minutes.
+pub(crate) fn calendar_after_retry_after() -> crate::retry::RetryPolicy {
+    crate::retry::RetryPolicy::from_fn(short_backoff, Some(4))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,6 +466,19 @@ mod tests {
             let attempt = (i + 1) as u32;
             assert_eq!(short_backoff(attempt), *want, "attempt {attempt}");
         }
+    }
+
+    /// [`calendar_after_retry_after`] must answer exactly what
+    /// [`short_backoff`] does, and give both `google.rs` and `graph.rs` the
+    /// same four-attempt give-up point they each used to name with their
+    /// own constant.
+    #[test]
+    fn calendar_after_retry_after_matches_short_backoff_exactly() {
+        let policy = calendar_after_retry_after();
+        for attempt in 1..=7u32 {
+            assert_eq!(policy.delay_for(attempt), short_backoff(attempt), "attempt {attempt}");
+        }
+        assert_eq!(policy.max_attempts(), Some(4));
     }
 
     #[test]

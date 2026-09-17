@@ -63,20 +63,14 @@ use tokio::time::sleep;
 
 use super::tokens::{self, Credential, Resource};
 use super::{
-    RemoteCalendar, deterministic_event_id, retry_after_delay, short_backoff, sync_window,
+    RemoteCalendar, calendar_after_retry_after, deterministic_event_id, retry_after_delay,
+    sync_window,
 };
 use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
 use crate::service::{Service, blocking};
 
 const API: &str = "https://www.googleapis.com/calendar/v3";
-
-/// How many times one request retries a rate-limited 403 before [`sync`]
-/// gives up for this poll and lets the next one -- a minute or an hour away,
-/// per the calendar's own `refresh_minutes` -- try again. Generous enough
-/// that a brief burst clears inside one sync; small enough that a sustained
-/// limit does not hold up a background poll for minutes.
-const MAX_RATE_LIMIT_ATTEMPTS: u32 = 4;
 
 #[derive(Deserialize)]
 struct CalendarListResponse {
@@ -447,14 +441,15 @@ async fn get_bytes(url: &str, token: &str) -> CommandResult<Vec<u8>> {
             let retry_after = retry_after_delay(response.headers());
             let body = response.bytes().await.unwrap_or_default();
             if is_rate_limit_reason(&body) {
-                if attempt >= MAX_RATE_LIMIT_ATTEMPTS {
+                let policy = calendar_after_retry_after();
+                if policy.gives_up_after(attempt) {
                     return Err(CommandError::new(
                         codes::RATE_LIMITED,
                         "Google Calendar is rate-limiting this account; it will be tried again \
                          on the next sync",
                     ));
                 }
-                sleep(retry_after.unwrap_or_else(|| short_backoff(attempt))).await;
+                sleep(retry_after.unwrap_or_else(|| policy.delay_for(attempt))).await;
                 continue;
             }
             // A 403 for any other reason: this account's credential is
@@ -821,7 +816,7 @@ mod tests {
         );
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            MAX_RATE_LIMIT_ATTEMPTS,
+            calendar_after_retry_after().max_attempts().unwrap(),
             "it must have actually retried, honouring the mock's Retry-After: 0"
         );
     }

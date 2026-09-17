@@ -622,30 +622,22 @@ fn capture_panic_messages() {
     });
 }
 
-/// Capped exponential backoff with full jitter: a delay drawn uniformly from
-/// `0..=min(BACKOFF_BASE * 2^(attempt - 1), BACKOFF_CAP)`.
-///
-/// Full jitter rather than a fixed delay or a narrower jittered band,
-/// because the case this exists for is many of a vault's accounts failing
-/// at once -- a network that just came back, a provider having a bad
-/// afternoon -- and a supervisor that made every one of them wait exactly
-/// the same length of time would have them all retry in the same instant
-/// and fail together again. See Marc Brooker's "Exponential Backoff and
-/// Jitter" (the AWS Architecture Blog, 2015) for the fuller argument; this
-/// is its "FullJitter".
-fn backoff_delay(attempt: u32) -> Duration {
-    let exponent = attempt.saturating_sub(1).min(10);
-    let scaled = BACKOFF_BASE.saturating_mul(1u32 << exponent);
-    full_jitter(scaled.min(BACKOFF_CAP))
+/// This restart loop's own schedule, as a [`crate::retry::RetryPolicy`] --
+/// capped exponential backoff with full jitter, unlimited attempts: nothing
+/// about a supervised task gives up on its own, only `Outcome::Done` or
+/// [`Supervisor::stop`] end it. See [`crate::retry::RetryPolicy::exponential`]
+/// for why full jitter exists at all, and phase 9.3 of
+/// `docs/plans/architecture-refactor.md` ("unify the retry mechanism, not
+/// the policies") for why this schedule's own base, cap and jitter choice
+/// stay exactly what they were, only expressed through the shared type now.
+fn supervisor_backoff() -> crate::retry::RetryPolicy {
+    crate::retry::RetryPolicy::exponential(BACKOFF_BASE, BACKOFF_CAP, true, None)
 }
 
-fn full_jitter(capped: Duration) -> Duration {
-    let millis = u64::try_from(capped.as_millis()).unwrap_or(u64::MAX);
-    if millis == 0 {
-        return Duration::ZERO;
-    }
-    use rand::Rng;
-    Duration::from_millis(rand::rng().random_range(0..=millis))
+/// A delay drawn uniformly from `0..=min(BACKOFF_BASE * 2^(attempt - 1),
+/// BACKOFF_CAP)` -- see [`supervisor_backoff`] for the schedule itself.
+fn backoff_delay(attempt: u32) -> Duration {
+    supervisor_backoff().delay_for(attempt)
 }
 
 #[cfg(test)]

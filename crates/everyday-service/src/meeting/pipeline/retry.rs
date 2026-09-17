@@ -28,8 +28,29 @@ const TRANSIENT_RETRY_CAP: Duration = Duration::from_secs(4 * 60);
 /// configured at all. See `crate::error::codes`, and each `Transcriber`'s
 /// own `status_error` (`transcribe/openai.rs`, `transcribe/gemini.rs`) for
 /// what maps to which.
+///
+/// Not merged with `outbox::is_transient_local_failure`, despite the
+/// similar name: that classifier disagrees with this one on every code
+/// either of them names (see its own pinning test) -- one is about a
+/// provider or the network, the other about local vault storage, and
+/// unioning them would make each wrong for the other's domain.
 fn is_transient(code: &str) -> bool {
     matches!(code, codes::NETWORK | codes::TIMED_OUT | codes::RATE_LIMITED | codes::PROVIDER)
+}
+
+/// This stage retry's own schedule, as a [`crate::retry::RetryPolicy`] --
+/// capped exponential backoff, unjittered, bounded at [`TRANSIENT_RETRIES`]
+/// attempts. `base` stays a parameter rather than fixed at
+/// [`TRANSIENT_RETRY_BASE`], for the same reason [`retry_transient_from`]
+/// already takes one broken out: a test shrinking the delay without a real
+/// recording ever needing to.
+fn pipeline_transient(base: Duration) -> crate::retry::RetryPolicy {
+    crate::retry::RetryPolicy::exponential(
+        base,
+        TRANSIENT_RETRY_CAP,
+        false,
+        Some(TRANSIENT_RETRIES),
+    )
 }
 
 /// Run one stage's own operation -- `do_transcribe`, `do_identify`,
@@ -57,16 +78,16 @@ where
 /// [`retry_transient`], with the starting delay broken out so a test can
 /// shrink it without a real recording ever needing to -- the same seam
 /// `capture.rs`'s `finish_with_retry_from` uses for the same reason.
-pub(crate) async fn retry_transient_from<F, Fut>(op: F, mut delay: Duration) -> CommandResult<()>
+pub(crate) async fn retry_transient_from<F, Fut>(op: F, base: Duration) -> CommandResult<()>
 where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = CommandResult<()>>,
 {
+    let policy = pipeline_transient(base);
     let mut last_err = None;
     for attempt in 0..TRANSIENT_RETRIES {
         if attempt > 0 {
-            tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(TRANSIENT_RETRY_CAP);
+            tokio::time::sleep(policy.delay_for(attempt)).await;
         }
         match op().await {
             Ok(()) => return Ok(()),
@@ -106,6 +127,20 @@ mod tests {
         ] {
             assert!(!is_transient(code), "{code} must not be transient");
         }
+    }
+
+    /// [`pipeline_transient`] must answer the same doubling-then-capped
+    /// sequence the pinning test below already exercises end to end through
+    /// [`retry_transient_from`] -- checked directly here too, against the
+    /// same base and cap this module has always used.
+    #[test]
+    fn pipeline_transient_matches_the_pinned_doubling_sequence() {
+        let policy = pipeline_transient(TRANSIENT_RETRY_BASE);
+        assert_eq!(policy.delay_for(1), Duration::from_secs(30));
+        assert_eq!(policy.delay_for(2), Duration::from_secs(60));
+        assert_eq!(policy.delay_for(3), Duration::from_secs(120));
+        assert_eq!(policy.delay_for(4), Duration::from_secs(240));
+        assert_eq!(policy.max_attempts(), Some(TRANSIENT_RETRIES));
     }
 
     /// Phase 9.3's pinning step, part two: the exact delay sequence

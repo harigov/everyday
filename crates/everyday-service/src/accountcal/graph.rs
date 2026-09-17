@@ -52,7 +52,7 @@
 //! are retried with a short backoff, honouring `Retry-After` when Graph
 //! sends one -- see [`get_json_full_url`], which shares its retry loop and
 //! backoff with `google.rs`'s own (`super::retry_after_delay`,
-//! `super::short_backoff`).
+//! `super::calendar_after_retry_after`).
 
 use std::sync::Arc;
 
@@ -68,7 +68,8 @@ use tokio::time::sleep;
 
 use super::tokens::{self, Credential, Resource};
 use super::{
-    RemoteCalendar, deterministic_event_id, retry_after_delay, short_backoff, sync_window,
+    RemoteCalendar, calendar_after_retry_after, deterministic_event_id, retry_after_delay,
+    sync_window,
 };
 use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
@@ -79,11 +80,6 @@ const API: &str = "https://graph.microsoft.com/v1.0";
 /// `remote_id` so [`sync`] can tell "read this one with delta" from "read
 /// this one with a windowed poll" without a second field on the record.
 const PRIMARY: &str = "primary";
-/// How many times one request retries a 429 or a 503 before [`sync`] gives
-/// up for this poll and lets the next scheduled one try again -- the same
-/// number, for the same reason, as `google.rs`'s own
-/// `MAX_RATE_LIMIT_ATTEMPTS`.
-const MAX_RETRY_ATTEMPTS: u32 = 4;
 
 #[derive(Deserialize)]
 struct CalendarListResponse {
@@ -498,7 +494,8 @@ async fn get_json_full_url<T: serde::de::DeserializeOwned>(
             ));
         }
         if status == 429 || status == 503 {
-            if attempt >= MAX_RETRY_ATTEMPTS {
+            let policy = calendar_after_retry_after();
+            if policy.gives_up_after(attempt) {
                 return Err(CommandError::new(
                     codes::RATE_LIMITED,
                     format!(
@@ -508,7 +505,7 @@ async fn get_json_full_url<T: serde::de::DeserializeOwned>(
                 ));
             }
             let retry_after = retry_after_delay(response.headers());
-            sleep(retry_after.unwrap_or_else(|| short_backoff(attempt))).await;
+            sleep(retry_after.unwrap_or_else(|| policy.delay_for(attempt))).await;
             continue;
         }
         if status == 410 {

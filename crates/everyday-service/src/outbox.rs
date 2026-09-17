@@ -61,6 +61,7 @@
 //! bytes the parent was originally ingested from.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use everyday_core::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use everyday_core::mail::{Draft, DraftState, MailboxRole, Op, OpKind, OpState, OpTarget};
@@ -78,6 +79,24 @@ use crate::service::{Service, blocking};
 /// module docs' calling convention is what lets the account task simply
 /// call again when [`DrainReport::pending`] says there is more.
 const DRAIN_BATCH: u32 = 25;
+
+/// This outbox's own schedule, as a [`crate::retry::RetryPolicy`] -- wraps
+/// [`everyday_core::mail::backoff_for_attempt`] exactly, rather than
+/// re-deriving its table here: per phase 9.3 of
+/// `docs/plans/architecture-refactor.md`, "the table lives in core... don't
+/// move it". Unlimited attempts, the same as the function it wraps: a
+/// retryable op keeps its `not_before` growing, capped at the table's last
+/// entry, until it succeeds, is cancelled, or fails for a reason that was
+/// never retryable to begin with.
+fn outbox_table() -> crate::retry::RetryPolicy {
+    crate::retry::RetryPolicy::from_fn(
+        |attempts: u32| {
+            Duration::try_from(everyday_core::mail::backoff_for_attempt(attempts))
+                .expect("RETRY_BACKOFF's entries are all positive durations")
+        },
+        None,
+    )
+}
 
 /// What one [`drain_outbox`] pass did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -170,14 +189,15 @@ where
                 // for the one retry-with-a-fresh-token this crate allows
                 // itself before ever surfacing `Auth` at all.
                 //
-                // `backoff_for_attempt` is read *before* `attempts` is
-                // bumped -- it is documented as 0-indexed ("the first
-                // retry, after attempt 0 failed, waits `RETRY_BACKOFF[0]`"),
-                // so reading it after incrementing would make the very
-                // first retry wait the *second* schedule entry (a minute)
-                // instead of the first (thirty seconds), and every later
-                // retry one step further out than the schedule promises.
-                let backoff = everyday_core::mail::backoff_for_attempt(op.attempts);
+                // `outbox_table`'s delay is read *before* `attempts` is
+                // bumped -- it wraps `backoff_for_attempt`, documented as
+                // 0-indexed ("the first retry, after attempt 0 failed,
+                // waits `RETRY_BACKOFF[0]`"), so reading it after
+                // incrementing would make the very first retry wait the
+                // *second* schedule entry (a minute) instead of the first
+                // (thirty seconds), and every later retry one step further
+                // out than the schedule promises.
+                let backoff = outbox_table().delay_for(op.attempts);
                 op.attempts += 1;
                 op.last_error = Some(reason.clone());
                 op.not_before = Timestamp::now() + backoff;
@@ -189,7 +209,7 @@ where
             Err(err) if is_retryable(&err) => {
                 // See the `Auth` arm above for why the backoff is read
                 // before `attempts` is bumped.
-                let backoff = everyday_core::mail::backoff_for_attempt(op.attempts);
+                let backoff = outbox_table().delay_for(op.attempts);
                 op.attempts += 1;
                 op.last_error = Some(err.to_string());
                 op.not_before = Timestamp::now() + backoff;
@@ -955,6 +975,22 @@ mod tests {
                 "attempts already made: {attempts}"
             );
         }
+    }
+
+    /// [`outbox_table`] must answer exactly what
+    /// [`everyday_core::mail::backoff_for_attempt`] does -- it is a wrapper,
+    /// not a second implementation.
+    #[test]
+    fn outbox_table_matches_backoff_for_attempt_exactly() {
+        let policy = outbox_table();
+        for attempts in 0..10u32 {
+            assert_eq!(
+                policy.delay_for(attempts),
+                Duration::try_from(everyday_core::mail::backoff_for_attempt(attempts)).unwrap(),
+                "attempts already made: {attempts}"
+            );
+        }
+        assert_eq!(policy.max_attempts(), None, "an outbox op never gives up on its own");
     }
 
     /// Phase 9.3's pinning step: [`is_transient_local_failure`]'s verdict
