@@ -59,7 +59,7 @@ fn tick_inner(svc: &Arc<Service>, vault: &Vault) -> CoreResult<()> {
         return Ok(());
     }
 
-    let now = Timestamp::now();
+    let now = svc.now();
     let owners = owner_addresses(vault)?;
     let calendars = vault.calendars()?;
 

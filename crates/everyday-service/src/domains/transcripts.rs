@@ -75,7 +75,7 @@ pub struct EnrolVoice {
 /// so a template preview is comparing like with like across edits, and the
 /// real assistant call it drives shows a person the template's shape before
 /// they trust it on an actual recording.
-fn sample_transcript() -> Transcript {
+fn sample_transcript(now: Timestamp) -> Transcript {
     let speakers = vec![
         Speaker {
             key: 0,
@@ -135,7 +135,6 @@ fn sample_transcript() -> Transcript {
         });
         at += 4_500;
     }
-    let now = Timestamp::now();
     Transcript {
         id: everyday_core::TranscriptId::new(),
         note_id: NoteId::new(),
@@ -259,7 +258,8 @@ async fn preview_meeting_template(
     args: PreviewMeetingTemplate,
 ) -> CommandResult<String> {
     let vault = svc.require()?;
-    let transcript = sample_transcript();
+    let now = svc.now();
+    let transcript = sample_transcript(now);
     let settings = blocking({
         let vault = vault.clone();
         move || Ok(vault.meeting_settings()?)
@@ -270,8 +270,8 @@ async fn preview_meeting_template(
     let facts = Facts {
         title: "Product launch review".into(),
         event: None,
-        started_at: Some(Timestamp::now()),
-        ended_at: Some(Timestamp::now()),
+        started_at: Some(now),
+        ended_at: Some(now),
         present: present_in_order(&transcript),
         tz,
     };
@@ -369,6 +369,7 @@ async fn rewrite_meeting_note(
 async fn name_speaker(svc: Arc<Service>, ctx: Ctx, args: NameSpeaker) -> CommandResult<Transcript> {
     let vault = svc.require()?;
     let note_id = args.note_id;
+    let now = svc.now();
     // `voiceprint_id` travels out of the closure by hand, not through
     // `crate::touched::current()`, on purpose: this command's own unit
     // tests below call `name_speaker` directly, without going through
@@ -394,8 +395,14 @@ async fn name_speaker(svc: Arc<Service>, ctx: Ctx, args: NameSpeaker) -> Command
         if settings.voiceprints && !transcript.speakers[idx].centroid.is_empty() {
             let centroid = transcript.speakers[idx].centroid.clone();
             let model = transcript.speakers[idx].embedding_model.clone();
-            let id =
-                fold_named_voice(&vault, &args.name, args.email.as_deref(), &centroid, &model)?;
+            let id = fold_named_voice(
+                &vault,
+                &args.name,
+                args.email.as_deref(),
+                &centroid,
+                &model,
+                now,
+            )?;
             transcript.speakers[idx].voiceprint_id = Some(id);
             voiceprint_id = Some(id);
         }
@@ -404,7 +411,7 @@ async fn name_speaker(svc: Arc<Service>, ctx: Ctx, args: NameSpeaker) -> Command
         transcript.speakers[idx].email =
             args.email.clone().or(transcript.speakers[idx].email.clone());
         transcript.speakers[idx].how = Attribution::Named;
-        transcript.updated_at = Timestamp::now();
+        transcript.updated_at = now;
         vault.save_transcript(&transcript)?;
 
         if old_label != args.name
@@ -462,6 +469,7 @@ fn fold_named_voice(
     email: Option<&str>,
     centroid: &[f32],
     model: &str,
+    now: Timestamp,
 ) -> everyday_core::Result<VoiceprintId> {
     let voiceprints = vault.voiceprints()?;
     let candidates: Vec<&Voiceprint> =
@@ -495,7 +503,6 @@ fn fold_named_voice(
             Ok(vp.id)
         }
         None => {
-            let now = Timestamp::now();
             let vp = Voiceprint {
                 id: VoiceprintId::new(),
                 name: name.to_string(),
@@ -690,6 +697,7 @@ async fn enrol_voice(
     })
     .await?;
     let model = kit.embedding_model().to_string();
+    let now = svc.now();
 
     blocking(move || {
         let profile = vault.profile().unwrap_or_default();
@@ -704,20 +712,17 @@ async fn enrol_voice(
                 identify::fold_into(&mut vp, &embedding, Params::default());
                 vp
             }
-            None => {
-                let now = Timestamp::now();
-                Voiceprint {
-                    id: VoiceprintId::new(),
-                    name: owner_name,
-                    email: None,
-                    is_owner: true,
-                    model,
-                    centroids: vec![embedding],
-                    samples: 1,
-                    created_at: now,
-                    updated_at: now,
-                }
-            }
+            None => Voiceprint {
+                id: VoiceprintId::new(),
+                name: owner_name,
+                email: None,
+                is_owner: true,
+                model,
+                centroids: vec![embedding],
+                samples: 1,
+                created_at: now,
+                updated_at: now,
+            },
         };
         vault.save_voiceprint(&vp)?;
         Ok(VoiceprintInfo::from(vp))
@@ -860,7 +865,7 @@ mod tests {
 
     #[test]
     fn present_in_order_lists_each_speaker_once_by_first_speech() {
-        let t = sample_transcript();
+        let t = sample_transcript(Timestamp::now());
         let present = present_in_order(&t);
         assert_eq!(present, vec!["You".to_string(), "Priya".to_string(), "Sam".to_string()]);
     }
