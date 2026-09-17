@@ -26,6 +26,9 @@ import { pref } from './prefs'
 import { edited, proposals, recordAs } from './proposals.svelte'
 import { app, errorMessage, handle, isLocked, quietly } from './state.svelte'
 import { latest } from './store/latest'
+import { optimisticPatch } from './store/optimistic-patch'
+import { optimisticRemove } from './store/optimistic-remove'
+import { guardedRefresh } from './store/refresh'
 import { todo } from './todo.svelte'
 import { durationMinutes, formatValue } from './tracker'
 import { tracking } from './tracking.svelte'
@@ -254,6 +257,11 @@ class CalendarState {
 
   /** Blocks edited since the last write, and the timer that writes them. */
   #saves = new Autosave<string>((ids) => this.#writeBlocks(ids))
+  /** `patch`'s assign-stamp-queue, once. See `store/optimistic-patch.ts`. */
+  #patcher = optimisticPatch<string, TimeBlock>(
+    (id) => this.blocks.find((b) => b.id === id),
+    this.#saves,
+  )
   #syncTimer: ReturnType<typeof setInterval> | null = null
   #clock: ReturnType<typeof setInterval> | null = null
   /**
@@ -412,45 +420,43 @@ class CalendarState {
 
   async refresh() {
     if (!app.supportsCalendar) return
-    const generation = this.#generation.next()
     const [from, to] = this.range
-    this.loading = true
-    try {
-      // One round of queries per navigation, all four in parallel. Each is a
-      // date-range scan over a clear index column, so paging through a year
-      // is cheap even on an encrypted vault.
-      const [calendars, events, blocks, dueTasks, openTasks, projects, entries, readings] =
-        await Promise.all([
-          api.calendars(),
-          api.events({ from, to, visibleOnly: true }),
-          api.blocks({ from, to }),
-          api.tasks({ dueFrom: from, dueTo: to, limit: 500 }),
-          api.tasks({ statuses: OPEN_STATUSES, sort: 'dueAsc', limit: 300 }),
-          api.projects(),
-          api.entries({ from, to, sort: 'dateAsc', limit: 500 }),
-          app.supportsTrackers ? api.readings({ from, to }) : Promise.resolve([]),
-        ])
-      // Only the newest navigation may land. `step`, `goto` and `setView`
-      // each fire this without waiting for the last call to answer, so
-      // paging quickly -- or switching from week to month and back -- put
-      // two of these in the air at once, and nothing before this guaranteed
-      // they landed in the order they were asked for.
-      if (!this.#generation.isCurrent(generation)) return
-      this.calendars = calendars
-      this.events = events
-      this.blocks = blocks
-      this.dueTasks = dueTasks
-      this.openTasks = openTasks
-      this.projects = projects
-      this.entryDays = new Set(entries.map((e: EntrySummary) => e.localDate))
-      this.readings = readings
-      // A selection that has scrolled out of the window is not a selection.
-      if (this.selection && !this.selected) this.selection = null
-    } catch (e) {
-      await handle(e)
-    } finally {
-      if (this.#generation.isCurrent(generation)) this.loading = false
-    }
+    await guardedRefresh(
+      this.#generation,
+      async (isCurrent) => {
+        // One round of queries per navigation, all four in parallel. Each is
+        // a date-range scan over a clear index column, so paging through a
+        // year is cheap even on an encrypted vault.
+        const [calendars, events, blocks, dueTasks, openTasks, projects, entries, readings] =
+          await Promise.all([
+            api.calendars(),
+            api.events({ from, to, visibleOnly: true }),
+            api.blocks({ from, to }),
+            api.tasks({ dueFrom: from, dueTo: to, limit: 500 }),
+            api.tasks({ statuses: OPEN_STATUSES, sort: 'dueAsc', limit: 300 }),
+            api.projects(),
+            api.entries({ from, to, sort: 'dateAsc', limit: 500 }),
+            app.supportsTrackers ? api.readings({ from, to }) : Promise.resolve([]),
+          ])
+        // Only the newest navigation may land. `step`, `goto` and `setView`
+        // each fire this without waiting for the last call to answer, so
+        // paging quickly -- or switching from week to month and back -- put
+        // two of these in the air at once, and nothing before this
+        // guaranteed they landed in the order they were asked for.
+        if (!isCurrent()) return
+        this.calendars = calendars
+        this.events = events
+        this.blocks = blocks
+        this.dueTasks = dueTasks
+        this.openTasks = openTasks
+        this.projects = projects
+        this.entryDays = new Set(entries.map((e: EntrySummary) => e.localDate))
+        this.readings = readings
+        // A selection that has scrolled out of the window is not a selection.
+        if (this.selection && !this.selected) this.selection = null
+      },
+      { setLoading: (v) => (this.loading = v), onError: (e) => handle(e) },
+    )
   }
 
   /**
@@ -1092,11 +1098,7 @@ class CalendarState {
    * reconciliation pass.
    */
   patch(id: string, changes: Partial<TimeBlock>) {
-    const block = this.blocks.find((b) => b.id === id)
-    if (!block) return
-    Object.assign(block, changes)
-    block.updatedAt = new Date().toISOString()
-    this.#saves.touch(id)
+    this.#patcher.patch(id, changes)
   }
 
   /**
@@ -1153,15 +1155,16 @@ class CalendarState {
   }
 
   async removeBlock(id: string) {
-    this.blocks = this.blocks.filter((b) => b.id !== id)
-    this.#saves.forget(id)
-    if (this.selection?.kind === 'block' && this.selection.id === id) this.selection = null
-    try {
-      await api.deleteBlock(id)
-      void todo.refreshStats()
-    } catch (e) {
-      await handle(e, () => this.refreshBlocks())
-    }
+    await optimisticRemove({
+      optimistic: () => {
+        this.blocks = this.blocks.filter((b) => b.id !== id)
+        this.#saves.forget(id)
+        if (this.selection?.kind === 'block' && this.selection.id === id) this.selection = null
+      },
+      call: () => api.deleteBlock(id),
+      onSuccess: () => void todo.refreshStats(),
+      rollback: () => this.refreshBlocks(),
+    })
   }
 
   /** Turn a plan into a record, or back. What "I actually did this" is. */
