@@ -2,7 +2,10 @@
 
 use serde_json::{Value, json};
 
-use super::{Args, Built, Tool, ToolContext, done, flag, limit_arg, list, schema, text};
+use super::{
+    Args, Built, Tool, ToolContext, delete_built, describe_by_id, done, flag, limit_arg, list,
+    load_by_id, run_delete, schema, text,
+};
 use crate::error::{Error, Result};
 use crate::id::NoteId;
 use crate::note::{Note, NoteSummary};
@@ -92,8 +95,13 @@ pub(super) static TOOLS: &[Tool] = &[
 ];
 
 fn describe_delete_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
-    let id: NoteId = args.opt_id("note_id", "note").ok()??;
-    ctx.vault.note(id).ok().map(|n| n.display_title())
+    describe_by_id::<NoteId, Note>(
+        args,
+        "note_id",
+        "note",
+        |id| ctx.vault.note(id),
+        |n| n.display_title(),
+    )
 }
 
 fn note_json(n: &NoteSummary) -> Value {
@@ -123,8 +131,7 @@ fn run_list_notes(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 }
 
 fn run_get_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: NoteId = args.id("note_id", "note")?;
-    let n = ctx.vault.note(id)?;
+    let n: Note = load_by_id(args, "note_id", "note", |id| ctx.vault.note(id))?;
     Ok(json!({
         "id": n.id.to_string(),
         "title": n.display_title(),
@@ -198,8 +205,7 @@ fn apply_update_note_args(args: &Args<'_>, mut note: Note) -> Result<Note> {
 }
 
 fn run_update_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: NoteId = args.id("note_id", "note")?;
-    let note = ctx.vault.note(id)?;
+    let note: Note = load_by_id(args, "note_id", "note", |id| ctx.vault.note(id))?;
     let note = apply_update_note_args(args, note)?;
 
     // Unconditional, as `update_entry` is: the other writer here is the
@@ -210,33 +216,39 @@ fn run_update_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 }
 
 fn build_update_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
-    let id: NoteId = args.id("note_id", "note")?;
-    let original = ctx.vault.note(id)?;
+    let original: Note = load_by_id(args, "note_id", "note", |id| ctx.vault.note(id))?;
     let expected_updated_at = original.updated_at;
     let note = apply_update_note_args(args, original)?;
     let caption = format!("Change note: {}", note.display_title());
+    let about = About { kind: AboutKind::Note, id: note.id.to_string() };
     Ok(Built {
         payload: Payload::Replace { record: ProposedRecord::Note(note), expected_updated_at },
         caption,
-        about: Some(About { kind: AboutKind::Note, id: id.to_string() }),
+        about: Some(about),
     })
 }
 
 fn run_delete_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: NoteId = args.id("note_id", "note")?;
     // Read it first, so the confirmation card and the reply can name what
     // went rather than quoting an id at somebody.
-    let note = ctx.vault.note(id)?;
-    ctx.vault.delete_note(id)?;
-    done("deleted", "note", &note.display_title(), id.to_string())
+    run_delete::<NoteId, Note>(
+        args,
+        "note_id",
+        "note",
+        |id| ctx.vault.note(id),
+        |id| ctx.vault.delete_note(id),
+        |note| note.display_title(),
+    )
 }
 
 fn build_delete_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
-    let id: NoteId = args.id("note_id", "note")?;
-    let note = ctx.vault.note(id)?;
-    Ok(Built {
-        payload: Payload::Delete { kind: ProposalKind::Note, id: id.to_string() },
-        caption: format!("Delete note: {}", note.display_title()),
-        about: Some(About { kind: AboutKind::Note, id: id.to_string() }),
-    })
+    delete_built::<NoteId, Note>(
+        args,
+        "note_id",
+        "note",
+        ProposalKind::Note,
+        AboutKind::Note,
+        |id| ctx.vault.note(id),
+        |note: Note| format!("Delete note: {}", note.display_title()),
+    )
 }

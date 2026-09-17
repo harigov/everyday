@@ -4,8 +4,8 @@
 use serde_json::{Value, json};
 
 use super::{
-    Args, Built, Tool, ToolContext, day, done, flag, limit_arg, list, number, one_of,
-    resolve_purpose, schema, text,
+    Args, Built, Tool, ToolContext, day, delete_built, describe_by_id, done, flag, limit_arg, list,
+    load_by_id, number, one_of, resolve_purpose, run_delete, schema, text,
 };
 use crate::completable::Completable;
 use crate::error::{Error, Result};
@@ -211,13 +211,17 @@ pub(super) static TOOLS: &[Tool] = &[
 ];
 
 fn describe_delete_project(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
-    let id: ProjectId = args.opt_id("project_id", "project").ok()??;
-    ctx.vault.project(id).ok().map(|p| p.name)
+    describe_by_id::<ProjectId, Project>(
+        args,
+        "project_id",
+        "project",
+        |id| ctx.vault.project(id),
+        |p| p.name,
+    )
 }
 
 fn describe_delete_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
-    let id: TaskId = args.opt_id("task_id", "task").ok()??;
-    ctx.vault.task(id).ok().map(|t| t.title)
+    describe_by_id::<TaskId, Task>(args, "task_id", "task", |id| ctx.vault.task(id), |t| t.title)
 }
 
 fn task_json(t: &Task) -> Value {
@@ -322,8 +326,7 @@ fn run_create_project(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 }
 
 fn run_update_project(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: ProjectId = args.id("project_id", "project")?;
-    let mut p = ctx.vault.project(id)?;
+    let mut p: Project = load_by_id(args, "project_id", "project", |id| ctx.vault.project(id))?;
 
     if let Some(name) = args.opt_str("name") {
         p.name = name.to_string();
@@ -357,10 +360,14 @@ fn run_update_project(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 }
 
 fn run_delete_project(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: ProjectId = args.id("project_id", "project")?;
-    let p = ctx.vault.project(id)?;
-    ctx.vault.delete_project(id)?;
-    done("deleted", "project", &p.name, id.to_string())
+    run_delete::<ProjectId, Project>(
+        args,
+        "project_id",
+        "project",
+        |id| ctx.vault.project(id),
+        |id| ctx.vault.delete_project(id),
+        |p| p.name,
+    )
 }
 
 fn run_list_tasks(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -418,9 +425,8 @@ fn run_list_tasks(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 }
 
 fn run_get_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: TaskId = args.id("task_id", "task")?;
-    let task = ctx.vault.task(id)?;
-    let children = ctx.vault.tasks(&TaskQuery::children_of(id))?;
+    let task: Task = load_by_id(args, "task_id", "task", |id| ctx.vault.task(id))?;
+    let children = ctx.vault.tasks(&TaskQuery::children_of(task.id))?;
     let mut out = task_json(&task);
     if !children.is_empty() {
         out.as_object_mut()
@@ -538,23 +544,22 @@ fn apply_update_task_args(ctx: &ToolContext<'_>, args: &Args<'_>, mut t: Task) -
 }
 
 fn run_update_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: TaskId = args.id("task_id", "task")?;
-    let t = ctx.vault.task(id)?;
+    let t: Task = load_by_id(args, "task_id", "task", |id| ctx.vault.task(id))?;
     let t = apply_update_task_args(ctx, args, t)?;
     ctx.vault.save_task(&t)?;
     done("updated", "task", &t.title, t.id.to_string())
 }
 
 fn build_update_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
-    let id: TaskId = args.id("task_id", "task")?;
-    let original = ctx.vault.task(id)?;
+    let original: Task = load_by_id(args, "task_id", "task", |id| ctx.vault.task(id))?;
     let expected_updated_at = original.updated_at;
     let t = apply_update_task_args(ctx, args, original)?;
     let caption = format!("Change task: {}", t.title);
+    let about = About { kind: AboutKind::Task, id: t.id.to_string() };
     Ok(Built {
         payload: Payload::Replace { record: ProposedRecord::Task(t), expected_updated_at },
         caption,
-        about: Some(About { kind: AboutKind::Task, id: id.to_string() }),
+        about: Some(about),
     })
 }
 
@@ -587,18 +592,24 @@ fn resolve_parent(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Option<TaskI
 }
 
 fn run_delete_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: TaskId = args.id("task_id", "task")?;
-    let t = ctx.vault.task(id)?;
-    ctx.vault.delete_task(id)?;
-    done("deleted", "task", &t.title, id.to_string())
+    run_delete::<TaskId, Task>(
+        args,
+        "task_id",
+        "task",
+        |id| ctx.vault.task(id),
+        |id| ctx.vault.delete_task(id),
+        |t| t.title,
+    )
 }
 
 fn build_delete_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
-    let id: TaskId = args.id("task_id", "task")?;
-    let t = ctx.vault.task(id)?;
-    Ok(Built {
-        payload: Payload::Delete { kind: ProposalKind::Task, id: id.to_string() },
-        caption: format!("Delete task: {}", t.title),
-        about: Some(About { kind: AboutKind::Task, id: id.to_string() }),
-    })
+    delete_built::<TaskId, Task>(
+        args,
+        "task_id",
+        "task",
+        ProposalKind::Task,
+        AboutKind::Task,
+        |id| ctx.vault.task(id),
+        |t: Task| format!("Delete task: {}", t.title),
+    )
 }

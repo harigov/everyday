@@ -932,6 +932,98 @@ fn done(action: &str, kind: &str, name: &str, id: String) -> Result<Value> {
     Ok(json!({ "ok": true, "action": action, "kind": kind, "name": name, "id": id }))
 }
 
+// ---- per-entity mechanics ------------------------------------------------
+//
+// Every domain's `get_x`/`update_x`/`delete_x` starts the same way: parse an
+// id argument, load the record it names, and -- for a delete -- say what
+// went. The four helpers below are that shape, parameterised over how a
+// record is fetched and named; what a tool actually *does* with the record
+// stays in the domain file that calls them. `noun` is usually
+// [`RecordKind::not_found_noun`], spelled out at each call site rather than
+// read from a `RecordKind` here, so a tool whose model-facing name differs
+// from the kind's own -- `create_time_block`'s "time block", not "block" --
+// is free to say so without these helpers knowing about the exception.
+
+/// Parse `key` as an id and load the record it names -- the first two lines
+/// of nearly every `run_get_x`, `run_update_x`, `build_update_x`,
+/// `run_delete_x` and `build_delete_x`, collapsed to one call.
+fn load_by_id<Id, T>(
+    args: &Args<'_>,
+    key: &str,
+    noun: &str,
+    get: impl FnOnce(Id) -> Result<T>,
+) -> Result<T>
+where
+    Id: std::str::FromStr,
+{
+    get(args.id(key, noun)?)
+}
+
+/// The same, for a `describe_delete_x`: an id that might not have arrived
+/// yet, or might not parse, while the model is still choosing its
+/// arguments. `None` rather than an error whenever the id is missing,
+/// invalid, or names nothing -- the same "say nothing rather than something
+/// wrong" every `describe_delete_x` already had.
+fn describe_by_id<Id, T>(
+    args: &Args<'_>,
+    key: &str,
+    noun: &str,
+    get: impl FnOnce(Id) -> Result<T>,
+    name: impl FnOnce(T) -> String,
+) -> Option<String>
+where
+    Id: std::str::FromStr,
+{
+    let id: Id = args.opt_id(key, noun).ok()??;
+    get(id).ok().map(name)
+}
+
+/// The mechanical half of a `run_delete_x`: parse the id, read the record so
+/// the reply can name what went, delete it, and reply the way every
+/// deleting tool replies. `get` and `remove` stay separate closures because
+/// there is no delete generic over every domain to call instead of them --
+/// see the refactor plan's "Out of scope" table on a generic `RecordStore`.
+fn run_delete<Id, T>(
+    args: &Args<'_>,
+    key: &str,
+    noun: &str,
+    get: impl FnOnce(Id) -> Result<T>,
+    remove: impl FnOnce(Id) -> Result<()>,
+    name: impl FnOnce(T) -> String,
+) -> Result<Value>
+where
+    Id: std::str::FromStr + std::fmt::Display + Copy,
+{
+    let id: Id = args.id(key, noun)?;
+    let record = get(id)?;
+    remove(id)?;
+    done("deleted", noun, &name(record), id.to_string())
+}
+
+/// The mechanical half of a `build_delete_x`: read the record so the
+/// caption can name what would go, then build the `Payload::Delete` a
+/// proposal carries.
+fn delete_built<Id, T>(
+    args: &Args<'_>,
+    key: &str,
+    noun: &str,
+    kind: crate::proposal::ProposalKind,
+    about: crate::proposal::AboutKind,
+    get: impl FnOnce(Id) -> Result<T>,
+    caption: impl FnOnce(T) -> String,
+) -> Result<Built>
+where
+    Id: std::str::FromStr + std::fmt::Display + Copy,
+{
+    let id: Id = args.id(key, noun)?;
+    let record = get(id)?;
+    Ok(Built {
+        payload: crate::proposal::Payload::Delete { kind, id: id.to_string() },
+        caption: caption(record),
+        about: Some(crate::proposal::About { kind: about, id: id.to_string() }),
+    })
+}
+
 // ---- the catalogue ------------------------------------------------------
 
 /// Every tool that exists, in catalogue order: orientation first, then the

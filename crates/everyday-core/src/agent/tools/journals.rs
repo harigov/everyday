@@ -7,7 +7,8 @@
 use serde_json::{Value, json};
 
 use super::{
-    Args, Tool, ToolContext, day, done, empty_schema, flag, limit_arg, list, schema, text,
+    Args, Tool, ToolContext, day, describe_by_id, done, empty_schema, flag, limit_arg, list,
+    load_by_id, run_delete, schema, text,
 };
 use crate::error::{Error, Result};
 use crate::id::{EntryId, JournalId};
@@ -134,8 +135,13 @@ pub(super) static TOOLS: &[Tool] = &[
 ];
 
 fn describe_delete_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
-    let id: EntryId = args.opt_id("entry_id", "entry").ok()??;
-    ctx.vault.entry(id).ok().map(|e| e.display_title())
+    describe_by_id::<EntryId, Entry>(
+        args,
+        "entry_id",
+        "entry",
+        |id| ctx.vault.entry(id),
+        |e| e.display_title(),
+    )
 }
 
 // ---- projections ----------------------------------------------------------
@@ -343,8 +349,8 @@ fn run_list_entries(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 }
 
 fn run_get_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: EntryId = args.id("entry_id", "entry")?;
-    Ok(entry_json(&ctx.vault.entry(id)?))
+    let entry: Entry = load_by_id(args, "entry_id", "entry", |id| ctx.vault.entry(id))?;
+    Ok(entry_json(&entry))
 }
 
 fn run_create_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -371,8 +377,7 @@ fn run_create_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 }
 
 fn run_update_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: EntryId = args.id("entry_id", "entry")?;
-    let mut entry = ctx.vault.entry(id)?;
+    let mut entry: Entry = load_by_id(args, "entry_id", "entry", |id| ctx.vault.entry(id))?;
 
     if let Some(body) = args.opt_str("body") {
         // A body arrives whole or not at all, so replacing one that holds
@@ -422,10 +427,14 @@ fn run_update_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 }
 
 fn run_delete_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: EntryId = args.id("entry_id", "entry")?;
     // Read it first, so the confirmation and the reply can name what went
     // rather than quoting an id at somebody.
-    let entry = ctx.vault.entry(id)?;
-    ctx.vault.delete_entry(id)?;
-    done("deleted", "entry", &entry.display_title(), id.to_string())
+    run_delete::<EntryId, Entry>(
+        args,
+        "entry_id",
+        "entry",
+        |id| ctx.vault.entry(id),
+        |id| ctx.vault.delete_entry(id),
+        |entry| entry.display_title(),
+    )
 }

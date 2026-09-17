@@ -5,7 +5,8 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 use super::{
-    Args, Tool, ToolContext, Window, day, done, empty_schema, flag, limit_arg, one_of, schema, text,
+    Args, Tool, ToolContext, Window, day, describe_by_id, done, empty_schema, flag, limit_arg,
+    load_by_id, one_of, run_delete, schema, text,
 };
 use crate::completable::Completable;
 use crate::error::Result;
@@ -136,8 +137,7 @@ pub(super) static TOOLS: &[Tool] = &[
 ];
 
 fn describe_delete_goal(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
-    let id: GoalId = args.opt_id("goal_id", "goal").ok()??;
-    ctx.vault.goal(id).ok().map(|g| g.title)
+    describe_by_id::<GoalId, Goal>(args, "goal_id", "goal", |id| ctx.vault.goal(id), |g| g.title)
 }
 
 fn run_list_roles(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
@@ -247,8 +247,7 @@ fn run_create_goal(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 }
 
 fn run_update_goal(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: GoalId = args.id("goal_id", "goal")?;
-    let mut goal = ctx.vault.goal(id)?;
+    let mut goal: Goal = load_by_id(args, "goal_id", "goal", |id| ctx.vault.goal(id))?;
 
     if let Some(title) = args.opt_str("title") {
         let title = title.trim();
@@ -273,14 +272,18 @@ fn run_update_goal(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     }
     goal.updated_at = jiff::Timestamp::now();
     ctx.vault.save_goal(&goal)?;
-    done("updated", "goal", &goal.title, id.to_string())
+    done("updated", "goal", &goal.title, goal.id.to_string())
 }
 
 fn run_delete_goal(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: GoalId = args.id("goal_id", "goal")?;
-    let goal = ctx.vault.goal(id)?;
-    ctx.vault.delete_goal(id)?;
-    done("deleted", "goal", &goal.title, id.to_string())
+    run_delete::<GoalId, Goal>(
+        args,
+        "goal_id",
+        "goal",
+        |id| ctx.vault.goal(id),
+        |id| ctx.vault.delete_goal(id),
+        |goal| goal.title,
+    )
 }
 
 fn run_set_purpose(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {

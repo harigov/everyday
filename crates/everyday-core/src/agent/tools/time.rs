@@ -9,8 +9,8 @@
 use serde_json::{Value, json};
 
 use super::{
-    Args, Built, Tool, ToolContext, Window, day, done, limit_arg, one_of, resolve_purpose, schema,
-    text,
+    Args, Built, Tool, ToolContext, Window, day, done, limit_arg, one_of, resolve_purpose,
+    run_delete, schema, text,
 };
 use crate::error::Result;
 use crate::id::{BlockId, ProjectId, TaskId};
@@ -306,10 +306,14 @@ fn clock(args: &Args<'_>, key: &str) -> Result<jiff::civil::Time> {
 }
 
 fn run_delete_block(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: BlockId = args.id("block_id", "time block")?;
-    let block = ctx.vault.block(id)?;
-    ctx.vault.delete_block(id)?;
-    done("deleted", "time block", &block.local_date.to_string(), id.to_string())
+    run_delete::<BlockId, TimeBlock>(
+        args,
+        "block_id",
+        "time block",
+        |id| ctx.vault.block(id),
+        |id| ctx.vault.delete_block(id),
+        |block| block.local_date.to_string(),
+    )
 }
 
 fn build_delete_time_block(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
