@@ -44,6 +44,7 @@
 //! looking at the window.
 
 use everyday_core::id::{CalendarId, EventId};
+use everyday_core::record::RecordKind;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -206,6 +207,98 @@ pub enum Kind {
     BackgroundTask,
 }
 
+/// [`Kind`] is coarser than [`RecordKind`] on the mail side (a mail message
+/// or a mail op never gets its own change event -- both are reported as
+/// `Kind::Thread`, see `domains::mail`) and carries two things that are not
+/// records at all (`Settings`, `BackgroundTask`). So neither direction is
+/// total; both are still an exhaustive match with no wildcard, so a variant
+/// added to either enum without a line here fails to compile rather than
+/// silently falling through.
+impl TryFrom<Kind> for RecordKind {
+    type Error = ();
+
+    fn try_from(kind: Kind) -> Result<RecordKind, ()> {
+        match kind {
+            Kind::Journal => Ok(RecordKind::Journal),
+            Kind::Entry => Ok(RecordKind::Entry),
+            Kind::Note => Ok(RecordKind::Note),
+            Kind::Project => Ok(RecordKind::Project),
+            Kind::Task => Ok(RecordKind::Task),
+            Kind::Block => Ok(RecordKind::Block),
+            Kind::Calendar => Ok(RecordKind::Calendar),
+            Kind::Event => Ok(RecordKind::Event),
+            Kind::Shelf => Ok(RecordKind::Kind),
+            Kind::Item => Ok(RecordKind::Item),
+            Kind::Log => Ok(RecordKind::Log),
+            Kind::Tracker => Ok(RecordKind::Tracker),
+            Kind::Reading => Ok(RecordKind::Reading),
+            Kind::Role => Ok(RecordKind::Role),
+            Kind::Goal => Ok(RecordKind::Goal),
+            Kind::Account => Ok(RecordKind::Account),
+            Kind::Mailbox => Ok(RecordKind::Mailbox),
+            Kind::Thread => Ok(RecordKind::Thread),
+            Kind::Draft => Ok(RecordKind::Draft),
+            Kind::Conversation => Ok(RecordKind::Conversation),
+            Kind::Routine => Ok(RecordKind::Routine),
+            Kind::RoutineRun => Ok(RecordKind::RoutineRun),
+            Kind::Proposal => Ok(RecordKind::Proposal),
+            Kind::Memory => Ok(RecordKind::Memory),
+            Kind::Recording => Ok(RecordKind::Recording),
+            Kind::Transcript => Ok(RecordKind::Transcript),
+            Kind::Voiceprint => Ok(RecordKind::Voiceprint),
+            // Not a record: the vault's own settings.
+            Kind::Settings => Err(()),
+            // Not a record: a supervisor task's status.
+            Kind::BackgroundTask => Err(()),
+        }
+    }
+}
+
+/// The reverse of [`TryFrom<Kind> for RecordKind`]. `Err(())` for the three
+/// kinds no `Change` is ever raised for by their own name: a mail message
+/// and a mail op are both folded into `Kind::Thread`, and the assistant's
+/// own message is folded into `Kind::Conversation` -- see `agent.rs`'s
+/// `written` and `domains::mail`.
+impl TryFrom<RecordKind> for Kind {
+    type Error = ();
+
+    fn try_from(kind: RecordKind) -> Result<Kind, ()> {
+        match kind {
+            RecordKind::Journal => Ok(Kind::Journal),
+            RecordKind::Entry => Ok(Kind::Entry),
+            RecordKind::Note => Ok(Kind::Note),
+            RecordKind::Project => Ok(Kind::Project),
+            RecordKind::Task => Ok(Kind::Task),
+            RecordKind::Block => Ok(Kind::Block),
+            RecordKind::Calendar => Ok(Kind::Calendar),
+            RecordKind::Event => Ok(Kind::Event),
+            RecordKind::Kind => Ok(Kind::Shelf),
+            RecordKind::Item => Ok(Kind::Item),
+            RecordKind::Log => Ok(Kind::Log),
+            RecordKind::Tracker => Ok(Kind::Tracker),
+            RecordKind::Reading => Ok(Kind::Reading),
+            RecordKind::Role => Ok(Kind::Role),
+            RecordKind::Goal => Ok(Kind::Goal),
+            RecordKind::Account => Ok(Kind::Account),
+            RecordKind::Mailbox => Ok(Kind::Mailbox),
+            RecordKind::Thread => Ok(Kind::Thread),
+            RecordKind::Draft => Ok(Kind::Draft),
+            RecordKind::Conversation => Ok(Kind::Conversation),
+            RecordKind::Routine => Ok(Kind::Routine),
+            RecordKind::RoutineRun => Ok(Kind::RoutineRun),
+            RecordKind::Proposal => Ok(Kind::Proposal),
+            RecordKind::Memory => Ok(Kind::Memory),
+            RecordKind::Recording => Ok(Kind::Recording),
+            RecordKind::Transcript => Ok(Kind::Transcript),
+            RecordKind::Voiceprint => Ok(Kind::Voiceprint),
+            // Folded into `Kind::Thread` -- see this impl's docs.
+            RecordKind::MailMessage | RecordKind::Op => Err(()),
+            // Folded into `Kind::Conversation` -- see this impl's docs.
+            RecordKind::Message => Err(()),
+        }
+    }
+}
+
 /// One write, on its way to everyone who did not make it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -306,3 +399,71 @@ pub trait EventSink: Send + Sync {
 pub struct Silent;
 
 impl EventSink for Silent {}
+
+#[cfg(test)]
+mod tests {
+    //! Phase 6's `Kind` <-> `RecordKind` conversions. Both `TryFrom` impls
+    //! are exhaustive matches with no wildcard, so the compiler already
+    //! proves every variant is accounted for; these tests pin *where* each
+    //! one goes, and that the exceptions on both sides are exactly the ones
+    //! the docs on those impls name.
+    use super::*;
+
+    const RECORD_KINDS: [Kind; 27] = [
+        Kind::Journal,
+        Kind::Entry,
+        Kind::Note,
+        Kind::Project,
+        Kind::Task,
+        Kind::Block,
+        Kind::Calendar,
+        Kind::Event,
+        Kind::Shelf,
+        Kind::Item,
+        Kind::Log,
+        Kind::Tracker,
+        Kind::Reading,
+        Kind::Role,
+        Kind::Goal,
+        Kind::Account,
+        Kind::Mailbox,
+        Kind::Thread,
+        Kind::Draft,
+        Kind::Conversation,
+        Kind::Routine,
+        Kind::RoutineRun,
+        Kind::Proposal,
+        Kind::Memory,
+        Kind::Recording,
+        Kind::Transcript,
+        Kind::Voiceprint,
+    ];
+
+    #[test]
+    fn every_record_backed_change_kind_round_trips_through_record_kind() {
+        for kind in RECORD_KINDS {
+            let record = RecordKind::try_from(kind).unwrap_or_else(|()| {
+                panic!("{kind:?} is one of the 27 record-backed kinds and should convert")
+            });
+            assert_eq!(Kind::try_from(record), Ok(kind), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn settings_and_background_task_name_no_record() {
+        assert_eq!(RecordKind::try_from(Kind::Settings), Err(()));
+        assert_eq!(RecordKind::try_from(Kind::BackgroundTask), Err(()));
+    }
+
+    #[test]
+    fn a_mail_message_a_mail_op_and_the_assistants_own_message_have_no_change_kind_of_their_own() {
+        // All three are real record kinds -- see `RecordDescriptor` in
+        // `everyday-core` -- but no `Change` is ever raised under their own
+        // name; a mail message and a mail op both surface as
+        // `Kind::Thread`, and the assistant's own message as
+        // `Kind::Conversation`. See `TryFrom<RecordKind> for Kind`'s docs.
+        assert_eq!(Kind::try_from(RecordKind::MailMessage), Err(()));
+        assert_eq!(Kind::try_from(RecordKind::Op), Err(()));
+        assert_eq!(Kind::try_from(RecordKind::Message), Err(()));
+    }
+}

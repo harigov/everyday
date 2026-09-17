@@ -53,6 +53,7 @@ use std::sync::OnceLock;
 use crate::error::{Error, Result};
 use crate::id::{ConversationId, GoalId, RoleId};
 use crate::purpose::Purpose;
+use crate::record::RecordKind;
 use crate::vault::Vault;
 use jiff::civil::Date;
 
@@ -261,6 +262,47 @@ impl Domain {
             // first place: no tool here returns one, or a `voiceprint_id`,
             // or anything an embedding could be reconstructed from.
             | Domain::Meetings => Sensitivity::Ordinary,
+        }
+    }
+}
+
+/// The domain a record kind's tools live in, for the twenty-nine kinds one
+/// actually does -- a `RecordKind::Proposal` names work the assistant
+/// prepared, not a domain of its own, and answers `None`. Coarser than
+/// [`RecordKind`] on purpose, the same way [`Domain::sensitivity`] and
+/// [`available`] already are: several kinds share one domain (`Project`,
+/// `Task` and `Block` are all `Domain::Tasks`), because a tool list is
+/// offered per domain, not per table.
+impl TryFrom<RecordKind> for Domain {
+    type Error = ();
+
+    fn try_from(kind: RecordKind) -> Result<Domain, ()> {
+        match kind {
+            RecordKind::Journal | RecordKind::Entry => Ok(Domain::Journals),
+            RecordKind::Note => Ok(Domain::Notes),
+            RecordKind::Project | RecordKind::Task | RecordKind::Block => Ok(Domain::Tasks),
+            RecordKind::Calendar | RecordKind::Event => Ok(Domain::Calendars),
+            RecordKind::Kind | RecordKind::Item | RecordKind::Log => Ok(Domain::Library),
+            RecordKind::Tracker | RecordKind::Reading => Ok(Domain::Trackers),
+            RecordKind::Role | RecordKind::Goal => Ok(Domain::Purpose),
+            RecordKind::Routine | RecordKind::RoutineRun => Ok(Domain::Routines),
+            RecordKind::Conversation | RecordKind::Message | RecordKind::Memory => {
+                Ok(Domain::Agent)
+            }
+            // Accounts have no tool domain of their own -- `Domain::Mail`
+            // requires both `supports_mail()` and `supports_accounts()` --
+            // so an account's tools are the mail domain's.
+            RecordKind::Account
+            | RecordKind::Mailbox
+            | RecordKind::MailMessage
+            | RecordKind::Thread
+            | RecordKind::Draft
+            | RecordKind::Op => Ok(Domain::Mail),
+            RecordKind::Recording | RecordKind::Transcript | RecordKind::Voiceprint => {
+                Ok(Domain::Meetings)
+            }
+            // Proposed work, not a domain a tool list is offered for.
+            RecordKind::Proposal => Err(()),
         }
     }
 }
@@ -1200,6 +1242,48 @@ fn check_cap(ctx: &ToolContext<'_>, drafting: &Drafting) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`TryFrom<RecordKind> for Domain`] is an exhaustive match with no
+    /// wildcard, so it cannot silently start skipping a variant; this pins
+    /// what each group actually maps to, and that `Proposal` -- proposed
+    /// work, not a domain of its own -- is the one kind refused.
+    #[test]
+    fn every_record_kind_maps_to_its_domain_or_is_refused() {
+        for (kind, domain) in [
+            (RecordKind::Journal, Domain::Journals),
+            (RecordKind::Entry, Domain::Journals),
+            (RecordKind::Note, Domain::Notes),
+            (RecordKind::Project, Domain::Tasks),
+            (RecordKind::Task, Domain::Tasks),
+            (RecordKind::Block, Domain::Tasks),
+            (RecordKind::Calendar, Domain::Calendars),
+            (RecordKind::Event, Domain::Calendars),
+            (RecordKind::Kind, Domain::Library),
+            (RecordKind::Item, Domain::Library),
+            (RecordKind::Log, Domain::Library),
+            (RecordKind::Tracker, Domain::Trackers),
+            (RecordKind::Reading, Domain::Trackers),
+            (RecordKind::Role, Domain::Purpose),
+            (RecordKind::Goal, Domain::Purpose),
+            (RecordKind::Routine, Domain::Routines),
+            (RecordKind::RoutineRun, Domain::Routines),
+            (RecordKind::Conversation, Domain::Agent),
+            (RecordKind::Message, Domain::Agent),
+            (RecordKind::Memory, Domain::Agent),
+            (RecordKind::Account, Domain::Mail),
+            (RecordKind::Mailbox, Domain::Mail),
+            (RecordKind::MailMessage, Domain::Mail),
+            (RecordKind::Thread, Domain::Mail),
+            (RecordKind::Draft, Domain::Mail),
+            (RecordKind::Op, Domain::Mail),
+            (RecordKind::Recording, Domain::Meetings),
+            (RecordKind::Transcript, Domain::Meetings),
+            (RecordKind::Voiceprint, Domain::Meetings),
+        ] {
+            assert_eq!(Domain::try_from(kind), Ok(domain), "{kind:?}");
+        }
+        assert_eq!(Domain::try_from(RecordKind::Proposal), Err(()));
+    }
 
     /// The rule that has to hold before there is a domain it applies to.
     ///
