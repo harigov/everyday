@@ -704,6 +704,11 @@ export interface Capabilities {
    */
   routines: boolean
   /**
+   * Backend carries proposals: work the assistant prepared for the person to
+   * accept or decline. False hides dreaming and every ghost.
+   */
+  proposals?: boolean
+  /**
    * Backend carries the assistant's own domain, so its settings, threads and
    * memory have somewhere to live.
    *

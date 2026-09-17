@@ -46,6 +46,7 @@ const KINDS = [
   'note',
   'routine',
   'routineRun',
+  'proposal',
   'project',
   'task',
   'block',

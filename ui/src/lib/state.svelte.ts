@@ -473,6 +473,11 @@ class AppState {
     return this.status?.capabilities?.routines === true
   }
 
+  /** Backend carries proposals -- see `docs/plans/dreaming.md`. */
+  get supportsProposals(): boolean {
+    return this.status?.capabilities?.proposals === true
+  }
+
   /**
    * Does this vault hold the assistant's own records at all?
    *

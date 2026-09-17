@@ -8,6 +8,7 @@
 import type {
   Account,
   AccountId,
+  DeclineReason,
   AgentCallerKind,
   AgentEvent,
   AgentMailAccess,
@@ -55,6 +56,7 @@ import type {
   MeetingSettings,
   Memory,
   MemoryId,
+  MemoryOrigin,
   Note,
   NoteId,
   NoteQuery,
@@ -62,6 +64,9 @@ import type {
   Profile,
   Project,
   ProjectId,
+  ProposalId,
+  ProposalQuery,
+  ProposedRecord,
   Reading,
   ReadingId,
   ReadingQuery,
@@ -711,6 +716,24 @@ export const api = {
   /** How many runs nobody has looked at. The number on the app bar. */
   unseenRuns: () => call('unseenRuns', {}),
   routineTemplates: () => call('routineTemplates', {}),
+
+  /** Work the assistant prepared. See `proposals.svelte.ts`. */
+  proposals: (query: ProposalQuery = {}) => call('listProposals', { query }),
+  proposal: (id: ProposalId) => call('getProposal', { id }),
+  /**
+   * Say yes. `edited` is the record as changed before accepting; `confirm`
+   * is for a memory accepted as true from the memory list.
+   */
+  acceptProposal: (id: ProposalId, edited: ProposedRecord | null = null, confirm = false) =>
+    call('acceptProposal', { id, edited, confirm }),
+  declineProposal: (id: ProposalId, reason: DeclineReason | null = null) =>
+    call('declineProposal', { id, reason }),
+  /** Mark proposals as looked at. An empty list means every pending one. */
+  markProposalsSeen: (ids: ProposalId[] = []) => call('markProposalsSeen', { ids }),
+  /** Pending proposals nobody has looked at. Half the number on the app bar. */
+  unseenProposals: () => call('unseenProposals', {}),
+  /** Confirm an inferred memory, or strike it out as rejected. */
+  setMemoryOrigin: (id: MemoryId, origin: MemoryOrigin) => call('setMemoryOrigin', { id, origin }),
 
   notes: (query: NoteQuery = {}) => call('listNotes', { query }),
   note: (id: NoteId) => call('getNote', { id }),

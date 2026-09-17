@@ -84,7 +84,19 @@ import type {
   VaultStatus,
 } from './types'
 import { TASK_STATUSES, VaultError, goalIsOpen, isAhead, isOpen, priorityRank } from './types'
-import type { AgentEvent, AgentMessage, AgentSettings, Conversation, Memory } from './types'
+import type {
+  AgentEvent,
+  AgentMessage,
+  AgentSettings,
+  Conversation,
+  DeclineReason,
+  DreamScope,
+  Memory,
+  MemoryOrigin,
+  Proposal,
+  ProposalQuery,
+  ProposedRecord,
+} from './types'
 import { DEFAULT_COLORS } from './colors'
 import type { Draft, MailCategory } from './types'
 import {
@@ -2441,6 +2453,8 @@ let agentSettings: AgentSettings = {
   maxSteps: 24,
   remember: true,
   web: false,
+  dreaming: false,
+  proposals: {},
   hasKey: true,
 }
 let agentKey = 'sk-mock'
@@ -2452,10 +2466,248 @@ const memories: Memory[] = [
     text: 'Plans the week on Sunday evening.',
     sourceId: null,
     pinned: false,
+    origin: 'told',
     createdAt: iso(-20),
     updatedAt: iso(-20),
   },
+  {
+    id: 'mem-2',
+    text: 'Usually writes in the journal after ten at night.',
+    sourceId: null,
+    pinned: false,
+    origin: 'inferred',
+    lastSupported: day(1),
+    createdAt: iso(6),
+    updatedAt: iso(1),
+  },
+  {
+    id: 'mem-3',
+    text: 'Skips the gym on Thursdays.',
+    sourceId: null,
+    pinned: false,
+    origin: 'rejected',
+    createdAt: iso(12),
+    updatedAt: iso(9),
+  },
 ]
+
+// ── Proposals ────────────────────────────────────────────────────────────
+//
+// Work a dream prepared: a task and a block for tomorrow, a memory, a
+// routine, and two already answered so the weekly reading has something to
+// show. See docs/plans/dreaming.md.
+
+function blockProposalAt(daysAhead: number, hour: number, minutes: number): TimeBlock {
+  const b = blockAt(`b-prop-${hour}`, 't-van', -daysAhead, hour, minutes, 'planned')
+  return { ...b, subject: { type: 'adhoc' }, title: 'Deep work: the insurance claim' }
+}
+
+const DREAM_RUN = 'run-dream-1'
+
+const proposals: Proposal[] = [
+  {
+    id: 'prop-task',
+    kind: 'task',
+    payload: {
+      type: 'create',
+      record: {
+        kind: 'task',
+        value: seedTask({
+          id: 't-prop-dentist',
+          title: 'Book the dentist',
+          dueDate: day(-1),
+          estimateMinutes: 10,
+        }),
+      },
+    },
+    caption: 'Create task: Book the dentist',
+    why: 'Mentioned in two journal entries this week and not on the list.',
+    madeBy: { type: 'run', runId: DREAM_RUN },
+    targetDate: day(-1),
+    madeAt: iso(0),
+    expiresAt: iso(-2),
+    outcome: { type: 'pending' },
+    seen: false,
+    updatedAt: iso(0),
+  },
+  {
+    id: 'prop-block',
+    kind: 'block',
+    payload: { type: 'create', record: { kind: 'block', value: blockProposalAt(1, 9, 90) } },
+    caption: 'Plan time tomorrow 09:00–10:30: Deep work: the insurance claim',
+    why: 'The claim is due Friday and tomorrow morning is clear.',
+    about: { kind: 'task', id: 't-van' },
+    madeBy: { type: 'run', runId: DREAM_RUN },
+    targetDate: day(-1),
+    madeAt: iso(0),
+    expiresAt: iso(-1),
+    outcome: { type: 'pending' },
+    seen: false,
+    updatedAt: iso(0),
+  },
+  {
+    id: 'prop-memory',
+    kind: 'memory',
+    payload: {
+      type: 'create',
+      record: {
+        kind: 'memory',
+        value: {
+          id: 'mem-prop-1',
+          text: 'Runs on Tuesday and Saturday mornings.',
+          sourceId: null,
+          pinned: false,
+          origin: 'inferred',
+          lastSupported: day(1),
+          createdAt: iso(0),
+          updatedAt: iso(0),
+        },
+      },
+    },
+    caption: 'Remember: Runs on Tuesday and Saturday mornings.',
+    why: 'Run readings on six of the last eight Tuesdays and Saturdays.',
+    madeBy: { type: 'run', runId: DREAM_RUN },
+    madeAt: iso(0),
+    expiresAt: iso(-30),
+    outcome: { type: 'pending' },
+    seen: false,
+    updatedAt: iso(0),
+  },
+  {
+    id: 'prop-routine',
+    kind: 'routine',
+    payload: {
+      type: 'create',
+      record: {
+        kind: 'routine',
+        value: {
+          id: 'ro-prop-1',
+          name: 'Friday wind-down',
+          instructions:
+            'Remind me at half past nine to write in the journal, and list what I finished this week.',
+          trigger: { type: 'schedule', at: '21:30', days: ['fri'] },
+          graceMinutes: 60,
+          enabled: true,
+          kind: { type: 'custom' },
+          createdAt: iso(0),
+          updatedAt: iso(0),
+        },
+      },
+    },
+    caption: 'Create routine: Friday wind-down',
+    why: 'You wrote on five of the last seven nights, and never on a Friday.',
+    madeBy: { type: 'run', runId: DREAM_RUN },
+    madeAt: iso(0),
+    expiresAt: iso(-14),
+    outcome: { type: 'pending' },
+    seen: false,
+    updatedAt: iso(0),
+  },
+  {
+    id: 'prop-old-1',
+    kind: 'task',
+    payload: {
+      type: 'create',
+      record: { kind: 'task', value: seedTask({ id: 't-prop-old', title: 'Renew the passport' }) },
+    },
+    caption: 'Create task: Renew the passport',
+    why: 'Expires in March.',
+    madeBy: { type: 'run', runId: 'run-dream-0' },
+    madeAt: iso(4),
+    expiresAt: iso(-3),
+    outcome: { type: 'accepted', at: iso(3), savedAs: 't-prop-old', edited: true },
+    seen: true,
+    updatedAt: iso(3),
+  },
+  {
+    id: 'prop-old-2',
+    kind: 'block',
+    payload: { type: 'create', record: { kind: 'block', value: blockProposalAt(-3, 13, 60) } },
+    caption: 'Plan time 13:00–14:00: Prepare for the one-to-one',
+    why: 'A one-to-one with Priya is at two.',
+    madeBy: { type: 'run', runId: 'run-dream-0' },
+    targetDate: day(3),
+    madeAt: iso(4),
+    expiresAt: iso(3),
+    outcome: { type: 'declined', at: iso(3), reason: { type: 'neverThis' } },
+    seen: true,
+    updatedAt: iso(3),
+  },
+]
+
+/** The three routines dreaming owns, made the first time it is turned on. */
+function dreamRoutines(): Routine[] {
+  const make = (
+    scope: DreamScope,
+    name: string,
+    at: string,
+    days: Weekday[],
+    graceMinutes: number,
+    dayOfMonth: number | null = null,
+  ): Routine => ({
+    id: `ro-dream-${scope}`,
+    name,
+    instructions: '',
+    trigger: { type: 'schedule', at, days, dayOfMonth },
+    graceMinutes,
+    enabled: true,
+    kind: { type: 'dream', scope },
+    createdAt: iso(0),
+    updatedAt: iso(0),
+  })
+  return [
+    make('day', 'Nightly dream', '03:00', [], 20 * 60),
+    make('week', 'Weekly dream', '03:30', ['sun'], 44 * 60),
+    make('month', 'Monthly dream', '04:00', [], 6 * 24 * 60, 1),
+  ]
+}
+
+function proposalPending(p: Proposal): boolean {
+  return p.outcome.type === 'pending'
+}
+
+/** Save what a proposal carries, the way the real accept does. */
+function applyProposal(p: Proposal, edited: ProposedRecord | null, confirm: boolean): string {
+  const payload = p.payload
+  if (payload.type === 'delete') {
+    const lists: Record<string, { id: string }[]> = {
+      task: tasks,
+      block: blocks,
+      memory: memories,
+      routine: routines,
+      note: notes,
+    }
+    const list = lists[payload.kind]
+    const at = list?.findIndex((r) => r.id === payload.id) ?? -1
+    if (list && at >= 0) list.splice(at, 1)
+    return payload.id
+  }
+  if (payload.type === 'sendMail') return payload.draftId
+  const record = edited ?? payload.record
+  const upsert = <R extends { id: string }>(list: R[], value: R) => {
+    const at = list.findIndex((r) => r.id === value.id)
+    if (payload.type === 'replace' && at < 0) {
+      throw new VaultError('not_found', 'what this proposal changes has been deleted')
+    }
+    if (at >= 0) list[at] = value
+    else list.push(value)
+    return value.id
+  }
+  switch (record.kind) {
+    case 'task':
+      return upsert(tasks, { ...record.value, updatedAt: new Date().toISOString() })
+    case 'block':
+      return upsert(blocks, { ...record.value, updatedAt: new Date().toISOString() })
+    case 'memory': {
+      const origin: MemoryOrigin = confirm || edited ? 'confirmed' : 'inferred'
+      return upsert(memories, { ...record.value, origin })
+    }
+    case 'routine':
+      return upsert(routines, { ...record.value, kind: { type: 'custom' } })
+    case 'note':
+      return upsert(notes, record.value)
+  }
+}
 
 function plainText(node: unknown): string {
   if (!node || typeof node !== 'object') return ''
@@ -2558,6 +2810,7 @@ function status(): VaultStatus {
           purpose: true,
           notes: true,
           routines: true,
+          proposals: true,
           agent: true,
           accounts: true,
           mail: true,
@@ -2866,6 +3119,12 @@ export const mockInvoke = async <T>(
 
     case 'delete_routine': {
       requireUnlocked()
+      if (routines.find((r) => r.id === args.id)?.kind?.type === 'dream') {
+        throw new VaultError(
+          'invalid',
+          'a dream belongs to the application; turn dreaming off in Settings instead',
+        )
+      }
       const at = routines.findIndex((r) => r.id === args.id)
       if (at >= 0) routines.splice(at, 1)
       for (let i = runs.length - 1; i >= 0; i -= 1) {
@@ -2934,6 +3193,85 @@ export const mockInvoke = async <T>(
     case 'unseen_runs':
       requireUnlocked()
       return runs.filter((r) => !r.seen).length as T
+
+    case 'list_proposals': {
+      requireUnlocked()
+      const q = (args.query ?? {}) as ProposalQuery
+      let rows = [...proposals]
+      if (q.kinds?.length) rows = rows.filter((p) => q.kinds!.includes(p.kind))
+      if (q.states?.length) rows = rows.filter((p) => q.states!.includes(p.outcome.type))
+      if (q.from || q.to) {
+        rows = rows.filter(
+          (p) =>
+            !!p.targetDate &&
+            (!q.from || p.targetDate >= q.from) &&
+            (!q.to || p.targetDate <= q.to),
+        )
+      }
+      if (q.madeSince) rows = rows.filter((p) => p.madeAt >= q.madeSince!)
+      if (q.aboutKind) rows = rows.filter((p) => p.about?.kind === q.aboutKind)
+      if (q.aboutId) rows = rows.filter((p) => p.about?.id === q.aboutId)
+      if (q.runId) {
+        rows = rows.filter((p) => p.madeBy?.type === 'run' && p.madeBy.runId === q.runId)
+      }
+      if (q.unseen != null) rows = rows.filter((p) => p.seen === !q.unseen)
+      rows.sort((a, b) => b.madeAt.localeCompare(a.madeAt))
+      return rows.slice(0, q.limit ?? rows.length) as T
+    }
+
+    case 'get_proposal': {
+      requireUnlocked()
+      const found = proposals.find((p) => p.id === args.id)
+      if (!found) throw new VaultError('not_found', 'no such proposal')
+      return found as T
+    }
+
+    case 'accept_proposal': {
+      requireUnlocked()
+      const found = proposals.find((p) => p.id === args.id)
+      if (!found) throw new VaultError('not_found', 'no such proposal')
+      if (!proposalPending(found)) throw new VaultError('invalid', 'this has already been answered')
+      const edited = (args.edited ?? null) as ProposedRecord | null
+      const savedAs = applyProposal(found, edited, args.confirm === true)
+      const now = new Date().toISOString()
+      found.outcome = { type: 'accepted', at: now, savedAs, edited: edited !== null }
+      found.seen = true
+      found.updatedAt = now
+      return found as T
+    }
+
+    case 'decline_proposal': {
+      requireUnlocked()
+      const found = proposals.find((p) => p.id === args.id)
+      if (!found) throw new VaultError('not_found', 'no such proposal')
+      if (!proposalPending(found)) throw new VaultError('invalid', 'this has already been answered')
+      const now = new Date().toISOString()
+      found.outcome = {
+        type: 'declined',
+        at: now,
+        reason: (args.reason ?? null) as DeclineReason | null,
+      }
+      found.seen = true
+      found.updatedAt = now
+      if (found.payload.type === 'create' && found.payload.record.kind === 'memory') {
+        // A struck-out inference is kept, so a later dream cannot learn it.
+        memories.push({ ...found.payload.record.value, origin: 'rejected' })
+      }
+      return found as T
+    }
+
+    case 'mark_proposals_seen': {
+      requireUnlocked()
+      const ids = (args.ids ?? []) as string[]
+      for (const p of proposals) {
+        if (proposalPending(p) && (ids.length === 0 || ids.includes(p.id))) p.seen = true
+      }
+      return undefined as T
+    }
+
+    case 'unseen_proposals':
+      requireUnlocked()
+      return proposals.filter((p) => proposalPending(p) && !p.seen).length as T
 
     case 'routine_templates':
       requireUnlocked()
@@ -4223,6 +4561,13 @@ export const mockInvoke = async <T>(
     case 'save_agent_settings': {
       requireUnlocked()
       agentSettings = args.settings as AgentSettings
+      // The real one makes the three dream routines the first time dreaming
+      // is turned on, and switches them with it after that.
+      const dreams = routines.filter((r) => r.kind?.type === 'dream')
+      if (agentSettings.dreaming && dreams.length === 0) routines.push(...dreamRoutines())
+      for (const r of routines) {
+        if (r.kind?.type === 'dream') r.enabled = agentSettings.dreaming === true
+      }
       return { ...agentSettings, hasKey: agentKey !== '' } as T
     }
 
@@ -4298,6 +4643,15 @@ export const mockInvoke = async <T>(
       // Answers with the whole list, so a caller can redraw without a second
       // call. Nothing is evicted here; the cap is the real one's business.
       return [...memories] as T
+    }
+
+    case 'set_memory_origin': {
+      requireUnlocked()
+      const found = memories.find((m) => m.id === args.id)
+      if (!found) throw new VaultError('not_found', 'no such memory')
+      found.origin = args.origin as MemoryOrigin
+      found.updatedAt = new Date().toISOString()
+      return found as T
     }
 
     case 'delete_memory': {
