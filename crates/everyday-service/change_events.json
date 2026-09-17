@@ -1,0 +1,1171 @@
+{
+  "commands": [
+    {
+      "command": "save_journal",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "journal",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_entry",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "entry",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_entry_force",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "entry",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_note",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "note",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_note_force",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "note",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_profile",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_project",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "project",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_task",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "task",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_tasks",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "task",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_block",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "block",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_role",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "role",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_goal",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "goal",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_goals",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "goal",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "seed_roles",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "role",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_tracker",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "tracker",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "log_reading",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "reading",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_reading",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "reading",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_kind",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "shelf",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "add_item",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "item",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_item",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "item",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "add_item",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "item",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_items",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "item",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "set_item_status",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "item",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "set_item_progress",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "item",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_log",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "log",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "apply_metadata",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "item",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_account",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "account",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_account_password",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "account",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "set_agent_access",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "account",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "mark_read",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "mark_unread",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "star",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "unstar",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "label",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "unlabel",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "set_thread_category",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "snooze",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "unsnooze",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "move_to_mailbox",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "archive",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "trash",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "allow_remote_images",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "revoke_remote_image_allowance",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "recategorize_mail",
+      "events": []
+    },
+    {
+      "command": "rebuild_mail_index",
+      "events": []
+    },
+    {
+      "command": "new_draft",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "draft",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_draft",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "draft",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "send_draft",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "draft",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "undo_send",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "draft",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "new_draft",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "draft",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_draft",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "draft",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "discard_draft",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "draft",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "import_calendar",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "calendar",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_calendar",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "calendar",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_meeting_settings",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "set_transcriber_key",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "cancel_speech_model_download",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "dismiss_meeting_offer",
+      "events": []
+    },
+    {
+      "command": "append_recording_chunk",
+      "events": []
+    },
+    {
+      "command": "save_agent_settings",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "set_agent_key",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "clear_agent_key",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "set_quick_job",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_memory",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "memory",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "set_memory_origin",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "memory",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_routine",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "routine",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "run_routine",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "routineRun",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "mark_runs_seen",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "routineRun",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "confirm_tool_call",
+      "events": []
+    },
+    {
+      "command": "accept_proposal",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "note",
+          "op": "created",
+          "origin": "local"
+        },
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "proposal",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "decline_proposal",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "proposal",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "mark_proposals_seen",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "proposal",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "touch",
+      "events": []
+    },
+    {
+      "command": "poll_auto_lock",
+      "events": []
+    },
+    {
+      "command": "set_auto_lock",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "set_forget_key",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "flush",
+      "events": []
+    },
+    {
+      "command": "verify_password",
+      "events": []
+    },
+    {
+      "command": "change_password",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "lock",
+      "events": []
+    },
+    {
+      "command": "unlock",
+      "events": []
+    }
+  ],
+  "schedulerTick": [
+    {
+      "idPresent": false,
+      "idsLen": 0,
+      "kind": "proposal",
+      "op": "updated",
+      "origin": null
+    },
+    {
+      "idPresent": false,
+      "idsLen": 0,
+      "kind": "routineRun",
+      "op": "updated",
+      "origin": "assistant"
+    }
+  ],
+  "skippedCommands": [
+    {
+      "name": "attach_oauth_sign_in",
+      "reason": "OAuth: attaches a real sign-in's tokens to an account"
+    },
+    {
+      "name": "begin_oauth_sign_in",
+      "reason": "OAuth: a loopback redirect to a real provider"
+    },
+    {
+      "name": "begin_recording",
+      "reason": "refuses unless the transcriber's speech kit is genuinely on disk"
+    },
+    {
+      "name": "cancel_oauth_sign_in",
+      "reason": "OAuth: cancels the sign-in begin_oauth_sign_in above needs"
+    },
+    {
+      "name": "download_speech_model",
+      "reason": "a real ~40MB network download"
+    },
+    {
+      "name": "enrol_voice",
+      "reason": "needs the speech/voice model kit to embed real audio"
+    },
+    {
+      "name": "fetch_attachment",
+      "reason": "needs a message's raw bytes from a real synced pack"
+    },
+    {
+      "name": "fetch_image",
+      "reason": "fetches a remote image over HTTP"
+    },
+    {
+      "name": "finish_recording",
+      "reason": "moves the recording into the transcription pipeline: background work"
+    },
+    {
+      "name": "name_speaker",
+      "reason": "needs a transcript, which only a finished recording produces"
+    },
+    {
+      "name": "respond_to_invite",
+      "reason": "needs an ICS-bearing message in the local pack store, and sends"
+    },
+    {
+      "name": "retry_recording",
+      "reason": "resumes the same background pipeline finish_recording does"
+    },
+    {
+      "name": "send_message",
+      "reason": "streams: true, unreachable through Service::call at all"
+    },
+    {
+      "name": "subscribe_account_calendar",
+      "reason": "fetches a remote account's calendar over the network"
+    },
+    {
+      "name": "subscribe_calendar",
+      "reason": "fetches a remote ICS feed over the network"
+    },
+    {
+      "name": "sync_account",
+      "reason": "starts a supervised sync task against a real mail server"
+    },
+    {
+      "name": "sync_calendar",
+      "reason": "refreshes one calendar from its remote source"
+    },
+    {
+      "name": "sync_due_calendars",
+      "reason": "refreshes every subscribed calendar from its remote source"
+    }
+  ],
+  "tools": [
+    {
+      "events": [],
+      "tool": "create_entry"
+    },
+    {
+      "events": [],
+      "tool": "update_entry"
+    },
+    {
+      "events": [],
+      "tool": "create_goal"
+    },
+    {
+      "events": [],
+      "tool": "update_goal"
+    },
+    {
+      "events": [],
+      "tool": "set_purpose"
+    },
+    {
+      "events": [],
+      "tool": "create_item"
+    },
+    {
+      "events": [],
+      "tool": "update_item"
+    },
+    {
+      "events": [],
+      "tool": "create_note"
+    },
+    {
+      "events": [],
+      "tool": "update_note"
+    },
+    {
+      "events": [],
+      "tool": "create_project"
+    },
+    {
+      "events": [],
+      "tool": "update_project"
+    },
+    {
+      "events": [],
+      "tool": "create_task"
+    },
+    {
+      "events": [],
+      "tool": "update_task"
+    },
+    {
+      "events": [],
+      "tool": "create_time_block"
+    },
+    {
+      "events": [],
+      "tool": "log_reading"
+    },
+    {
+      "events": [],
+      "tool": "create_routine"
+    },
+    {
+      "events": [],
+      "tool": "update_routine"
+    },
+    {
+      "events": [],
+      "tool": "run_routine"
+    },
+    {
+      "events": [],
+      "tool": "remember"
+    },
+    {
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ],
+      "tool": "archive_thread"
+    },
+    {
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ],
+      "tool": "mark_read"
+    },
+    {
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ],
+      "tool": "move_thread"
+    },
+    {
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ],
+      "tool": "snooze_thread"
+    },
+    {
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ],
+      "tool": "label_thread"
+    },
+    {
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ],
+      "tool": "trash_thread"
+    },
+    {
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "draft",
+          "op": "created",
+          "origin": "local"
+        }
+      ],
+      "tool": "draft_message"
+    },
+    {
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "draft",
+          "op": "updated",
+          "origin": "local"
+        }
+      ],
+      "tool": "update_draft"
+    },
+    {
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "draft",
+          "op": "created",
+          "origin": "local"
+        }
+      ],
+      "tool": "draft_reply"
+    }
+  ]
+}
