@@ -306,9 +306,17 @@
             "description": "Deadline. Format: YYYY-MM-DD.",
             "type": "string"
           },
+          "due_time": {
+            "description": "Time of day the deadline bites, HH:MM in 24-hour time. Meaningless without due_date, and refused without one.",
+            "type": "string"
+          },
           "estimate_minutes": {
             "description": "Expected effort in minutes.",
             "type": "integer"
+          },
+          "goal_id": {
+            "description": "File it under this goal, from list_goals.",
+            "type": "string"
           },
           "notes": {
             "description": "Detail that does not fit in the title.",
@@ -331,6 +339,10 @@
           },
           "project_id": {
             "description": "Which project it belongs to. Omit for the inbox.",
+            "type": "string"
+          },
+          "role_id": {
+            "description": "Or under this role directly, from list_roles.",
             "type": "string"
           },
           "start_date": {
@@ -385,6 +397,10 @@
             "description": "End, as HH:MM. Must be after the start.",
             "type": "string"
           },
+          "goal_id": {
+            "description": "File it under this goal, from list_goals.",
+            "type": "string"
+          },
           "kind": {
             "description": "planned (setting time aside) or actual (recording what it took). Defaults to planned.",
             "enum": [
@@ -403,6 +419,10 @@
           },
           "project_id": {
             "description": "Or which project, if it is not one task.",
+            "type": "string"
+          },
+          "role_id": {
+            "description": "Or under this role directly, from list_roles.",
             "type": "string"
           },
           "start_time": {
@@ -2152,17 +2172,33 @@
             "description": "Remove the deadline.",
             "type": "boolean"
           },
+          "clear_due_time": {
+            "description": "Remove the time of day, keeping the due_date.",
+            "type": "boolean"
+          },
           "clear_project": {
             "description": "Move it back to the inbox.",
+            "type": "boolean"
+          },
+          "clear_purpose": {
+            "description": "Unfile it from whatever goal or role it carries.",
             "type": "boolean"
           },
           "due_date": {
             "description": "Set the deadline. Format: YYYY-MM-DD.",
             "type": "string"
           },
+          "due_time": {
+            "description": "Time of day the deadline bites, HH:MM in 24-hour time. Allowed only once the task has a due_date, whether it already had one or this same call is setting one.",
+            "type": "string"
+          },
           "estimate_minutes": {
             "description": "Expected effort in minutes.",
             "type": "integer"
+          },
+          "goal_id": {
+            "description": "File it under this goal, from list_goals.",
+            "type": "string"
           },
           "notes": {
             "description": "Replace the notes.",
@@ -2181,6 +2217,10 @@
           },
           "project_id": {
             "description": "Move it to this project.",
+            "type": "string"
+          },
+          "role_id": {
+            "description": "Or under this role directly, from list_roles.",
             "type": "string"
           },
           "start_date": {

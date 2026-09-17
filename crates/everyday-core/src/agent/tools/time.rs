@@ -8,9 +8,13 @@
 
 use serde_json::{Value, json};
 
-use super::{Args, Tool, ToolContext, Window, day, done, limit_arg, one_of, schema, text};
+use super::{
+    Args, Built, Tool, ToolContext, Window, day, done, limit_arg, one_of, resolve_purpose, schema,
+    text,
+};
 use crate::error::Result;
 use crate::id::{BlockId, ProjectId, TaskId};
+use crate::proposal::{About, AboutKind, Payload, ProposalKind, ProposedRecord};
 use crate::store::calendars::EventQuery;
 use crate::store::tasks::BlockQuery;
 use crate::task::{BlockKind, BlockSubject, TimeBlock};
@@ -70,12 +74,16 @@ pub(super) static TOOLS: &[Tool] = &[
                     )
                 ),
                 ("notes", text("Anything worth noting.")),
+                ("goal_id", text("File it under this goal, from list_goals.")),
+                ("role_id", text("Or under this role directly, from list_roles.")),
             ],
             &["date", "start_time", "end_time"]
         ),
         "Set aside time for a task, or record time that was spent. Give exactly one \
          of task_id, project_id or label to say what the time is for.",
-        run_create_block
+        run_create_block,
+        None,
+        Some(build_create_block)
     ),
     tool!(
         "delete_time_block",
@@ -84,7 +92,8 @@ pub(super) static TOOLS: &[Tool] = &[
         schema(vec![("block_id", text("Id from list_time_blocks."))], &["block_id"]),
         "Permanently delete a block of time.",
         run_delete_block,
-        Some(describe_delete_time_block)
+        Some(describe_delete_time_block),
+        Some(build_delete_time_block)
     ),
 ];
 
@@ -164,7 +173,11 @@ fn block_subject_label(b: &TimeBlock) -> Value {
     }
 }
 
-fn run_create_block(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+/// Everything `create_time_block` does to build the record, without saving
+/// it -- the half `run_create_block` and `build_create_block` share. Returns
+/// the block and the name of what it is for, which both the plain reply and
+/// a proposal's caption need.
+fn block_from_args(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<(TimeBlock, String)> {
     let date = args.date("date")?;
     let start = clock(args, "start_time")?;
     let end = clock(args, "end_time")?;
@@ -227,9 +240,59 @@ fn run_create_block(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     block.kind = kind;
     block.title = label.unwrap_or_default().to_string();
     block.notes = args.opt_str("notes").unwrap_or_default().to_string();
+    block.purpose = resolve_purpose(ctx, args)?;
 
+    Ok((block, name))
+}
+
+/// What a task-linked block's proposal is "about" -- the task, not the
+/// block, since the task is what a person recognises and what the ghost
+/// should sit beside. `None` for a block with no such subject.
+fn task_about(block: &TimeBlock) -> Option<About> {
+    match &block.subject {
+        BlockSubject::Task { id } => Some(About { kind: AboutKind::Task, id: id.to_string() }),
+        BlockSubject::Project { .. } | BlockSubject::Adhoc => None,
+    }
+}
+
+/// "Thu" for the weekday a caption reads for a proposed block -- a plain
+/// match rather than a format string, since [`jiff::civil::Weekday`] has no
+/// short `Display` of its own and this file has no other use for one.
+fn weekday_abbrev(date: jiff::civil::Date) -> &'static str {
+    use jiff::civil::Weekday;
+    match date.weekday() {
+        Weekday::Monday => "Mon",
+        Weekday::Tuesday => "Tue",
+        Weekday::Wednesday => "Wed",
+        Weekday::Thursday => "Thu",
+        Weekday::Friday => "Fri",
+        Weekday::Saturday => "Sat",
+        Weekday::Sunday => "Sun",
+    }
+}
+
+fn run_create_block(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let (block, name) = block_from_args(ctx, args)?;
+    let date = block.local_date;
     ctx.vault.save_block(&block)?;
     done("created", "time block", &format!("{name} on {date}"), block.id.to_string())
+}
+
+fn build_create_block(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
+    let (block, name) = block_from_args(ctx, args)?;
+    let about = task_about(&block);
+    let zone = jiff::tz::TimeZone::get(ctx.tz).unwrap_or(jiff::tz::TimeZone::UTC);
+    let start = block.start.to_zoned(zone.clone()).time();
+    let end = block.end.to_zoned(zone).time();
+    let caption = format!(
+        "Plan time {} {:02}:{:02}\u{2013}{:02}:{:02}: {name}",
+        weekday_abbrev(block.local_date),
+        start.hour(),
+        start.minute(),
+        end.hour(),
+        end.minute(),
+    );
+    Ok(Built { payload: Payload::Create { record: ProposedRecord::Block(block) }, caption, about })
 }
 
 fn clock(args: &Args<'_>, key: &str) -> Result<jiff::civil::Time> {
@@ -247,4 +310,16 @@ fn run_delete_block(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let block = ctx.vault.block(id)?;
     ctx.vault.delete_block(id)?;
     done("deleted", "time block", &block.local_date.to_string(), id.to_string())
+}
+
+fn build_delete_time_block(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
+    let id: BlockId = args.id("block_id", "time block")?;
+    let block = ctx.vault.block(id)?;
+    let desc = describe_delete_time_block(ctx, args).unwrap_or_else(|| "the block".to_string());
+    let about = task_about(&block).or(Some(About { kind: AboutKind::Block, id: id.to_string() }));
+    Ok(Built {
+        payload: Payload::Delete { kind: ProposalKind::Block, id: id.to_string() },
+        caption: format!("Delete block: {desc}"),
+        about,
+    })
 }

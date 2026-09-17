@@ -4,10 +4,12 @@
 use serde_json::{Value, json};
 
 use super::{
-    Args, Tool, ToolContext, day, done, flag, limit_arg, list, number, one_of, schema, text,
+    Args, Built, Tool, ToolContext, day, done, flag, limit_arg, list, number, one_of,
+    resolve_purpose, schema, text,
 };
 use crate::error::{Error, Result};
 use crate::id::{ProjectId, TaskId};
+use crate::proposal::{About, AboutKind, Payload, ProposalKind, ProposedRecord};
 use crate::store::tasks::{ParentScope, ProjectScope, TaskQuery};
 use crate::task::{Priority, Project, ProjectStatus, Task, TaskStatus};
 use jiff::Timestamp;
@@ -132,15 +134,26 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("status", one_of("Defaults to todo.", STATUSES)),
                 ("priority", one_of("Defaults to none.", PRIORITIES)),
                 ("due_date", day("Deadline.")),
+                (
+                    "due_time",
+                    text(
+                        "Time of day the deadline bites, HH:MM in 24-hour time. Meaningless \
+                         without due_date, and refused without one."
+                    )
+                ),
                 ("start_date", day("Earliest sensible start.")),
                 ("estimate_minutes", number("Expected effort in minutes.")),
                 ("tags", list("Tags to attach.")),
+                ("goal_id", text("File it under this goal, from list_goals.")),
+                ("role_id", text("Or under this role directly, from list_roles.")),
             ],
             &["title"]
         ),
         "Create a task. This is the tool for 'add a task', 'remind me to', \
          'I need to'. Create several by calling it several times.",
-        run_create_task
+        run_create_task,
+        None,
+        Some(build_create_task)
     ),
     tool!(
         "update_task",
@@ -157,16 +170,30 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("clear_project", flag("Move it back to the inbox.")),
                 ("due_date", day("Set the deadline.")),
                 ("clear_due_date", flag("Remove the deadline.")),
+                (
+                    "due_time",
+                    text(
+                        "Time of day the deadline bites, HH:MM in 24-hour time. Allowed only \
+                         once the task has a due_date, whether it already had one or this \
+                         same call is setting one."
+                    )
+                ),
+                ("clear_due_time", flag("Remove the time of day, keeping the due_date.")),
                 ("start_date", day("Set the start date.")),
                 ("estimate_minutes", number("Expected effort in minutes.")),
                 ("tags", list("Replaces the tags entirely.")),
+                ("goal_id", text("File it under this goal, from list_goals.")),
+                ("role_id", text("Or under this role directly, from list_roles.")),
+                ("clear_purpose", flag("Unfile it from whatever goal or role it carries.")),
             ],
             &["task_id"]
         ),
         "Change a task. Omitted fields are left alone. This is how a task is \
          completed \u{2014} status done \u{2014} rescheduled, reprioritised or moved. \
          Never delete a task to mark it finished.",
-        run_update_task
+        run_update_task,
+        None,
+        Some(build_update_task)
     ),
     tool!(
         "delete_task",
@@ -177,7 +204,8 @@ pub(super) static TOOLS: &[Tool] = &[
          a task use update_task with status done; to drop one you decided against, \
          status cancelled. Delete only what was never real.",
         run_delete_task,
-        Some(describe_delete_task)
+        Some(describe_delete_task),
+        Some(build_delete_task)
     ),
 ];
 
@@ -401,7 +429,9 @@ fn run_get_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     Ok(out)
 }
 
-fn run_create_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+/// Everything `create_task` does to build the record, without saving it --
+/// the half `run_create_task` and `build_create_task` share.
+fn task_from_create_args(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Task> {
     let mut t = Task::new(args.str("title")?);
     t.project_id = resolve_project(ctx, args, "project_id")?;
     t.parent_id = resolve_parent(ctx, args)?;
@@ -413,18 +443,38 @@ fn run_create_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         t.priority = p;
     }
     t.due_date = args.opt_date("due_date")?;
+    // A time of day makes no sense floating free of a date -- there is
+    // nothing for `t.due_time` to mean without `t.due_date` -- so this is
+    // refused here rather than stored as a value nothing ever reads.
+    let due_time = args.opt_time("due_time")?;
+    if due_time.is_some() && t.due_date.is_none() {
+        return Err(args.bad("`due_time` needs a `due_date`; give one or leave both out"));
+    }
+    t.due_time = due_time;
     t.start_date = args.opt_date("start_date")?;
     t.estimate_minutes = args.opt_u32("estimate_minutes");
     t.tags = args.strings("tags");
+    t.purpose = resolve_purpose(ctx, args)?;
+    Ok(t)
+}
 
+fn run_create_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let t = task_from_create_args(ctx, args)?;
     ctx.vault.save_task(&t)?;
     done("created", "task", &t.title, t.id.to_string())
 }
 
-fn run_update_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: TaskId = args.id("task_id", "task")?;
-    let mut t = ctx.vault.task(id)?;
+fn build_create_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
+    let t = task_from_create_args(ctx, args)?;
+    let caption = format!("Create task: {}", t.title);
+    Ok(Built { payload: Payload::Create { record: ProposedRecord::Task(t) }, caption, about: None })
+}
 
+/// Everything `update_task` does to the loaded record, without saving it --
+/// the half `run_update_task` and `build_update_task` share. `t` arrives as
+/// the record was read from the vault and leaves as the after-image a
+/// `Payload::Replace` would carry.
+fn apply_update_task_args(ctx: &ToolContext<'_>, args: &Args<'_>, mut t: Task) -> Result<Task> {
     if let Some(title) = args.opt_str("title") {
         t.title = title.to_string();
     }
@@ -448,10 +498,25 @@ fn run_update_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     } else if let Some(p) = resolve_project(ctx, args, "project_id")? {
         t.project_id = Some(p);
     }
+    // The due date is resolved before the due time below, so a `due_time`
+    // given in the same call as a fresh `due_date` sees the date it belongs
+    // to rather than whatever the task had before this call.
     if args.bool_or("clear_due_date", false) {
         t.due_date = None;
+        t.due_time = None;
     } else if let Some(d) = args.opt_date("due_date")? {
         t.due_date = Some(d);
+    }
+    if args.bool_or("clear_due_time", false) {
+        t.due_time = None;
+    } else if let Some(time) = args.opt_time("due_time")? {
+        if t.due_date.is_none() {
+            return Err(args.bad(
+                "`due_time` needs a `due_date`; this task has none, and none was given \
+                 in this call either",
+            ));
+        }
+        t.due_time = Some(time);
     }
     if let Some(d) = args.opt_date("start_date")? {
         t.start_date = Some(d);
@@ -462,10 +527,34 @@ fn run_update_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if args.get("tags").is_some() {
         t.tags = args.strings("tags");
     }
+    if args.bool_or("clear_purpose", false) {
+        t.purpose = None;
+    } else if let Some(p) = resolve_purpose(ctx, args)? {
+        t.purpose = Some(p);
+    }
     t.updated_at = Timestamp::now();
+    Ok(t)
+}
 
+fn run_update_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let id: TaskId = args.id("task_id", "task")?;
+    let t = ctx.vault.task(id)?;
+    let t = apply_update_task_args(ctx, args, t)?;
     ctx.vault.save_task(&t)?;
     done("updated", "task", &t.title, t.id.to_string())
+}
+
+fn build_update_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
+    let id: TaskId = args.id("task_id", "task")?;
+    let original = ctx.vault.task(id)?;
+    let expected_updated_at = original.updated_at;
+    let t = apply_update_task_args(ctx, args, original)?;
+    let caption = format!("Change task: {}", t.title);
+    Ok(Built {
+        payload: Payload::Replace { record: ProposedRecord::Task(t), expected_updated_at },
+        caption,
+        about: Some(About { kind: AboutKind::Task, id: id.to_string() }),
+    })
 }
 
 /// Read the project an argument names, so a task cannot be filed into one
@@ -501,4 +590,14 @@ fn run_delete_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let t = ctx.vault.task(id)?;
     ctx.vault.delete_task(id)?;
     done("deleted", "task", &t.title, id.to_string())
+}
+
+fn build_delete_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
+    let id: TaskId = args.id("task_id", "task")?;
+    let t = ctx.vault.task(id)?;
+    Ok(Built {
+        payload: Payload::Delete { kind: ProposalKind::Task, id: id.to_string() },
+        caption: format!("Delete task: {}", t.title),
+        about: Some(About { kind: AboutKind::Task, id: id.to_string() }),
+    })
 }

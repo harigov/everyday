@@ -77,8 +77,8 @@ use std::collections::HashSet;
 use serde_json::{Value, json};
 
 use super::{
-    Args, Caller, Tool, ToolContext, done, empty_schema, flag, limit_arg, list, number, one_of,
-    schema, text,
+    Args, Built, Caller, Drafting, Tool, ToolContext, done, empty_schema, flag, limit_arg, list,
+    number, one_of, schema, text,
 };
 use crate::account::{Account, AgentCaller, Permission};
 use crate::error::{Error, Result};
@@ -88,6 +88,7 @@ use crate::mail::{
     compose,
 };
 use crate::mailsearch::MailQuery;
+use crate::proposal::{Payload, ProposalKind};
 
 /// [`search_mail`]'s hard cap, per the plan's table -- "Capped at 25."
 const SEARCH_CAP: u32 = 25;
@@ -345,7 +346,8 @@ pub(super) static TOOLS: &[Tool] = &[
          and sends in one call. Always confirmed before it happens, and queued through a \
          short undo window even once confirmed. Never available on a scheduled run.",
         run_send_draft,
-        Some(describe_send_draft)
+        Some(describe_send_draft),
+        Some(build_send_draft)
     ),
     tool!(
         "respond_to_invite",
@@ -1203,6 +1205,93 @@ fn run_send_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
                 ),
             );
         }
+    }
+    Ok(out)
+}
+
+/// Build the `SendMail` proposal `send_draft` makes instead of sending, while
+/// drafting. Every check `run_send_draft` would have made before it enqueues
+/// anything -- the account's own permission, and that there is somebody to
+/// send it to -- still runs here: a proposal for a send that could not
+/// happen is not a safer form of it, just a later failure. What it does not
+/// do is `run_send_draft`'s own `unattended` refusal, which drafting mode
+/// exists to bypass -- see [`dispatch`](super::dispatch)'s module docs -- or
+/// the fingerprint check, which only means anything at the moment a person
+/// actually confirms a send.
+fn build_send_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
+    let draft_id: DraftId = args.id("draft_id", "draft")?;
+    let draft = ctx.vault.draft(draft_id)?;
+    let account = ctx.vault.account(draft.account_id)?;
+    require_permission(ctx, &account, Permission::Send, "send_draft")?;
+    if draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() {
+        return Err(Error::Invalid("send_draft: this draft has no recipients yet.".into()));
+    }
+    let subject =
+        if draft.subject.trim().is_empty() { "(no subject)" } else { draft.subject.trim() };
+    Ok(Built {
+        payload: Payload::SendMail { draft_id },
+        caption: format!("Send draft: {subject}"),
+        about: None,
+    })
+}
+
+/// The two tools that write a brand new [`Draft`], rather than changing or
+/// acting on one that already exists -- `dispatch`'s one documented
+/// exception to "no builder, no proposal". A draft is inert until it is
+/// sent, exactly like one written by hand, so composing it is not the
+/// unasked work drafting mode exists to hold back; only sending it is, and
+/// that half becomes the usual `SendMail` proposal through
+/// [`run_drafting_write`].
+const DRAFT_WRITERS: &[&str] = &["draft_reply", "draft_message"];
+
+/// Whether `tool` is one of [`DRAFT_WRITERS`] -- what `dispatch` checks
+/// before falling back to the ordinary drafting path in `dispatch_drafting`.
+pub(super) fn writes_a_draft(tool: &str) -> bool {
+    DRAFT_WRITERS.contains(&tool)
+}
+
+/// Run `draft_reply` or `draft_message` for real while drafting, then
+/// propose sending what it just wrote.
+///
+/// The policy and the run's own cap are checked *before* the draft is
+/// written, not only when the `SendMail` proposal is built afterwards: a
+/// dream that cannot end up proposing the send should not leave a stray
+/// draft behind either. Everything past that is the tool's own ordinary
+/// run, and then the same [`super::propose`] every other proposable tool
+/// goes through.
+pub(super) fn run_drafting_write(
+    ctx: &ToolContext<'_>,
+    tool: &Tool,
+    args: &Args<'_>,
+    drafting: &Drafting,
+) -> Result<Value> {
+    super::check_policy(ctx, ProposalKind::Mail)?;
+    super::check_cap(ctx, drafting)?;
+
+    let mut out = (tool.run)(ctx, args)?;
+    let draft_id: DraftId = out
+        .get("id")
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| Error::Invalid("could not read back the draft just written".into()))?;
+    let subject = out.get("name").and_then(Value::as_str).unwrap_or("(no subject)").to_string();
+
+    let built = Built {
+        payload: Payload::SendMail { draft_id },
+        caption: format!("Send draft: {subject}"),
+        about: None,
+    };
+    let proposal = super::propose(ctx, drafting, args, built)?;
+
+    if let Some(map) = out.as_object_mut() {
+        map.insert("proposal_id".into(), proposal["id"].clone());
+        map.insert(
+            "note".into(),
+            json!(
+                "Drafted for real; sending it is a separate proposal the person will accept \
+                 or decline."
+            ),
+        );
     }
     Ok(out)
 }

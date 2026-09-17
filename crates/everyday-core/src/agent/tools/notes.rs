@@ -2,10 +2,11 @@
 
 use serde_json::{Value, json};
 
-use super::{Args, Tool, ToolContext, done, flag, limit_arg, list, schema, text};
+use super::{Args, Built, Tool, ToolContext, done, flag, limit_arg, list, schema, text};
 use crate::error::{Error, Result};
 use crate::id::NoteId;
 use crate::note::{Note, NoteSummary};
+use crate::proposal::{About, AboutKind, Payload, ProposalKind, ProposedRecord};
 use crate::richtext::RichDoc;
 use crate::store::notes::{NoteQuery, NoteSort};
 use jiff::Timestamp;
@@ -52,7 +53,9 @@ pub(super) static TOOLS: &[Tool] = &[
          belongs \u{2014} a report, a plan, a summary, a list of what you found. Prefer it \
          to a journal entry for writing of your own: an entry is somebody's record of \
          a day they lived, and filling their journal with your reports spoils it.",
-        run_create_note
+        run_create_note,
+        None,
+        Some(build_create_note)
     ),
     tool!(
         "update_note",
@@ -71,7 +74,9 @@ pub(super) static TOOLS: &[Tool] = &[
         "Change an existing note. Every field is optional and omitted fields are left \
          alone \u{2014} but `body` and `tags` replace rather than append, so read the note \
          first if you mean to add to it.",
-        run_update_note
+        run_update_note,
+        None,
+        Some(build_update_note)
     ),
     tool!(
         "delete_note",
@@ -81,7 +86,8 @@ pub(super) static TOOLS: &[Tool] = &[
         "Permanently delete a note. There is no undo. Only do this when explicitly \
          asked to delete that specific note.",
         run_delete_note,
-        Some(describe_delete_note)
+        Some(describe_delete_note),
+        Some(build_delete_note)
     ),
 ];
 
@@ -133,18 +139,34 @@ fn run_get_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     }))
 }
 
-fn run_create_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+/// Everything `create_note` does to build the record, without saving it --
+/// the half `run_create_note` and `build_create_note` share.
+fn note_from_create_args(args: &Args<'_>) -> Result<Note> {
     let mut note = Note::written(args.opt_str("title").unwrap_or_default(), args.str("body")?);
     note.tags = args.strings("tags");
     note.pinned = args.bool_or("pinned", false);
+    Ok(note)
+}
+
+fn run_create_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let note = note_from_create_args(args)?;
     ctx.vault.save_note(&note, None)?;
     done("created", "note", &note.display_title(), note.id.to_string())
 }
 
-fn run_update_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: NoteId = args.id("note_id", "note")?;
-    let mut note = ctx.vault.note(id)?;
+fn build_create_note(_ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
+    let note = note_from_create_args(args)?;
+    let caption = format!("Create note: {}", note.display_title());
+    Ok(Built {
+        payload: Payload::Create { record: ProposedRecord::Note(note) },
+        caption,
+        about: None,
+    })
+}
 
+/// Everything `update_note` does to the loaded record, without saving it --
+/// the half `run_update_note` and `build_update_note` share.
+fn apply_update_note_args(args: &Args<'_>, mut note: Note) -> Result<Note> {
     if let Some(body) = args.opt_str("body") {
         // The same refusal `update_entry` makes, for the same reason: a body
         // arrives whole or not at all, and the model was handed Markdown, in
@@ -172,12 +194,32 @@ fn run_update_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     // own `updated_at`, and an editor still holding this note would otherwise
     // keep matching the version it loaded and overwrite this edit silently.
     note.updated_at = Timestamp::now();
+    Ok(note)
+}
+
+fn run_update_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let id: NoteId = args.id("note_id", "note")?;
+    let note = ctx.vault.note(id)?;
+    let note = apply_update_note_args(args, note)?;
 
     // Unconditional, as `update_entry` is: the other writer here is the
     // person sitting in front of it, and a failed tool call they would have
     // to resolve by hand is worse than the last write winning.
     ctx.vault.overwrite_note(&note)?;
     done("updated", "note", &note.display_title(), note.id.to_string())
+}
+
+fn build_update_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
+    let id: NoteId = args.id("note_id", "note")?;
+    let original = ctx.vault.note(id)?;
+    let expected_updated_at = original.updated_at;
+    let note = apply_update_note_args(args, original)?;
+    let caption = format!("Change note: {}", note.display_title());
+    Ok(Built {
+        payload: Payload::Replace { record: ProposedRecord::Note(note), expected_updated_at },
+        caption,
+        about: Some(About { kind: AboutKind::Note, id: id.to_string() }),
+    })
 }
 
 fn run_delete_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -187,4 +229,14 @@ fn run_delete_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let note = ctx.vault.note(id)?;
     ctx.vault.delete_note(id)?;
     done("deleted", "note", &note.display_title(), id.to_string())
+}
+
+fn build_delete_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
+    let id: NoteId = args.id("note_id", "note")?;
+    let note = ctx.vault.note(id)?;
+    Ok(Built {
+        payload: Payload::Delete { kind: ProposalKind::Note, id: id.to_string() },
+        caption: format!("Delete note: {}", note.display_title()),
+        about: Some(About { kind: AboutKind::Note, id: id.to_string() }),
+    })
 }
