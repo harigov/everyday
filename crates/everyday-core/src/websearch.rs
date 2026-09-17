@@ -603,6 +603,9 @@ impl<F: Fetcher> WebSearch<F> {
     /// back with "no results" when the web has plenty is the failure people
     /// remember.
     pub fn lookup(&self, query: &str, kind: &Kind) -> Result<Vec<SearchResult>> {
+        if !kind.looks_things_up() {
+            return Ok(Vec::new());
+        }
         let mut last = None;
         for attempt in SearchRequest::for_kind(query, kind).attempts() {
             match self.search(&attempt) {
@@ -1260,6 +1263,15 @@ fn parse_nominatim(body: &str) -> Result<Vec<SearchResult>> {
         if let Some(country) = place.pointer("/address/country").and_then(Value::as_str) {
             facts.insert("country".to_string(), country.to_string());
         }
+        // OpenStreetMap's own word for it -- `museum`, `playground`,
+        // `theme_park` -- which is what a Places shelf's type field wants.
+        if let Some(osm_type) = place.get("type").and_then(Value::as_str) {
+            let words = osm_type.replace('_', " ");
+            let mut chars = words.trim().chars();
+            if let Some(first) = chars.next().filter(|_| osm_type != "yes") {
+                facts.insert("type".to_string(), first.to_uppercase().chain(chars).collect());
+            }
+        }
         let osm_url = match (place.get("osm_type").and_then(Value::as_str), place.get("osm_id")) {
             (Some(kind), Some(id)) => format!("https://www.openstreetmap.org/{kind}/{id}"),
             _ => String::new(),
@@ -1786,7 +1798,9 @@ mod tests {
 
     #[test]
     fn every_seeded_shelf_names_a_source_that_exists() {
-        for kind in crate::library::default_kinds() {
+        // Except the one that names no source at all, which is checked by
+        // `a_shelf_that_looks_nothing_up_sends_nothing`.
+        for kind in crate::library::default_kinds().into_iter().filter(|k| k.looks_things_up()) {
             let source = Source::from_slug(&kind.source);
             assert_eq!(
                 source.slug(),
@@ -1839,6 +1853,33 @@ mod tests {
         assert!(hit.facts["address"].starts_with("43A, Commercial Street"));
         assert_eq!(hit.facts.get("country").map(String::as_str), Some("United Kingdom"));
         assert_eq!(hit.url, "https://www.openstreetmap.org/way/123");
+    }
+
+    #[test]
+    fn nominatim_says_what_sort_of_place_it_is() {
+        let body = r#"[
+            {"display_name":"Adventure Playground, Mill Road","type":"playground"},
+            {"display_name":"Some Building, High Street","type":"yes"},
+            {"display_name":"Alton Towers, Staffordshire","type":"theme_park"}
+        ]"#;
+        let hits = parse_nominatim(body).unwrap();
+        assert_eq!(hits[0].facts.get("type").map(String::as_str), Some("Playground"));
+        // OSM's "yes" means "a building, of no stated sort", which is no type.
+        assert_eq!(hits[1].facts.get("type"), None);
+        assert_eq!(hits[2].facts.get("type").map(String::as_str), Some("Theme park"));
+    }
+
+    #[test]
+    fn a_shelf_that_looks_nothing_up_sends_nothing() {
+        struct Refuse;
+        impl Fetcher for Refuse {
+            fn get(&self, request: &Request) -> Result<String> {
+                panic!("a people shelf asked {} about somebody", request.url)
+            }
+        }
+        let contacts =
+            crate::library::default_kinds().into_iter().find(|k| k.slug == "contact").unwrap();
+        assert!(WebSearch::new(Refuse).lookup("Ada Lovelace", &contacts).unwrap().is_empty());
     }
 
     #[test]

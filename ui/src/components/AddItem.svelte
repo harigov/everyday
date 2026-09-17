@@ -6,7 +6,7 @@
   import { tidyMenu, type MenuItem } from '../lib/menu'
   import { onOffPref } from '../lib/prefs'
   import { app } from '../lib/state.svelte'
-  import { web, type LiveOutcome } from '../lib/websearch'
+  import { looksThingsUp, web, type LiveOutcome } from '../lib/websearch'
   import type { KindInfo, SearchResult } from '../lib/types'
   import Cover from './Cover.svelte'
   import Icon from './Icon.svelte'
@@ -54,6 +54,12 @@
   const enrichPref = onOffPref('everyday.library.enrich')
   /** Whether to go and look the title up. Remembered across the session. */
   let enrich = $state(enrichPref.get())
+  /**
+   * Whether this add will actually look anything up. Never on a shelf that
+   * looks nothing up -- people -- whatever the toggle says elsewhere: a
+   * friend's name is not a search query.
+   */
+  const lookingUp = $derived(enrich && looksThingsUp(kind))
 
   // ── the suggestion list ──────────────────────────────────────────────
   //
@@ -97,7 +103,7 @@
   function onInput(value: string) {
     draft = value
     open = value.trim().length > 1
-    if (!enrich || !open) {
+    if (!lookingUp || !open) {
       hits = []
       searching = false
       search.stop()
@@ -112,7 +118,7 @@
     if (!on) {
       hits = []
       search.stop()
-    } else if (draft.trim().length > 1) {
+    } else if (lookingUp && draft.trim().length > 1) {
       search.lookup(kind.id, draft, 6)
     }
   }
@@ -131,7 +137,7 @@
     cursor = -1
     search.stop()
     try {
-      await library.add(kind.id, title, enrich)
+      await library.add(kind.id, title, lookingUp)
     } finally {
       busy = false
       field?.focus()
@@ -222,17 +228,19 @@
       onfocus={() => (open = draft.trim().length > 1 && hits.length > 0)}
     />
 
-    <button
-      class="toggle"
-      class:on={enrich}
-      title={enrich
-        ? 'Looking up covers and details online. Click to stop.'
-        : 'Adding exactly what you type. Click to look things up online.'}
-      aria-pressed={enrich}
-      onclick={() => setEnrich(!enrich)}
-    >
-      <Icon name="sparkle" size={14} filled={enrich} />
-    </button>
+    {#if looksThingsUp(kind)}
+      <button
+        class="toggle"
+        class:on={enrich}
+        title={enrich
+          ? 'Looking up covers and details online. Click to stop.'
+          : 'Adding exactly what you type. Click to look things up online.'}
+        aria-pressed={enrich}
+        onclick={() => setEnrich(!enrich)}
+      >
+        <Icon name="sparkle" size={14} filled={enrich} />
+      </button>
+    {/if}
 
     <button class="go" disabled={!draft.trim() || busy} onclick={addTyped} title="Add (Enter)">
       <Icon name="plus" size={15} />

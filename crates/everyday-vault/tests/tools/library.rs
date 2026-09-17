@@ -97,3 +97,41 @@ fn moving_something_off_a_shelf_and_back_clears_the_dates_it_never_earned() {
     assert!(events.contains(&everyday_core::LogEvent::Started));
     assert!(events.contains(&everyday_core::LogEvent::Finished));
 }
+
+#[test]
+fn a_library_seeded_by_an_older_build_is_brought_up_to_date_on_the_next_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    // The shelves as an older build left them: unstamped, Films and Series,
+    // no type on a place and no shelf of people.
+    for mut kind in everyday_core::library::default_kinds() {
+        kind.revision = 0;
+        match kind.slug.as_str() {
+            "contact" => continue,
+            "film" => (kind.name, kind.singular) = ("Films".into(), "Film".into()),
+            "series" => (kind.name, kind.singular) = ("Series".into(), "Series".into()),
+            "place" => kind.fields.retain(|f| f.key != "type"),
+            _ => {}
+        }
+        vault.save_kind(&kind).unwrap();
+    }
+
+    vault.seed_library().unwrap();
+    let names: Vec<String> = call(&vault, "list_shelves", serde_json::json!({}))
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(names.contains(&"Movies".to_string()), "got {names:?}");
+    assert!(names.contains(&"TV Shows".to_string()), "got {names:?}");
+    assert_eq!(names.last().map(String::as_str), Some("Contacts"), "got {names:?}");
+    let place = vault.kinds().unwrap().into_iter().find(|k| k.slug == "place").unwrap();
+    assert_eq!(place.fields[0].key, "type");
+
+    // Deleting the new shelf is a decision the next open respects.
+    let contacts = vault.kinds().unwrap().into_iter().find(|k| k.slug == "contact").unwrap();
+    vault.delete_kind(contacts.id).unwrap();
+    assert_eq!(vault.seed_library().unwrap(), 0);
+    assert!(vault.kinds().unwrap().iter().all(|k| k.slug != "contact"));
+}

@@ -10,7 +10,7 @@
   import { article } from '../lib/format'
   import { focusOnMount } from '../lib/focus'
   import { library } from '../lib/library.svelte'
-  import { sourceLabel } from '../lib/websearch'
+  import { NO_SOURCE, sourceLabel } from '../lib/websearch'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { colourItems } from '../lib/menus'
@@ -121,11 +121,21 @@
         label: 'Look things up on',
         icon: 'search' as const,
         hint: sourceLabel(kind.source),
-        items: sources.map((source) => ({
-          label: source.label,
-          checked: kind.source === source.id,
-          run: () => library.saveShelf({ ...shelfOnly(kind), source: source.id }),
-        })),
+        items: [
+          ...sources.map((source) => ({
+            label: source.label,
+            checked: kind.source === source.id,
+            run: () => library.saveShelf({ ...shelfOnly(kind), source: source.id }),
+          })),
+          SEP,
+          // Contacts' setting, and anyone else's shelf whose titles should
+          // stay on this machine.
+          {
+            label: 'Nowhere',
+            checked: kind.source === NO_SOURCE,
+            run: () => library.saveShelf({ ...shelfOnly(kind), source: NO_SOURCE }),
+          },
+        ],
       },
       {
         label: 'Show in this list',

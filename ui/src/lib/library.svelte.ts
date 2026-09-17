@@ -341,6 +341,7 @@ class LibraryState {
             label: f.label,
             fieldType: 'text' as const,
             placeholder: '',
+            suggestions: [],
           }))
         }
       }

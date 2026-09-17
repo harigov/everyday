@@ -71,6 +71,11 @@ pub async fn search(request: &SearchRequest) -> CommandResult<Vec<SearchResult>>
 /// [`WebSearch`](everyday_core::websearch::WebSearch) cannot drift apart on
 /// the policy. All this adds is the `await`.
 pub async fn lookup(query: &str, kind: &Kind, limit: u32) -> CommandResult<Vec<SearchResult>> {
+    // A shelf that never looks anything up -- people -- sends nothing, even
+    // when a client asks it to.
+    if !kind.looks_things_up() {
+        return Ok(Vec::new());
+    }
     let mut last: Option<CommandError> = None;
     for attempt in SearchRequest::for_kind(query, kind).limit(limit).attempts() {
         match search(&attempt).await {
