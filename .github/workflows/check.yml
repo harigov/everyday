@@ -96,6 +96,7 @@ jobs:
             librsvg2-dev \
             libayatana-appindicator3-dev \
             libpipewire-0.3-dev \
+            libasound2-dev \
             libspa-0.2-dev \
             libclang-dev
 
@@ -152,6 +153,14 @@ jobs:
             --component rustfmt,clippy
           rustup default stable
           rustc --version
+
+      # No webview here, but `everyday-vault` stores keys through `keyring`,
+      # whose Secret Service backend links libdbus.
+      - name: Build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
 
       - uses: actions/cache@v4
         with:
