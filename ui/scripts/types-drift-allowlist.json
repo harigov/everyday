@@ -1,0 +1,698 @@
+[
+  {
+    "type": "Account",
+    "field": "assistantAccess",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Account",
+    "field": "identities",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Account",
+    "field": "mcpAccess",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "AgentMessage",
+    "field": "failed",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "AgentMessage",
+    "field": "toolCalls",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Calendar",
+    "field": "accountSync",
+    "kind": "field-only-in-rust",
+    "reason": "Sync bookkeeping (resume token / etags) for the account-calendar sync engine; the service never sends it past the sync layer, so there is nothing for the UI to draw."
+  },
+  {
+    "type": "Calendar",
+    "field": "refreshMinutes",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Calendar",
+    "field": "visible",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "CalendarEvent",
+    "field": "allDay",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "CalendarEvent",
+    "field": "attendees",
+    "kind": "field-only-in-rust",
+    "reason": "Sealed with the event but never selected into the read path the UI gets; worth wiring up, since it is the field that makes \"who is coming\" answerable."
+  },
+  {
+    "type": "CalendarEvent",
+    "field": "busy",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "CalendarEvent",
+    "field": "description",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "CalendarEvent",
+    "field": "location",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "CalendarEvent",
+    "field": "organizer",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "CalendarEvent",
+    "field": "series",
+    "kind": "field-only-in-rust",
+    "reason": "The series-linking id `crate::meeting::detect::series_key` uses internally; the UI has no use for it today."
+  },
+  {
+    "type": "CalendarEvent",
+    "field": "status",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "CalendarEvent",
+    "field": "url",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Conversation",
+    "field": "runId",
+    "kind": "field-only-in-rust",
+    "reason": "Links a routine run's transcript back to the run; the history list only reads title/createdAt/updatedAt, so it was never added to the UI type."
+  },
+  {
+    "type": "Draft",
+    "field": "attachments",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Draft",
+    "field": "bcc",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Draft",
+    "field": "calendarPart",
+    "kind": "field-only-in-rust",
+    "reason": "The built .ics bytes for an outgoing invite reply; write-only from compose's point of view, never re-read by the UI."
+  },
+  {
+    "type": "Draft",
+    "field": "cc",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Draft",
+    "field": "messageId",
+    "kind": "field-only-in-rust",
+    "reason": "Internal outbox bookkeeping (the Message-ID minted for retry-safe sends); compose has no use for it."
+  },
+  {
+    "type": "Draft",
+    "field": "serverCopy",
+    "kind": "field-only-in-rust",
+    "reason": "Where the draft's last IMAP APPEND landed; outbox-internal, not shown in compose."
+  },
+  {
+    "type": "Draft",
+    "field": "to",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Entry",
+    "field": "attachments",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Entry",
+    "field": "starred",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Entry",
+    "field": "tags",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Entry",
+    "field": "title",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Entry",
+    "field": "tz",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Entry",
+    "field": "weather",
+    "kind": "field-only-in-rust",
+    "reason": "Captured on write (crate::model::Weather) but never read back -- there is no Weather type in types.ts at all. Looks like a genuinely unused field rather than a deliberate omission."
+  },
+  {
+    "type": "Goal",
+    "field": "notes",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Goal",
+    "field": "sortOrder",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Item",
+    "field": "coverUrl",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Item",
+    "field": "creator",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Item",
+    "field": "external",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Item",
+    "field": "facts",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Item",
+    "field": "favourite",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Item",
+    "field": "links",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Item",
+    "field": "notes",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Item",
+    "field": "sortOrder",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Item",
+    "field": "source",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Item",
+    "field": "status",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Item",
+    "field": "subtitle",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Item",
+    "field": "summary",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Item",
+    "field": "tags",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Journal",
+    "field": "shownTrackers",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Kind",
+    "field": "builtin",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Kind",
+    "field": "fields",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Kind",
+    "field": "progressUnit",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Kind",
+    "field": "revision",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Kind",
+    "field": "sortOrder",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Kind",
+    "field": "source",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Kind",
+    "field": "visible",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "LogEntry",
+    "field": "event",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "LogEntry",
+    "field": "note",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "MailMessage",
+    "field": "bcc",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "MailMessage",
+    "field": "categorySource",
+    "kind": "field-only-in-rust",
+    "reason": "Which pass (rules/model/person) last set `category`; the UI shows the category itself but not its provenance."
+  },
+  {
+    "type": "MailMessage",
+    "field": "cc",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "MailMessage",
+    "field": "labels",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "MailMessage",
+    "field": "replyTo",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "MailMessage",
+    "field": "snippet",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "MailMessage",
+    "field": "to",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Mailbox",
+    "field": "pseudo",
+    "kind": "field-only-in-ts",
+    "reason": "types.ts's own comment says it: synthetic, set only by the mock for its \"Starred\"/\"Snoozed\" views, never sent by the real backend."
+  },
+  {
+    "type": "Memory",
+    "field": "pinned",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Note",
+    "field": "attachments",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Note",
+    "field": "pinned",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Note",
+    "field": "tags",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Note",
+    "field": "title",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Profile",
+    "field": "about",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Profile",
+    "field": "firstName",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Profile",
+    "field": "gender",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Profile",
+    "field": "lastName",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Profile",
+    "field": "location",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Project",
+    "field": "notes",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Project",
+    "field": "sortOrder",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Project",
+    "field": "tags",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Proposal",
+    "field": "seen",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Proposal",
+    "field": "why",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Reading",
+    "field": "note",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Reading",
+    "field": "tz",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Recording",
+    "field": "automatic",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Recording",
+    "field": "chunks",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Recording",
+    "field": "partial",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Role",
+    "field": "archived",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Role",
+    "field": "notes",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Role",
+    "field": "sortOrder",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Routine",
+    "field": "graceMinutes",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "RoutineRun",
+    "field": "reason",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "RoutineRun",
+    "field": "routineName",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "RoutineRun",
+    "field": "seen",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "RoutineRun",
+    "field": "steps",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "RoutineRun",
+    "field": "summary",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Task",
+    "field": "notes",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Task",
+    "field": "sortOrder",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Task",
+    "field": "tags",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Thread",
+    "field": "aiAutoDraftAskedAtCount",
+    "kind": "field-only-in-rust",
+    "reason": "everyday_service::mailai's own bookkeeping for whether the auto-draft pass has already asked about this thread; internal to that pass."
+  },
+  {
+    "type": "Thread",
+    "field": "aiCategorizeAskedAtCount",
+    "kind": "field-only-in-rust",
+    "reason": "As aiAutoDraftAskedAtCount, for the categorisation pass; internal bookkeeping."
+  },
+  {
+    "type": "Thread",
+    "field": "hasAttachments",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Thread",
+    "field": "participants",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Thread",
+    "field": "snippet",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Thread",
+    "field": "starred",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "TimeBlock",
+    "field": "allDay",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "TimeBlock",
+    "field": "notes",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "TimeBlock",
+    "field": "tags",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "TimeBlock",
+    "field": "title",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Tracker",
+    "field": "archived",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Tracker",
+    "field": "color",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Tracker",
+    "field": "defaultValue",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Tracker",
+    "field": "icon",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Tracker",
+    "field": "onCalendar",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Tracker",
+    "field": "scaleMax",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Tracker",
+    "field": "sortOrder",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Tracker",
+    "field": "unit",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "VoiceprintInfo",
+    "field": "centroids",
+    "kind": "field-only-in-rust",
+    "reason": "The raw speaker-embedding vectors; VoiceprintInfo intentionally strips them down to what the meeting settings UI needs to show and rename a voice."
+  },
+  {
+    "type": "VoiceprintInfo",
+    "field": "isOwner",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  }
+]
