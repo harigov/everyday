@@ -3,7 +3,7 @@
 //! ```text
 //!   library/
 //!     Books.csv           one row per book, one column per field
-//!     Films.csv
+//!     Movies.csv
 //!     shelves.csv         what a shelf is: its verbs, its fields, its icon
 //!     log.csv             what you did with them, and when
 //!     media/              cover art
@@ -90,6 +90,7 @@ const SHELF_COLUMNS: &[&str] = &[
     "log_verb",
     "fields",
     "progress_unit",
+    "source",
     "visible",
     "order",
     "id",
@@ -145,6 +146,7 @@ impl Portable for LibraryPart {
                     .collect::<Vec<_>>()
                     .join("; "),
                 kind.progress_unit.clone(),
+                kind.source.clone(),
                 kind.visible.to_string(),
                 kind.sort_order.to_string(),
                 kind.id.to_string(),
@@ -327,9 +329,24 @@ fn read_shelf(
     }
     let fields = row.get("fields");
     if !fields.trim().is_empty() {
+        // The file says what the fields are called and how they are written,
+        // not what they offer as you type; that is kept from the shelf this
+        // is landing on, so a round trip does not strip it.
+        let before = std::mem::take(&mut kind.fields);
         kind.fields = fields.split(';').filter_map(parse_field).collect();
+        for field in &mut kind.fields {
+            if let Some(old) = before.iter().find(|f| f.key == field.key) {
+                field.placeholder.clone_from(&old.placeholder);
+                field.suggestions.clone_from(&old.suggestions);
+            }
+        }
     }
     kind.progress_unit = row.get("progress_unit").to_string();
+    // Absent from files written before it was exported, which leaves the
+    // shelf's own choice -- or none -- rather than clearing it.
+    if !row.get("source").is_empty() {
+        kind.source = row.get("source").to_string();
+    }
     kind.visible = row.get("visible").is_empty() || row.flag("visible");
     if let Some(order) = row.parse("order") {
         kind.sort_order = order;
@@ -352,6 +369,7 @@ fn parse_field(spec: &str) -> Option<everyday_core::library::FieldDef> {
         field_type: everyday_core::library::FieldType::parse(parts.next().unwrap_or("text").trim())
             .unwrap_or_default(),
         placeholder: String::new(),
+        suggestions: Vec::new(),
     })
 }
 

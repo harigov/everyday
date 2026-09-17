@@ -401,9 +401,9 @@ hundred and sixty-five of those are not a journal.
 
 ## The library
 
-A shelf for the things you mean to get to. Books, films, series, music,
-games, articles, podcasts, restaurants, recipes and places, out of the box —
-and whatever else you keep a list of, because a *kind* is a record in the
+A shelf for the things you mean to get to. Books, movies, TV shows, music,
+games, articles, podcasts, restaurants, recipes, places and the people you
+know, out of the box — and whatever else you keep a list of, because a *kind* is a record in the
 vault rather than a variant in the source.
 
 ```
@@ -423,12 +423,12 @@ fields — Author, Pages, ISBN — and, more usefully than it sounds, its own
 
 ```
   Books        To read   Reading    Read
-  Films        To watch  Watching   Watched
+  Movies       To watch  Watching   Watched
   Games        To play   Playing    Played
   Restaurants  To try    Booked     Been
 ```
 
-A person *reads* a book, *watches* a series and *plays* a game, and an
+A person *reads* a book, *watches* a show and *plays* a game, and an
 application that insists on "in progress" for all three reads like a form.
 The filter bar, the cards and the detail panel all speak the open shelf's
 language.
@@ -441,6 +441,23 @@ holds its items, they still appear under *Everything*, they still count in the
 tally at the bottom of the panel and they still come back in search; a shelf
 that could go missing with no way to find it again would be the worst kind of
 missing, which is the kind where the data is plainly still there.
+
+Fields can **offer values as you type** without insisting on them. The
+Places shelf starts with a *Type* field that offers Hike, Museum, Play area,
+Park, Beach and the rest, plus anything you have already typed there, so a
+shelf holding a walk and a gallery can be searched for either — and the one
+sort of place nobody thought of is still one you can write down.
+
+**Contacts** is a shelf of people: how you know them, an email, a telephone
+number, a birthday, and the log as a record of when you last caught up. It
+is the one seeded shelf that **never looks anything up** — typing a friend's
+name does not send it to a search engine — and any other shelf can be set
+the same way with **Look things up on → Nowhere**.
+
+Seeded shelves are **upgraded once** when a release changes them — Films
+became Movies, Series became TV Shows, Places gained its type, Contacts
+arrived. A shelf you renamed keeps your name, and a shelf you deleted after
+the upgrade stays deleted.
 
 What is deliberately *not* per-kind is the status itself: `wishlist`,
 `active`, `paused`, `done`, `abandoned`, closed, the same five everywhere.
@@ -486,13 +503,14 @@ source it asks depends on the shelf:
 | Shelf | Source | Because |
 |---|---|---|
 | Books | Open Library | covers, page counts, ISBNs, ratings |
-| Films, podcasts | iTunes Search | artwork at a usable size |
-| Series | TVmaze | the network, the genres, the year it began, a portrait |
+| Movies, podcasts | iTunes Search | artwork at a usable size |
+| TV shows | TVmaze | the network, the genres, the year it began, a portrait |
 | Music | MusicBrainz, with covers from the Cover Art Archive | the year the record came out rather than the year of the remaster on sale |
 | Games | Steam | poster art, and the store's own page for who made it, when, and what it is |
-| Restaurants, places | OpenStreetMap | an address, often a cuisine and a phone number |
+| Restaurants, places | OpenStreetMap | an address, often a cuisine and a phone number, and what sort of place it is |
 | Anything general | Wikipedia | a summary and a thumbnail |
 | Articles, recipes | a plain web search | there is no catalogue of these |
+| Contacts | nowhere | a person is not a search query |
 
 Any shelf can be pointed at a different one: right-click it and pick under
 **Look things up on**. The table is where the seeded shelves start, not
@@ -505,7 +523,7 @@ last one returns: a web search answers with *pages* — "Dune (2021) — IMDb",
 "Buy Dune on Blu-ray" — and what a shelf wants is the thing, which is what an
 encyclopaedia article parses into. The plain search is still the last resort,
 and when it runs it is told what kind of thing it is looking for, so "dune"
-on a films shelf is searched for as "dune film". The order is one list,
+on a movies shelf is searched for as "dune film". The order is one list,
 `SearchRequest::attempts`, walked by both callers so neither can drift.
 
 Every one of them works with no API key, no account and no client id
@@ -1781,7 +1799,7 @@ two date columns and the start instant are in the clear. The file says that
 you have three calendars and which days have something on them.
 
 The library makes the same trade, and the *names of the shelves themselves*
-are sealed: a database that said "Books" and "Films" would be telling
+are sealed: a database that said "Books" and "Movies" would be telling
 somebody what sort of person keeps it. What is clear is what an index scan
 needs — which shelf, what status, your rating, whether you starred it, the
 year, the finish date, and a log row's date and event. So the file says that

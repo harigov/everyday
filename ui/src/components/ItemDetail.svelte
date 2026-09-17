@@ -5,9 +5,9 @@
   import { focusOnMount } from '../lib/focus'
   import { coverRatio, library } from '../lib/library.svelte'
   import { ratingLabel } from '../lib/rating'
-  import { sourceLabel } from '../lib/websearch'
+  import { looksThingsUp, sourceLabel } from '../lib/websearch'
   import { ITEM_STATUSES } from '../lib/types'
-  import type { Item, KindInfo, LogEvent, QuickFields, SearchResult } from '../lib/types'
+  import type { FieldDef, Item, KindInfo, LogEvent, QuickFields, SearchResult } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Cover from './Cover.svelte'
   import Icon from './Icon.svelte'
@@ -237,6 +237,27 @@
   }
 
   const shownFields = $derived(kind?.fields ?? [])
+
+  /**
+   * What a text field offers as you type: the shelf's suggestions, then
+   * whatever has already been written in that field on this shelf -- so the
+   * "Waterfall" you typed on one place is offered on the next.
+   */
+  function choicesFor(field: FieldDef): string[] {
+    if (field.fieldType !== 'text') return []
+    const seen = new Set<string>()
+    const out: string[] = []
+    const used = library.items
+      .filter((i) => i.kindId === item.kindId)
+      .map((i) => i.facts[field.key]?.trim() ?? '')
+    for (const value of [...(field.suggestions ?? []), ...used.sort()]) {
+      const folded = value.toLowerCase()
+      if (!value || seen.has(folded)) continue
+      seen.add(folded)
+      out.push(value)
+    }
+    return out
+  }
   /**
    * Facts with no field definition behind them.
    *
@@ -527,6 +548,7 @@
                 oninput={(e) => setFact(field.key, e.currentTarget.value)}
               ></textarea>
             {:else}
+              {@const choices = choicesFor(field)}
               <input
                 type={field.fieldType === 'number'
                   ? 'number'
@@ -535,8 +557,16 @@
                     : 'text'}
                 placeholder={field.placeholder}
                 value={item.facts[field.key] ?? ''}
+                list={choices.length > 0 ? `fact-choices-${field.key}` : undefined}
                 oninput={(e) => setFact(field.key, e.currentTarget.value)}
               />
+              {#if choices.length > 0}
+                <datalist id="fact-choices-{field.key}">
+                  {#each choices as choice (choice)}
+                    <option value={choice}></option>
+                  {/each}
+                </datalist>
+              {/if}
             {/if}
           </dd>
         {/each}
@@ -648,70 +678,78 @@
       {/if}
     </section>
 
-    <section>
-      <div class="head-row">
-        <h3>Metadata</h3>
-        <div class="head-actions">
-          {#if quick.enabled('library.fields')}
-            <button class="mini" disabled={fieldsBusy} onclick={() => void suggestFields()}>
-              <Icon name="sparkle" size={12} />
-              Fill in the gaps
-            </button>
-          {/if}
-          <button class="mini" disabled={library.enriching || matching} onclick={findMatches}>
-            <Icon name="sparkle" size={12} />
-            {item.source ? 'Look up again' : 'Look this up'}
-          </button>
-        </div>
-      </div>
-
-      <!-- One chip per field, because accepting the author and rejecting the
-           year has to be two decisions. Only fields that are empty are ever
-           offered: what you typed survives a lookup that disagrees. -->
-      <Suggestions
-        scope={item.id}
-        items={fieldChips}
-        busy={fieldsBusy}
-        label="Found:"
-        onaccept={acceptField}
-        ondismiss={() => fieldSlot.dismiss(() => (fieldChips = []))}
-      />
-
-      {#if showMatches}
-        {#if matching}
-          <p class="empty">Searching…</p>
-        {:else if matchError}
-          <p class="empty err">{matchError}</p>
-        {:else if matches.length === 0}
-          <p class="empty">Nothing found for “{item.title}”.</p>
-        {:else}
-          <p class="empty">
-            Picking one replaces the title, byline and details. Your rating, your notes and the
-            history are never touched.
-          </p>
-          <div class="matches">
-            {#each matches as hit, i (hit.url || hit.title + i)}
-              <button class="match" class:picked={suggested === i} onclick={() => void choose(hit)}>
-                <span class="m-title">
-                  {hit.title}
-                  {#if suggested === i}
-                    <span class="hint-tag"><Icon name="sparkle" size={10} /> likely</span>
-                  {/if}
-                </span>
-                {#if hit.creator || hit.year}
-                  <span class="m-sub"
-                    >{hit.creator}{#if hit.creator && hit.year}&nbsp;·&nbsp;{/if}{hit.year ??
-                      ''}</span
-                  >
-                {/if}
+    <!-- Not on a shelf that looks nothing up: a person's card is filled in
+         by the person who knows them, not by a search for their name. -->
+    {#if !kind || looksThingsUp(kind)}
+      <section>
+        <div class="head-row">
+          <h3>Metadata</h3>
+          <div class="head-actions">
+            {#if quick.enabled('library.fields')}
+              <button class="mini" disabled={fieldsBusy} onclick={() => void suggestFields()}>
+                <Icon name="sparkle" size={12} />
+                Fill in the gaps
               </button>
-            {/each}
+            {/if}
+            <button class="mini" disabled={library.enriching || matching} onclick={findMatches}>
+              <Icon name="sparkle" size={12} />
+              {item.source ? 'Look up again' : 'Look this up'}
+            </button>
           </div>
+        </div>
+
+        <!-- One chip per field, because accepting the author and rejecting the
+             year has to be two decisions. Only fields that are empty are ever
+             offered: what you typed survives a lookup that disagrees. -->
+        <Suggestions
+          scope={item.id}
+          items={fieldChips}
+          busy={fieldsBusy}
+          label="Found:"
+          onaccept={acceptField}
+          ondismiss={() => fieldSlot.dismiss(() => (fieldChips = []))}
+        />
+
+        {#if showMatches}
+          {#if matching}
+            <p class="empty">Searching…</p>
+          {:else if matchError}
+            <p class="empty err">{matchError}</p>
+          {:else if matches.length === 0}
+            <p class="empty">Nothing found for “{item.title}”.</p>
+          {:else}
+            <p class="empty">
+              Picking one replaces the title, byline and details. Your rating, your notes and the
+              history are never touched.
+            </p>
+            <div class="matches">
+              {#each matches as hit, i (hit.url || hit.title + i)}
+                <button
+                  class="match"
+                  class:picked={suggested === i}
+                  onclick={() => void choose(hit)}
+                >
+                  <span class="m-title">
+                    {hit.title}
+                    {#if suggested === i}
+                      <span class="hint-tag"><Icon name="sparkle" size={10} /> likely</span>
+                    {/if}
+                  </span>
+                  {#if hit.creator || hit.year}
+                    <span class="m-sub"
+                      >{hit.creator}{#if hit.creator && hit.year}&nbsp;·&nbsp;{/if}{hit.year ??
+                        ''}</span
+                    >
+                  {/if}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        {:else if item.source}
+          <p class="empty">Filled in from {sourceLabel(item.source)}.</p>
         {/if}
-      {:else if item.source}
-        <p class="empty">Filled in from {sourceLabel(item.source)}.</p>
-      {/if}
-    </section>
+      </section>
+    {/if}
   </div>
 </aside>
 

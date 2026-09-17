@@ -88,7 +88,7 @@ fn fill(vault: &Vault) {
     block.kind = BlockKind::Actual;
     block.notes = "Longer than it should have been.".into();
 
-    let kind = Kind::new("books", "Books", "Book");
+    let kind = Kind::new("books", "Books", "Book").with_source("openLibrary");
     let mut item = Item::new(kind.id, "The Dispossessed");
     item.creator = "Ursula K. Le Guin".into();
     item.year = Some(1974);
@@ -235,6 +235,12 @@ fn a_vault_comes_back_out_of_its_own_archive() {
             assert_eq!(blocks[0].subject, BlockSubject::Task { id: parent.id });
 
             let library = store.library().unwrap();
+            let shelves = library.list_kinds()?;
+            assert_eq!(shelves.len(), 1);
+            assert_eq!(
+                shelves[0].source, "openLibrary",
+                "the shelf forgot where it looks things up"
+            );
             let items = library.list_items(&ItemQuery::default())?;
             assert_eq!(items.len(), 1);
             assert_eq!(items[0].creator, "Ursula K. Le Guin");

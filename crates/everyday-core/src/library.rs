@@ -16,8 +16,8 @@
 //!
 //! **A kind is data, not a variant.** [`Kind`] is a record in the vault with
 //! a name, an icon, a set of extra [`fields`](FieldDef) and the verbs it
-//! prefers ("reading" rather than "in progress"). The application seeds ten
-//! of them — see [`default_kinds`] — and the person using it can edit those
+//! prefers ("reading" rather than "in progress"). The application seeds
+//! eleven of them — see [`default_kinds`] — and the person using it can edit those
 //! or add "Board games", "Wines", "Podcasts I owe someone an opinion on"
 //! without a release. A closed Rust enum would have made every new category
 //! a schema migration, and there is no end to the list of things a person
@@ -169,15 +169,35 @@ pub struct FieldDef {
     /// "ISBN" that people fill in once a year.
     #[serde(default)]
     pub placeholder: String,
+    /// Values the field offers as you type: "Hike", "Museum", "Play area"
+    /// for the type of a place.
+    ///
+    /// Offered, not enforced, for the reason the whole type is presentation:
+    /// the one place nobody thought of is the one somebody wants to record,
+    /// and a closed list would make them file it under "Other". Always
+    /// written, even when empty, because the interface reads it as a list.
+    #[serde(default)]
+    pub suggestions: Vec<String>,
 }
 
 impl FieldDef {
     pub fn new(key: &str, label: &str, field_type: FieldType) -> Self {
-        Self { key: key.into(), label: label.into(), field_type, placeholder: String::new() }
+        Self {
+            key: key.into(),
+            label: label.into(),
+            field_type,
+            placeholder: String::new(),
+            suggestions: Vec::new(),
+        }
     }
 
     pub fn with_placeholder(mut self, placeholder: &str) -> Self {
         self.placeholder = placeholder.into();
+        self
+    }
+
+    pub fn with_suggestions(mut self, suggestions: &[&str]) -> Self {
+        self.suggestions = suggestions.iter().map(|s| s.to_string()).collect();
         self
     }
 }
@@ -193,9 +213,10 @@ pub struct Kind {
     pub id: KindId,
     /// Stable machine name — `book`, `film`, `restaurant`. What the metadata
     /// lookups key on, and what quick capture matches when you type
-    /// `Dune #book`. Distinct from `name`, which is free to be renamed.
+    /// `Dune #book`. Distinct from `name`, which is free to be renamed —
+    /// which is why the Movies shelf is still `film` underneath.
     pub slug: String,
-    /// Plural, because it names a shelf: "Books", "Films".
+    /// Plural, because it names a shelf: "Books", "Movies".
     pub name: String,
     /// Singular, because it names one thing and the buttons say "Add a
     /// book". Deriving this by chopping an "s" works for books and not for
@@ -218,6 +239,9 @@ pub struct Kind {
     /// deserialize the whole shelf. See
     /// [`Source::from_slug`](crate::websearch::Source::from_slug), which
     /// treats anything unknown as the general case.
+    ///
+    /// The one exception is [`NO_SOURCE`], which means "never look these
+    /// up" — see [`Kind::looks_things_up`].
     #[serde(default)]
     pub source: String,
     /// What progress through one of these is counted in: "page", "episode",
@@ -238,6 +262,19 @@ pub struct Kind {
     /// calendar hides it without unsubscribing.
     #[serde(default = "yes")]
     pub visible: bool,
+    /// The [`LIBRARY_REVISION`] the library had been brought up to when the
+    /// application seeded or upgraded this shelf. Zero on a shelf made by
+    /// hand, and on one written before there was such a thing.
+    ///
+    /// Kept on the shelves rather than in a settings row so that it travels
+    /// with them and needs no new table. The library's revision is the
+    /// *highest* of these, and only seeding and [`upgrade_kinds`] ever set
+    /// one. So one shelf losing its stamp cannot make the library look old
+    /// again. That happens when an older build or a client saves a shelf
+    /// without the field, and it would otherwise bring back a Contacts shelf
+    /// somebody deleted.
+    #[serde(default)]
+    pub revision: u32,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -245,6 +282,13 @@ pub struct Kind {
 fn yes() -> bool {
     true
 }
+
+/// The [`Kind::source`] that means "never look these up".
+///
+/// A shelf of people is the case it exists for: typing a friend's name into
+/// the add box must not send it to a search engine, and nothing a search
+/// engine said about a stranger of the same name belongs on their card.
+pub const NO_SOURCE: &str = "none";
 
 impl Kind {
     pub fn new(slug: &str, name: &str, singular: &str) -> Self {
@@ -263,6 +307,7 @@ impl Kind {
             sort_order: 0,
             builtin: false,
             visible: true,
+            revision: 0,
             created_at: now,
             updated_at: now,
         }
@@ -298,6 +343,11 @@ impl Kind {
         self
     }
 
+    /// May a title typed onto this shelf be sent to a metadata source?
+    pub fn looks_things_up(&self) -> bool {
+        self.source.trim() != NO_SOURCE
+    }
+
     /// Can you be part-way through one of these?
     pub fn tracks_progress(&self) -> bool {
         !self.progress_unit.trim().is_empty()
@@ -319,7 +369,7 @@ pub const DEFAULT_KIND_COLORS: &[&str] = crate::model::DEFAULT_JOURNAL_COLORS;
 
 /// The kinds a new vault starts with.
 ///
-/// Ten, covering what the brief asked for, and every one of them editable
+/// Eleven, covering what the brief asked for, and every one of them editable
 /// and deletable afterwards. They are seeded rather than hard-coded so that
 /// the first run is useful and the second run is yours: the application has
 /// an opinion about where to start and none at all about where you end up.
@@ -339,7 +389,7 @@ pub fn default_kinds() -> Vec<Kind> {
                 FieldDef::new("publisher", "Publisher", FieldType::Text),
                 FieldDef::new("isbn", "ISBN", FieldType::Text).with_placeholder("9780441013593"),
             ]),
-        Kind::new("film", "Films", "Film")
+        Kind::new("film", "Movies", "Movie")
             .with_icon("\u{1f3ac}")
             .with_verbs(Verbs::new("To watch", "Watching", "Watched", "watched"))
             .with_source("itunes")
@@ -349,7 +399,7 @@ pub fn default_kinds() -> Vec<Kind> {
                 FieldDef::new("runtime", "Runtime (min)", FieldType::Number),
                 FieldDef::new("genre", "Genre", FieldType::Text),
             ]),
-        Kind::new("series", "Series", "Series")
+        Kind::new("series", "TV Shows", "TV show")
             .with_icon("\u{1f4fa}")
             .with_verbs(Verbs::new("To watch", "Watching", "Watched", "watched"))
             .with_source("tvmaze")
@@ -420,14 +470,123 @@ pub fn default_kinds() -> Vec<Kind> {
             .with_verbs(Verbs::new("To visit", "Planning", "Visited", "visited"))
             .with_source("nominatim")
             .with_fields(vec![
+                place_type_field(),
                 FieldDef::new("country", "Country", FieldType::Text),
                 FieldDef::new("address", "Address", FieldType::Multiline),
             ]),
+        contacts_kind(),
     ];
     for (i, kind) in kinds.iter_mut().enumerate() {
         kind.builtin = true;
+        kind.revision = LIBRARY_REVISION;
         kind.sort_order = i as i32;
         kind.color = DEFAULT_KIND_COLORS[i % DEFAULT_KIND_COLORS.len()].to_string();
+    }
+    kinds
+}
+
+/// What sort of place it is. First on the Places shelf, because it is the
+/// question a shelf holding a hike and a museum is filtered by.
+fn place_type_field() -> FieldDef {
+    FieldDef::new("type", "Type", FieldType::Text)
+        .with_placeholder("Hike, museum, play area…")
+        .with_suggestions(&[
+            "Beach",
+            "Campsite",
+            "Castle",
+            "City",
+            "Gallery",
+            "Garden",
+            "Hike",
+            "Landmark",
+            "Museum",
+            "Park",
+            "Play area",
+            "Theme park",
+            "Viewpoint",
+            "Zoo",
+        ])
+}
+
+/// People. A shelf like any other — a log row is a catch-up, a note is a
+/// note — except that nothing on it is ever looked up. See [`NO_SOURCE`].
+fn contacts_kind() -> Kind {
+    Kind::new("contact", "Contacts", "Contact")
+        .with_icon("\u{1f464}")
+        .with_verbs(Verbs::new("To meet", "In touch", "Met", "met"))
+        .with_source(NO_SOURCE)
+        .with_fields(vec![
+            FieldDef::new("relationship", "How you know them", FieldType::Text)
+                .with_placeholder("Friend, colleague, neighbour…")
+                .with_suggestions(&["Family", "Friend", "Colleague", "Neighbour", "Client"]),
+            FieldDef::new("email", "Email", FieldType::Text),
+            FieldDef::new("phone", "Telephone", FieldType::Text),
+            FieldDef::new("birthday", "Birthday", FieldType::Date),
+            FieldDef::new("company", "Works at", FieldType::Text),
+            FieldDef::new("address", "Address", FieldType::Multiline),
+            FieldDef::new("url", "Website", FieldType::Url),
+        ])
+}
+
+/// Which [`default_kinds`] a library has been brought up to.
+///
+/// Bump it, and add a step to [`upgrade_kinds`], whenever a change to the
+/// seeded shelves should reach a vault that was seeded before it. A vault
+/// seeded from scratch is already current and never runs a step.
+///
+/// 1. Films became Movies, Series became TV Shows, Places gained a type,
+///    and a Contacts shelf was added.
+pub const LIBRARY_REVISION: u32 = 1;
+
+/// Bring an existing library's shelves up to [`LIBRARY_REVISION`]. Returns
+/// the shelves to write — every one, stamped — or nothing when the library
+/// is already current.
+///
+/// Each step changes only what still looks the way the application left it.
+/// A shelf somebody renamed keeps their name; a Places shelf that already
+/// has a type keeps it. And a step runs once: a Contacts shelf deleted after
+/// the upgrade stays deleted, for the reason
+/// [`Vault::seed_library`](crate::Vault::seed_library) gives. The one way to
+/// run it twice is to delete every shelf it stamped, and then the only thing
+/// it can bring back is the Contacts shelf.
+pub fn upgrade_kinds(mut kinds: Vec<Kind>) -> Vec<Kind> {
+    let revision = kinds.iter().map(|k| k.revision).max().unwrap_or(0);
+    if kinds.is_empty() || revision >= LIBRARY_REVISION {
+        return Vec::new();
+    }
+
+    if revision < 1 {
+        for kind in kinds.iter_mut().filter(|k| k.builtin) {
+            match (kind.slug.as_str(), kind.name.as_str(), kind.singular.as_str()) {
+                ("film", "Films", "Film") => {
+                    kind.name = "Movies".into();
+                    kind.singular = "Movie".into();
+                }
+                ("series", "Series", "Series") => {
+                    kind.name = "TV Shows".into();
+                    kind.singular = "TV show".into();
+                }
+                ("place", ..) if !kind.fields.iter().any(|f| f.key == "type") => {
+                    kind.fields.insert(0, place_type_field());
+                }
+                _ => {}
+            }
+        }
+        if !kinds.iter().any(|k| k.slug == "contact") {
+            let mut contacts = contacts_kind();
+            contacts.builtin = true;
+            contacts.sort_order = kinds.iter().map(|k| k.sort_order).max().unwrap_or(0) + 1;
+            contacts.color = DEFAULT_KIND_COLORS[kinds.len() % DEFAULT_KIND_COLORS.len()].into();
+            kinds.push(contacts);
+        }
+    }
+
+    let now = Timestamp::now();
+    for kind in &mut kinds {
+        if kind.revision < LIBRARY_REVISION {
+            kind.revision = LIBRARY_REVISION;
+            kind.updated_at = now;
+        }
     }
     kinds
 }
@@ -938,7 +1097,9 @@ mod tests {
             kinds.iter().map(|k| k.slug.as_str()).collect();
         assert_eq!(slugs.len(), kinds.len(), "two seeded kinds share a slug");
         // The list the brief asked for, by name.
-        for want in ["book", "film", "music", "game", "restaurant", "recipe", "place", "article"] {
+        for want in
+            ["book", "film", "music", "game", "restaurant", "recipe", "place", "article", "contact"]
+        {
             assert!(slugs.contains(want), "no seeded kind for {want}");
         }
         assert!(kinds.iter().all(|k| k.builtin), "seeded kinds should say so");
@@ -946,6 +1107,98 @@ mod tests {
         // Sidebar order is the order of the list, not whatever the ids sort
         // to -- ids are minted in a loop and would order by microsecond.
         assert!(kinds.windows(2).all(|w| w[0].sort_order < w[1].sort_order));
+        // A fresh library is already current, so no upgrade step runs on it.
+        assert!(kinds.iter().all(|k| k.revision == LIBRARY_REVISION));
+        assert!(upgrade_kinds(kinds).is_empty());
+    }
+
+    /// The shelves as a build before revision 1 seeded them.
+    fn revision_zero() -> Vec<Kind> {
+        let mut kinds: Vec<Kind> =
+            default_kinds().into_iter().filter(|k| k.slug != "contact").collect();
+        for kind in &mut kinds {
+            kind.revision = 0;
+            match kind.slug.as_str() {
+                "film" => (kind.name, kind.singular) = ("Films".into(), "Film".into()),
+                "series" => (kind.name, kind.singular) = ("Series".into(), "Series".into()),
+                "place" => kind.fields.retain(|f| f.key != "type"),
+                _ => {}
+            }
+        }
+        kinds
+    }
+
+    fn by_slug<'a>(kinds: &'a [Kind], slug: &str) -> &'a Kind {
+        kinds.iter().find(|k| k.slug == slug).unwrap()
+    }
+
+    #[test]
+    fn an_old_library_is_brought_up_to_date_once() {
+        let upgraded = upgrade_kinds(revision_zero());
+        assert_eq!(by_slug(&upgraded, "film").name, "Movies");
+        assert_eq!(by_slug(&upgraded, "film").singular, "Movie");
+        assert_eq!(by_slug(&upgraded, "series").name, "TV Shows");
+        assert_eq!(by_slug(&upgraded, "place").fields[0].key, "type");
+
+        let contacts = by_slug(&upgraded, "contact");
+        assert!(contacts.builtin);
+        assert!(!contacts.looks_things_up());
+        // Added at the foot of the sidebar, not on top of Books.
+        assert!(upgraded.iter().all(|k| k.slug == "contact" || k.sort_order < contacts.sort_order));
+
+        assert!(upgraded.iter().all(|k| k.revision == LIBRARY_REVISION));
+        assert!(upgrade_kinds(upgraded.clone()).is_empty(), "a second run should do nothing");
+
+        // Deleting the new shelf afterwards is a decision, and sticks.
+        let without: Vec<Kind> = upgraded.into_iter().filter(|k| k.slug != "contact").collect();
+        assert!(upgrade_kinds(without).is_empty());
+    }
+
+    #[test]
+    fn a_shelf_that_lost_its_stamp_does_not_rerun_the_upgrade() {
+        // An older build, or a client that does not know the field, saves a
+        // shelf without it. Somebody has since deleted Contacts and renamed
+        // Movies back to Films. Neither may be undone on the next open.
+        let mut kinds: Vec<Kind> =
+            upgrade_kinds(revision_zero()).into_iter().filter(|k| k.slug != "contact").collect();
+        for kind in &mut kinds {
+            if kind.slug == "film" {
+                (kind.name, kind.singular) = ("Films".into(), "Film".into());
+                kind.revision = 0;
+            }
+        }
+        // And a shelf made by hand since, which is never stamped.
+        kinds.push(Kind::new("wine", "Wines", "Wine"));
+        assert_eq!(kinds.last().unwrap().revision, 0);
+        assert!(upgrade_kinds(kinds).is_empty());
+    }
+
+    #[test]
+    fn an_upgrade_leaves_what_somebody_changed_alone() {
+        let mut kinds = revision_zero();
+        for kind in &mut kinds {
+            match kind.slug.as_str() {
+                "film" => kind.name = "Cinema".into(),
+                "place" => kind.fields.insert(0, FieldDef::new("type", "Sort", FieldType::Text)),
+                _ => {}
+            }
+        }
+        // Somebody's own shelf of people, made before there was a built-in one.
+        kinds.push(Kind::new("contact", "Friends", "Friend"));
+
+        let upgraded = upgrade_kinds(kinds);
+        assert_eq!(by_slug(&upgraded, "film").name, "Cinema");
+        assert_eq!(by_slug(&upgraded, "series").name, "TV Shows");
+        let place = by_slug(&upgraded, "place");
+        assert_eq!(place.fields.iter().filter(|f| f.key == "type").count(), 1);
+        assert_eq!(place.field_label("type"), "Sort");
+        assert_eq!(upgraded.iter().filter(|k| k.slug == "contact").count(), 1);
+        assert_eq!(by_slug(&upgraded, "contact").name, "Friends");
+    }
+
+    #[test]
+    fn an_empty_library_is_left_to_the_seeding() {
+        assert!(upgrade_kinds(Vec::new()).is_empty());
     }
 
     #[test]

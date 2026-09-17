@@ -1874,6 +1874,8 @@ export interface FieldDef {
   label: string
   fieldType: FieldType
   placeholder: string
+  /** Offered as you type — "Hike", "Museum" — never enforced. */
+  suggestions: string[]
 }
 
 /**
@@ -1900,7 +1902,7 @@ export type SearchSource =
 /** A category of thing you keep track of. Data, not a variant. */
 export interface Kind {
   id: KindId
-  /** Stable machine name — `book`, `film`. What lookups key on. */
+  /** Stable machine name — `book`, `film` (shown as Movies). What lookups key on. */
   slug: string
   /** Plural: it names a shelf. */
   name: string
@@ -1911,7 +1913,10 @@ export interface Kind {
   color: string
   verbs: Verbs
   fields: FieldDef[]
-  /** A `SearchSource` slug. Anything unrecognised means a plain web search. */
+  /**
+   * A `SearchSource` slug. Anything unrecognised means a plain web search,
+   * except `NO_SOURCE`, which means nothing on the shelf is ever looked up.
+   */
   source: string
   /** "page", "episode", "hour". Empty means no notion of being part-way. */
   progressUnit: string
@@ -1919,6 +1924,8 @@ export interface Kind {
   /** Seeded by the app rather than added by hand. */
   builtin: boolean
   visible: boolean
+  /** Which of the app's shelf upgrades this shelf has seen. Passed back as is. */
+  revision: number
   createdAt: string
   updatedAt: string
 }

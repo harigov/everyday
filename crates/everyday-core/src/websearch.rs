@@ -603,6 +603,9 @@ impl<F: Fetcher> WebSearch<F> {
     /// back with "no results" when the web has plenty is the failure people
     /// remember.
     pub fn lookup(&self, query: &str, kind: &Kind) -> Result<Vec<SearchResult>> {
+        if !kind.looks_things_up() {
+            return Ok(Vec::new());
+        }
         let mut last = None;
         for attempt in SearchRequest::for_kind(query, kind).attempts() {
             match self.search(&attempt) {
@@ -1260,6 +1263,9 @@ fn parse_nominatim(body: &str) -> Result<Vec<SearchResult>> {
         if let Some(country) = place.pointer("/address/country").and_then(Value::as_str) {
             facts.insert("country".to_string(), country.to_string());
         }
+        if let Some(kind) = osm_place_type(place) {
+            facts.insert("type".to_string(), kind);
+        }
         let osm_url = match (place.get("osm_type").and_then(Value::as_str), place.get("osm_id")) {
             (Some(kind), Some(id)) => format!("https://www.openstreetmap.org/{kind}/{id}"),
             _ => String::new(),
@@ -1275,6 +1281,29 @@ fn parse_nominatim(body: &str) -> Result<Vec<SearchResult>> {
         });
     }
     Ok(out)
+}
+
+/// OpenStreetMap's own word for what a place is -- `museum`, `playground`,
+/// `theme_park` -- tidied into what a Places shelf's type field holds.
+///
+/// Only for the categories that describe somewhere a person goes. The rest
+/// describe the map instead: a city is `boundary/administrative`, a street
+/// address `building/house`, a road `highway/primary`. Filling the field
+/// with "Administrative" would be wrong on that card, and the detail panel
+/// would then offer it on every other place on the shelf.
+fn osm_place_type(place: &Value) -> Option<String> {
+    const VISITABLE: &[&str] = &["tourism", "leisure", "historic", "natural", "amenity"];
+    // `category` in the `jsonv2` format this asks for, `class` in `json`.
+    let category = place.get("category").or_else(|| place.get("class")).and_then(Value::as_str)?;
+    let osm_type = place.get("type").and_then(Value::as_str)?.trim();
+    // "yes" means "one of these, of no stated sort", which is no type.
+    if !VISITABLE.contains(&category) || osm_type.is_empty() || osm_type == "yes" {
+        return None;
+    }
+    let words = osm_type.replace('_', " ");
+    let mut chars = words.chars();
+    let first = chars.next()?;
+    Some(first.to_uppercase().chain(chars).collect())
 }
 
 // ── Small helpers ────────────────────────────────────────────────────────
@@ -1786,7 +1815,9 @@ mod tests {
 
     #[test]
     fn every_seeded_shelf_names_a_source_that_exists() {
-        for kind in crate::library::default_kinds() {
+        // Except the one that names no source at all, which is checked by
+        // `a_shelf_that_looks_nothing_up_sends_nothing`.
+        for kind in crate::library::default_kinds().into_iter().filter(|k| k.looks_things_up()) {
             let source = Source::from_slug(&kind.source);
             assert_eq!(
                 source.slug(),
@@ -1839,6 +1870,38 @@ mod tests {
         assert!(hit.facts["address"].starts_with("43A, Commercial Street"));
         assert_eq!(hit.facts.get("country").map(String::as_str), Some("United Kingdom"));
         assert_eq!(hit.url, "https://www.openstreetmap.org/way/123");
+    }
+
+    #[test]
+    fn nominatim_says_what_sort_of_place_it_is() {
+        let body = r#"[
+            {"display_name":"Adventure Playground, Mill Road","category":"leisure","type":"playground"},
+            {"display_name":"Some Hall, High Street","category":"historic","type":"yes"},
+            {"display_name":"Alton Towers, Staffordshire","class":"tourism","type":"theme_park"},
+            {"display_name":"Paris, Île-de-France","category":"boundary","type":"administrative"},
+            {"display_name":"12, Mill Road, Cambridge","category":"building","type":"house"},
+            {"display_name":"Mill Road, Cambridge","category":"highway","type":"primary"},
+            {"display_name":"No category, anywhere","type":"museum"}
+        ]"#;
+        let hits = parse_nominatim(body).unwrap();
+        let types: Vec<Option<&str>> =
+            hits.iter().map(|hit| hit.facts.get("type").map(String::as_str)).collect();
+        // "yes" is "one of these, of no stated sort", which is no type; and a
+        // city, a house or a road is a place on the map, not a sort of outing.
+        assert_eq!(types, [Some("Playground"), None, Some("Theme park"), None, None, None, None],);
+    }
+
+    #[test]
+    fn a_shelf_that_looks_nothing_up_sends_nothing() {
+        struct Refuse;
+        impl Fetcher for Refuse {
+            fn get(&self, request: &Request) -> Result<String> {
+                panic!("a people shelf asked {} about somebody", request.url)
+            }
+        }
+        let contacts =
+            crate::library::default_kinds().into_iter().find(|k| k.slug == "contact").unwrap();
+        assert!(WebSearch::new(Refuse).lookup("Ada Lovelace", &contacts).unwrap().is_empty());
     }
 
     #[test]

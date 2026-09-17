@@ -18,7 +18,7 @@
 // and staying there.
 
 import { api } from './api'
-import type { KindId, SearchRequest, SearchResult, SearchSource, SourceInfo } from './types'
+import type { Kind, KindId, SearchRequest, SearchResult, SearchSource, SourceInfo } from './types'
 import { VaultError } from './types'
 
 /**
@@ -41,6 +41,14 @@ function errorMessage(e: unknown): string {
   return String(e)
 }
 
+/** The shelf source meaning "never look these up". Matches `library::NO_SOURCE`. */
+export const NO_SOURCE = 'none'
+
+/** May a title typed onto this shelf be sent to a metadata source? */
+export function looksThingsUp(kind: Pick<Kind, 'source'>): boolean {
+  return kind.source.trim() !== NO_SOURCE
+}
+
 /**
  * What a source is called, from the slug an item or a shelf stores.
  *
@@ -51,6 +59,9 @@ function errorMessage(e: unknown): string {
  */
 export function sourceLabel(slug: string): string {
   switch (slug) {
+    case NO_SOURCE:
+      return 'nowhere'
+
     case 'wikipedia':
       return 'Wikipedia'
     case 'openLibrary':

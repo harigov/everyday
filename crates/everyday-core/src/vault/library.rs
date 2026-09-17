@@ -15,7 +15,9 @@ use super::Vault;
 use super::session::Domain;
 use crate::error::{Error, Result};
 use crate::id::{ItemId, KindId, LogId};
-use crate::library::{Item, ItemStatus, Kind, KindCount, LibraryStats, LogEntry, default_kinds};
+use crate::library::{
+    Item, ItemStatus, Kind, KindCount, LibraryStats, LogEntry, default_kinds, upgrade_kinds,
+};
 use crate::store::library::{ItemQuery, LibraryStore, LogQuery};
 
 impl Vault {
@@ -57,8 +59,8 @@ impl Vault {
         self.with_library(|l| l.delete_kind(id))
     }
 
-    /// Put the built-in shelves in an empty library, and do nothing at all
-    /// otherwise. Returns how many were added.
+    /// Put the built-in shelves in an empty library, or bring an existing
+    /// one's up to date. Returns how many shelves were written.
     ///
     /// Called on unlock rather than at creation, which is what makes it work
     /// for the vault somebody already had before this app existed: the
@@ -66,16 +68,24 @@ impl Vault {
     /// as an empty screen with a "make a category" button.
     ///
     /// The emptiness test is deliberately "no kinds at all", not "no kind
-    /// with this slug". Somebody who deletes the Films shelf has said
+    /// with this slug". Somebody who deletes the Movies shelf has said
     /// something, and an application that puts it back every time it starts
     /// is an application that is arguing.
+    ///
+    /// A library that already has shelves gets [`upgrade_kinds`] instead,
+    /// which renames and adds what later releases changed, once.
     pub fn seed_library(&self) -> Result<usize> {
         if !self.supports_library() || !self.is_writable() {
             return Ok(0);
         }
         self.with_library(|l| {
-            if !l.list_kinds()?.is_empty() {
-                return Ok(0);
+            let existing = l.list_kinds()?;
+            if !existing.is_empty() {
+                let upgraded = upgrade_kinds(existing);
+                for kind in &upgraded {
+                    l.put_kind(kind)?;
+                }
+                return Ok(upgraded.len());
             }
             let seeds = default_kinds();
             for kind in &seeds {

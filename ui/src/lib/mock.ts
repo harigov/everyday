@@ -281,8 +281,13 @@ function verbs(wishlist: string, active: string, done: string, log: string) {
   return { wishlist, active, done, log }
 }
 
-function field(key: string, label: string, fieldType: Kind['fields'][number]['fieldType']) {
-  return { key, label, fieldType, placeholder: '' }
+function field(
+  key: string,
+  label: string,
+  fieldType: Kind['fields'][number]['fieldType'],
+  suggestions: string[] = [],
+) {
+  return { key, label, fieldType, placeholder: '', suggestions }
 }
 
 const kinds: KindInfo[] = [
@@ -305,6 +310,7 @@ const kinds: KindInfo[] = [
     sortOrder: 0,
     builtin: true,
     visible: true,
+    revision: 1,
     createdAt: iso(300),
     updatedAt: iso(300),
     items: 0,
@@ -313,8 +319,8 @@ const kinds: KindInfo[] = [
   {
     id: 'k-film',
     slug: 'film',
-    name: 'Films',
-    singular: 'Film',
+    name: 'Movies',
+    singular: 'Movie',
     icon: '\u{1f3ac}',
     color: '#0f766e',
     verbs: verbs('To watch', 'Watching', 'Watched', 'watched'),
@@ -324,6 +330,7 @@ const kinds: KindInfo[] = [
     sortOrder: 1,
     builtin: true,
     visible: true,
+    revision: 1,
     createdAt: iso(300),
     updatedAt: iso(300),
     items: 0,
@@ -343,6 +350,7 @@ const kinds: KindInfo[] = [
     sortOrder: 2,
     builtin: true,
     visible: true,
+    revision: 1,
     createdAt: iso(300),
     updatedAt: iso(300),
     items: 0,
@@ -362,6 +370,7 @@ const kinds: KindInfo[] = [
     sortOrder: 3,
     builtin: true,
     visible: true,
+    revision: 1,
     createdAt: iso(300),
     updatedAt: iso(300),
     items: 0,
@@ -385,6 +394,56 @@ const kinds: KindInfo[] = [
     sortOrder: 4,
     builtin: true,
     visible: true,
+    revision: 1,
+    createdAt: iso(300),
+    updatedAt: iso(300),
+    items: 0,
+    open: 0,
+  },
+  {
+    id: 'k-place',
+    slug: 'place',
+    name: 'Places',
+    singular: 'Place',
+    icon: '\u{1f5fa}\u{fe0f}',
+    color: '#7c3aed',
+    verbs: verbs('To visit', 'Planning', 'Visited', 'visited'),
+    fields: [
+      field('type', 'Type', 'text', ['Beach', 'Hike', 'Museum', 'Park', 'Play area', 'Zoo']),
+      field('country', 'Country', 'text'),
+      field('address', 'Address', 'multiline'),
+    ],
+    source: 'nominatim',
+    progressUnit: '',
+    sortOrder: 5,
+    builtin: true,
+    visible: true,
+    revision: 1,
+    createdAt: iso(300),
+    updatedAt: iso(300),
+    items: 0,
+    open: 0,
+  },
+  {
+    id: 'k-contact',
+    slug: 'contact',
+    name: 'Contacts',
+    singular: 'Contact',
+    icon: '\u{1f464}',
+    color: '#be185d',
+    verbs: verbs('To meet', 'In touch', 'Met', 'met'),
+    fields: [
+      field('relationship', 'How you know them', 'text', ['Family', 'Friend', 'Colleague']),
+      field('email', 'Email', 'text'),
+      field('phone', 'Telephone', 'text'),
+      field('birthday', 'Birthday', 'date'),
+    ],
+    source: 'none',
+    progressUnit: '',
+    sortOrder: 6,
+    builtin: true,
+    visible: true,
+    revision: 1,
     createdAt: iso(300),
     updatedAt: iso(300),
     items: 0,
@@ -540,6 +599,33 @@ const items: Item[] = [
     status: 'wishlist',
     facts: { cuisine: 'Japanese' },
     createdAt: iso(2),
+  }),
+  seedItem({
+    id: 'i-parkland',
+    kindId: 'k-place',
+    title: 'Parkland Walk',
+    status: 'done',
+    rating: 80,
+    facts: { type: 'Hike', country: 'United Kingdom' },
+    finishedOn: day(12),
+    createdAt: iso(40),
+  }),
+  seedItem({
+    id: 'i-soane',
+    kindId: 'k-place',
+    title: "Sir John Soane's Museum",
+    status: 'wishlist',
+    facts: { type: 'Museum', country: 'United Kingdom' },
+    createdAt: iso(6),
+  }),
+  seedItem({
+    id: 'i-ada',
+    kindId: 'k-contact',
+    title: 'Ada Byron',
+    status: 'active',
+    facts: { relationship: 'Friend', email: 'ada@example.com' },
+    notes: 'Owes me a book recommendation.',
+    createdAt: iso(20),
   }),
   seedItem({
     id: 'i-abandoned',
@@ -3562,6 +3648,7 @@ export const mockInvoke = async <T>(
         sortOrder: kinds.length,
         builtin: false,
         visible: true,
+        revision: 0,
         createdAt: now,
         updatedAt: now,
       } satisfies Kind as T
@@ -3886,6 +3973,8 @@ export const mockInvoke = async <T>(
 
     case 'lookup_metadata':
       requireUnlocked()
+      // As the service does: a shelf that looks nothing up answers nothing.
+      if (kinds.find((k) => k.id === args.kindId)?.source === 'none') return [] as T
       return fakeResults(str(args.query), (args.limit as number) ?? 8) as T
 
     case 'search_sources':
@@ -5005,7 +5094,7 @@ export async function mockSendMessage(
       '| Shelf | Open |',
       '| --- | ---: |',
       '| Books | 4 |',
-      '| Films | 2 |',
+      '| Movies | 2 |',
     ].join('\n')
   } else {
     reply = 'This is a scripted reply from the mock backend. There is no model behind it.'
