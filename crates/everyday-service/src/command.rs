@@ -296,6 +296,13 @@ impl Command {
         // the writing, carried back across each `.await` by the task-local
         // scope this opens, never by anything thread-affine.
         let (result, touched) = crate::touched::scope((self.run)(svc.clone(), ctx, args)).await;
+        // Read only by `assert_declared_matches_touched`, which a release
+        // build compiles away entirely -- see that function's own doc. This
+        // keeps `touched` from being an unused binding there instead of
+        // naming it `_touched`, which would read as "nobody wants this" in
+        // the build that actually does.
+        #[cfg(not(any(debug_assertions, test)))]
+        let _ = &touched;
         let out = result?;
         if let Some((kind, op)) = self.change {
             #[cfg(any(debug_assertions, test))]
