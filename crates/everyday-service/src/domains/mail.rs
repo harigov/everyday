@@ -559,11 +559,29 @@ pub struct SendDraft {
 }
 
 async fn send_draft(svc: Arc<Service>, _ctx: Ctx, args: SendDraft) -> CommandResult<Draft> {
+    queue_send(&svc, args.id, args.delay_seconds, args.send_at).await
+}
+
+/// Queue a draft to send: the shared tail of a person's own "send" in the
+/// composer above, and of a `SendMail` proposal's accept
+/// (`everyday_service::domains::proposals::accept_proposal`) -- both are a
+/// person saying "yes, send this", so both go through the one check of the
+/// rate limit and of there being somewhere to send it, then the same call
+/// into the outbox. [`everyday_core::Vault::queue_draft_send`] is what
+/// refuses a draft that is not [`everyday_core::mail::DraftState::Editing`]
+/// -- already sent, already queued, or discarded -- with the same message
+/// either caller reports.
+pub(crate) async fn queue_send(
+    svc: &Arc<Service>,
+    id: DraftId,
+    delay_seconds: Option<u32>,
+    send_at: Option<Timestamp>,
+) -> CommandResult<Draft> {
     let origin = Origin::Person;
     svc.check_mail_rate_limit(&origin, "person")?;
     let vault = svc.require()?;
     let (draft, op) = blocking(move || {
-        let draft = vault.draft(args.id)?;
+        let draft = vault.draft(id)?;
         if draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() {
             return Err(CommandError::new(
                 codes::INVALID,
@@ -571,8 +589,8 @@ async fn send_draft(svc: Arc<Service>, _ctx: Ctx, args: SendDraft) -> CommandRes
             ));
         }
         let not_before =
-            args.send_at.unwrap_or_else(|| Timestamp::now() + undo_send_delay(args.delay_seconds));
-        Ok(vault.queue_draft_send(args.id, not_before, origin)?)
+            send_at.unwrap_or_else(|| Timestamp::now() + undo_send_delay(delay_seconds));
+        Ok(vault.queue_draft_send(id, not_before, origin)?)
     })
     .await?;
     svc.notify_mail_write(op.account_id);

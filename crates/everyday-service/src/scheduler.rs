@@ -122,6 +122,23 @@ pub async fn tick(service: &Arc<Service>) {
         tracing::warn!(error = %e, "could not release due snoozes");
     }
 
+    // Proposals: the expiry sweep, beside the snooze release just above and
+    // independent of whether this vault has routines at all, on the same
+    // reasoning -- a vault without proposals answers `false` immediately
+    // (`supports_proposals` is the only read it does), and a real failure
+    // here should not also cost this tick its routines.
+    {
+        let vault = vault.clone();
+        let service = service.clone();
+        let _ = blocking(move || {
+            if vault.supports_proposals() && sweep_proposals(&vault, Timestamp::now()) {
+                service.events().changed(Change::new(Kind::Proposal, Op::Updated));
+            }
+            Ok(())
+        })
+        .await;
+    }
+
     // The two model-assisted mail features that run unasked, on their own
     // schedule rather than a tool call's -- see `crate::mailai`'s module
     // docs for why neither is a tool, and why each keeps its own per-minute
@@ -878,6 +895,56 @@ fn pretty_minutes(seconds: i64) -> String {
         return format!("{hours} hours");
     }
     format!("{} days", (hours + 12) / 24)
+}
+
+/// Close whatever a pending proposal's own clock, or an event only mail can
+/// raise, has already decided -- called from `tick`, beside
+/// `release_due_snoozes`. Returns whether anything closed, so the caller
+/// knows whether to raise a `Change`.
+///
+/// [`everyday_core::Vault::expire_proposals`] handles every kind's own
+/// deadline. A `SendMail` proposal has a second way to go stale that no
+/// deadline alone can see -- its draft sent by hand, discarded, or gone
+/// altogether -- so that is swept here too, in the same pass. Every failure
+/// is logged and skipped rather than propagated: one bad row must not stop
+/// the rest of the sweep, the way one routine's trouble does not stop
+/// another's in the loop above.
+fn sweep_proposals(vault: &Vault, now: Timestamp) -> bool {
+    use everyday_core::proposal::{Payload, ProposalKind};
+    use everyday_core::store::proposals::ProposalQuery;
+
+    let mut closed = false;
+    match vault.expire_proposals(now) {
+        Ok(ids) => closed |= !ids.is_empty(),
+        Err(e) => tracing::warn!(error = %e, "could not expire due proposals"),
+    }
+
+    let pending = match vault.proposals(&ProposalQuery::pending_of(ProposalKind::Mail)) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not list pending mail proposals");
+            return closed;
+        }
+    };
+    for mut proposal in pending {
+        let Payload::SendMail { draft_id } = &proposal.payload else { continue };
+        let draft_id = *draft_id;
+        let stale = match vault.draft(draft_id) {
+            Ok(draft) => !matches!(draft.state, everyday_core::mail::DraftState::Editing),
+            // Gone altogether reads the same as no longer editing: either
+            // way there is nothing left to send.
+            Err(_) => true,
+        };
+        if !stale {
+            continue;
+        }
+        proposal.close(everyday_core::proposal::Outcome::Expired { at: now }, now);
+        match vault.save_proposal(&proposal) {
+            Ok(()) => closed = true,
+            Err(e) => tracing::warn!(error = %e, "could not close a stale mail proposal"),
+        }
+    }
+    closed
 }
 
 #[cfg(test)]
