@@ -31,7 +31,7 @@
 use crate::command;
 use crate::ctx::{Caller, Ctx, Scope};
 use crate::error::{CommandError, CommandResult, codes, mail_rate_limit_error};
-use crate::events::{Change, Kind, Op};
+use crate::events::{Kind, Op};
 use crate::service::{PROTOCOL, Service, blocking};
 use everyday_core::agent::tools::{self, Caller as ToolCaller};
 use everyday_core::mail::Origin as MailOrigin;
@@ -309,7 +309,7 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
     // carry from one it can, and asking about the domain first is what keeps
     // the two answers indistinguishable from outside.
     ctx.require(scope_of(tool.domain))?;
-    // Stamped on the `Change` this call may raise -- see `mail_tool_change`
+    // Stamped on the `Change` this call may raise -- see `mail_tool_change_kind`
     // -- exactly as `Command::invoke` stamps its own, so a client that made
     // this write itself does not reload because of it. Read off `ctx` here,
     // before it is shadowed below by the `ToolContext` built for the tool
@@ -408,34 +408,48 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
         if let Some(caller) = caller {
             ctx = ctx.with_caller(caller);
         }
-        let result =
-            tools::dispatch(&ctx, &args.name, &args.arguments).map_err(CommandError::from)?;
-        // See `mail_tool_change`'s own doc: this is `run_tool`'s equivalent
-        // of the `change:` a row in `command::COMMANDS` declares for itself,
-        // for the one row -- this one -- whose actual effect depends on
-        // which tool it named rather than being fixed at the table.
-        if let Some(mut change) = mail_tool_change(&args.name, &result) {
-            change.origin = origin.clone();
-            svc.events().changed(change);
+        // Collected locally, around this one call, rather than read from
+        // `crate::touched`'s own task-local: this closure runs on the
+        // blocking pool `blocking` already dispatched onto, a different
+        // task from the one `Command::invoke` opened its own scope on, and
+        // that scope is not reachable from here -- see `crate::touched`'s
+        // module doc. `everyday_core::vault::touched::collect` needs
+        // nothing from that scope; it is a plain synchronous call around a
+        // plain synchronous call.
+        let (result, dispatched) = everyday_core::vault::touched::collect(|| {
+            tools::dispatch(&ctx, &args.name, &args.arguments)
+        });
+        let result = result.map_err(CommandError::from)?;
+        // See `mail_tool_change_kind`'s own doc: this is `run_tool`'s
+        // equivalent of the `change:` a row in `command::COMMANDS` declares
+        // for itself, for the one row -- this one -- whose actual effect
+        // depends on which tool it named rather than being fixed at the
+        // table.
+        if let Some((kind, op)) = mail_tool_change_kind(&args.name) {
+            crate::events::emit_touched(
+                svc.events().as_ref(),
+                origin.clone(),
+                &dispatched,
+                kind,
+                op,
+            );
         }
         Ok(result)
     })
     .await
 }
 
-/// The [`Change`] equivalent, for a mail tool run through [`run_tool`], to
+/// The `(Kind, Op)` equivalent, for a mail tool run through [`run_tool`], to
 /// what the matching direct command in `domains::mail` declares on its own
 /// row via `change:` -- see [`crate::command::Command::change`]'s own doc
 /// for what that ordinarily does and why `run_tool` cannot lean on the same
 /// mechanism: `Command::invoke` reads a `(Kind, Op)` fixed per row and an id
 /// out of that row's own *arguments*, both fixed at compile time, whereas
 /// `run_tool` is one row for the whole tool catalogue, each tool shaped
-/// differently. This is `run_tool`'s own copy of the same fact, keyed by
-/// tool name, reading the touched record's id back out of the tool's own
-/// JSON result -- `"id"`, which every mutating mail tool's `done`,
-/// `done_thread` and `draft_result` helper (in `agent::tools::mail`)
-/// already sets to the record it just touched, since a person reading the
-/// same JSON needs exactly that id too.
+/// differently. This is `run_tool`'s own copy of the fact this function
+/// pairs with [`crate::events::emit_touched`], which reads the touched
+/// record's id back out of what the tool's own dispatch collected, the
+/// same collector every other write in this application now goes through.
 ///
 /// Before this existed, a mail write made through `run_tool` -- an MCP
 /// archive, a scheduled auto-draft, `send_draft`'s own queued send --
@@ -452,16 +466,14 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
 /// reply lives on the message a thread already re-reads, not on a
 /// [`Kind`] any list is drawn from), and for anything this table simply
 /// does not yet name.
-fn mail_tool_change(name: &str, result: &Value) -> Option<Change> {
-    let (kind, op) = match name {
-        "draft_reply" | "draft_message" => (Kind::Draft, Op::Created),
-        "update_draft" | "send_draft" => (Kind::Draft, Op::Updated),
+fn mail_tool_change_kind(name: &str) -> Option<(Kind, Op)> {
+    match name {
+        "draft_reply" | "draft_message" => Some((Kind::Draft, Op::Created)),
+        "update_draft" | "send_draft" => Some((Kind::Draft, Op::Updated)),
         "mark_read" | "label_thread" | "move_thread" | "snooze_thread" | "archive_thread"
-        | "trash_thread" => (Kind::Thread, Op::Updated),
-        _ => return None,
-    };
-    let id = result.get("id").and_then(Value::as_str).map(str::to_string);
-    Some(Change { kind, op, id, ids: Vec::new(), origin: None })
+        | "trash_thread" => Some((Kind::Thread, Op::Updated)),
+        _ => None,
+    }
 }
 
 pub static COMMANDS: &[crate::command::Command] = &[

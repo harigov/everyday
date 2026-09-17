@@ -333,8 +333,6 @@ fn assert_declared_matches_touched(
     id: Option<&str>,
     ids: &[String],
 ) {
-    use everyday_core::record::RecordKind;
-
     // Not a record at all -- the vault's own settings, or a supervisor
     // task's status -- so there is nothing in `touched` that could ever
     // name one. See `Kind`'s own `TryFrom<Kind> for RecordKind`.
@@ -345,24 +343,11 @@ fn assert_declared_matches_touched(
         return;
     }
 
-    // `Kind` is coarser than `RecordKind` in exactly the two places
-    // `TryFrom<RecordKind> for Kind`'s own doc names: a mail message and an
-    // `Op` both surface as `Kind::Thread`, and the assistant's own message
-    // surfaces as `Kind::Conversation`.
-    fn kind_covers(kind: Kind, record: RecordKind) -> bool {
-        match kind {
-            Kind::Thread => {
-                matches!(record, RecordKind::Thread | RecordKind::MailMessage | RecordKind::Op)
-            }
-            Kind::Conversation => {
-                matches!(record, RecordKind::Conversation | RecordKind::Message)
-            }
-            other => RecordKind::try_from(other) == Ok(record),
-        }
-    }
-
-    let relevant: Vec<&str> =
-        touched.iter().filter(|(k, _)| kind_covers(kind, *k)).map(|(_, id)| id.as_str()).collect();
+    let relevant: Vec<&str> = touched
+        .iter()
+        .filter(|(k, _)| crate::events::kind_covers(kind, *k))
+        .map(|(_, id)| id.as_str())
+        .collect();
 
     if let Some(id) = id {
         assert!(
@@ -649,7 +634,7 @@ mod tests {
             // Its effect is whatever tool it ran, which announces its own
             // -- literally, now: `domains::meta::run_tool` raises the
             // matching `Change` itself, off a table keyed by tool name
-            // (`domains::meta::mail_tool_change`), because this row's own
+            // (`domains::meta::mail_tool_change_kind`), because this row's own
             // `(Kind, Op)` cannot be fixed at the table the way every other
             // row's can. Listed here anyway, not given a `change:`, because
             // this test checks the table `Command::invoke` reads to decide

@@ -67,6 +67,17 @@ pub(crate) fn merge(touched: Vec<(RecordKind, String)>) {
     let _ = TOUCHED.try_with(|cell| cell.borrow_mut().extend(touched));
 }
 
+/// Everything merged into the current [`scope`] so far, for a command body
+/// that wants to raise its own event mid-command from what it has already
+/// written -- `accept_proposal`'s own second [`crate::events::Change`],
+/// beside the `Proposal` one every row in this table raises, is the
+/// motivating caller. Empty outside a `scope`, the same as a fresh one that
+/// has not merged anything yet; a caller cannot tell the two apart, and
+/// does not need to.
+pub fn current() -> Vec<(RecordKind, String)> {
+    TOUCHED.try_with(|cell| cell.borrow().clone()).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

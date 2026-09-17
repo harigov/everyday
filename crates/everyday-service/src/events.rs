@@ -299,6 +299,53 @@ impl TryFrom<RecordKind> for Kind {
     }
 }
 
+/// Does a [`Change`] announced as `kind` cover a write the collector saw
+/// against `record`?
+///
+/// Almost always the single [`RecordKind`] `TryFrom<Kind>` names -- but
+/// `Kind` is coarser than `RecordKind` in exactly the two places
+/// `TryFrom<RecordKind> for Kind`'s own doc names: a mail message and an
+/// `Op` both surface as `Kind::Thread`, and the assistant's own message
+/// surfaces as `Kind::Conversation`. Shared by [`command::assert_declared_matches_touched`](crate::command)
+/// and [`emit_touched`], so the two cannot answer this question
+/// differently from each other.
+pub(crate) fn kind_covers(kind: Kind, record: RecordKind) -> bool {
+    match kind {
+        Kind::Thread => {
+            matches!(record, RecordKind::Thread | RecordKind::MailMessage | RecordKind::Op)
+        }
+        Kind::Conversation => matches!(record, RecordKind::Conversation | RecordKind::Message),
+        other => RecordKind::try_from(other) == Ok(record),
+    }
+}
+
+/// Raise one [`Change`] for every id the collector saw touched under
+/// `kind`'s own family (see [`kind_covers`]), batching them exactly the way
+/// a command's own `change:` row does: `id` alone for one, `ids` for more
+/// than one, and nothing at all when there is nothing to report.
+///
+/// What replaces a hand-built [`Change`] whose `id`/`ids` used to be
+/// computed from a return value or a closure's own bookkeeping -- see
+/// `docs/plans/architecture-refactor.md`'s Phase 7. The *kind* and *op* are
+/// still named at the call site: which family of record a write announces,
+/// and whether it reads as created, updated or deleted, are decisions this
+/// function has no business making.
+pub fn emit_touched(
+    sink: &dyn EventSink,
+    origin: Option<String>,
+    touched: &[(RecordKind, String)],
+    kind: Kind,
+    op: Op,
+) {
+    let mut ids: Vec<String> =
+        touched.iter().filter(|(k, _)| kind_covers(kind, *k)).map(|(_, id)| id.clone()).collect();
+    match ids.len() {
+        0 => {}
+        1 => sink.changed(Change { kind, op, id: ids.pop(), ids: Vec::new(), origin }),
+        _ => sink.changed(Change { kind, op, id: None, ids, origin }),
+    }
+}
+
 /// One write, on its way to everyone who did not make it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

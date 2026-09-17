@@ -8,7 +8,7 @@ use super::Nothing;
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
-use crate::events::{Change, Kind, Op};
+use crate::events::{Kind, Op};
 use crate::service::{Service, blocking};
 use everyday_core::id::DraftId;
 use everyday_core::proposal::{
@@ -112,18 +112,30 @@ async fn accept_proposal(svc: Arc<Service>, ctx: Ctx, args: Accept) -> CommandRe
         }
     };
 
-    if let Some(change) = change_for_accept(&accepted) {
-        svc.events().changed(Change { origin: ctx.caller.origin().map(str::to_string), ..change });
+    if let Some((kind, op)) = change_for_accept(&accepted) {
+        // The record `accepted.outcome` names as `saved_as` is exactly what
+        // the collector saw the vault call above write -- `try_accept`
+        // always goes through the domain's own `save_*`/`delete_*`, every
+        // one of which now reports itself -- so this reads the same id back
+        // out of `touched` rather than trusting `saved_as` a second time.
+        // Filtered to `kind` so the `Proposal` this same command's own
+        // `change:` row already raised (also in `touched` by now, from
+        // closing the proposal) is never mistaken for the second change.
+        let origin = ctx.caller.origin().map(str::to_string);
+        let touched = crate::touched::current();
+        crate::events::emit_touched(svc.events().as_ref(), origin, &touched, kind, op);
     }
     Ok(accepted)
 }
 
-/// The second [`Change`] a successful accept raises, for the record the
-/// proposal actually saved or removed -- `None` for anything that did not
-/// finish `Accepted` (there is nothing to report for a decline raised from
-/// inside the vault call, which answers `Err` instead).
-fn change_for_accept(proposal: &Proposal) -> Option<Change> {
-    let Outcome::Accepted { saved_as, .. } = &proposal.outcome else { return None };
+/// The `(Kind, Op)` of the second [`Change`] a successful accept raises, for
+/// the record the proposal actually saved or removed -- `None` for anything
+/// that did not finish `Accepted` (there is nothing to report for a decline
+/// raised from inside the vault call, which answers `Err` instead).
+fn change_for_accept(proposal: &Proposal) -> Option<(Kind, Op)> {
+    if !matches!(proposal.outcome, Outcome::Accepted { .. }) {
+        return None;
+    }
     let kind = match proposal.kind {
         ProposalKind::Task => Kind::Task,
         ProposalKind::Block => Kind::Block,
@@ -140,7 +152,7 @@ fn change_for_accept(proposal: &Proposal) -> Option<Change> {
         // queued; nothing is created.
         Payload::SendMail { .. } => Op::Updated,
     };
-    Some(Change { kind, op, id: Some(saved_as.clone()), ids: Vec::new(), origin: None })
+    Some((kind, op))
 }
 
 /// Accept a `SendMail` proposal: send the draft it points at, then close the

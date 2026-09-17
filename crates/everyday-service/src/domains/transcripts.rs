@@ -369,6 +369,14 @@ async fn rewrite_meeting_note(
 async fn name_speaker(svc: Arc<Service>, ctx: Ctx, args: NameSpeaker) -> CommandResult<Transcript> {
     let vault = svc.require()?;
     let note_id = args.note_id;
+    // `voiceprint_id` travels out of the closure by hand, not through
+    // `crate::touched::current()`, on purpose: this command's own unit
+    // tests below call `name_speaker` directly, without going through
+    // `Command::invoke`, so there is no collecting scope open for
+    // `current()` to read from. Every other hand-written `Change` this
+    // phase moved onto the collector is raised only from a command's own
+    // `run`, reached exclusively through `Command::invoke`; this one is
+    // the exception, and stays hand-computed for that reason.
     let (transcript, voiceprint_id) = blocking(move || {
         let mut transcript = vault
             .transcript_for_note(note_id)?
