@@ -170,7 +170,7 @@ pub async fn discover(
     }
     let source = source_for_provider(account.provider);
     let result = provider_for(source).discover(svc, vault, account).await;
-    note_if_credential_is_bad(vault, account, &result).await;
+    note_if_credential_is_bad(svc, vault, account, &result).await;
     result
 }
 
@@ -186,6 +186,7 @@ pub async fn discover(
 /// (an OAuth account's discovery calling it after `tokens::access_token`
 /// already did) is harmless: it writes the same status again.
 async fn note_if_credential_is_bad<T>(
+    svc: &Arc<Service>,
     vault: &Arc<Vault>,
     account: &Account,
     result: &CommandResult<T>,
@@ -193,7 +194,7 @@ async fn note_if_credential_is_bad<T>(
     if let Err(e) = result
         && e.code == codes::FORBIDDEN
     {
-        tokens::mark_needs_sign_in(vault, account.id, &e.message).await;
+        tokens::mark_needs_sign_in(vault, account.id, &e.message, svc.now()).await;
     }
 }
 
@@ -219,7 +220,7 @@ pub async fn sync(
     let account = blocking(move || Ok(vault_for_account.account(account_id)?)).await?;
 
     let result = provider_for(source).sync(svc, vault, &account, calendar).await;
-    note_if_credential_is_bad(vault, &account, &result).await;
+    note_if_credential_is_bad(svc, vault, &account, &result).await;
 
     // Only a genuine, permission-shaped failure (`FORBIDDEN`, already
     // handled above by moving the account to `NeedsSignIn`) skips the
@@ -512,7 +513,7 @@ mod tests {
         vault.save_account(&account).unwrap();
 
         let result: CommandResult<()> = Err(CommandError::new(codes::FORBIDDEN, "bad credential"));
-        note_if_credential_is_bad(&vault, &account, &result).await;
+        note_if_credential_is_bad(&Arc::new(Service::new()), &vault, &account, &result).await;
 
         let reloaded = vault.account(account.id).unwrap();
         assert!(
@@ -531,7 +532,7 @@ mod tests {
             vault.save_account(&account).unwrap();
 
             let result: CommandResult<()> = Err(CommandError::new(code, "try again later"));
-            note_if_credential_is_bad(&vault, &account, &result).await;
+            note_if_credential_is_bad(&Arc::new(Service::new()), &vault, &account, &result).await;
 
             let reloaded = vault.account(account.id).unwrap();
             assert_eq!(

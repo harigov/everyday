@@ -260,7 +260,7 @@ async fn access_token(
         Ok(access_token) => Ok(access_token),
         Err(OAuthError::InvalidGrant { description }) => {
             cache.forget(&key).await;
-            mark_needs_sign_in(vault, account_id, &description).await;
+            mark_needs_sign_in(vault, account_id, &description, svc.now()).await;
             Err(CommandError::new(
                 codes::FORBIDDEN,
                 "this account needs to sign in again before its calendars can be read",
@@ -287,13 +287,18 @@ async fn access_token(
 /// application learns that one was revoked. `pub(crate)` rather than
 /// private for that second caller; calling this twice for the same OAuth
 /// failure is harmless, see that function's own doc.
-pub(crate) async fn mark_needs_sign_in(vault: &Arc<Vault>, account_id: AccountId, why: &str) {
+pub(crate) async fn mark_needs_sign_in(
+    vault: &Arc<Vault>,
+    account_id: AccountId,
+    why: &str,
+    now: Timestamp,
+) {
     let vault = vault.clone();
     let reason = why.to_string();
     let outcome = blocking(move || {
         let mut account = vault.account(account_id)?;
         account.status = AccountStatus::NeedsSignIn { reason };
-        account.updated_at = Timestamp::now();
+        account.updated_at = now;
         Ok(vault.save_account(&account)?)
     })
     .await;

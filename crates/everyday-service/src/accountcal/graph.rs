@@ -176,7 +176,7 @@ async fn sync_with_base(
     let mut remove_ids: Vec<everyday_core::id::EventId> =
         removed_raw.iter().map(|raw_id| deterministic_event_id(calendar.id, raw_id)).collect();
     for item in &upsert_raw {
-        if let Some(event) = to_event(calendar.id, item) {
+        if let Some(event) = to_event(calendar.id, item, svc.now()) {
             upsert.push(event);
         } else {
             remove_ids.push(deterministic_event_id(calendar.id, &item.id));
@@ -368,7 +368,7 @@ async fn windowed_sync(
 /// is missing the one thing every occurrence needs -- a start -- which
 /// `sync` reads as "this id is no longer a usable event" and removes rather
 /// than drops silently.
-fn to_event(calendar_id: CalendarId, item: &GraphEvent) -> Option<Event> {
+fn to_event(calendar_id: CalendarId, item: &GraphEvent, now: jiff::Timestamp) -> Option<Event> {
     if item.is_cancelled {
         return None;
     }
@@ -408,7 +408,7 @@ fn to_event(calendar_id: CalendarId, item: &GraphEvent) -> Option<Event> {
         url: item.web_link.clone(),
         busy: !matches!(item.show_as.as_str(), "free" | "workingElsewhere"),
         series: item.series_master_id.clone().or_else(|| item.i_cal_u_id.clone()),
-        updated_at: jiff::Timestamp::now(),
+        updated_at: now,
     })
 }
 
@@ -976,7 +976,7 @@ mod tests {
         let mut item = bare_graph_event("instance-1");
         item.series_master_id = Some("master-abc".into());
         item.i_cal_u_id = Some("040000008200...".into());
-        let event = to_event(CalendarId::new(), &item).unwrap();
+        let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
         assert_eq!(event.series.as_deref(), Some("master-abc"), "seriesMasterId wins");
     }
 
@@ -987,14 +987,14 @@ mod tests {
     fn i_cal_u_id_is_the_series_when_there_is_no_series_master_id() {
         let mut item = bare_graph_event("evt-1");
         item.i_cal_u_id = Some("040000008200...".into());
-        let event = to_event(CalendarId::new(), &item).unwrap();
+        let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
         assert_eq!(event.series.as_deref(), Some("040000008200..."));
     }
 
     #[test]
     fn an_event_with_neither_field_has_no_series() {
         let item = bare_graph_event("evt-1");
-        let event = to_event(CalendarId::new(), &item).unwrap();
+        let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
         assert_eq!(event.series, None);
     }
 }

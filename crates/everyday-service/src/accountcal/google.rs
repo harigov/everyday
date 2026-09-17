@@ -252,7 +252,7 @@ async fn sync_with_base(
             remove_ids.push(id);
             continue;
         }
-        if let Some(event) = to_event(calendar.id, &item, &default_tz) {
+        if let Some(event) = to_event(calendar.id, &item, &default_tz, svc.now()) {
             upsert.push(event);
         }
     }
@@ -334,7 +334,12 @@ async fn list_events(
     Ok((items, next_sync_token))
 }
 
-fn to_event(calendar_id: CalendarId, item: &GoogleEvent, default_tz: &str) -> Option<Event> {
+fn to_event(
+    calendar_id: CalendarId,
+    item: &GoogleEvent,
+    default_tz: &str,
+    now: jiff::Timestamp,
+) -> Option<Event> {
     let start = item.start.as_ref()?;
     let end = item.end.as_ref().unwrap_or(start);
     let all_day = start.date.is_some();
@@ -388,7 +393,7 @@ fn to_event(calendar_id: CalendarId, item: &GoogleEvent, default_tz: &str) -> Op
         url: item.html_link.clone(),
         busy: item.transparency != "transparent",
         series: item.recurring_event_id.clone().or_else(|| item.i_cal_uid.clone()),
-        updated_at: jiff::Timestamp::now(),
+        updated_at: now,
     })
 }
 
@@ -892,7 +897,7 @@ mod tests {
         let mut item = bare_google_event("instance-1");
         item.recurring_event_id = Some("master-abc".into());
         item.i_cal_uid = Some("master-abc@google.com".into());
-        let event = to_event(CalendarId::new(), &item, "UTC").unwrap();
+        let event = to_event(CalendarId::new(), &item, "UTC", jiff::Timestamp::now()).unwrap();
         assert_eq!(event.series.as_deref(), Some("master-abc"), "recurringEventId wins");
     }
 
@@ -903,14 +908,14 @@ mod tests {
     fn i_cal_uid_is_the_series_when_there_is_no_recurring_event_id() {
         let mut item = bare_google_event("evt-1");
         item.i_cal_uid = Some("evt-1@google.com".into());
-        let event = to_event(CalendarId::new(), &item, "UTC").unwrap();
+        let event = to_event(CalendarId::new(), &item, "UTC", jiff::Timestamp::now()).unwrap();
         assert_eq!(event.series.as_deref(), Some("evt-1@google.com"));
     }
 
     #[test]
     fn an_event_with_neither_field_has_no_series() {
         let item = bare_google_event("evt-1");
-        let event = to_event(CalendarId::new(), &item, "UTC").unwrap();
+        let event = to_event(CalendarId::new(), &item, "UTC", jiff::Timestamp::now()).unwrap();
         assert_eq!(event.series, None);
     }
 }
