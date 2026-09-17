@@ -19,6 +19,7 @@
 //! was given a path. A service is handed a vault; it does not go looking.
 
 use crate::agent::Pending;
+use crate::clock::{Clock, SystemClock};
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
@@ -61,6 +62,11 @@ pub struct Service {
     vault: RwLock<Option<Arc<Vault>>>,
     last_path: RwLock<Option<PathBuf>>,
     events: RwLock<Arc<dyn EventSink>>,
+    /// Where every `Timestamp::now()`/`Instant::now()` this service needs
+    /// comes from, so a test can hand it one that does not move on its own.
+    /// Defaults to [`SystemClock`], for the same reason `events` defaults to
+    /// [`Silent`] -- see [`Service::set_clock`].
+    clock: RwLock<Arc<dyn Clock>>,
     /// The keyed long-lived tasks this session runs -- mail's future sync
     /// tasks, and nothing yet. Defaults to a supervisor with nowhere to send
     /// its own announcements, exactly as `events` defaults to [`Silent`],
@@ -232,6 +238,10 @@ impl Default for Service {
 
 impl Service {
     pub fn new() -> Self {
+        // Built before the rest of `Self`, rather than read back out of the
+        // `clock` field below, because the two budgets below need a `now`
+        // of their own before there is a `Self` to read `self.clock` from.
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         Self {
             vault: RwLock::new(None),
             last_path: RwLock::new(None),
@@ -254,13 +264,14 @@ impl Service {
             mail_categorize_budget: Mutex::new(TokenBucket::new(
                 Self::MAIL_CATEGORIZE_PER_MINUTE,
                 f64::from(Self::MAIL_CATEGORIZE_PER_MINUTE) / 60.0,
-                Timestamp::now(),
+                clock.now(),
             )),
             mail_autodraft_budget: Mutex::new(TokenBucket::new(
                 Self::MAIL_AUTODRAFT_PER_MINUTE,
                 f64::from(Self::MAIL_AUTODRAFT_PER_MINUTE) / 60.0,
-                Timestamp::now(),
+                clock.now(),
             )),
+            clock: RwLock::new(clock),
             mail_summary_cache: Mutex::new(HashMap::new()),
             mail_categorize_cursor: Mutex::new(HashMap::new()),
             mail_autodraft_cursor: Mutex::new(HashMap::new()),
@@ -281,11 +292,11 @@ impl Service {
     /// and say how many were actually available -- never more than `want`,
     /// and `0` when the budget is empty. What bounds one tick's batch size.
     pub fn mail_categorize_take(&self, want: u32) -> u32 {
-        take_tokens(&self.mail_categorize_budget, want)
+        take_tokens(&self.mail_categorize_budget, self.now(), want)
     }
 
     pub fn mail_autodraft_take(&self, want: u32) -> u32 {
-        take_tokens(&self.mail_autodraft_budget, want)
+        take_tokens(&self.mail_autodraft_budget, self.now(), want)
     }
 
     /// Where `account`'s next categorisation pass should page from -- see
@@ -447,6 +458,33 @@ impl Service {
 
     pub fn events(&self) -> Arc<dyn EventSink> {
         self.events.read().unwrap().clone()
+    }
+
+    /// Replace the clock this service reads "now" from.
+    ///
+    /// Only a test calls this -- see `everyday_service::clock`'s module doc
+    /// for why a fake clock, not `tokio::time::pause`, is how a time-dependent
+    /// service behaviour (a proposal's expiry, a routine's due check) is
+    /// proven without an actual sleep.
+    pub fn set_clock(&self, clock: Arc<dyn Clock>) {
+        *self.clock.write().unwrap() = clock;
+    }
+
+    pub fn clock(&self) -> Arc<dyn Clock> {
+        self.clock.read().unwrap().clone()
+    }
+
+    /// Wall-clock time, through this service's clock. What every call site
+    /// that used to read `jiff::Timestamp::now()` directly now reads instead.
+    pub fn now(&self) -> Timestamp {
+        self.clock().now()
+    }
+
+    /// Monotonic time, through this service's clock. What every call site
+    /// that used to read `std::time::Instant::now()` directly now reads
+    /// instead.
+    pub fn instant(&self) -> Instant {
+        self.clock().instant()
     }
 
     /// Replace the supervisor this service hooks lock and unlock to.
@@ -633,7 +671,7 @@ impl Service {
             Origin::Mcp { client } => format!("mcp:{client}"),
             Origin::Person | Origin::Routine { .. } => return Ok(()),
         };
-        let now = Timestamp::now();
+        let now = self.now();
         let mut limits = self.mail_rate_limits.lock().unwrap();
         let state =
             limits.entry(key).or_insert_with(|| RateLimitState::new(PER_TURN, PER_MINUTE, now));
@@ -841,7 +879,7 @@ impl Service {
 
     /// Record that `id` had a chunk appended just now, in this process.
     pub fn meeting_touch_append(&self, id: RecordingId) {
-        self.meeting_last_append.lock().unwrap().insert(id, Instant::now());
+        self.meeting_last_append.lock().unwrap().insert(id, self.instant());
     }
 
     /// How long ago `id` last had a chunk appended, in this process -- or
@@ -1101,9 +1139,8 @@ impl Drop for RunClaim {
 /// Take up to `want` tokens from `bucket`, one at a time, and say how many
 /// were actually there -- what [`Service::mail_categorize_take`] and
 /// [`Service::mail_autodraft_take`] both are.
-fn take_tokens(bucket: &Mutex<TokenBucket>, want: u32) -> u32 {
+fn take_tokens(bucket: &Mutex<TokenBucket>, now: Timestamp, want: u32) -> u32 {
     let mut bucket = bucket.lock().unwrap();
-    let now = Timestamp::now();
     let mut taken = 0u32;
     while taken < want && bucket.try_take(now) {
         taken += 1;

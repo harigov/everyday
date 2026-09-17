@@ -41,6 +41,7 @@
 
 pub mod accountcal;
 pub mod agent;
+pub mod clock;
 pub mod command;
 pub mod ctx;
 pub mod domains;
