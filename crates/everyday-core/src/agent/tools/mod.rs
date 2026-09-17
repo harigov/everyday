@@ -603,6 +603,93 @@ impl Tool {
 }
 
 impl<'a> ToolContext<'a> {
+    /// A context with nothing wired beyond what every tool needs: the
+    /// vault, and today's date in the caller's own zone. Every other field
+    /// starts at its "nobody asked" value -- `None`, or `false` for
+    /// `unattended` -- and each `with_*` below turns one on.
+    ///
+    /// The one constructor every caller builds a [`ToolContext`] through,
+    /// so a field this struct gains later is a decision made once, here,
+    /// rather than copied by hand into `ConfirmGate::describe`,
+    /// `ConfirmGate::park` and the two `run_tool`s that used to build one
+    /// from a bare struct literal apiece.
+    pub fn new(vault: &'a Vault, today: Date, tz: &'a str) -> Self {
+        Self {
+            vault,
+            today,
+            tz,
+            conversation: None,
+            unattended: false,
+            caller: None,
+            mail_search: None,
+            assistant_provider: None,
+            mail_rate_limit: None,
+            after_mail_write: None,
+            invite_responder: None,
+            drafting: None,
+        }
+    }
+
+    /// The thread this call belongs to. See [`ToolContext::conversation`].
+    pub fn with_conversation(mut self, conversation: ConversationId) -> Self {
+        self.conversation = Some(conversation);
+        self
+    }
+
+    /// Whether this call is part of a scheduled run with nobody watching.
+    /// See [`ToolContext::unattended`].
+    pub fn with_unattended(mut self, unattended: bool) -> Self {
+        self.unattended = unattended;
+        self
+    }
+
+    /// Who this call is being made on behalf of. See [`ToolContext::caller`].
+    pub fn with_caller(mut self, caller: Caller) -> Self {
+        self.caller = Some(caller);
+        self
+    }
+
+    /// Mail's search index. See [`ToolContext::mail_search`].
+    pub fn with_mail_search(mut self, mail_search: &'a dyn crate::mailsearch::MailSearch) -> Self {
+        self.mail_search = Some(mail_search);
+        self
+    }
+
+    /// The provider the assistant is configured to use right now. See
+    /// [`ToolContext::assistant_provider`].
+    pub fn with_assistant_provider(mut self, provider: String) -> Self {
+        self.assistant_provider = Some(provider);
+        self
+    }
+
+    /// The gate a mail write's enqueue passes through. See
+    /// [`ToolContext::mail_rate_limit`].
+    pub fn with_mail_rate_limit(mut self, rate_limit: &'a MailRateLimit<'a>) -> Self {
+        self.mail_rate_limit = Some(rate_limit);
+        self
+    }
+
+    /// Called once a mail tool's write actually lands. See
+    /// [`ToolContext::after_mail_write`].
+    pub fn with_after_mail_write(mut self, hook: &'a dyn Fn(crate::id::AccountId)) -> Self {
+        self.after_mail_write = Some(hook);
+        self
+    }
+
+    /// The gate `respond_to_invite` builds and queues an iTIP `REPLY`
+    /// through. See [`ToolContext::invite_responder`].
+    pub fn with_invite_responder(mut self, responder: &'a InviteResponder<'a>) -> Self {
+        self.invite_responder = Some(responder);
+        self
+    }
+
+    /// Set when this call is part of work nobody asked for. See
+    /// [`ToolContext::drafting`].
+    pub fn with_drafting(mut self, drafting: Option<Drafting>) -> Self {
+        self.drafting = drafting;
+        self
+    }
+
     /// Now, in the zone this context was built with.
     ///
     /// Built from `today` and the zone rather than from the clock, so a tool
