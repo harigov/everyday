@@ -98,6 +98,7 @@ pub mod profile;
 pub mod proposal;
 pub mod purpose;
 pub mod quick;
+pub mod record;
 pub mod richtext;
 pub mod routine;
 #[cfg(feature = "schema")]
@@ -152,6 +153,7 @@ pub use purpose::{
     Goal, GoalActivity, GoalStatus, Purpose, PurposeMinutes, Role, RoleEventMinutes,
 };
 pub use quick::{Prompt as QuickPrompt, QuickApp, QuickContext, QuickJob, QuickPolicy};
+pub use record::{RecordDescriptor, RecordKind};
 pub use richtext::RichDoc;
 pub use routine::{DreamScope, Due, Outcome, Routine, RoutineKind, RoutineRun, Trigger, Weekday};
 pub use store::accounts::AccountStore;
