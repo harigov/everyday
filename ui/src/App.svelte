@@ -9,7 +9,8 @@
   // half-typed note belonging to an app this component never mentions.
   //
   // App bar order first, then what every app shares, then the window's own.
-  import { app, type Section } from './lib/state.svelte'
+  import { app } from './lib/state.svelte'
+  import { APPS } from './lib/apps'
   import './lib/notes.svelte'
   import { todo } from './lib/todo.svelte'
   import './lib/calendar.svelte'
@@ -128,22 +129,11 @@
   // browsing, or -- for the apps that span every one of those at once -- the
   // vault's own accent.
   //
-  // A table keyed by `Section` rather than a chain of ternaries with a
-  // fallback on the end. The chain had grown a clause per app and quietly
-  // gave any new one the *journal's* accent, which is the one answer that is
-  // wrong everywhere; this does not compile until the new app says which of
-  // the two it wants.
-  const ACCENTS: Record<Section, () => string> = {
-    journal: () => app.accent,
-    notes: () => 'var(--accent)',
-    todo: () => todo.accent,
-    calendar: () => 'var(--accent)',
-    library: () => library.accent,
-    mail: () => 'var(--accent)',
-    overview: () => 'var(--accent)',
-    assistant: () => 'var(--accent)',
-  }
-  const accent = $derived(ACCENTS[app.section]())
+  // `apps.ts`'s own `accent` per app, rather than a table kept here: that
+  // used to be a chain of ternaries with a fallback on the end, which had
+  // grown a clause per app and quietly gave any new one the *journal's*
+  // accent, which is the one answer that is wrong everywhere.
+  const accent = $derived(APPS[app.section].accent({ app, todo, library }))
 
   /**
    * The window's one keyboard handler.

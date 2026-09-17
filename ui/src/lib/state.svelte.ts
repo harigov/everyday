@@ -6,6 +6,7 @@
 
 import { tick } from 'svelte'
 import { api, isMock, newRequestId } from './api'
+import { APP_ORDER, APPS, type Section } from './apps'
 import { AUTOSAVE_MS } from './autosave'
 import { errorMessage, handle, isConflict, isLocked, quietly, setPolicy } from './errors'
 import { notify } from './notify.svelte'
@@ -62,21 +63,14 @@ export type Screen = 'loading' | 'setup' | 'locked' | 'main' | 'error'
  * back to the app you were last in is what makes it feel like one program
  * rather than a handful bolted together.
  *
- * The order here is the app bar's, because `nextSection` cycles along it:
- * the shortcut that moves to the next app has to move to the next app you
- * can see, not the next one this list was written in.
+ * `Section` and its order now live in `apps.ts`, alongside the label, icon,
+ * accent, capability check, create action and chat context every app in it
+ * carries -- see that file's own header for why it, rather than this one,
+ * owns them. Re-exported here because most of the application already
+ * imports `Section` (and, for `nextSection` below, the order) from
+ * `state.svelte`.
  */
-export const SECTIONS = [
-  'overview',
-  'notes',
-  'todo',
-  'calendar',
-  'library',
-  'mail',
-  'assistant',
-  'journal',
-] as const
-export type Section = (typeof SECTIONS)[number]
+export { type Section, APP_ORDER as SECTIONS } from './apps'
 
 export type Theme = 'light' | 'dark' | 'system'
 
@@ -92,7 +86,7 @@ const themePref = pref<Theme>('everyday.theme', parseTheme, 'system')
 
 /** Same reason `parseTheme` is named: `start` also runs a `?section=` override through it. */
 function parseSection(raw: string | null): Section | null {
-  return SECTIONS.includes(raw as Section) ? (raw as Section) : null
+  return APP_ORDER.includes(raw as Section) ? (raw as Section) : null
 }
 const sectionPref = pref<Section | null>('everyday.section', parseSection, null)
 
@@ -505,33 +499,14 @@ class AppState {
   /**
    * Is this section available on the vault that is open?
    *
-   * A switch over every `Section` rather than a chain of `if`s with a `true`
-   * at the end. The chain answered "yes" for anything it had not been told
-   * about, so an app added without a line here was offered on a backend that
-   * cannot carry it and failed at the first query; the switch does not
-   * compile until the new section says what it needs.
+   * Reads `apps.ts`'s registry rather than a switch of its own: that used to
+   * be a chain of `if`s with a `true` at the end, which answered "yes" for
+   * anything it had not been told about, so an app added without a line here
+   * was offered on a backend that cannot carry it and failed at the first
+   * query. `APPS` does not compile until the new section says what it needs.
    */
   canShow(section: Section): boolean {
-    switch (section) {
-      // The one app every backend can carry: a store that cannot hold
-      // journals is not a vault.
-      case 'journal':
-        return true
-      case 'notes':
-        return this.supportsNotes
-      case 'todo':
-        return this.supportsTasks
-      case 'calendar':
-        return this.supportsCalendar
-      case 'library':
-        return this.supportsLibrary
-      case 'overview':
-        return this.supportsOverview
-      case 'mail':
-        return this.supportsMail
-      case 'assistant':
-        return this.supportsAssistant
-    }
+    return APPS[section].supported(this)
   }
 
   setSection(section: Section) {
@@ -565,7 +540,7 @@ class AppState {
    * a screen that cannot work.
    */
   nextSection() {
-    const available = SECTIONS.filter((s) => this.canShow(s))
+    const available = APP_ORDER.filter((s) => this.canShow(s))
     if (available.length < 2) return
     const at = available.indexOf(this.section)
     this.setSection(available[(at + 1) % available.length]!)

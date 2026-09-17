@@ -15,7 +15,7 @@
 
   import { onDestroy } from 'svelte'
   import { agent } from '../lib/agent.svelte'
-  import { chatContext } from '../lib/chat-context'
+  import { APPS } from '../lib/apps'
   import { splitDigest } from '../lib/dream'
   import { renderMarkdown } from '../lib/markdown'
   import { panels } from '../lib/panels.svelte'
@@ -167,7 +167,7 @@
    * which app is open and what is selected in it.
    */
   const context = $derived.by(() =>
-    chatContext({
+    APPS[app.section].chatContext({
       section: app.section,
       todo: {
         showingGoals: todo.showingGoals,

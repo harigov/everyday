@@ -15,6 +15,7 @@
   // pressed, and the bar does not.
 
   import { app, type Section } from '../lib/state.svelte'
+  import { APPS as APP_REGISTRY } from '../lib/apps'
   import { assistant } from '../lib/assistant.svelte'
   import { proposals } from '../lib/proposals.svelte'
   import { meetings } from '../lib/meetings.svelte'
@@ -42,6 +43,12 @@
     icon: IconName
   }
 
+  /** `apps.ts`'s registry entry, narrowed to what a bar button draws. */
+  function entryOf(id: Section): AppEntry {
+    const a = APP_REGISTRY[id]
+    return { id, label: a.label, icon: a.icon }
+  }
+
   // Each tab is hidden on a backend that cannot carry it, so a vault never
   // offers an app that cannot work.
   //
@@ -51,16 +58,22 @@
   // in front of you -- and the journal is last because it is the one app you
   // go to on purpose, with something already in mind to write. In between
   // are the four you dip into all day.
-  const APPS: AppEntry[] = [
-    { id: 'overview', label: 'Overview', icon: 'compass' },
-    { id: 'notes', label: 'Notes', icon: 'pencil' },
-    { id: 'todo', label: 'Todo', icon: 'check' },
-    { id: 'calendar', label: 'Calendar', icon: 'calendar' },
-    { id: 'library', label: 'Library', icon: 'book' },
-    { id: 'mail', label: 'Mail', icon: 'mail' },
-    { id: 'journal', label: 'Journal', icon: 'quote' },
+  //
+  // A list of ids rather than `apps.ts`'s own `APP_ORDER`: that order starts
+  // at the Overview and ends with the Assistant right before the journal,
+  // which is the order `nextSection` cycles in, not the order this bar draws
+  // in -- the Assistant sits apart, below, for the reason `ASSISTANT` below
+  // has its own doc comment.
+  const NAV_ORDER: Section[] = [
+    'overview',
+    'notes',
+    'todo',
+    'calendar',
+    'library',
+    'mail',
+    'journal',
   ]
-  const shown = $derived(APPS.filter((a) => app.canShow(a.id)))
+  const shown = $derived(NAV_ORDER.map(entryOf).filter((a) => app.canShow(a.id)))
 
   /**
    * The assistant, which is an app and is not one of the list.
@@ -69,7 +82,7 @@
    * Filed among them it read as a sixth place to keep things, so it sits
    * apart at the foot of the bar, above the vault's own controls.
    */
-  const ASSISTANT: AppEntry = { id: 'assistant', label: 'Assistant', icon: 'sparkle' }
+  const ASSISTANT: AppEntry = entryOf('assistant')
 
   /**
    * What has not been looked at: runs, and proposals waiting for an answer.
