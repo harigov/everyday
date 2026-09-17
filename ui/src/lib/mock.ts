@@ -3648,7 +3648,7 @@ export const mockInvoke = async <T>(
         sortOrder: kinds.length,
         builtin: false,
         visible: true,
-        revision: 1,
+        revision: 0,
         createdAt: now,
         updatedAt: now,
       } satisfies Kind as T

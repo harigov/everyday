@@ -1263,14 +1263,8 @@ fn parse_nominatim(body: &str) -> Result<Vec<SearchResult>> {
         if let Some(country) = place.pointer("/address/country").and_then(Value::as_str) {
             facts.insert("country".to_string(), country.to_string());
         }
-        // OpenStreetMap's own word for it -- `museum`, `playground`,
-        // `theme_park` -- which is what a Places shelf's type field wants.
-        if let Some(osm_type) = place.get("type").and_then(Value::as_str) {
-            let words = osm_type.replace('_', " ");
-            let mut chars = words.trim().chars();
-            if let Some(first) = chars.next().filter(|_| osm_type != "yes") {
-                facts.insert("type".to_string(), first.to_uppercase().chain(chars).collect());
-            }
+        if let Some(kind) = osm_place_type(place) {
+            facts.insert("type".to_string(), kind);
         }
         let osm_url = match (place.get("osm_type").and_then(Value::as_str), place.get("osm_id")) {
             (Some(kind), Some(id)) => format!("https://www.openstreetmap.org/{kind}/{id}"),
@@ -1287,6 +1281,29 @@ fn parse_nominatim(body: &str) -> Result<Vec<SearchResult>> {
         });
     }
     Ok(out)
+}
+
+/// OpenStreetMap's own word for what a place is -- `museum`, `playground`,
+/// `theme_park` -- tidied into what a Places shelf's type field holds.
+///
+/// Only for the categories that describe somewhere a person goes. The rest
+/// describe the map instead: a city is `boundary/administrative`, a street
+/// address `building/house`, a road `highway/primary`. Filling the field
+/// with "Administrative" would be wrong on that card, and the detail panel
+/// would then offer it on every other place on the shelf.
+fn osm_place_type(place: &Value) -> Option<String> {
+    const VISITABLE: &[&str] = &["tourism", "leisure", "historic", "natural", "amenity"];
+    // `category` in the `jsonv2` format this asks for, `class` in `json`.
+    let category = place.get("category").or_else(|| place.get("class")).and_then(Value::as_str)?;
+    let osm_type = place.get("type").and_then(Value::as_str)?.trim();
+    // "yes" means "one of these, of no stated sort", which is no type.
+    if !VISITABLE.contains(&category) || osm_type.is_empty() || osm_type == "yes" {
+        return None;
+    }
+    let words = osm_type.replace('_', " ");
+    let mut chars = words.chars();
+    let first = chars.next()?;
+    Some(first.to_uppercase().chain(chars).collect())
 }
 
 // ── Small helpers ────────────────────────────────────────────────────────
@@ -1858,15 +1875,20 @@ mod tests {
     #[test]
     fn nominatim_says_what_sort_of_place_it_is() {
         let body = r#"[
-            {"display_name":"Adventure Playground, Mill Road","type":"playground"},
-            {"display_name":"Some Building, High Street","type":"yes"},
-            {"display_name":"Alton Towers, Staffordshire","type":"theme_park"}
+            {"display_name":"Adventure Playground, Mill Road","category":"leisure","type":"playground"},
+            {"display_name":"Some Hall, High Street","category":"historic","type":"yes"},
+            {"display_name":"Alton Towers, Staffordshire","class":"tourism","type":"theme_park"},
+            {"display_name":"Paris, Île-de-France","category":"boundary","type":"administrative"},
+            {"display_name":"12, Mill Road, Cambridge","category":"building","type":"house"},
+            {"display_name":"Mill Road, Cambridge","category":"highway","type":"primary"},
+            {"display_name":"No category, anywhere","type":"museum"}
         ]"#;
         let hits = parse_nominatim(body).unwrap();
-        assert_eq!(hits[0].facts.get("type").map(String::as_str), Some("Playground"));
-        // OSM's "yes" means "a building, of no stated sort", which is no type.
-        assert_eq!(hits[1].facts.get("type"), None);
-        assert_eq!(hits[2].facts.get("type").map(String::as_str), Some("Theme park"));
+        let types: Vec<Option<&str>> =
+            hits.iter().map(|hit| hit.facts.get("type").map(String::as_str)).collect();
+        // "yes" is "one of these, of no stated sort", which is no type; and a
+        // city, a house or a road is a place on the map, not a sort of outing.
+        assert_eq!(types, [Some("Playground"), None, Some("Theme park"), None, None, None, None],);
     }
 
     #[test]

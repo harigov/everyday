@@ -262,14 +262,17 @@ pub struct Kind {
     /// calendar hides it without unsubscribing.
     #[serde(default = "yes")]
     pub visible: bool,
-    /// The [`LIBRARY_REVISION`] of the build that last wrote this shelf's
-    /// library, or made the shelf. Zero on a shelf written before there was
-    /// such a thing.
+    /// The [`LIBRARY_REVISION`] the library had been brought up to when the
+    /// application seeded or upgraded this shelf. Zero on a shelf made by
+    /// hand, and on one written before there was such a thing.
     ///
     /// Kept on the shelves rather than in a settings row so that it travels
-    /// with them and needs no new table: the library's revision is the
-    /// lowest of these, so a shelf made by a newer build cannot vouch for
-    /// the older ones beside it. See [`upgrade_kinds`] for what it gates.
+    /// with them and needs no new table. The library's revision is the
+    /// *highest* of these, and only seeding and [`upgrade_kinds`] ever set
+    /// one. So one shelf losing its stamp cannot make the library look old
+    /// again. That happens when an older build or a client saves a shelf
+    /// without the field, and it would otherwise bring back a Contacts shelf
+    /// somebody deleted.
     #[serde(default)]
     pub revision: u32,
     pub created_at: Timestamp,
@@ -304,7 +307,7 @@ impl Kind {
             sort_order: 0,
             builtin: false,
             visible: true,
-            revision: LIBRARY_REVISION,
+            revision: 0,
             created_at: now,
             updated_at: now,
         }
@@ -475,6 +478,7 @@ pub fn default_kinds() -> Vec<Kind> {
     ];
     for (i, kind) in kinds.iter_mut().enumerate() {
         kind.builtin = true;
+        kind.revision = LIBRARY_REVISION;
         kind.sort_order = i as i32;
         kind.color = DEFAULT_KIND_COLORS[i % DEFAULT_KIND_COLORS.len()].to_string();
     }
@@ -542,9 +546,11 @@ pub const LIBRARY_REVISION: u32 = 1;
 /// A shelf somebody renamed keeps their name; a Places shelf that already
 /// has a type keeps it. And a step runs once: a Contacts shelf deleted after
 /// the upgrade stays deleted, for the reason
-/// [`Vault::seed_library`](crate::Vault::seed_library) gives.
+/// [`Vault::seed_library`](crate::Vault::seed_library) gives. The one way to
+/// run it twice is to delete every shelf it stamped, and then the only thing
+/// it can bring back is the Contacts shelf.
 pub fn upgrade_kinds(mut kinds: Vec<Kind>) -> Vec<Kind> {
-    let revision = kinds.iter().map(|k| k.revision).min().unwrap_or(0);
+    let revision = kinds.iter().map(|k| k.revision).max().unwrap_or(0);
     if kinds.is_empty() || revision >= LIBRARY_REVISION {
         return Vec::new();
     }
@@ -1149,6 +1155,25 @@ mod tests {
     }
 
     #[test]
+    fn a_shelf_that_lost_its_stamp_does_not_rerun_the_upgrade() {
+        // An older build, or a client that does not know the field, saves a
+        // shelf without it. Somebody has since deleted Contacts and renamed
+        // Movies back to Films. Neither may be undone on the next open.
+        let mut kinds: Vec<Kind> =
+            upgrade_kinds(revision_zero()).into_iter().filter(|k| k.slug != "contact").collect();
+        for kind in &mut kinds {
+            if kind.slug == "film" {
+                (kind.name, kind.singular) = ("Films".into(), "Film".into());
+                kind.revision = 0;
+            }
+        }
+        // And a shelf made by hand since, which is never stamped.
+        kinds.push(Kind::new("wine", "Wines", "Wine"));
+        assert_eq!(kinds.last().unwrap().revision, 0);
+        assert!(upgrade_kinds(kinds).is_empty());
+    }
+
+    #[test]
     fn an_upgrade_leaves_what_somebody_changed_alone() {
         let mut kinds = revision_zero();
         for kind in &mut kinds {
@@ -1160,7 +1185,6 @@ mod tests {
         }
         // Somebody's own shelf of people, made before there was a built-in one.
         kinds.push(Kind::new("contact", "Friends", "Friend"));
-        kinds.last_mut().unwrap().revision = 0;
 
         let upgraded = upgrade_kinds(kinds);
         assert_eq!(by_slug(&upgraded, "film").name, "Cinema");
