@@ -155,7 +155,7 @@ use everyday_core::crypto::Cipher;
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{EntryId, TaskId};
 use everyday_core::model::{Entry, EntrySummary};
-use everyday_core::store::{Capabilities, StoreContext, entry_aad};
+use everyday_core::store::{BackendCapabilities, StoreContext, entry_aad};
 use pool::{Pool, ReadGuard};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -293,30 +293,18 @@ impl SqlStore {
         })
     }
 
-    /// What every driver of this crate can do.
-    ///
-    /// Every domain, on both databases. The optional accessors on
-    /// `JournalStore` stay optional for the sake of backends that are not
+    /// The four facts `capabilities()`'s default body cannot derive from the
+    /// domain accessors, for every driver of this crate. Every domain is
+    /// implemented on both databases, so the accessors on `JournalStore`
+    /// derive an all-true set of domain flags without this method saying so
+    /// directly -- it stays optional for the sake of backends that are not
     /// this one, not because a SQL vault might be missing the todo app.
-    pub(crate) fn capabilities(&self) -> Capabilities {
-        Capabilities {
+    pub(crate) fn backend_capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
             blobs: true,
             transactional: true,
             human_readable: false,
             max_blob_bytes: self.driver.max_blob_bytes(),
-            tasks: true,
-            calendars: true,
-            library: true,
-            trackers: true,
-            purpose: true,
-            notes: true,
-            routines: true,
-            proposals: true,
-            agent: true,
-            secrets: true,
-            accounts: true,
-            mail: true,
-            meetings: true,
         }
     }
 

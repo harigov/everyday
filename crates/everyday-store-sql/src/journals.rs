@@ -24,7 +24,7 @@ use everyday_core::store::secrets::SecretStore;
 use everyday_core::store::tasks::TaskStore;
 use everyday_core::store::trackers::TrackerStore;
 use everyday_core::store::{
-    Capabilities, EntryQuery, JournalStore, SortOrder, StoreStats, entry_aad, journal_aad,
+    BackendCapabilities, EntryQuery, JournalStore, SortOrder, StoreStats, entry_aad, journal_aad,
 };
 
 use crate::conn::{SqlExt, ToValue, Value, Where};
@@ -96,8 +96,8 @@ impl JournalStore for SqlStore {
         self.driver.backend_id()
     }
 
-    fn capabilities(&self) -> Capabilities {
-        SqlStore::capabilities(self)
+    fn backend_capabilities(&self) -> BackendCapabilities {
+        SqlStore::backend_capabilities(self)
     }
 
     fn tasks(&self) -> Option<&dyn TaskStore> {
