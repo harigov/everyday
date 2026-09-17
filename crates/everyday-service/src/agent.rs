@@ -925,7 +925,9 @@ async fn run_tool(
         // fixed for the turn, and is the person's rather than the host's, so
         // that "due today" in a tool means the same day the prompt said it
         // was.
-        let now = jiff::Timestamp::now()
+        let now = meta
+            .service
+            .now()
             .to_zoned(jiff::tz::TimeZone::get(&zone).unwrap_or(jiff::tz::TimeZone::UTC));
         // Held for the duration of the call so `mail_search` below can
         // borrow from it -- `Service::mail_index` hands back an `Arc`, not
