@@ -20,6 +20,7 @@ pub mod mailview;
 pub mod meetings;
 pub mod meta;
 pub mod notes;
+pub mod proposals;
 pub mod purpose;
 pub mod quick;
 pub mod routines;
@@ -71,6 +72,7 @@ pub fn catalog() -> &'static [&'static Command] {
             trackers::COMMANDS,
             purpose::COMMANDS,
             routines::COMMANDS,
+            proposals::COMMANDS,
             signin::COMMANDS,
             speech::COMMANDS,
             transcripts::COMMANDS,

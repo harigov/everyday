@@ -412,6 +412,7 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
             mail_rate_limit: Some(&rate_limit),
             after_mail_write: Some(&after_mail_write),
             invite_responder: Some(&invite_responder),
+            drafting: None,
         };
         let result =
             tools::dispatch(&ctx, &args.name, &args.arguments).map_err(CommandError::from)?;

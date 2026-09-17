@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -88,7 +88,7 @@ pub fn migrate(
 
 /// Every migration step, in order. Index 0 is version 1.
 pub fn steps(d: Dialect) -> Vec<Vec<String>> {
-    vec![v1(d), v2(d), v3(d), v4(d), v5(d), v6(d), v7(d), v8(d), v9(d), v10(d)]
+    vec![v1(d), v2(d), v3(d), v4(d), v5(d), v6(d), v7(d), v8(d), v9(d), v10(d), v11(d)]
 }
 
 /// The `blobs` table, for a backend that keeps attachments in the database.
@@ -1201,6 +1201,39 @@ fn v10(d: Dialect) -> Vec<String> {
                  data        {blob} NOT NULL
              )"
         ),
+    ]
+}
+
+/// Version 11: proposals -- work the assistant prepared and did not do. See
+/// `docs/plans/dreaming.md` and `everyday_core::proposal`.
+///
+/// Additive, like every step since 7. In the clear: the kind of record, the
+/// day it would be drawn on (so a calendar week finds its ghosts the way it
+/// finds `time_blocks`, by `target_date`), when it was made and when it
+/// expires, where it stands, and whether it has been looked at. Everything
+/// that says what the proposal *is* stays sealed. `outcome` leads the main
+/// index because every read that matters -- the ghosts, the sweep, the count
+/// -- asks for pending rows first.
+fn v11(d: Dialect) -> Vec<String> {
+    let (blob, int, boolean, f) = (d.blob(), d.int(), d.boolean(), d.bool_default(false));
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS proposals (
+                 id           TEXT    PRIMARY KEY NOT NULL,
+                 kind         TEXT    NOT NULL,
+                 target_date  TEXT,
+                 made_us      {int} NOT NULL,
+                 expires_us   {int} NOT NULL,
+                 outcome      TEXT    NOT NULL,
+                 seen         {boolean} NOT NULL DEFAULT {f},
+                 data         {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS proposals_pending
+             ON proposals (outcome, kind, target_date)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS proposals_by_expiry ON proposals (outcome, expires_us)".into(),
+        "CREATE INDEX IF NOT EXISTS proposals_by_made ON proposals (made_us)".into(),
     ]
 }
 

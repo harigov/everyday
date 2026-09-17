@@ -467,6 +467,23 @@ pub struct ToolContext<'a> {
     /// the tool refuses with "not available right now" rather than
     /// panicking on a missing hook.
     pub invite_responder: Option<&'a InviteResponder<'a>>,
+    /// Set when this call is part of work nobody asked for -- today, a dream.
+    ///
+    /// While it is set, a `Write` or `Destructive` tool builds its record and
+    /// hands it to the vault as a [`crate::proposal::Proposal`] instead of
+    /// saving it. `None` for everyone else, which is every caller that
+    /// existed before dreaming did. See `docs/plans/dreaming.md`.
+    pub drafting: Option<Drafting>,
+}
+
+/// How a drafting call is made. See [`ToolContext::drafting`].
+#[derive(Debug, Clone, Default)]
+pub struct Drafting {
+    /// Who the proposals are recorded as made by.
+    pub source: Option<crate::proposal::ProposalSource>,
+    /// Tools that run for real even while drafting -- a dream's one note.
+    /// The caller is responsible for any budget on them.
+    pub direct: Vec<&'static str>,
 }
 
 impl<'a> ToolContext<'a> {

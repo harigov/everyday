@@ -459,6 +459,15 @@ pub struct AgentSettings {
     /// chose.
     #[serde(default)]
     pub web: bool,
+    /// Whether the assistant dreams: reads the day overnight, revises what it
+    /// has inferred about the person, and leaves proposals to accept or
+    /// decline. Off until somebody turns it on, because it reads the journal.
+    /// See `docs/plans/dreaming.md`.
+    #[serde(default)]
+    pub dreaming: bool,
+    /// Which kinds of record the assistant may propose.
+    #[serde(default)]
+    pub proposals: crate::proposal::ProposalPolicy,
     /// Whether a key is stored. Never the key itself.
     #[serde(default)]
     pub has_key: bool,
@@ -480,6 +489,8 @@ impl Default for AgentSettings {
             remember: true,
             timezone: None,
             web: false,
+            dreaming: false,
+            proposals: crate::proposal::ProposalPolicy::default(),
             has_key: false,
         }
     }
@@ -883,9 +894,44 @@ pub struct Memory {
     /// typed themselves.
     #[serde(default)]
     pub pinned: bool,
+    /// Who stands behind it. Everything written before this field existed
+    /// was told, which is what the default says.
+    #[serde(default)]
+    pub origin: MemoryOrigin,
+    /// The last day the data still supported an inferred memory. A dream
+    /// moves it forward or lets it lapse; eviction among inferred memories
+    /// is oldest-supported first. Meaningless for any other origin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_supported: Option<jiff::civil::Date>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
+
+/// Where a memory came from, and so how much weight it carries.
+///
+/// Told and confirmed memories are standing instructions. An inferred one is
+/// an observation a dream made, used lightly and under a heading that says
+/// it may be wrong. A rejected one is kept, as "do not assume", so that a
+/// later dream cannot learn it again. See `docs/plans/dreaming.md`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryOrigin {
+    /// The person said it, or the assistant was asked to keep it.
+    #[default]
+    Told,
+    /// A dream noticed it.
+    Inferred,
+    /// Inferred, and then the person agreed or rewrote it.
+    Confirmed,
+    /// Inferred, and then the person struck it out.
+    Rejected,
+}
+
+/// How many inferred memories are kept, on top of [`MAX_MEMORIES`].
+///
+/// Smaller than the told list, and evicted oldest-supported first: the one
+/// yesterday's data confirmed is the one to keep.
+pub const MAX_INFERRED: usize = 24;
 
 /// How many memories are kept, and how many are loaded into a prompt.
 ///
@@ -904,6 +950,8 @@ impl Memory {
             text: text.into(),
             source_id: None,
             pinned: false,
+            origin: MemoryOrigin::Told,
+            last_supported: None,
             created_at: now,
             updated_at: now,
         }
@@ -911,6 +959,11 @@ impl Memory {
 
     pub fn from_conversation(text: impl Into<String>, source: ConversationId) -> Self {
         Self { source_id: Some(source), ..Self::new(text) }
+    }
+
+    /// A memory a dream inferred, supported by the data as of `on`.
+    pub fn inferred(text: impl Into<String>, on: jiff::civil::Date) -> Self {
+        Self { origin: MemoryOrigin::Inferred, last_supported: Some(on), ..Self::new(text) }
     }
 
     pub fn validate(&self) -> Result<()> {

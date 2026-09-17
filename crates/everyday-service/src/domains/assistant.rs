@@ -81,6 +81,13 @@ pub struct MemoryRef {
     pub id: MemoryId,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryOriginArgs {
+    pub id: MemoryId,
+    pub origin: everyday_core::MemoryOrigin,
+}
+
 /// What a turn needs. Not reachable through `call` -- see the module docs --
 /// but declared here so the shape is in one place and appears in the catalogue.
 #[derive(Deserialize)]
@@ -255,6 +262,16 @@ async fn save_memory(svc: Arc<Service>, _ctx: Ctx, args: SaveMemory) -> CommandR
     svc.on_vault(move |vault| vault.save_memory(&args.memory)).await
 }
 
+/// Confirm an inferred memory, or strike it out. See
+/// `everyday_core::agent::MemoryOrigin`.
+async fn set_memory_origin(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: MemoryOriginArgs,
+) -> CommandResult<Memory> {
+    svc.on_vault(move |vault| vault.set_memory_origin(args.id, args.origin)).await
+}
+
 async fn delete_memory(svc: Arc<Service>, _ctx: Ctx, args: MemoryRef) -> CommandResult<()> {
     svc.on_vault(move |vault| vault.delete_memory(args.id)).await
 }
@@ -354,6 +371,14 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: SaveMemory, returns: "Memory[]",
         signature: &[("memory", "Memory", true)],
         run: save_memory,
+    },
+    command! {
+        name: "set_memory_origin", scope: Agent, effect: Write,
+        change: Memory / Updated,
+        id: |a: &MemoryOriginArgs| Some(a.id.to_string()),
+        args: MemoryOriginArgs, returns: "Memory",
+        signature: &[("id", "MemoryId", true), ("origin", "MemoryOrigin", true)],
+        run: set_memory_origin,
     },
     command! {
         name: "delete_memory", scope: Agent, effect: Destructive,

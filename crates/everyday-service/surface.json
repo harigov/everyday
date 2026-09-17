@@ -1,6 +1,36 @@
 {
   "commands": [
     {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ProposalId"
+        },
+        {
+          "name": "edited",
+          "required": false,
+          "type": "ProposedRecord | null"
+        },
+        {
+          "name": "confirm",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "changes": {
+        "kind": "proposal",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "accept_proposal",
+      "orScope": null,
+      "returns": "Proposal",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -454,6 +484,31 @@
       "name": "conversation_messages",
       "orScope": null,
       "returns": "AgentMessage[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ProposalId"
+        },
+        {
+          "name": "reason",
+          "required": false,
+          "type": "DeclineReason | null"
+        }
+      ],
+      "changes": {
+        "kind": "proposal",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "decline_proposal",
+      "orScope": null,
+      "returns": "Proposal",
       "scope": "agent",
       "sensitive": false,
       "streams": false
@@ -1235,6 +1290,23 @@
         {
           "name": "id",
           "required": true,
+          "type": "ProposalId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_proposal",
+      "orScope": null,
+      "returns": "Proposal",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "RecordingId"
         }
       ],
@@ -1704,6 +1776,23 @@
       "args": [
         {
           "name": "query",
+          "required": false,
+          "type": "ProposalQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_proposals",
+      "orScope": null,
+      "returns": "Proposal[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
           "required": true,
           "type": "ReadingQuery"
         }
@@ -1984,6 +2073,26 @@
       "orScope": null,
       "returns": "MailActionByOrigin[]",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "ids",
+          "required": false,
+          "type": "ProposalId[]"
+        }
+      ],
+      "changes": {
+        "kind": "proposal",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "mark_proposals_seen",
+      "orScope": null,
+      "returns": "void",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -4052,6 +4161,31 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "MemoryId"
+        },
+        {
+          "name": "origin",
+          "required": true,
+          "type": "MemoryOrigin"
+        }
+      ],
+      "changes": {
+        "kind": "memory",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_memory_origin",
+      "orScope": null,
+      "returns": "Memory",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "name",
           "required": true,
           "type": "string"
@@ -4554,6 +4688,17 @@
       "orScope": null,
       "returns": "VaultStatus",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "unseen_proposals",
+      "orScope": null,
+      "returns": "number",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },

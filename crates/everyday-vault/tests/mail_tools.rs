@@ -155,6 +155,7 @@ fn ctx<'a>(vault: &'a Vault, caller: Option<Caller>, provider: Option<&str>) -> 
         mail_rate_limit: None,
         after_mail_write: None,
         invite_responder: None,
+        drafting: None,
     }
 }
 

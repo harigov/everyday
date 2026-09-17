@@ -140,6 +140,7 @@ mod notes;
 pub mod packs;
 mod pool;
 mod profile;
+mod proposals;
 mod purpose;
 mod record;
 mod routines;
@@ -310,6 +311,7 @@ impl SqlStore {
             purpose: true,
             notes: true,
             routines: true,
+            proposals: true,
             agent: true,
             secrets: true,
             accounts: true,

@@ -178,6 +178,9 @@ pub enum Kind {
     Routine,
     /// One run of it. What the count on the app bar is drawn from.
     RoutineRun,
+    /// Work the assistant prepared and did not do. See
+    /// `everyday_core::proposal`.
+    Proposal,
     Memory,
     /// A call being recorded, or the history row of one that was. See
     /// `everyday_core::meeting`.

@@ -230,6 +230,59 @@ pub enum Due {
     Later,
 }
 
+/// Whose routine this is.
+///
+/// A dream is a routine the application owns: it is made when dreaming is
+/// switched on, it cannot be deleted by hand, and its instructions field is
+/// the person's paragraph *added to* an app-owned prompt rather than the
+/// prompt itself. See `docs/plans/dreaming.md`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum RoutineKind {
+    #[default]
+    Custom,
+    Dream {
+        scope: DreamScope,
+    },
+}
+
+impl RoutineKind {
+    pub fn is_dream(self) -> bool {
+        matches!(self, RoutineKind::Dream { .. })
+    }
+
+    pub fn dream_scope(self) -> Option<DreamScope> {
+        match self {
+            RoutineKind::Dream { scope } => Some(scope),
+            RoutineKind::Custom => None,
+        }
+    }
+}
+
+/// How far back a dream reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DreamScope {
+    /// Yesterday, from the records.
+    Day,
+    /// The last seven days, from the nightly dreams' outputs.
+    Week,
+    /// The last month, from the weekly dreams' outputs.
+    Month,
+}
+
+impl DreamScope {
+    pub const ALL: [DreamScope; 3] = [DreamScope::Day, DreamScope::Week, DreamScope::Month];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DreamScope::Day => "day",
+            DreamScope::Week => "week",
+            DreamScope::Month => "month",
+        }
+    }
+}
+
 /// Standing work.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -243,6 +296,10 @@ pub struct Routine {
     #[serde(default = "default_grace")]
     pub grace_minutes: u32,
     pub enabled: bool,
+    /// Written by a person, or owned by the application. A person's routine
+    /// is the default, and everything saved before this field existed.
+    #[serde(default)]
+    pub kind: RoutineKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_at: Option<Timestamp>,
     pub created_at: Timestamp,
@@ -263,6 +320,7 @@ impl Routine {
             trigger,
             grace_minutes: DEFAULT_GRACE_MINUTES,
             enabled: true,
+            kind: RoutineKind::Custom,
             last_run_at: None,
             created_at: now,
             updated_at: now,

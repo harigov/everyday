@@ -49,6 +49,7 @@ pub fn ctx(vault: &Vault) -> ToolContext<'_> {
         mail_rate_limit: None,
         after_mail_write: None,
         invite_responder: None,
+        drafting: None,
     }
 }
 

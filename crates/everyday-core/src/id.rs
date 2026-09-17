@@ -82,6 +82,8 @@ typed_id!(NoteId, "note");
 // The assistant's standing work, and its log. See `crate::routine`.
 typed_id!(RoutineId, "routine");
 typed_id!(RoutineRunId, "run");
+// Work the assistant prepared and did not do. See `crate::proposal`.
+typed_id!(ProposalId, "proposal");
 
 // Meeting notes. A `RecordingId` names one call being (or once) recorded, a
 // `TranscriptId` what was said in it, a `VoiceprintId` a voice, and a

@@ -17,6 +17,7 @@ use everyday_core::store::agent::AgentStore;
 use everyday_core::store::calendars::CalendarStore;
 use everyday_core::store::library::LibraryStore;
 use everyday_core::store::notes::NoteStore;
+use everyday_core::store::proposals::ProposalStore;
 use everyday_core::store::purpose::PurposeStore;
 use everyday_core::store::routines::RoutineStore;
 use everyday_core::store::secrets::SecretStore;
@@ -124,6 +125,10 @@ impl JournalStore for SqlStore {
     }
 
     fn routines(&self) -> Option<&dyn RoutineStore> {
+        Some(self)
+    }
+
+    fn proposals(&self) -> Option<&dyn ProposalStore> {
         Some(self)
     }
 

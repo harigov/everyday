@@ -150,6 +150,9 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   // same reload.
   routine: 'assistant',
   routineRun: 'assistant',
+  // Work the assistant prepared. Drawn in several apps; the assistant store
+  // holds the pending list and the count on the app bar.
+  proposal: 'assistant',
   // The assistant's own thread. The panel reads it when it is opened, and a
   // reply arriving on another machine is not something to interrupt this one
   // with -- so nothing reloads, and the event exists for a future history

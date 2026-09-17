@@ -478,6 +478,7 @@ impl ConfirmGate {
             mail_rate_limit: None,
             after_mail_write: None,
             invite_responder: None,
+            drafting: None,
         };
         tools::describe(&ctx, name, arguments).unwrap_or_default()
     }
@@ -783,6 +784,7 @@ async fn run_tool(
             mail_rate_limit: Some(&rate_limit),
             after_mail_write: Some(&after_mail_write),
             invite_responder: Some(&invite_responder),
+            drafting: None,
         };
         tools::dispatch(&ctx, name, &arguments)
     })

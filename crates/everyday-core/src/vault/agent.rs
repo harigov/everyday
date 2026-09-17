@@ -247,6 +247,17 @@ impl Vault {
         Ok(evicted)
     }
 
+    /// Change who stands behind a memory: confirm an inferred one, or strike
+    /// it out as rejected. Returns the memory as saved.
+    pub fn set_memory_origin(
+        &self,
+        id: MemoryId,
+        origin: crate::agent::MemoryOrigin,
+    ) -> Result<Memory> {
+        let _ = (id, origin);
+        Err(crate::error::Error::Unsupported("changing a memory's origin (not built yet)"))
+    }
+
     pub fn delete_memory(&self, id: MemoryId) -> Result<()> {
         self.writable()?;
         self.with_agent(|a| a.delete_memory(id))

@@ -50,6 +50,7 @@ impl JournalStore for MemStore {
         Capabilities {
             notes: false,
             routines: false,
+            proposals: false,
             blobs: true,
             transactional: false,
             human_readable: false,
