@@ -105,10 +105,8 @@ async fn accept_proposal(svc: Arc<Service>, ctx: Ctx, args: Accept) -> CommandRe
     let accepted = match proposal.payload {
         Payload::SendMail { draft_id } => accept_mail_proposal(&svc, &vault, id, draft_id).await?,
         _ => {
-            blocking(move || {
-                Ok(vault.accept_proposal(id, args.edited, args.confirm, Timestamp::now())?)
-            })
-            .await?
+            let now = svc.now();
+            blocking(move || Ok(vault.accept_proposal(id, args.edited, args.confirm, now)?)).await?
         }
     };
 
@@ -171,7 +169,7 @@ async fn accept_mail_proposal(
     id: ProposalId,
     draft_id: DraftId,
 ) -> CommandResult<Proposal> {
-    let now = Timestamp::now();
+    let now = svc.now();
     match crate::domains::mail::queue_send(svc, draft_id, None, None).await {
         Ok(draft) => {
             close_proposal(
@@ -221,7 +219,8 @@ async fn close_proposal(
 }
 
 async fn decline_proposal(svc: Arc<Service>, _ctx: Ctx, args: Decline) -> CommandResult<Proposal> {
-    svc.on_vault(move |vault| vault.decline_proposal(args.id, args.reason, Timestamp::now())).await
+    let now = svc.now();
+    svc.on_vault(move |vault| vault.decline_proposal(args.id, args.reason, now)).await
 }
 
 async fn mark_proposals_seen(

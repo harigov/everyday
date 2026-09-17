@@ -209,7 +209,7 @@ async fn sync_due_calendars(
     if !vault.is_writable() {
         return Ok(Vec::new());
     }
-    let now = jiff::Timestamp::now();
+    let now = svc.now();
     // The name travels with the id because the notification below needs it, and
     // re-reading the subscription after a failed sync to find out what to call
     // it is a second decrypt for a string we already had.

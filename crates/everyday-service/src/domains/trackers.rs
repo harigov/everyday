@@ -160,9 +160,9 @@ async fn tracker_days(
 ///   mark on the calendar at an hour nothing happened.
 async fn log_reading(svc: Arc<Service>, _ctx: Ctx, args: LogReading) -> CommandResult<Reading> {
     let vault = svc.require()?;
+    let now = svc.now();
     blocking(move || {
         let tz = system_tz();
-        let now = jiff::Timestamp::now();
         let at = match args.at {
             Some(at) => Some(at),
             None if args.date == local_date_in(now, &tz) => Some(now),
