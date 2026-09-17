@@ -439,7 +439,7 @@ pub struct SaveDraft {
 /// changed.
 async fn save_draft(svc: Arc<Service>, _ctx: Ctx, args: SaveDraft) -> CommandResult<()> {
     let incoming = args.draft;
-    let now = Timestamp::now();
+    let now = svc.now();
     let append = svc.draft_append_due(incoming.id, now);
     let vault = svc.require()?;
     let draft_id = incoming.id;
@@ -580,6 +580,7 @@ pub(crate) async fn queue_send(
     let origin = Origin::Person;
     svc.check_mail_rate_limit(&origin, "person")?;
     let vault = svc.require()?;
+    let now = svc.now();
     let (draft, op) = blocking(move || {
         let draft = vault.draft(id)?;
         if draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() {
@@ -588,8 +589,7 @@ pub(crate) async fn queue_send(
                 "a message needs at least one recipient",
             ));
         }
-        let not_before =
-            send_at.unwrap_or_else(|| Timestamp::now() + undo_send_delay(delay_seconds));
+        let not_before = send_at.unwrap_or_else(|| now + undo_send_delay(delay_seconds));
         Ok(vault.queue_draft_send(id, not_before, origin)?)
     })
     .await?;
@@ -607,7 +607,8 @@ pub struct UndoSend {
 /// [`everyday_core::Vault::undo_send`] for exactly when it refuses.
 async fn undo_send(svc: Arc<Service>, _ctx: Ctx, args: UndoSend) -> CommandResult<Draft> {
     let vault = svc.require()?;
-    blocking(move || Ok(vault.undo_send(args.draft_id, Timestamp::now())?)).await
+    let now = svc.now();
+    blocking(move || Ok(vault.undo_send(args.draft_id, now)?)).await
 }
 
 #[derive(Deserialize)]
@@ -750,6 +751,7 @@ fn respond_to_invite_inner(
     response: InviteResponse,
     comment: Option<String>,
     origin: Origin,
+    now: Timestamp,
 ) -> CommandResult<(AccountId, ThreadId)> {
     let message = vault.mail_message(message_id)?;
     let mut inv = message.invite.clone().ok_or_else(|| {
@@ -812,7 +814,7 @@ fn respond_to_invite_inner(
     draft.calendar_part = Some(DraftCalendarPart { method: "REPLY".to_string(), ics });
 
     vault.save_draft(&draft)?;
-    let not_before = Timestamp::now() + undo_send_delay(None);
+    let not_before = now + undo_send_delay(None);
     vault.queue_draft_send(draft.id, not_before, origin)?;
 
     inv.my_response = Some(attendee_response);
@@ -833,6 +835,7 @@ async fn respond_to_invite(
         return Err(CommandError::new(codes::INTERNAL, "the mail pack store is not open"));
     };
 
+    let now = svc.now();
     let (account_id, thread_id) = blocking(move || {
         respond_to_invite_inner(
             &vault,
@@ -841,6 +844,7 @@ async fn respond_to_invite(
             args.response,
             args.comment,
             origin,
+            now,
         )
     })
     .await?;
@@ -886,9 +890,16 @@ pub(crate) fn respond_to_invite_for_tool(
     let packs = svc
         .packs()
         .ok_or(everyday_core::error::Error::Unsupported("the mail pack store is not open"))?;
-    let (account_id, thread_id) =
-        respond_to_invite_inner(&vault, packs.as_ref(), message_id, response, comment, origin)
-            .map_err(to_core_error)?;
+    let (account_id, thread_id) = respond_to_invite_inner(
+        &vault,
+        packs.as_ref(),
+        message_id,
+        response,
+        comment,
+        origin,
+        svc.now(),
+    )
+    .map_err(to_core_error)?;
 
     svc.notify_outbox(account_id);
     svc.events().changed(Change {

@@ -160,7 +160,7 @@ where
     let credential = match credential::resolve(&svc, &vault, &account).await {
         credential::Resolved::Ready(c) => c,
         credential::Resolved::NeedsSignIn(reason) => {
-            credential::mark_needs_sign_in(&vault, &account, &reason);
+            credential::mark_needs_sign_in(&vault, &account, &reason, svc.now());
             statuses.set_idle(account_id);
             return Ok(Outcome::Done);
         }
@@ -247,14 +247,22 @@ where
                     .await;
             }
         };
-        credential::mark_ok(&vault, &account);
+        credential::mark_ok(&vault, &account, svc.now());
         statuses.set_phase(account_id, Phase::Idling, 0, 0);
 
         // Between passes, with the bodies pass idle and the outbox already
         // drained above: see `packstore`'s own module docs for why nowhere
         // else is safe. Rate-limited internally; see `maybe_compact`'s own
         // docs.
-        maybe_compact(&vault, &ctx.packs, account_id, &stop, &mut last_compaction_attempt).await;
+        maybe_compact(
+            &vault,
+            &ctx.packs,
+            account_id,
+            &stop,
+            &mut last_compaction_attempt,
+            svc.instant(),
+        )
+        .await;
 
         // Undo-send and send-at are both a `Pending` op whose `not_before`
         // is the only thing standing between it and a drain; so is a
@@ -368,12 +376,12 @@ async fn handle_session_error(
     match e {
         MailError::Auth(reason) => {
             svc.token_cache().forget(&account_id.to_string()).await;
-            credential::mark_needs_sign_in(vault, account, &reason);
+            credential::mark_needs_sign_in(vault, account, &reason, svc.now());
             statuses.set_idle(account_id);
             Ok(Outcome::Done)
         }
         MailError::Server(message) => {
-            credential::mark_error(vault, account, &message);
+            credential::mark_error(vault, account, &message, svc.now());
             Err(message.into())
         }
         e => {
@@ -510,11 +518,12 @@ async fn maybe_compact(
     account_id: AccountId,
     stop: &watch::Receiver<bool>,
     last_attempt: &mut Option<Instant>,
+    now: Instant,
 ) {
-    if !compaction_due(*last_attempt, Instant::now()) {
+    if !compaction_due(*last_attempt, now) {
         return;
     }
-    *last_attempt = Some(Instant::now());
+    *last_attempt = Some(now);
 
     match compact_account(vault, packs, account_id, stop).await {
         Ok(Some(summary)) => {

@@ -433,7 +433,7 @@ async fn mark_account_needs_sign_in(
     let vault_for_account = vault.clone();
     let loaded = blocking(move || Ok(vault_for_account.account(account)?)).await;
     if let Ok(acct) = loaded {
-        crate::mailsync::credential::mark_needs_sign_in(vault, &acct, reason);
+        crate::mailsync::credential::mark_needs_sign_in(vault, &acct, reason, svc.now());
     }
 }
 
