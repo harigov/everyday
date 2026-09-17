@@ -118,14 +118,23 @@ check(
 
 // ── mail ─────────────────────────────────────────────────────────────
 //
-// KNOWN BUG, pinned rather than fixed here: there is no `case 'mail'` yet,
-// so it falls through to the journal's `default` and reports the journal's
-// own selection -- 'the journal' below, on a screen that has no entry on it
-// at all -- instead of anything about the mail app. Phase 1 of
-// docs/plans/architecture-refactor.md adds the case; this is the "before"
-// picture the fix's test flips.
+// Phase 1 of docs/plans/architecture-refactor.md: the open thread's subject
+// when one is selected, otherwise the current mailbox or label's name,
+// otherwise just the app itself. Previously there was no `case 'mail'`, so
+// this fell through to the journal's `default` and reported the journal's
+// own selection instead -- see git history for that "before" picture.
 
-check('mail (bug): falls through to the journal default', chatContext(base('mail')), 'the journal')
+check('mail, nothing selected', chatContext(base('mail')), 'the mail app')
+check(
+  'mail, a mailbox open, no thread',
+  chatContext(base('mail', { mail: { subject: null, mailboxName: 'Inbox' } })),
+  'the mail app, mailbox "Inbox"',
+)
+check(
+  'mail, a thread open',
+  chatContext(base('mail', { mail: { subject: 'Re: the roof', mailboxName: 'Inbox' } })),
+  'the mail app, thread "Re: the roof"',
+)
 
 await close()
 finish('chat-context')

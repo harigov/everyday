@@ -23,6 +23,7 @@
   import { app } from '../lib/state.svelte'
   import { todo } from '../lib/todo.svelte'
   import { assistant, PANE_LABELS } from '../lib/assistant.svelte'
+  import { mail } from '../lib/mail.svelte'
   import { overview } from '../lib/overview.svelte'
   import { purpose } from '../lib/purpose.svelte'
   import { library } from '../lib/library.svelte'
@@ -177,7 +178,10 @@
       notes: { openTitle: notes.open ? notes.title : null },
       overview: { widgets: overview.widgets },
       assistant: { paneLabel: PANE_LABELS[assistant.pane] },
-      mail: { subject: null, mailboxName: null },
+      mail: {
+        subject: mail.openThread?.thread.subject ?? null,
+        mailboxName: mail.mailbox?.remoteName ?? null,
+      },
       entry: app.entry,
     }),
   )

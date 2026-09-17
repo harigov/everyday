@@ -78,10 +78,10 @@ export function chatContext(ctx: ChatContext): string {
     }
     case 'assistant':
       return `your own routines and what they did, on the "${ctx.assistant.paneLabel}" page`
-    // TODO(0.7): no `case 'mail'` yet -- an open thread or a mailbox falls
-    // through to the journal's answer below, which is wrong on a screen that
-    // has no entry at all. Phase 1 adds the case; this phase only pins the
-    // bug down so it cannot get worse by accident on the way there.
+    case 'mail':
+      if (ctx.mail.subject) return `the mail app, thread "${ctx.mail.subject}"`
+      if (ctx.mail.mailboxName) return `the mail app, mailbox "${ctx.mail.mailboxName}"`
+      return 'the mail app'
     default: {
       const entry = ctx.entry
       if (!entry) return 'the journal'
