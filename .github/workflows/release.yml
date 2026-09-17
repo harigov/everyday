@@ -198,6 +198,7 @@ jobs:
             librsvg2-dev \
             libayatana-appindicator3-dev \
             libpipewire-0.3-dev \
+            libasound2-dev \
             libspa-0.2-dev \
             libclang-dev \
             build-essential curl wget file patchelf desktop-file-utils
