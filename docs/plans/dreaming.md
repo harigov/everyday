@@ -587,10 +587,8 @@ is the digest builder and the prompts, and the day-of-month trigger.
 
 ## Open questions
 
-- **The word.** "Dreaming" in the switch and "Dreams" as the routine
-  heading, or "Overnight" and "Overnight review". The plan uses *dreaming*
-  because the person who asked for it did; the interface can say either and
-  nothing below the settings pane cares.
+- **The word.** Settled: *Dreaming*, in the switch and as the routines'
+  heading.
 - **Whether accepting a memory from its ghost means Inferred or
   Confirmed.** The plan says Inferred from a ghost and Confirmed from the
   memory list, on the grounds that a tap on a row is "put that there" and a

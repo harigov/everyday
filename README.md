@@ -1480,6 +1480,83 @@ make, and the payoff is the one that matters for something running in a
 capture box: *"the quick model put the author in the year field"* is a test to
 write rather than a network trace to capture.
 
+## Dreaming
+
+Everything above is work somebody asked for. **Dreaming** is the one thing
+the assistant does that nobody asked for, and it is built around that
+difference.
+
+Turned on in Settings → Assistant, it reads the day overnight and does three
+things with it: revises what it has *noticed* about you, prepares work it
+thinks would help, and, if there is something worth saying, writes one note.
+It is off until you turn it on, because it reads the journal, and the
+sentence beside the switch says so.
+
+### Three dreams, not one
+
+A nightly dream reads yesterday. A weekly one, on Sunday, reads the seven
+nightly ones rather than the raw week. A monthly one reads the four weekly
+ones. Consolidation is cheaper than rereading, and a pattern seen on three
+days is not a pattern: the nightly dream may only confirm what is already
+suspected, and new inferences wait for the weekly one.
+
+They are ordinary routines the application owns — the same scheduler, log,
+transcript and count on the app bar — with a long grace, so a laptop opened
+at nine runs last night's dream on the next tick instead of skipping it. Their
+schedule is yours to move and they have a box for anything you want added to
+what they are asked to do. They cannot be deleted; turning dreaming off stops
+them. A day with nothing in it costs nothing: there is no model call and no
+number on the bar.
+
+The arithmetic is done here, not by the model. A dream is handed a digest —
+tasks finished and rescheduled, hours by role, readings, the calendar, the
+day's entries, what it proposed before and what you did with it — and opens a
+record only when it decides to. A dream's transcript shows that digest,
+folded, so "what did it look at" has an answer.
+
+### Proposals, not actions
+
+[What it did, rather than what it may
+do](#what-it-did-rather-than-what-it-may-do) argues against a queue of drafts
+to approve, and for work you asked for that argument stands. Work nobody
+asked for is different, so a dream never saves anything. It leaves
+**proposals**: a task, time set aside on the calendar, a memory, a routine, a
+note, or a mail draft to send — each a finished record the application built
+and did not save.
+
+They are drawn where the record would be. A proposed task sits at the foot of
+the list it would join, a proposed hour is a dashed block on the grid, a
+proposed memory is under the others. Each has its reason on it and two
+answers. Opening one lets you change it first, and saving from there is the
+yes. Every kind can be switched off on its own. At most forty wait at once,
+each lasts only as long as it could matter — a block until it would have
+ended, a task until its day is over — and one nobody answers simply expires.
+
+A proposal stores **the record, not the call that made it.** A tool's
+arguments change whenever a prompt is tuned; the records are the one thing
+this vault already keeps readable from one version to the next. So a proposal
+made before an update is accepted after it the way any older task is read,
+and nothing replays a stored tool call. Accepting checks that what it refers
+to still exists and that what it changes has not changed since; if either
+fails it says so and closes, rather than writing something stale.
+
+What you do with them is the point. Accepted, accepted after editing,
+declined — with a one-tap reason if you like — or left to expire: the weekly
+dream reads those and writes them down as ordinary memories. A kind declined
+three times running stops being proposed, and that too is a memory you can
+strike out.
+
+### What it thinks it knows
+
+A memory now says who stands behind it. **Told** ones are what you said, and
+the assistant treats them as instructions, as before. **Noticed** ones are a
+dream's inferences: they reach the assistant under a heading that says they
+may be wrong, they carry the last day the data still supported them, and they
+lapse when it stops. Press *That's right* and one becomes **confirmed**; press
+*Not true* and it is kept as something **not to assume**, so no later dream
+can learn it again. It never records a judgment about your mood, your health
+or the people in your life.
+
 ## One vault, many windows
 
 A vault can be served to other copies of this application. A client is not a
