@@ -1,15 +1,42 @@
 # Naming the record, without changing what anything does
 
-> **Status: proposed.** Nothing here is built. This plan is the result of an
-> architecture review and a critical second pass over it. The second pass
-> found that most of the first review's *automation* would have broken
-> deliberate behaviour. What is left is a smaller refactor whose only goal is
-> less duplication, at **zero behaviour change**, with the safety net built
-> before anything moves.
+> **Delivered.** All phases are built and on this branch: Phase 0's guardrails,
+> the mail chat-context fix, capabilities from the accessors, the UI app
+> registry and store helpers, the TypeScript drift check, the `RecordKind`
+> descriptor, the change collector, the shared tool helpers, and Phase 9's
+> file splits, calendar provider, retry policy, injected clock and runtime
+> split. 2,091 Rust tests and 40/40 UI test files pass; clippy is clean under
+> CI's toolchain; `surface.json` and the MCP tool surface are byte-identical
+> to the pre-refactor commit, and every Phase 0 golden is unchanged since it
+> was written.
 >
-> **Delivery:** all phases land on one branch and one PR, as one commit per
-> phase (or sub-phase). "Phases never share a PR" below is kept as
-> "phases never share a commit", so each phase can still be reverted alone.
+> Five things went differently from the plan below, each for a reason worth
+> keeping:
+>
+> - **Phase 6's `Timestamped` trait was skipped.** The `updated_at = now()`
+>   line appears ~45 times, and the clusters were under concurrent
+>   restructuring. `Completable` landed; `Timestamped` was not worth a
+>   half-done adoption. Phase 9.2's clock covers the service side anyway.
+> - **Phase 7 moved four hand-written `changed()` calls, not nine.** The rest
+>   either write through paths the collector cannot see (`run_import` uses
+>   `with_store`), report an id no record touches (`respond_to_invite`), or
+>   are called outside a command scope and lost their event when moved
+>   (`name_speaker`, caught by a test). Four commands whose declared change
+>   legitimately differs from what they touch are listed as known mismatches.
+> - **The three transient-error classifiers stayed separate** (Phase 9.3).
+>   They give opposite verdicts on every code either names, which a pinning
+>   test now proves. Only the delay schedules were unified.
+> - **`everyday-app`'s reconnect backoff stayed hand-written**, since sharing
+>   `RetryPolicy` would have made it public API.
+> - **Phase 9.5 left `remote_image_once` on `Service`** because `close()`
+>   clears it in the middle of the routine fields, before `stop_all()`;
+>   moving it would have needed a second out-of-band call. `locked()` and
+>   `close()` still disagree about what they clear, and meeting state is
+>   cleared by neither — preserved deliberately, and now documented in code.
+>
+> Delivery note: the plan said "phases never share a PR". At the author's
+> request all phases landed on one branch, one commit per phase or sub-phase,
+> so each is still revertible alone.
 
 ## The one rule
 
