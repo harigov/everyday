@@ -53,6 +53,7 @@
 //! decryption; [`resolve`] is the same rule in Rust for callers holding the
 //! records already.
 
+use crate::completable::Completable;
 use crate::id::{GoalId, RoleId};
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
@@ -259,21 +260,6 @@ impl Goal {
         self
     }
 
-    /// Move to `status`, keeping `completed_at` honest.
-    ///
-    /// Only [`Done`](GoalStatus::Done) stamps. Dropping a goal is not
-    /// finishing it, and a "completed" date on something you gave up on
-    /// would poison the one count anybody wants from this — how many of the
-    /// things you set out to do you actually did.
-    pub fn set_status(&mut self, status: GoalStatus) {
-        self.status = status;
-        self.completed_at = match status {
-            GoalStatus::Done => self.completed_at.or_else(|| Some(Timestamp::now())),
-            _ => None,
-        };
-        self.updated_at = Timestamp::now();
-    }
-
     /// What this goal points at, for a record that serves it.
     pub fn purpose(&self) -> Purpose {
         Purpose::Goal { id: self.id }
@@ -286,6 +272,27 @@ impl Goal {
         out.push('\n');
         out.push_str(&self.notes);
         out
+    }
+}
+
+/// Only [`Done`](GoalStatus::Done) stamps `completed_at`. Dropping a goal is
+/// not finishing it, and a "completed" date on something you gave up on
+/// would poison the one count anybody wants from this -- how many of the
+/// things you set out to do you actually did.
+impl Completable for Goal {
+    type Status = GoalStatus;
+    const DONE: GoalStatus = GoalStatus::Done;
+
+    fn status_mut(&mut self) -> &mut GoalStatus {
+        &mut self.status
+    }
+
+    fn completed_at_mut(&mut self) -> &mut Option<Timestamp> {
+        &mut self.completed_at
+    }
+
+    fn updated_at_mut(&mut self) -> &mut Timestamp {
+        &mut self.updated_at
     }
 }
 

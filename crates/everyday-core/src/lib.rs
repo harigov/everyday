@@ -79,6 +79,7 @@ pub mod account;
 pub mod agent;
 pub mod blobstore;
 pub mod calendar;
+pub mod completable;
 pub mod crypto;
 pub mod dream;
 pub mod error;
@@ -122,6 +123,7 @@ pub use agent::{
 };
 pub use blobstore::FileBlobStore;
 pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatus, SyncReport};
+pub use completable::Completable;
 pub use error::{Error, Result};
 pub use id::{
     AccountId, BlobId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId,

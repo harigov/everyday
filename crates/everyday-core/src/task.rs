@@ -33,6 +33,7 @@
 //! keeps tasks out of the blob store, and keeps the attachment
 //! garbage-collector's job unchanged.
 
+use crate::completable::Completable;
 use crate::id::{BlockId, ProjectId, TaskId};
 use crate::purpose::Purpose;
 use jiff::{
@@ -261,16 +262,6 @@ impl Project {
         self
     }
 
-    /// Move to `status`, keeping `completed_at` honest.
-    pub fn set_status(&mut self, status: ProjectStatus) {
-        self.status = status;
-        self.completed_at = match status {
-            ProjectStatus::Done => self.completed_at.or_else(|| Some(Timestamp::now())),
-            _ => None,
-        };
-        self.updated_at = Timestamp::now();
-    }
-
     /// Everything a text filter should look at.
     pub fn searchable_text(&self) -> String {
         let mut out = String::with_capacity(64);
@@ -282,6 +273,23 @@ impl Project {
             out.push_str(tag);
         }
         out
+    }
+}
+
+impl Completable for Project {
+    type Status = ProjectStatus;
+    const DONE: ProjectStatus = ProjectStatus::Done;
+
+    fn status_mut(&mut self) -> &mut ProjectStatus {
+        &mut self.status
+    }
+
+    fn completed_at_mut(&mut self) -> &mut Option<Timestamp> {
+        &mut self.completed_at
+    }
+
+    fn updated_at_mut(&mut self) -> &mut Timestamp {
+        &mut self.updated_at
     }
 }
 
@@ -378,19 +386,6 @@ impl Task {
         self.parent_id.is_some()
     }
 
-    /// Move to `status`, keeping `completed_at` honest.
-    ///
-    /// Reopening a finished task clears the completion stamp rather than
-    /// leaving a date that would make the analytics count it twice.
-    pub fn set_status(&mut self, status: TaskStatus) {
-        self.status = status;
-        self.completed_at = match status {
-            TaskStatus::Done => self.completed_at.or_else(|| Some(Timestamp::now())),
-            _ => None,
-        };
-        self.updated_at = Timestamp::now();
-    }
-
     /// Is the deadline in the past, as of `today`? Open tasks only: a
     /// finished task is never overdue, whenever it was due.
     pub fn is_overdue(&self, today: Date) -> bool {
@@ -416,6 +411,26 @@ impl Task {
             out.push_str(tag);
         }
         out
+    }
+}
+
+/// Reopening a finished task clears the completion stamp rather than
+/// leaving a date that would make the analytics count it twice -- see
+/// [`Completable::set_status`].
+impl Completable for Task {
+    type Status = TaskStatus;
+    const DONE: TaskStatus = TaskStatus::Done;
+
+    fn status_mut(&mut self) -> &mut TaskStatus {
+        &mut self.status
+    }
+
+    fn completed_at_mut(&mut self) -> &mut Option<Timestamp> {
+        &mut self.completed_at
+    }
+
+    fn updated_at_mut(&mut self) -> &mut Timestamp {
+        &mut self.updated_at
     }
 }
 

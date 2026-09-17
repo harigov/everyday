@@ -367,6 +367,7 @@ pub fn block_aad(id: BlockId) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::completable::Completable;
     use crate::task::BlockSubject;
     use jiff::Timestamp;
     use jiff::civil::date;

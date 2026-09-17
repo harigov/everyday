@@ -7,6 +7,7 @@ use super::{
     Args, Built, Tool, ToolContext, day, done, flag, limit_arg, list, number, one_of,
     resolve_purpose, schema, text,
 };
+use crate::completable::Completable;
 use crate::error::{Error, Result};
 use crate::id::{ProjectId, TaskId};
 use crate::proposal::{About, AboutKind, Payload, ProposalKind, ProposedRecord};

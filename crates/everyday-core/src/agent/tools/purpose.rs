@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use super::{
     Args, Tool, ToolContext, Window, day, done, empty_schema, flag, limit_arg, one_of, schema, text,
 };
+use crate::completable::Completable;
 use crate::error::Result;
 use crate::id::{GoalId, RoleId};
 use crate::purpose::{Goal, GoalActivity, GoalStatus, Purpose};

@@ -234,6 +234,7 @@ pub fn goal_aad(id: GoalId) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::completable::Completable;
     use jiff::civil::date;
 
     fn goal(role: RoleId, title: &str) -> Goal {
