@@ -4,12 +4,13 @@
 //! Every write that stamps a timestamp, backs off a retry, or checks whether
 //! something is due, used to call `jiff::Timestamp::now()` or
 //! `std::time::Instant::now()` straight from wherever it sat. That makes the
-//! call site untestable without an actual sleep -- a routine due in five
-//! minutes, or a proposal that expires in a day, could only be proven by
-//! waiting five minutes or a day. A `Service` now holds one clock, reachable
-//! through [`Service::now`](crate::service::Service::now) and
+//! call site untestable without an actual sleep -- a proposal that expires in
+//! a day could only be proven to expire by waiting a day. A `Service` now
+//! holds one clock, reachable through [`Service::now`](crate::service::Service::now) and
 //! [`Service::instant`](crate::service::Service::instant), and a test can
-//! swap [`SystemClock`] for a [`FakeClock`] it moves by hand.
+//! swap [`SystemClock`] for a fake it moves by hand -- see
+//! `tests/support/clock.rs`'s `FakeClock`, which implements this trait from
+//! outside the crate, the way a real caller would.
 //!
 //! # This is not tokio's clock
 //!
@@ -22,7 +23,16 @@
 //! touches. A test that pauses tokio time to skip a sleep still sees the real
 //! wall clock through `Service::now()`, precisely as it did before this
 //! module existed -- and a test that wants a fixed or moving wall clock
-//! instead reaches for [`FakeClock`], not for `tokio::time::pause`.
+//! instead reaches for a fake `Clock`, not for `tokio::time::pause`.
+//!
+//! # Not every `now()` in this crate
+//!
+//! `everyday_core::agent::AgentSettings::now()` -- what the scheduler's
+//! routine due-check reads -- calls `jiff::Timestamp::now()` itself, inside
+//! `everyday-core`. That crate's own `Timestamp::now()` calls are out of
+//! scope for this clock (see `docs/plans/architecture-refactor.md`, phase
+//! 9.2): a routine's due-check is therefore not made fake-clock-testable by
+//! this module, only the call sites inside `everyday-service` itself are.
 use std::sync::Arc;
 use std::time::Instant;
 
