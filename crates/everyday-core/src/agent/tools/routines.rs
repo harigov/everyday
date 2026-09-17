@@ -162,7 +162,7 @@ fn schedule_from(args: &Args<'_>) -> Result<Trigger> {
     let at = raw.trim().parse::<jiff::civil::Time>().map_err(|_| {
         args.bad(format!("{raw:?} is not a time of day. Use 24-hour HH:MM, for example 07:00."))
     })?;
-    Ok(Trigger::Schedule { at, days: parse_days(args)? })
+    Ok(Trigger::Schedule { at, days: parse_days(args)?, day_of_month: None })
 }
 
 /// The `days` argument, deduplicated in the order they were given.
@@ -235,16 +235,19 @@ fn run_update_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if args.get("at").is_some() {
         let named = schedule_from(args)?;
         routine.trigger = match (named, &routine.trigger) {
-            (Trigger::Schedule { at, days }, Trigger::Schedule { days: was, .. })
-                if args.get("days").is_none() =>
-            {
-                Trigger::Schedule { at, days: if days.is_empty() { was.clone() } else { days } }
-            }
+            (
+                Trigger::Schedule { at, days, .. },
+                Trigger::Schedule { days: was, day_of_month, .. },
+            ) if args.get("days").is_none() => Trigger::Schedule {
+                at,
+                days: if days.is_empty() { was.clone() } else { days },
+                day_of_month: *day_of_month,
+            },
             (next, _) => next,
         };
     } else if args.get("days").is_some() {
-        if let Trigger::Schedule { at, .. } = routine.trigger {
-            routine.trigger = Trigger::Schedule { at, days: parse_days(args)? };
+        if let Trigger::Schedule { at, day_of_month, .. } = routine.trigger {
+            routine.trigger = Trigger::Schedule { at, days: parse_days(args)?, day_of_month };
         } else {
             return Err(Error::Invalid(
                 "update_routine: this routine does not run on a schedule, so it has no \

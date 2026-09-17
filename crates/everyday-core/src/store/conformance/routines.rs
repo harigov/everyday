@@ -54,7 +54,7 @@ fn routine_round_trips_every_field(store: &dyn JournalStore) {
     let mut routine = Routine::new(
         "Morning brief",
         "Look at what is due and leave me a note.",
-        Trigger::Schedule { at: time(7, 0, 0, 0), days: everyday_weekdays() },
+        Trigger::Schedule { at: time(7, 0, 0, 0), days: everyday_weekdays(), day_of_month: None },
     );
     routine.grace_minutes = 90;
     routine.last_run_at = Some(Timestamp::now());

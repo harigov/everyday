@@ -196,6 +196,7 @@ fn due_now(svc: &Arc<Service>, instructions: &str) -> Routine {
         Trigger::Schedule {
             at: jiff::civil::time(local.hour(), local.minute(), 0, 0),
             days: vec![],
+            day_of_month: None,
         },
     );
     // Made before its moment, or the slot would predate the routine and be
@@ -354,6 +355,7 @@ async fn a_moment_missed_by_more_than_its_grace_is_recorded_rather_than_run_late
         Trigger::Schedule {
             at: jiff::civil::time(local.hour(), local.minute(), 0, 0),
             days: vec![],
+            day_of_month: None,
         },
     );
     routine.created_at = then - jiff::SignedDuration::from_hours(1);
@@ -473,7 +475,11 @@ async fn a_routine_the_assistant_was_asked_to_make_is_a_routine() {
     assert_eq!(routines[0].name, "Weekly plan");
     assert_eq!(
         routines[0].trigger,
-        Trigger::Schedule { at: jiff::civil::time(19, 0, 0, 0), days: vec![Weekday::Sun] }
+        Trigger::Schedule {
+            at: jiff::civil::time(19, 0, 0, 0),
+            days: vec![Weekday::Sun],
+            day_of_month: None,
+        }
     );
 }
 

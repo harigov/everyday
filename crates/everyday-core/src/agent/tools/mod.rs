@@ -484,6 +484,35 @@ pub struct Drafting {
     /// Tools that run for real even while drafting -- a dream's one note.
     /// The caller is responsible for any budget on them.
     pub direct: Vec<&'static str>,
+    /// How many proposals this source may make in total. `None` is no cap
+    /// beyond the vault's own on pending proposals.
+    pub max_proposals: Option<usize>,
+}
+
+/// The name of the optional argument every writing tool accepts while
+/// drafting: one line on why the proposal is being made.
+pub const WHY_ARG: &str = "why";
+
+impl Tool {
+    /// The tool's argument schema as offered to a caller that is drafting:
+    /// the same, plus an optional [`WHY_ARG`] on every tool that writes.
+    pub fn parameters_for(&self, drafting: bool) -> Value {
+        let mut schema = self.parameters();
+        if drafting
+            && self.effect != Effect::Read
+            && let Some(props) = schema.get_mut("properties").and_then(Value::as_object_mut)
+        {
+            props.insert(
+                WHY_ARG.to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "One short sentence, shown to the person beside the \
+                        proposal: why you are proposing this, with the evidence."
+                }),
+            );
+        }
+        schema
+    }
 }
 
 impl<'a> ToolContext<'a> {

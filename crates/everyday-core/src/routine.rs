@@ -144,6 +144,11 @@ pub enum Trigger {
         at: Time,
         #[serde(default)]
         days: Vec<Weekday>,
+        /// Only on this day of the month, `1..=28`, as well as on `days`.
+        /// `None` is every day `days` allows. Added for the monthly dream;
+        /// capped at 28 so that every month has the day.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        day_of_month: Option<u8>,
     },
     /// Before an event on the calendar starts.
     ///
@@ -178,7 +183,7 @@ impl Trigger {
     /// disagree.
     pub fn describe(&self) -> String {
         match self {
-            Trigger::Schedule { at, days } => {
+            Trigger::Schedule { at, days, .. } => {
                 let when = format!("{:02}:{:02}", at.hour(), at.minute());
                 if days.is_empty() {
                     return format!("Every day at {when}");
@@ -356,7 +361,7 @@ impl Routine {
     /// whose days do not include the last seven -- which cannot happen, since
     /// an empty list means every day, but is expressed rather than assumed.
     pub fn slot_at_or_before(&self, now: &Zoned) -> Option<Timestamp> {
-        let Trigger::Schedule { at, days } = &self.trigger else { return None };
+        let Trigger::Schedule { at, days, .. } = &self.trigger else { return None };
         // Walk back a week a day at a time. Cheap, and it is the only way to
         // be right across a zone whose offset changed in the middle: each
         // candidate is built in the local calendar and converted, so a slot
@@ -410,7 +415,7 @@ impl Routine {
         if !self.enabled {
             return None;
         }
-        let Trigger::Schedule { at, days } = &self.trigger else { return None };
+        let Trigger::Schedule { at, days, .. } = &self.trigger else { return None };
         for ahead in 0..=7 {
             let day = now.date().checked_add(jiff::Span::new().days(ahead)).ok()?;
             if !days.is_empty() && !days.contains(&Weekday::from_civil(day.weekday())) {
@@ -581,7 +586,7 @@ mod tests {
         let mut r = Routine::new(
             "Morning brief",
             "Say what is due today.",
-            Trigger::Schedule { at: time(7, 0, 0, 0), days: days.to_vec() },
+            Trigger::Schedule { at: time(7, 0, 0, 0), days: days.to_vec(), day_of_month: None },
         );
         r.created_at = date(2026, 9, 1).at(0, 0, 0, 0).in_tz("UTC").unwrap().timestamp();
         r
@@ -670,7 +675,7 @@ mod tests {
         // reckoned in the local calendar rather than by adding 86 400
         // seconds to yesterday.
         let mut r = morning(&[]);
-        r.trigger = Trigger::Schedule { at: time(1, 30, 0, 0), days: vec![] };
+        r.trigger = Trigger::Schedule { at: time(1, 30, 0, 0), days: vec![], day_of_month: None };
         r.created_at = at(2026, 10, 30, 0, 0, "America/Los_Angeles").timestamp();
 
         let after = at(2026, 11, 1, 4, 0, "America/Los_Angeles");
@@ -688,7 +693,7 @@ mod tests {
         // routine set for 02:30 still has to have a moment that day, and it
         // is the first instant that does exist.
         let mut r = morning(&[]);
-        r.trigger = Trigger::Schedule { at: time(2, 30, 0, 0), days: vec![] };
+        r.trigger = Trigger::Schedule { at: time(2, 30, 0, 0), days: vec![], day_of_month: None };
         r.created_at = at(2026, 3, 7, 0, 0, "America/Los_Angeles").timestamp();
 
         let after = at(2026, 3, 8, 9, 0, "America/Los_Angeles");
@@ -712,16 +717,30 @@ mod tests {
     fn a_trigger_says_when_it_runs_in_words() {
         let seven = time(7, 0, 0, 0);
         let cases = [
-            (Trigger::Schedule { at: seven, days: vec![] }, "Every day at 07:00"),
             (
-                Trigger::Schedule { at: seven, days: Weekday::WEEKDAYS.to_vec() },
+                Trigger::Schedule { at: seven, days: vec![], day_of_month: None },
+                "Every day at 07:00",
+            ),
+            (
+                Trigger::Schedule {
+                    at: seven,
+                    days: Weekday::WEEKDAYS.to_vec(),
+                    day_of_month: None,
+                },
                 "Weekdays at 07:00",
             ),
             (
-                Trigger::Schedule { at: seven, days: vec![Weekday::Sat, Weekday::Sun] },
+                Trigger::Schedule {
+                    at: seven,
+                    days: vec![Weekday::Sat, Weekday::Sun],
+                    day_of_month: None,
+                },
                 "Weekends at 07:00",
             ),
-            (Trigger::Schedule { at: seven, days: vec![Weekday::Wed] }, "Wed at 07:00"),
+            (
+                Trigger::Schedule { at: seven, days: vec![Weekday::Wed], day_of_month: None },
+                "Wed at 07:00",
+            ),
             (Trigger::TaskDue { lead_days: 1 }, "The day before a task is due"),
             (Trigger::Manual, "Only when you ask"),
         ];
