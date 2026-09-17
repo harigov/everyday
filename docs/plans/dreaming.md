@@ -469,7 +469,12 @@ Rust:
   relationship; never a memory about something the person wrote in
   confidence. The weekly one adds the outcome reading from *The loop*. The
   monthly one adds the long arcs: goals with no activity, roles with no
-  hours, anniversaries from the profile.
+  hours, and the month's birthdays -- the profile's, and those on the
+  library's Contacts shelf (added on `main` after this plan was written),
+  with when each person was last caught up with from that shelf's log. The
+  Contacts shelf is never looked up on the web, and a dream has no web
+  search, so a person's name goes no further than the assistant's own
+  model.
 - **Leash.** In [`scheduler::execute`](../../crates/everyday-service/src/scheduler.rs),
   a `Dream` run gets `drafting: true` on its `ToolContext`, and the catalogue
   filtered to reads plus the writing tools whose kinds the policy allows,
