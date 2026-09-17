@@ -338,3 +338,20 @@ pub(super) fn detach_note_from_meetings(u: &mut Unlocked, note_id: NoteId) -> Re
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod pinned_strings {
+    //! Phase 0.1 of `docs/plans/architecture-refactor.md`. `mod meetings` is
+    //! private inside `crate::vault`, so these two constants -- `pub` though
+    //! they are -- are unreachable from `everyday-core/tests/`, which only
+    //! sees paths through modules that are themselves public the whole way
+    //! down. Pinned here instead, rather than by making `vault::meetings`
+    //! public just so a test file elsewhere could see it.
+    use super::*;
+
+    #[test]
+    fn transcriber_secret_owner_kind_and_id_are_pinned() {
+        assert_eq!(TRANSCRIBER_SECRET_OWNER_KIND, "transcriber");
+        assert_eq!(TRANSCRIBER_SECRET_OWNER_ID, "singleton");
+    }
+}

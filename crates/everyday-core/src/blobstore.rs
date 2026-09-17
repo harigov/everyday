@@ -455,6 +455,21 @@ mod tests {
         FileBlobStore::open(dir, cipher).unwrap()
     }
 
+    /// Phase 0.1 of `docs/plans/architecture-refactor.md`: `chunk_aad` is
+    /// module-private, so unlike its siblings in `crate::store::*` this
+    /// cannot be pinned from `everyday-core/tests/pinned_strings.rs` without
+    /// widening its visibility -- which the plan asks not to do. It lives
+    /// here instead, beside the function it pins.
+    #[test]
+    fn chunk_aad_label_is_pinned() {
+        // All-zero bytes, not a BLAKE3 hash of some fixed input: the point is
+        // a literal the test does not have to trust `BlobId`'s own `Display`
+        // to reproduce, and 64 zero hex digits is checkable by inspection.
+        let id = BlobId([0u8; 32]);
+        let zeros = "0".repeat(64);
+        assert_eq!(chunk_aad(id, 3, 9), format!("everyday.blob.v1:{zeros}:3/9").into_bytes());
+    }
+
     fn pseudorandom(n: usize) -> Vec<u8> {
         let mut v = Vec::with_capacity(n);
         let mut x: u32 = 0x1234_5678;

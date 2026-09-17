@@ -479,3 +479,27 @@ impl PurposeStore for SqlStore {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+mod pinned_strings {
+    //! Phase 0.1 of `docs/plans/architecture-refactor.md`. `RecordKind` and
+    //! its `as_str` are `pub(crate)`, so this cannot live in
+    //! `everyday-core/tests/pinned_strings.rs` -- that file only sees this
+    //! crate's own public surface, and `RecordKind` is store-sql's own
+    //! detail, not core's. These are the literal `purposes.record_kind`
+    //! values every purpose pointer is filed under; a change here is a
+    //! migration, not a rename.
+    use super::RecordKind;
+
+    #[test]
+    fn every_record_kind_as_str_is_pinned() {
+        assert_eq!(RecordKind::Project.as_str(), "project");
+        assert_eq!(RecordKind::Task.as_str(), "task");
+        assert_eq!(RecordKind::Block.as_str(), "block");
+        assert_eq!(RecordKind::Entry.as_str(), "entry");
+        assert_eq!(RecordKind::Note.as_str(), "note");
+        assert_eq!(RecordKind::Item.as_str(), "item");
+        assert_eq!(RecordKind::Calendar.as_str(), "calendar");
+        assert_eq!(RecordKind::Tracker.as_str(), "tracker");
+    }
+}

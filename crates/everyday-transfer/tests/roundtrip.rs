@@ -713,3 +713,58 @@ fn an_entry_whose_journal_is_gone_is_filed_somewhere_that_exists() {
         })
         .unwrap();
 }
+
+/// Phase 0.6 of `docs/plans/architecture-refactor.md`: an imported note keeps
+/// the `created` front matter said, rather than being stamped with the
+/// moment of import.
+///
+/// This matters for the same reason "The one rule" calls out imports by
+/// name: `Vault::save_note`'s conditional path exists so an *autosave*
+/// cannot silently overwrite somebody else's edit, but an import is a
+/// deliberate act of bringing outside writing in, and the moment doing that
+/// happened is not the moment the note was written. A note reimported a
+/// year after it was first exported must not read as a year old
+/// -- backdated to whenever the export ran -- either: see
+/// `crates/everyday-transfer/src/parts/notes.rs`'s `read`, which takes
+/// `created` from the file and only falls back to "now" for `updated_at`
+/// when *that* field is missing too.
+#[test]
+fn importing_a_note_keeps_the_source_created_timestamp() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+
+    // No sidecar (`.everyday/<id>.json`) -- this is the plain-Markdown path
+    // any program, not just this one's own exporter, can produce, and it is
+    // also the path `notes.rs`'s `read` takes the `created`/`updated` front
+    // matter fields on rather than trusting a sidecar's own copy.
+    let markdown = "---\n\
+                     title: Written a long time ago\n\
+                     created: 2019-03-14T09:26:53Z\n\
+                     updated: 2019-03-14T09:26:53Z\n\
+                     ---\n\
+                     \n\
+                     Kept from a note taken years before this import runs.\n";
+    let files = [("notes/Old.md".to_string(), markdown.as_bytes().to_vec())].into_iter().collect();
+    let archive = zip::Reader::from_files(files);
+
+    let before_import = jiff::Timestamp::now();
+    let reports = everyday_transfer::import(&vault, &archive, &importable(), Mode::Skip).unwrap();
+    assert!(reports.iter().flat_map(|r| &r.problems).next().is_none(), "{reports:?}");
+
+    vault
+        .with_store(|store| {
+            let notes = store.notes().unwrap().all_notes()?;
+            assert_eq!(notes.len(), 1);
+            assert_eq!(
+                notes[0].created_at,
+                "2019-03-14T09:26:53Z".parse::<jiff::Timestamp>().unwrap(),
+                "the note's created_at must be the file's, not the moment of import"
+            );
+            assert!(
+                notes[0].created_at < before_import,
+                "sanity check on the fixture: the source date must actually be in the past"
+            );
+            Ok(())
+        })
+        .unwrap();
+}
