@@ -69,6 +69,7 @@ pub const fn max_per_run(scope: DreamScope) -> usize {
 /// Also the unit [`ProposalPolicy`] switches on and off, so its spelling is
 /// the settings' as well as the wire's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ProposalKind {
     Task,
@@ -108,6 +109,7 @@ impl ProposalKind {
 
 /// A record a proposal carries, whole.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", content = "value", rename_all = "lowercase")]
 pub enum ProposedRecord {
     Task(Task),
@@ -179,6 +181,7 @@ impl ProposedRecord {
 
 /// What accepting a proposal would do.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Payload {
     /// Save a record that does not exist yet.
@@ -232,6 +235,7 @@ impl Payload {
 
 /// What a proposal was reacting to, if anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum AboutKind {
     Task,
@@ -246,6 +250,7 @@ pub enum AboutKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct About {
     pub kind: AboutKind,
@@ -254,6 +259,7 @@ pub struct About {
 
 /// Who made a proposal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ProposalSource {
     /// A scheduled run -- today, always a dream.
@@ -265,6 +271,7 @@ pub enum ProposalSource {
 /// Why somebody said no. Optional, and one tap: forcing a reason is how a
 /// signal stops being given.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum DeclineReason {
     NotNow,
@@ -279,6 +286,7 @@ pub enum DeclineReason {
 
 /// Where a proposal stands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Outcome {
     Pending,
@@ -318,6 +326,7 @@ impl Outcome {
 
 /// [`Outcome`] without its payload: the clear column, and the query filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ProposalState {
     Pending,
@@ -342,6 +351,7 @@ impl ProposalState {
 /// Shaped like [`crate::quick::QuickPolicy`]: a set of exceptions, so a kind
 /// added by a later build is on by default for a vault written earlier.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct ProposalPolicy {
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
@@ -356,6 +366,7 @@ impl ProposalPolicy {
 
 /// Work the assistant prepared and did not do.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Proposal {
     pub id: ProposalId,

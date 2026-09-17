@@ -11,6 +11,12 @@ authors.workspace = true
 # Exposes `store::conformance`, the shared backend test battery. Backends
 # enable this in their dev-dependencies.
 testing = []
+# Derives `schemars::JsonSchema` on the record types, for
+# `ui/scripts/check-types-drift.mjs`'s generator (see
+# `crates/everyday-core/src/schema.rs`). Off by default: it is not part of
+# the shipped binary, only of a checked-in, on-demand-regenerated schema
+# file. See docs/plans/architecture-refactor.md, Phase 5.
+schema = ["dep:schemars"]
 
 [dependencies]
 serde.workspace = true
@@ -25,6 +31,15 @@ argon2.workspace = true
 chacha20poly1305.workspace = true
 tracing.workspace = true
 fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
+# `uuid1` and `jiff02` match this crate's own `uuid` and `jiff` versions, so
+# the typed ids and timestamps get a schema for free instead of a hand-written
+# one.
+schemars = { version = "1", optional = true, default-features = false, features = [
+    "std",
+    "derive",
+    "uuid1",
+    "jiff02",
+] }
 
 [dev-dependencies]
 tempfile = "3"

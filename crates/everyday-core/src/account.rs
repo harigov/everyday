@@ -50,6 +50,7 @@ use serde::{Deserialize, Serialize};
 /// instance, or anything else this list does not name, and the interface
 /// asks for every field a preset would otherwise have filled in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum Provider {
     Google,
@@ -200,6 +201,7 @@ impl Provider {
 
 /// How a connection to [`Endpoint::host`] is secured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum EndpointSecurity {
     /// TLS from the first byte -- the connection is encrypted before any
@@ -212,6 +214,7 @@ pub enum EndpointSecurity {
 
 /// One server to connect to: IMAP or SMTP, never both.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Endpoint {
     pub host: String,
@@ -236,6 +239,7 @@ impl Endpoint {
 /// are all the primary address's. This is what "send from my work alias"
 /// needs and nothing more -- a name, an address, a signature.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Identity {
     pub name: String,
@@ -252,6 +256,7 @@ pub struct Identity {
 /// iCloud, Fastmail or Yahoo, or a plain one for a self-hosted server that
 /// has no OAuth story at all.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AuthMethod {
     OAuth {
@@ -273,6 +278,7 @@ pub enum AuthMethod {
 /// Which services this account has been asked to provide. A credential
 /// without a service switched on is signed in to nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Services {
     pub mail: bool,
@@ -281,6 +287,7 @@ pub struct Services {
 
 /// Whether this account is usable, and if not, why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AccountStatus {
     Ok,
@@ -320,6 +327,7 @@ pub enum AccountStatus {
 /// is not the user, and it starts off on every account until a person turns
 /// it on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct AgentMailAccess {
     pub read: bool,
@@ -373,6 +381,7 @@ impl AgentMailAccess {
 /// not any of these three is on. This struct exists only for the parts that
 /// reach a model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct MailAi {
     /// Batch threads the rules could only call `Other` or low-confidence to
@@ -410,6 +419,7 @@ pub enum Permission {
 /// See the module docs for what is and is not sealed, and for why an account
 /// is a vault-level record rather than something the mail app owns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Account {
     pub id: AccountId,
@@ -528,6 +538,7 @@ impl Account {
 /// (true)` reads back as a coin flip, `access_for(AgentCaller::Assistant)`
 /// reads back as English.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum AgentCaller {
     Assistant,
@@ -545,6 +556,7 @@ pub enum AgentCaller {
 /// add-account sheet, unsealed, because none of it is a secret -- it is
 /// exactly what the provider already publishes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Preset {
     pub imap: Endpoint,
@@ -563,6 +575,7 @@ pub struct Preset {
 
 /// The OAuth half of a [`Preset`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct OAuthPreset {
     pub auth_url: String,
@@ -601,6 +614,7 @@ pub struct OAuthPreset {
 /// four independent optional fields says exactly as much as is actually known
 /// and no more.
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct AccountSecret {
     #[serde(default, skip_serializing_if = "Option::is_none")]

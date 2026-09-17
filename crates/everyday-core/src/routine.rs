@@ -51,6 +51,7 @@ pub const DEFAULT_GRACE_MINUTES: u32 = 60;
 /// this application's decision and cannot change under us with a dependency
 /// bump. The conversion is the only place the two meet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Weekday {
     Mon,
@@ -137,6 +138,7 @@ impl Weekday {
 // the wire is camelCase -- so a routine that runs before a meeting could not
 // be saved from the interface at all.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Trigger {
     /// A time of day, on the given days. An empty list means every day.
@@ -262,6 +264,7 @@ pub enum Due {
 /// the person's paragraph *added to* an app-owned prompt rather than the
 /// prompt itself. See `docs/plans/dreaming.md`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum RoutineKind {
     #[default]
@@ -286,6 +289,7 @@ impl RoutineKind {
 
 /// How far back a dream reads.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum DreamScope {
     /// Yesterday, from the records. The default because it is the smallest
@@ -313,6 +317,7 @@ impl DreamScope {
 
 /// Standing work.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Routine {
     pub id: RoutineId,
@@ -524,6 +529,7 @@ impl Routine {
 /// A closed set, like [`crate::GoalStatus`], so a run cannot be in a state
 /// the interface has no word for.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum Outcome {
     /// Asked for, and not started yet.
@@ -568,6 +574,7 @@ impl Outcome {
 
 /// One run of a routine.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct RoutineRun {
     pub id: RoutineRunId,

@@ -244,6 +244,7 @@ pub const PACK_ROTATE_BYTES: u64 = 64 * 1024 * 1024;
 /// the schema section of `docs/plans/mail.md`), long after the
 /// [`PackStore`] that minted it is out of scope.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct PackRef {
     /// The account this pack belongs to, exactly as it was passed to

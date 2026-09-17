@@ -59,6 +59,7 @@ use serde::{Deserialize, Serialize};
 
 /// Who you are being. A handful of these, changing about once a year.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Role {
     pub id: RoleId,
@@ -167,6 +168,7 @@ pub fn suggested_roles() -> Vec<Role> {
 /// goals sit paused" has to be askable across a whole life at once, and
 /// per-role vocabularies would make it unanswerable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum GoalStatus {
     #[default]
@@ -207,6 +209,7 @@ impl GoalStatus {
 
 /// An outcome you want, under a role.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Goal {
     pub id: GoalId,
@@ -293,6 +296,7 @@ impl Goal {
 /// outcome, and an hour of it should count against that role rather than
 /// against nothing at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Purpose {
     Goal { id: GoalId },
@@ -364,6 +368,7 @@ pub fn resolve(chain: impl IntoIterator<Item = Option<Purpose>>) -> Option<Purpo
 /// not booked against anything, and a chart that quietly dropped that share
 /// would be flattering rather than useful.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct PurposeMinutes {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -395,6 +400,7 @@ impl PurposeMinutes {
 /// the two questions — "how much of my week did other people book" and "what
 /// did I actually do" — are different questions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct RoleEventMinutes {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -408,6 +414,7 @@ pub struct RoleEventMinutes {
 /// Every field is a count or an instant, so the whole thing is answerable
 /// from clear columns and nothing is decrypted to draw the list.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct GoalActivity {
     /// Tasks pointing here, or at a project pointing here, that are neither

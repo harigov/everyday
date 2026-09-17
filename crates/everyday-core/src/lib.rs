@@ -100,6 +100,8 @@ pub mod purpose;
 pub mod quick;
 pub mod richtext;
 pub mod routine;
+#[cfg(feature = "schema")]
+pub mod schema;
 pub mod search;
 pub mod store;
 pub mod task;

@@ -71,6 +71,7 @@ use std::collections::BTreeMap;
 /// Four strings is a cheap price for the interface never having to be
 /// generic about it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Verbs {
     /// The wishlist, in this kind's language: "To read", "To watch".
@@ -120,6 +121,7 @@ impl Verbs {
 /// and refusing it would be the interface arguing with somebody about their
 /// own shelf.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum FieldType {
     #[default]
@@ -159,6 +161,7 @@ impl FieldType {
 /// lets somebody rename "Author" to "Written by" without every book losing
 /// its author.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct FieldDef {
     pub key: String,
@@ -208,6 +211,7 @@ impl FieldDef {
 /// interface lists these down the sidebar the way it lists journals and
 /// projects, and every [`Item`] belongs to exactly one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Kind {
     pub id: KindId,
@@ -599,6 +603,7 @@ pub fn upgrade_kinds(mut kinds: Vec<Kind>) -> Vec<Kind> {
 /// docs: this is the axis every cross-kind question is asked along. What a
 /// kind gets to decide is the *word* — see [`Verbs`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum ItemStatus {
     /// Noted down. The whole point of the app: somewhere to put a
@@ -654,6 +659,7 @@ impl ItemStatus {
 /// carries how many people it is an average of, because 9.4 from eleven
 /// people is a different fact from 9.4 from eleven thousand.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalRating {
     /// Who said so: "Open Library", "iTunes".
@@ -669,6 +675,7 @@ pub struct ExternalRating {
 /// A link kept beside an item: where it was found, where to buy it, where
 /// the recipe actually is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Link {
     pub label: String,
@@ -681,6 +688,7 @@ pub struct Link {
 /// recorded rather than read from it live, so that changing a kind from
 /// pages to minutes does not silently relabel every book on the shelf.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Progress {
     pub position: u32,
@@ -713,6 +721,7 @@ impl Progress {
 /// the fastest way to add something is to type its name and press Enter and
 /// let the metadata arrive later — or never.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Item {
     pub id: ItemId,
@@ -912,6 +921,7 @@ impl Item {
 /// one tap on a card — and an app that first asks you to classify the event
 /// is an app whose log stays empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum LogEvent {
     Started,
@@ -969,6 +979,7 @@ impl LogEvent {
 /// See the module docs: this exists so that "what did I read when" has an
 /// answer that survives reading the thing twice.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct LogEntry {
     pub id: LogId,
@@ -1056,6 +1067,7 @@ pub fn normalize_rating(score: f64, max: f64) -> Option<u8> {
 
 /// What is on one shelf. For the line under its name in the sidebar.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct KindCount {
     pub kind_id: KindId,
@@ -1067,6 +1079,7 @@ pub struct KindCount {
 
 /// Counts for the library sidebar and the year-in-review strip.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryStats {
     pub kinds: u64,

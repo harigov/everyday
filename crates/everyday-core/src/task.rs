@@ -49,6 +49,7 @@ use serde::{Deserialize, Serialize};
 /// wanting analytics later. Per-project columns would make that
 /// unanswerable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum TaskStatus {
     /// Captured, not committed to.
@@ -101,6 +102,7 @@ impl TaskStatus {
 
 /// How a project is going.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum ProjectStatus {
     #[default]
@@ -144,6 +146,7 @@ impl ProjectStatus {
 /// priority, and a scheme where everything must be triaged on capture is a
 /// scheme people stop capturing into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum Priority {
     #[default]
@@ -187,6 +190,7 @@ impl Priority {
 
 /// A body of work with tasks under it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
     pub id: ProjectId,
@@ -289,6 +293,7 @@ pub const DEFAULT_PROJECT_COLORS: &[&str] = crate::model::DEFAULT_JOURNAL_COLORS
 /// A task with no `project_id` is in the inbox — captured but not filed —
 /// which is what makes capture cheap enough to actually do.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
     pub id: TaskId,
@@ -420,6 +425,7 @@ impl Task {
 /// appointment as well as the work, and giving it a home here means the
 /// calendar does not need its own storage layer when it arrives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum BlockSubject {
     Task {
@@ -450,6 +456,7 @@ impl BlockSubject {
 
 /// Intention or record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum BlockKind {
     /// "I mean to do this then." Lives on the calendar ahead of time.
@@ -483,6 +490,7 @@ impl BlockKind {
 /// `local_date`, and for the same reason: a backend can answer "show me this
 /// week" as an index scan without knowing anything about time zones.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct TimeBlock {
     pub id: BlockId,
@@ -583,6 +591,7 @@ impl TimeBlock {
 /// because one of them happens to be due today. Every column this reads is
 /// in the clear, so it decrypts nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectTaskCount {
     /// `None` is the inbox.
@@ -599,6 +608,7 @@ pub struct ProjectTaskCount {
 /// about a calendar date, and which date is the caller's to decide -- the
 /// core has no business guessing a time zone.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct TaskStats {
     pub projects: u64,

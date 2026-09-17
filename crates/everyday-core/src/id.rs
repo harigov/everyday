@@ -9,6 +9,7 @@ use uuid::Uuid;
 macro_rules! typed_id {
     ($name:ident, $kind:literal) => {
         #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
         #[serde(transparent)]
         pub struct $name(pub Uuid);
 
@@ -179,8 +180,13 @@ typed_id!(OpId, "op");
 /// Blobs are content-addressed with BLAKE3 so that the same photo dropped into
 /// two entries is stored once, and so that a corrupted blob is detectable.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(transparent)]
-pub struct BlobId(#[serde(with = "hex32")] pub [u8; 32]);
+pub struct BlobId(
+    #[serde(with = "hex32")]
+    #[cfg_attr(feature = "schema", schemars(with = "String"))]
+    pub [u8; 32],
+);
 
 impl BlobId {
     pub fn of(bytes: &[u8]) -> Self {

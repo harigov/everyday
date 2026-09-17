@@ -59,6 +59,7 @@ use std::collections::BTreeMap;
 /// URL" instructions, which is the single hardest step for the person doing
 /// the subscribing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum CalendarProvider {
     Google,
@@ -136,6 +137,7 @@ impl CalendarProvider {
 /// to decide which adapter a sync belongs to, the same way
 /// [`CalendarProvider`] decides which name and icon the interface draws.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum AccountCalendarSource {
     /// iCloud, Fastmail, Custom, and Google's own CalDAV endpoint.
@@ -173,6 +175,7 @@ impl AccountCalendarSource {
 /// enumerate a good deal of the calendar's shape — so it lives beside the
 /// origin rather than in a clear column.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct AccountSyncCursor {
     /// RFC 6578's `sync-token` for CalDAV, or Google's or Graph's own delta
@@ -219,6 +222,7 @@ impl AccountSyncCursor {
 
 /// Where a calendar's events come from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum CalendarOrigin {
     /// A feed that is refetched. The URL is a secret — anyone holding it can
@@ -278,6 +282,7 @@ impl CalendarOrigin {
 /// an app that silently declines to publish your changes is worse than one
 /// that never offered.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Calendar {
     pub id: CalendarId,
@@ -522,6 +527,7 @@ fn looks_schemed(url: &str) -> bool {
 
 /// Whether the organiser has committed to an event happening.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum EventStatus {
     #[default]
@@ -553,6 +559,7 @@ impl EventStatus {
 /// with no recurrence engine anywhere near the draw path. See
 /// [`crate::ics`] for the expansion.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Event {
     pub id: EventId,
@@ -642,6 +649,7 @@ impl Event {
 
 /// What one sync did, for the line the interface shows afterwards.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct SyncReport {
     pub calendar_id: Option<CalendarId>,

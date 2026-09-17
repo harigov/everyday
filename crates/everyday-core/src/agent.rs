@@ -701,6 +701,7 @@ pub struct LegacyModelConfig {
 }
 
 /// Who said something.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -718,6 +719,7 @@ pub enum Role {
 }
 
 /// One tool the model asked to run.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolCall {
@@ -733,6 +735,7 @@ pub struct ToolCall {
 }
 
 /// One turn in a conversation.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
@@ -772,6 +775,7 @@ pub struct Message {
 
 /// What [`Message::mail_link`] carries: enough to open Mail at the thread a
 /// write actually touched, and to say so before the click.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MailLink {
@@ -830,6 +834,7 @@ impl Message {
 }
 
 /// A titled thread.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Conversation {
@@ -902,6 +907,7 @@ impl Default for Conversation {
 }
 
 /// A fact the assistant keeps between conversations.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Memory {
@@ -939,6 +945,7 @@ pub struct Memory {
 /// an observation a dream made, used lightly and under a heading that says
 /// it may be wrong. A rejected one is kept, as "do not assume", so that a
 /// later dream cannot learn it again. See `docs/plans/dreaming.md`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MemoryOrigin {
