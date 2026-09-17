@@ -12,6 +12,7 @@ use super::session::Domain;
 use crate::error::{Error, Result};
 use crate::id::{GoalId, RoleId};
 use crate::purpose::{Goal, GoalActivity, PurposeMinutes, Role, RoleEventMinutes, suggested_roles};
+use crate::record::RecordKind;
 use crate::store::purpose::{GoalQuery, PurposeStore, PurposeWindow};
 
 impl Vault {
@@ -41,13 +42,17 @@ impl Vault {
         if role.name.trim().is_empty() {
             return Err(Error::Invalid("a role needs a name".into()));
         }
-        self.with_purpose(|p| p.put_role(role))
+        self.with_purpose(|p| p.put_role(role))?;
+        self.wrote(RecordKind::Role, role.id);
+        Ok(())
     }
 
     /// Delete a role, which the backend refuses while goals point at it.
     pub fn delete_role(&self, id: RoleId) -> Result<()> {
         self.writable()?;
-        self.with_purpose(|p| p.delete_role(id))
+        self.with_purpose(|p| p.delete_role(id))?;
+        self.wrote(RecordKind::Role, id);
+        Ok(())
     }
 
     /// How many goals sit under a role, and how many are still open.
@@ -66,16 +71,20 @@ impl Vault {
     /// somebody who deletes the lot never sees it again.
     pub fn seed_roles(&self) -> Result<usize> {
         self.writable()?;
-        self.with_purpose(|p| {
+        let added = self.with_purpose(|p| {
             if !p.list_roles()?.is_empty() {
-                return Ok(0);
+                return Ok(Vec::new());
             }
             let seeds = suggested_roles();
             for role in &seeds {
                 p.put_role(role)?;
             }
-            Ok(seeds.len())
-        })
+            Ok(seeds)
+        })?;
+        for role in &added {
+            self.wrote(RecordKind::Role, role.id);
+        }
+        Ok(added.len())
     }
 
     pub fn goals(&self, query: &GoalQuery) -> Result<Vec<Goal>> {
@@ -99,17 +108,25 @@ impl Vault {
         self.with_purpose(|p| {
             p.get_role(goal.role_id)?;
             p.put_goal(goal)
-        })
+        })?;
+        self.wrote(RecordKind::Goal, goal.id);
+        Ok(())
     }
 
     pub fn save_goals(&self, goals: &[Goal]) -> Result<()> {
         self.writable()?;
-        self.with_purpose(|p| p.put_goals(goals))
+        self.with_purpose(|p| p.put_goals(goals))?;
+        for goal in goals {
+            self.wrote(RecordKind::Goal, goal.id);
+        }
+        Ok(())
     }
 
     pub fn delete_goal(&self, id: GoalId) -> Result<()> {
         self.writable()?;
-        self.with_purpose(|p| p.delete_goal(id))
+        self.with_purpose(|p| p.delete_goal(id))?;
+        self.wrote(RecordKind::Goal, id);
+        Ok(())
     }
 
     /// Minutes per resolved purpose over a window, planned and actual.

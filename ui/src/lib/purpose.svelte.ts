@@ -16,6 +16,7 @@
 
 import { api } from './api'
 import { app, handle } from './state.svelte'
+import { guardedRefresh } from './store/refresh'
 import type {
   Goal,
   GoalActivity,
@@ -70,8 +71,24 @@ class PurposeState {
   /** Which role's section is folded away, by id. Chrome, not vault contents. */
   collapsed = $state<Set<RoleId>>(new Set())
 
-  /** Which load is the current one, so a slow one cannot land after a lock. */
+  /**
+   * Which load is the current one, so a slow one cannot land after a lock.
+   *
+   * A raw counter rather than `latest()`, because `refreshActivity` below
+   * reads it without minting a token of its own -- it rides on whatever
+   * `load` or `reset` last set, and two overlapping calls to it are meant to
+   * both land, last write wins, the way they always have. `latest()` would
+   * mint a fresh token for each and let the first go stale the moment the
+   * second started, which is a real change in which answer survives.
+   * `#loadGeneration` wraps this same field in `Generation`'s shape, for
+   * `load` alone, which *does* mint one token per call the way `next()`
+   * already did by hand.
+   */
   #generation = 0
+  #loadGeneration = {
+    next: (): number => ++this.#generation,
+    isCurrent: (token: number): boolean => token === this.#generation,
+  }
   #loaded = false
 
   constructor() {
@@ -155,19 +172,17 @@ class PurposeState {
   async load(force = false) {
     if (!this.enabled) return
     if (this.#loaded && !force) return
-    const mine = ++this.#generation
-    this.loading = true
-    try {
-      const [roles, goals] = await Promise.all([api.roles(), api.goals()])
-      if (mine !== this.#generation) return
-      this.roles = roles
-      this.goals = goals
-      this.#loaded = true
-    } catch (e) {
-      await handle(e)
-    } finally {
-      if (mine === this.#generation) this.loading = false
-    }
+    await guardedRefresh(
+      this.#loadGeneration,
+      async (isCurrent) => {
+        const [roles, goals] = await Promise.all([api.roles(), api.goals()])
+        if (!isCurrent()) return
+        this.roles = roles
+        this.goals = goals
+        this.#loaded = true
+      },
+      { setLoading: (v) => (this.loading = v), onError: (e) => handle(e) },
+    )
   }
 
   role(id: RoleId | null | undefined): RoleInfo | undefined {

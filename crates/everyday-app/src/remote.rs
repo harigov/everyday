@@ -55,6 +55,42 @@ const RECONNECT_MAX: Duration = Duration::from_secs(30);
 /// time.
 const QUIET_FAILURES: u32 = 3;
 
+/// This loop's own schedule, as a [`everyday_service::retry::RetryPolicy`]
+/// -- capped exponential backoff, unjittered (unlike the supervisor's own;
+/// see [`RetryPolicy::exponential`](everyday_service::retry::RetryPolicy::exponential)'s
+/// doc for why jitter exists there and not here: one desktop client
+/// reconnecting to one server is not the stampede a jittered schedule
+/// guards against), and no give-up -- only the session being replaced ends
+/// [`Remote::start`]'s loop, never this schedule. Phase 9.3 of
+/// `docs/plans/architecture-refactor.md`'s fifth schedule, brought in once
+/// `RetryPolicy` went `pub` for exactly this (see that type's own doc).
+fn remote_reconnect() -> everyday_service::retry::RetryPolicy {
+    everyday_service::retry::RetryPolicy::exponential(RECONNECT_MIN, RECONNECT_MAX, false, None)
+}
+
+/// The delay to wait once `failures` attempts in a row have failed --
+/// `failures` is 1-indexed the way [`Remote::start`]'s loop counts it: the
+/// value passed is the count *after* the failure this delay is waited out
+/// for, so `reconnect_delay(1)` is what the loop waits after the very first
+/// one.
+///
+/// Named and pulled out of the loop, rather than a `delay` variable doubled
+/// in place, so it can be pinned in `tests` below -- see that test's own
+/// doc for why.
+fn reconnect_delay(failures: u32) -> Duration {
+    remote_reconnect().delay_for(failures)
+}
+
+/// Whether the `failures`th failure in a row is the one that should finally
+/// tell the user the vault is unreachable -- see `QUIET_FAILURES`'s own doc
+/// for why not the first, and `told` is what stops this firing twice for the
+/// same bad streak. [`Remote::start`] resets `told` to `false` the moment a
+/// reconnect succeeds, so the same threshold warns again on a later,
+/// unrelated streak -- see the pinning test in `tests` below.
+fn should_warn(failures: u32, told: bool) -> bool {
+    failures >= QUIET_FAILURES && !told
+}
+
 impl Remote {
     /// Connect, and start listening for what the server says.
     pub fn start(client: RemoteClient, sink: Arc<dyn EventSink>) -> Arc<Self> {
@@ -63,7 +99,6 @@ impl Remote {
         let remote = Arc::new(Self { client: client.clone(), stop });
 
         tauri::async_runtime::spawn(async move {
-            let mut delay = RECONNECT_MIN;
             let mut failures = 0u32;
             let mut told = false;
             loop {
@@ -115,7 +150,7 @@ impl Remote {
                 }
                 failures += 1;
 
-                if failures >= QUIET_FAILURES && !told {
+                if should_warn(failures, told) {
                     told = true;
                     sink.notify(
                         everyday_service::Notification::warning("Not connected")
@@ -129,10 +164,9 @@ impl Remote {
                 }
 
                 tokio::select! {
-                    _ = tokio::time::sleep(delay) => {}
+                    _ = tokio::time::sleep(reconnect_delay(failures)) => {}
                     _ = rx.changed() => return,
                 }
-                delay = (delay * 2).min(RECONNECT_MAX);
 
                 // Whether the *next* attempt gets a fresh budget is decided by
                 // whether it works, not by anything here. `hello` is a short
@@ -142,7 +176,6 @@ impl Remote {
                 // reset them only when `failures` was zero and nothing ever set
                 // it back to zero.
                 if client.reachable().await {
-                    delay = RECONNECT_MIN;
                     failures = 0;
                     if told {
                         told = false;
@@ -226,4 +259,67 @@ pub async fn resume(id: &str) -> CommandResult<RemoteClient> {
         .ok_or_else(|| CommandError::new("not_found", "there is no such connection"))?;
     let token = crate::remotes::token(&connection.id)?;
     RemoteClient::resume(connection, token).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Phase 9.3's pinning step for the fifth schedule, fixed here before
+    /// `reconnect_delay` was rewritten to go through a shared `RetryPolicy`
+    /// (now `remote_reconnect`) and left in place unchanged afterwards, to
+    /// prove the rewrite is the same sequence expressed differently.
+    /// `reconnect_delay` is not exercised through `Remote::start` itself
+    /// here -- that loop's `client` is a real
+    /// `everyday_server::client::RemoteClient`, which has no in-process fake
+    /// and would need a real socket to drive, which this crate's tests do
+    /// not open (see `capture.rs` and `meeting.rs` for the same rule applied
+    /// to a microphone and a vault). Pinning the named function the loop
+    /// calls at its one delay-computing call site is the same technique
+    /// `supervisor::backoff_delay` and `meeting::pipeline::retry::
+    /// pipeline_transient` were pinned with before their own Phase 9.3
+    /// rewrite.
+    #[test]
+    fn reconnect_delay_doubles_from_one_second_and_caps_at_thirty() {
+        assert_eq!(reconnect_delay(1), Duration::from_secs(1));
+        assert_eq!(reconnect_delay(2), Duration::from_secs(2));
+        assert_eq!(reconnect_delay(3), Duration::from_secs(4));
+        assert_eq!(reconnect_delay(4), Duration::from_secs(8));
+        assert_eq!(reconnect_delay(5), Duration::from_secs(16));
+        assert_eq!(reconnect_delay(6), Duration::from_secs(30), "capped");
+        assert_eq!(reconnect_delay(7), Duration::from_secs(30), "stays capped");
+        assert_eq!(
+            reconnect_delay(1_000),
+            Duration::from_secs(30),
+            "never exceeds the cap however long the run"
+        );
+    }
+
+    /// The banner's own threshold, pinned the same way: quiet for the first
+    /// two failures in a row, tells on the third, and -- once told -- stays
+    /// quiet for the rest of that streak no matter how long it runs.
+    /// `Remote::start` is the only place `told` is ever set back to
+    /// `false` (the moment a reconnect succeeds), which is what the last
+    /// assertion below stands in for: the same threshold, given a reset
+    /// `told`, warns again exactly as it did the first time.
+    #[test]
+    fn should_warn_fires_once_at_quiet_failures_then_stays_quiet_until_told_resets() {
+        for failures in 1..QUIET_FAILURES {
+            assert!(!should_warn(failures, false), "failure {failures} is too early to tell");
+        }
+        assert!(
+            should_warn(QUIET_FAILURES, false),
+            "the {QUIET_FAILURES}th failure in a row is the one that tells"
+        );
+        for failures in QUIET_FAILURES..QUIET_FAILURES + 5 {
+            assert!(
+                !should_warn(failures, true),
+                "already told -- stays quiet until a reconnect resets `told`"
+            );
+        }
+        assert!(
+            should_warn(QUIET_FAILURES, false),
+            "told reset by a reconnect: the same threshold warns again on a later streak"
+        );
+    }
 }

@@ -17,16 +17,6 @@ use crate::{SqlStore, date_str, to_us, vals};
 
 impl Record for Proposal {
     const TABLE: &'static str = "proposals";
-    const KIND: &'static str = "proposal";
-    type Id = ProposalId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        proposal_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![

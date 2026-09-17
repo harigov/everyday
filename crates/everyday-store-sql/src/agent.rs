@@ -41,16 +41,6 @@ use crate::{SqlStore, to_us, vals};
 
 impl Record for Conversation {
     const TABLE: &'static str = "conversations";
-    const KIND: &'static str = "conversation";
-    type Id = ConversationId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        conversation_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
@@ -62,16 +52,6 @@ impl Record for Conversation {
 
 impl Record for Message {
     const TABLE: &'static str = "messages";
-    const KIND: &'static str = "message";
-    type Id = MessageId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        message_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
@@ -83,16 +63,6 @@ impl Record for Message {
 
 impl Record for Memory {
     const TABLE: &'static str = "memories";
-    const KIND: &'static str = "memory";
-    type Id = MemoryId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        memory_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![("created_us", to_us(self.created_at).to_value())]

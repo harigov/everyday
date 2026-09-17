@@ -27,7 +27,6 @@ use everyday_core::account::{
     Account, AccountSecret, AccountStatus, AgentCaller, AgentMailAccess, Preset, Provider,
 };
 use everyday_core::id::AccountId;
-use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -223,6 +222,7 @@ async fn save_account_password(
     args: SaveAccountPassword,
 ) -> CommandResult<()> {
     let vault = svc.require()?;
+    let now = svc.now();
     let account = blocking({
         let vault = vault.clone();
         move || {
@@ -235,7 +235,7 @@ async fn save_account_password(
             // before anything has synced. The first sync that is refused
             // moves it back.
             account.status = AccountStatus::Ok;
-            account.updated_at = Timestamp::now();
+            account.updated_at = now;
             vault.save_account(&account)?;
             Ok(account)
         }
@@ -268,6 +268,7 @@ async fn attach_oauth_sign_in(
     let tokens = svc.sign_ins().claim_tokens(&args.sign_in_id).ok_or_else(|| {
         CommandError::new(codes::NOT_FOUND, "that sign-in has no tokens waiting to be saved")
     })?;
+    let now = svc.now();
     let account = blocking({
         let vault = vault.clone();
         move || {
@@ -282,7 +283,7 @@ async fn attach_oauth_sign_in(
             }
             vault.save_account_secret(args.id, &secret)?;
             account.status = AccountStatus::Ok;
-            account.updated_at = Timestamp::now();
+            account.updated_at = now;
             vault.save_account(&account)?;
             Ok(account)
         }
@@ -300,13 +301,14 @@ async fn attach_oauth_sign_in(
 /// Flip one caller's switches on one account.
 async fn set_agent_access(svc: Arc<Service>, _ctx: Ctx, args: SetAgentAccess) -> CommandResult<()> {
     let vault = svc.require()?;
+    let now = svc.now();
     blocking(move || {
         let mut account = vault.account(args.id)?;
         match args.caller {
             AgentCaller::Assistant => account.assistant_access = args.access,
             AgentCaller::Mcp => account.mcp_access = args.access,
         }
-        account.updated_at = Timestamp::now();
+        account.updated_at = now;
         Ok(vault.save_account(&account)?)
     })
     .await

@@ -2,7 +2,7 @@
 //! vectors, this decides.
 
 use super::{Attribution, Voiceprint};
-use jiff::Timestamp;
+use crate::timestamped::Timestamped;
 use std::collections::BTreeMap;
 
 /// One turn on the system track, with its embedding.
@@ -380,7 +380,7 @@ pub fn fold_into(voiceprint: &mut Voiceprint, centroid: &[f32], params: Params) 
                 .collect();
             voiceprint.centroids[i] = normalise(&merged);
             voiceprint.samples += 1;
-            voiceprint.updated_at = Timestamp::now();
+            voiceprint.touch();
             return;
         }
     }
@@ -397,7 +397,7 @@ pub fn fold_into(voiceprint: &mut Voiceprint, centroid: &[f32], params: Params) 
         voiceprint.centroids.push(centroid.to_vec());
     }
     voiceprint.samples += 1;
-    voiceprint.updated_at = Timestamp::now();
+    voiceprint.touch();
 }
 
 /// Split an attendee string into (name, email). Either may be absent.
@@ -438,6 +438,7 @@ pub fn parse_attendee(attendee: &str) -> (Option<String>, Option<String>) {
 mod tests {
     use super::*;
     use crate::id::VoiceprintId;
+    use jiff::Timestamp;
 
     // A tiny deterministic PRNG so tests do not depend on `rand`'s exact
     // algorithm across versions, and so a failure reproduces byte for byte.

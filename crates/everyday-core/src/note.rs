@@ -23,6 +23,7 @@ use crate::id::{BlobId, NoteId};
 use crate::model::{Attachment, MediaKind};
 use crate::purpose::Purpose;
 use crate::richtext::RichDoc;
+use crate::timestamped::Timestamped;
 use crate::{Error, Result};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,7 @@ pub const MAX_TITLE_BYTES: usize = 500;
 
 /// A note.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Note {
     pub id: NoteId,
@@ -149,8 +151,15 @@ impl Note {
     }
 }
 
+impl Timestamped for Note {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
+    }
+}
+
 /// A row in the note list.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct NoteSummary {
     pub id: NoteId,

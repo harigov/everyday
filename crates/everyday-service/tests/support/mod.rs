@@ -1,20 +1,24 @@
 //! Test fixtures shared across this crate's integration tests.
 //!
-//! Two unrelated things live here for the same reason: each is something
+//! Three unrelated things live here for the same reason: each is something
 //! more than one test file built by hand before this existed, and a second
 //! copy is where the drift starts. [`compare`] writes or checks a committed
 //! snapshot -- `surface.json`, the command table every client is generated
 //! from, and `mcp.json`, the tool catalogue an MCP client and a model read --
-//! and [`vault::service`] builds a vault to run commands against, which
-//! `tests/call.rs` and `tests/transfer.rs` both need and neither is about.
+//! [`vault::service`] builds a vault to run commands against, which
+//! `tests/call.rs` and `tests/transfer.rs` both need and neither is about,
+//! and [`clock::FakeClock`] is a `Service`-facing clock a test moves by
+//! hand, for whichever test wants to prove a time-dependent behaviour
+//! without a sleep.
 //!
 //! Rust compiles every file in `tests/` as its own binary, so this is shared
 //! by `mod support;` in each of them rather than by being importable. That is
 //! also why each of those declarations carries `#[allow(dead_code)]`: no one
-//! binary uses all of both halves, and the other half would otherwise warn.
+//! binary uses every part of this module, and the rest would otherwise warn.
 
 use std::path::Path;
 
+pub mod clock;
 pub mod vault;
 
 /// The environment variable that turns a comparison into an update.

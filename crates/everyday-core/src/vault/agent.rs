@@ -15,8 +15,9 @@ use crate::agent::{
 };
 use crate::error::{Error, Result};
 use crate::id::{ConversationId, MemoryId, MessageId};
+use crate::record::RecordKind;
 use crate::store::agent::{AgentStore, ConversationQuery};
-use jiff::Timestamp;
+use crate::timestamped::Timestamped;
 
 impl Vault {
     /// Does this vault's backend hold conversations at all?
@@ -160,12 +161,16 @@ impl Vault {
 
     pub fn save_conversation(&self, conversation: &Conversation) -> Result<()> {
         self.writable()?;
-        self.with_agent(|a| a.put_conversation(conversation))
+        self.with_agent(|a| a.put_conversation(conversation))?;
+        self.wrote(RecordKind::Conversation, conversation.id);
+        Ok(())
     }
 
     pub fn delete_conversation(&self, id: ConversationId) -> Result<()> {
         self.writable()?;
-        self.with_agent(|a| a.delete_conversation(id))
+        self.with_agent(|a| a.delete_conversation(id))?;
+        self.wrote(RecordKind::Conversation, id);
+        Ok(())
     }
 
     pub fn messages(&self, id: ConversationId) -> Result<Vec<Message>> {
@@ -189,6 +194,7 @@ impl Vault {
     pub fn save_message(&self, message: &Message) -> Result<()> {
         self.writable()?;
         self.with_agent(|a| a.put_message(message))?;
+        self.wrote(RecordKind::Message, message.id);
 
         let touched = self.conversation(message.conversation_id).and_then(|mut c| {
             c.updated_at = message.created_at.max(c.updated_at);
@@ -205,7 +211,9 @@ impl Vault {
 
     pub fn delete_message(&self, id: MessageId) -> Result<()> {
         self.writable()?;
-        self.with_agent(|a| a.delete_message(id))
+        self.with_agent(|a| a.delete_message(id))?;
+        self.wrote(RecordKind::Message, id);
+        Ok(())
     }
 
     // ---- memory ----------------------------------------------------------
@@ -242,6 +250,7 @@ impl Vault {
         self.writable()?;
         memory.validate()?;
         self.with_agent(|a| a.put_memory(memory))?;
+        self.wrote(RecordKind::Memory, memory.id);
 
         let existing = self.memories()?;
 
@@ -294,6 +303,7 @@ impl Vault {
                 continue;
             }
             self.with_agent(|a| a.delete_memory(m.id))?;
+            self.wrote(RecordKind::Memory, m.id);
             evicted.push(m);
         }
         Ok(evicted)
@@ -338,13 +348,15 @@ impl Vault {
         }
 
         memory.origin = origin;
-        memory.updated_at = Timestamp::now();
+        memory.touch();
         self.save_memory(&memory)?;
         Ok(memory)
     }
 
     pub fn delete_memory(&self, id: MemoryId) -> Result<()> {
         self.writable()?;
-        self.with_agent(|a| a.delete_memory(id))
+        self.with_agent(|a| a.delete_memory(id))?;
+        self.wrote(RecordKind::Memory, id);
+        Ok(())
     }
 }

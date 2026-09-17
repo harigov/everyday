@@ -53,12 +53,15 @@
 //! decryption; [`resolve`] is the same rule in Rust for callers holding the
 //! records already.
 
+use crate::completable::Completable;
 use crate::id::{GoalId, RoleId};
+use crate::timestamped::Timestamped;
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
 
 /// Who you are being. A handful of these, changing about once a year.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Role {
     pub id: RoleId,
@@ -167,6 +170,7 @@ pub fn suggested_roles() -> Vec<Role> {
 /// goals sit paused" has to be askable across a whole life at once, and
 /// per-role vocabularies would make it unanswerable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum GoalStatus {
     #[default]
@@ -207,6 +211,7 @@ impl GoalStatus {
 
 /// An outcome you want, under a role.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Goal {
     pub id: GoalId,
@@ -256,21 +261,6 @@ impl Goal {
         self
     }
 
-    /// Move to `status`, keeping `completed_at` honest.
-    ///
-    /// Only [`Done`](GoalStatus::Done) stamps. Dropping a goal is not
-    /// finishing it, and a "completed" date on something you gave up on
-    /// would poison the one count anybody wants from this — how many of the
-    /// things you set out to do you actually did.
-    pub fn set_status(&mut self, status: GoalStatus) {
-        self.status = status;
-        self.completed_at = match status {
-            GoalStatus::Done => self.completed_at.or_else(|| Some(Timestamp::now())),
-            _ => None,
-        };
-        self.updated_at = Timestamp::now();
-    }
-
     /// What this goal points at, for a record that serves it.
     pub fn purpose(&self) -> Purpose {
         Purpose::Goal { id: self.id }
@@ -286,6 +276,33 @@ impl Goal {
     }
 }
 
+/// Only [`Done`](GoalStatus::Done) stamps `completed_at`. Dropping a goal is
+/// not finishing it, and a "completed" date on something you gave up on
+/// would poison the one count anybody wants from this -- how many of the
+/// things you set out to do you actually did.
+impl Completable for Goal {
+    type Status = GoalStatus;
+    const DONE: GoalStatus = GoalStatus::Done;
+
+    fn status_mut(&mut self) -> &mut GoalStatus {
+        &mut self.status
+    }
+
+    fn completed_at_mut(&mut self) -> &mut Option<Timestamp> {
+        &mut self.completed_at
+    }
+
+    fn updated_at_mut(&mut self) -> &mut Timestamp {
+        &mut self.updated_at
+    }
+}
+
+impl Timestamped for Goal {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
+    }
+}
+
 /// What a record is *for*.
 ///
 /// Pointing at a role directly is not a degraded case of pointing at a goal.
@@ -293,6 +310,7 @@ impl Goal {
 /// outcome, and an hour of it should count against that role rather than
 /// against nothing at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Purpose {
     Goal { id: GoalId },
@@ -364,6 +382,7 @@ pub fn resolve(chain: impl IntoIterator<Item = Option<Purpose>>) -> Option<Purpo
 /// not booked against anything, and a chart that quietly dropped that share
 /// would be flattering rather than useful.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct PurposeMinutes {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -395,6 +414,7 @@ impl PurposeMinutes {
 /// the two questions — "how much of my week did other people book" and "what
 /// did I actually do" — are different questions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct RoleEventMinutes {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -408,6 +428,7 @@ pub struct RoleEventMinutes {
 /// Every field is a count or an instant, so the whole thing is answerable
 /// from clear columns and nothing is decrypted to draw the list.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct GoalActivity {
     /// Tasks pointing here, or at a project pointing here, that are neither

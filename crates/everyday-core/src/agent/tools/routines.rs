@@ -3,13 +3,15 @@
 use serde_json::{Value, json};
 
 use super::{
-    Args, Built, Tool, ToolContext, done, empty_schema, flag, limit_arg, list, number, schema, text,
+    Args, Built, Tool, ToolContext, delete_built, describe_by_id, done, empty_schema, flag,
+    limit_arg, list, load_by_id, number, run_delete, schema, text,
 };
 use crate::error::{Error, Result};
 use crate::id::RoutineId;
 use crate::proposal::{About, AboutKind, Payload, ProposalKind, ProposedRecord};
 use crate::routine::{Routine, RoutineRun, Trigger, Weekday};
 use crate::store::routines::RunQuery;
+use crate::timestamped::Timestamped;
 
 pub(super) static TOOLS: &[Tool] = &[
     tool!(
@@ -126,8 +128,13 @@ pub(super) static TOOLS: &[Tool] = &[
 ];
 
 fn describe_delete_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
-    let id: RoutineId = args.opt_id("routine_id", "routine").ok()??;
-    ctx.vault.routine(id).ok().map(|r| r.name)
+    describe_by_id::<RoutineId, Routine>(
+        args,
+        "routine_id",
+        "routine",
+        |id| ctx.vault.routine(id),
+        |r| r.name,
+    )
 }
 
 fn routine_json(r: &Routine, now: &jiff::Zoned) -> Value {
@@ -288,14 +295,13 @@ fn apply_update_routine_args(args: &Args<'_>, mut routine: Routine) -> Result<Ro
     if let Some(enabled) = args.opt_bool("enabled") {
         routine.enabled = enabled;
     }
-    routine.updated_at = jiff::Timestamp::now();
+    routine.touch();
     routine.validate()?;
     Ok(routine)
 }
 
 fn run_update_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: RoutineId = args.id("routine_id", "routine")?;
-    let routine = ctx.vault.routine(id)?;
+    let routine: Routine = load_by_id(args, "routine_id", "routine", |id| ctx.vault.routine(id))?;
     let routine = apply_update_routine_args(args, routine)?;
     ctx.vault.save_routine(&routine)?;
 
@@ -326,16 +332,19 @@ fn refuse_if_dream(routine: &Routine) -> Result<()> {
 }
 
 fn build_update_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
-    let id: RoutineId = args.id("routine_id", "routine")?;
-    let original = ctx.vault.routine(id)?;
-    refuse_if_dream(&original)?;
+    let original: Routine = load_by_id(args, "routine_id", "routine", |id| {
+        let r = ctx.vault.routine(id)?;
+        refuse_if_dream(&r)?;
+        Ok(r)
+    })?;
     let expected_updated_at = original.updated_at;
     let routine = apply_update_routine_args(args, original)?;
     let caption = format!("Change routine: {}", routine.name);
+    let about = About { kind: AboutKind::Routine, id: routine.id.to_string() };
     Ok(Built {
         payload: Payload::Replace { record: ProposedRecord::Routine(routine), expected_updated_at },
         caption,
-        about: Some(About { kind: AboutKind::Routine, id: id.to_string() }),
+        about: Some(about),
     })
 }
 
@@ -354,23 +363,35 @@ fn refuse_delete_if_dream(routine: &Routine) -> Result<()> {
 }
 
 fn run_delete_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: RoutineId = args.id("routine_id", "routine")?;
     // Read it first, so the confirmation card and the reply can name what went.
-    let routine = ctx.vault.routine(id)?;
-    refuse_delete_if_dream(&routine)?;
-    ctx.vault.delete_routine(id)?;
-    done("deleted", "routine", &routine.name, id.to_string())
+    run_delete::<RoutineId, Routine>(
+        args,
+        "routine_id",
+        "routine",
+        |id| {
+            let r = ctx.vault.routine(id)?;
+            refuse_delete_if_dream(&r)?;
+            Ok(r)
+        },
+        |id| ctx.vault.delete_routine(id),
+        |routine| routine.name,
+    )
 }
 
 fn build_delete_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
-    let id: RoutineId = args.id("routine_id", "routine")?;
-    let routine = ctx.vault.routine(id)?;
-    refuse_delete_if_dream(&routine)?;
-    Ok(Built {
-        payload: Payload::Delete { kind: ProposalKind::Routine, id: id.to_string() },
-        caption: format!("Delete routine: {}", routine.name),
-        about: Some(About { kind: AboutKind::Routine, id: id.to_string() }),
-    })
+    delete_built::<RoutineId, Routine>(
+        args,
+        "routine_id",
+        "routine",
+        ProposalKind::Routine,
+        AboutKind::Routine,
+        |id| {
+            let r = ctx.vault.routine(id)?;
+            refuse_delete_if_dream(&r)?;
+            Ok(r)
+        },
+        |routine: Routine| format!("Delete routine: {}", routine.name),
+    )
 }
 
 fn run_run_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {

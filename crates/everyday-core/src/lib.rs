@@ -79,6 +79,7 @@ pub mod account;
 pub mod agent;
 pub mod blobstore;
 pub mod calendar;
+pub mod completable;
 pub mod crypto;
 pub mod dream;
 pub mod error;
@@ -98,13 +99,17 @@ pub mod profile;
 pub mod proposal;
 pub mod purpose;
 pub mod quick;
+pub mod record;
 pub mod richtext;
 pub mod routine;
+#[cfg(feature = "schema")]
+pub mod schema;
 pub mod search;
 pub mod store;
 pub mod task;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+pub mod timestamped;
 pub mod tracker;
 pub mod vault;
 pub mod websearch;
@@ -119,6 +124,7 @@ pub use agent::{
 };
 pub use blobstore::FileBlobStore;
 pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatus, SyncReport};
+pub use completable::Completable;
 pub use error::{Error, Result};
 pub use id::{
     AccountId, BlobId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId,
@@ -150,6 +156,7 @@ pub use purpose::{
     Goal, GoalActivity, GoalStatus, Purpose, PurposeMinutes, Role, RoleEventMinutes,
 };
 pub use quick::{Prompt as QuickPrompt, QuickApp, QuickContext, QuickJob, QuickPolicy};
+pub use record::{RecordDescriptor, RecordKind};
 pub use richtext::RichDoc;
 pub use routine::{DreamScope, Due, Outcome, Routine, RoutineKind, RoutineRun, Trigger, Weekday};
 pub use store::accounts::AccountStore;
@@ -172,6 +179,7 @@ pub use task::{
     BlockKind, BlockSubject, Priority, Project, ProjectStatus, ProjectTaskCount, Task, TaskStats,
     TaskStatus, TimeBlock,
 };
+pub use timestamped::Timestamped;
 pub use tracker::{Aggregate, Reading, Tracker, TrackerKind};
 pub use vault::{Vault, VaultConfig, VaultHeader, VaultStatus};
 pub use websearch::{Fetcher, SearchRequest, SearchResult, Source, WebSearch};

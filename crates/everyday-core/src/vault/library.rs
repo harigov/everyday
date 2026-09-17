@@ -18,6 +18,7 @@ use crate::id::{ItemId, KindId, LogId};
 use crate::library::{
     Item, ItemStatus, Kind, KindCount, LibraryStats, LogEntry, default_kinds, upgrade_kinds,
 };
+use crate::record::RecordKind;
 use crate::store::library::{ItemQuery, LibraryStore, LogQuery};
 
 impl Vault {
@@ -50,13 +51,19 @@ impl Vault {
         if kind.slug.trim().is_empty() {
             return Err(Error::Invalid("a shelf needs a short name to look things up by".into()));
         }
-        self.with_library(|l| l.put_kind(kind))
+        self.with_library(|l| l.put_kind(kind))?;
+        self.wrote(RecordKind::Kind, kind.id);
+        Ok(())
     }
 
     /// Delete the shelf, everything on it and every log row those items had.
+    /// Only the shelf itself is recorded as touched -- the cascade has no
+    /// ids in hand here to name individually.
     pub fn delete_kind(&self, id: KindId) -> Result<()> {
         self.writable()?;
-        self.with_library(|l| l.delete_kind(id))
+        self.with_library(|l| l.delete_kind(id))?;
+        self.wrote(RecordKind::Kind, id);
+        Ok(())
     }
 
     /// Put the built-in shelves in an empty library, or bring an existing
@@ -121,7 +128,9 @@ impl Vault {
         self.with_library(|l| {
             l.get_kind(item.kind_id)?;
             l.put_item(item)
-        })
+        })?;
+        self.wrote(RecordKind::Item, item.id);
+        Ok(())
     }
 
     /// One write for many items: a re-ordered shelf, or a bulk status change.
@@ -130,13 +139,21 @@ impl Vault {
         if let Some(bad) = items.iter().find(|i| i.title.trim().is_empty()) {
             return Err(Error::Invalid(format!("item {} has no title", bad.id)));
         }
-        self.with_library(|l| l.put_items(items))
+        self.with_library(|l| l.put_items(items))?;
+        for item in items {
+            self.wrote(RecordKind::Item, item.id);
+        }
+        Ok(())
     }
 
-    /// Delete the item and its whole log.
+    /// Delete the item and its whole log. Only the item itself is recorded
+    /// as touched -- the cascade has no ids in hand here to name
+    /// individually.
     pub fn delete_item(&self, id: ItemId) -> Result<()> {
         self.writable()?;
-        self.with_library(|l| l.delete_item(id))
+        self.with_library(|l| l.delete_item(id))?;
+        self.wrote(RecordKind::Item, id);
+        Ok(())
     }
 
     pub fn logs(&self, query: &LogQuery) -> Result<Vec<LogEntry>> {
@@ -157,12 +174,16 @@ impl Vault {
         self.with_library(|l| {
             l.get_item(log.item_id)?;
             l.put_log(log)
-        })
+        })?;
+        self.wrote(RecordKind::Log, log.id);
+        Ok(())
     }
 
     pub fn delete_log(&self, id: LogId) -> Result<()> {
         self.writable()?;
-        self.with_library(|l| l.delete_log(id))
+        self.with_library(|l| l.delete_log(id))?;
+        self.wrote(RecordKind::Log, id);
+        Ok(())
     }
 
     /// Counts for the library sidebar, as of the calendar year `year`.

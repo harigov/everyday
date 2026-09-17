@@ -78,7 +78,6 @@ use everyday_core::meeting::{
 };
 use everyday_core::store::meetings::RecordingQuery;
 use everyday_core::{Error, Vault};
-use jiff::Timestamp;
 
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Change, Kind, Notification, Op};
@@ -418,7 +417,7 @@ pub fn append(
                 true
             }
         };
-        recording.updated_at = Timestamp::now();
+        recording.updated_at = svc.now();
         Ok(())
     })?;
     svc.meeting_touch_append(id);
@@ -440,9 +439,9 @@ pub fn finish(svc: &Arc<Service>, id: RecordingId) -> CommandResult<Recording> {
                 format!("recording is {} and cannot be finished", recording.stage.as_str()),
             ));
         }
-        recording.ended_at = Some(Timestamp::now());
+        recording.ended_at = Some(svc.now());
         recording.stage = Stage::Transcribing;
-        recording.updated_at = Timestamp::now();
+        recording.updated_at = svc.now();
         Ok(())
     })?;
     svc.meeting_forget_append(id);
@@ -514,7 +513,7 @@ pub fn retry(svc: &Arc<Service>, id: RecordingId) -> CommandResult<Recording> {
             ));
         }
         recording.stage = resume;
-        recording.updated_at = Timestamp::now();
+        recording.updated_at = svc.now();
         Ok(())
     })?;
     pipeline::enqueue(svc, id);
@@ -555,9 +554,9 @@ fn reclaim_stale(svc: &Arc<Service>, vault: &Vault) -> CommandResult<Vec<Recordi
 /// [`mutate_recording`]'s own doc.
 fn finish_stuck(svc: &Arc<Service>, vault: &Vault, id: RecordingId) -> CommandResult<()> {
     mutate_recording(vault, id, |recording| {
-        recording.ended_at.get_or_insert_with(Timestamp::now);
+        recording.ended_at.get_or_insert_with(|| svc.now());
         recording.stage = Stage::Transcribing;
-        recording.updated_at = Timestamp::now();
+        recording.updated_at = svc.now();
         Ok(())
     })?;
     svc.meeting_forget_append(id);
@@ -604,12 +603,13 @@ fn recover_inner(svc: &Arc<Service>, vault: &Vault) -> CommandResult<()> {
 /// called from the scheduler's minute tick alongside everything else it
 /// does while the vault is unlocked and writable.
 pub fn expire_failed_tick(svc: &Arc<Service>, vault: &Vault) {
+    let now = svc.instant();
     {
         let mut last = LAST_EXPIRE_SWEEP.lock().unwrap();
-        if last.is_some_and(|t| t.elapsed() < EXPIRE_SWEEP_INTERVAL) {
+        if last.is_some_and(|t| now.saturating_duration_since(t) < EXPIRE_SWEEP_INTERVAL) {
             return;
         }
-        *last = Some(Instant::now());
+        *last = Some(now);
     }
     if let Err(e) = expire_failed(svc, vault) {
         tracing::warn!(error = %e, "meeting spool: failed-recording expiry pass failed");
@@ -674,7 +674,7 @@ fn sweep_orphaned_spool(vault: &Vault) {
 /// read-modify-write, must win outright rather than have this delete the
 /// row out from under them the instant either one releases it.
 fn expire_failed(svc: &Arc<Service>, vault: &Vault) -> CommandResult<()> {
-    let now = Timestamp::now();
+    let now = svc.now();
     let failed = vault.recordings(&RecordingQuery {
         // `Stage::as_str` answers "failed" for every `Stage::Failed { .. }`
         // regardless of its fields, so the literal here is exactly what a
@@ -1111,8 +1111,8 @@ mod tests {
 
     // ---- failed expiry ----------------------------------------------------
 
-    fn days_ago(days: i64) -> Timestamp {
-        Timestamp::from_second(Timestamp::now().as_second() - days * 86_400).unwrap()
+    fn days_ago(days: i64) -> jiff::Timestamp {
+        jiff::Timestamp::from_second(jiff::Timestamp::now().as_second() - days * 86_400).unwrap()
     }
 
     #[test]

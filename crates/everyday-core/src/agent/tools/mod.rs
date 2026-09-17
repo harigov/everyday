@@ -53,6 +53,7 @@ use std::sync::OnceLock;
 use crate::error::{Error, Result};
 use crate::id::{ConversationId, GoalId, RoleId};
 use crate::purpose::Purpose;
+use crate::record::RecordKind;
 use crate::vault::Vault;
 use jiff::civil::Date;
 
@@ -261,6 +262,47 @@ impl Domain {
             // first place: no tool here returns one, or a `voiceprint_id`,
             // or anything an embedding could be reconstructed from.
             | Domain::Meetings => Sensitivity::Ordinary,
+        }
+    }
+}
+
+/// The domain a record kind's tools live in, for the twenty-nine kinds one
+/// actually does -- a `RecordKind::Proposal` names work the assistant
+/// prepared, not a domain of its own, and answers `None`. Coarser than
+/// [`RecordKind`] on purpose, the same way [`Domain::sensitivity`] and
+/// [`available`] already are: several kinds share one domain (`Project`,
+/// `Task` and `Block` are all `Domain::Tasks`), because a tool list is
+/// offered per domain, not per table.
+impl TryFrom<RecordKind> for Domain {
+    type Error = ();
+
+    fn try_from(kind: RecordKind) -> Result<Domain, ()> {
+        match kind {
+            RecordKind::Journal | RecordKind::Entry => Ok(Domain::Journals),
+            RecordKind::Note => Ok(Domain::Notes),
+            RecordKind::Project | RecordKind::Task | RecordKind::Block => Ok(Domain::Tasks),
+            RecordKind::Calendar | RecordKind::Event => Ok(Domain::Calendars),
+            RecordKind::Kind | RecordKind::Item | RecordKind::Log => Ok(Domain::Library),
+            RecordKind::Tracker | RecordKind::Reading => Ok(Domain::Trackers),
+            RecordKind::Role | RecordKind::Goal => Ok(Domain::Purpose),
+            RecordKind::Routine | RecordKind::RoutineRun => Ok(Domain::Routines),
+            RecordKind::Conversation | RecordKind::Message | RecordKind::Memory => {
+                Ok(Domain::Agent)
+            }
+            // Accounts have no tool domain of their own -- `Domain::Mail`
+            // requires both `supports_mail()` and `supports_accounts()` --
+            // so an account's tools are the mail domain's.
+            RecordKind::Account
+            | RecordKind::Mailbox
+            | RecordKind::MailMessage
+            | RecordKind::Thread
+            | RecordKind::Draft
+            | RecordKind::Op => Ok(Domain::Mail),
+            RecordKind::Recording | RecordKind::Transcript | RecordKind::Voiceprint => {
+                Ok(Domain::Meetings)
+            }
+            // Proposed work, not a domain a tool list is offered for.
+            RecordKind::Proposal => Err(()),
         }
     }
 }
@@ -561,6 +603,99 @@ impl Tool {
 }
 
 impl<'a> ToolContext<'a> {
+    /// A context with nothing wired beyond what every tool needs: the
+    /// vault, and today's date in the caller's own zone. Every other field
+    /// starts at its "nobody asked" value -- `None`, or `false` for
+    /// `unattended` -- and each `with_*` below turns one on.
+    ///
+    /// The one constructor every caller builds a [`ToolContext`] through,
+    /// so a field this struct gains later is a decision made once, here,
+    /// rather than copied by hand into `ConfirmGate::describe`,
+    /// `ConfirmGate::park` and the two `run_tool`s that used to build one
+    /// from a bare struct literal apiece.
+    pub fn new(vault: &'a Vault, today: Date, tz: &'a str) -> Self {
+        Self {
+            vault,
+            today,
+            tz,
+            conversation: None,
+            unattended: false,
+            caller: None,
+            mail_search: None,
+            assistant_provider: None,
+            mail_rate_limit: None,
+            after_mail_write: None,
+            invite_responder: None,
+            drafting: None,
+        }
+    }
+
+    /// The thread this call belongs to. See [`ToolContext::conversation`].
+    pub fn with_conversation(mut self, conversation: ConversationId) -> Self {
+        self.conversation = Some(conversation);
+        self
+    }
+
+    /// Whether this call is part of a scheduled run with nobody watching.
+    /// See [`ToolContext::unattended`].
+    pub fn with_unattended(mut self, unattended: bool) -> Self {
+        self.unattended = unattended;
+        self
+    }
+
+    /// Who this call is being made on behalf of. See [`ToolContext::caller`].
+    pub fn with_caller(mut self, caller: Caller) -> Self {
+        self.caller = Some(caller);
+        self
+    }
+
+    /// Mail's search index, already the `Option` every caller has it as --
+    /// `Service::mail_index` answers `None` when this vault's mail storage
+    /// did not open cleanly this session, which is not a "did not ask"
+    /// this builder should turn into one. See [`ToolContext::mail_search`].
+    pub fn with_mail_search(
+        mut self,
+        mail_search: Option<&'a dyn crate::mailsearch::MailSearch>,
+    ) -> Self {
+        self.mail_search = mail_search;
+        self
+    }
+
+    /// The provider the assistant is configured to use right now. See
+    /// [`ToolContext::assistant_provider`].
+    pub fn with_assistant_provider(mut self, provider: String) -> Self {
+        self.assistant_provider = Some(provider);
+        self
+    }
+
+    /// The gate a mail write's enqueue passes through. See
+    /// [`ToolContext::mail_rate_limit`].
+    pub fn with_mail_rate_limit(mut self, rate_limit: &'a MailRateLimit<'a>) -> Self {
+        self.mail_rate_limit = Some(rate_limit);
+        self
+    }
+
+    /// Called once a mail tool's write actually lands. See
+    /// [`ToolContext::after_mail_write`].
+    pub fn with_after_mail_write(mut self, hook: &'a dyn Fn(crate::id::AccountId)) -> Self {
+        self.after_mail_write = Some(hook);
+        self
+    }
+
+    /// The gate `respond_to_invite` builds and queues an iTIP `REPLY`
+    /// through. See [`ToolContext::invite_responder`].
+    pub fn with_invite_responder(mut self, responder: &'a InviteResponder<'a>) -> Self {
+        self.invite_responder = Some(responder);
+        self
+    }
+
+    /// Set when this call is part of work nobody asked for. See
+    /// [`ToolContext::drafting`].
+    pub fn with_drafting(mut self, drafting: Option<Drafting>) -> Self {
+        self.drafting = drafting;
+        self
+    }
+
     /// Now, in the zone this context was built with.
     ///
     /// Built from `today` and the zone rather than from the clock, so a tool
@@ -890,6 +1025,98 @@ fn done(action: &str, kind: &str, name: &str, id: String) -> Result<Value> {
     Ok(json!({ "ok": true, "action": action, "kind": kind, "name": name, "id": id }))
 }
 
+// ---- per-entity mechanics ------------------------------------------------
+//
+// Every domain's `get_x`/`update_x`/`delete_x` starts the same way: parse an
+// id argument, load the record it names, and -- for a delete -- say what
+// went. The four helpers below are that shape, parameterised over how a
+// record is fetched and named; what a tool actually *does* with the record
+// stays in the domain file that calls them. `noun` is usually
+// [`RecordKind::not_found_noun`], spelled out at each call site rather than
+// read from a `RecordKind` here, so a tool whose model-facing name differs
+// from the kind's own -- `create_time_block`'s "time block", not "block" --
+// is free to say so without these helpers knowing about the exception.
+
+/// Parse `key` as an id and load the record it names -- the first two lines
+/// of nearly every `run_get_x`, `run_update_x`, `build_update_x`,
+/// `run_delete_x` and `build_delete_x`, collapsed to one call.
+fn load_by_id<Id, T>(
+    args: &Args<'_>,
+    key: &str,
+    noun: &str,
+    get: impl FnOnce(Id) -> Result<T>,
+) -> Result<T>
+where
+    Id: std::str::FromStr,
+{
+    get(args.id(key, noun)?)
+}
+
+/// The same, for a `describe_delete_x`: an id that might not have arrived
+/// yet, or might not parse, while the model is still choosing its
+/// arguments. `None` rather than an error whenever the id is missing,
+/// invalid, or names nothing -- the same "say nothing rather than something
+/// wrong" every `describe_delete_x` already had.
+fn describe_by_id<Id, T>(
+    args: &Args<'_>,
+    key: &str,
+    noun: &str,
+    get: impl FnOnce(Id) -> Result<T>,
+    name: impl FnOnce(T) -> String,
+) -> Option<String>
+where
+    Id: std::str::FromStr,
+{
+    let id: Id = args.opt_id(key, noun).ok()??;
+    get(id).ok().map(name)
+}
+
+/// The mechanical half of a `run_delete_x`: parse the id, read the record so
+/// the reply can name what went, delete it, and reply the way every
+/// deleting tool replies. `get` and `remove` stay separate closures because
+/// there is no delete generic over every domain to call instead of them --
+/// see the refactor plan's "Out of scope" table on a generic `RecordStore`.
+fn run_delete<Id, T>(
+    args: &Args<'_>,
+    key: &str,
+    noun: &str,
+    get: impl FnOnce(Id) -> Result<T>,
+    remove: impl FnOnce(Id) -> Result<()>,
+    name: impl FnOnce(T) -> String,
+) -> Result<Value>
+where
+    Id: std::str::FromStr + std::fmt::Display + Copy,
+{
+    let id: Id = args.id(key, noun)?;
+    let record = get(id)?;
+    remove(id)?;
+    done("deleted", noun, &name(record), id.to_string())
+}
+
+/// The mechanical half of a `build_delete_x`: read the record so the
+/// caption can name what would go, then build the `Payload::Delete` a
+/// proposal carries.
+fn delete_built<Id, T>(
+    args: &Args<'_>,
+    key: &str,
+    noun: &str,
+    kind: crate::proposal::ProposalKind,
+    about: crate::proposal::AboutKind,
+    get: impl FnOnce(Id) -> Result<T>,
+    caption: impl FnOnce(T) -> String,
+) -> Result<Built>
+where
+    Id: std::str::FromStr + std::fmt::Display + Copy,
+{
+    let id: Id = args.id(key, noun)?;
+    let record = get(id)?;
+    Ok(Built {
+        payload: crate::proposal::Payload::Delete { kind, id: id.to_string() },
+        caption: caption(record),
+        about: Some(crate::proposal::About { kind: about, id: id.to_string() }),
+    })
+}
+
 // ---- the catalogue ------------------------------------------------------
 
 /// Every tool that exists, in catalogue order: orientation first, then the
@@ -1200,6 +1427,48 @@ fn check_cap(ctx: &ToolContext<'_>, drafting: &Drafting) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`TryFrom<RecordKind> for Domain`] is an exhaustive match with no
+    /// wildcard, so it cannot silently start skipping a variant; this pins
+    /// what each group actually maps to, and that `Proposal` -- proposed
+    /// work, not a domain of its own -- is the one kind refused.
+    #[test]
+    fn every_record_kind_maps_to_its_domain_or_is_refused() {
+        for (kind, domain) in [
+            (RecordKind::Journal, Domain::Journals),
+            (RecordKind::Entry, Domain::Journals),
+            (RecordKind::Note, Domain::Notes),
+            (RecordKind::Project, Domain::Tasks),
+            (RecordKind::Task, Domain::Tasks),
+            (RecordKind::Block, Domain::Tasks),
+            (RecordKind::Calendar, Domain::Calendars),
+            (RecordKind::Event, Domain::Calendars),
+            (RecordKind::Kind, Domain::Library),
+            (RecordKind::Item, Domain::Library),
+            (RecordKind::Log, Domain::Library),
+            (RecordKind::Tracker, Domain::Trackers),
+            (RecordKind::Reading, Domain::Trackers),
+            (RecordKind::Role, Domain::Purpose),
+            (RecordKind::Goal, Domain::Purpose),
+            (RecordKind::Routine, Domain::Routines),
+            (RecordKind::RoutineRun, Domain::Routines),
+            (RecordKind::Conversation, Domain::Agent),
+            (RecordKind::Message, Domain::Agent),
+            (RecordKind::Memory, Domain::Agent),
+            (RecordKind::Account, Domain::Mail),
+            (RecordKind::Mailbox, Domain::Mail),
+            (RecordKind::MailMessage, Domain::Mail),
+            (RecordKind::Thread, Domain::Mail),
+            (RecordKind::Draft, Domain::Mail),
+            (RecordKind::Op, Domain::Mail),
+            (RecordKind::Recording, Domain::Meetings),
+            (RecordKind::Transcript, Domain::Meetings),
+            (RecordKind::Voiceprint, Domain::Meetings),
+        ] {
+            assert_eq!(Domain::try_from(kind), Ok(domain), "{kind:?}");
+        }
+        assert_eq!(Domain::try_from(RecordKind::Proposal), Err(()));
+    }
 
     /// The rule that has to hold before there is a domain it applies to.
     ///

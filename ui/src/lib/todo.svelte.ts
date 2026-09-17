@@ -19,6 +19,9 @@ import { app, handle } from './state.svelte'
 import { debounce } from './store/debounce'
 import { FocusRequest } from './store/focus-request'
 import { latest } from './store/latest'
+import { optimisticPatch } from './store/optimistic-patch'
+import { optimisticRemove } from './store/optimistic-remove'
+import { guardedRefresh } from './store/refresh'
 import { addDays, todayIso } from './time'
 import { parseQuickAdd } from './quickadd'
 import {
@@ -180,6 +183,8 @@ class TodoState {
 
   /** Tasks edited since the last write, and the timer that writes them. */
   #saves = new Autosave<TaskId>((ids) => this.#writeTasks(ids))
+  /** `patch`'s assign-stamp-queue, once. See `store/optimistic-patch.ts`. */
+  #patcher = optimisticPatch<TaskId, Task>((id) => this.tasks.find((t) => t.id === id), this.#saves)
   #started = false
   /** Which load is the current one. See `refresh`. */
   #generation = latest()
@@ -262,30 +267,28 @@ class TodoState {
    */
   async refresh() {
     if (!app.supportsTasks) return
-    const generation = this.#generation.next()
-    this.loading = true
-    try {
-      const [projects, tasks, stats, tags] = await Promise.all([
-        api.projects(),
-        this.showingGoals ? Promise.resolve([]) : api.tasks(this.query()),
-        api.taskStats(),
-        api.taskTags(),
-      ])
-      if (!this.#generation.isCurrent(generation)) return
-      this.projects = projects
-      this.tasks = tasks
-      this.stats = stats
-      this.tags = tags
-      // A selection that has scrolled out of scope is not a selection.
-      if (this.selectedTask && !tasks.some((t) => t.id === this.selectedTask)) {
-        this.selectedTask = null
-        this.detailBlocks = []
-      }
-    } catch (e) {
-      await handle(e)
-    } finally {
-      if (this.#generation.isCurrent(generation)) this.loading = false
-    }
+    await guardedRefresh(
+      this.#generation,
+      async (isCurrent) => {
+        const [projects, tasks, stats, tags] = await Promise.all([
+          api.projects(),
+          this.showingGoals ? Promise.resolve([]) : api.tasks(this.query()),
+          api.taskStats(),
+          api.taskTags(),
+        ])
+        if (!isCurrent()) return
+        this.projects = projects
+        this.tasks = tasks
+        this.stats = stats
+        this.tags = tags
+        // A selection that has scrolled out of scope is not a selection.
+        if (this.selectedTask && !tasks.some((t) => t.id === this.selectedTask)) {
+          this.selectedTask = null
+          this.detailBlocks = []
+        }
+      },
+      { setLoading: (v) => (this.loading = v), onError: (e) => handle(e) },
+    )
   }
 
   /**
@@ -534,11 +537,7 @@ class TodoState {
    * showing the same thing without a reconciliation pass.
    */
   patch(id: TaskId, changes: Partial<Task>) {
-    const task = this.tasks.find((t) => t.id === id)
-    if (!task) return
-    Object.assign(task, changes)
-    task.updatedAt = new Date().toISOString()
-    this.#saves.touch(id)
+    this.#patcher.patch(id, changes)
   }
 
   /** Write every pending edit now. Safe when nothing is dirty. */
@@ -664,22 +663,25 @@ class TodoState {
   }
 
   async remove(id: TaskId) {
-    // Drop it locally first: the subtree goes with it on disk, so waiting
-    // would leave orphaned children on screen for a round trip.
-    const doomed = this.#subtree(id)
-    this.tasks = this.tasks.filter((t) => !doomed.has(t.id))
-    if (doomed.has(this.selectedTask ?? '')) {
-      this.selectedTask = null
-      this.detailBlocks = []
-    }
-    for (const gone of doomed) this.#saves.forget(gone)
-    try {
-      await api.deleteTask(id)
-      void this.refreshStats()
-      void this.refreshTags()
-    } catch (e) {
-      await handle(e, () => this.refresh())
-    }
+    await optimisticRemove({
+      // Drop it locally first: the subtree goes with it on disk, so waiting
+      // would leave orphaned children on screen for a round trip.
+      optimistic: () => {
+        const doomed = this.#subtree(id)
+        this.tasks = this.tasks.filter((t) => !doomed.has(t.id))
+        if (doomed.has(this.selectedTask ?? '')) {
+          this.selectedTask = null
+          this.detailBlocks = []
+        }
+        for (const gone of doomed) this.#saves.forget(gone)
+      },
+      call: () => api.deleteTask(id),
+      onSuccess: () => {
+        void this.refreshStats()
+        void this.refreshTags()
+      },
+      rollback: () => this.refresh(),
+    })
   }
 
   #subtree(root: TaskId): Set<TaskId> {

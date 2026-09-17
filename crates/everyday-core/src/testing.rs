@@ -17,7 +17,8 @@ use crate::error::{Error, Result};
 use crate::id::{BlobId, EntryId, JournalId};
 use crate::model::{Entry, EntrySummary, Journal};
 use crate::store::{
-    BackendRegistry, Capabilities, EntryQuery, JournalStore, StoreContext, StoreFactory, StoreStats,
+    BackendCapabilities, BackendRegistry, EntryQuery, JournalStore, StoreContext, StoreFactory,
+    StoreStats,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -46,26 +47,8 @@ impl JournalStore for MemStore {
     fn backend(&self) -> &'static str {
         "memory"
     }
-    fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            notes: false,
-            routines: false,
-            proposals: false,
-            blobs: true,
-            transactional: false,
-            human_readable: false,
-            max_blob_bytes: None,
-            tasks: false,
-            calendars: false,
-            library: false,
-            trackers: false,
-            purpose: false,
-            agent: false,
-            secrets: false,
-            accounts: false,
-            mail: false,
-            meetings: false,
-        }
+    fn backend_capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities { blobs: true, ..BackendCapabilities::default() }
     }
     fn list_journals(&self) -> Result<Vec<Journal>> {
         self.journals
@@ -182,8 +165,8 @@ impl JournalStore for Handle {
     fn backend(&self) -> &'static str {
         self.0.backend()
     }
-    fn capabilities(&self) -> Capabilities {
-        self.0.capabilities()
+    fn backend_capabilities(&self) -> BackendCapabilities {
+        self.0.backend_capabilities()
     }
     fn list_journals(&self) -> Result<Vec<Journal>> {
         self.0.list_journals()

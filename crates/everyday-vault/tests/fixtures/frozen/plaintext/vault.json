@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "name": "My Journal",
+  "backend": "sqlite",
+  "cipher": "none",
+  "createdAt": "2026-09-17T17:04:26.300309771Z",
+  "autoLockSeconds": 900,
+  "migratedLock": true,
+  "forgetKeySeconds": 0
+}

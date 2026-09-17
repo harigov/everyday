@@ -19,6 +19,7 @@ directories = "6"
 
 [dev-dependencies]
 jiff.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tempfile = "3"
 # Test-only: parsing the hostile `.eml` corpus and sanitising it the same

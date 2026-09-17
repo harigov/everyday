@@ -24,7 +24,9 @@ use crate::mail::{
     Thread, apply_optimistic,
 };
 use crate::packstore::{PackRef, PackStore};
+use crate::record::RecordKind;
 use crate::store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
+use crate::timestamped::Timestamped;
 use jiff::Timestamp;
 
 impl Vault {
@@ -80,7 +82,9 @@ impl Vault {
 
     pub fn save_mailbox(&self, mailbox: &Mailbox) -> Result<()> {
         self.writable()?;
-        self.with_mail(|m| m.put_mailbox(mailbox))
+        self.with_mail(|m| m.put_mailbox(mailbox))?;
+        self.wrote(RecordKind::Mailbox, mailbox.id);
+        Ok(())
     }
 
     /// See [`crate::store::mail::MailStore::delete_mailbox`] for what the
@@ -90,7 +94,9 @@ impl Vault {
     /// [`Vault::remove_mail_uids`]'s own pairs.
     pub fn delete_mailbox(&self, id: MailboxId) -> Result<Vec<(MailMessageId, PackRef)>> {
         self.writable()?;
-        self.with_mail(|m| m.delete_mailbox(id))
+        let removed = self.with_mail(|m| m.delete_mailbox(id))?;
+        self.wrote(RecordKind::Mailbox, id);
+        Ok(removed)
     }
 
     // ---- bulk header ingest ------------------------------------------------
@@ -169,7 +175,12 @@ impl Vault {
     /// [`crate::store::mail::MailStore::merge_threads`].
     pub fn merge_mail_threads(&self, keep: ThreadId, others: &[ThreadId]) -> Result<()> {
         self.writable()?;
-        self.with_mail(|m| m.merge_threads(keep, others))
+        self.with_mail(|m| m.merge_threads(keep, others))?;
+        self.wrote(RecordKind::Thread, keep);
+        for id in others {
+            self.wrote(RecordKind::Thread, *id);
+        }
+        Ok(())
     }
 
     pub fn mail_message(&self, id: MailMessageId) -> Result<Message> {
@@ -199,7 +210,9 @@ impl Vault {
 
     pub fn save_draft(&self, draft: &Draft) -> Result<()> {
         self.writable()?;
-        self.with_mail(|m| m.put_draft(draft))
+        self.with_mail(|m| m.put_draft(draft))?;
+        self.wrote(RecordKind::Draft, draft.id);
+        Ok(())
     }
 
     pub fn draft(&self, id: DraftId) -> Result<Draft> {
@@ -237,15 +250,21 @@ impl Vault {
     /// actually there.
     pub fn with_draft(&self, id: DraftId, f: impl FnOnce(&mut Draft) -> bool) -> Result<Draft> {
         self.writable()?;
-        self.write(|u| {
+        let mut wrote = false;
+        let draft = self.write(|u| {
             let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
             let mut draft = mail.get_draft(id)?;
             if f(&mut draft) {
-                draft.updated_at = Timestamp::now();
+                draft.touch();
                 mail.put_draft(&draft)?;
+                wrote = true;
             }
             Ok(draft)
-        })
+        })?;
+        if wrote {
+            self.wrote(RecordKind::Draft, id);
+        }
+        Ok(draft)
     }
 
     /// Set message `id`'s [`crate::mail::Invite`] directly -- what
@@ -259,7 +278,9 @@ impl Vault {
         invite: Option<crate::mail::Invite>,
     ) -> Result<()> {
         self.writable()?;
-        self.with_mail(move |m| m.set_message_invite(id, invite))
+        self.with_mail(move |m| m.set_message_invite(id, invite))?;
+        self.wrote(RecordKind::MailMessage, id);
+        Ok(())
     }
 
     /// Undo `respond_to_invite`'s own optimistic write to `message_id`'s
@@ -275,19 +296,26 @@ impl Vault {
     /// nothing to revert, and this must never manufacture one.
     pub fn revert_invite_response(&self, message_id: MailMessageId) -> Result<()> {
         self.writable()?;
-        self.with_mail(|m| {
+        let changed = self.with_mail(|m| {
             let message = m.get_message(message_id)?;
-            let Some(mut invite) = message.invite else { return Ok(()) };
+            let Some(mut invite) = message.invite else { return Ok(false) };
             invite.my_response = None;
-            m.set_message_invite(message_id, Some(invite))
-        })
+            m.set_message_invite(message_id, Some(invite))?;
+            Ok(true)
+        })?;
+        if changed {
+            self.wrote(RecordKind::MailMessage, message_id);
+        }
+        Ok(())
     }
 
     // ---- the outbox ----------------------------------------------------------
 
     pub fn enqueue_op(&self, op: &Op) -> Result<()> {
         self.writable()?;
-        self.with_mail(|m| m.enqueue_op(op))
+        self.with_mail(|m| m.enqueue_op(op))?;
+        self.wrote(RecordKind::Op, op.id);
+        Ok(())
     }
 
     pub fn due_ops(&self, account: AccountId, now: Timestamp, limit: u32) -> Result<Vec<Op>> {
@@ -310,7 +338,9 @@ impl Vault {
 
     pub fn update_op(&self, op: &Op) -> Result<()> {
         self.writable()?;
-        self.with_mail(|m| m.update_op(op))
+        self.with_mail(|m| m.update_op(op))?;
+        self.wrote(RecordKind::Op, op.id);
+        Ok(())
     }
 
     pub fn op(&self, id: OpId) -> Result<Op> {
@@ -445,7 +475,9 @@ impl Vault {
     /// this is deliberately not [`Vault::correct_mail_category`].
     pub fn set_mail_message_category(&self, id: MailMessageId, category: Category) -> Result<()> {
         self.writable()?;
-        self.with_mail(|m| m.set_message_category(id, category))
+        self.with_mail(|m| m.set_message_category(id, category))?;
+        self.wrote(RecordKind::MailMessage, id);
+        Ok(())
     }
 
     /// See
@@ -486,7 +518,9 @@ impl Vault {
     /// told is over either.
     pub fn release_snooze(&self, thread: ThreadId) -> Result<()> {
         self.writable()?;
-        self.with_mail(|m| m.set_thread_snoozed_until(thread, None))
+        self.with_mail(|m| m.set_thread_snoozed_until(thread, None))?;
+        self.wrote(RecordKind::Thread, thread);
+        Ok(())
     }
 
     // ---- batch thread actions ----------------------------------------------
@@ -535,7 +569,7 @@ impl Vault {
             return Err(Error::Invalid(format!("{kind:?} does not target a thread")));
         }
         self.writable()?;
-        self.write(|u| {
+        let ops = self.write(|u| {
             let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
             let mut ops = Vec::with_capacity(threads.len());
             for &thread_id in threads {
@@ -551,7 +585,19 @@ impl Vault {
                 ops.push(op);
             }
             Ok(ops)
-        })
+        })?;
+        // Each thread is what every command built on this announces --
+        // `mark_read`, `star`, `archive` and the rest all declare
+        // `Thread/Updated` with the same thread ids their own arguments
+        // named. The messages `apply_local_effect` rewrote underneath and
+        // the `Op` each thread enqueued are exactly what `events.rs`'s
+        // `Kind::Thread` is documented to fold both of into: recording them
+        // here too would be truer to what was physically written, but would
+        // only ever restate the same thread id a second and third time.
+        for &thread_id in threads {
+            self.wrote(RecordKind::Thread, thread_id);
+        }
+        Ok(ops)
     }
 
     /// Undo [`Vault::apply_thread_ops`]'s local effect for one thread, once
@@ -578,7 +624,9 @@ impl Vault {
                 Inverse::ClearSnooze => mail.set_thread_snoozed_until(thread, None),
                 Inverse::None => Ok(()),
             }
-        })
+        })?;
+        self.wrote(RecordKind::Thread, thread);
+        Ok(())
     }
 
     // ---- sending and saving a draft -----------------------------------------
@@ -594,7 +642,7 @@ impl Vault {
         origin: Origin,
     ) -> Result<(Draft, Op)> {
         self.writable()?;
-        self.write(|u| {
+        let result = self.write(|u| {
             let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
             let mut draft = mail.get_draft(draft_id)?;
             if !matches!(draft.state, DraftState::Editing) {
@@ -607,10 +655,12 @@ impl Vault {
                 .not_before(not_before);
             mail.enqueue_op(&op)?;
             draft.state = DraftState::Queued { op: op.id };
-            draft.updated_at = Timestamp::now();
+            draft.touch();
             mail.put_draft(&draft)?;
             Ok((draft, op))
-        })
+        })?;
+        self.wrote(RecordKind::Draft, draft_id);
+        Ok(result)
     }
 
     /// Cancel a queued send, provided its op is still [`OpState::Pending`],
@@ -651,7 +701,7 @@ impl Vault {
     /// already `Some`.
     pub fn undo_send(&self, draft_id: DraftId, now: Timestamp) -> Result<Draft> {
         self.writable()?;
-        self.write(|u| {
+        let draft = self.write(|u| {
             let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
             let mut draft = mail.get_draft(draft_id)?;
             let DraftState::Queued { op: op_id } = draft.state else {
@@ -698,10 +748,12 @@ impl Vault {
             op.transition_to(OpState::Cancelled)?;
             mail.update_op(&op)?;
             draft.state = DraftState::Editing;
-            draft.updated_at = Timestamp::now();
+            draft.touch();
             mail.put_draft(&draft)?;
             Ok(draft)
-        })
+        })?;
+        self.wrote(RecordKind::Draft, draft_id);
+        Ok(draft)
     }
 
     /// Save `draft`, and — when `append` says to — enqueue an
@@ -717,7 +769,7 @@ impl Vault {
         origin: Origin,
     ) -> Result<Option<Op>> {
         self.writable()?;
-        self.write(|u| {
+        let op = self.write(|u| {
             let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
             mail.put_draft(draft)?;
             if !append {
@@ -727,7 +779,9 @@ impl Vault {
                 Op::new(draft.account_id, OpKind::AppendDraft, OpTarget::Draft(draft.id), origin);
             mail.enqueue_op(&op)?;
             Ok(Some(op))
-        })
+        })?;
+        self.wrote(RecordKind::Draft, draft.id);
+        Ok(op)
     }
 
     /// Discard `draft`: [`DraftState::Discarded`], one write, plus an
@@ -744,7 +798,7 @@ impl Vault {
     /// already passes.
     pub fn discard_draft(&self, draft_id: DraftId) -> Result<(Draft, Option<Op>)> {
         self.writable()?;
-        self.write(|u| {
+        let result = self.write(|u| {
             let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
             let mut draft = mail.get_draft(draft_id)?;
             // A discard racing a still-pending `Send` must win: otherwise
@@ -768,7 +822,7 @@ impl Vault {
                 }
             }
             draft.state = DraftState::Discarded;
-            draft.updated_at = Timestamp::now();
+            draft.touch();
             mail.put_draft(&draft)?;
             let op = match &draft.server_copy {
                 Some(_) => {
@@ -784,7 +838,9 @@ impl Vault {
                 None => None,
             };
             Ok((draft, op))
-        })
+        })?;
+        self.wrote(RecordKind::Draft, draft_id);
+        Ok(result)
     }
 }
 

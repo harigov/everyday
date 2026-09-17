@@ -41,6 +41,7 @@
 
 pub mod accountcal;
 pub mod agent;
+pub mod clock;
 pub mod command;
 pub mod ctx;
 pub mod domains;
@@ -56,11 +57,14 @@ pub mod mailview;
 pub mod meeting;
 pub mod outbox;
 pub mod quick;
+pub mod retry;
+pub(crate) mod runtime;
 pub mod scheduler;
 pub mod service;
 pub mod signin;
 pub mod supervisor;
 pub mod token_cache;
+pub mod touched;
 pub mod transfers;
 pub mod websearch;
 

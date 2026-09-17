@@ -176,6 +176,24 @@ pub struct Capabilities {
     pub meetings: bool,
 }
 
+/// The facts about a backend that [`Capabilities`]' domain flags cannot
+/// derive from the [`JournalStore`] accessors: whether it stores blobs, is
+/// transactional, produces files another tool can read, and any size cap on
+/// an attachment.
+///
+/// A backend overrides [`JournalStore::backend_capabilities`] to report
+/// these instead of overriding [`JournalStore::capabilities`] itself, so the
+/// domain flags -- `tasks`, `notes`, `mail`, and the rest -- are always the
+/// accessors' own answer and can never drift from them. See
+/// [`JournalStore::capabilities`]'s default body.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BackendCapabilities {
+    pub blobs: bool,
+    pub transactional: bool,
+    pub human_readable: bool,
+    pub max_blob_bytes: Option<u64>,
+}
+
 /// Per-vault configuration a backend needs and the core knows nothing about.
 ///
 /// A file-backed store needs only the directory it is handed. A store that
@@ -453,7 +471,45 @@ pub trait JournalStore: Send + Sync {
     /// the right backend is chosen when the vault is reopened.
     fn backend(&self) -> &'static str;
 
-    fn capabilities(&self) -> Capabilities;
+    /// The four facts about this backend that its domain accessors below
+    /// cannot answer. See [`BackendCapabilities`]. The default is what
+    /// `MemStore` wants: no durability guarantee, no human-readable files,
+    /// no size limit, and it overrides `blobs` alone.
+    fn backend_capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::default()
+    }
+
+    /// What this backend can and cannot do. The UI reads this to hide
+    /// features a backend does not support rather than surfacing errors at
+    /// click time.
+    ///
+    /// The domain flags are derived from the accessors below -- each one is
+    /// exactly `self.<domain>().is_some()` -- so a backend cannot report a
+    /// domain it does not implement, or forget to report one it does.
+    /// Backends override [`JournalStore::backend_capabilities`] for the four
+    /// facts that are not accessor-shaped, not this method.
+    fn capabilities(&self) -> Capabilities {
+        let b = self.backend_capabilities();
+        Capabilities {
+            blobs: b.blobs,
+            transactional: b.transactional,
+            human_readable: b.human_readable,
+            max_blob_bytes: b.max_blob_bytes,
+            tasks: self.tasks().is_some(),
+            calendars: self.calendars().is_some(),
+            library: self.library().is_some(),
+            trackers: self.trackers().is_some(),
+            purpose: self.purpose().is_some(),
+            notes: self.notes().is_some(),
+            routines: self.routines().is_some(),
+            proposals: self.proposals().is_some(),
+            agent: self.agent().is_some(),
+            secrets: self.secrets().is_some(),
+            accounts: self.accounts().is_some(),
+            mail: self.mail().is_some(),
+            meetings: self.meetings().is_some(),
+        }
+    }
 
     /// Storage for the task domain, if this backend has any.
     ///

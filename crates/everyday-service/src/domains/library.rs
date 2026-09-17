@@ -350,6 +350,7 @@ async fn set_item_progress(svc: Arc<Service>, _ctx: Ctx, args: SetProgress) -> C
     let vault = svc.require()?;
     let today = today_local();
     let tz = system_tz();
+    let now = svc.now();
     blocking(move || {
         let mut item = vault.item(args.id)?;
         // The unit comes from the shelf, and is copied onto the item rather
@@ -366,7 +367,7 @@ async fn set_item_progress(svc: Arc<Service>, _ctx: Ctx, args: SetProgress) -> C
         if item.status == ItemStatus::Wishlist {
             item.set_status(ItemStatus::Active, today);
         }
-        item.updated_at = jiff::Timestamp::now();
+        item.updated_at = now;
         vault.save_item(&item)?;
 
         if args.log {

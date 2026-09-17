@@ -33,8 +33,10 @@
 //! keeps tasks out of the blob store, and keeps the attachment
 //! garbage-collector's job unchanged.
 
+use crate::completable::Completable;
 use crate::id::{BlockId, ProjectId, TaskId};
 use crate::purpose::Purpose;
+use crate::timestamped::Timestamped;
 use jiff::{
     Timestamp,
     civil::{Date, Time},
@@ -49,6 +51,7 @@ use serde::{Deserialize, Serialize};
 /// wanting analytics later. Per-project columns would make that
 /// unanswerable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum TaskStatus {
     /// Captured, not committed to.
@@ -101,6 +104,7 @@ impl TaskStatus {
 
 /// How a project is going.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum ProjectStatus {
     #[default]
@@ -144,6 +148,7 @@ impl ProjectStatus {
 /// priority, and a scheme where everything must be triaged on capture is a
 /// scheme people stop capturing into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum Priority {
     #[default]
@@ -187,6 +192,7 @@ impl Priority {
 
 /// A body of work with tasks under it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
     pub id: ProjectId,
@@ -257,16 +263,6 @@ impl Project {
         self
     }
 
-    /// Move to `status`, keeping `completed_at` honest.
-    pub fn set_status(&mut self, status: ProjectStatus) {
-        self.status = status;
-        self.completed_at = match status {
-            ProjectStatus::Done => self.completed_at.or_else(|| Some(Timestamp::now())),
-            _ => None,
-        };
-        self.updated_at = Timestamp::now();
-    }
-
     /// Everything a text filter should look at.
     pub fn searchable_text(&self) -> String {
         let mut out = String::with_capacity(64);
@@ -281,6 +277,29 @@ impl Project {
     }
 }
 
+impl Completable for Project {
+    type Status = ProjectStatus;
+    const DONE: ProjectStatus = ProjectStatus::Done;
+
+    fn status_mut(&mut self) -> &mut ProjectStatus {
+        &mut self.status
+    }
+
+    fn completed_at_mut(&mut self) -> &mut Option<Timestamp> {
+        &mut self.completed_at
+    }
+
+    fn updated_at_mut(&mut self) -> &mut Timestamp {
+        &mut self.updated_at
+    }
+}
+
+impl Timestamped for Project {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
+    }
+}
+
 /// Project accents. The journal palette, so one vault has one set of colours.
 pub const DEFAULT_PROJECT_COLORS: &[&str] = crate::model::DEFAULT_JOURNAL_COLORS;
 
@@ -289,6 +308,7 @@ pub const DEFAULT_PROJECT_COLORS: &[&str] = crate::model::DEFAULT_JOURNAL_COLORS
 /// A task with no `project_id` is in the inbox — captured but not filed —
 /// which is what makes capture cheap enough to actually do.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
     pub id: TaskId,
@@ -373,19 +393,6 @@ impl Task {
         self.parent_id.is_some()
     }
 
-    /// Move to `status`, keeping `completed_at` honest.
-    ///
-    /// Reopening a finished task clears the completion stamp rather than
-    /// leaving a date that would make the analytics count it twice.
-    pub fn set_status(&mut self, status: TaskStatus) {
-        self.status = status;
-        self.completed_at = match status {
-            TaskStatus::Done => self.completed_at.or_else(|| Some(Timestamp::now())),
-            _ => None,
-        };
-        self.updated_at = Timestamp::now();
-    }
-
     /// Is the deadline in the past, as of `today`? Open tasks only: a
     /// finished task is never overdue, whenever it was due.
     pub fn is_overdue(&self, today: Date) -> bool {
@@ -414,12 +421,39 @@ impl Task {
     }
 }
 
+/// Reopening a finished task clears the completion stamp rather than
+/// leaving a date that would make the analytics count it twice -- see
+/// [`Completable::set_status`].
+impl Completable for Task {
+    type Status = TaskStatus;
+    const DONE: TaskStatus = TaskStatus::Done;
+
+    fn status_mut(&mut self) -> &mut TaskStatus {
+        &mut self.status
+    }
+
+    fn completed_at_mut(&mut self) -> &mut Option<Timestamp> {
+        &mut self.completed_at
+    }
+
+    fn updated_at_mut(&mut self) -> &mut Timestamp {
+        &mut self.updated_at
+    }
+}
+
+impl Timestamped for Task {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
+    }
+}
+
 /// What a block of time was spent on.
 ///
 /// `Adhoc` is not a placeholder: a calendar has to hold the dentist
 /// appointment as well as the work, and giving it a home here means the
 /// calendar does not need its own storage layer when it arrives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum BlockSubject {
     Task {
@@ -450,6 +484,7 @@ impl BlockSubject {
 
 /// Intention or record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum BlockKind {
     /// "I mean to do this then." Lives on the calendar ahead of time.
@@ -483,6 +518,7 @@ impl BlockKind {
 /// `local_date`, and for the same reason: a backend can answer "show me this
 /// week" as an index scan without knowing anything about time zones.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct TimeBlock {
     pub id: BlockId,
@@ -583,6 +619,7 @@ impl TimeBlock {
 /// because one of them happens to be due today. Every column this reads is
 /// in the clear, so it decrypts nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectTaskCount {
     /// `None` is the inbox.
@@ -599,6 +636,7 @@ pub struct ProjectTaskCount {
 /// about a calendar date, and which date is the caller's to decide -- the
 /// core has no business guessing a time zone.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct TaskStats {
     pub projects: u64,

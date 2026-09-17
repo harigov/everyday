@@ -47,6 +47,7 @@ mod session;
 mod tasks;
 #[cfg(test)]
 mod tests;
+pub mod touched;
 mod trackers;
 
 pub use header::VaultHeader;

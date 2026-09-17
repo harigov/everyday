@@ -30,6 +30,7 @@
 // how the few exceptions -- the ones with a modifier in them -- say so.
 
 import { agent } from './agent.svelte'
+import { APPS } from './apps'
 import { calendar } from './calendar.svelte'
 import { SEQUENCE_MS, chordOf, isTyping, match, type Binding } from './keys'
 import { library } from './library.svelte'
@@ -1066,28 +1067,24 @@ export const ACTIONS: (Binding & { group: Group })[] = [
 /**
  * What "the next thing" means in the app that is open.
  *
- * A table keyed by `Section`, the same shape `App.svelte`'s `ACCENTS` uses
- * and for the same reason: this used to be an `if`/`else` chain with the
- * journal on the end of it, so a new app that forgot to add a clause did not
- * fail to compile, it silently opened a fresh journal entry instead -- the
- * one answer that is right nowhere else. This does not compile until the
- * new app says what its own "next thing" is.
+ * Reads `apps.ts`'s own `create` per app rather than a table kept here: that
+ * used to be an `if`/`else` chain with the journal on the end of it, so a
+ * new app that forgot to add a clause did not fail to compile, it silently
+ * opened a fresh journal entry instead -- the one answer that is right
+ * nowhere else.
  */
-const CREATE: Record<Section, () => unknown> = {
-  journal: () => app.newEntry(),
-  notes: () => notes.create(),
-  // The goals pane has no task line to put a cursor in, and the next thing
-  // somebody wants there is a goal.
-  todo: () => (todo.showingGoals ? focusNewGoal() : todo.focusCapture()),
-  calendar: () => calendar.bookNow(),
-  library: () => library.focusCapture(),
-  mail: () => mail.compose(),
-  overview: () => (overview.wantsLog = true),
-  assistant: () => assistant.draft(),
-}
-
 function create() {
-  void CREATE[app.section]()
+  void APPS[app.section].create({
+    app,
+    notes,
+    todo,
+    calendar,
+    library,
+    mail,
+    overview,
+    assistant,
+    focusNewGoal,
+  })
 }
 
 /**

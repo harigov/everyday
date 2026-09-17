@@ -3,6 +3,7 @@
 use super::calendars::sample_event;
 use super::library::seeded_kind;
 use super::*;
+use crate::completable::Completable;
 
 /// The purpose half of the suite. Called by [`run_all`] when the backend has
 /// a [`PurposeStore`](crate::store::purpose::PurposeStore).

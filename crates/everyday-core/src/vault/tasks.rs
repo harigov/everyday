@@ -9,6 +9,7 @@ use super::Vault;
 use super::session::Domain;
 use crate::error::{Error, Result};
 use crate::id::{BlockId, ProjectId, TaskId};
+use crate::record::RecordKind;
 use crate::store::EntryQuery;
 use crate::store::tasks::{BlockQuery, TaskQuery, TaskStore};
 use crate::task::{Project, Task, TaskStats, TimeBlock};
@@ -38,13 +39,19 @@ impl Vault {
 
     pub fn save_project(&self, project: &Project) -> Result<()> {
         self.writable()?;
-        self.with_tasks(|t| t.put_project(project))
+        self.with_tasks(|t| t.put_project(project))?;
+        self.wrote(RecordKind::Project, project.id);
+        Ok(())
     }
 
-    /// Delete a project, its tasks and their time blocks.
+    /// Delete a project, its tasks and their time blocks. Only the project
+    /// itself is recorded as touched -- the cascade has no ids in hand here
+    /// to name individually.
     pub fn delete_project(&self, id: ProjectId) -> Result<()> {
         self.writable()?;
-        self.with_tasks(|t| t.delete_project(id))
+        self.with_tasks(|t| t.delete_project(id))?;
+        self.wrote(RecordKind::Project, id);
+        Ok(())
     }
 
     pub fn tasks(&self, query: &TaskQuery) -> Result<Vec<Task>> {
@@ -63,7 +70,9 @@ impl Vault {
         if task.parent_id == Some(task.id) {
             return Err(Error::Invalid("a task cannot be its own subtask".into()));
         }
-        self.with_tasks(|t| t.put_task(task))
+        self.with_tasks(|t| t.put_task(task))?;
+        self.wrote(RecordKind::Task, task.id);
+        Ok(())
     }
 
     /// Write several tasks as one operation. This is what a board reorder
@@ -75,13 +84,21 @@ impl Vault {
                 return Err(Error::Invalid("a task needs a title".into()));
             }
         }
-        self.with_tasks(|s| s.put_tasks(tasks))
+        self.with_tasks(|s| s.put_tasks(tasks))?;
+        for t in tasks {
+            self.wrote(RecordKind::Task, t.id);
+        }
+        Ok(())
     }
 
-    /// Delete a task, its subtasks and their time blocks.
+    /// Delete a task, its subtasks and their time blocks. Only the task
+    /// itself is recorded as touched -- the cascade has no ids in hand here
+    /// to name individually.
     pub fn delete_task(&self, id: TaskId) -> Result<()> {
         self.writable()?;
-        self.with_tasks(|t| t.delete_task(id))
+        self.with_tasks(|t| t.delete_task(id))?;
+        self.wrote(RecordKind::Task, id);
+        Ok(())
     }
 
     pub fn blocks(&self, query: &BlockQuery) -> Result<Vec<TimeBlock>> {
@@ -95,12 +112,16 @@ impl Vault {
     pub fn save_block(&self, block: &TimeBlock) -> Result<()> {
         self.writable()?;
         block.validate()?;
-        self.with_tasks(|t| t.put_block(block))
+        self.with_tasks(|t| t.put_block(block))?;
+        self.wrote(RecordKind::Block, block.id);
+        Ok(())
     }
 
     pub fn delete_block(&self, id: BlockId) -> Result<()> {
         self.writable()?;
-        self.with_tasks(|t| t.delete_block(id))
+        self.with_tasks(|t| t.delete_block(id))?;
+        self.wrote(RecordKind::Block, id);
+        Ok(())
     }
 
     /// Counts for the sidebar, as of the calendar day `today`.

@@ -627,27 +627,15 @@ impl ConfirmGate {
     /// project" with no subject asks somebody to think, and one that says
     /// "delete 0192f8b2-..." asks them to guess.
     fn describe(&self, name: &str, arguments: &Value) -> String {
-        let ctx = ToolContext {
-            vault: &self.vault,
-            today: self.today,
-            tz: &self.tz,
-            conversation: None,
-            unattended: self.unattended,
-            // A confirmation card only ever reads a record to name it --
-            // `describe_send_draft` reads the draft's own recipients and
-            // subject straight off the vault, and `describe_respond_to_invite`
-            // reads the message's own invite the same way -- so none of the
-            // five fields below are needed here, the same way they are not
-            // needed by `every_destructive_tool_can_name_what_it_would_delete`
-            // in the core's own tests.
-            caller: None,
-            mail_search: None,
-            assistant_provider: None,
-            mail_rate_limit: None,
-            after_mail_write: None,
-            invite_responder: None,
-            drafting: None,
-        };
+        // A confirmation card only ever reads a record to name it --
+        // `describe_send_draft` reads the draft's own recipients and
+        // subject straight off the vault, and `describe_respond_to_invite`
+        // reads the message's own invite the same way -- so nothing beyond
+        // `unattended` is needed here, the same way it is not needed by
+        // `every_destructive_tool_can_name_what_it_would_delete` in the
+        // core's own tests.
+        let ctx =
+            ToolContext::new(&self.vault, self.today, &self.tz).with_unattended(self.unattended);
         tools::describe(&ctx, name, arguments).unwrap_or_default()
     }
 
@@ -668,20 +656,11 @@ impl ConfirmGate {
         arguments: &Value,
         source: ProposalSource,
     ) -> everyday_core::error::Result<Value> {
-        let ctx = ToolContext {
-            vault: &self.vault,
-            today: self.today,
-            tz: &self.tz,
-            conversation: Some(self.conversation),
-            unattended: self.unattended,
-            caller: Some(ToolCaller::Assistant { conversation: self.conversation }),
-            mail_search: None,
-            assistant_provider: Some(self.assistant_provider.clone()),
-            mail_rate_limit: None,
-            after_mail_write: None,
-            invite_responder: None,
-            drafting: None,
-        };
+        let ctx = ToolContext::new(&self.vault, self.today, &self.tz)
+            .with_conversation(self.conversation)
+            .with_unattended(self.unattended)
+            .with_caller(ToolCaller::Assistant { conversation: self.conversation })
+            .with_assistant_provider(self.assistant_provider.clone());
         tools::propose_call(&ctx, name, arguments, source)
     }
 }
@@ -946,7 +925,9 @@ async fn run_tool(
         // fixed for the turn, and is the person's rather than the host's, so
         // that "due today" in a tool means the same day the prompt said it
         // was.
-        let now = jiff::Timestamp::now()
+        let now = meta
+            .service
+            .now()
             .to_zoned(jiff::tz::TimeZone::get(&zone).unwrap_or(jiff::tz::TimeZone::UTC));
         // Held for the duration of the call so `mail_search` below can
         // borrow from it -- `Service::mail_index` hands back an `Arc`, not
@@ -987,20 +968,16 @@ async fn run_tool(
                 &service, message_id, response, comment, origin,
             )
         };
-        let ctx = ToolContext {
-            vault: &vault,
-            today: now.date(),
-            tz: &zone,
-            conversation: Some(meta.conversation),
-            unattended: meta.unattended,
-            caller: Some(ToolCaller::Assistant { conversation: meta.conversation }),
-            mail_search: mail_index.as_deref(),
-            assistant_provider: Some(assistant_provider),
-            mail_rate_limit: Some(&rate_limit),
-            after_mail_write: Some(&after_mail_write),
-            invite_responder: Some(&invite_responder),
-            drafting: meta.drafting.clone(),
-        };
+        let ctx = ToolContext::new(&vault, now.date(), &zone)
+            .with_conversation(meta.conversation)
+            .with_unattended(meta.unattended)
+            .with_caller(ToolCaller::Assistant { conversation: meta.conversation })
+            .with_mail_search(mail_index.as_deref())
+            .with_assistant_provider(assistant_provider)
+            .with_mail_rate_limit(&rate_limit)
+            .with_after_mail_write(&after_mail_write)
+            .with_invite_responder(&invite_responder)
+            .with_drafting(meta.drafting.clone());
         tools::dispatch(&ctx, name, &arguments)
     })
     .await;

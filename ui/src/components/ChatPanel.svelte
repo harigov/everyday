@@ -15,6 +15,7 @@
 
   import { onDestroy } from 'svelte'
   import { agent } from '../lib/agent.svelte'
+  import { APPS } from '../lib/apps'
   import { splitDigest } from '../lib/dream'
   import { renderMarkdown } from '../lib/markdown'
   import { panels } from '../lib/panels.svelte'
@@ -22,9 +23,9 @@
   import { app } from '../lib/state.svelte'
   import { todo } from '../lib/todo.svelte'
   import { assistant, PANE_LABELS } from '../lib/assistant.svelte'
+  import { mail } from '../lib/mail.svelte'
   import { overview } from '../lib/overview.svelte'
   import { purpose } from '../lib/purpose.svelte'
-  import { specOf } from '../lib/dashboard'
   import { library } from '../lib/library.svelte'
   import { notes } from '../lib/notes.svelte'
   import EmptyState from './EmptyState.svelte'
@@ -165,45 +166,25 @@
    * records and does not need to be handed one, but it does need to know
    * which app is open and what is selected in it.
    */
-  const context = $derived.by(() => {
-    switch (app.section) {
-      case 'todo':
-        if (todo.showingGoals) {
-          const goal = purpose.selected ? purpose.goal(purpose.selected) : undefined
-          return goal
-            ? `the todo app's goals, the goal "${goal.title}"`
-            : "the todo app's goals, grouped by role"
-        }
-        return todo.project ? `the todo app, project "${todo.project.name}"` : 'the todo app'
-      case 'calendar':
-        return 'the calendar'
-      case 'library':
-        return library.kind ? `the library, shelf "${library.kind.name}"` : 'the library'
-      case 'notes':
-        return notes.open ? `the notes app, the note "${notes.title}"` : 'the notes app'
-      case 'overview': {
-        // Named rather than described: it is a page of whatever cards its
-        // owner put on it now, so "where the week adds up by role" would be
-        // a claim about somebody else's page. An empty page is one somebody
-        // is allowed to have, and saying "showing" followed by nothing at all
-        // would be the assistant told a sentence that stops mid-word.
-        const cards = overview.widgets.map((w) => specOf(w.type).label.toLowerCase()).slice(0, 6)
-        return cards.length > 0
-          ? `their overview page, showing ${cards.join(', ')}`
-          : 'their overview page, which they have not put anything on yet'
-      }
-      case 'assistant':
-        return `your own routines and what they did, on the "${PANE_LABELS[assistant.pane]}" page`
-      default: {
-        const entry = app.entry
-        if (!entry) return 'the journal'
-        const title = entry.title?.trim()
-        return title
-          ? `the journal, entry "${title}" dated ${entry.localDate}`
-          : `the journal, an entry dated ${entry.localDate}`
-      }
-    }
-  })
+  const context = $derived.by(() =>
+    APPS[app.section].chatContext({
+      section: app.section,
+      todo: {
+        showingGoals: todo.showingGoals,
+        goalTitle: (purpose.selected ? purpose.goal(purpose.selected) : undefined)?.title ?? null,
+        projectName: todo.project?.name ?? null,
+      },
+      library: { shelfName: library.kind?.name ?? null },
+      notes: { openTitle: notes.open ? notes.title : null },
+      overview: { widgets: overview.widgets },
+      assistant: { paneLabel: PANE_LABELS[assistant.pane] },
+      mail: {
+        subject: mail.openThread?.thread.subject ?? null,
+        mailboxName: mail.mailbox?.remoteName ?? null,
+      },
+      entry: app.entry,
+    }),
+  )
 
   // Follow the reply as it streams, but only from the bottom: a person who
   // has scrolled up to read something is reading it, and yanking them back

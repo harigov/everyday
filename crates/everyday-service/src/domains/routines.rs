@@ -123,9 +123,10 @@ async fn new_routine(_svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandRe
 
 async fn save_routine(svc: Arc<Service>, _ctx: Ctx, args: SaveRoutine) -> CommandResult<Routine> {
     let vault = svc.require()?;
+    let now = svc.now();
     blocking(move || {
         let mut routine = args.routine;
-        routine.updated_at = jiff::Timestamp::now();
+        routine.updated_at = now;
         vault.save_routine(&routine)?;
         Ok(routine)
     })

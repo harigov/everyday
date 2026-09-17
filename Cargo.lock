@@ -2157,6 +2157,7 @@ dependencies = [
  "fs4 1.1.0",
  "jiff",
  "rand 0.9.5",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "tempfile",
@@ -2375,6 +2376,7 @@ dependencies = [
  "everyday-store-sqlite",
  "jiff",
  "keyring",
+ "serde",
  "serde_json",
  "tempfile",
 ]
@@ -6052,10 +6054,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
 dependencies = [
  "dyn-clone",
+ "jiff",
  "ref-cast",
  "schemars_derive 1.2.2",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

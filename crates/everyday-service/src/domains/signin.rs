@@ -92,7 +92,7 @@ async fn begin_oauth_sign_in(
         // port is known -- see that function's doc.
         redirect: String::new(),
     };
-    let begun = svc.sign_ins().begin(client, args.login_hint.as_deref()).await?;
+    let begun = svc.sign_ins().begin(client, args.login_hint.as_deref(), svc.clock()).await?;
     Ok(BegunSignIn { sign_in_id: begun.sign_in_id, url: begun.url })
 }
 

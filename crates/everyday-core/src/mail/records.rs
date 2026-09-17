@@ -11,6 +11,7 @@
 
 use crate::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use crate::packstore::PackRef;
+use crate::timestamped::Timestamped;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +25,7 @@ use serde::{Deserialize, Serialize};
 /// string already says "no name was given" without a second way to spell
 /// the same fact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Address {
     pub name: String,
@@ -49,6 +51,7 @@ impl Address {
 /// that might be `INBOX`, `Sent Items`, `[Gmail]/Sent Mail`, or anything
 /// else a provider chooses to call it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum MailboxRole {
     Inbox,
@@ -103,6 +106,7 @@ impl MailboxRole {
 /// engine every `uid` it remembers for this mailbox may now point at a
 /// different message — see [`crate::store::mail::MailStore::reset_mailbox`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Mailbox {
     pub id: MailboxId,
@@ -139,6 +143,7 @@ impl Mailbox {
 /// [`MessageFlags::bits`] pack them into the clear `messages.flags` column
 /// the unread count is summed from without decrypting a single row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct MessageFlags {
     pub seen: bool,
@@ -203,6 +208,7 @@ impl MessageFlags {
 /// stable id for the message, independent of which mailbox or label it is
 /// filed under.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct GmailMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -221,6 +227,7 @@ pub struct GmailMeta {
 /// now is the fixed set phase 7's own preview names, so `Option<Category>`
 /// has somewhere to live before the rules that fill it do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum Category {
     Important,
@@ -261,6 +268,7 @@ impl Category {
 /// order for anything that reads them back — a rules answer is the one a
 /// fresh backfill may always overwrite, a model's or a person's own is not.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum CategorySource {
     /// `crate::mail::categorize::categorize`'s own answer. The default for
@@ -280,6 +288,7 @@ pub enum CategorySource {
 /// and stored apart, so opening a thread list never has to decrypt the text
 /// of every message in it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
     pub id: MailMessageId,
@@ -343,6 +352,7 @@ pub struct Message {
 /// carrying one of those rather than inventing a fifth [`InviteMethod`]
 /// variant nothing in the interface would know what to do with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum InviteMethod {
     Request,
@@ -358,6 +368,7 @@ pub enum InviteMethod {
 /// [`AttendeeResponse::NeedsAction`] rather than growing this enum for a
 /// value the interface has no button for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum AttendeeResponse {
     Accepted,
@@ -368,6 +379,7 @@ pub enum AttendeeResponse {
 
 /// One name on the attendee list, and where their own RSVP currently stands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct InviteAttendee {
     pub address: Address,
@@ -393,6 +405,7 @@ pub struct InviteAttendee {
 /// clock reading `00:00`, which a genuine midnight meeting could also
 /// produce by coincidence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Invite {
     /// The `VEVENT`'s own `UID` — stable across `REQUEST`, `REPLY`, `CANCEL`
@@ -438,6 +451,7 @@ pub struct Invite {
 /// starts to count it as a live reference. See `crate::store`'s blob-walk for
 /// why this type, not [`Message`], is what that walk reaches into.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct PartRef {
     /// The `Content-ID` a `cid:` URL in the sanitised HTML rewrites to, for
@@ -465,6 +479,7 @@ pub struct PartRef {
 /// first. The sync engine converts one into the other on its way into
 /// [`Body::remote_images`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteImage {
     /// The address the message actually pointed at. Never shown to the
@@ -497,6 +512,7 @@ pub struct RemoteImage {
 /// at sync, so that no tool ever parses HTML or has to guess where a quote
 /// begins.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Body {
     pub message_id: MailMessageId,
@@ -593,6 +609,7 @@ fn safe_slice(s: &str, start: usize, end: usize) -> &str {
 /// `everyday_store_sql::mail::write::recompute_thread` is the one place all
 /// three are actually computed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Thread {
     pub id: ThreadId,
@@ -675,6 +692,7 @@ pub struct Thread {
 /// outbox entry sending it, so the compose window can show "sending…" and
 /// still be the same record if the send fails and reverts to `Editing`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum DraftState {
     Editing,
@@ -704,6 +722,7 @@ impl DraftState {
 /// attachment is first uploaded — the compose window's own attach command —
 /// so the outbox executor never has to invent either.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct DraftAttachment {
     pub blob: BlobId,
@@ -719,6 +738,7 @@ pub struct DraftAttachment {
 /// stale copy to delete after a restart — see that function's own module
 /// docs for the trade a memory-only version used to make.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct DraftServerCopy {
     pub mailbox: String,
@@ -733,6 +753,7 @@ pub struct DraftServerCopy {
 /// [`Draft::server_copy`]: a draft sealed before this field existed decodes
 /// as `None`, exactly "no calendar part", which is what it always meant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct DraftCalendarPart {
     /// The iTIP method this part carries, upper-case (`"REPLY"`) — a plain
@@ -753,6 +774,7 @@ pub struct DraftCalendarPart {
 /// state: whoever writes it, it is edited in the same editor and sent by
 /// the same [`Op`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Draft {
     pub id: DraftId,
@@ -850,6 +872,12 @@ impl Draft {
     }
 }
 
+impl Timestamped for Draft {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
+    }
+}
+
 // ---- the outbox -----------------------------------------------------------
 
 /// Who asked for an [`Op`]. The one place every path to a mail server meets
@@ -861,6 +889,7 @@ impl Draft {
 /// `drafts.origin`); `conversation`, `run` and `client` stay inside the
 /// sealed payload, the same trade every other pointer in this crate makes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Origin {
     Person,
@@ -900,6 +929,7 @@ impl Origin {
 /// plan's list, with data only where the action needs it: a destination
 /// mailbox to move to, a label's name, a time to wake a snoozed thread.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum OpKind {
     MarkRead,
@@ -967,6 +997,7 @@ impl OpKind {
 // internal tag works fine; this is the one enum in the module whose
 // variants are newtypes over a single scalar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", content = "id", rename_all = "camelCase")]
 pub enum OpTarget {
     Thread(ThreadId),
@@ -977,6 +1008,7 @@ pub enum OpTarget {
 /// Where one [`Op`] is in its life. See [`crate::mail::outbox`] for the
 /// legal transitions between these.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum OpState {
     Pending,
@@ -1009,6 +1041,7 @@ impl OpState {
 /// One entry in the outbox: the local write already happened; this is what
 /// still has to reach the server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Op {
     pub id: OpId,
@@ -1053,6 +1086,12 @@ impl Op {
     }
 }
 
+impl Timestamped for Op {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
+    }
+}
+
 // ---- remote-image permissions ----------------------------------------------
 
 /// The standing allow-list a remote image is checked against: senders and
@@ -1067,6 +1106,7 @@ impl Op {
 /// another, and a second copy of the same list per account would only be
 /// somewhere for the two to quietly disagree.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteImageSettings {
     /// Exact sender addresses, lower-cased for comparison — see

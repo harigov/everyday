@@ -39,6 +39,7 @@ use std::time::Duration;
 use everyday_mail::oauth::{Loopback, LoopbackError, OAuthClient, OAuthError, Tokens};
 use tokio::sync::watch;
 
+use crate::clock::Clock;
 use crate::error::{CommandError, CommandResult, codes};
 
 /// How long a sign-in has, from `begin_oauth_sign_in` to a browser coming
@@ -121,12 +122,20 @@ impl SignIns {
     /// `client.redirect` is overwritten with the loopback's own
     /// `http://127.0.0.1:{port}/callback` before anything is built from it
     /// -- the caller does not, and should not, know the port in advance.
+    ///
+    /// `clock` is cloned into the spawned wait-then-exchange task below, not
+    /// just read for `sweep` and this flow's own `started_at`: the exchange
+    /// finishes whenever the browser gets round to it, arbitrarily later
+    /// than this call, so its own `completed_at` needs a clock that is still
+    /// there to ask, not a `now` this call happened to capture early.
     pub async fn begin(
         self: &Arc<Self>,
         mut client: OAuthClient,
         login_hint: Option<&str>,
+        clock: Arc<dyn Clock>,
     ) -> CommandResult<Begun> {
-        self.sweep();
+        let now = clock.now();
+        self.sweep(now);
 
         let loopback = Loopback::bind().await.map_err(|e| {
             CommandError::new(codes::IO, format!("could not open the loopback: {e}"))
@@ -146,7 +155,7 @@ impl SignIns {
             Flow {
                 cancel: cancel_tx,
                 outcome: outcome_rx,
-                started_at: jiff::Timestamp::now(),
+                started_at: now,
                 cancelled: Arc::clone(&cancelled),
             },
         );
@@ -183,7 +192,7 @@ impl SignIns {
                     let still_wanted = !cancelled.load(Ordering::SeqCst)
                         && this.epoch.load(Ordering::SeqCst) == born_epoch;
                     if still_wanted {
-                        completed.insert(id, (tokens, jiff::Timestamp::now()));
+                        completed.insert(id, (tokens, clock.now()));
                         drop(completed);
                         Outcome::Success
                     } else {
@@ -314,8 +323,8 @@ impl SignIns {
     /// already has a scheduler and a supervisor for things that must run
     /// whether or not anyone is signing in; a sign-in that never happens
     /// again needs no clock of its own, only to not leak the one before it.
-    fn sweep(&self) {
-        let Ok(cutoff) = jiff::Timestamp::now().checked_sub(jiff::SignedDuration::from_secs(
+    fn sweep(&self, now: jiff::Timestamp) {
+        let Ok(cutoff) = now.checked_sub(jiff::SignedDuration::from_secs(
             (SIGN_IN_TIMEOUT + GRACE).as_secs() as i64,
         )) else {
             return;
@@ -492,7 +501,7 @@ mod tests {
         let token_url = mock_token_endpoint("at-1").await;
         let sign_ins = Arc::new(SignIns::new());
 
-        let begun = sign_ins.begin(client(token_url), None).await.unwrap();
+        let begun = sign_ins.begin(client(token_url), None, crate::clock::system()).await.unwrap();
         assert!(begun.url.starts_with("https://example.test/auth?"));
 
         // Extract the state the way a browser would carry it back, and
@@ -515,8 +524,10 @@ mod tests {
     #[tokio::test]
     async fn cancelling_makes_the_wait_fail_promptly() {
         let sign_ins = Arc::new(SignIns::new());
-        let begun =
-            sign_ins.begin(client("http://127.0.0.1:1/token".to_string()), None).await.unwrap();
+        let begun = sign_ins
+            .begin(client("http://127.0.0.1:1/token".to_string()), None, crate::clock::system())
+            .await
+            .unwrap();
 
         sign_ins.cancel(&begun.sign_in_id);
         // The flow was removed outright by `cancel`, so nothing is left to
@@ -536,7 +547,7 @@ mod tests {
     async fn clear_cancels_every_flow_and_drops_unclaimed_tokens() {
         let token_url = mock_token_endpoint("at-1").await;
         let sign_ins = Arc::new(SignIns::new());
-        let begun = sign_ins.begin(client(token_url), None).await.unwrap();
+        let begun = sign_ins.begin(client(token_url), None, crate::clock::system()).await.unwrap();
 
         sign_ins.clear();
         let err = sign_ins.wait(&begun.sign_in_id).await.unwrap_err();
@@ -554,7 +565,7 @@ mod tests {
     async fn cancelling_during_the_exchange_drops_the_tokens_it_produces() {
         let token_url = mock_delayed_token_endpoint("at-1", Duration::from_millis(200)).await;
         let sign_ins = Arc::new(SignIns::new());
-        let begun = sign_ins.begin(client(token_url), None).await.unwrap();
+        let begun = sign_ins.begin(client(token_url), None, crate::clock::system()).await.unwrap();
 
         deliver_redirect(&begun).await;
         // Give the loopback time to accept the code and start the (slow)
@@ -577,7 +588,7 @@ mod tests {
     async fn clearing_during_the_exchange_drops_the_tokens_it_produces() {
         let token_url = mock_delayed_token_endpoint("at-1", Duration::from_millis(200)).await;
         let sign_ins = Arc::new(SignIns::new());
-        let begun = sign_ins.begin(client(token_url), None).await.unwrap();
+        let begun = sign_ins.begin(client(token_url), None, crate::clock::system()).await.unwrap();
 
         deliver_redirect(&begun).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -600,7 +611,7 @@ mod tests {
         sign_ins.clear();
 
         let token_url = mock_token_endpoint("at-2").await;
-        let begun = sign_ins.begin(client(token_url), None).await.unwrap();
+        let begun = sign_ins.begin(client(token_url), None, crate::clock::system()).await.unwrap();
         deliver_redirect(&begun).await;
 
         sign_ins.wait(&begun.sign_in_id).await.unwrap();

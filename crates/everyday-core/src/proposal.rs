@@ -40,6 +40,7 @@ use crate::agent::Memory;
 use crate::error::{Error, Result};
 use crate::id::{ConversationId, DraftId, ProposalId, RoutineRunId};
 use crate::note::Note;
+use crate::record::RecordKind;
 use crate::routine::{DreamScope, Routine};
 use crate::task::{Task, TimeBlock};
 
@@ -69,6 +70,7 @@ pub const fn max_per_run(scope: DreamScope) -> usize {
 /// Also the unit [`ProposalPolicy`] switches on and off, so its spelling is
 /// the settings' as well as the wire's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ProposalKind {
     Task,
@@ -106,8 +108,69 @@ impl ProposalKind {
     }
 }
 
+/// Every [`ProposalKind`] names a [`RecordKind`] it would make or change --
+/// `Mail` proposes a [`RecordKind::Draft`], not a mail message itself, since
+/// what a mail proposal carries is a draft to send. Total: there is no
+/// `ProposalKind` this cannot answer.
+impl From<ProposalKind> for RecordKind {
+    fn from(kind: ProposalKind) -> RecordKind {
+        match kind {
+            ProposalKind::Task => RecordKind::Task,
+            ProposalKind::Block => RecordKind::Block,
+            ProposalKind::Memory => RecordKind::Memory,
+            ProposalKind::Routine => RecordKind::Routine,
+            ProposalKind::Note => RecordKind::Note,
+            ProposalKind::Mail => RecordKind::Draft,
+        }
+    }
+}
+
+/// The reverse of [`From<ProposalKind> for RecordKind`], for the six kinds a
+/// proposal can actually carry. `Err(())` for the other twenty-four -- there
+/// is no proposal kind for a journal entry or a mailbox, and returning that
+/// plainly is more honest than picking one.
+impl TryFrom<RecordKind> for ProposalKind {
+    type Error = ();
+
+    fn try_from(kind: RecordKind) -> Result<ProposalKind, ()> {
+        match kind {
+            RecordKind::Task => Ok(ProposalKind::Task),
+            RecordKind::Block => Ok(ProposalKind::Block),
+            RecordKind::Memory => Ok(ProposalKind::Memory),
+            RecordKind::Routine => Ok(ProposalKind::Routine),
+            RecordKind::Note => Ok(ProposalKind::Note),
+            RecordKind::Draft => Ok(ProposalKind::Mail),
+            RecordKind::Journal
+            | RecordKind::Entry
+            | RecordKind::Project
+            | RecordKind::Calendar
+            | RecordKind::Event
+            | RecordKind::Kind
+            | RecordKind::Item
+            | RecordKind::Log
+            | RecordKind::Tracker
+            | RecordKind::Reading
+            | RecordKind::Role
+            | RecordKind::Goal
+            | RecordKind::RoutineRun
+            | RecordKind::Proposal
+            | RecordKind::Conversation
+            | RecordKind::Message
+            | RecordKind::Account
+            | RecordKind::Mailbox
+            | RecordKind::MailMessage
+            | RecordKind::Thread
+            | RecordKind::Op
+            | RecordKind::Recording
+            | RecordKind::Transcript
+            | RecordKind::Voiceprint => Err(()),
+        }
+    }
+}
+
 /// A record a proposal carries, whole.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", content = "value", rename_all = "lowercase")]
 pub enum ProposedRecord {
     Task(Task),
@@ -179,6 +242,7 @@ impl ProposedRecord {
 
 /// What accepting a proposal would do.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Payload {
     /// Save a record that does not exist yet.
@@ -232,6 +296,7 @@ impl Payload {
 
 /// What a proposal was reacting to, if anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum AboutKind {
     Task,
@@ -246,14 +311,76 @@ pub enum AboutKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct About {
     pub kind: AboutKind,
     pub id: String,
 }
 
+/// Every [`AboutKind`] names exactly the [`RecordKind`] it points at. Total:
+/// there is no `AboutKind` this cannot answer.
+impl From<AboutKind> for RecordKind {
+    fn from(kind: AboutKind) -> RecordKind {
+        match kind {
+            AboutKind::Task => RecordKind::Task,
+            AboutKind::Block => RecordKind::Block,
+            AboutKind::Event => RecordKind::Event,
+            AboutKind::Note => RecordKind::Note,
+            AboutKind::Entry => RecordKind::Entry,
+            AboutKind::Thread => RecordKind::Thread,
+            AboutKind::Memory => RecordKind::Memory,
+            AboutKind::Routine => RecordKind::Routine,
+            AboutKind::Goal => RecordKind::Goal,
+        }
+    }
+}
+
+/// The reverse, for the nine kinds a proposal's "about" can actually name.
+/// `Err(())` for the other twenty-one -- nothing has ever reacted to a
+/// mailbox or a recording, so there is no `AboutKind` for one.
+impl TryFrom<RecordKind> for AboutKind {
+    type Error = ();
+
+    fn try_from(kind: RecordKind) -> Result<AboutKind, ()> {
+        match kind {
+            RecordKind::Task => Ok(AboutKind::Task),
+            RecordKind::Block => Ok(AboutKind::Block),
+            RecordKind::Event => Ok(AboutKind::Event),
+            RecordKind::Note => Ok(AboutKind::Note),
+            RecordKind::Entry => Ok(AboutKind::Entry),
+            RecordKind::Thread => Ok(AboutKind::Thread),
+            RecordKind::Memory => Ok(AboutKind::Memory),
+            RecordKind::Routine => Ok(AboutKind::Routine),
+            RecordKind::Goal => Ok(AboutKind::Goal),
+            RecordKind::Journal
+            | RecordKind::Project
+            | RecordKind::Calendar
+            | RecordKind::Kind
+            | RecordKind::Item
+            | RecordKind::Log
+            | RecordKind::Tracker
+            | RecordKind::Reading
+            | RecordKind::Role
+            | RecordKind::RoutineRun
+            | RecordKind::Proposal
+            | RecordKind::Conversation
+            | RecordKind::Message
+            | RecordKind::Account
+            | RecordKind::Mailbox
+            | RecordKind::MailMessage
+            | RecordKind::Draft
+            | RecordKind::Op
+            | RecordKind::Recording
+            | RecordKind::Transcript
+            | RecordKind::Voiceprint => Err(()),
+        }
+    }
+}
+
 /// Who made a proposal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ProposalSource {
     /// A scheduled run -- today, always a dream.
@@ -265,6 +392,7 @@ pub enum ProposalSource {
 /// Why somebody said no. Optional, and one tap: forcing a reason is how a
 /// signal stops being given.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum DeclineReason {
     NotNow,
@@ -279,6 +407,7 @@ pub enum DeclineReason {
 
 /// Where a proposal stands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Outcome {
     Pending,
@@ -318,6 +447,7 @@ impl Outcome {
 
 /// [`Outcome`] without its payload: the clear column, and the query filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ProposalState {
     Pending,
@@ -342,6 +472,7 @@ impl ProposalState {
 /// Shaped like [`crate::quick::QuickPolicy`]: a set of exceptions, so a kind
 /// added by a later build is on by default for a vault written earlier.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct ProposalPolicy {
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
@@ -356,6 +487,7 @@ impl ProposalPolicy {
 
 /// Work the assistant prepared and did not do.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Proposal {
     pub id: ProposalId,
@@ -639,5 +771,33 @@ mod tests {
             assert_eq!(ProposalKind::parse(k.as_str()), Some(k));
         }
         assert_eq!(ProposalKind::parse("Event"), None);
+    }
+
+    #[test]
+    fn every_proposal_kind_round_trips_through_record_kind() {
+        // `From<ProposalKind> for RecordKind` is total (an exhaustive match
+        // with no wildcard, so this cannot silently start skipping a
+        // variant); this checks `TryFrom<RecordKind> for ProposalKind`
+        // agrees with it for every kind that made the trip.
+        for k in ProposalKind::ALL {
+            assert_eq!(ProposalKind::try_from(RecordKind::from(k)), Ok(k));
+        }
+    }
+
+    #[test]
+    fn every_about_kind_round_trips_through_record_kind() {
+        for k in [
+            AboutKind::Task,
+            AboutKind::Block,
+            AboutKind::Event,
+            AboutKind::Note,
+            AboutKind::Entry,
+            AboutKind::Thread,
+            AboutKind::Memory,
+            AboutKind::Routine,
+            AboutKind::Goal,
+        ] {
+            assert_eq!(AboutKind::try_from(RecordKind::from(k)), Ok(k));
+        }
     }
 }

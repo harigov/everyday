@@ -632,6 +632,48 @@ fn a_read_only_vault_can_still_be_backed_up() {
     assert_eq!(second.backup(&dest.path().join("copy")).unwrap_err().code(), "unsupported");
 }
 
+/// Phase 0.6 of `docs/plans/architecture-refactor.md`: `Vault::save_entry`
+/// must store `updated_at` exactly as the caller set it, rather than
+/// re-stamping it on the way in.
+///
+/// `saving_an_entry_someone_else_changed_is_refused` below already relies on
+/// this indirectly -- its second `save_entry` only succeeds because the
+/// `updated_at` it read back after the first save is bit-for-bit what
+/// `put_entry_if`'s comparison sees as "current" -- but it never reads the
+/// stored value back to say so. This does, because "who stamps `updated_at`,
+/// and when" is one of the six things "The one rule" says a refactor may
+/// never move: an automatic re-stamp here would make every second autosave
+/// from a stale-looking client a false conflict.
+#[test]
+fn save_entry_stores_the_caller_supplied_updated_at_verbatim() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+    let j = Journal::new("Daily");
+    v.save_journal(&j).unwrap();
+
+    let mut e = Entry::new(j.id, "UTC");
+    e.updated_at = "2020-01-02T03:04:05Z".parse().unwrap();
+    v.save_entry(&e, None).unwrap();
+    assert_eq!(
+        v.entry(e.id).unwrap().updated_at,
+        e.updated_at,
+        "save_entry must not re-stamp updated_at"
+    );
+
+    // The conditional save this enables: a second save whose `expect` is
+    // exactly the value the first save stored must not be a false conflict.
+    let mut second = e.clone();
+    second.updated_at = "2021-06-15T12:00:00Z".parse().unwrap();
+    v.save_entry(&second, Some(e.updated_at)).unwrap();
+    assert_eq!(v.entry(e.id).unwrap().updated_at, second.updated_at);
+
+    // And a save whose `expect` is the version *before* that one -- stale by
+    // now -- is a conflict, not a silent overwrite.
+    let mut stale = second.clone();
+    stale.updated_at = "2022-01-01T00:00:00Z".parse().unwrap();
+    assert_eq!(v.save_entry(&stale, Some(e.updated_at)).unwrap_err().code(), "conflict");
+}
+
 #[test]
 fn saving_an_entry_someone_else_changed_is_refused() {
     let dir = tempfile::tempdir().unwrap();

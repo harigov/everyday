@@ -44,6 +44,7 @@ pub const MAX_FIELD_BYTES: usize = 200;
 /// The owner of a vault. Every field may be empty; most vaults will fill in
 /// two or three.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct Profile {
     pub first_name: String,

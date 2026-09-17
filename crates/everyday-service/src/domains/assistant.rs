@@ -10,7 +10,7 @@
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
-use crate::events::{Change, Kind, Op};
+use crate::events::{Kind, Op};
 use crate::service::{Service, blocking};
 use everyday_core::agent::{AgentSettings, Conversation, Memory, Message};
 use everyday_core::store::agent::ConversationQuery;
@@ -122,7 +122,7 @@ async fn save_agent_settings(
     args: SaveSettings,
 ) -> CommandResult<AgentSettings> {
     let vault = svc.require()?;
-    let (settings, cleared, dreams) = blocking(move || {
+    let settings = blocking(move || {
         let previous = vault.agent_settings()?;
         // Compared before the write below overwrites `previous`, on
         // `acknowledgement_name`'s own rule -- the endpoint actually
@@ -144,12 +144,10 @@ async fn save_agent_settings(
         // here, in the same write, on every account that had it set, rather
         // than left for whoever next opens that account to notice it is
         // stale.
-        let mut cleared = Vec::new();
         if provider_changed {
             for mut account in vault.accounts()? {
                 if account.assistant_provider_acknowledged.take().is_some() {
                     vault.save_account(&account)?;
-                    cleared.push(account.id.to_string());
                 }
             }
         }
@@ -159,43 +157,45 @@ async fn save_agent_settings(
         // moved, or dreaming is on but the three are somehow missing --
         // which happens the very first time anybody turns it on, since
         // nothing else in this application ever creates them.
-        let mut dreams = Vec::new();
         if vault.supports_routines() {
             let missing_while_on =
                 args.settings.dreaming && !vault.routines()?.iter().any(|r| r.kind.is_dream());
             if dreaming_before != args.settings.dreaming || missing_while_on {
-                dreams = vault.set_dreaming(args.settings.dreaming)?;
+                vault.set_dreaming(args.settings.dreaming)?;
             }
         }
 
         // Read back rather than echoing what was sent: `has_key` is derived
         // from the secret table, so the pane must be told what is true rather
         // than what it asked for.
-        Ok((vault.agent_settings()?, cleared, dreams))
+        Ok(vault.agent_settings()?)
     })
     .await?;
 
     // A batch `Change` rather than one per account, matching `events.rs`'s
     // own "the board reorder" rule: several accounts losing their
     // acknowledgement in one save is one thing that happened, not several.
-    if !cleared.is_empty() {
-        svc.events().changed(Change {
-            kind: Kind::Account,
-            op: Op::Updated,
-            id: None,
-            ids: cleared,
-            origin: ctx.caller.origin().map(str::to_string),
-        });
-    }
-    if !dreams.is_empty() {
-        svc.events().changed(Change {
-            kind: Kind::Routine,
-            op: Op::Updated,
-            id: None,
-            ids: dreams.into_iter().map(|r| r.id.to_string()).collect(),
-            origin: ctx.caller.origin().map(str::to_string),
-        });
-    }
+    // The closure above no longer collects which accounts and routines it
+    // touched for itself -- the collector already saw the same writes, in
+    // the same order, so `emit_touched` raises the identical batch from
+    // that: one `Change` per kind, `ids` rather than `id` the moment there
+    // is more than one, nothing at all when there is nothing to report.
+    let origin = ctx.caller.origin().map(str::to_string);
+    let touched = crate::touched::current();
+    crate::events::emit_touched(
+        svc.events().as_ref(),
+        origin.clone(),
+        &touched,
+        Kind::Account,
+        Op::Updated,
+    );
+    crate::events::emit_touched(
+        svc.events().as_ref(),
+        origin,
+        &touched,
+        Kind::Routine,
+        Op::Updated,
+    );
     Ok(settings)
 }
 

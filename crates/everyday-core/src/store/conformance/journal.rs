@@ -27,6 +27,7 @@ pub(super) fn run_journal_suite(store: &dyn JournalStore) {
     stats_reflect_contents(store);
     unicode_survives_a_round_trip(store);
     the_owner_round_trips_and_starts_empty(store);
+    capabilities_match_the_accessors(store);
 }
 
 pub(super) fn cleanup(store: &dyn JournalStore) {
@@ -538,4 +539,27 @@ fn the_owner_round_trips_and_starts_empty(store: &dyn JournalStore) {
     // Emptied by hand is emptied, not reverted to what was there before.
     store.put_profile(&Profile::default()).expect("clearing the profile");
     assert!(store.profile().unwrap().is_empty(), "clearing it must actually clear it");
+}
+
+/// Every domain flag on [`Capabilities`] must equal `.is_some()` on the
+/// accessor it stands for -- not what a backend feels like claiming.
+///
+/// This is what lets [`JournalStore::capabilities`]'s default body exist at
+/// all: the flags and the accessors would otherwise be two places that can
+/// drift apart, and this is the one test standing between them.
+fn capabilities_match_the_accessors(store: &dyn JournalStore) {
+    let caps = store.capabilities();
+    assert_eq!(caps.tasks, store.tasks().is_some(), "tasks flag vs accessor");
+    assert_eq!(caps.calendars, store.calendars().is_some(), "calendars flag vs accessor");
+    assert_eq!(caps.library, store.library().is_some(), "library flag vs accessor");
+    assert_eq!(caps.trackers, store.trackers().is_some(), "trackers flag vs accessor");
+    assert_eq!(caps.purpose, store.purpose().is_some(), "purpose flag vs accessor");
+    assert_eq!(caps.notes, store.notes().is_some(), "notes flag vs accessor");
+    assert_eq!(caps.routines, store.routines().is_some(), "routines flag vs accessor");
+    assert_eq!(caps.proposals, store.proposals().is_some(), "proposals flag vs accessor");
+    assert_eq!(caps.agent, store.agent().is_some(), "agent flag vs accessor");
+    assert_eq!(caps.secrets, store.secrets().is_some(), "secrets flag vs accessor");
+    assert_eq!(caps.accounts, store.accounts().is_some(), "accounts flag vs accessor");
+    assert_eq!(caps.mail, store.mail().is_some(), "mail flag vs accessor");
+    assert_eq!(caps.meetings, store.meetings().is_some(), "meetings flag vs accessor");
 }

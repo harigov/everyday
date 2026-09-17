@@ -1,0 +1,814 @@
+[
+  {
+    "id": "00000000-0000-0000-0000-00000000000f",
+    "kind": "account",
+    "record": {
+      "address": "fixture-1@example.com",
+      "assistantAccess": {
+        "archive": true,
+        "draft": true,
+        "edit": true,
+        "read": true,
+        "remove": true,
+        "send": false
+      },
+      "auth": {
+        "type": "password",
+        "username": "fixture-1@example.com"
+      },
+      "createdAt": "2023-11-14T22:13:36Z",
+      "displayName": "Fixture Account 1",
+      "id": "00000000-0000-0000-0000-00000000000f",
+      "identities": [],
+      "imap": {
+        "host": "",
+        "port": 993,
+        "security": "tls"
+      },
+      "mailAi": {
+        "autoDraft": false,
+        "categorize": false,
+        "summaries": false
+      },
+      "mcpAccess": {
+        "archive": true,
+        "draft": true,
+        "edit": true,
+        "read": true,
+        "remove": true,
+        "send": false
+      },
+      "provider": "custom",
+      "services": {
+        "calendar": false,
+        "mail": true
+      },
+      "smtp": {
+        "host": "",
+        "port": 587,
+        "security": "startTls"
+      },
+      "status": {
+        "reason": "not yet signed in",
+        "type": "needsSignIn"
+      },
+      "updatedAt": "2023-11-14T22:13:36Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-00000000000f",
+    "kind": "account_secret",
+    "record": {
+      "accessToken": [
+        "fixture-access-token-1",
+        "2023-11-14T22:13:37Z"
+      ],
+      "refreshToken": "fixture-refresh-token-1"
+    }
+  },
+  {
+    "id": "singleton",
+    "kind": "agent_settings",
+    "record": {
+      "key": "fixture-agent-key-1",
+      "settings": {
+        "assistantModel": {
+          "maxTokens": null,
+          "model": "gpt-5.1-mini",
+          "temperature": null
+        },
+        "confirmDestructive": true,
+        "dreaming": false,
+        "enabled": true,
+        "hasKey": true,
+        "instructions": "Be a fixture.",
+        "maxSteps": 24,
+        "name": "Fixture Assistant 1",
+        "parkUnattended": false,
+        "proposals": {},
+        "providerConfig": {
+          "baseUrl": null,
+          "provider": "openAi"
+        },
+        "quickJobs": {},
+        "quickModel": null,
+        "remember": true,
+        "web": false
+      }
+    }
+  },
+  {
+    "id": "455482dce6f505ecee3f0cb66ec7c25cebaf9f0847ba328fe49e6aac4c022c8b",
+    "kind": "blob",
+    "record": {
+      "bytesUtf8": "fixture attachment bytes for generation 1"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-00000000000b",
+    "kind": "block",
+    "record": {
+      "allDay": false,
+      "createdAt": "2023-11-14T22:13:32Z",
+      "end": "2023-11-14T22:43:31Z",
+      "id": "00000000-0000-0000-0000-00000000000b",
+      "kind": "planned",
+      "localDate": "2023-11-14",
+      "notes": "",
+      "purpose": {
+        "id": "00000000-0000-0000-0000-000000000002",
+        "type": "goal"
+      },
+      "start": "2023-11-14T22:13:31Z",
+      "subject": {
+        "id": "00000000-0000-0000-0000-000000000009",
+        "type": "task"
+      },
+      "tags": [],
+      "title": "",
+      "tz": "UTC",
+      "updatedAt": "2023-11-14T22:13:32Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000010",
+    "kind": "calendar",
+    "record": {
+      "accountSync": {
+        "etags": {},
+        "recurringHrefs": []
+      },
+      "color": "#c2410c",
+      "createdAt": "2023-11-14T22:13:38Z",
+      "id": "00000000-0000-0000-0000-000000000010",
+      "name": "Fixture Calendar 1",
+      "origin": {
+        "account_id": "00000000-0000-0000-0000-00000000000f",
+        "remote_id": "fixture-remote-cal-1",
+        "remote_name": "Fixture Calendar 1",
+        "source": "calDav",
+        "type": "account"
+      },
+      "provider": "other",
+      "refreshMinutes": 60,
+      "roleId": "00000000-0000-0000-0000-000000000001",
+      "updatedAt": "2023-11-14T22:13:38Z",
+      "visible": true
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000016",
+    "kind": "conversation",
+    "record": {
+      "createdAt": "2023-11-14T22:13:46Z",
+      "id": "00000000-0000-0000-0000-000000000016",
+      "title": "Fixture conversation 1",
+      "updatedAt": "2023-11-14T22:13:47Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000006",
+    "kind": "entry",
+    "record": {
+      "attachments": [
+        {
+          "blob": "455482dce6f505ecee3f0cb66ec7c25cebaf9f0847ba328fe49e6aac4c022c8b",
+          "byteLen": 41,
+          "caption": "a fixture attachment",
+          "filename": "fixture.png",
+          "height": 10,
+          "kind": "image",
+          "mime": "image/png",
+          "width": 10
+        }
+      ],
+      "body": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A fixture entry.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          },
+          {
+            "attrs": {
+              "blob": "455482dce6f505ecee3f0cb66ec7c25cebaf9f0847ba328fe49e6aac4c022c8b",
+              "caption": "a fixture attachment",
+              "filename": "fixture.png",
+              "kind": "image",
+              "mime": "image/png"
+            },
+            "type": "media"
+          }
+        ],
+        "type": "doc"
+      },
+      "createdAt": "2023-11-14T22:13:25Z",
+      "id": "00000000-0000-0000-0000-000000000006",
+      "journalId": "00000000-0000-0000-0000-000000000005",
+      "localDate": "2024-01-03",
+      "location": {
+        "country": "Fixtureland",
+        "latitude": 51.5,
+        "locality": "Fixture City",
+        "longitude": -0.1,
+        "placeName": "Fixture Place"
+      },
+      "purpose": {
+        "id": "00000000-0000-0000-0000-000000000002",
+        "type": "goal"
+      },
+      "starred": true,
+      "tags": [
+        "fixture"
+      ],
+      "title": "Fixture entry 1",
+      "tz": "UTC",
+      "updatedAt": "2023-11-14T22:13:25Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000011",
+    "kind": "event",
+    "record": {
+      "allDay": false,
+      "attendees": [
+        "attendee@example.com"
+      ],
+      "busy": true,
+      "calendarId": "00000000-0000-0000-0000-000000000010",
+      "description": "A fixture event.",
+      "end": "2023-11-14T22:43:39Z",
+      "endDate": "2024-01-03",
+      "id": "00000000-0000-0000-0000-000000000011",
+      "localDate": "2024-01-03",
+      "location": "Fixtureland",
+      "organizer": "organizer@example.com",
+      "start": "2023-11-14T22:13:39Z",
+      "status": "confirmed",
+      "title": "Fixture event 1",
+      "tz": "UTC",
+      "uid": "fixture-event-1",
+      "updatedAt": "2023-11-14T22:13:40Z",
+      "url": ""
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000002",
+    "kind": "goal",
+    "record": {
+      "createdAt": "2023-11-14T22:13:21Z",
+      "id": "00000000-0000-0000-0000-000000000002",
+      "notes": "",
+      "roleId": "00000000-0000-0000-0000-000000000001",
+      "sortOrder": 0,
+      "status": "active",
+      "title": "Fixture goal 1",
+      "updatedAt": "2023-11-14T22:13:21Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-00000000000d",
+    "kind": "item",
+    "record": {
+      "coverUrl": "",
+      "createdAt": "2023-11-14T22:13:34Z",
+      "creator": "",
+      "external": [],
+      "facts": {},
+      "favourite": false,
+      "id": "00000000-0000-0000-0000-00000000000d",
+      "kindId": "00000000-0000-0000-0000-00000000000c",
+      "links": [],
+      "notes": "",
+      "purpose": {
+        "id": "00000000-0000-0000-0000-000000000002",
+        "type": "goal"
+      },
+      "sortOrder": 0,
+      "source": "",
+      "status": "active",
+      "subtitle": "",
+      "summary": "",
+      "tags": [],
+      "title": "Fixture item 1",
+      "updatedAt": "2023-11-14T22:13:34Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000005",
+    "kind": "journal",
+    "record": {
+      "color": "#c2410c",
+      "createdAt": "2023-11-14T22:13:24Z",
+      "description": "",
+      "icon": "📓",
+      "id": "00000000-0000-0000-0000-000000000005",
+      "name": "Fixture journal 1",
+      "shownTrackers": [
+        "00000000-0000-0000-0000-000000000003"
+      ],
+      "sortOrder": 0,
+      "updatedAt": "2023-11-14T22:13:24Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-00000000000c",
+    "kind": "library_kind",
+    "record": {
+      "builtin": false,
+      "color": "#c2410c",
+      "createdAt": "2023-11-14T22:13:33Z",
+      "fields": [],
+      "icon": "🔖",
+      "id": "00000000-0000-0000-0000-00000000000c",
+      "name": "Fixtures",
+      "progressUnit": "",
+      "revision": 0,
+      "singular": "Fixture",
+      "slug": "fixture-kind-1",
+      "sortOrder": 0,
+      "source": "",
+      "updatedAt": "2023-11-14T22:13:33Z",
+      "verbs": {
+        "active": "Underway",
+        "done": "Done",
+        "log": "finished",
+        "wishlist": "To try"
+      },
+      "visible": true
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-00000000000e",
+    "kind": "log",
+    "record": {
+      "createdAt": "2023-11-14T22:13:35Z",
+      "date": "2024-01-03",
+      "event": "finished",
+      "id": "00000000-0000-0000-0000-00000000000e",
+      "itemId": "00000000-0000-0000-0000-00000000000d",
+      "note": "fixture log 1",
+      "tz": "UTC",
+      "updatedAt": "2023-11-14T22:13:35Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-00000000001a",
+    "kind": "mail_body",
+    "record": {
+      "htmlSanitised": "",
+      "messageId": "00000000-0000-0000-0000-00000000001a",
+      "parts": [],
+      "quotedRanges": [],
+      "remoteImages": [],
+      "text": "A fixture message body, generation 1."
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-00000000001d",
+    "kind": "mail_draft",
+    "record": {
+      "accountId": "00000000-0000-0000-0000-00000000000f",
+      "attachments": [],
+      "bcc": [],
+      "bodyHtml": "<p>A fixture draft.</p>",
+      "cc": [],
+      "createdAt": "2023-11-14T22:13:50Z",
+      "id": "00000000-0000-0000-0000-00000000001d",
+      "identity": "fixture-1@example.com",
+      "origin": {
+        "type": "person"
+      },
+      "state": {
+        "type": "editing"
+      },
+      "subject": "Fixture draft 1",
+      "to": [
+        {
+          "email": "draft-recipient-1@example.com",
+          "name": ""
+        }
+      ],
+      "updatedAt": "2023-11-14T22:13:50Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-00000000001a",
+    "kind": "mail_message",
+    "record": {
+      "accountId": "00000000-0000-0000-0000-00000000000f",
+      "bcc": [],
+      "categorySource": "rules",
+      "cc": [],
+      "date": "2023-11-14T22:13:49Z",
+      "flags": {
+        "answered": false,
+        "deleted": false,
+        "draft": false,
+        "flagged": false,
+        "seen": true
+      },
+      "from": {
+        "email": "sender-1@example.com",
+        "name": "Fixture Sender"
+      },
+      "hasAttachments": false,
+      "id": "00000000-0000-0000-0000-00000000001a",
+      "labels": [
+        "fixture"
+      ],
+      "messageIdHeader": "<fixture-1@example.com>",
+      "pack": {
+        "account": "00000000-0000-0000-0000-00000000000f",
+        "len": 0,
+        "offset": 0,
+        "pack": "00000000-0000-0000-0000-00000000001c"
+      },
+      "replyTo": [],
+      "size": 128,
+      "snippet": "A fixture message.",
+      "subject": "Fixture subject 1",
+      "threadId": "00000000-0000-0000-0000-00000000001b",
+      "to": [
+        {
+          "email": "fixture-1@example.com",
+          "name": "Fixture Recipient"
+        }
+      ]
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-00000000001e",
+    "kind": "mail_op",
+    "record": {
+      "accountId": "00000000-0000-0000-0000-00000000000f",
+      "attempts": 0,
+      "createdAt": "2023-11-14T22:13:52Z",
+      "id": "00000000-0000-0000-0000-00000000001e",
+      "kind": {
+        "type": "markRead"
+      },
+      "notBefore": "2023-11-14T22:13:51Z",
+      "origin": {
+        "type": "person"
+      },
+      "state": {
+        "type": "pending"
+      },
+      "target": {
+        "id": "00000000-0000-0000-0000-00000000001b",
+        "type": "thread"
+      },
+      "updatedAt": "2023-11-14T22:13:52Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-00000000001b",
+    "kind": "mail_thread",
+    "record": {
+      "accountId": "00000000-0000-0000-0000-00000000000f",
+      "hasAttachments": false,
+      "id": "00000000-0000-0000-0000-00000000001b",
+      "lastDate": "2023-11-14T22:13:49Z",
+      "messageCount": 1,
+      "participants": [
+        {
+          "email": "sender-1@example.com",
+          "name": "Fixture Sender"
+        },
+        {
+          "email": "fixture-1@example.com",
+          "name": "Fixture Recipient"
+        }
+      ],
+      "snippet": "A fixture message.",
+      "starred": false,
+      "subject": "Fixture subject 1",
+      "unreadCount": 0
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000019",
+    "kind": "mailbox",
+    "record": {
+      "accountId": "00000000-0000-0000-0000-00000000000f",
+      "highestModseq": 0,
+      "id": "00000000-0000-0000-0000-000000000019",
+      "remoteName": "INBOX",
+      "role": "inbox",
+      "uidnext": 0,
+      "uidvalidity": 0
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000018",
+    "kind": "memory",
+    "record": {
+      "createdAt": "2023-11-14T22:13:48Z",
+      "id": "00000000-0000-0000-0000-000000000018",
+      "origin": "told",
+      "pinned": false,
+      "sourceId": "00000000-0000-0000-0000-000000000016",
+      "text": "Fixture memory 1",
+      "updatedAt": "2023-11-14T22:13:48Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000017",
+    "kind": "message",
+    "record": {
+      "content": "Fixture message 1",
+      "conversationId": "00000000-0000-0000-0000-000000000016",
+      "createdAt": "2023-11-14T22:13:47Z",
+      "failed": false,
+      "id": "00000000-0000-0000-0000-000000000017",
+      "role": "user",
+      "toolCallId": null,
+      "toolCalls": []
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000007",
+    "kind": "note",
+    "record": {
+      "attachments": [],
+      "body": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A fixture note.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "createdAt": "2023-11-14T22:13:26Z",
+      "id": "00000000-0000-0000-0000-000000000007",
+      "pinned": true,
+      "purpose": {
+        "id": "00000000-0000-0000-0000-000000000002",
+        "type": "goal"
+      },
+      "tags": [
+        "fixture"
+      ],
+      "title": "Fixture note 1",
+      "updatedAt": "2023-11-14T22:13:26Z"
+    }
+  },
+  {
+    "id": "singleton",
+    "kind": "profile",
+    "record": {
+      "about": "A fixture profile, generation 1.",
+      "firstName": "Fixture",
+      "gender": "unspecified",
+      "lastName": "Person 1",
+      "location": "Fixtureland",
+      "updatedAt": "<stamped at write time, excluded from the fixture>"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000008",
+    "kind": "project",
+    "record": {
+      "color": "#c2410c",
+      "createdAt": "2023-11-14T22:13:27Z",
+      "icon": "🗂️",
+      "id": "00000000-0000-0000-0000-000000000008",
+      "name": "Fixture project 1",
+      "notes": "",
+      "priority": "medium",
+      "purpose": {
+        "id": "00000000-0000-0000-0000-000000000002",
+        "type": "goal"
+      },
+      "sortOrder": 0,
+      "status": "active",
+      "tags": [],
+      "updatedAt": "2023-11-14T22:13:27Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000014",
+    "kind": "proposal",
+    "record": {
+      "caption": "Fixture proposal 1",
+      "expiresAt": "2023-11-21T22:13:45Z",
+      "id": "00000000-0000-0000-0000-000000000014",
+      "kind": "task",
+      "madeAt": "2023-11-14T22:13:45Z",
+      "outcome": {
+        "type": "pending"
+      },
+      "payload": {
+        "record": {
+          "kind": "task",
+          "value": {
+            "createdAt": "2023-11-14T22:13:44Z",
+            "id": "00000000-0000-0000-0000-000000000015",
+            "notes": "",
+            "priority": "none",
+            "sortOrder": 0,
+            "status": "todo",
+            "tags": [],
+            "title": "Fixture proposed task 1",
+            "updatedAt": "2023-11-14T22:13:44Z"
+          }
+        },
+        "type": "create"
+      },
+      "seen": false,
+      "updatedAt": "2023-11-14T22:13:45Z",
+      "why": "because this is a fixture"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000004",
+    "kind": "reading",
+    "record": {
+      "createdAt": "2023-11-14T22:13:23Z",
+      "id": "00000000-0000-0000-0000-000000000004",
+      "localDate": "2024-01-03",
+      "note": "fixture reading 1",
+      "trackerId": "00000000-0000-0000-0000-000000000003",
+      "tz": "UTC",
+      "updatedAt": "<stamped at write time, excluded from the fixture>",
+      "value": 42.0
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000020",
+    "kind": "recording",
+    "record": {
+      "automatic": false,
+      "chunks": [],
+      "endedAt": "2023-11-14T22:13:54Z",
+      "id": "00000000-0000-0000-0000-000000000020",
+      "noteId": "00000000-0000-0000-0000-000000000007",
+      "partial": [],
+      "stage": {
+        "type": "done"
+      },
+      "startedAt": "2023-11-14T22:13:53Z",
+      "templateId": "00000000-0000-0000-0000-00000000001f",
+      "title": "Fixture recording 1",
+      "updatedAt": "2023-11-14T22:13:53Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "kind": "role",
+    "record": {
+      "archived": false,
+      "color": "#c2410c",
+      "createdAt": "2023-11-14T22:13:20Z",
+      "icon": "🧭",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "name": "Fixture role 1",
+      "notes": "",
+      "sortOrder": 0,
+      "updatedAt": "2023-11-14T22:13:20Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000012",
+    "kind": "routine",
+    "record": {
+      "createdAt": "2023-11-14T22:13:41Z",
+      "enabled": true,
+      "graceMinutes": 60,
+      "id": "00000000-0000-0000-0000-000000000012",
+      "instructions": "Do the fixture thing.",
+      "kind": {
+        "type": "custom"
+      },
+      "name": "Fixture routine 1",
+      "trigger": {
+        "type": "manual"
+      },
+      "updatedAt": "2023-11-14T22:13:41Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000013",
+    "kind": "routine_run",
+    "record": {
+      "finishedAt": "2023-11-14T22:13:43Z",
+      "id": "00000000-0000-0000-0000-000000000013",
+      "outcome": "done",
+      "reason": "",
+      "routineId": "00000000-0000-0000-0000-000000000012",
+      "routineName": "Fixture routine 1",
+      "seen": false,
+      "startedAt": "2023-11-14T22:13:42Z",
+      "steps": 0,
+      "summary": "Fixture run summary 1"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000009",
+    "kind": "task",
+    "record": {
+      "createdAt": "2023-11-14T22:13:28Z",
+      "id": "00000000-0000-0000-0000-000000000009",
+      "notes": "",
+      "priority": "high",
+      "projectId": "00000000-0000-0000-0000-000000000008",
+      "purpose": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "type": "role"
+      },
+      "sortOrder": 0,
+      "status": "doing",
+      "tags": [],
+      "title": "Fixture task 1",
+      "updatedAt": "2023-11-14T22:13:28Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-00000000000a",
+    "kind": "task",
+    "record": {
+      "completedAt": "2023-11-14T22:13:29Z",
+      "createdAt": "2023-11-14T22:13:30Z",
+      "id": "00000000-0000-0000-0000-00000000000a",
+      "notes": "",
+      "parentId": "00000000-0000-0000-0000-000000000009",
+      "priority": "none",
+      "projectId": "00000000-0000-0000-0000-000000000008",
+      "sortOrder": 0,
+      "status": "done",
+      "tags": [],
+      "title": "Fixture subtask 1",
+      "updatedAt": "2023-11-14T22:13:30Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000003",
+    "kind": "tracker",
+    "record": {
+      "archived": false,
+      "color": "#e11d48",
+      "createdAt": "2023-11-14T22:13:22Z",
+      "defaultValue": 1.0,
+      "icon": "dot",
+      "id": "00000000-0000-0000-0000-000000000003",
+      "kind": "amount",
+      "name": "Fixture tracker 1",
+      "onCalendar": false,
+      "purpose": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "type": "role"
+      },
+      "scaleMax": 10.0,
+      "sortOrder": 0,
+      "unit": "",
+      "updatedAt": "<stamped at write time, excluded from the fixture>"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000021",
+    "kind": "transcript",
+    "record": {
+      "backend": "fixture",
+      "createdAt": "2023-11-14T22:13:55Z",
+      "id": "00000000-0000-0000-0000-000000000021",
+      "language": "en",
+      "noteId": "00000000-0000-0000-0000-000000000007",
+      "recordingId": "00000000-0000-0000-0000-000000000020",
+      "segments": [],
+      "speakers": [],
+      "updatedAt": "2023-11-14T22:13:56Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000022",
+    "kind": "voiceprint",
+    "record": {
+      "centroids": [
+        [
+          0.10000000149011612,
+          0.20000000298023224,
+          0.30000001192092896
+        ]
+      ],
+      "createdAt": "2023-11-14T22:13:57Z",
+      "email": "voice-1@example.com",
+      "id": "00000000-0000-0000-0000-000000000022",
+      "isOwner": false,
+      "model": "fixture-embedding-model",
+      "name": "Fixture voice 1",
+      "samples": 1,
+      "updatedAt": "2023-11-14T22:13:58Z"
+    }
+  }
+]

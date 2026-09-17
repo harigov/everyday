@@ -17,16 +17,6 @@ use crate::{SqlStore, to_us, vals};
 
 impl Record for Routine {
     const TABLE: &'static str = "routines";
-    const KIND: &'static str = "routine";
-    type Id = RoutineId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        routine_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
@@ -38,16 +28,6 @@ impl Record for Routine {
 
 impl Record for RoutineRun {
     const TABLE: &'static str = "routine_runs";
-    const KIND: &'static str = "run";
-    type Id = RoutineRunId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        run_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![

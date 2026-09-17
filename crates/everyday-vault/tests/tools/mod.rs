@@ -10,6 +10,7 @@ mod journals;
 mod library;
 mod memory;
 mod notes;
+mod partial_patch;
 mod purpose;
 mod tasks;
 mod time;

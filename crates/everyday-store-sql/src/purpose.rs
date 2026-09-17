@@ -28,44 +28,12 @@
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{GoalId, RoleId};
 use everyday_core::purpose::{Goal, GoalActivity, Purpose, PurposeMinutes, Role, RoleEventMinutes};
+use everyday_core::record::RecordKind;
 use everyday_core::store::purpose::{GoalQuery, PurposeStore, PurposeWindow, goal_aad, role_aad};
 
 use crate::conn::{Sql, SqlExt, ToValue, Value, Where};
 use crate::record::Record;
 use crate::{SqlStore, date_str, from_us, to_us, vals};
-
-/// What kind of record a `purposes` row belongs to.
-///
-/// A closed set, spelled once. These strings are a schema, not labels: a
-/// typo in one of them makes a record's purpose silently unfindable by the
-/// reports while still reading back perfectly from its own sealed payload,
-/// which is the most annoying class of bug this table could have.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RecordKind {
-    Project,
-    Task,
-    Block,
-    Entry,
-    Note,
-    Item,
-    Calendar,
-    Tracker,
-}
-
-impl RecordKind {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            RecordKind::Project => "project",
-            RecordKind::Task => "task",
-            RecordKind::Block => "block",
-            RecordKind::Entry => "entry",
-            RecordKind::Note => "note",
-            RecordKind::Item => "item",
-            RecordKind::Calendar => "calendar",
-            RecordKind::Tracker => "tracker",
-        }
-    }
-}
 
 /// Point one record at a purpose, or clear it.
 ///
@@ -83,17 +51,18 @@ pub(crate) fn set_purpose(
     id: &str,
     purpose: Option<&Purpose>,
 ) -> Result<()> {
+    let column = purpose_column(kind);
     match purpose {
         Some(p) => tx.execute(
             "INSERT INTO purposes (record_kind, record_id, purpose_kind, purpose_id)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (record_kind, record_id) DO UPDATE SET
                 purpose_kind = ?3, purpose_id = ?4",
-            &vals![kind.as_str(), id, p.kind_str(), p.id_str()],
+            &vals![column, id, p.kind_str(), p.id_str()],
         )?,
         None => tx.execute(
             "DELETE FROM purposes WHERE record_kind = ?1 AND record_id = ?2",
-            &vals![kind.as_str(), id],
+            &vals![column, id],
         )?,
     };
     Ok(())
@@ -105,27 +74,29 @@ pub(crate) fn set_purpose(
 /// subquery against the table they came from, because by the time this runs
 /// that table no longer has them.
 pub(crate) fn forget_purposes(tx: &mut dyn Sql, kind: RecordKind, ids: &[String]) -> Result<()> {
+    let column = purpose_column(kind);
     for id in ids {
         tx.execute(
             "DELETE FROM purposes WHERE record_kind = ?1 AND record_id = ?2",
-            &vals![kind.as_str(), id.as_str()],
+            &vals![column, id.as_str()],
         )?;
     }
     Ok(())
 }
 
+/// The `purposes.record_kind` column value for a kind every caller in this
+/// module only ever passes one of the eight purpose-bearing kinds for --
+/// [`RecordKind::purpose_column`] is the one place that literal comes from,
+/// kept alongside every other record surface's literal in
+/// `everyday-core::record`. The `expect` is a caller bug, not a data one:
+/// nothing in this crate calls `set_purpose` or `forget_purposes` with a
+/// kind purpose can't attach to.
+fn purpose_column(kind: RecordKind) -> &'static str {
+    kind.purpose_column().unwrap_or_else(|| panic!("{kind:?} has no purposes.record_kind column"))
+}
+
 impl Record for Role {
     const TABLE: &'static str = "roles";
-    const KIND: &'static str = "role";
-    type Id = RoleId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        role_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
@@ -139,16 +110,6 @@ impl Record for Role {
 
 impl Record for Goal {
     const TABLE: &'static str = "goals";
-    const KIND: &'static str = "goal";
-    type Id = GoalId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        goal_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
@@ -477,5 +438,29 @@ impl PurposeStore for SqlStore {
         }
 
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod pinned_strings {
+    //! Phase 0.1 of `docs/plans/architecture-refactor.md`, kept passing
+    //! through phase 6: these are the literal `purposes.record_kind` values
+    //! every purpose pointer is filed under, and a change here is a
+    //! migration, not a rename. `RecordKind` moved to `everyday-core` in
+    //! phase 6 (`everyday_core::record::RecordKind`), so this now pins
+    //! `purpose_column()` rather than the local `as_str()` it used to test
+    //! -- the eight literal strings themselves are unchanged.
+    use super::RecordKind;
+
+    #[test]
+    fn every_purpose_bearing_record_kinds_column_is_pinned() {
+        assert_eq!(RecordKind::Project.purpose_column(), Some("project"));
+        assert_eq!(RecordKind::Task.purpose_column(), Some("task"));
+        assert_eq!(RecordKind::Block.purpose_column(), Some("block"));
+        assert_eq!(RecordKind::Entry.purpose_column(), Some("entry"));
+        assert_eq!(RecordKind::Note.purpose_column(), Some("note"));
+        assert_eq!(RecordKind::Item.purpose_column(), Some("item"));
+        assert_eq!(RecordKind::Calendar.purpose_column(), Some("calendar"));
+        assert_eq!(RecordKind::Tracker.purpose_column(), Some("tracker"));
     }
 }

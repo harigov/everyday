@@ -105,24 +105,31 @@ async fn accept_proposal(svc: Arc<Service>, ctx: Ctx, args: Accept) -> CommandRe
     let accepted = match proposal.payload {
         Payload::SendMail { draft_id } => accept_mail_proposal(&svc, &vault, id, draft_id).await?,
         _ => {
-            blocking(move || {
-                Ok(vault.accept_proposal(id, args.edited, args.confirm, Timestamp::now())?)
-            })
-            .await?
+            let now = svc.now();
+            blocking(move || Ok(vault.accept_proposal(id, args.edited, args.confirm, now)?)).await?
         }
     };
 
-    if let Some(change) = change_for_accept(&accepted) {
-        svc.events().changed(Change { origin: ctx.caller.origin().map(str::to_string), ..change });
+    if let Some((kind, op, saved_as)) = change_for_accept(&accepted) {
+        // The id comes from `accepted.outcome`'s own `saved_as`, as it did
+        // before the collector existed, and deliberately not from `touched`.
+        // Reading it back out of the collector looked equivalent and is not:
+        // `save_memory` evicts over the cap by *deleting* rows, and each
+        // deletion reports itself, so a scrape of every `Memory` the command
+        // touched announces the evicted memories as though this accept had
+        // created them. What this event is for is the one record the
+        // proposal saved, which is exactly what `saved_as` names.
+        let origin = ctx.caller.origin().map(str::to_string);
+        svc.events().changed(Change { kind, op, id: Some(saved_as), ids: Vec::new(), origin });
     }
     Ok(accepted)
 }
 
-/// The second [`Change`] a successful accept raises, for the record the
-/// proposal actually saved or removed -- `None` for anything that did not
-/// finish `Accepted` (there is nothing to report for a decline raised from
-/// inside the vault call, which answers `Err` instead).
-fn change_for_accept(proposal: &Proposal) -> Option<Change> {
+/// The `(Kind, Op)` of the second [`Change`] a successful accept raises, for
+/// the record the proposal actually saved or removed -- `None` for anything
+/// that did not finish `Accepted` (there is nothing to report for a decline
+/// raised from inside the vault call, which answers `Err` instead).
+fn change_for_accept(proposal: &Proposal) -> Option<(Kind, Op, String)> {
     let Outcome::Accepted { saved_as, .. } = &proposal.outcome else { return None };
     let kind = match proposal.kind {
         ProposalKind::Task => Kind::Task,
@@ -140,7 +147,7 @@ fn change_for_accept(proposal: &Proposal) -> Option<Change> {
         // queued; nothing is created.
         Payload::SendMail { .. } => Op::Updated,
     };
-    Some(Change { kind, op, id: Some(saved_as.clone()), ids: Vec::new(), origin: None })
+    Some((kind, op, saved_as.clone()))
 }
 
 /// Accept a `SendMail` proposal: send the draft it points at, then close the
@@ -159,7 +166,7 @@ async fn accept_mail_proposal(
     id: ProposalId,
     draft_id: DraftId,
 ) -> CommandResult<Proposal> {
-    let now = Timestamp::now();
+    let now = svc.now();
     match crate::domains::mail::queue_send(svc, draft_id, None, None).await {
         Ok(draft) => {
             close_proposal(
@@ -209,7 +216,8 @@ async fn close_proposal(
 }
 
 async fn decline_proposal(svc: Arc<Service>, _ctx: Ctx, args: Decline) -> CommandResult<Proposal> {
-    svc.on_vault(move |vault| vault.decline_proposal(args.id, args.reason, Timestamp::now())).await
+    let now = svc.now();
+    svc.on_vault(move |vault| vault.decline_proposal(args.id, args.reason, now)).await
 }
 
 async fn mark_proposals_seen(

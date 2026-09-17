@@ -7,12 +7,14 @@
 use crate::id::{BlobId, EntryId, JournalId, TrackerId};
 use crate::purpose::Purpose;
 use crate::richtext::RichDoc;
+use crate::timestamped::Timestamped;
 use crate::tracker::Tracker;
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
 
 /// A named collection of entries. Day One calls these "journals".
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Journal {
     pub id: JournalId,
@@ -108,7 +110,7 @@ impl Journal {
     pub fn show(&mut self, id: TrackerId) {
         if !self.shows(id) {
             self.shown_trackers.push(id);
-            self.updated_at = Timestamp::now();
+            self.touch();
         }
     }
 
@@ -117,8 +119,14 @@ impl Journal {
         let before = self.shown_trackers.len();
         self.shown_trackers.retain(|held| *held != id);
         if self.shown_trackers.len() != before {
-            self.updated_at = Timestamp::now();
+            self.touch();
         }
+    }
+}
+
+impl Timestamped for Journal {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
     }
 }
 
@@ -127,6 +135,7 @@ pub const DEFAULT_JOURNAL_COLORS: &[&str] =
 
 /// Where an entry was written. Optional everywhere.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Location {
     pub latitude: f64,
@@ -141,6 +150,7 @@ pub struct Location {
 
 /// Weather at the time of writing, as captured by an importer or plugin.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Weather {
     pub temperature_c: f64,
@@ -150,6 +160,7 @@ pub struct Weather {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum MediaKind {
     Image,
@@ -175,6 +186,7 @@ impl MediaKind {
 /// The bytes themselves live in the backend's blob store, addressed by
 /// `blob`. Several entries may reference the same blob.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Attachment {
     pub blob: BlobId,
@@ -196,6 +208,7 @@ pub struct Attachment {
 
 /// A single journal entry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
     pub id: EntryId,
@@ -338,6 +351,12 @@ impl Entry {
     }
 }
 
+impl Timestamped for Entry {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
+    }
+}
+
 /// Truncate to at most `max` chars, appending an ellipsis, without ever
 /// splitting a UTF-8 code point.
 pub(crate) fn truncate_on_char_boundary(s: &str, max: usize) -> String {
@@ -351,6 +370,7 @@ pub(crate) fn truncate_on_char_boundary(s: &str, max: usize) -> String {
 
 /// A row in the entry list.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct EntrySummary {
     pub id: EntryId,

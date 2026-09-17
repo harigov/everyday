@@ -304,6 +304,66 @@ async fn a_scheduled_run_may_not_delete_anything() {
     assert_eq!(run.summary, "It needs deleting and I could not do it.");
 }
 
+/// [`Effect::Outward`]'s own half of the same rule -- see `ConfirmGate::
+/// on_tool_call`'s `"outward" => ...` arm. Unlike a destructive call there is
+/// no setting that would let this through even attended, so the interesting
+/// case is that a scheduled run refuses it exactly as a delete is refused,
+/// with a message naming *why* ("sends something") rather than the
+/// destructive one's wording.
+#[tokio::test]
+async fn a_scheduled_run_may_not_send_anything() {
+    let (svc, _dir) = service("http://127.0.0.1:1/v1");
+    let vault = svc.get().unwrap();
+
+    let mut account = everyday_core::account::Account::new(
+        everyday_core::account::Provider::Custom,
+        "me@example.com",
+    );
+    account.services.mail = true;
+    vault.save_account(&account).unwrap();
+    let mut draft = everyday_core::mail::Draft::new(
+        account.id,
+        account.address.clone(),
+        everyday_core::mail::Origin::Person,
+    );
+    draft.to = vec![everyday_core::mail::Address::bare("friend@example.com")];
+    draft.subject = "hi".into();
+    vault.save_draft(&draft).unwrap();
+
+    let model = fake_model(calls(
+        "send_draft",
+        serde_json::json!({ "draft_id": draft.id.to_string() }).to_string(),
+        "It needs sending and I could not do it.",
+    ))
+    .await;
+    let mut settings = vault.agent_settings().unwrap();
+    settings.provider_config.base_url = Some(model.endpoint.clone());
+    vault.save_agent_settings(&settings).unwrap();
+
+    // `send_draft` is only ever *offered* to the assistant on an account
+    // that has both acknowledged this provider and switched sending on for
+    // it -- see `agent::tools::mail::account_eligible` and
+    // `AgentMailAccess::permits`, whose default has `send` off. Neither is
+    // what this test is about: it must still be refused with nobody
+    // watching even once the account itself has said yes, so both are set
+    // here rather than left at their defaults.
+    account.assistant_provider_acknowledged = Some(settings.provider_config.acknowledgement_name());
+    account.assistant_access.send = true;
+    vault.save_account(&account).unwrap();
+    due_now(&svc, "Send it.");
+
+    everyday_service::scheduler::tick(&svc).await;
+
+    assert_eq!(
+        vault.draft(draft.id).unwrap().state,
+        everyday_core::mail::DraftState::Editing,
+        "nothing may be sent with nobody watching"
+    );
+    let run = &vault.runs(&RunQuery::default()).unwrap()[0];
+    assert_eq!(run.outcome, Outcome::Done, "the run still finishes and reports");
+    assert_eq!(run.summary, "It needs sending and I could not do it.");
+}
+
 // ── park_unattended: docs/plans/dreaming.md's Phase 5 ───────────────────
 
 #[tokio::test]

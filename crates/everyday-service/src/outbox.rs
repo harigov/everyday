@@ -61,6 +61,7 @@
 //! bytes the parent was originally ingested from.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use everyday_core::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use everyday_core::mail::{Draft, DraftState, MailboxRole, Op, OpKind, OpState, OpTarget};
@@ -68,7 +69,6 @@ use everyday_mail::outbox::{
     ExecContext, Executed, Located, Lookups, Sender, execute, is_retryable,
 };
 use everyday_mail::session::{MailError, MailSession};
-use jiff::Timestamp;
 
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
@@ -78,6 +78,24 @@ use crate::service::{Service, blocking};
 /// module docs' calling convention is what lets the account task simply
 /// call again when [`DrainReport::pending`] says there is more.
 const DRAIN_BATCH: u32 = 25;
+
+/// This outbox's own schedule, as a [`crate::retry::RetryPolicy`] -- wraps
+/// [`everyday_core::mail::backoff_for_attempt`] exactly, rather than
+/// re-deriving its table here: per phase 9.3 of
+/// `docs/plans/architecture-refactor.md`, "the table lives in core... don't
+/// move it". Unlimited attempts, the same as the function it wraps: a
+/// retryable op keeps its `not_before` growing, capped at the table's last
+/// entry, until it succeeds, is cancelled, or fails for a reason that was
+/// never retryable to begin with.
+fn outbox_table() -> crate::retry::RetryPolicy {
+    crate::retry::RetryPolicy::from_fn(
+        |attempts: u32| {
+            Duration::try_from(everyday_core::mail::backoff_for_attempt(attempts))
+                .expect("RETRY_BACKOFF's entries are all positive durations")
+        },
+        None,
+    )
+}
 
 /// What one [`drain_outbox`] pass did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -112,7 +130,7 @@ where
     T: Sender,
 {
     let vault = svc.require()?;
-    let now = Timestamp::now();
+    let now = svc.now();
     let ops = blocking({
         let vault = vault.clone();
         move || Ok(vault.due_ops(account, now, DRAIN_BATCH)?)
@@ -170,17 +188,18 @@ where
                 // for the one retry-with-a-fresh-token this crate allows
                 // itself before ever surfacing `Auth` at all.
                 //
-                // `backoff_for_attempt` is read *before* `attempts` is
-                // bumped -- it is documented as 0-indexed ("the first
-                // retry, after attempt 0 failed, waits `RETRY_BACKOFF[0]`"),
-                // so reading it after incrementing would make the very
-                // first retry wait the *second* schedule entry (a minute)
-                // instead of the first (thirty seconds), and every later
-                // retry one step further out than the schedule promises.
-                let backoff = everyday_core::mail::backoff_for_attempt(op.attempts);
+                // `outbox_table`'s delay is read *before* `attempts` is
+                // bumped -- it wraps `backoff_for_attempt`, documented as
+                // 0-indexed ("the first retry, after attempt 0 failed,
+                // waits `RETRY_BACKOFF[0]`"), so reading it after
+                // incrementing would make the very first retry wait the
+                // *second* schedule entry (a minute) instead of the first
+                // (thirty seconds), and every later retry one step further
+                // out than the schedule promises.
+                let backoff = outbox_table().delay_for(op.attempts);
                 op.attempts += 1;
                 op.last_error = Some(reason.clone());
-                op.not_before = Timestamp::now() + backoff;
+                op.not_before = svc.now() + backoff;
                 op.transition_to(OpState::Pending)?;
                 persist_op(&vault, &op).await?;
                 mark_account_needs_sign_in(svc, &vault, account, &reason).await;
@@ -189,10 +208,10 @@ where
             Err(err) if is_retryable(&err) => {
                 // See the `Auth` arm above for why the backoff is read
                 // before `attempts` is bumped.
-                let backoff = everyday_core::mail::backoff_for_attempt(op.attempts);
+                let backoff = outbox_table().delay_for(op.attempts);
                 op.attempts += 1;
                 op.last_error = Some(err.to_string());
-                op.not_before = Timestamp::now() + backoff;
+                op.not_before = svc.now() + backoff;
                 op.transition_to(OpState::Pending)?;
                 persist_op(&vault, &op).await?;
                 report.retried += 1;
@@ -414,7 +433,7 @@ async fn mark_account_needs_sign_in(
     let vault_for_account = vault.clone();
     let loaded = blocking(move || Ok(vault_for_account.account(account)?)).await;
     if let Ok(acct) = loaded {
-        crate::mailsync::credential::mark_needs_sign_in(vault, &acct, reason);
+        crate::mailsync::credential::mark_needs_sign_in(vault, &acct, reason, svc.now());
     }
 }
 
@@ -665,7 +684,7 @@ pub async fn release_due_snoozes(svc: &Arc<Service>) -> CommandResult<usize> {
     if !vault.is_writable() || !vault.supports_mail() {
         return Ok(0);
     }
-    let now = Timestamp::now();
+    let now = svc.now();
     let due = blocking({
         let vault = vault.clone();
         move || Ok(vault.due_snoozed_threads(now, 200)?)
@@ -880,7 +899,11 @@ impl Lookups for VaultLookups {
 /// read gone wrong, so a locked vault or a full disk backs off and tries
 /// again instead of reversing whatever the person just asked for and
 /// telling them it failed.
-fn is_transient_local_failure(code: &str) -> bool {
+///
+/// Not merged with `meeting::pipeline::retry::is_transient` -- see
+/// `crate::retry::tests::pipeline_and_outbox_classifiers_disagree_by_design`
+/// for the decision, checked directly against both functions.
+pub(crate) fn is_transient_local_failure(code: &str) -> bool {
     matches!(code, codes::LOCKED | codes::IO | codes::BACKEND)
 }
 
@@ -935,5 +958,72 @@ mod tests {
         let err = vault_err(Error::not_found("draft", "some-id"));
         assert!(matches!(err, MailError::Protocol(_)), "{err:?}");
         assert!(!is_retryable(&err));
+    }
+
+    /// Phase 9.3's pinning step: the literal seconds
+    /// [`everyday_core::mail::backoff_for_attempt`] answers with, as
+    /// `drain_outbox`'s two call sites (`Err(MailError::Auth(..))` and
+    /// `Err(err) if is_retryable(&err)`) actually use it -- fixed here,
+    /// in this crate, even though the table itself lives in
+    /// `everyday-core` and is pinned there too; this is what a caller of
+    /// `outbox_table()` must keep seeing once phase 9.3 wraps it.
+    #[test]
+    fn outbox_backoff_seconds_are_pinned() {
+        let expected = [30u64, 60, 300, 900, 3600, 3600, 3600].map(std::time::Duration::from_secs);
+        for (attempts, want) in expected.into_iter().enumerate() {
+            let got = everyday_core::mail::backoff_for_attempt(attempts as u32);
+            assert_eq!(
+                std::time::Duration::try_from(got).unwrap(),
+                want,
+                "attempts already made: {attempts}"
+            );
+        }
+    }
+
+    /// [`outbox_table`] must answer exactly what
+    /// [`everyday_core::mail::backoff_for_attempt`] does -- it is a wrapper,
+    /// not a second implementation.
+    #[test]
+    fn outbox_table_matches_backoff_for_attempt_exactly() {
+        let policy = outbox_table();
+        for attempts in 0..10u32 {
+            assert_eq!(
+                policy.delay_for(attempts),
+                Duration::try_from(everyday_core::mail::backoff_for_attempt(attempts)).unwrap(),
+                "attempts already made: {attempts}"
+            );
+        }
+        assert_eq!(policy.max_attempts(), None, "an outbox op never gives up on its own");
+    }
+
+    /// Phase 9.3's pinning step: [`is_transient_local_failure`]'s verdict
+    /// on a representative set of codes, fixed before the retry mechanism
+    /// moves. Also the evidence for why it must stay separate from
+    /// `meeting::pipeline::retry::is_transient`: that classifier says
+    /// `true` for `NETWORK`/`TIMED_OUT`/`RATE_LIMITED` and `false` for
+    /// `LOCKED`/`IO`/`BACKEND` -- the exact opposite of this one. A
+    /// vault/storage failure and a provider/network failure are different
+    /// domains that happen to share the word "transient"; unioning them
+    /// would make a genuinely wrong request (in pipeline's world) retry
+    /// forever, or a full disk (in outbox's world) fail permanently.
+    #[test]
+    fn is_transient_local_failure_verdicts_are_pinned() {
+        for code in [codes::LOCKED, codes::IO, codes::BACKEND] {
+            assert!(is_transient_local_failure(code), "{code} must be a transient local failure");
+        }
+        for code in [
+            codes::NETWORK,
+            codes::TIMED_OUT,
+            codes::RATE_LIMITED,
+            codes::FORBIDDEN,
+            codes::NOT_FOUND,
+            codes::INVALID,
+            codes::DECRYPT_FAILED,
+        ] {
+            assert!(
+                !is_transient_local_failure(code),
+                "{code} must not be a transient local failure"
+            );
+        }
     }
 }

@@ -257,13 +257,13 @@ fn persist_rotated_refresh_token(
 /// not there already with the same words -- an idempotent write, since this
 /// is called from a loop that may see the same failure more than once before
 /// something stops asking.
-pub fn mark_needs_sign_in(vault: &Vault, account: &Account, reason: &str) {
+pub fn mark_needs_sign_in(vault: &Vault, account: &Account, reason: &str, now: Timestamp) {
     if matches!(&account.status, AccountStatus::NeedsSignIn { reason: r } if r == reason) {
         return;
     }
     let mut account = account.clone();
     account.status = AccountStatus::NeedsSignIn { reason: reason.to_string() };
-    account.updated_at = Timestamp::now();
+    account.updated_at = now;
     let _ = vault.save_account(&account);
 }
 
@@ -271,22 +271,22 @@ pub fn mark_needs_sign_in(vault: &Vault, account: &Account, reason: &str) {
 /// that refused or could not be reached for a reason signing in again will
 /// not fix. Named after the calendar's own rule: "a feed that is down is a
 /// state, not a dialog."
-pub fn mark_error(vault: &Vault, account: &Account, message: &str) {
+pub fn mark_error(vault: &Vault, account: &Account, message: &str, now: Timestamp) {
     if matches!(&account.status, AccountStatus::Error { message: m } if m == message) {
         return;
     }
     let mut account = account.clone();
     account.status = AccountStatus::Error { message: message.to_string() };
-    account.updated_at = Timestamp::now();
+    account.updated_at = now;
     let _ = vault.save_account(&account);
 }
 
 /// Move `account` back to [`AccountStatus::Ok`] and stamp `last_synced_at`.
-pub fn mark_ok(vault: &Vault, account: &Account) {
+pub fn mark_ok(vault: &Vault, account: &Account, now: Timestamp) {
     let mut account = account.clone();
     account.status = AccountStatus::Ok;
-    account.last_synced_at = Some(Timestamp::now());
-    account.updated_at = Timestamp::now();
+    account.last_synced_at = Some(now);
+    account.updated_at = now;
     let _ = vault.save_account(&account);
 }
 

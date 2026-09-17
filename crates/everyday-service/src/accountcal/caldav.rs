@@ -351,7 +351,7 @@ pub async fn sync(
             };
             fresh_etags.push((resource.href.clone(), content.etag.clone()));
             let (mut events, more_skipped, recurring) =
-                events_from_ics(&content.data, calendar.id, &resource.href, &tz, window);
+                events_from_ics(&content.data, calendar.id, &resource.href, &tz, window, svc.now());
             skipped += more_skipped;
             upsert.append(&mut events);
             if recurring {
@@ -680,6 +680,7 @@ fn events_from_ics(
     href: &str,
     default_tz: &str,
     window: (jiff::civil::Date, jiff::civil::Date),
+    now: jiff::Timestamp,
 ) -> (Vec<Event>, u64, bool) {
     // Lenient in the same spirit as `everyday_core::ics::parse`: a resource
     // that does not parse as a calendar at all contributes nothing rather
@@ -768,7 +769,7 @@ fn events_from_ics(
             // it from the `#start` suffix the same way it does for a
             // subscribed feed's `<uid>@<start>`.
             series: None,
-            updated_at: jiff::Timestamp::now(),
+            updated_at: now,
         });
     }
     (out, skipped, recurring)
@@ -907,6 +908,34 @@ fn attendees_of(comp: &calcard::icalendar::ICalendarComponent) -> Vec<String> {
         .collect()
 }
 
+/// This source's [`super::CalendarProvider`] -- a thin wrapper so
+/// [`super::provider_for`] can hand back CalDAV's [`discover`] and [`sync`]
+/// without a caller matching on [`AccountCalendarSource`] itself. See
+/// `crate::meeting::transcribe::openai::OpenAiTranscriber` for the same
+/// shape elsewhere.
+pub(crate) struct CalDavProvider;
+
+impl super::CalendarProvider for CalDavProvider {
+    fn discover<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+    ) -> super::BoxFuture<'a, CommandResult<Vec<RemoteCalendar>>> {
+        Box::pin(discover(svc, vault, account))
+    }
+
+    fn sync<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+    ) -> super::BoxFuture<'a, CommandResult<SyncReport>> {
+        Box::pin(sync(svc, vault, account, calendar))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1005,8 +1034,14 @@ mod tests {
                    END:VEVENT\r\n\
                    END:VCALENDAR\r\n";
         let window = (jiff::civil::date(2020, 1, 1), jiff::civil::date(2030, 1, 1));
-        let (events, skipped, recurring) =
-            events_from_ics(ics, CalendarId::new(), "/cal/standup.ics", "America/New_York", window);
+        let (events, skipped, recurring) = events_from_ics(
+            ics,
+            CalendarId::new(),
+            "/cal/standup.ics",
+            "America/New_York",
+            window,
+            jiff::Timestamp::now(),
+        );
 
         assert_eq!(skipped, 0);
         assert!(recurring, "an RRULE makes this resource recurring");
@@ -1047,8 +1082,14 @@ mod tests {
     #[test]
     fn a_calendar_that_does_not_parse_yields_no_events_rather_than_failing() {
         let window = (jiff::civil::date(2020, 1, 1), jiff::civil::date(2030, 1, 1));
-        let (events, skipped, recurring) =
-            events_from_ics("not a calendar", CalendarId::new(), "/cal/x.ics", "UTC", window);
+        let (events, skipped, recurring) = events_from_ics(
+            "not a calendar",
+            CalendarId::new(),
+            "/cal/x.ics",
+            "UTC",
+            window,
+            jiff::Timestamp::now(),
+        );
         assert!(events.is_empty());
         assert_eq!(skipped, 0);
         assert!(!recurring);
@@ -1097,8 +1138,14 @@ mod tests {
             UID:trip@example.com\r\nDTSTART;VALUE=DATE:20260710\r\nDTEND;VALUE=DATE:20260713\r\n\
             SUMMARY:Trip\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         let window = (jiff::civil::date(2020, 1, 1), jiff::civil::date(2030, 1, 1));
-        let (events, skipped, recurring) =
-            events_from_ics(ics, CalendarId::new(), "/cal/trip.ics", "UTC", window);
+        let (events, skipped, recurring) = events_from_ics(
+            ics,
+            CalendarId::new(),
+            "/cal/trip.ics",
+            "UTC",
+            window,
+            jiff::Timestamp::now(),
+        );
         assert_eq!(skipped, 0);
         assert!(!recurring);
         assert_eq!(events.len(), 1);
@@ -1117,8 +1164,14 @@ mod tests {
             UID:overnight@example.com\r\nDTSTART;TZID=UTC:20260710T230000\r\n\
             DTEND;TZID=UTC:20260711T010000\r\nSUMMARY:Overnight\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         let window = (jiff::civil::date(2020, 1, 1), jiff::civil::date(2030, 1, 1));
-        let (events, skipped, recurring) =
-            events_from_ics(ics, CalendarId::new(), "/cal/overnight.ics", "UTC", window);
+        let (events, skipped, recurring) = events_from_ics(
+            ics,
+            CalendarId::new(),
+            "/cal/overnight.ics",
+            "UTC",
+            window,
+            jiff::Timestamp::now(),
+        );
         assert_eq!(skipped, 0);
         assert!(!recurring);
         assert_eq!(events.len(), 1);

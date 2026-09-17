@@ -26,12 +26,14 @@ pub mod template;
 
 use crate::calendar::Event;
 use crate::id::{CalendarId, NoteId, RecordingId, TemplateId, TranscriptId, VoiceprintId};
+use crate::timestamped::Timestamped;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 /// Which side of the call a stretch of audio came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum Track {
     /// The microphone: the vault's owner.
@@ -63,6 +65,7 @@ pub const CHUNK_SECONDS: u32 = 30;
 /// sync and may be gone by the time the pipeline finishes, and the note
 /// still has to say who was invited.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct EventRef {
     pub calendar_id: CalendarId,
@@ -120,6 +123,7 @@ impl EventRef {
 /// `stage` is also a plaintext column, spelled by [`Stage::as_str`], so
 /// recovery can find the stuck ones without unsealing every row.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Stage {
     Recording,
@@ -163,6 +167,7 @@ pub const FAILED_SPOOL_DAYS: i64 = 7;
 
 /// One spooled chunk of one track.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct ChunkMeta {
     pub track: Track,
@@ -181,6 +186,7 @@ pub struct ChunkMeta {
 /// A recording: the pipeline's durable state, and afterwards the history of
 /// which call a note came from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Recording {
     pub id: RecordingId,
@@ -235,6 +241,7 @@ impl Recording {
 
 /// A transcribed stretch of one track, before speakers are settled.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct TrackSegment {
     pub track: Track,
@@ -254,6 +261,7 @@ pub struct TrackSegment {
 /// How a speaker's name was arrived at. Shown, because a guess and a match
 /// should not look the same.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Attribution {
     /// The microphone track.
@@ -270,6 +278,7 @@ pub enum Attribution {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Speaker {
     /// Referred to by [`Segment::speaker`]. Stable within one transcript.
@@ -292,6 +301,7 @@ pub struct Speaker {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Segment {
     pub start_ms: u64,
@@ -302,6 +312,7 @@ pub struct Segment {
 
 /// What was said, kept after the audio is gone.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Transcript {
     pub id: TranscriptId,
@@ -360,6 +371,7 @@ pub const MAX_CENTROIDS: usize = 4;
 /// A voice. Several centroids rather than one, because a person sounds
 /// different on a headset and on a laptop.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Voiceprint {
     pub id: VoiceprintId,
@@ -378,8 +390,15 @@ pub struct Voiceprint {
     pub updated_at: Timestamp,
 }
 
+impl Timestamped for Voiceprint {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
+    }
+}
+
 /// When to offer.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum Offer {
     /// Never ask; recording only by hand.
@@ -393,6 +412,7 @@ pub enum Offer {
 
 /// Which calendars the watcher looks at. Empty lists mean every calendar.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct CalendarFilter {
     pub calendar_ids: Vec<CalendarId>,
@@ -401,6 +421,7 @@ pub struct CalendarFilter {
 
 /// The local recognisers on offer. See `everyday_service::meeting::models`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum LocalModel {
     /// Parakeet TDT 0.6B v3, int8: English and European languages, fast.
@@ -421,6 +442,7 @@ impl LocalModel {
 /// Who turns speech into text. There is deliberately no default: the switch
 /// stays off until somebody has chosen one of these and made it usable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum TranscriberConfig {
     Local {
@@ -472,6 +494,7 @@ impl TranscriberConfig {
 
 /// A note shape. See [`template`] for what the body means.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct NoteTemplate {
     pub id: TemplateId,
@@ -481,6 +504,7 @@ pub struct NoteTemplate {
 
 /// Everything the meetings feature is configured by. Sealed in the vault.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct MeetingSettings {
     /// Refused by the service unless [`MeetingSettings::transcriber`] is set

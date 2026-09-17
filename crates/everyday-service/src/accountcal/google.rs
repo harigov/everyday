@@ -63,20 +63,14 @@ use tokio::time::sleep;
 
 use super::tokens::{self, Credential, Resource};
 use super::{
-    RemoteCalendar, deterministic_event_id, retry_after_delay, short_backoff, sync_window,
+    RemoteCalendar, calendar_after_retry_after, deterministic_event_id, retry_after_delay,
+    sync_window,
 };
 use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
 use crate::service::{Service, blocking};
 
 const API: &str = "https://www.googleapis.com/calendar/v3";
-
-/// How many times one request retries a rate-limited 403 before [`sync`]
-/// gives up for this poll and lets the next one -- a minute or an hour away,
-/// per the calendar's own `refresh_minutes` -- try again. Generous enough
-/// that a brief burst clears inside one sync; small enough that a sustained
-/// limit does not hold up a background poll for minutes.
-const MAX_RATE_LIMIT_ATTEMPTS: u32 = 4;
 
 #[derive(Deserialize)]
 struct CalendarListResponse {
@@ -258,7 +252,7 @@ async fn sync_with_base(
             remove_ids.push(id);
             continue;
         }
-        if let Some(event) = to_event(calendar.id, &item, &default_tz) {
+        if let Some(event) = to_event(calendar.id, &item, &default_tz, svc.now()) {
             upsert.push(event);
         }
     }
@@ -340,7 +334,12 @@ async fn list_events(
     Ok((items, next_sync_token))
 }
 
-fn to_event(calendar_id: CalendarId, item: &GoogleEvent, default_tz: &str) -> Option<Event> {
+fn to_event(
+    calendar_id: CalendarId,
+    item: &GoogleEvent,
+    default_tz: &str,
+    now: jiff::Timestamp,
+) -> Option<Event> {
     let start = item.start.as_ref()?;
     let end = item.end.as_ref().unwrap_or(start);
     let all_day = start.date.is_some();
@@ -394,7 +393,7 @@ fn to_event(calendar_id: CalendarId, item: &GoogleEvent, default_tz: &str) -> Op
         url: item.html_link.clone(),
         busy: item.transparency != "transparent",
         series: item.recurring_event_id.clone().or_else(|| item.i_cal_uid.clone()),
-        updated_at: jiff::Timestamp::now(),
+        updated_at: now,
     })
 }
 
@@ -447,14 +446,15 @@ async fn get_bytes(url: &str, token: &str) -> CommandResult<Vec<u8>> {
             let retry_after = retry_after_delay(response.headers());
             let body = response.bytes().await.unwrap_or_default();
             if is_rate_limit_reason(&body) {
-                if attempt >= MAX_RATE_LIMIT_ATTEMPTS {
+                let policy = calendar_after_retry_after();
+                if policy.gives_up_after(attempt) {
                     return Err(CommandError::new(
                         codes::RATE_LIMITED,
                         "Google Calendar is rate-limiting this account; it will be tried again \
                          on the next sync",
                     ));
                 }
-                sleep(retry_after.unwrap_or_else(|| short_backoff(attempt))).await;
+                sleep(retry_after.unwrap_or_else(|| policy.delay_for(attempt))).await;
                 continue;
             }
             // A 403 for any other reason: this account's credential is
@@ -522,6 +522,31 @@ fn urlencoding_light(s: &str) -> String {
         }
     }
     out
+}
+
+/// This source's [`super::CalendarProvider`] -- see `caldav.rs`'s own
+/// `CalDavProvider` for why this thin wrapper exists.
+pub(crate) struct GoogleProvider;
+
+impl super::CalendarProvider for GoogleProvider {
+    fn discover<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+    ) -> super::BoxFuture<'a, CommandResult<Vec<RemoteCalendar>>> {
+        Box::pin(discover(svc, vault, account))
+    }
+
+    fn sync<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+    ) -> super::BoxFuture<'a, CommandResult<SyncReport>> {
+        Box::pin(sync(svc, vault, account, calendar))
+    }
 }
 
 #[cfg(test)]
@@ -796,7 +821,7 @@ mod tests {
         );
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            MAX_RATE_LIMIT_ATTEMPTS,
+            calendar_after_retry_after().max_attempts().unwrap(),
             "it must have actually retried, honouring the mock's Retry-After: 0"
         );
     }
@@ -872,7 +897,7 @@ mod tests {
         let mut item = bare_google_event("instance-1");
         item.recurring_event_id = Some("master-abc".into());
         item.i_cal_uid = Some("master-abc@google.com".into());
-        let event = to_event(CalendarId::new(), &item, "UTC").unwrap();
+        let event = to_event(CalendarId::new(), &item, "UTC", jiff::Timestamp::now()).unwrap();
         assert_eq!(event.series.as_deref(), Some("master-abc"), "recurringEventId wins");
     }
 
@@ -883,14 +908,14 @@ mod tests {
     fn i_cal_uid_is_the_series_when_there_is_no_recurring_event_id() {
         let mut item = bare_google_event("evt-1");
         item.i_cal_uid = Some("evt-1@google.com".into());
-        let event = to_event(CalendarId::new(), &item, "UTC").unwrap();
+        let event = to_event(CalendarId::new(), &item, "UTC", jiff::Timestamp::now()).unwrap();
         assert_eq!(event.series.as_deref(), Some("evt-1@google.com"));
     }
 
     #[test]
     fn an_event_with_neither_field_has_no_series() {
         let item = bare_google_event("evt-1");
-        let event = to_event(CalendarId::new(), &item, "UTC").unwrap();
+        let event = to_event(CalendarId::new(), &item, "UTC", jiff::Timestamp::now()).unwrap();
         assert_eq!(event.series, None);
     }
 }

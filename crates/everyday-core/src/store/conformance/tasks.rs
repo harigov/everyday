@@ -1,6 +1,7 @@
 //! The task half of the conformance suite: projects, tasks and time blocks.
 
 use super::*;
+use crate::completable::Completable;
 
 /// The task half of the suite. Called by [`run_all`] when the backend has a
 /// [`TaskStore`]; public so a backend under construction can run it alone.

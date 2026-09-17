@@ -32,25 +32,16 @@
 use everyday_core::account::{ACCOUNT_SECRET_OWNER_KIND, Account};
 use everyday_core::error::Result;
 use everyday_core::id::AccountId;
+use everyday_core::record::RecordKind;
 use everyday_core::store::accounts::{AccountStore, account_aad};
 
 use crate::conn::{SqlExt, ToValue, Value};
-use crate::purpose::{RecordKind, forget_purposes};
+use crate::purpose::forget_purposes;
 use crate::record::Record;
 use crate::{SqlStore, to_us, vals};
 
 impl Record for Account {
     const TABLE: &'static str = "accounts";
-    const KIND: &'static str = "account";
-    type Id = AccountId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        account_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![

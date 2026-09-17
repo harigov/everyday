@@ -13,6 +13,7 @@
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{JournalId, ReadingId, TrackerId};
 use everyday_core::purpose::Purpose;
+use everyday_core::record::RecordKind;
 use everyday_core::store::trackers::{
     ReadingQuery, TrackerDay, TrackerStore, reading_aad, tracker_aad,
 };
@@ -20,22 +21,12 @@ use everyday_core::tracker::{Reading, Tracker};
 use jiff::civil::Date;
 
 use crate::conn::{Sql, SqlExt, ToValue, Value, Where};
-use crate::purpose::{RecordKind, forget_purposes};
+use crate::purpose::forget_purposes;
 use crate::record::Record;
 use crate::{SqlStore, from_us, id_str, to_us, vals};
 
 impl Record for Tracker {
     const TABLE: &'static str = "trackers";
-    const KIND: &'static str = "tracker";
-    type Id = TrackerId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        tracker_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
@@ -57,16 +48,6 @@ impl Record for Tracker {
 
 impl Record for Reading {
     const TABLE: &'static str = "readings";
-    const KIND: &'static str = "reading";
-    type Id = ReadingId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        reading_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![

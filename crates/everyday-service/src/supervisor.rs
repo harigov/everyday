@@ -622,30 +622,22 @@ fn capture_panic_messages() {
     });
 }
 
-/// Capped exponential backoff with full jitter: a delay drawn uniformly from
-/// `0..=min(BACKOFF_BASE * 2^(attempt - 1), BACKOFF_CAP)`.
-///
-/// Full jitter rather than a fixed delay or a narrower jittered band,
-/// because the case this exists for is many of a vault's accounts failing
-/// at once -- a network that just came back, a provider having a bad
-/// afternoon -- and a supervisor that made every one of them wait exactly
-/// the same length of time would have them all retry in the same instant
-/// and fail together again. See Marc Brooker's "Exponential Backoff and
-/// Jitter" (the AWS Architecture Blog, 2015) for the fuller argument; this
-/// is its "FullJitter".
-fn backoff_delay(attempt: u32) -> Duration {
-    let exponent = attempt.saturating_sub(1).min(10);
-    let scaled = BACKOFF_BASE.saturating_mul(1u32 << exponent);
-    full_jitter(scaled.min(BACKOFF_CAP))
+/// This restart loop's own schedule, as a [`crate::retry::RetryPolicy`] --
+/// capped exponential backoff with full jitter, unlimited attempts: nothing
+/// about a supervised task gives up on its own, only `Outcome::Done` or
+/// [`Supervisor::stop`] end it. See [`crate::retry::RetryPolicy::exponential`]
+/// for why full jitter exists at all, and phase 9.3 of
+/// `docs/plans/architecture-refactor.md` ("unify the retry mechanism, not
+/// the policies") for why this schedule's own base, cap and jitter choice
+/// stay exactly what they were, only expressed through the shared type now.
+fn supervisor_backoff() -> crate::retry::RetryPolicy {
+    crate::retry::RetryPolicy::exponential(BACKOFF_BASE, BACKOFF_CAP, true, None)
 }
 
-fn full_jitter(capped: Duration) -> Duration {
-    let millis = u64::try_from(capped.as_millis()).unwrap_or(u64::MAX);
-    if millis == 0 {
-        return Duration::ZERO;
-    }
-    use rand::Rng;
-    Duration::from_millis(rand::rng().random_range(0..=millis))
+/// A delay drawn uniformly from `0..=min(BACKOFF_BASE * 2^(attempt - 1),
+/// BACKOFF_CAP)` -- see [`supervisor_backoff`] for the schedule itself.
+fn backoff_delay(attempt: u32) -> Duration {
+    supervisor_backoff().delay_for(attempt)
 }
 
 #[cfg(test)]
@@ -1021,5 +1013,55 @@ mod tests {
     fn backoff_grows_and_caps() {
         assert!(backoff_delay(1) <= BACKOFF_BASE);
         assert!(backoff_delay(20) <= BACKOFF_CAP);
+    }
+
+    /// Phase 9.3's pinning step: [`backoff_delay`]'s exact invariants --
+    /// full jitter means the draw itself is not reproducible, but the
+    /// *bound* each attempt draws from is, and so is how that bound grows
+    /// -- fixed here before `backoff_delay` is rewritten to go through a
+    /// shared `RetryPolicy`.
+    #[test]
+    fn backoff_delay_bounds_and_cap_growth_are_pinned() {
+        let mut prev_cap = Duration::ZERO;
+        for attempt in 1..=25u32 {
+            let exponent = attempt.saturating_sub(1).min(10);
+            let expected_cap = BACKOFF_BASE.saturating_mul(1u32 << exponent).min(BACKOFF_CAP);
+            // Full jitter draws uniformly from `0..=expected_cap`; drawing
+            // several times catches an off-by-one in either bound without
+            // this test itself becoming a coin flip.
+            for _ in 0..20 {
+                let d = backoff_delay(attempt);
+                assert!(d <= expected_cap, "attempt {attempt}: {d:?} exceeds cap {expected_cap:?}");
+            }
+            if attempt <= 11 {
+                assert!(
+                    expected_cap >= prev_cap,
+                    "the cap must grow with attempt until it saturates at BACKOFF_CAP"
+                );
+            } else {
+                assert_eq!(
+                    expected_cap, BACKOFF_CAP,
+                    "the cap must have saturated at BACKOFF_CAP by attempt 12"
+                );
+            }
+            prev_cap = expected_cap;
+        }
+        // Never retries forever without a cap: even a huge attempt count
+        // stays within BACKOFF_CAP, on every draw.
+        for _ in 0..20 {
+            assert!(backoff_delay(1_000_000) <= BACKOFF_CAP);
+        }
+    }
+
+    /// The supervisor's give-up point, pinned: there is none. A restart
+    /// loop only ever stops on `Outcome::Done` or `Supervisor::stop` --
+    /// `does_not_restart_after_done` and `stop_all_stops_a_running_task`
+    /// above already cover both; this is the negative case, that a purely
+    /// failing task is never abandoned on its own.
+    #[test]
+    fn backoff_delay_never_refuses_to_answer_however_many_attempts_have_failed() {
+        for attempt in [1, 2, 100, 10_000, u32::MAX] {
+            let _ = backoff_delay(attempt); // must not panic or overflow
+        }
     }
 }

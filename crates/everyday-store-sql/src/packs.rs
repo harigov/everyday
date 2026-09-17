@@ -222,3 +222,22 @@ impl PackStore for SqlStore {
         TablePacks::new(self).drop_packs(account, packs)
     }
 }
+
+#[cfg(test)]
+mod pinned_strings {
+    //! Phase 0.1 of `docs/plans/architecture-refactor.md`. `row_aad` is
+    //! module-private -- narrower even than `pub(crate)` -- so this has to
+    //! live beside it rather than in `everyday-core/tests/`, which cannot
+    //! see it at all, or even in some other file of this crate.
+    use super::row_aad;
+    use everyday_core::id::PackId;
+
+    #[test]
+    fn row_aad_label_is_pinned() {
+        let id = PackId::parse("01234567-89ab-cdef-0123-456789abcdef").unwrap();
+        assert_eq!(
+            row_aad("acct-1", id),
+            b"everyday.mailpack.row.v1:acct-1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+        );
+    }
+}

@@ -18,6 +18,7 @@
 
 use super::records::{MessageFlags, OpKind, OpState};
 use crate::error::{Error, Result};
+use crate::timestamped::Timestamped;
 use jiff::SignedDuration;
 
 // ---- state transitions ----------------------------------------------------
@@ -77,7 +78,7 @@ impl super::records::Op {
             )));
         }
         self.state = next;
-        self.updated_at = jiff::Timestamp::now();
+        self.touch();
         Ok(())
     }
 }

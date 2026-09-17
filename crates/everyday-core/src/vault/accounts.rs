@@ -13,6 +13,7 @@ use super::session::Domain;
 use crate::account::{ACCOUNT_SECRET_OWNER_KIND, Account, AccountSecret};
 use crate::error::{Error, Result};
 use crate::id::AccountId;
+use crate::record::RecordKind;
 use crate::store::accounts::AccountStore;
 use crate::store::secrets::SecretStore;
 
@@ -44,15 +45,21 @@ impl Vault {
         if account.address.trim().is_empty() {
             return Err(Error::Invalid("an account needs an address".into()));
         }
-        self.with_accounts(|a| a.put_account(account))
+        self.with_accounts(|a| a.put_account(account))?;
+        self.wrote(RecordKind::Account, account.id);
+        Ok(())
     }
 
     /// Delete the account. Its secret and every calendar (and event) it
     /// brought into the vault go with it -- see
-    /// [`crate::store::accounts::AccountStore::delete_account`].
+    /// [`crate::store::accounts::AccountStore::delete_account`]. Only the
+    /// account itself is recorded as touched; the calendars it cascades away
+    /// have no ids in hand here to name individually.
     pub fn delete_account(&self, id: AccountId) -> Result<()> {
         self.writable()?;
-        self.with_accounts(|a| a.delete_account(id))
+        self.with_accounts(|a| a.delete_account(id))?;
+        self.wrote(RecordKind::Account, id);
+        Ok(())
     }
 
     /// The credential this account signs in with, or `None` if none has ever

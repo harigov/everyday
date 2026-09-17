@@ -1,0 +1,18 @@
+{
+  "format": 1,
+  "name": "My Journal",
+  "backend": "sqlite",
+  "cipher": "xchacha20poly1305",
+  "kdf": {
+    "memoryKib": 8,
+    "iterations": 1,
+    "lanes": 1
+  },
+  "salt": "4f4c6638898d003e99c567c3454150a2",
+  "wrappedKey": "5699da485fdf9829a0b8fc4b0c3ab524beaeb1e554d4af70ff74a075bb9ce15c5b56d3376313d7278a64dd4bb6846b6da74ad28723c744ec96bca1122daecde244ab4561a7c44ae5",
+  "createdAt": "2026-09-17T17:04:26.223307441Z",
+  "autoLockSeconds": 900,
+  "migratedLock": true,
+  "keyCheck": "e90ff96bd20b302468d6eb3023a25d16a6baa5d9b93abda25a0761c4869dd559d4f56293db775ebb0e6a25e9b294e4c7d80058adcceecccf268f515a37",
+  "forgetKeySeconds": 0
+}

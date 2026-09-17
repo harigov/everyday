@@ -28,6 +28,7 @@ const MAX_DEPTH: usize = 64;
 pub const MEDIA_NODE: &str = "media";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(transparent)]
 pub struct RichDoc(pub Value);
 

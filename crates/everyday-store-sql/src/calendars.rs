@@ -9,25 +9,16 @@
 use everyday_core::calendar::{Calendar, CalendarOrigin, Event};
 use everyday_core::error::Result;
 use everyday_core::id::{CalendarId, EventId};
+use everyday_core::record::RecordKind;
 use everyday_core::store::calendars::{CalendarStore, EventQuery, calendar_aad, event_aad};
 
 use crate::conn::{SqlExt, ToValue, Value, Where};
-use crate::purpose::{RecordKind, forget_purposes, set_purpose};
+use crate::purpose::{forget_purposes, set_purpose};
 use crate::record::{Record, upsert_stmt};
 use crate::{SqlStore, to_us, vals};
 
 impl Record for Calendar {
     const TABLE: &'static str = "calendars";
-    const KIND: &'static str = "calendar";
-    type Id = CalendarId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        calendar_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
@@ -47,16 +38,6 @@ impl Record for Calendar {
 
 impl Record for Event {
     const TABLE: &'static str = "events";
-    const KIND: &'static str = "event";
-    type Id = EventId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        event_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![

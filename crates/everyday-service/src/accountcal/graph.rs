@@ -52,7 +52,7 @@
 //! are retried with a short backoff, honouring `Retry-After` when Graph
 //! sends one -- see [`get_json_full_url`], which shares its retry loop and
 //! backoff with `google.rs`'s own (`super::retry_after_delay`,
-//! `super::short_backoff`).
+//! `super::calendar_after_retry_after`).
 
 use std::sync::Arc;
 
@@ -68,7 +68,8 @@ use tokio::time::sleep;
 
 use super::tokens::{self, Credential, Resource};
 use super::{
-    RemoteCalendar, deterministic_event_id, retry_after_delay, short_backoff, sync_window,
+    RemoteCalendar, calendar_after_retry_after, deterministic_event_id, retry_after_delay,
+    sync_window,
 };
 use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
@@ -79,11 +80,6 @@ const API: &str = "https://graph.microsoft.com/v1.0";
 /// `remote_id` so [`sync`] can tell "read this one with delta" from "read
 /// this one with a windowed poll" without a second field on the record.
 const PRIMARY: &str = "primary";
-/// How many times one request retries a 429 or a 503 before [`sync`] gives
-/// up for this poll and lets the next scheduled one try again -- the same
-/// number, for the same reason, as `google.rs`'s own
-/// `MAX_RATE_LIMIT_ATTEMPTS`.
-const MAX_RETRY_ATTEMPTS: u32 = 4;
 
 #[derive(Deserialize)]
 struct CalendarListResponse {
@@ -180,7 +176,7 @@ async fn sync_with_base(
     let mut remove_ids: Vec<everyday_core::id::EventId> =
         removed_raw.iter().map(|raw_id| deterministic_event_id(calendar.id, raw_id)).collect();
     for item in &upsert_raw {
-        if let Some(event) = to_event(calendar.id, item) {
+        if let Some(event) = to_event(calendar.id, item, svc.now()) {
             upsert.push(event);
         } else {
             remove_ids.push(deterministic_event_id(calendar.id, &item.id));
@@ -372,7 +368,7 @@ async fn windowed_sync(
 /// is missing the one thing every occurrence needs -- a start -- which
 /// `sync` reads as "this id is no longer a usable event" and removes rather
 /// than drops silently.
-fn to_event(calendar_id: CalendarId, item: &GraphEvent) -> Option<Event> {
+fn to_event(calendar_id: CalendarId, item: &GraphEvent, now: jiff::Timestamp) -> Option<Event> {
     if item.is_cancelled {
         return None;
     }
@@ -412,7 +408,7 @@ fn to_event(calendar_id: CalendarId, item: &GraphEvent) -> Option<Event> {
         url: item.web_link.clone(),
         busy: !matches!(item.show_as.as_str(), "free" | "workingElsewhere"),
         series: item.series_master_id.clone().or_else(|| item.i_cal_u_id.clone()),
-        updated_at: jiff::Timestamp::now(),
+        updated_at: now,
     })
 }
 
@@ -498,7 +494,8 @@ async fn get_json_full_url<T: serde::de::DeserializeOwned>(
             ));
         }
         if status == 429 || status == 503 {
-            if attempt >= MAX_RETRY_ATTEMPTS {
+            let policy = calendar_after_retry_after();
+            if policy.gives_up_after(attempt) {
                 return Err(CommandError::new(
                     codes::RATE_LIMITED,
                     format!(
@@ -508,7 +505,7 @@ async fn get_json_full_url<T: serde::de::DeserializeOwned>(
                 ));
             }
             let retry_after = retry_after_delay(response.headers());
-            sleep(retry_after.unwrap_or_else(|| short_backoff(attempt))).await;
+            sleep(retry_after.unwrap_or_else(|| policy.delay_for(attempt))).await;
             continue;
         }
         if status == 410 {
@@ -534,6 +531,31 @@ async fn get_json_full_url<T: serde::de::DeserializeOwned>(
                 format!("could not read Microsoft Graph's answer: {e}"),
             )
         });
+    }
+}
+
+/// This source's [`super::CalendarProvider`] -- see `caldav.rs`'s own
+/// `CalDavProvider` for why this thin wrapper exists.
+pub(crate) struct GraphProvider;
+
+impl super::CalendarProvider for GraphProvider {
+    fn discover<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+    ) -> super::BoxFuture<'a, CommandResult<Vec<RemoteCalendar>>> {
+        Box::pin(discover(svc, vault, account))
+    }
+
+    fn sync<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+    ) -> super::BoxFuture<'a, CommandResult<SyncReport>> {
+        Box::pin(sync(svc, vault, account, calendar))
     }
 }
 
@@ -954,7 +976,7 @@ mod tests {
         let mut item = bare_graph_event("instance-1");
         item.series_master_id = Some("master-abc".into());
         item.i_cal_u_id = Some("040000008200...".into());
-        let event = to_event(CalendarId::new(), &item).unwrap();
+        let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
         assert_eq!(event.series.as_deref(), Some("master-abc"), "seriesMasterId wins");
     }
 
@@ -965,14 +987,14 @@ mod tests {
     fn i_cal_u_id_is_the_series_when_there_is_no_series_master_id() {
         let mut item = bare_graph_event("evt-1");
         item.i_cal_u_id = Some("040000008200...".into());
-        let event = to_event(CalendarId::new(), &item).unwrap();
+        let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
         assert_eq!(event.series.as_deref(), Some("040000008200..."));
     }
 
     #[test]
     fn an_event_with_neither_field_has_no_series() {
         let item = bare_graph_event("evt-1");
-        let event = to_event(CalendarId::new(), &item).unwrap();
+        let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
         assert_eq!(event.series, None);
     }
 }

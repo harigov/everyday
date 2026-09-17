@@ -5,6 +5,7 @@ use super::session::{Domain, pick_domain};
 use crate::error::Result;
 use crate::id::NoteId;
 use crate::note::{Note, NoteSummary};
+use crate::record::RecordKind;
 use crate::store::notes::{NoteQuery, NoteStore};
 use jiff::Timestamp;
 
@@ -47,7 +48,9 @@ impl Vault {
             // this.
             super::meetings::reindex_note(u, note.id);
             Ok(())
-        })
+        })?;
+        self.wrote(RecordKind::Note, note.id);
+        Ok(())
     }
 
     /// Save a note whatever is already stored. The deliberate "keep mine".
@@ -60,7 +63,9 @@ impl Vault {
             notes.put_note(note)?;
             super::meetings::reindex_note(u, note.id);
             Ok(())
-        })
+        })?;
+        self.wrote(RecordKind::Note, note.id);
+        Ok(())
     }
 
     /// Delete a note, its transcript if it had one, and the pointer a
@@ -78,7 +83,9 @@ impl Vault {
             u.index.remove_note(id);
             super::meetings::detach_note_from_meetings(u, id)?;
             Ok(())
-        })
+        })?;
+        self.wrote(RecordKind::Note, id);
+        Ok(())
     }
 
     pub fn note_tags(&self) -> Result<Vec<(String, u64)>> {

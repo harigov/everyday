@@ -25,16 +25,6 @@ use crate::{SqlStore, to_us, vals};
 
 impl Record for Recording {
     const TABLE: &'static str = "recordings";
-    const KIND: &'static str = "recording";
-    type Id = RecordingId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        recording_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
@@ -47,16 +37,6 @@ impl Record for Recording {
 
 impl Record for Transcript {
     const TABLE: &'static str = "transcripts";
-    const KIND: &'static str = "transcript";
-    type Id = TranscriptId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        transcript_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![("note_id", self.note_id.to_string().to_value())]
@@ -65,16 +45,6 @@ impl Record for Transcript {
 
 impl Record for Voiceprint {
     const TABLE: &'static str = "voiceprints";
-    const KIND: &'static str = "voiceprint";
-    type Id = VoiceprintId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        voiceprint_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![("created_us", to_us(self.created_at).to_value())]

@@ -4,13 +4,14 @@
 use serde_json::{Value, json};
 
 use super::{
-    Args, Tool, ToolContext, day, decimal, done, empty_schema, flag, limit_arg, list, number,
-    one_of, schema, text,
+    Args, Tool, ToolContext, day, decimal, describe_by_id, done, empty_schema, flag, limit_arg,
+    list, load_by_id, number, one_of, run_delete, schema, text,
 };
 use crate::error::Result;
 use crate::id::ItemId;
 use crate::library::{Item, ItemStatus, LogEntry, LogEvent};
 use crate::store::library::ItemQuery;
+use crate::timestamped::Timestamped;
 
 const ITEM_STATUSES: &[&str] = &["wishlist", "active", "paused", "done", "abandoned"];
 
@@ -104,8 +105,7 @@ pub(super) static TOOLS: &[Tool] = &[
 ];
 
 fn describe_delete_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
-    let id: ItemId = args.opt_id("item_id", "item").ok()??;
-    ctx.vault.item(id).ok().map(|i| i.title)
+    describe_by_id::<ItemId, Item>(args, "item_id", "item", |id| ctx.vault.item(id), |i| i.title)
 }
 
 /// A rating as the tools speak it, converted to how the vault stores it.
@@ -208,8 +208,7 @@ fn run_create_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 }
 
 fn run_update_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: ItemId = args.id("item_id", "item")?;
-    let mut item = ctx.vault.item(id)?;
+    let mut item: Item = load_by_id(args, "item_id", "item", |id| ctx.vault.item(id))?;
     let was = item.status;
 
     if let Some(title) = args.opt_str("title") {
@@ -245,7 +244,7 @@ fn run_update_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         item.tags = args.strings("tags");
     }
 
-    item.updated_at = jiff::Timestamp::now();
+    item.touch();
     ctx.vault.save_item(&item)?;
 
     // The same transitions the interface logs, and for its reason: the
@@ -274,8 +273,12 @@ fn run_update_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 }
 
 fn run_delete_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let id: ItemId = args.id("item_id", "item")?;
-    let item = ctx.vault.item(id)?;
-    ctx.vault.delete_item(id)?;
-    done("deleted", "item", &item.title, id.to_string())
+    run_delete::<ItemId, Item>(
+        args,
+        "item_id",
+        "item",
+        |id| ctx.vault.item(id),
+        |id| ctx.vault.delete_item(id),
+        |item| item.title,
+    )
 }

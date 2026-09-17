@@ -67,6 +67,8 @@ pub mod graph;
 pub mod tokens;
 
 use std::collections::HashSet;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -99,6 +101,58 @@ pub struct RemoteCalendar {
     pub source: AccountCalendarSource,
 }
 
+/// A boxed, `Send` future -- hand-rolled the same way
+/// `crate::meeting::transcribe::BoxFuture` is, so a trait object can return
+/// an `async fn`'s future without `#[async_trait]` or naming it.
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// One calendar source behind a common interface, shaped like
+/// [`crate::meeting::transcribe::Transcriber`]: [`discover`] and [`sync`]
+/// used to `match` on [`Provider`] and [`AccountCalendarSource`] directly
+/// and call straight into `caldav`, `google` or `graph`; this trait is that
+/// match, given a name, so [`provider_for`] is the one place the three
+/// sources are chosen between.
+pub trait CalendarProvider: Send + Sync {
+    fn discover<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+    ) -> BoxFuture<'a, CommandResult<Vec<RemoteCalendar>>>;
+
+    fn sync<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+    ) -> BoxFuture<'a, CommandResult<SyncReport>>;
+}
+
+/// The [`CalendarProvider`] for one of the three sources -- the single
+/// factory [`discover`] and [`sync`] both go through, in place of the
+/// `match` each used to have of its own.
+fn provider_for(source: AccountCalendarSource) -> Box<dyn CalendarProvider> {
+    match source {
+        AccountCalendarSource::CalDav => Box::new(caldav::CalDavProvider),
+        AccountCalendarSource::Google => Box::new(google::GoogleProvider),
+        AccountCalendarSource::Graph => Box::new(graph::GraphProvider),
+    }
+}
+
+/// Which source an account's own calendars come from, before any of them
+/// has been subscribed to and so has no [`AccountCalendarSource`] of its
+/// own yet on a [`CalendarOrigin::Account`] -- see the module doc's table.
+fn source_for_provider(provider: Provider) -> AccountCalendarSource {
+    match provider {
+        Provider::Google => AccountCalendarSource::Google,
+        Provider::Microsoft => AccountCalendarSource::Graph,
+        Provider::ICloud | Provider::Fastmail | Provider::Yahoo | Provider::Custom => {
+            AccountCalendarSource::CalDav
+        }
+    }
+}
+
 /// Discover the calendars `account` offers, over whichever source its
 /// provider and CalDAV address say to use.
 ///
@@ -114,14 +168,9 @@ pub async fn discover(
     if !account.services.calendar {
         return Ok(Vec::new());
     }
-    let result = match account.provider {
-        Provider::Google => google::discover(svc, vault, account).await,
-        Provider::Microsoft => graph::discover(svc, vault, account).await,
-        Provider::ICloud | Provider::Fastmail | Provider::Yahoo | Provider::Custom => {
-            caldav::discover(svc, vault, account).await
-        }
-    };
-    note_if_credential_is_bad(vault, account, &result).await;
+    let source = source_for_provider(account.provider);
+    let result = provider_for(source).discover(svc, vault, account).await;
+    note_if_credential_is_bad(svc, vault, account, &result).await;
     result
 }
 
@@ -137,6 +186,7 @@ pub async fn discover(
 /// (an OAuth account's discovery calling it after `tokens::access_token`
 /// already did) is harmless: it writes the same status again.
 async fn note_if_credential_is_bad<T>(
+    svc: &Arc<Service>,
     vault: &Arc<Vault>,
     account: &Account,
     result: &CommandResult<T>,
@@ -144,7 +194,7 @@ async fn note_if_credential_is_bad<T>(
     if let Err(e) = result
         && e.code == codes::FORBIDDEN
     {
-        tokens::mark_needs_sign_in(vault, account.id, &e.message).await;
+        tokens::mark_needs_sign_in(vault, account.id, &e.message, svc.now()).await;
     }
 }
 
@@ -169,12 +219,8 @@ pub async fn sync(
     let vault_for_account = vault.clone();
     let account = blocking(move || Ok(vault_for_account.account(account_id)?)).await?;
 
-    let result = match source {
-        AccountCalendarSource::CalDav => caldav::sync(svc, vault, &account, calendar).await,
-        AccountCalendarSource::Google => google::sync(svc, vault, &account, calendar).await,
-        AccountCalendarSource::Graph => graph::sync(svc, vault, &account, calendar).await,
-    };
-    note_if_credential_is_bad(vault, &account, &result).await;
+    let result = provider_for(source).sync(svc, vault, &account, calendar).await;
+    note_if_credential_is_bad(svc, vault, &account, &result).await;
 
     // Only a genuine, permission-shaped failure (`FORBIDDEN`, already
     // handled above by moving the account to `NeedsSignIn`) skips the
@@ -302,6 +348,19 @@ pub(crate) fn short_backoff(attempt: u32) -> Duration {
     BASE.saturating_mul(1u32 << exponent).min(CAP)
 }
 
+/// This module's own schedule for a rate-limited HTTP retry, as a
+/// [`crate::retry::RetryPolicy`] -- wraps [`short_backoff`] exactly, and is
+/// the one place `google.rs`'s and `graph.rs`'s HTTP loops now read their
+/// give-up point from. Both used to carry their own constant for it
+/// (`google.rs`'s `MAX_RATE_LIMIT_ATTEMPTS`, `graph.rs`'s
+/// `MAX_RETRY_ATTEMPTS`) with a comment on each saying the other was "the
+/// same number, for the same reason" -- four attempts, generous enough that
+/// a brief burst clears inside one sync, small enough that a sustained
+/// limit does not hold up a background poll for minutes.
+pub(crate) fn calendar_after_retry_after() -> crate::retry::RetryPolicy {
+    crate::retry::RetryPolicy::from_fn(short_backoff, Some(4))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,6 +448,61 @@ mod tests {
         );
     }
 
+    // ---- retry math, pinned before phase 9.3 touches it ------------------
+
+    /// [`short_backoff`]'s exact sequence, fixed before it is expressed as
+    /// a `RetryPolicy`. 200ms base, doubling, capped at 2s.
+    #[test]
+    fn short_backoff_sequence_is_pinned() {
+        let expected = [
+            Duration::from_millis(200),
+            Duration::from_millis(400),
+            Duration::from_millis(800),
+            Duration::from_millis(1600),
+            Duration::from_millis(2000), // capped
+            Duration::from_millis(2000),
+            Duration::from_millis(2000),
+        ];
+        for (i, want) in expected.iter().enumerate() {
+            let attempt = (i + 1) as u32;
+            assert_eq!(short_backoff(attempt), *want, "attempt {attempt}");
+        }
+    }
+
+    /// [`calendar_after_retry_after`] must answer exactly what
+    /// [`short_backoff`] does, and give both `google.rs` and `graph.rs` the
+    /// same four-attempt give-up point they each used to name with their
+    /// own constant.
+    #[test]
+    fn calendar_after_retry_after_matches_short_backoff_exactly() {
+        let policy = calendar_after_retry_after();
+        for attempt in 1..=7u32 {
+            assert_eq!(policy.delay_for(attempt), short_backoff(attempt), "attempt {attempt}");
+        }
+        assert_eq!(policy.max_attempts(), Some(4));
+    }
+
+    #[test]
+    fn retry_after_delay_reads_a_plain_second_count() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "7".parse().unwrap());
+        assert_eq!(retry_after_delay(&headers), Some(Duration::from_secs(7)));
+    }
+
+    #[test]
+    fn retry_after_delay_is_none_when_absent_or_not_a_plain_second_count() {
+        assert_eq!(retry_after_delay(&reqwest::header::HeaderMap::new()), None, "no header at all");
+
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers
+            .insert(reqwest::header::RETRY_AFTER, "Wed, 21 Oct 2026 07:28:00 GMT".parse().unwrap());
+        assert_eq!(
+            retry_after_delay(&headers),
+            None,
+            "the HTTP-date form is never sent by Google or Graph and is not parsed"
+        );
+    }
+
     // ---- finding 2: only a credential problem moves the account ---------
 
     #[tokio::test]
@@ -399,7 +513,7 @@ mod tests {
         vault.save_account(&account).unwrap();
 
         let result: CommandResult<()> = Err(CommandError::new(codes::FORBIDDEN, "bad credential"));
-        note_if_credential_is_bad(&vault, &account, &result).await;
+        note_if_credential_is_bad(&Arc::new(Service::new()), &vault, &account, &result).await;
 
         let reloaded = vault.account(account.id).unwrap();
         assert!(
@@ -418,7 +532,7 @@ mod tests {
             vault.save_account(&account).unwrap();
 
             let result: CommandResult<()> = Err(CommandError::new(code, "try again later"));
-            note_if_credential_is_bad(&vault, &account, &result).await;
+            note_if_credential_is_bad(&Arc::new(Service::new()), &vault, &account, &result).await;
 
             let reloaded = vault.account(account.id).unwrap();
             assert_eq!(

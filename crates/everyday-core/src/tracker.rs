@@ -53,6 +53,7 @@
 //! than averaging them in.
 
 use crate::id::{EntryId, JournalId, ReadingId, TrackerId};
+use crate::timestamped::Timestamped;
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +67,7 @@ use serde::{Deserialize, Serialize};
 /// escape hatch for anything unusual is [`Amount`](TrackerKind::Amount) with
 /// a unit of your choosing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum TrackerKind {
     /// Done or not done. Habits: floss, walk the dog, no phone in bed.
@@ -123,6 +125,7 @@ impl TrackerKind {
 
 /// How readings combine over a period. See [`TrackerKind::aggregate`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum Aggregate {
     /// How many times it happened.
@@ -150,6 +153,7 @@ pub const DEFAULT_SCALE_MAX: f64 = 10.0;
 /// knows about calendars beyond a day being in a week; that lives in the
 /// interface, where the week's first day is already a setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Cadence {
     /// How many times per period. Zero is meaningless and is rejected by
@@ -159,6 +163,7 @@ pub struct Cadence {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum Period {
     #[default]
@@ -239,6 +244,7 @@ impl Cadence {
 /// Which journals draw its chip is a per-journal choice, held in
 /// [`Journal::shown_trackers`](crate::model::Journal::shown_trackers).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Tracker {
     pub id: TrackerId,
@@ -451,8 +457,15 @@ impl Tracker {
     }
 }
 
+impl Timestamped for Tracker {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
+    }
+}
+
 /// One recorded value: this tracker, this much, then.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Reading {
     pub id: ReadingId,
@@ -543,6 +556,12 @@ impl Reading {
         let at = self.at?;
         let zoned = at.in_tz(&self.tz).unwrap_or_else(|_| at.in_tz("UTC").expect("UTC exists"));
         Some(i32::from(zoned.hour()) * 60 + i32::from(zoned.minute()))
+    }
+}
+
+impl Timestamped for Reading {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
     }
 }
 

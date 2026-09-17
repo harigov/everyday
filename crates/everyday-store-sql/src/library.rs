@@ -27,27 +27,18 @@ use everyday_core::error::Result;
 use everyday_core::id::{ItemId, KindId, LogId};
 use everyday_core::library::{Item, ItemStatus, Kind, LogEntry};
 use everyday_core::purpose::Purpose;
+use everyday_core::record::RecordKind;
 use everyday_core::store::library::{
     ItemQuery, LibraryStore, LogQuery, item_aad, kind_aad, log_aad,
 };
 
 use crate::conn::{SqlExt, ToValue, Value, Where};
-use crate::purpose::{RecordKind, forget_purposes};
+use crate::purpose::forget_purposes;
 use crate::record::Record;
 use crate::{SqlStore, date_str, to_us, vals};
 
 impl Record for Kind {
     const TABLE: &'static str = "kinds";
-    const KIND: &'static str = "kind";
-    type Id = KindId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        kind_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
@@ -61,16 +52,6 @@ impl Record for Kind {
 
 impl Record for Item {
     const TABLE: &'static str = "items";
-    const KIND: &'static str = "item";
-    type Id = ItemId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        item_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
@@ -98,16 +79,6 @@ impl Record for Item {
 
 impl Record for LogEntry {
     const TABLE: &'static str = "logs";
-    const KIND: &'static str = "log";
-    type Id = LogId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        log_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![

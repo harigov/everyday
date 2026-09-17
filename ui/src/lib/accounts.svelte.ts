@@ -8,8 +8,11 @@
 // messages -- so there is no paging here, unlike what mail itself will need.
 
 import { api } from './api'
-import { registerApply, singleId, type ChangeWithIds } from './live-apply'
-import { app, handle, isLocked } from './state.svelte'
+import { registerApply, type ChangeWithIds } from './live-apply'
+import { app, handle } from './state.svelte'
+import { applySingleChange, patchOneFromChange } from './store/live-patch'
+import { latest } from './store/latest'
+import { guardedRefresh } from './store/refresh'
 import type {
   Account,
   AccountId,
@@ -26,7 +29,7 @@ class AccountsState {
   loading = $state(false)
 
   /** Which load is current, so a slow one cannot land after a lock or a newer call. */
-  #generation = 0
+  #generation = latest()
   #loaded = false
   #presetsLoaded = false
 
@@ -40,7 +43,7 @@ class AccountsState {
   }
 
   reset() {
-    this.#generation += 1
+    this.#generation.next()
     this.list = []
     this.presets = []
     this.loading = false
@@ -51,18 +54,16 @@ class AccountsState {
   /** Load the list, once. Called when the Accounts tab is opened. */
   async load(force = false) {
     if (this.#loaded && !force) return
-    const mine = ++this.#generation
-    this.loading = true
-    try {
-      const list = await api.accounts()
-      if (mine !== this.#generation) return
-      this.list = list
-      this.#loaded = true
-    } catch (e) {
-      await handle(e)
-    } finally {
-      if (mine === this.#generation) this.loading = false
-    }
+    await guardedRefresh(
+      this.#generation,
+      async (isCurrent) => {
+        const list = await api.accounts()
+        if (!isCurrent()) return
+        this.list = list
+        this.#loaded = true
+      },
+      { setLoading: (v) => (this.loading = v), onError: (e) => handle(e) },
+    )
   }
 
   /** Reload after a write, without the loading flag -- the list is already on screen. */
@@ -149,30 +150,24 @@ class AccountsState {
   }
 
   #applyChanges(changes: ChangeWithIds[]): boolean {
-    if (changes.length !== 1) return false
-    const change = changes[0]!
-    const id = singleId(change)
-    if (!id) return false
-    if (change.op === 'deleted') {
-      this.list = this.list.filter((a) => a.id !== id)
-      return true
-    }
-    if (change.op === 'created' || change.op === 'updated') {
-      void this.#patchOne(id)
-      return true
-    }
-    return false
+    return applySingleChange(changes, {
+      onDeleted: (id) => {
+        this.list = this.list.filter((a) => a.id !== id)
+      },
+      onUpserted: (id) => void this.#patchOne(id),
+    })
   }
 
   async #patchOne(id: AccountId) {
-    try {
-      const view = await api.account(id)
-      const at = this.list.findIndex((a) => a.id === id)
-      this.list = at >= 0 ? this.list.map((a, i) => (i === at ? view : a)) : [...this.list, view]
-    } catch (e) {
-      if (isLocked(e)) return
-      await this.refresh()
-    }
+    await patchOneFromChange({
+      fetch: () => api.account(id),
+      apply: (view) => {
+        const at = this.list.findIndex((a) => a.id === id)
+        this.list = at >= 0 ? this.list.map((a, i) => (i === at ? view : a)) : [...this.list, view]
+      },
+      onLocked: () => {},
+      fallback: () => this.refresh(),
+    })
   }
 }
 

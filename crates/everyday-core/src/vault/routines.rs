@@ -4,9 +4,10 @@ use super::Vault;
 use super::session::Domain;
 use crate::error::{Error, Result};
 use crate::id::{RoutineId, RoutineRunId};
+use crate::record::RecordKind;
 use crate::routine::{DreamScope, Routine, RoutineRun, Trigger};
 use crate::store::routines::{RoutineStore, RunQuery};
-use jiff::Timestamp;
+use crate::timestamped::Timestamped;
 
 /// What `Vault::save_routine` says when somebody tries to make or unmake a
 /// dream by hand. One sentence, used from both directions -- a new routine
@@ -70,7 +71,9 @@ impl Vault {
         if let Trigger::BeforeEvent { role_id: Some(role), .. } = &routine.trigger {
             self.role(*role)?;
         }
-        self.with_routines(|r| r.put_routine(routine))
+        self.with_routines(|r| r.put_routine(routine))?;
+        self.wrote(RecordKind::Routine, routine.id);
+        Ok(())
     }
 
     /// Delete a routine, its runs, and the transcripts behind them.
@@ -96,7 +99,9 @@ impl Vault {
                 let _ = self.delete_conversation(conversation);
             }
         }
-        self.with_routines(|r| r.delete_routine(id))
+        self.with_routines(|r| r.delete_routine(id))?;
+        self.wrote(RecordKind::Routine, id);
+        Ok(())
     }
 
     /// Switch dreaming on or off.
@@ -124,7 +129,7 @@ impl Vault {
                 .cloned()
                 .unwrap_or_else(|| Routine::dream(scope));
             routine.enabled = on;
-            routine.updated_at = Timestamp::now();
+            routine.touch();
             self.put_routine_unchecked(&routine)?;
             out.push(routine);
         }
@@ -141,7 +146,9 @@ impl Vault {
 
     pub fn save_run(&self, run: &RoutineRun) -> Result<()> {
         self.writable()?;
-        self.with_routines(|r| r.put_run(run))
+        self.with_routines(|r| r.put_run(run))?;
+        self.wrote(RecordKind::RoutineRun, run.id);
+        Ok(())
     }
 
     pub fn delete_run(&self, id: RoutineRunId) -> Result<()> {
@@ -150,7 +157,9 @@ impl Vault {
         if let Some(conversation) = run.conversation_id {
             let _ = self.delete_conversation(conversation);
         }
-        self.with_routines(|r| r.delete_run(id))
+        self.with_routines(|r| r.delete_run(id))?;
+        self.wrote(RecordKind::RoutineRun, id);
+        Ok(())
     }
 
     /// How many runs nobody has looked at. The number on the app bar.
@@ -159,8 +168,16 @@ impl Vault {
     }
 
     /// Mark runs as looked at. An empty list means all of them.
+    ///
+    /// Only the ids named record a touch -- "all of them" has no ids of its
+    /// own to name here any more than `mark_runs_seen`'s own `change:` row
+    /// does, since both read the same empty `ids` the caller sent.
     pub fn mark_runs_seen(&self, ids: &[RoutineRunId]) -> Result<()> {
         self.writable()?;
-        self.with_routines(|r| r.mark_runs_seen(ids))
+        self.with_routines(|r| r.mark_runs_seen(ids))?;
+        for id in ids {
+            self.wrote(RecordKind::RoutineRun, *id);
+        }
+        Ok(())
     }
 }
