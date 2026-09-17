@@ -649,9 +649,15 @@ impl<'a> ToolContext<'a> {
         self
     }
 
-    /// Mail's search index. See [`ToolContext::mail_search`].
-    pub fn with_mail_search(mut self, mail_search: &'a dyn crate::mailsearch::MailSearch) -> Self {
-        self.mail_search = Some(mail_search);
+    /// Mail's search index, already the `Option` every caller has it as --
+    /// `Service::mail_index` answers `None` when this vault's mail storage
+    /// did not open cleanly this session, which is not a "did not ask"
+    /// this builder should turn into one. See [`ToolContext::mail_search`].
+    pub fn with_mail_search(
+        mut self,
+        mail_search: Option<&'a dyn crate::mailsearch::MailSearch>,
+    ) -> Self {
+        self.mail_search = mail_search;
         self
     }
 
