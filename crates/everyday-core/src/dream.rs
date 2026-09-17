@@ -508,7 +508,7 @@ fn readings_section(vault: &Vault, from: Date, to: Date) -> Vec<String> {
         entry.1 += day.sum;
     }
     let mut rows: Vec<_> = by_tracker.into_iter().collect();
-    rows.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+    rows.sort_by_key(|row| std::cmp::Reverse(row.1.0));
     capped(rows, MAX_DIGEST_ITEMS, |(id, (count, sum))| {
         let name = trackers
             .iter()
