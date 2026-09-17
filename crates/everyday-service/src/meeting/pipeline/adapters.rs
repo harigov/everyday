@@ -150,3 +150,43 @@ impl Summariser for AssistantSummariser {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Phase 9.3's pinning step: [`looks_like_network_error`]'s verdict on a
+    /// representative set of messages, fixed before anything about the
+    /// retry mechanism moves. This is a *message* classifier, unlike
+    /// `pipeline::retry::is_transient` (a `CommandError::code` classifier)
+    /// or `outbox::is_transient_local_failure` (also a code classifier) --
+    /// nothing here is expected to unify with either.
+    #[test]
+    fn looks_like_network_error_verdicts_are_pinned() {
+        for message in [
+            "Connection refused (os error 111)",
+            "dns error: failed to lookup address information",
+            "error trying to connect: tcp connect error",
+            "operation timed out",
+            "request timeout",
+            "TIMED OUT waiting for a response",
+        ] {
+            assert!(
+                looks_like_network_error(message),
+                "{message:?} must look like a network error"
+            );
+        }
+        for message in [
+            "invalid api key provided",
+            "the model gpt-nonexistent does not exist",
+            "context length exceeded",
+            "rate limit reached, please retry after 20s",
+            "the assistant is not configured",
+        ] {
+            assert!(
+                !looks_like_network_error(message),
+                "{message:?} must not look like a network error"
+            );
+        }
+    }
+}

@@ -936,4 +936,55 @@ mod tests {
         assert!(matches!(err, MailError::Protocol(_)), "{err:?}");
         assert!(!is_retryable(&err));
     }
+
+    /// Phase 9.3's pinning step: the literal seconds
+    /// [`everyday_core::mail::backoff_for_attempt`] answers with, as
+    /// `drain_outbox`'s two call sites (`Err(MailError::Auth(..))` and
+    /// `Err(err) if is_retryable(&err)`) actually use it -- fixed here,
+    /// in this crate, even though the table itself lives in
+    /// `everyday-core` and is pinned there too; this is what a caller of
+    /// `outbox_table()` must keep seeing once phase 9.3 wraps it.
+    #[test]
+    fn outbox_backoff_seconds_are_pinned() {
+        let expected = [30u64, 60, 300, 900, 3600, 3600, 3600].map(std::time::Duration::from_secs);
+        for (attempts, want) in expected.into_iter().enumerate() {
+            let got = everyday_core::mail::backoff_for_attempt(attempts as u32);
+            assert_eq!(
+                std::time::Duration::try_from(got).unwrap(),
+                want,
+                "attempts already made: {attempts}"
+            );
+        }
+    }
+
+    /// Phase 9.3's pinning step: [`is_transient_local_failure`]'s verdict
+    /// on a representative set of codes, fixed before the retry mechanism
+    /// moves. Also the evidence for why it must stay separate from
+    /// `meeting::pipeline::retry::is_transient`: that classifier says
+    /// `true` for `NETWORK`/`TIMED_OUT`/`RATE_LIMITED` and `false` for
+    /// `LOCKED`/`IO`/`BACKEND` -- the exact opposite of this one. A
+    /// vault/storage failure and a provider/network failure are different
+    /// domains that happen to share the word "transient"; unioning them
+    /// would make a genuinely wrong request (in pipeline's world) retry
+    /// forever, or a full disk (in outbox's world) fail permanently.
+    #[test]
+    fn is_transient_local_failure_verdicts_are_pinned() {
+        for code in [codes::LOCKED, codes::IO, codes::BACKEND] {
+            assert!(is_transient_local_failure(code), "{code} must be a transient local failure");
+        }
+        for code in [
+            codes::NETWORK,
+            codes::TIMED_OUT,
+            codes::RATE_LIMITED,
+            codes::FORBIDDEN,
+            codes::NOT_FOUND,
+            codes::INVALID,
+            codes::DECRYPT_FAILED,
+        ] {
+            assert!(
+                !is_transient_local_failure(code),
+                "{code} must not be a transient local failure"
+            );
+        }
+    }
 }

@@ -434,6 +434,48 @@ mod tests {
         );
     }
 
+    // ---- retry math, pinned before phase 9.3 touches it ------------------
+
+    /// [`short_backoff`]'s exact sequence, fixed before it is expressed as
+    /// a `RetryPolicy`. 200ms base, doubling, capped at 2s.
+    #[test]
+    fn short_backoff_sequence_is_pinned() {
+        let expected = [
+            Duration::from_millis(200),
+            Duration::from_millis(400),
+            Duration::from_millis(800),
+            Duration::from_millis(1600),
+            Duration::from_millis(2000), // capped
+            Duration::from_millis(2000),
+            Duration::from_millis(2000),
+        ];
+        for (i, want) in expected.iter().enumerate() {
+            let attempt = (i + 1) as u32;
+            assert_eq!(short_backoff(attempt), *want, "attempt {attempt}");
+        }
+    }
+
+    #[test]
+    fn retry_after_delay_reads_a_plain_second_count() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "7".parse().unwrap());
+        assert_eq!(retry_after_delay(&headers), Some(Duration::from_secs(7)));
+    }
+
+    #[test]
+    fn retry_after_delay_is_none_when_absent_or_not_a_plain_second_count() {
+        assert_eq!(retry_after_delay(&reqwest::header::HeaderMap::new()), None, "no header at all");
+
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers
+            .insert(reqwest::header::RETRY_AFTER, "Wed, 21 Oct 2026 07:28:00 GMT".parse().unwrap());
+        assert_eq!(
+            retry_after_delay(&headers),
+            None,
+            "the HTTP-date form is never sent by Google or Graph and is not parsed"
+        );
+    }
+
     // ---- finding 2: only a credential problem moves the account ---------
 
     #[tokio::test]

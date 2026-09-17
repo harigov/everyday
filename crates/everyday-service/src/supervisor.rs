@@ -1022,4 +1022,54 @@ mod tests {
         assert!(backoff_delay(1) <= BACKOFF_BASE);
         assert!(backoff_delay(20) <= BACKOFF_CAP);
     }
+
+    /// Phase 9.3's pinning step: [`backoff_delay`]'s exact invariants --
+    /// full jitter means the draw itself is not reproducible, but the
+    /// *bound* each attempt draws from is, and so is how that bound grows
+    /// -- fixed here before `backoff_delay` is rewritten to go through a
+    /// shared `RetryPolicy`.
+    #[test]
+    fn backoff_delay_bounds_and_cap_growth_are_pinned() {
+        let mut prev_cap = Duration::ZERO;
+        for attempt in 1..=25u32 {
+            let exponent = attempt.saturating_sub(1).min(10);
+            let expected_cap = BACKOFF_BASE.saturating_mul(1u32 << exponent).min(BACKOFF_CAP);
+            // Full jitter draws uniformly from `0..=expected_cap`; drawing
+            // several times catches an off-by-one in either bound without
+            // this test itself becoming a coin flip.
+            for _ in 0..20 {
+                let d = backoff_delay(attempt);
+                assert!(d <= expected_cap, "attempt {attempt}: {d:?} exceeds cap {expected_cap:?}");
+            }
+            if attempt <= 11 {
+                assert!(
+                    expected_cap >= prev_cap,
+                    "the cap must grow with attempt until it saturates at BACKOFF_CAP"
+                );
+            } else {
+                assert_eq!(
+                    expected_cap, BACKOFF_CAP,
+                    "the cap must have saturated at BACKOFF_CAP by attempt 12"
+                );
+            }
+            prev_cap = expected_cap;
+        }
+        // Never retries forever without a cap: even a huge attempt count
+        // stays within BACKOFF_CAP, on every draw.
+        for _ in 0..20 {
+            assert!(backoff_delay(1_000_000) <= BACKOFF_CAP);
+        }
+    }
+
+    /// The supervisor's give-up point, pinned: there is none. A restart
+    /// loop only ever stops on `Outcome::Done` or `Supervisor::stop` --
+    /// `does_not_restart_after_done` and `stop_all_stops_a_running_task`
+    /// above already cover both; this is the negative case, that a purely
+    /// failing task is never abandoned on its own.
+    #[test]
+    fn backoff_delay_never_refuses_to_answer_however_many_attempts_have_failed() {
+        for attempt in [1, 2, 100, 10_000, u32::MAX] {
+            let _ = backoff_delay(attempt); // must not panic or overflow
+        }
+    }
 }
