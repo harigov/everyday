@@ -25,21 +25,22 @@ use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{EventSink, Silent};
 use crate::idempotency::{Claim, Idempotency};
+use crate::runtime::mail::MailRuntime;
+use crate::runtime::meeting::MeetingRuntime;
+use crate::runtime::routine::RoutineRuntime;
 use crate::signin::SignIns;
 use crate::supervisor::Supervisor;
 use crate::token_cache::TokenCache;
 use crate::transfers::Transfers;
 use everyday_core::id::{AccountId, DraftId, RecordingId, ThreadId};
 use everyday_core::mail::Origin;
-use everyday_core::mail::RateLimitState;
-use everyday_core::mail::TokenBucket;
 use everyday_core::mail::rate_limit::RateLimitRefusal;
 use everyday_core::{BlobId, CalendarId, Vault};
-use jiff::{SignedDuration, Timestamp};
+use jiff::Timestamp;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 /// The version of the command surface this build speaks.
@@ -95,23 +96,10 @@ pub struct Service {
     /// already records the failure itself, and reopening the app is a
     /// reasonable moment to be told again.
     reported_feeds: RwLock<HashSet<CalendarId>>,
-    /// Routines whose failure has already been reported this session. See
-    /// [`Service::routine_failed`].
-    reported_routines: RwLock<HashSet<String>>,
-    /// Runs this process is carrying out, by id.
-    ///
-    /// A row in the vault reading `Running` says one of two things and cannot
-    /// tell them apart on its own: a run happening now, or one a process that
-    /// died left behind. This says which, because it exists only in memory --
-    /// a run this process is not carrying out is not in here, whatever the
-    /// row says.
-    claimed_runs: RwLock<HashSet<String>>,
-    /// The routine running right now, by name, if one is.
-    ///
-    /// Here rather than derived from a `Running` row, because a row is also
-    /// what a run abandoned by a dead process looks like. This is in memory
-    /// and therefore cannot lie about the present.
-    running_routine: RwLock<Option<String>>,
+    /// This session's routine bookkeeping -- which runs it is claiming, the
+    /// name of whichever is running right now, and which failures it has
+    /// already reported. See [`crate::runtime::routine::RoutineRuntime`].
+    routines: RoutineRuntime,
     /// OAuth sign-ins in flight, and the tokens a finished one is waiting
     /// under to be claimed into the vault -- see `signin.rs`'s module doc.
     /// Session state for the reason `pending` and `transfers` are: it holds
@@ -135,99 +123,18 @@ pub struct Service {
     /// See `mailview::remote_images_allowed`, which reads this before the
     /// standing allow-list.
     remote_image_once: RwLock<HashSet<everyday_core::id::MailMessageId>>,
-    /// Mail's pack store and search index, and each account's sync
-    /// progress -- open and populated for exactly as long as the vault they
-    /// belong to is unlocked. See `mailsync::wiring` for how they are
-    /// opened (with a key derived from the vault's own, never reused) and
+    /// Mail's session state: the open pack store and search index, the
+    /// outbox's wake handles and debounce timers, the rate limiter, the
+    /// summary cache and the categorise/auto-draft budgets and cursors. See
+    /// [`crate::runtime::mail::MailRuntime`], and
     /// [`Service::open_mail`]/[`Service::close_mail`] for the two moments
-    /// that open and drop them.
-    mail: RwLock<Option<crate::mailsync::wiring::MailState>>,
-    /// One [`tokio::sync::Notify`] per account, woken by [`Service::notify_outbox`]
-    /// whenever a write enqueues an `Op` -- what lets an account's sync task
-    /// drain the outbox the moment something is due rather than waiting for
-    /// its next `IDLE` wake or timer tick. Get-or-create through
-    /// [`Service::outbox_notify`], so whichever of a write command or the
-    /// sync task asks first creates the handle the other one shares.
-    mail_notify: Mutex<HashMap<AccountId, Arc<tokio::sync::Notify>>>,
-    /// When each draft last enqueued an `AppendDraft` op, for
-    /// [`Service::draft_append_due`]'s thirty-second debounce. Session
-    /// state, not a vault fact: a draft typed into for a minute autosaves
-    /// locally on every keystroke, and this is what stops each of those
-    /// saves from also appending to the server's Drafts folder.
-    mail_draft_debounce: Mutex<HashMap<DraftId, Timestamp>>,
-    /// Per-caller state for [`Service::check_mail_rate_limit`], keyed by
-    /// `Origin::Assistant`'s conversation or `Origin::Mcp`'s client name.
-    /// `Origin::Person` and `Origin::Routine` never appear here --
-    /// [`Origin::is_rate_limited`](everyday_core::mail::Origin::is_rate_limited)
-    /// says so, and [`Service::check_mail_rate_limit`] returns before ever
-    /// touching this map for either.
-    mail_rate_limits: Mutex<HashMap<String, RateLimitState>>,
-    /// Paces `everyday_service::mailai`'s background model-assisted
-    /// categorisation pass: at most a handful of threads sent to the quick
-    /// model per rolling minute, across every account, per the plan's own
-    /// words ("at most N threads per minute"). Session state, on the same
-    /// terms every other mail limiter here is -- a restart simply starts a
-    /// fresh minute's budget.
-    mail_categorize_budget: Mutex<TokenBucket>,
-    /// As [`Service::mail_categorize_budget`], for the auto-draft
-    /// background pass.
-    mail_autodraft_budget: Mutex<TokenBucket>,
-    /// `summarize_thread`'s cache: a thread's summary, keyed by how many
-    /// messages it had when it was written. A thread that has grown since
-    /// -- a new message landed -- misses the cache and is summarised again;
-    /// one that has not is answered instantly. In memory, not the vault:
-    /// losing it on a restart costs one re-summarise, never data nothing
-    /// else remembers, the same trade `mail_notify` and the rest of this
-    /// session state already make.
-    mail_summary_cache: Mutex<HashMap<ThreadId, (u32, String)>>,
-    /// Where [`everyday_service::mailai::categorize_tick`]'s next pass over
-    /// an account's `Other` threads should start -- `threads_in_category`'s
-    /// own opaque cursor, or `None` for "start from the newest again."
-    ///
-    /// Without this, a page's worth of already-asked threads (see
-    /// [`everyday_core::mail::Thread::ai_categorize_asked_at_count`]) would
-    /// filter down to nothing every tick once an account has more `Other`
-    /// threads than one page, and nothing past page one would ever be
-    /// reached: the newest page is always the same 25 threads, however many
-    /// of them this tick actually has anything new to ask about. Advancing
-    /// this cursor every tick, whether or not that page yielded a thread
-    /// worth asking, is what walks further back over time -- and
-    /// `None` once a page comes back empty (`next_cursor` itself `None`)
-    /// wraps back to the newest page next time, the same way `threads_in_category`
-    /// wrapping is expected to work for any other keyset-paged reader.
-    /// Session state, not a vault fact, on the same terms every other
-    /// scheduler bookkeeping field here already is.
-    mail_categorize_cursor: Mutex<HashMap<AccountId, String>>,
-    /// As [`Service::mail_categorize_cursor`], for the auto-draft pass over
-    /// `Important` threads.
-    mail_autodraft_cursor: Mutex<HashMap<AccountId, String>>,
-    /// Calendar events the meeting watcher has already raised an offer for
-    /// this session, keyed by calendar and the event's own uid (not its
-    /// `EventId`, which a feed calendar mints fresh on every sync -- see
-    /// [`everyday_core::meeting::EventRef::series_key`]'s neighbour,
-    /// `Event::uid`, for why that is the durable half). Also where
-    /// `dismiss_meeting_offer` records "not now": either way, the same call
-    /// is not offered again until this process restarts or the vault
-    /// relocks and unlocks -- `everyday_service::meeting::watch` is the only
-    /// reader and writer.
-    meeting_offered: RwLock<HashSet<(CalendarId, String)>>,
-    /// When each recording last had a chunk appended to it, in this
-    /// process. What `everyday_service::meeting::spool`'s unlock recovery
-    /// reads to tell a call still being captured from one a crash or a quit
-    /// left stuck in `Stage::Recording` -- a recording with no entry here
-    /// has not been appended to since this process started, which after a
-    /// restart is every recording still open, so recovery treats "no entry"
-    /// the same as "stale". Session state on the same terms every other
-    /// scheduler bookkeeping field here already is: losing it costs
-    /// recovery nothing but immediacy, since a truly live capture keeps
-    /// refreshing its own entry.
-    meeting_last_append: Mutex<HashMap<RecordingId, Instant>>,
-    /// Failed recordings the minute tick's expiry sweep has already raised
-    /// its "will be deleted tomorrow" notification for, so it says so once
-    /// per process rather than once an hour for as long as the recording
-    /// sits in its last day. Cleared implicitly by never being consulted
-    /// again once the recording is actually deleted or retried.
-    meeting_expiry_warned: RwLock<HashSet<RecordingId>>,
+    /// that open and drop the state inside it.
+    mail: MailRuntime,
+    /// The meeting watcher's and the spool's session state -- which offers
+    /// have already been raised, when each recording last had a chunk
+    /// appended, and which expiring recordings have already been warned
+    /// about. See [`crate::runtime::meeting::MeetingRuntime`].
+    meetings: MeetingRuntime,
 }
 
 impl Default for Service {
@@ -251,33 +158,17 @@ impl Service {
             idempotency: Idempotency::default(),
             transfers: Arc::default(),
             reported_feeds: RwLock::new(HashSet::new()),
-            reported_routines: RwLock::new(HashSet::new()),
-            claimed_runs: RwLock::new(HashSet::new()),
-            running_routine: RwLock::new(None),
+            routines: RoutineRuntime::default(),
             sign_ins: Arc::new(SignIns::new()),
             token_cache: Arc::new(TokenCache::new()),
             remote_image_once: RwLock::new(HashSet::new()),
-            mail: RwLock::new(None),
-            mail_notify: Mutex::new(HashMap::new()),
-            mail_draft_debounce: Mutex::new(HashMap::new()),
-            mail_rate_limits: Mutex::new(HashMap::new()),
-            mail_categorize_budget: Mutex::new(TokenBucket::new(
+            mail: MailRuntime::new(
+                clock.now(),
                 Self::MAIL_CATEGORIZE_PER_MINUTE,
-                f64::from(Self::MAIL_CATEGORIZE_PER_MINUTE) / 60.0,
-                clock.now(),
-            )),
-            mail_autodraft_budget: Mutex::new(TokenBucket::new(
                 Self::MAIL_AUTODRAFT_PER_MINUTE,
-                f64::from(Self::MAIL_AUTODRAFT_PER_MINUTE) / 60.0,
-                clock.now(),
-            )),
+            ),
             clock: RwLock::new(clock),
-            mail_summary_cache: Mutex::new(HashMap::new()),
-            mail_categorize_cursor: Mutex::new(HashMap::new()),
-            mail_autodraft_cursor: Mutex::new(HashMap::new()),
-            meeting_offered: RwLock::new(HashSet::new()),
-            meeting_last_append: Mutex::new(HashMap::new()),
-            meeting_expiry_warned: RwLock::new(HashSet::new()),
+            meetings: MeetingRuntime::default(),
         }
     }
 
@@ -292,61 +183,46 @@ impl Service {
     /// and say how many were actually available -- never more than `want`,
     /// and `0` when the budget is empty. What bounds one tick's batch size.
     pub fn mail_categorize_take(&self, want: u32) -> u32 {
-        take_tokens(&self.mail_categorize_budget, self.now(), want)
+        self.mail.categorize_take(self.now(), want)
     }
 
     pub fn mail_autodraft_take(&self, want: u32) -> u32 {
-        take_tokens(&self.mail_autodraft_budget, self.now(), want)
+        self.mail.autodraft_take(self.now(), want)
     }
 
     /// Where `account`'s next categorisation pass should page from -- see
-    /// [`Service::mail_categorize_cursor`]'s own docs.
+    /// [`crate::runtime::mail::MailRuntime`]'s own docs on the field this
+    /// reads.
     pub fn mail_categorize_cursor(&self, account: AccountId) -> Option<String> {
-        self.mail_categorize_cursor.lock().unwrap().get(&account).cloned()
+        self.mail.categorize_cursor(account)
     }
 
     /// Remember `cursor` for `account`'s next categorisation pass, or forget
     /// it (wrapping back to the newest page) when `cursor` is `None`.
     pub fn set_mail_categorize_cursor(&self, account: AccountId, cursor: Option<String>) {
-        let mut cursors = self.mail_categorize_cursor.lock().unwrap();
-        match cursor {
-            Some(c) => {
-                cursors.insert(account, c);
-            }
-            None => {
-                cursors.remove(&account);
-            }
-        }
+        self.mail.set_categorize_cursor(account, cursor);
     }
 
     /// As [`Service::mail_categorize_cursor`], for the auto-draft pass.
     pub fn mail_autodraft_cursor(&self, account: AccountId) -> Option<String> {
-        self.mail_autodraft_cursor.lock().unwrap().get(&account).cloned()
+        self.mail.autodraft_cursor(account)
     }
 
     /// As [`Service::set_mail_categorize_cursor`], for the auto-draft pass.
     pub fn set_mail_autodraft_cursor(&self, account: AccountId, cursor: Option<String>) {
-        let mut cursors = self.mail_autodraft_cursor.lock().unwrap();
-        match cursor {
-            Some(c) => {
-                cursors.insert(account, c);
-            }
-            None => {
-                cursors.remove(&account);
-            }
-        }
+        self.mail.set_autodraft_cursor(account, cursor);
     }
 
     /// `thread`'s cached summary, if one exists and `message_count` still
     /// matches what it was written against -- see
-    /// [`Service::mail_summary_cache`]'s own docs.
+    /// [`crate::runtime::mail::MailRuntime`]'s own docs on the field this
+    /// reads.
     pub fn mail_summary_cached(&self, thread: ThreadId, message_count: u32) -> Option<String> {
-        let cache = self.mail_summary_cache.lock().unwrap();
-        cache.get(&thread).filter(|(n, _)| *n == message_count).map(|(_, s)| s.clone())
+        self.mail.summary_cached(thread, message_count)
     }
 
     pub fn mail_summary_cache_put(&self, thread: ThreadId, message_count: u32, summary: String) {
-        self.mail_summary_cache.lock().unwrap().insert(thread, (message_count, summary));
+        self.mail.summary_cache_put(thread, message_count, summary);
     }
 
     /// OAuth sign-ins this session is driving, or has already finished
@@ -364,14 +240,14 @@ impl Service {
     /// What `everyday-app`'s protocol routes and the outbox's attachment
     /// paths reach raw messages through -- see `mailsync::wiring`.
     pub fn packs(&self) -> Option<Arc<dyn everyday_core::packstore::PackStore>> {
-        self.mail.read().unwrap().as_ref().map(|m| m.packs.clone())
+        self.mail.packs()
     }
 
     /// Mail's search index, if the vault is unlocked and it opened cleanly.
     /// What `search_mail` and the interface's search box both reach through
     /// -- see `mailsearch`'s module docs on why the two must never disagree.
     pub fn mail_index(&self) -> Option<Arc<dyn everyday_core::MailSearch>> {
-        self.mail.read().unwrap().as_ref().map(|m| m.index.clone())
+        self.mail.index()
     }
 
     /// Every account's sync progress, if the vault is unlocked. `None` only
@@ -379,20 +255,20 @@ impl Service {
     /// registry itself answers an account nobody has synced yet with
     /// [`crate::mailsync::status::Phase::Idle`] rather than being absent.
     pub fn mail_statuses(&self) -> Option<crate::mailsync::status::StatusRegistry> {
-        self.mail.read().unwrap().as_ref().map(|m| m.statuses.clone())
+        self.mail.statuses()
     }
 
     /// The cached answer to `unread_counts`, if the vault is unlocked --
     /// see `mailsync::unread_cache`'s module docs for what it caches and
     /// the two writes that invalidate it.
     pub fn mail_unread_cache(&self) -> Option<Arc<crate::mailsync::unread_cache::UnreadCache>> {
-        self.mail.read().unwrap().as_ref().map(|m| m.unread_cache.clone())
+        self.mail.unread_cache()
     }
 
     /// The contact index `suggest_addresses` reads, if the vault is
     /// unlocked -- see `mailsync::contacts`'s module docs.
     pub fn mail_contacts(&self) -> Option<Arc<crate::mailsync::contacts::ContactIndex>> {
-        self.mail.read().unwrap().as_ref().map(|m| m.contacts.clone())
+        self.mail.contacts()
     }
 
     /// `account`'s unread count per mailbox, through the cache
@@ -414,7 +290,7 @@ impl Service {
     /// [`Service::mail_statuses`] answer. `mailsync::wiring`'s own door into
     /// this session state -- see it for why the field itself stays private.
     pub(crate) fn set_mail_state(&self, state: Option<crate::mailsync::wiring::MailState>) {
-        *self.mail.write().unwrap() = state;
+        self.mail.set_state(state);
     }
 
     /// Open mail's pack store and search index against `vault`, and -- if
@@ -576,12 +452,7 @@ impl Service {
     /// or a write command asks first creates the handle, and the other
     /// shares it.
     pub fn outbox_notify(&self, account: AccountId) -> Arc<tokio::sync::Notify> {
-        self.mail_notify
-            .lock()
-            .unwrap()
-            .entry(account)
-            .or_insert_with(|| Arc::new(tokio::sync::Notify::new()))
-            .clone()
+        self.mail.outbox_notify(account)
     }
 
     /// Wake `account`'s sync task to drain the outbox now, rather than
@@ -627,22 +498,13 @@ impl Service {
     /// `true` also records `now` as this draft's last append, so the very
     /// next call within the window answers `false`.
     pub fn draft_append_due(&self, draft: DraftId, now: Timestamp) -> bool {
-        const DEBOUNCE: SignedDuration = SignedDuration::from_secs(30);
-        let mut last = self.mail_draft_debounce.lock().unwrap();
-        let due = match last.get(&draft) {
-            Some(&previous) => now.duration_since(previous) >= DEBOUNCE,
-            None => true,
-        };
-        if due {
-            last.insert(draft, now);
-        }
-        due
+        self.mail.draft_append_due(draft, now)
     }
 
     /// The one gate every mail-op enqueue passes through, per the plan's
     /// risk table: *"the assistant floods the outbox... exceeding it is an
     /// error the model reads."* `origin` and `turn` are exactly
-    /// [`RateLimitState::check`]'s own two arguments; this only adds the
+    /// [`everyday_core::mail::RateLimitState::check`]'s own two arguments; this only adds the
     /// per-caller bucket, keyed by the conversation or client
     /// [`Origin::is_rate_limited`](everyday_core::mail::Origin::is_rate_limited)
     /// names, and the numbers below.
@@ -655,14 +517,6 @@ impl Service {
     /// that arrives with phase 5 -- but every write command already calls
     /// this before it enqueues, so the day one does, it is already checked.
     pub fn check_mail_rate_limit(&self, origin: &Origin, turn: &str) -> CommandResult<()> {
-        /// How many mail ops one model turn may enqueue before it is
-        /// refused -- generous enough for "archive these dozen newsletters"
-        /// in one go, tight enough that a runaway loop cannot spend a whole
-        /// minute's budget in a single turn.
-        const PER_TURN: u32 = 20;
-        /// How many mail ops one caller may enqueue per rolling minute.
-        const PER_MINUTE: u32 = 60;
-
         if !origin.is_rate_limited() {
             return Ok(());
         }
@@ -672,10 +526,7 @@ impl Service {
             Origin::Person | Origin::Routine { .. } => return Ok(()),
         };
         let now = self.now();
-        let mut limits = self.mail_rate_limits.lock().unwrap();
-        let state =
-            limits.entry(key).or_insert_with(|| RateLimitState::new(PER_TURN, PER_MINUTE, now));
-        state.check(turn, now).map_err(|refusal| {
+        self.mail.check_rate_limit(key, turn, now).map_err(|refusal| {
             let message = match refusal {
                 RateLimitRefusal::PerTurn => {
                     "too many mail actions in this turn; wait for the next one"
@@ -740,18 +591,18 @@ impl Service {
         self.sign_ins.clear();
         self.token_cache.try_clear();
         self.reported_feeds.write().unwrap().clear();
-        self.reported_routines.write().unwrap().clear();
-        self.claimed_runs.write().unwrap().clear();
-        self.running_routine.write().unwrap().take();
+        self.routines.forget_reported();
+        self.routines.forget_claimed();
+        self.routines.forget_running();
         self.remote_image_once.write().unwrap().clear();
         self.supervisor().stop_all().await;
         self.close_mail();
-        self.mail_notify.lock().unwrap().clear();
-        self.mail_draft_debounce.lock().unwrap().clear();
-        self.mail_rate_limits.lock().unwrap().clear();
-        self.mail_summary_cache.lock().unwrap().clear();
-        self.mail_categorize_cursor.lock().unwrap().clear();
-        self.mail_autodraft_cursor.lock().unwrap().clear();
+        self.mail.forget_notify();
+        self.mail.forget_draft_debounce();
+        self.mail.forget_rate_limits();
+        self.mail.forget_summary_cache();
+        self.mail.forget_categorize_cursor();
+        self.mail.forget_autodraft_cursor();
         let previous = self.vault.write().unwrap().take();
         if let Some(vault) = &previous {
             // Drop the key and the decrypted index now rather than whenever the
@@ -856,12 +707,12 @@ impl Service {
     /// to a calendar that has stopped answering, and the same session scope:
     /// cleared when the vault closes, so the next outage is news again.
     pub fn routine_failed(&self, id: String) -> bool {
-        self.reported_routines.write().unwrap().insert(id)
+        self.routines.failed(id)
     }
 
     /// Note that a routine ran, so its next failure is news.
     pub fn routine_recovered(&self, id: String) {
-        self.reported_routines.write().unwrap().remove(&id);
+        self.routines.recovered(&id);
     }
 
     // ---- meetings: the watcher's and the spool's session state ------------
@@ -874,33 +725,33 @@ impl Service {
     /// directly so "Not now" has the same effect without waiting for the
     /// next tick to notice.
     pub fn meeting_offer_seen(&self, calendar: CalendarId, uid: &str) -> bool {
-        self.meeting_offered.write().unwrap().insert((calendar, uid.to_string()))
+        self.meetings.offer_seen(calendar, uid)
     }
 
     /// Record that `id` had a chunk appended just now, in this process.
     pub fn meeting_touch_append(&self, id: RecordingId) {
-        self.meeting_last_append.lock().unwrap().insert(id, self.instant());
+        self.meetings.touch_append(id, self.instant());
     }
 
     /// How long ago `id` last had a chunk appended, in this process -- or
     /// `None` if it never has been, which after a restart is true of every
-    /// recording still open. See [`Service::meeting_last_append`]'s own
-    /// docs for why recovery treats the two alike.
+    /// recording still open. See [`crate::runtime::meeting::MeetingRuntime`]'s
+    /// own docs for why recovery treats the two alike.
     pub fn meeting_since_append(&self, id: RecordingId) -> Option<std::time::Duration> {
-        self.meeting_last_append.lock().unwrap().get(&id).map(Instant::elapsed)
+        self.meetings.since_append(id)
     }
 
     /// Forget `id`'s append time -- called once a recording leaves
     /// `Stage::Recording`, so a long-finished call's id does not sit in this
     /// map for the rest of the session.
     pub fn meeting_forget_append(&self, id: RecordingId) {
-        self.meeting_last_append.lock().unwrap().remove(&id);
+        self.meetings.forget_append(id);
     }
 
     /// Mark `id` as warned about its coming deletion, and say whether this
     /// was the first time -- `true` the first call, `false` after.
     pub fn meeting_expiry_warn_once(&self, id: RecordingId) -> bool {
-        self.meeting_expiry_warned.write().unwrap().insert(id)
+        self.meetings.expiry_warn_once(id)
     }
 
     /// Take this run for the life of the returned guard.
@@ -909,13 +760,13 @@ impl Service {
     /// what makes "this process is carrying it out" a fact rather than a flag
     /// somebody has to remember to clear.
     pub fn claim_run(self: &Arc<Self>, id: String) -> RunClaim {
-        self.claimed_runs.write().unwrap().insert(id.clone());
+        self.routines.claim(id.clone());
         RunClaim { service: self.clone(), id }
     }
 
     /// Is this process carrying out that run?
     pub fn claims_run(&self, id: &str) -> bool {
-        self.claimed_runs.read().unwrap().contains(id)
+        self.routines.claims(id)
     }
 
     /// Say which routine is running, or `None` when none is.
@@ -923,11 +774,11 @@ impl Service {
     /// Read by the tray, so that a process staying resident to keep its
     /// appointments can say what it is doing rather than merely being there.
     pub fn set_running_routine(&self, name: Option<String>) {
-        *self.running_routine.write().unwrap() = name;
+        self.routines.set_running(name);
     }
 
     pub fn running_routine(&self) -> Option<String> {
-        self.running_routine.read().unwrap().clone()
+        self.routines.running()
     }
 
     // ---- dispatch -------------------------------------------------------
@@ -1132,20 +983,8 @@ pub struct RunClaim {
 
 impl Drop for RunClaim {
     fn drop(&mut self) {
-        self.service.claimed_runs.write().unwrap().remove(&self.id);
+        self.service.routines.release(&self.id);
     }
-}
-
-/// Take up to `want` tokens from `bucket`, one at a time, and say how many
-/// were actually there -- what [`Service::mail_categorize_take`] and
-/// [`Service::mail_autodraft_take`] both are.
-fn take_tokens(bucket: &Mutex<TokenBucket>, now: Timestamp, want: u32) -> u32 {
-    let mut bucket = bucket.lock().unwrap();
-    let mut taken = 0u32;
-    while taken < want && bucket.try_take(now) {
-        taken += 1;
-    }
-    taken
 }
 
 #[cfg(test)]
