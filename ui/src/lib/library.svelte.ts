@@ -26,6 +26,9 @@ import { app, errorMessage, handle, isLocked, quietly } from './state.svelte'
 import { debounce } from './store/debounce'
 import { FocusRequest } from './store/focus-request'
 import { latest } from './store/latest'
+import { optimisticPatch } from './store/optimistic-patch'
+import { optimisticRemove } from './store/optimistic-remove'
+import { guardedRefresh } from './store/refresh'
 import { web, type SearchOutcome } from './websearch'
 import type {
   Item,
@@ -166,6 +169,8 @@ class LibraryState {
     // Counts move when a status does, and the sidebar shows them.
     void this.refreshCounts()
   })
+  /** `patch`/`touch`'s assign-stamp-queue, once. See `store/optimistic-patch.ts`. */
+  #patcher = optimisticPatch<ItemId, Item>((id) => this.items.find((i) => i.id === id), this.#saves)
 
   // ── lifecycle ────────────────────────────────────────────────────────
 
@@ -389,34 +394,32 @@ class LibraryState {
    */
   async refresh() {
     if (!app.supportsLibrary) return
-    const generation = this.#generation.next()
-    this.loading = true
-    try {
-      const [items, stats] = await Promise.all([
-        api.items({
-          kindId: this.shelf,
-          statuses: statusesFor(this.filter),
-          text: this.query.trim(),
-          favourite: this.favouritesOnly ? true : null,
-          sort: this.sort,
-          limit: PAGE,
-        }),
-        api.libraryStats(),
-      ])
-      if (!this.#generation.isCurrent(generation)) return
-      this.items = items
-      this.stats = stats
-      // A selection that has scrolled out of the filter is dropped rather
-      // than left pointing at a card nobody can see.
-      if (this.selected && !items.some((i) => i.id === this.selected)) {
-        this.selected = null
-        this.logs = []
-      }
-    } catch (e) {
-      await handle(e)
-    } finally {
-      if (this.#generation.isCurrent(generation)) this.loading = false
-    }
+    await guardedRefresh(
+      this.#generation,
+      async (isCurrent) => {
+        const [items, stats] = await Promise.all([
+          api.items({
+            kindId: this.shelf,
+            statuses: statusesFor(this.filter),
+            text: this.query.trim(),
+            favourite: this.favouritesOnly ? true : null,
+            sort: this.sort,
+            limit: PAGE,
+          }),
+          api.libraryStats(),
+        ])
+        if (!isCurrent()) return
+        this.items = items
+        this.stats = stats
+        // A selection that has scrolled out of the filter is dropped rather
+        // than left pointing at a card nobody can see.
+        if (this.selected && !items.some((i) => i.id === this.selected)) {
+          this.selected = null
+          this.logs = []
+        }
+      },
+      { setLoading: (v) => (this.loading = v), onError: (e) => handle(e) },
+    )
   }
 
   /**
@@ -477,17 +480,12 @@ class LibraryState {
    * object without a reconciliation pass.
    */
   patch(id: ItemId, changes: Partial<Item>) {
-    const item = this.items.find((i) => i.id === id)
-    if (!item) return
-    Object.assign(item, changes)
-    this.touch(id)
+    this.#patcher.patch(id, changes)
   }
 
   /** Note an edit made in place. Written a beat after typing stops. */
   touch(id: ItemId) {
-    const item = this.items.find((i) => i.id === id)
-    if (item) item.updatedAt = new Date().toISOString()
-    this.#saves.touch(id)
+    this.#patcher.touch(id)
   }
 
   async open(id: ItemId) {
@@ -569,14 +567,15 @@ class LibraryState {
   }
 
   async remove(id: ItemId) {
-    this.items = this.items.filter((i) => i.id !== id)
-    if (this.selected === id) this.close()
-    try {
-      await api.deleteItem(id)
-      void this.refreshCounts()
-    } catch (e) {
-      await handle(e, () => this.refresh())
-    }
+    await optimisticRemove({
+      optimistic: () => {
+        this.items = this.items.filter((i) => i.id !== id)
+        if (this.selected === id) this.close()
+      },
+      call: () => api.deleteItem(id),
+      onSuccess: () => void this.refreshCounts(),
+      rollback: () => this.refresh(),
+    })
   }
 
   // ── the log ──────────────────────────────────────────────────────────
