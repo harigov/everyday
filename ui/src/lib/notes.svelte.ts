@@ -16,12 +16,14 @@
 
 import { api, newRequestId } from './api'
 import { Autosave } from './autosave'
-import { registerApply, singleId, type ChangeWithIds } from './live-apply'
+import { registerApply, type ChangeWithIds } from './live-apply'
 import { proposals, recordAs } from './proposals.svelte'
 import { app, handle, isConflict, isLocked } from './state.svelte'
 import { debounce } from './store/debounce'
 import { DocBinding } from './store/doc-binding'
 import { latest } from './store/latest'
+import { applySingleChange, patchOneFromChange } from './store/live-patch'
+import { guardedRefresh } from './store/refresh'
 import type { Note, NoteHit, NoteId, NoteSort, NoteSummary, Proposal, ProposalId } from './types'
 
 /** How many notes a list loads at once. A drawer, not a database. */
@@ -190,28 +192,28 @@ class NotesState {
    */
   async refresh() {
     if (!app.supportsNotes) return
-    const generation = this.#generation.next()
-    try {
-      // Each lands as it arrives rather than both at the end: the notes and
-      // the tag sidebar are two calls, and holding a good list back until the
-      // second one answers means a failed `noteTags` throws away notes that
-      // loaded perfectly well, leaving the previous list -- or nothing at all,
-      // on a first load -- under an error banner.
-      const list = await api.notes({
-        tags: this.tag ? [this.tag] : [],
-        sort: this.sort,
-        limit: PAGE,
-      })
-      if (!this.#generation.isCurrent(generation)) return
-      this.list = list
+    await guardedRefresh(
+      this.#generation,
+      async (isCurrent) => {
+        // Each lands as it arrives rather than both at the end: the notes
+        // and the tag sidebar are two calls, and holding a good list back
+        // until the second one answers means a failed `noteTags` throws
+        // away notes that loaded perfectly well, leaving the previous list
+        // -- or nothing at all, on a first load -- under an error banner.
+        const list = await api.notes({
+          tags: this.tag ? [this.tag] : [],
+          sort: this.sort,
+          limit: PAGE,
+        })
+        if (!isCurrent()) return
+        this.list = list
 
-      const tags = await api.noteTags()
-      if (!this.#generation.isCurrent(generation)) return
-      this.tags = tags
-    } catch (e) {
-      if (isLocked(e)) return
-      await handle(e)
-    }
+        const tags = await api.noteTags()
+        if (!isCurrent()) return
+        this.tags = tags
+      },
+      { onError: (e) => (isLocked(e) ? undefined : handle(e)) },
+    )
   }
 
   /**
@@ -224,50 +226,47 @@ class NotesState {
    * if slower.
    */
   #applyChanges(changes: ChangeWithIds[]): boolean {
-    if (changes.length !== 1) return false
-    const change = changes[0]!
-    const id = singleId(change)
-    if (!id) return false
-    if (change.op === 'deleted') {
-      this.list = this.list.filter((n) => n.id !== id)
-      return true
-    }
-    if (change.op === 'created' || change.op === 'updated') {
+    return applySingleChange(changes, {
+      onDeleted: (id) => {
+        this.list = this.list.filter((n) => n.id !== id)
+      },
       // Answered synchronously -- see `Applier` -- with the fetch running
       // after. `#patchOne` falls back to `refresh()` itself if it fails, so
       // nothing here has to wait for it to decide.
-      void this.#patchOne(id)
-      return true
-    }
-    return false
+      onUpserted: (id) => void this.#patchOne(id),
+    })
   }
 
   /** The fetch-and-patch `#applyChanges` starts and does not wait for. */
   async #patchOne(id: NoteId) {
-    try {
-      const note = await api.note(id)
-      if (this.tag && !note.tags.includes(this.tag)) {
-        // No longer -- or never -- under the tag this list is filtered to.
-        // Drop it if it was showing under an earlier tag; do nothing if it
-        // was never in this list to begin with.
-        this.list = this.list.filter((n) => n.id !== id)
-        return
-      }
-      const summary = summarize(note)
-      const at = this.list.findIndex((n) => n.id === id)
-      // Replaced in place when already shown, so its position in the sort
-      // order is left alone rather than guessed at; inserted at the front
-      // otherwise, which is right for the default "last changed" sort and an
-      // approximation everywhere else that the next real `refresh` corrects.
-      this.list =
-        at >= 0 ? this.list.map((n, i) => (i === at ? summary : n)) : [summary, ...this.list]
-    } catch (e) {
-      if (isLocked(e)) return
+    await patchOneFromChange({
+      fetch: () => api.note(id),
+      apply: (note) => {
+        if (this.tag && !note.tags.includes(this.tag)) {
+          // No longer -- or never -- under the tag this list is filtered to.
+          // Drop it if it was showing under an earlier tag; do nothing if it
+          // was never in this list to begin with.
+          this.list = this.list.filter((n) => n.id !== id)
+          return
+        }
+        const summary = summarize(note)
+        const at = this.list.findIndex((n) => n.id === id)
+        // Replaced in place when already shown, so its position in the sort
+        // order is left alone rather than guessed at; inserted at the front
+        // otherwise, which is right for the default "last changed" sort and
+        // an approximation everywhere else that the next real `refresh`
+        // corrects.
+        this.list =
+          at >= 0 ? this.list.map((n, i) => (i === at ? summary : n)) : [summary, ...this.list]
+      },
+      // A lock is not a failure to fall back from -- the same policy
+      // everywhere else a background read meets a vault that just shut.
+      onLocked: () => {},
       // Fetching the one row failed in some way patching cannot reason
       // about -- ask for all of them rather than risk this list disagreeing
       // with the vault.
-      await this.refresh()
-    }
+      fallback: () => this.refresh(),
+    })
   }
 
   async setSort(sort: NoteSort) {
