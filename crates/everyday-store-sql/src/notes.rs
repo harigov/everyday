@@ -24,25 +24,16 @@ use everyday_core::error::{Error, Result};
 use everyday_core::id::NoteId;
 use everyday_core::note::{Note, NoteSummary};
 use everyday_core::purpose::Purpose;
+use everyday_core::record::RecordKind;
 use everyday_core::store::notes::{NoteQuery, NoteStore, note_aad};
 
 use crate::conn::{SqlExt, ToValue, Value};
-use crate::purpose::{RecordKind, forget_purposes, set_purpose};
+use crate::purpose::{forget_purposes, set_purpose};
 use crate::record::Record;
 use crate::{SqlStore, to_us, vals};
 
 impl Record for Note {
     const TABLE: &'static str = "notes";
-    const KIND: &'static str = "note";
-    type Id = NoteId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        note_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![

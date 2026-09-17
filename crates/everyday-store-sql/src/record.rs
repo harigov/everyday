@@ -25,10 +25,11 @@
 //! only the generic `get`.
 
 use crate::conn::{Sql, SqlExt, Value};
-use crate::purpose::{RecordKind, set_purpose};
+use crate::purpose::set_purpose;
 use crate::{SqlStore, vals};
 use everyday_core::error::{Error, Result};
 use everyday_core::purpose::Purpose;
+use everyday_core::record::{RecordDescriptor, RecordKind};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fmt::Display;
@@ -36,20 +37,16 @@ use std::str::FromStr;
 
 /// A record with the id/clear-columns/sealed-payload shape every table in
 /// this crate uses.
-pub(crate) trait Record: Serialize + DeserializeOwned {
+///
+/// The identity half — `KIND`, `Id`, `id()`, `aad()` — is
+/// [`RecordDescriptor`], in `everyday-core`, so that a record's kind and its
+/// aad label are named once for the whole workspace rather than once per
+/// crate. This trait adds only what is specific to being a *SQL* table: the
+/// one it lives in, its clear columns, and where its purpose pointer (for
+/// the tables that carry one) comes from.
+pub(crate) trait Record: RecordDescriptor + Serialize + DeserializeOwned {
     /// The table this record lives in.
     const TABLE: &'static str;
-    /// The word for one of these in a "not found" message — singular, where
-    /// [`TABLE`](Record::TABLE) is the plural the table is named.
-    const KIND: &'static str;
-
-    type Id: Display + FromStr + Copy;
-
-    fn id(&self) -> Self::Id;
-
-    /// Associated data the record's ciphertext is bound to — the
-    /// `xxx_aad(id)` function already written for this table's `get_xxx`.
-    fn aad(id: Self::Id) -> Vec<u8>;
 
     /// Every clear column but `id` and `data`, in the order the table
     /// declares them. [`upsert_stmt`] adds `id` at the front and `data` at
@@ -161,7 +158,7 @@ impl SqlStore {
                 &format!("SELECT data FROM {} WHERE id = ?1", R::TABLE),
                 &vals![id.to_string()],
             )?
-            .ok_or_else(|| Error::not_found(R::KIND, id))?;
+            .ok_or_else(|| Error::not_found(R::KIND.not_found_noun(), id))?;
         self.unseal(&R::aad(id), &sealed)
     }
 

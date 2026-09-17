@@ -442,8 +442,8 @@ impl SqlStore {
             .collect::<Result<_>>()?;
         tx.execute(&format!("DELETE FROM time_blocks WHERE task_id IN ({holes})"), &args)?;
         tx.execute(&format!("DELETE FROM tasks WHERE id IN ({holes})"), &args)?;
-        crate::purpose::forget_purposes(tx, crate::purpose::RecordKind::Block, &blocks)?;
-        crate::purpose::forget_purposes(tx, crate::purpose::RecordKind::Task, ids)?;
+        crate::purpose::forget_purposes(tx, everyday_core::record::RecordKind::Block, &blocks)?;
+        crate::purpose::forget_purposes(tx, everyday_core::record::RecordKind::Task, ids)?;
         Ok(())
     }
 

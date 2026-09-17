@@ -12,6 +12,7 @@ use everyday_core::error::{Error, Result};
 use everyday_core::id::{BlobId, EntryId, JournalId};
 use everyday_core::model::{Entry, EntrySummary, Journal};
 use everyday_core::purpose::Purpose;
+use everyday_core::record::RecordKind;
 use everyday_core::store::accounts::AccountStore;
 use everyday_core::store::agent::AgentStore;
 use everyday_core::store::calendars::CalendarStore;
@@ -24,26 +25,16 @@ use everyday_core::store::secrets::SecretStore;
 use everyday_core::store::tasks::TaskStore;
 use everyday_core::store::trackers::TrackerStore;
 use everyday_core::store::{
-    BackendCapabilities, EntryQuery, JournalStore, SortOrder, StoreStats, entry_aad, journal_aad,
+    BackendCapabilities, EntryQuery, JournalStore, SortOrder, StoreStats, journal_aad,
 };
 
 use crate::conn::{SqlExt, ToValue, Value, Where};
-use crate::purpose::{RecordKind, forget_purposes, set_purpose};
+use crate::purpose::{forget_purposes, set_purpose};
 use crate::record::Record;
 use crate::{SqlStore, to_us, vals};
 
 impl Record for Journal {
     const TABLE: &'static str = "journals";
-    const KIND: &'static str = "journal";
-    type Id = JournalId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        journal_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
@@ -61,16 +52,6 @@ impl Record for Journal {
 /// row with no summary at all.
 impl Record for Entry {
     const TABLE: &'static str = "entries";
-    const KIND: &'static str = "entry";
-    type Id = EntryId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        entry_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![

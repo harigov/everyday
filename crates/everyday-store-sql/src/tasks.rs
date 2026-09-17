@@ -9,6 +9,7 @@
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{BlockId, ProjectId, TaskId};
 use everyday_core::purpose::Purpose;
+use everyday_core::record::RecordKind;
 use everyday_core::store::tasks::{
     BlockQuery, ParentScope, ProjectScope, TaskQuery, TaskSort, TaskStore, block_aad, project_aad,
     task_aad,
@@ -18,22 +19,12 @@ use everyday_core::task::{
 };
 
 use crate::conn::{Sql, SqlExt, ToValue, Value, Where};
-use crate::purpose::{RecordKind, forget_purposes};
+use crate::purpose::forget_purposes;
 use crate::record::Record;
 use crate::{SqlStore, date_str, id_str, to_us, vals};
 
 impl Record for Project {
     const TABLE: &'static str = "projects";
-    const KIND: &'static str = "project";
-    type Id = ProjectId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        project_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
@@ -58,16 +49,6 @@ impl Record for Project {
 
 impl Record for Task {
     const TABLE: &'static str = "tasks";
-    const KIND: &'static str = "task";
-    type Id = TaskId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        task_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
@@ -95,16 +76,6 @@ impl Record for Task {
 
 impl Record for TimeBlock {
     const TABLE: &'static str = "time_blocks";
-    const KIND: &'static str = "block";
-    type Id = BlockId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        block_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![

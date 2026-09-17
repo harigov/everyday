@@ -25,7 +25,7 @@ use everyday_core::mail::{
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::{
     IngestMessage, MailStore, ThreadFilter, ThreadPage, body_aad, category_rules_aad, contacts_aad,
-    draft_aad, mailbox_aad, message_aad, op_aad, remote_image_settings_aad, thread_aad,
+    draft_aad, mailbox_aad, message_aad, op_aad, remote_image_settings_aad,
 };
 use jiff::Timestamp;
 
@@ -35,16 +35,6 @@ use crate::{SqlStore, from_us, to_us, vals};
 
 impl Record for Mailbox {
     const TABLE: &'static str = "mailboxes";
-    const KIND: &'static str = "mailbox";
-    type Id = MailboxId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        mailbox_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
@@ -59,16 +49,6 @@ impl Record for Mailbox {
 
 impl Record for Message {
     const TABLE: &'static str = "mail_messages";
-    const KIND: &'static str = "message";
-    type Id = MailMessageId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        message_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
@@ -88,16 +68,6 @@ impl Record for Message {
 
 impl Record for Thread {
     const TABLE: &'static str = "threads";
-    const KIND: &'static str = "thread";
-    type Id = ThreadId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        thread_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
@@ -112,16 +82,6 @@ impl Record for Thread {
 
 impl Record for Draft {
     const TABLE: &'static str = "drafts";
-    const KIND: &'static str = "draft";
-    type Id = DraftId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        draft_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
@@ -136,16 +96,6 @@ impl Record for Draft {
 
 impl Record for Op {
     const TABLE: &'static str = "ops";
-    const KIND: &'static str = "op";
-    type Id = OpId;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn aad(id: Self::Id) -> Vec<u8> {
-        op_aad(id)
-    }
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
