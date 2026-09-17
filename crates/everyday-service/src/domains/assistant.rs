@@ -259,38 +259,47 @@ async fn new_memory(_svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandRes
 /// person could not unpin a fact they had pinned by accident, and meant the
 /// pane's own switch did nothing.
 ///
-/// Two corrections happen here rather than in the vault, because they are
-/// about *who this request is* rather than about storage limits:
+/// Who stands behind a memory is not this command's to change. That is
+/// `set_memory_origin`'s job, and it refuses what this must refuse too: a
+/// struck-out memory quietly becoming a standing instruction again, or a
+/// person's own fact being relabelled as something a dream noticed. So the
+/// origin, and the date an inference was last supported, are taken from
+/// what is stored -- whatever the request says -- with one exception and one
+/// default, both about *who this request is* rather than about storage:
 ///
-/// - If what is stored under this id was `Inferred` and the text arriving
-///   now differs from it, the save becomes `Confirmed`. Rewriting what a
-///   dream noticed is standing behind it, which is a stronger claim than the
-///   dream itself ever made.
-/// - If there is nothing stored under this id yet and it arrives as
-///   `Inferred`, it is coerced to `Told` rather than refused. Only a dream
-///   infers -- see `set_memory_origin` -- but refusing outright would just
-///   make whoever sent this retype the same fact with a different label, and
-///   a freshly typed fact that nobody was told by a dream is exactly what
-///   `Told` means.
+/// - If what is stored was `Inferred` and the text arriving now differs, the
+///   save becomes `Confirmed`. Rewriting what a dream noticed is standing
+///   behind it, which is a stronger claim than the dream itself made.
+/// - If nothing is stored under this id yet, it is `Told`, whatever it
+///   arrived as. Only a dream infers, and only a person's answer to a dream
+///   confirms or rejects; a fact typed into the pane is exactly what `Told`
+///   means. Coerced rather than refused, so the pane never has to retype it.
 async fn save_memory(svc: Arc<Service>, _ctx: Ctx, args: SaveMemory) -> CommandResult<Vec<Memory>> {
     svc.on_vault(move |vault| {
         let mut memory = args.memory;
         let stored = vault.memories()?.into_iter().find(|m| m.id == memory.id);
-        match &stored {
-            None if memory.origin == everyday_core::MemoryOrigin::Inferred => {
-                memory.origin = everyday_core::MemoryOrigin::Told;
-            }
-            Some(old)
-                if old.origin == everyday_core::MemoryOrigin::Inferred
-                    && old.text != memory.text =>
-            {
-                memory.origin = everyday_core::MemoryOrigin::Confirmed;
-            }
-            _ => {}
-        }
+        let (origin, last_supported) = provenance_for_save(stored.as_ref(), &memory);
+        memory.origin = origin;
+        memory.last_supported = last_supported;
         vault.save_memory(&memory)
     })
     .await
+}
+
+/// The origin and last-supported date a hand-made save may carry. See
+/// `save_memory`.
+fn provenance_for_save(
+    stored: Option<&Memory>,
+    incoming: &Memory,
+) -> (everyday_core::MemoryOrigin, Option<jiff::civil::Date>) {
+    use everyday_core::MemoryOrigin;
+    match stored {
+        None => (MemoryOrigin::Told, None),
+        Some(old) if old.origin == MemoryOrigin::Inferred && old.text != incoming.text => {
+            (MemoryOrigin::Confirmed, old.last_supported)
+        }
+        Some(old) => (old.origin, old.last_supported),
+    }
 }
 
 /// Confirm an inferred memory, or strike it out. See
@@ -420,3 +429,53 @@ pub static COMMANDS: &[crate::command::Command] = &[
         run: delete_memory,
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::provenance_for_save;
+    use everyday_core::{Memory, MemoryOrigin};
+
+    #[test]
+    fn a_hand_save_never_changes_who_stands_behind_a_memory() {
+        let day = jiff::civil::date(2026, 9, 15);
+        let incoming = |origin| Memory { origin, ..Memory::new("Runs on Tuesdays") };
+
+        // New: always told, whatever it claims.
+        for claimed in [
+            MemoryOrigin::Told,
+            MemoryOrigin::Inferred,
+            MemoryOrigin::Confirmed,
+            MemoryOrigin::Rejected,
+        ] {
+            assert_eq!(provenance_for_save(None, &incoming(claimed)), (MemoryOrigin::Told, None));
+        }
+
+        // Stored and rejected: stays rejected, even when sent as told.
+        let rejected = Memory { origin: MemoryOrigin::Rejected, ..Memory::new("Runs on Tuesdays") };
+        assert_eq!(
+            provenance_for_save(Some(&rejected), &incoming(MemoryOrigin::Told)),
+            (MemoryOrigin::Rejected, None)
+        );
+
+        // Stored and told: cannot be relabelled as inferred.
+        let told = Memory::new("Runs on Tuesdays");
+        assert_eq!(
+            provenance_for_save(Some(&told), &incoming(MemoryOrigin::Inferred)),
+            (MemoryOrigin::Told, None)
+        );
+
+        // Stored and inferred: unchanged text keeps it inferred, with its date.
+        let inferred = Memory::inferred("Runs on Tuesdays", day);
+        assert_eq!(
+            provenance_for_save(Some(&inferred), &incoming(MemoryOrigin::Told)),
+            (MemoryOrigin::Inferred, Some(day))
+        );
+        // ...and rewritten text confirms it.
+        let rewritten =
+            Memory { text: "Runs on Tuesday mornings".into(), ..incoming(MemoryOrigin::Told) };
+        assert_eq!(
+            provenance_for_save(Some(&inferred), &rewritten),
+            (MemoryOrigin::Confirmed, Some(day))
+        );
+    }
+}

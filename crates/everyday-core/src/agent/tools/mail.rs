@@ -1253,10 +1253,13 @@ pub(super) fn writes_a_draft(tool: &str) -> bool {
 /// Run `draft_reply` or `draft_message` for real while drafting, then
 /// propose sending what it just wrote.
 ///
-/// The policy and the run's own cap are checked *before* the draft is
-/// written, not only when the `SendMail` proposal is built afterwards: a
-/// dream that cannot end up proposing the send should not leave a stray
-/// draft behind either. Everything past that is the tool's own ordinary
+/// The policy, the run's own cap and the vault's ceiling on pending
+/// proposals are all checked *before* the draft is written, not only when
+/// the `SendMail` proposal is built afterwards: a dream that cannot end up
+/// proposing the send should not leave a stray draft behind either. Should
+/// the proposal still fail -- a race with another writer, a store error --
+/// the draft just written is discarded, so a model retrying the call does
+/// not pile up orphans. Everything past that is the tool's own ordinary
 /// run, and then the same [`super::propose`] every other proposable tool
 /// goes through.
 pub(super) fn run_drafting_write(
@@ -1267,6 +1270,7 @@ pub(super) fn run_drafting_write(
 ) -> Result<Value> {
     super::check_policy(ctx, ProposalKind::Mail)?;
     super::check_cap(ctx, drafting)?;
+    super::check_pending_room(ctx)?;
 
     let mut out = (tool.run)(ctx, args)?;
     let draft_id: DraftId = out
@@ -1281,7 +1285,17 @@ pub(super) fn run_drafting_write(
         caption: format!("Send draft: {subject}"),
         about: None,
     };
-    let proposal = super::propose(ctx, drafting, args, built)?;
+    let proposal = match super::propose(ctx, drafting, args, built) {
+        Ok(proposal) => proposal,
+        Err(e) => {
+            // Best effort: the refusal is what the model needs to hear, and
+            // a discard that also fails must not replace it.
+            if let Err(cleanup) = ctx.vault.discard_draft(draft_id) {
+                tracing::warn!(error = %cleanup, "could not discard a draft whose send could not be proposed");
+            }
+            return Err(e);
+        }
+    };
 
     if let Some(map) = out.as_object_mut() {
         map.insert("proposal_id".into(), proposal["id"].clone());

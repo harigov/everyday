@@ -422,6 +422,42 @@ fn a_kind_the_person_switched_off_is_refused_rather_than_proposed() {
     let _ = f;
 }
 
+// ---- a full queue leaves no stray mail draft -----------------------------
+
+#[test]
+fn a_draft_is_not_written_when_its_send_could_not_be_proposed() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(dir.path());
+    let f = seed(&v);
+
+    // Fill the vault's ceiling on pending proposals.
+    let drafting_ctx = ctx_drafting(&v, Drafting::default());
+    for i in 0..everyday_core::proposal::MAX_PENDING_PROPOSALS {
+        tools::dispatch(&drafting_ctx, "remember", &json!({ "fact": format!("Fact {i}") }))
+            .unwrap_or_else(|e| panic!("proposal {i} should fit: {e}"));
+    }
+    let drafts_before = v.drafts(f.account_id).unwrap().len();
+
+    // Asked twice, as a model retrying would: refused both times, and no
+    // draft is left behind either time.
+    for _ in 0..2 {
+        let err = tools::dispatch(
+            &drafting_ctx,
+            "draft_message",
+            &json!({
+                "account_id": f.account_id.to_string(),
+                "to": ["someone@example.com"],
+                "subject": "Hi",
+                "body_html": "<p>hi</p>",
+            }),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("waiting for an answer"), "{err}");
+    }
+    assert_eq!(v.drafts(f.account_id).unwrap().len(), drafts_before, "no orphan drafts");
+    assert_eq!(v.pending_proposals().unwrap(), everyday_core::proposal::MAX_PENDING_PROPOSALS);
+}
+
 // ---- (c) the run's own cap ---------------------------------------------
 
 #[test]

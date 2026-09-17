@@ -4724,14 +4724,17 @@ export const mockInvoke = async <T>(
       const memory = args.memory as Memory
       const i = memories.findIndex((m) => m.id === memory.id)
       const previous = i >= 0 ? memories[i] : null
-      // Editing an inferred memory's text is a person standing behind it --
-      // the same rule `Vault::save_memory` applies in the real vault. See
-      // docs/plans/dreaming.md's memory-provenance phase.
-      const origin: MemoryOrigin | undefined =
-        previous?.origin === 'inferred' && previous.text !== memory.text
+      // Who stands behind a memory is not this command's to change -- the
+      // real `save_memory` command's rule. A new one is told; a stored one
+      // keeps its origin and date, except that rewriting an inferred one
+      // confirms it. Origins otherwise move only through `set_memory_origin`.
+      const origin: MemoryOrigin = !previous
+        ? 'told'
+        : previous.origin === 'inferred' && previous.text !== memory.text
           ? 'confirmed'
-          : memory.origin
-      const saved = { ...memory, origin }
+          : (previous.origin ?? 'told')
+      const lastSupported = previous ? (previous.lastSupported ?? null) : null
+      const saved = { ...memory, origin, lastSupported }
       if (i >= 0) memories[i] = saved
       else memories.push(saved)
       // Answers with the whole list, so a caller can redraw without a second

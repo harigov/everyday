@@ -1095,6 +1095,22 @@ fn propose(
     }))
 }
 
+/// Refuse up front when the vault's own ceiling on pending proposals has been
+/// reached. [`crate::vault::Vault::save_proposal`] enforces the same
+/// ceiling, but only at the end; a caller that writes something real
+/// *before* it proposes -- `run_drafting_write` -- has to know first, or
+/// every refused attempt leaves its real write behind.
+fn check_pending_room(ctx: &ToolContext<'_>) -> Result<()> {
+    let pending = ctx.vault.pending_proposals()?;
+    if pending >= crate::proposal::MAX_PENDING_PROPOSALS {
+        return Err(Error::Invalid(format!(
+            "{pending} proposals are already waiting for an answer; make no more \
+             until some are accepted or declined"
+        )));
+    }
+    Ok(())
+}
+
 /// Refuse a kind of proposal the person has switched off, in words a model
 /// can act on: not "forbidden", but which knob to stop reaching for.
 fn check_policy(ctx: &ToolContext<'_>, kind: crate::proposal::ProposalKind) -> Result<()> {
