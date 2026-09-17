@@ -2375,6 +2375,7 @@ dependencies = [
  "everyday-store-sqlite",
  "jiff",
  "keyring",
+ "serde",
  "serde_json",
  "tempfile",
 ]

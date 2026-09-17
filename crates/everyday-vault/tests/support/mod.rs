@@ -14,6 +14,9 @@
 
 #![allow(dead_code)]
 
+pub mod dump;
+pub mod fixture;
+
 use everyday_core::agent::tools::{self, ToolContext};
 use everyday_core::{Tracker, Vault, VaultConfig};
 use std::path::Path;
@@ -70,4 +73,30 @@ pub fn call_err(vault: &Vault, tool: &str, args: serde_json::Value) -> String {
         .map(|v| panic!("{tool} unexpectedly succeeded: {v}"))
         .unwrap_err()
         .to_string()
+}
+
+/// The environment variable that turns a golden-file comparison into an
+/// update. Copied from `everyday-service/tests/support/mod.rs`'s own
+/// `compare`, which this crate cannot reach across the crate boundary --
+/// same name, so `make fix` regenerates both crates' snapshots in one pass.
+pub const ACCEPT: &str = "UPDATE_SURFACE";
+
+/// Compare `current` against the file at `path`, or write it if asked to.
+///
+/// `why` is what a reader should think about before accepting a diff to
+/// this particular snapshot.
+pub fn compare(path: &std::path::Path, current: &str, why: &str, accept_with: &str) {
+    if std::env::var(ACCEPT).is_ok() {
+        std::fs::write(path, current)
+            .unwrap_or_else(|e| panic!("could not write {}: {e}", path.display()));
+        return;
+    }
+
+    // A missing file reads as an empty one, so the first run in a checkout
+    // that has never had one reports the whole snapshot as the change --
+    // which is the truth, and is more useful than an error about a path.
+    let recorded = std::fs::read_to_string(path).unwrap_or_default();
+    if recorded != current {
+        panic!("{why}\n\nThen: {accept_with}\n");
+    }
 }
