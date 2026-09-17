@@ -109,6 +109,7 @@ pub mod store;
 pub mod task;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+pub mod timestamped;
 pub mod tracker;
 pub mod vault;
 pub mod websearch;
@@ -178,6 +179,7 @@ pub use task::{
     BlockKind, BlockSubject, Priority, Project, ProjectStatus, ProjectTaskCount, Task, TaskStats,
     TaskStatus, TimeBlock,
 };
+pub use timestamped::Timestamped;
 pub use tracker::{Aggregate, Reading, Tracker, TrackerKind};
 pub use vault::{Vault, VaultConfig, VaultHeader, VaultStatus};
 pub use websearch::{Fetcher, SearchRequest, SearchResult, Source, WebSearch};

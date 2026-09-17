@@ -7,7 +7,7 @@ use crate::id::{RoutineId, RoutineRunId};
 use crate::record::RecordKind;
 use crate::routine::{DreamScope, Routine, RoutineRun, Trigger};
 use crate::store::routines::{RoutineStore, RunQuery};
-use jiff::Timestamp;
+use crate::timestamped::Timestamped;
 
 /// What `Vault::save_routine` says when somebody tries to make or unmake a
 /// dream by hand. One sentence, used from both directions -- a new routine
@@ -129,7 +129,7 @@ impl Vault {
                 .cloned()
                 .unwrap_or_else(|| Routine::dream(scope));
             routine.enabled = on;
-            routine.updated_at = Timestamp::now();
+            routine.touch();
             self.put_routine_unchecked(&routine)?;
             out.push(routine);
         }

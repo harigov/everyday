@@ -47,6 +47,7 @@
 //! calendar. See `docs` on [`Calendar`] for what the interface says about it.
 
 use crate::id::{AccountId, CalendarId, EventId, RoleId};
+use crate::timestamped::Timestamped;
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -478,6 +479,12 @@ impl Calendar {
     /// itself because the wifi dropped is worse than a stale one.
     pub fn mark_failed(&mut self, why: impl Into<String>) {
         self.last_error = Some(why.into());
+        self.touch();
+    }
+}
+
+impl Timestamped for Calendar {
+    fn touch(&mut self) {
         self.updated_at = Timestamp::now();
     }
 }

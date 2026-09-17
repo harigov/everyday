@@ -36,6 +36,7 @@
 use crate::completable::Completable;
 use crate::id::{BlockId, ProjectId, TaskId};
 use crate::purpose::Purpose;
+use crate::timestamped::Timestamped;
 use jiff::{
     Timestamp,
     civil::{Date, Time},
@@ -293,6 +294,12 @@ impl Completable for Project {
     }
 }
 
+impl Timestamped for Project {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
+    }
+}
+
 /// Project accents. The journal palette, so one vault has one set of colours.
 pub const DEFAULT_PROJECT_COLORS: &[&str] = crate::model::DEFAULT_JOURNAL_COLORS;
 
@@ -431,6 +438,12 @@ impl Completable for Task {
 
     fn updated_at_mut(&mut self) -> &mut Timestamp {
         &mut self.updated_at
+    }
+}
+
+impl Timestamped for Task {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
     }
 }
 

@@ -68,6 +68,7 @@
 
 use crate::error::{Error, Result};
 use crate::library::{ExternalRating, Item, Kind, Link};
+use crate::timestamped::Timestamped;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -712,7 +713,7 @@ pub fn apply(result: &SearchResult, kind: &Kind, item: &mut Item, overwrite: boo
     if item.source.is_empty() || overwrite {
         item.source = result.source.clone();
     }
-    item.updated_at = jiff::Timestamp::now();
+    item.touch();
 }
 // ── Small helpers ────────────────────────────────────────────────────────
 

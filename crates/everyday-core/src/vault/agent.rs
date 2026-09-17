@@ -17,7 +17,7 @@ use crate::error::{Error, Result};
 use crate::id::{ConversationId, MemoryId, MessageId};
 use crate::record::RecordKind;
 use crate::store::agent::{AgentStore, ConversationQuery};
-use jiff::Timestamp;
+use crate::timestamped::Timestamped;
 
 impl Vault {
     /// Does this vault's backend hold conversations at all?
@@ -348,7 +348,7 @@ impl Vault {
         }
 
         memory.origin = origin;
-        memory.updated_at = Timestamp::now();
+        memory.touch();
         self.save_memory(&memory)?;
         Ok(memory)
     }

@@ -11,6 +11,7 @@
 
 use crate::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use crate::packstore::PackRef;
+use crate::timestamped::Timestamped;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -871,6 +872,12 @@ impl Draft {
     }
 }
 
+impl Timestamped for Draft {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
+    }
+}
+
 // ---- the outbox -----------------------------------------------------------
 
 /// Who asked for an [`Op`]. The one place every path to a mail server meets
@@ -1076,6 +1083,12 @@ impl Op {
     pub fn not_before(mut self, not_before: Timestamp) -> Self {
         self.not_before = not_before;
         self
+    }
+}
+
+impl Timestamped for Op {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
     }
 }
 

@@ -63,6 +63,7 @@ pub mod tools;
 use crate::error::{Error, Result};
 use crate::id::{ConversationId, MemoryId, MessageId};
 use crate::quick::QuickPolicy;
+use crate::timestamped::Timestamped;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -1019,6 +1020,12 @@ impl Memory {
             )));
         }
         Ok(())
+    }
+}
+
+impl Timestamped for Memory {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
     }
 }
 

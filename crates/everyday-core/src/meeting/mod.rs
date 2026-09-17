@@ -26,6 +26,7 @@ pub mod template;
 
 use crate::calendar::Event;
 use crate::id::{CalendarId, NoteId, RecordingId, TemplateId, TranscriptId, VoiceprintId};
+use crate::timestamped::Timestamped;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -387,6 +388,12 @@ pub struct Voiceprint {
     pub samples: u32,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+}
+
+impl Timestamped for Voiceprint {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
+    }
 }
 
 /// When to offer.

@@ -11,6 +11,7 @@ use crate::error::Result;
 use crate::id::ItemId;
 use crate::library::{Item, ItemStatus, LogEntry, LogEvent};
 use crate::store::library::ItemQuery;
+use crate::timestamped::Timestamped;
 
 const ITEM_STATUSES: &[&str] = &["wishlist", "active", "paused", "done", "abandoned"];
 
@@ -243,7 +244,7 @@ fn run_update_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         item.tags = args.strings("tags");
     }
 
-    item.updated_at = jiff::Timestamp::now();
+    item.touch();
     ctx.vault.save_item(&item)?;
 
     // The same transitions the interface logs, and for its reason: the

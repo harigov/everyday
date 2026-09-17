@@ -7,6 +7,7 @@
 use crate::id::{BlobId, EntryId, JournalId, TrackerId};
 use crate::purpose::Purpose;
 use crate::richtext::RichDoc;
+use crate::timestamped::Timestamped;
 use crate::tracker::Tracker;
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
@@ -109,7 +110,7 @@ impl Journal {
     pub fn show(&mut self, id: TrackerId) {
         if !self.shows(id) {
             self.shown_trackers.push(id);
-            self.updated_at = Timestamp::now();
+            self.touch();
         }
     }
 
@@ -118,8 +119,14 @@ impl Journal {
         let before = self.shown_trackers.len();
         self.shown_trackers.retain(|held| *held != id);
         if self.shown_trackers.len() != before {
-            self.updated_at = Timestamp::now();
+            self.touch();
         }
+    }
+}
+
+impl Timestamped for Journal {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
     }
 }
 
@@ -341,6 +348,12 @@ impl Entry {
                 .and_then(|l| l.place_name.clone().or_else(|| l.locality.clone())),
             purpose: self.purpose,
         }
+    }
+}
+
+impl Timestamped for Entry {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
     }
 }
 

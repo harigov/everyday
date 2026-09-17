@@ -11,8 +11,8 @@ use crate::error::{Error, Result};
 use crate::id::{ReadingId, TrackerId};
 use crate::record::RecordKind;
 use crate::store::trackers::{ReadingQuery, TrackerDay, TrackerStore};
+use crate::timestamped::Timestamped;
 use crate::tracker::{Reading, Tracker};
-use jiff::Timestamp;
 
 impl Vault {
     /// Does this vault's backend store trackers at all?
@@ -43,7 +43,7 @@ impl Vault {
         if tracker.name.is_empty() {
             return Err(Error::Invalid("a tracker needs a name".into()));
         }
-        tracker.updated_at = Timestamp::now();
+        tracker.touch();
         let id = tracker.id;
         self.with_trackers(|t| t.put_tracker(&tracker))?;
         self.wrote(RecordKind::Tracker, id);
@@ -133,7 +133,7 @@ impl Vault {
         let mut reading = reading.clone();
         reading.value = tracker.clamp(reading.value);
         reading.note = reading.note.trim().to_string();
-        reading.updated_at = Timestamp::now();
+        reading.touch();
         // A reading's day and its instant have to agree, or a chip logged at
         // 00:10 lands on the calendar a day away from the entry it was
         // ticked under. The instant wins: it is the more precise of the two.
@@ -197,7 +197,7 @@ impl Vault {
                 self.with_trackers(|t| t.put_tracker(&tracker))?;
                 moved += 1;
             }
-            journal.updated_at = Timestamp::now();
+            journal.touch();
             self.save_journal(&journal)?;
         }
         Ok(moved)

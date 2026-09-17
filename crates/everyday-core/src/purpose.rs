@@ -55,6 +55,7 @@
 
 use crate::completable::Completable;
 use crate::id::{GoalId, RoleId};
+use crate::timestamped::Timestamped;
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
 
@@ -293,6 +294,12 @@ impl Completable for Goal {
 
     fn updated_at_mut(&mut self) -> &mut Timestamp {
         &mut self.updated_at
+    }
+}
+
+impl Timestamped for Goal {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
     }
 }
 

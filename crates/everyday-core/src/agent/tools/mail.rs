@@ -89,6 +89,7 @@ use crate::mail::{
 };
 use crate::mailsearch::MailQuery;
 use crate::proposal::{Payload, ProposalKind};
+use crate::timestamped::Timestamped;
 
 /// [`search_mail`]'s hard cap, per the plan's table -- "Capped at 25."
 const SEARCH_CAP: u32 = 25;
@@ -997,7 +998,7 @@ fn run_update_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if let Some(body_html) = args.opt_str("body_html") {
         draft.body_html = body_html.to_string();
     }
-    draft.updated_at = jiff::Timestamp::now();
+    draft.touch();
     // Marked only for a non-person caller -- see
     // `Draft::recipients_changed_by`'s own doc. The vault's owner acting
     // directly on this tool (a script, the palette) is still the person; it

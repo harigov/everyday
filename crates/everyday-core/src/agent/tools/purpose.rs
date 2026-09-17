@@ -13,6 +13,7 @@ use crate::error::Result;
 use crate::id::{GoalId, RoleId};
 use crate::purpose::{Goal, GoalActivity, GoalStatus, Purpose};
 use crate::store::purpose::{GoalQuery, PurposeWindow};
+use crate::timestamped::Timestamped;
 
 const GOAL_STATUSES: [&str; 4] = ["active", "paused", "done", "dropped"];
 
@@ -270,7 +271,7 @@ fn run_update_goal(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if let Some(status) = args.opt_enum::<GoalStatus>("status", &GOAL_STATUSES)? {
         goal.set_status(status);
     }
-    goal.updated_at = jiff::Timestamp::now();
+    goal.touch();
     ctx.vault.save_goal(&goal)?;
     done("updated", "goal", &goal.title, goal.id.to_string())
 }

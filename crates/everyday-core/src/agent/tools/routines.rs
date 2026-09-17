@@ -11,6 +11,7 @@ use crate::id::RoutineId;
 use crate::proposal::{About, AboutKind, Payload, ProposalKind, ProposedRecord};
 use crate::routine::{Routine, RoutineRun, Trigger, Weekday};
 use crate::store::routines::RunQuery;
+use crate::timestamped::Timestamped;
 
 pub(super) static TOOLS: &[Tool] = &[
     tool!(
@@ -294,7 +295,7 @@ fn apply_update_routine_args(args: &Args<'_>, mut routine: Routine) -> Result<Ro
     if let Some(enabled) = args.opt_bool("enabled") {
         routine.enabled = enabled;
     }
-    routine.updated_at = jiff::Timestamp::now();
+    routine.touch();
     routine.validate()?;
     Ok(routine)
 }

@@ -13,7 +13,7 @@ use crate::id::{ProjectId, TaskId};
 use crate::proposal::{About, AboutKind, Payload, ProposalKind, ProposedRecord};
 use crate::store::tasks::{ParentScope, ProjectScope, TaskQuery};
 use crate::task::{Priority, Project, ProjectStatus, Task, TaskStatus};
-use jiff::Timestamp;
+use crate::timestamped::Timestamped;
 
 // `pub(super)` rather than private: `agent::tools`'s own argument-parsing
 // tests exercise a real enum's error message, and a task's status is the
@@ -353,7 +353,7 @@ fn run_update_project(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if args.get("tags").is_some() {
         p.tags = args.strings("tags");
     }
-    p.updated_at = Timestamp::now();
+    p.touch();
 
     ctx.vault.save_project(&p)?;
     done("updated", "project", &p.name, p.id.to_string())
@@ -539,7 +539,7 @@ fn apply_update_task_args(ctx: &ToolContext<'_>, args: &Args<'_>, mut t: Task) -
     } else if let Some(p) = resolve_purpose(ctx, args)? {
         t.purpose = Some(p);
     }
-    t.updated_at = Timestamp::now();
+    t.touch();
     Ok(t)
 }
 

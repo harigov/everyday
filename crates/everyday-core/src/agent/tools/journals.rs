@@ -17,7 +17,7 @@ use crate::richtext::RichDoc;
 use crate::search::{Found, SearchScope};
 use crate::store::purpose::GoalQuery;
 use crate::store::{EntryQuery, SortOrder};
-use jiff::Timestamp;
+use crate::timestamped::Timestamped;
 
 pub(super) static TOOLS: &[Tool] = &[
     // ---- orientation ------------------------------------------------------
@@ -415,7 +415,7 @@ fn run_update_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     // still has the entry open keeps matching on the version it loaded and
     // its next save overwrites the assistant's edit with no conflict
     // reported -- the exact loss `put_entry_if` exists to prevent.
-    entry.updated_at = Timestamp::now();
+    entry.touch();
 
     // Unconditional rather than optimistic. The optimistic path exists for
     // two people editing the same entry in two windows; here the other

@@ -26,6 +26,7 @@
 //! shows one honest row per morning instead of seven briefs at once.
 
 use crate::id::{RoleId, RoutineId, RoutineRunId};
+use crate::timestamped::Timestamped;
 use crate::{ConversationId, Error, Result};
 use jiff::civil::{Time, Weekday as CivilWeekday, time};
 use jiff::{Timestamp, Zoned};
@@ -521,6 +522,12 @@ impl Routine {
             }
         }
         None
+    }
+}
+
+impl Timestamped for Routine {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
     }
 }
 

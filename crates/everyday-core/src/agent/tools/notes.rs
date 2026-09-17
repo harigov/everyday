@@ -12,7 +12,7 @@ use crate::note::{Note, NoteSummary};
 use crate::proposal::{About, AboutKind, Payload, ProposalKind, ProposedRecord};
 use crate::richtext::RichDoc;
 use crate::store::notes::{NoteQuery, NoteSort};
-use jiff::Timestamp;
+use crate::timestamped::Timestamped;
 
 pub(super) static TOOLS: &[Tool] = &[
     tool!(
@@ -200,7 +200,7 @@ fn apply_update_note_args(args: &Args<'_>, mut note: Note) -> Result<Note> {
     // Stamped here for the reason `update_entry` gives: every writer owns its
     // own `updated_at`, and an editor still holding this note would otherwise
     // keep matching the version it loaded and overwrite this edit silently.
-    note.updated_at = Timestamp::now();
+    note.touch();
     Ok(note)
 }
 

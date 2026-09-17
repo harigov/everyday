@@ -57,6 +57,7 @@
 
 use crate::id::{BlobId, ItemId, KindId, LogId};
 use crate::purpose::Purpose;
+use crate::timestamped::Timestamped;
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -873,7 +874,7 @@ impl Item {
             }
             _ => {}
         }
-        self.updated_at = Timestamp::now();
+        self.touch();
     }
 
     /// The best guess at a headline byline: the creator, then the year.
@@ -910,6 +911,12 @@ impl Item {
             out.push('\n');
         }
         out
+    }
+}
+
+impl Timestamped for Item {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
     }
 }
 

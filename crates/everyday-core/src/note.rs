@@ -23,6 +23,7 @@ use crate::id::{BlobId, NoteId};
 use crate::model::{Attachment, MediaKind};
 use crate::purpose::Purpose;
 use crate::richtext::RichDoc;
+use crate::timestamped::Timestamped;
 use crate::{Error, Result};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -147,6 +148,12 @@ impl Note {
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
+    }
+}
+
+impl Timestamped for Note {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
     }
 }
 

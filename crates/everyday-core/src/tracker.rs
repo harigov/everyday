@@ -53,6 +53,7 @@
 //! than averaging them in.
 
 use crate::id::{EntryId, JournalId, ReadingId, TrackerId};
+use crate::timestamped::Timestamped;
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
 
@@ -456,6 +457,12 @@ impl Tracker {
     }
 }
 
+impl Timestamped for Tracker {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
+    }
+}
+
 /// One recorded value: this tracker, this much, then.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -549,6 +556,12 @@ impl Reading {
         let at = self.at?;
         let zoned = at.in_tz(&self.tz).unwrap_or_else(|_| at.in_tz("UTC").expect("UTC exists"));
         Some(i32::from(zoned.hour()) * 60 + i32::from(zoned.minute()))
+    }
+}
+
+impl Timestamped for Reading {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
     }
 }
 

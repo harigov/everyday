@@ -26,6 +26,7 @@ use crate::mail::{
 use crate::packstore::{PackRef, PackStore};
 use crate::record::RecordKind;
 use crate::store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
+use crate::timestamped::Timestamped;
 use jiff::Timestamp;
 
 impl Vault {
@@ -254,7 +255,7 @@ impl Vault {
             let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
             let mut draft = mail.get_draft(id)?;
             if f(&mut draft) {
-                draft.updated_at = Timestamp::now();
+                draft.touch();
                 mail.put_draft(&draft)?;
                 wrote = true;
             }
@@ -654,7 +655,7 @@ impl Vault {
                 .not_before(not_before);
             mail.enqueue_op(&op)?;
             draft.state = DraftState::Queued { op: op.id };
-            draft.updated_at = Timestamp::now();
+            draft.touch();
             mail.put_draft(&draft)?;
             Ok((draft, op))
         })?;
@@ -747,7 +748,7 @@ impl Vault {
             op.transition_to(OpState::Cancelled)?;
             mail.update_op(&op)?;
             draft.state = DraftState::Editing;
-            draft.updated_at = Timestamp::now();
+            draft.touch();
             mail.put_draft(&draft)?;
             Ok(draft)
         })?;
@@ -821,7 +822,7 @@ impl Vault {
                 }
             }
             draft.state = DraftState::Discarded;
-            draft.updated_at = Timestamp::now();
+            draft.touch();
             mail.put_draft(&draft)?;
             let op = match &draft.server_copy {
                 Some(_) => {
