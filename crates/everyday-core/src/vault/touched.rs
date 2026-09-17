@@ -65,10 +65,23 @@ pub(super) fn touch(kind: RecordKind, id: impl Display) {
 ///
 /// See the module doc for why this has to be scoped tightly around one
 /// synchronous call rather than around the `.await` that waits for it.
+///
+/// Nests: an inner scope hands its own touches back to its caller *and*
+/// replays them into the scope it interrupted, so an outer collector still
+/// sees everything that happened while it was open. Without that, the
+/// `collect` a caller wraps around one particular call -- `run_tool` around a
+/// tool's dispatch -- would silently swallow those writes from the
+/// `blocking` scope already collecting around it, and the outer sink would
+/// answer "nothing was written" for a command that wrote.
 pub fn collect<T>(f: impl FnOnce() -> T) -> (T, Vec<(RecordKind, String)>) {
     let previous = SINK.with(|cell| cell.replace(Some(Vec::new())));
     let out = f();
     let touched = SINK.with(|cell| cell.replace(previous)).unwrap_or_default();
+    SINK.with(|cell| {
+        if let Some(outer) = cell.borrow_mut().as_mut() {
+            outer.extend(touched.iter().cloned());
+        }
+    });
     (out, touched)
 }
 
@@ -115,5 +128,19 @@ mod tests {
         let _ = collect(|| touch(RecordKind::Note, "n1"));
         let (_, touched) = collect(|| {});
         assert!(touched.is_empty());
+    }
+
+    #[test]
+    fn an_inner_scope_reports_to_its_caller_and_to_the_scope_it_interrupted() {
+        let (inner_seen, outer) = collect(|| {
+            touch(RecordKind::Journal, "j1");
+            let (_, inner) = collect(|| touch(RecordKind::Note, "n1"));
+            inner
+        });
+        assert_eq!(inner_seen, vec![(RecordKind::Note, "n1".to_string())]);
+        assert_eq!(
+            outer,
+            vec![(RecordKind::Journal, "j1".to_string()), (RecordKind::Note, "n1".to_string()),]
+        );
     }
 }
