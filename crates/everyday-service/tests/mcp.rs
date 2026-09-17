@@ -126,3 +126,53 @@ fn no_tool_is_declared_twice() {
         assert!(seen.insert(tool.name), "{} is declared twice", tool.name);
     }
 }
+
+/// The two service-level doors a `Sensitivity::Secret` domain's tools must
+/// never reach, checked against the real commands rather than against
+/// `tools::available_for` directly -- `everyday_core::agent::tools`'s own
+/// `a_secret_domain_is_never_offered_to_a_model` already pins that half.
+///
+/// No domain is `Secret` today: `Sensitivity::Secret`'s own module doc says
+/// why (disclosure is the whole of the harm, so a secret domain carries no
+/// tools at all rather than tools that are merely refused), which makes this
+/// loop empty on the day it is written. It stays here anyway as the guard
+/// for the day a secret domain gains one regardless -- both `list_tools` and
+/// `run_tool` read `tools::available_for`, which is what actually enforces
+/// this, but `tests/call.rs`'s `a_narrow_token_reaches_the_tools_of_its_own_
+/// domain_and_no_others` is the live proof that the two commands cannot
+/// drift from that filter: it exercises identical hiding, by scope rather
+/// than by sensitivity, through the same two doors.
+#[test]
+fn a_secret_domain_tool_is_hidden_from_list_tools_and_refused_by_run_tool() {
+    let secret: Vec<&tools::Tool> =
+        tools::catalog().iter().filter(|t| t.domain.sensitivity() == Sensitivity::Secret).collect();
+
+    let (svc, _dir) = support::vault::service(None);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let listed = svc
+            .call(everyday_service::ctx::Ctx::local(), "list_tools", serde_json::json!({}))
+            .await
+            .expect("list_tools");
+        let names: Vec<&str> =
+            listed.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+
+        for tool in &secret {
+            assert!(!names.contains(&tool.name), "{} is secret and must not be listed", tool.name);
+
+            let err = svc
+                .call(
+                    everyday_service::ctx::Ctx::local(),
+                    "run_tool",
+                    serde_json::json!({
+                        "name": tool.name,
+                        "arguments": {},
+                        "confirmDestructive": true,
+                    }),
+                )
+                .await
+                .expect_err("a secret tool must be refused rather than run");
+            assert_eq!(err.code, everyday_service::error::codes::UNSUPPORTED, "{err:?}");
+        }
+    });
+}

@@ -560,6 +560,69 @@ fn update_task_proposes_a_replace_carrying_the_loaded_updated_at() {
     assert_eq!(v.task(f.task.id).unwrap().title, f.task.title);
 }
 
+/// The same guarantee, for the other two `update_*` tools that can
+/// propose -- see `docs/plans/architecture-refactor.md`'s 0.5. `update_item`,
+/// `update_project`, `update_goal`, `update_entry` and `update_draft` have no
+/// `build` at all (dreaming refuses them outright, per the catalogue-wide
+/// test above), so they carry nothing here to pin.
+#[test]
+fn update_note_proposes_a_replace_carrying_the_loaded_updated_at() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(dir.path());
+    let f = seed(&v);
+    let drafting_ctx = ctx_drafting(&v, Drafting::default());
+
+    let out = tools::dispatch(
+        &drafting_ctx,
+        "update_note",
+        &json!({ "note_id": f.note.id.to_string(), "title": "Renamed" }),
+    )
+    .unwrap();
+    let id: ProposalId = out["id"].as_str().unwrap().parse().unwrap();
+    let p = v.proposal(id).unwrap();
+    match p.payload {
+        Payload::Replace { record: ProposedRecord::Note(n), expected_updated_at } => {
+            assert_eq!(n.title, "Renamed");
+            assert_eq!(n.id, f.note.id);
+            assert_eq!(expected_updated_at, f.note.updated_at);
+        }
+        other => panic!("expected a Replace of a note, got {other:?}"),
+    }
+    assert_eq!(p.about.as_ref().map(|a| a.id.clone()), Some(f.note.id.to_string()));
+    assert_eq!(v.note(f.note.id).unwrap().title, f.note.title, "the note itself never moved");
+}
+
+#[test]
+fn update_routine_proposes_a_replace_carrying_the_loaded_updated_at() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(dir.path());
+    let f = seed(&v);
+    let drafting_ctx = ctx_drafting(&v, Drafting::default());
+
+    let out = tools::dispatch(
+        &drafting_ctx,
+        "update_routine",
+        &json!({ "routine_id": f.routine.id.to_string(), "name": "Renamed" }),
+    )
+    .unwrap();
+    let id: ProposalId = out["id"].as_str().unwrap().parse().unwrap();
+    let p = v.proposal(id).unwrap();
+    match p.payload {
+        Payload::Replace { record: ProposedRecord::Routine(r), expected_updated_at } => {
+            assert_eq!(r.name, "Renamed");
+            assert_eq!(r.id, f.routine.id);
+            assert_eq!(expected_updated_at, f.routine.updated_at);
+        }
+        other => panic!("expected a Replace of a routine, got {other:?}"),
+    }
+    assert_eq!(p.about.as_ref().map(|a| a.id.clone()), Some(f.routine.id.to_string()));
+    assert_eq!(
+        v.routine(f.routine.id).unwrap().name,
+        f.routine.name,
+        "the routine itself never moved"
+    );
+}
+
 // ---- (f) remember while drafting builds an Inferred memory ---------------
 
 #[test]
