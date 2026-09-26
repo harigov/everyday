@@ -406,6 +406,22 @@ impl PurposeMinutes {
     }
 }
 
+/// Actual minutes against one resolved purpose on one day.
+///
+/// The per-day cut of [`PurposeMinutes`], and what a
+/// [`TrackerSource::Time`](crate::tracker::TrackerSource::Time) tracker's
+/// readings are made of. Actual time only: a planned hour is an intention,
+/// and a target of "an hour of piano a week" is met by playing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurposeDayMinutes {
+    pub date: jiff::civil::Date,
+    /// `None` is time filed under nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<Purpose>,
+    pub minutes: u64,
+}
+
 /// Minutes from a subscribed calendar, attributed by the calendar's role.
 ///
 /// Kept apart from [`PurposeMinutes`] rather than summed into it. An event

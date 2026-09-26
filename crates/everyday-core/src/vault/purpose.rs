@@ -11,7 +11,9 @@ use super::Vault;
 use super::session::Domain;
 use crate::error::{Error, Result};
 use crate::id::{GoalId, RoleId};
-use crate::purpose::{Goal, GoalActivity, PurposeMinutes, Role, RoleEventMinutes, suggested_roles};
+use crate::purpose::{
+    Goal, GoalActivity, PurposeDayMinutes, PurposeMinutes, Role, RoleEventMinutes, suggested_roles,
+};
 use crate::record::RecordKind;
 use crate::store::purpose::{GoalQuery, PurposeStore, PurposeWindow};
 
@@ -132,6 +134,11 @@ impl Vault {
     /// Minutes per resolved purpose over a window, planned and actual.
     pub fn time_by_purpose(&self, window: PurposeWindow) -> Result<Vec<PurposeMinutes>> {
         self.with_purpose(|p| p.time_by_purpose(window))
+    }
+
+    /// Actual minutes per resolved purpose per day over a window.
+    pub fn actual_minutes_by_day(&self, window: PurposeWindow) -> Result<Vec<PurposeDayMinutes>> {
+        self.with_purpose(|p| p.actual_minutes_by_day(window))
     }
 
     /// Minutes of subscribed-calendar events per role over a window.

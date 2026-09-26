@@ -60,6 +60,13 @@ pub struct ReadingQuery {
     /// hour-of-day question has to ask, and what stops an unknown minute
     /// being averaged in as though it were midnight.
     pub timed_only: bool,
+    /// Keep only readings somebody recorded, leaving out the derived
+    /// trackers' days the vault would otherwise work out and add. What a
+    /// caller that never draws a derived tracker asks for -- the calendar,
+    /// which only draws trackers with a real time of day -- so that it does
+    /// not pay for a scan of every block and the library's log to throw the
+    /// answer away. Backends ignore it: they only ever hold recorded ones.
+    pub recorded_only: bool,
     /// Cap on how many readings [`TrackerStore::list_readings`] returns.
     /// `None` means no limit.
     ///

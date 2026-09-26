@@ -43,7 +43,7 @@ import {
   type WidgetSize,
   type WidgetType,
 } from './dashboard'
-import { summarise, type HabitSummary } from './habits'
+import { periodStart, streakTarget, summarise, type HabitSummary } from './habits'
 import { purpose } from './purpose.svelte'
 import { pref } from './prefs'
 import { proposals } from './proposals.svelte'
@@ -206,12 +206,30 @@ class OverviewState {
     return { logged: logged + running, planned }
   }
 
+  /**
+   * The first day the tracker data has to reach back to.
+   *
+   * The heatmap's window, or further when a tracker's target runs over a
+   * longer period: "12 a year" is judged on the whole year, and a window
+   * that began in June would count half of it.
+   */
+  get dataFrom(): string {
+    const today = todayIso()
+    let from = this.habitFrom
+    for (const tracker of tracking.live) {
+      const start = periodStart(today, streakTarget(tracker).per, this.#weekStart)
+      if (start < from) from = start
+    }
+    return from
+  }
+
   /** What a habit widget draws for one tracker. */
   habit(trackerId: string): HabitSummary {
     const tracker = tracking.tracker(trackerId)
     return summarise(
       this.habitDays.filter((d) => d.trackerId === trackerId),
-      tracker?.cadence,
+      { kind: tracker?.kind ?? 'check', source: tracker?.source },
+      tracker ? streakTarget(tracker) : null,
       { from: this.habitFrom, to: todayIso(), today: todayIso() },
       this.#weekStart,
     )
@@ -364,7 +382,7 @@ class OverviewState {
           ask(needs.has('balance'), () => api.balance(this.weekStart, this.weekEnd), null),
           ask(
             needs.has('trackerDays'),
-            () => api.trackerDays({ from: this.habitFrom, to: today }),
+            () => api.trackerDays({ from: this.dataFrom, to: today }),
             [],
           ),
           ask(needs.has('taskStats'), () => api.taskStats(), null),

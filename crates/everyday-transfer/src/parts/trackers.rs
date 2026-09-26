@@ -14,10 +14,21 @@
 //! than the question's.
 //!
 //! The definitions are separate because they are few and they are different
-//! in kind: what a tracker *is* -- a habit with a cadence, a dose with a unit,
+//! in kind: what a tracker *is* -- a habit with a target, a dose with a unit,
 //! a scale out of five -- is a handful of rows that change about never, beside
 //! thousands that change daily. That split is the same one the vault makes,
 //! where a tracker is a sealed record and a reading is a row in the clear.
+//!
+//! A tracker's targets are one column, `; `-separated, each written
+//! `min..max per period` with either bound left out when there is none and
+//! `days` before `per` when it counts days rather than adding values up:
+//! `60..120 per week`, `..60 per day`, `3.. days per week`. Its source is
+//! `manual`, `time`, or `finished` with a shelf's id after it when it counts
+//! one shelf. A derived tracker's file holds no readings: they are worked
+//! out from the blocks and the library log, which travel on their own.
+//!
+//! Archives written before targets had a `target` column (a daily amount)
+//! and a `cadence` column (`3 per week`); both are still read.
 
 use super::doc;
 use super::index::{Namer, index_map, owner};
@@ -25,8 +36,8 @@ use crate::text::{Csv, Table, safe_name};
 use crate::{Files, Mode, Options, Part, Portable, Report, Spec, land};
 use everyday_core::store::JournalStore;
 use everyday_core::store::trackers::{ReadingQuery, TrackerStore};
-use everyday_core::tracker::{Cadence, Period, Reading, Tracker, TrackerKind};
-use everyday_core::{JournalId, ReadingId, Result, TrackerId};
+use everyday_core::tracker::{Period, Reading, Tally, Target, Tracker, TrackerKind, TrackerSource};
+use everyday_core::{JournalId, KindId, ReadingId, Result, TrackerId};
 use std::collections::BTreeMap;
 
 pub struct TrackersPart;
@@ -51,9 +62,9 @@ const INDEX_COLUMNS: &[&str] = &[
     "icon",
     "color",
     "default_value",
-    "target",
+    "targets",
     "scale_max",
-    "cadence",
+    "source",
     "on_calendar",
     "purpose",
     "archived",
@@ -92,13 +103,9 @@ impl Portable for TrackersPart {
                 tracker.icon.clone(),
                 tracker.color.clone(),
                 tracker.default_value.to_string(),
-                tracker.target.map(|t| t.to_string()).unwrap_or_default(),
+                targets_text(&tracker.targets),
                 tracker.scale_max.to_string(),
-                tracker
-                    .cadence
-                    .as_ref()
-                    .map(|c| format!("{} per {}", c.times, c.per.as_str()))
-                    .unwrap_or_default(),
+                source_text(tracker.source),
                 tracker.on_calendar.to_string(),
                 doc::purpose_text(tracker.purpose.as_ref()),
                 tracker.archived.to_string(),
@@ -221,11 +228,20 @@ fn read_tracker(
     if let Some(value) = row.parse("default_value") {
         tracker.default_value = value;
     }
-    tracker.target = row.parse("target");
     if let Some(max) = row.parse("scale_max") {
         tracker.scale_max = max;
     }
-    tracker.cadence = cadence(row.get("cadence"));
+    tracker.targets = parse_targets(row.get("targets"));
+    if tracker.targets.is_empty() {
+        // An archive from before targets, which had one column for each of
+        // the two things a target now says. The same order the vault folds
+        // them in: the cadence drove the streak, so it comes first.
+        tracker.targets.extend(cadence(row.get("cadence")));
+        if let Some(amount) = row.parse::<f64>("target").filter(|t| *t > 0.0) {
+            tracker.targets.push(Target::at_least(amount, Period::Day));
+        }
+    }
+    tracker.source = parse_source(row.get("source"));
     tracker.on_calendar = row.flag("on_calendar");
     tracker.purpose = doc::parse_purpose(row.get("purpose"));
     tracker.archived = row.flag("archived");
@@ -320,17 +336,62 @@ fn tracker_kind(name: &str) -> Option<TrackerKind> {
     TrackerKind::parse(&name.trim().to_ascii_lowercase())
 }
 
-/// `3 per week`, as it is written in the file.
-fn cadence(text: &str) -> Option<Cadence> {
+/// An old archive's `3 per week`, as the target it now is.
+fn cadence(text: &str) -> Option<Target> {
     let (times, per) = text.trim().split_once(" per ")?;
-    Some(Cadence {
-        times: times.trim().parse().ok()?,
-        per: match per.trim() {
-            "week" => Period::Week,
-            "month" => Period::Month,
-            _ => Period::Day,
-        },
-    })
+    let times: u32 = times.trim().parse().ok()?;
+    (times > 0).then(|| Target::days(times, Period::parse(per.trim()).unwrap_or(Period::Day)))
+}
+
+/// `60..120 per week; 3.. days per week`. See the module docs.
+fn targets_text(targets: &[Target]) -> String {
+    targets
+        .iter()
+        .map(|t| {
+            let bound = |b: Option<f64>| b.map(|v| v.to_string()).unwrap_or_default();
+            let days = if t.tally == Tally::Days { " days" } else { "" };
+            format!("{}..{}{days} per {}", bound(t.min), bound(t.max), t.per.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// The reverse of [`targets_text`]. A piece that does not read is dropped
+/// rather than failing the row: the tracker and its readings are worth more
+/// than one unreadable target.
+fn parse_targets(text: &str) -> Vec<Target> {
+    text.split(';')
+        .filter_map(|piece| {
+            let (bounds, per) = piece.trim().split_once(" per ")?;
+            let (bounds, tally) = match bounds.trim().strip_suffix(" days") {
+                Some(b) => (b, Tally::Days),
+                None => (bounds.trim(), Tally::Value),
+            };
+            let (min, max) = bounds.split_once("..")?;
+            let bound = |b: &str| b.trim().parse::<f64>().ok();
+            let mut target =
+                Target { min: bound(min), max: bound(max), per: Period::parse(per.trim())?, tally };
+            target.normalize().then_some(target)
+        })
+        .collect()
+}
+
+fn source_text(source: TrackerSource) -> String {
+    match source {
+        TrackerSource::Finished { kind_id: Some(kind) } => format!("finished {kind}"),
+        other => other.as_str().to_string(),
+    }
+}
+
+/// Anything unrecognised reads as manual: a tracker somebody can at least
+/// go on recording, rather than one that silently counts nothing.
+fn parse_source(text: &str) -> TrackerSource {
+    let text = text.trim();
+    match text.split_once(' ').map_or((text, ""), |(a, b)| (a, b.trim())) {
+        ("time", _) => TrackerSource::Time,
+        ("finished", kind) => TrackerSource::Finished { kind_id: KindId::parse(kind).ok() },
+        _ => TrackerSource::Manual,
+    }
 }
 
 #[cfg(test)]
@@ -338,12 +399,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_cadence_reads_the_way_it_is_written() {
-        let c = Cadence { times: 3, per: Period::Week };
-        let text = format!("{} per {}", c.times, c.per.as_str());
-        let back = cadence(&text).unwrap();
-        assert_eq!((back.times, back.per), (3, Period::Week));
+    fn an_old_archives_cadence_reads_as_a_target() {
+        assert_eq!(cadence("3 per week"), Some(Target::days(3, Period::Week)));
         assert!(cadence("").is_none());
+        assert!(cadence("0 per week").is_none(), "zero times is no habit at all");
+    }
+
+    #[test]
+    fn targets_read_the_way_they_are_written() {
+        let targets = vec![
+            Target::between(60.0, 120.0, Period::Week),
+            Target::at_most(60.0, Period::Day),
+            Target::days(3, Period::Week),
+            Target::at_least(12.0, Period::Year),
+            Target::at_least(1.5, Period::Quarter),
+        ];
+        let text = targets_text(&targets);
+        assert_eq!(
+            text,
+            "60..120 per week; ..60 per day; 3.. days per week; 12.. per year; 1.5.. per quarter"
+        );
+        assert_eq!(parse_targets(&text), targets);
+        assert!(parse_targets("").is_empty());
+        assert_eq!(
+            parse_targets("nonsense; ..60 per day"),
+            vec![Target::at_most(60.0, Period::Day)],
+            "one bad piece does not cost the rest"
+        );
+    }
+
+    #[test]
+    fn sources_read_the_way_they_are_written() {
+        let kind = KindId::new();
+        for source in [
+            TrackerSource::Manual,
+            TrackerSource::Time,
+            TrackerSource::Finished { kind_id: None },
+            TrackerSource::Finished { kind_id: Some(kind) },
+        ] {
+            assert_eq!(parse_source(&source_text(source)), source);
+        }
+        assert_eq!(parse_source(""), TrackerSource::Manual);
     }
 
     #[test]

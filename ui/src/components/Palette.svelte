@@ -32,7 +32,7 @@
   import { notify } from '../lib/notify.svelte'
   import { parseQuickAdd } from '../lib/quickadd'
   import { quick as quickState } from '../lib/quick.svelte'
-  import { describeQuickTrack, parseQuickTrack } from '../lib/quicktrack'
+  import { describeQuickTrack, isRecordable, parseQuickTrack } from '../lib/quicktrack'
   import { tracking } from '../lib/tracking.svelte'
   import { trapFocus } from '../lib/focus'
   import Icon from './Icon.svelte'
@@ -114,7 +114,7 @@
     // shared with the journal's strip and the Overview's pane.
     if (app.supportsTrackers) {
       const reading = parseQuickTrack(text, tracking.trackers)
-      if (reading.target) {
+      if (isRecordable(reading)) {
         rows.push({
           kind: 'capture',
           label: `Record: ${describeQuickTrack(reading)}`,

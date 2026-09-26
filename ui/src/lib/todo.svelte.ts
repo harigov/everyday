@@ -13,6 +13,7 @@
 import { api } from './api'
 import { Autosave } from './autosave'
 import { purpose } from './purpose.svelte'
+import { targets } from './targets.svelte'
 import { pref } from './prefs'
 import { proposals, recordAs } from './proposals.svelte'
 import { app, handle } from './state.svelte'
@@ -27,6 +28,7 @@ import { parseQuickAdd } from './quickadd'
 import {
   ORDER_STEP,
   byManualOrder,
+  daysLate,
   drawnAtTop,
   moveCard,
   numberOrder,
@@ -347,7 +349,7 @@ class TodoState {
     // rail for a frame.
     if (scope.kind === 'goals') {
       await purpose.load()
-      await purpose.refreshActivity()
+      await Promise.all([purpose.refreshActivity(), targets.refresh()])
     }
     await this.refresh()
   }
@@ -538,6 +540,10 @@ class TodoState {
    */
   patch(id: TaskId, changes: Partial<Task>) {
     this.#patcher.patch(id, changes)
+    // Re-filing a task moves whatever time it holds from one goal to
+    // another, and a goal's time target is read off exactly that. Written
+    // first, so the meter reads the new filing rather than the old one.
+    if ('purpose' in changes) void this.flush().then(() => targets.refresh())
   }
 
   /** Write every pending edit now. Safe when nothing is dirty. */
@@ -938,6 +944,8 @@ class TodoState {
         a.start.localeCompare(b.start),
       )
       void this.refreshStats()
+      // An hour logged against a task under a goal is that goal's time.
+      void targets.refresh()
     } catch (e) {
       await handle(e)
     }
@@ -948,6 +956,7 @@ class TodoState {
     try {
       await api.deleteBlock(id)
       void this.refreshStats()
+      void targets.refresh()
     } catch (e) {
       await handle(e)
     }
@@ -975,6 +984,9 @@ class TodoState {
     if (i >= 0) this.projects[i] = project
     try {
       await api.saveProject($state.snapshot(project))
+      // Filing a project files every hour under it, so this is the one
+      // save in the app most likely to move a goal's time target.
+      void targets.refresh()
     } catch (e) {
       await handle(e)
     }
@@ -988,6 +1000,7 @@ class TodoState {
       return
     }
     this.projects = this.projects.filter((p) => p.id !== id)
+    void targets.refresh()
     if (this.scope.kind === 'project' && this.scope.id === id) {
       await this.setScope({ kind: 'today' })
     } else {
@@ -1047,6 +1060,11 @@ class TodoState {
   /** Is this task past its deadline? */
   overdue(task: Task): boolean {
     return isOpen(task.status) && !!task.dueDate && task.dueDate < todayIso()
+  }
+
+  /** How many days past its deadline this task is; zero when it is not late. */
+  daysLate(task: Task): number {
+    return daysLate(task, todayIso())
   }
 }
 

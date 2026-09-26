@@ -1924,30 +1924,14 @@
   },
   "Journal": {
     "$defs": {
-      "Cadence": {
-        "description": "How often a tracker is meant to happen.\n\n[`Tracker::target`] answers \"how much, in a day\" and cannot express the\ncommonest habit there is: three times a week. That gap is not academic —\na streak counted against a daily target reads every rest day as a\nfailure, which is exactly the shape of habit tracking that makes people\nstop.\n\nSo a cadence is a count and a period, and the arithmetic it enables is\ndeliberately small: how many periods in a row were *met*. Nothing here\nknows about calendars beyond a day being in a week; that lives in the\ninterface, where the week's first day is already a setting.",
-        "properties": {
-          "per": {
-            "$ref": "#/$defs/Period"
-          },
-          "times": {
-            "description": "How many times per period. Zero is meaningless and is rejected by\n[`Cadence::new`], which is the only way to build one.",
-            "format": "uint32",
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "times",
-          "per"
-        ],
-        "type": "object"
-      },
       "Period": {
+        "description": "The calendar span a [`Target`] is counted over.\n\nCalendar-aligned rather than rolling: \"this week\" starts on the week's\nfirst day and \"this year\" on the first of January, because that is how\npeople plan, and a rolling seven days never says when it starts over.\nWhich day a week starts on is a setting of the interface, so anything\nhere that needs it takes it as a parameter.",
         "enum": [
           "day",
           "week",
-          "month"
+          "month",
+          "quarter",
+          "year"
         ],
         "type": "string"
       },
@@ -1990,28 +1974,58 @@
           }
         ]
       },
+      "Tally": {
+        "description": "What a [`Target`] counts within its period.",
+        "oneOf": [
+          {
+            "const": "value",
+            "description": "The period's value under the tracker's [`Aggregate`]: minutes summed,\ndoses summed, severity averaged. \"At most an hour of TV a day.\"",
+            "type": "string"
+          },
+          {
+            "const": "days",
+            "description": "Days in the period with something recorded. \"Run three times a\nweek\" — where a 25-minute run and a 60-minute one are both a run.\n\nThe only tally a [`Check`](TrackerKind::Check) has, since a tick has\nno value worth adding up.",
+            "type": "string"
+          }
+        ]
+      },
+      "Target": {
+        "description": "How much, over which period: the intention a tracker is measured against.\n\nOne shape for what used to be two fields. A daily `target` (\"30 minutes\")\nwas `Target { min: 30, per: Day }`, and a `cadence` (\"three times a\nweek\") was `Target { min: 3, per: Week, tally: Days }` — and the two\nbetween them could not say \"at most an hour of TV a day\", \"between one\nand two hours of piano a week\" or \"twelve books this year\".\n\nA bound is inclusive at both ends and at least one is required. A\nmaximum of zero is a real bound (\"no TV at all\"); a minimum of zero is\nno bound and is dropped by [`normalize`](Target::normalize).",
+        "properties": {
+          "max": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "min": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "per": {
+            "$ref": "#/$defs/Period",
+            "default": "day"
+          },
+          "tally": {
+            "$ref": "#/$defs/Tally",
+            "default": "value"
+          }
+        },
+        "type": "object"
+      },
       "Tracker": {
         "description": "A thing you have decided to record.\n\nA record of its own in the vault, like a library\n[`Kind`](crate::library::Kind) — not a field inside one journal. It was\nthe latter until the purpose domain arrived, and the change is what lets\na habit be the *measure* of a goal: \"meditate daily\" cannot belong to\nyour work journal or your personal one, it belongs to you, and a habits\nview had to reach through every journal to find it.\n\nWhich journals draw its chip is a per-journal choice, held in\n[`Journal::shown_trackers`](crate::model::Journal::shown_trackers).",
         "properties": {
           "archived": {
             "default": false,
-            "description": "Retired: kept for its history, gone from the day's chips.\n\nThe alternative — deleting the tracker — would take a year of\nreadings with it, which is the wrong answer to \"I stopped taking\nthis in March\".",
             "type": "boolean"
-          },
-          "cadence": {
-            "anyOf": [
-              {
-                "$ref": "#/$defs/Cadence"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "How often this is meant to happen, if it is a habit.\n\n`None` means it is not one — a dose is taken when it is taken and a\nsymptom is felt when it is felt, and neither has a streak. See\n[`Cadence`] for why [`target`](Tracker::target) could not carry this."
           },
           "color": {
             "default": "",
-            "description": "`#rrggbb`. Unlike the calendar — where colour is spoken for — a\ntracker's colour is its own identity in a row of chips.",
             "type": "string"
           },
           "createdAt": {
@@ -2020,13 +2034,11 @@
           },
           "defaultValue": {
             "default": 1.0,
-            "description": "What the input prefills, and the step its plus/minus buttons take:\nthe usual dose, the usual session. Ignored by\n[`Check`](TrackerKind::Check).",
             "format": "double",
             "type": "number"
           },
           "icon": {
             "default": "",
-            "description": "A name from the interface's tracker icon set, e.g. `pill`. Unknown\nnames fall back to a dot rather than to nothing, so a vault written\nby a later build with more icons still draws.",
             "type": "string"
           },
           "id": {
@@ -2041,7 +2053,6 @@
           },
           "onCalendar": {
             "default": false,
-            "description": "Draw this tracker's readings on the calendar.\n\nOff by default, and per tracker rather than per kind, because the\nquestion it answers is \"is the *time* of this real?\". A migraine at\n14:20 belongs on a grid. \"Flossed\", ticked at bedtime for the whole\nday, is a pin at an hour that means nothing.",
             "type": "boolean"
           },
           "purpose": {
@@ -2053,31 +2064,33 @@
                 "type": "null"
               }
             ],
-            "description": "What this measures, if it measures a goal.\n\nA run tracker under \"run 10k without stopping\" is evidence the goal\nis alive in a way no task can be: the goal has no work under it and\nnever will, and the only thing that says it is being pursued is that\nthe number keeps arriving."
+            "default": null
           },
           "scaleMax": {
             "default": 10.0,
-            "description": "Top of the severity range for a [`Scale`](TrackerKind::Scale).",
             "format": "double",
             "type": "number"
           },
           "sortOrder": {
             "default": 0,
-            "description": "Manual ordering within the journal.",
             "format": "int32",
             "type": "integer"
           },
-          "target": {
-            "description": "A daily goal, if there is one. Drives the progress ring on the chip\nand nothing else — missing it is information, not an error.",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
+          "source": {
+            "$ref": "#/$defs/TrackerSource",
+            "default": {
+              "type": "manual"
+            }
+          },
+          "targets": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/Target"
+            },
+            "type": "array"
           },
           "unit": {
             "default": "",
-            "description": "Shown after the value: `mg`, `min`, `pages`. Empty for a check.",
             "type": "string"
           },
           "updatedAt": {
@@ -2116,6 +2129,57 @@
             "const": "amount",
             "description": "A quantity. Minutes exercised, pages read, glasses of water.",
             "type": "string"
+          }
+        ]
+      },
+      "TrackerSource": {
+        "description": "Where a tracker's numbers come from.\n\nMost trackers are [`Manual`](TrackerSource::Manual): somebody records a\nreading. The others are *derived*: their readings are computed, at query\ntime, from records the vault already keeps, which is what lets \"twelve\nbooks this year\" or \"an hour or two of piano a week\" be a tracker with a\ntarget like any other — charted, streaked and asked about by the\nassistant through the same calls — without anybody writing the same\nfact down twice.\n\nDerived readings are never stored, so they cannot go stale when a block\nis moved or a finish date corrected, and they cannot be written: the\nvault refuses a reading against a derived tracker.",
+        "oneOf": [
+          {
+            "description": "Readings are recorded by hand. Everything before this existed.",
+            "properties": {
+              "type": {
+                "const": "manual",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Minutes of actual time blocks filed under the tracker's own\n[`purpose`](Tracker::purpose), by the block's own pointer or its\ntask's or project's — the chain the balance report follows. A\ntracker filed under a role counts that role's goals too.",
+            "properties": {
+              "type": {
+                "const": "time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Library items got to the end of — a finish or a re-read — counted on\nthe day of the log entry. Every shelf when `kind_id` is `None`.\n\nCounted by shelf rather than by what is filed under the goal:\n\"twelve books this year\" means every book, and nobody should have to\nfile each one to have it count.",
+            "properties": {
+              "kindId": {
+                "format": "uuid",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "const": "finished",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           }
         ]
       }
@@ -6477,30 +6541,14 @@
   },
   "Tracker": {
     "$defs": {
-      "Cadence": {
-        "description": "How often a tracker is meant to happen.\n\n[`Tracker::target`] answers \"how much, in a day\" and cannot express the\ncommonest habit there is: three times a week. That gap is not academic —\na streak counted against a daily target reads every rest day as a\nfailure, which is exactly the shape of habit tracking that makes people\nstop.\n\nSo a cadence is a count and a period, and the arithmetic it enables is\ndeliberately small: how many periods in a row were *met*. Nothing here\nknows about calendars beyond a day being in a week; that lives in the\ninterface, where the week's first day is already a setting.",
-        "properties": {
-          "per": {
-            "$ref": "#/$defs/Period"
-          },
-          "times": {
-            "description": "How many times per period. Zero is meaningless and is rejected by\n[`Cadence::new`], which is the only way to build one.",
-            "format": "uint32",
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "times",
-          "per"
-        ],
-        "type": "object"
-      },
       "Period": {
+        "description": "The calendar span a [`Target`] is counted over.\n\nCalendar-aligned rather than rolling: \"this week\" starts on the week's\nfirst day and \"this year\" on the first of January, because that is how\npeople plan, and a rolling seven days never says when it starts over.\nWhich day a week starts on is a setting of the interface, so anything\nhere that needs it takes it as a parameter.",
         "enum": [
           "day",
           "week",
-          "month"
+          "month",
+          "quarter",
+          "year"
         ],
         "type": "string"
       },
@@ -6543,6 +6591,49 @@
           }
         ]
       },
+      "Tally": {
+        "description": "What a [`Target`] counts within its period.",
+        "oneOf": [
+          {
+            "const": "value",
+            "description": "The period's value under the tracker's [`Aggregate`]: minutes summed,\ndoses summed, severity averaged. \"At most an hour of TV a day.\"",
+            "type": "string"
+          },
+          {
+            "const": "days",
+            "description": "Days in the period with something recorded. \"Run three times a\nweek\" — where a 25-minute run and a 60-minute one are both a run.\n\nThe only tally a [`Check`](TrackerKind::Check) has, since a tick has\nno value worth adding up.",
+            "type": "string"
+          }
+        ]
+      },
+      "Target": {
+        "description": "How much, over which period: the intention a tracker is measured against.\n\nOne shape for what used to be two fields. A daily `target` (\"30 minutes\")\nwas `Target { min: 30, per: Day }`, and a `cadence` (\"three times a\nweek\") was `Target { min: 3, per: Week, tally: Days }` — and the two\nbetween them could not say \"at most an hour of TV a day\", \"between one\nand two hours of piano a week\" or \"twelve books this year\".\n\nA bound is inclusive at both ends and at least one is required. A\nmaximum of zero is a real bound (\"no TV at all\"); a minimum of zero is\nno bound and is dropped by [`normalize`](Target::normalize).",
+        "properties": {
+          "max": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "min": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "per": {
+            "$ref": "#/$defs/Period",
+            "default": "day"
+          },
+          "tally": {
+            "$ref": "#/$defs/Tally",
+            "default": "value"
+          }
+        },
+        "type": "object"
+      },
       "TrackerKind": {
         "description": "What sort of thing is being recorded.\n\nA closed set of four, chosen to cover what a day actually produces: a\nthing you did or didn't do, a substance you took, a symptom you felt, and\na quantity you accumulated. User-defined kinds were considered and\nrejected for the reason [`TaskStatus`](crate::task::TaskStatus) is closed\ntoo — an open set makes cross-journal analysis unanswerable, and the\nescape hatch for anything unusual is [`Amount`](TrackerKind::Amount) with\na unit of your choosing.",
         "oneOf": [
@@ -6567,6 +6658,57 @@
             "type": "string"
           }
         ]
+      },
+      "TrackerSource": {
+        "description": "Where a tracker's numbers come from.\n\nMost trackers are [`Manual`](TrackerSource::Manual): somebody records a\nreading. The others are *derived*: their readings are computed, at query\ntime, from records the vault already keeps, which is what lets \"twelve\nbooks this year\" or \"an hour or two of piano a week\" be a tracker with a\ntarget like any other — charted, streaked and asked about by the\nassistant through the same calls — without anybody writing the same\nfact down twice.\n\nDerived readings are never stored, so they cannot go stale when a block\nis moved or a finish date corrected, and they cannot be written: the\nvault refuses a reading against a derived tracker.",
+        "oneOf": [
+          {
+            "description": "Readings are recorded by hand. Everything before this existed.",
+            "properties": {
+              "type": {
+                "const": "manual",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Minutes of actual time blocks filed under the tracker's own\n[`purpose`](Tracker::purpose), by the block's own pointer or its\ntask's or project's — the chain the balance report follows. A\ntracker filed under a role counts that role's goals too.",
+            "properties": {
+              "type": {
+                "const": "time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Library items got to the end of — a finish or a re-read — counted on\nthe day of the log entry. Every shelf when `kind_id` is `None`.\n\nCounted by shelf rather than by what is filed under the goal:\n\"twelve books this year\" means every book, and nobody should have to\nfile each one to have it count.",
+            "properties": {
+              "kindId": {
+                "format": "uuid",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "const": "finished",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -6574,23 +6716,10 @@
     "properties": {
       "archived": {
         "default": false,
-        "description": "Retired: kept for its history, gone from the day's chips.\n\nThe alternative — deleting the tracker — would take a year of\nreadings with it, which is the wrong answer to \"I stopped taking\nthis in March\".",
         "type": "boolean"
-      },
-      "cadence": {
-        "anyOf": [
-          {
-            "$ref": "#/$defs/Cadence"
-          },
-          {
-            "type": "null"
-          }
-        ],
-        "description": "How often this is meant to happen, if it is a habit.\n\n`None` means it is not one — a dose is taken when it is taken and a\nsymptom is felt when it is felt, and neither has a streak. See\n[`Cadence`] for why [`target`](Tracker::target) could not carry this."
       },
       "color": {
         "default": "",
-        "description": "`#rrggbb`. Unlike the calendar — where colour is spoken for — a\ntracker's colour is its own identity in a row of chips.",
         "type": "string"
       },
       "createdAt": {
@@ -6599,13 +6728,11 @@
       },
       "defaultValue": {
         "default": 1.0,
-        "description": "What the input prefills, and the step its plus/minus buttons take:\nthe usual dose, the usual session. Ignored by\n[`Check`](TrackerKind::Check).",
         "format": "double",
         "type": "number"
       },
       "icon": {
         "default": "",
-        "description": "A name from the interface's tracker icon set, e.g. `pill`. Unknown\nnames fall back to a dot rather than to nothing, so a vault written\nby a later build with more icons still draws.",
         "type": "string"
       },
       "id": {
@@ -6620,7 +6747,6 @@
       },
       "onCalendar": {
         "default": false,
-        "description": "Draw this tracker's readings on the calendar.\n\nOff by default, and per tracker rather than per kind, because the\nquestion it answers is \"is the *time* of this real?\". A migraine at\n14:20 belongs on a grid. \"Flossed\", ticked at bedtime for the whole\nday, is a pin at an hour that means nothing.",
         "type": "boolean"
       },
       "purpose": {
@@ -6632,31 +6758,33 @@
             "type": "null"
           }
         ],
-        "description": "What this measures, if it measures a goal.\n\nA run tracker under \"run 10k without stopping\" is evidence the goal\nis alive in a way no task can be: the goal has no work under it and\nnever will, and the only thing that says it is being pursued is that\nthe number keeps arriving."
+        "default": null
       },
       "scaleMax": {
         "default": 10.0,
-        "description": "Top of the severity range for a [`Scale`](TrackerKind::Scale).",
         "format": "double",
         "type": "number"
       },
       "sortOrder": {
         "default": 0,
-        "description": "Manual ordering within the journal.",
         "format": "int32",
         "type": "integer"
       },
-      "target": {
-        "description": "A daily goal, if there is one. Drives the progress ring on the chip\nand nothing else — missing it is information, not an error.",
-        "format": "double",
-        "type": [
-          "number",
-          "null"
-        ]
+      "source": {
+        "$ref": "#/$defs/TrackerSource",
+        "default": {
+          "type": "manual"
+        }
+      },
+      "targets": {
+        "default": [],
+        "items": {
+          "$ref": "#/$defs/Target"
+        },
+        "type": "array"
       },
       "unit": {
         "default": "",
-        "description": "Shown after the value: `mg`, `min`, `pages`. Empty for a check.",
         "type": "string"
       },
       "updatedAt": {

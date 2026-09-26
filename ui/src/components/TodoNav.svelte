@@ -7,6 +7,8 @@
 
   import { todo, type Scope } from '../lib/todo.svelte'
   import { purpose } from '../lib/purpose.svelte'
+  import { targets } from '../lib/targets.svelte'
+  import { describeProgress } from '../lib/tracker'
   import { panels } from '../lib/panels.svelte'
   import { app } from '../lib/state.svelte'
   import { DEFAULT_COLORS } from '../lib/colors'
@@ -17,7 +19,7 @@
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import type { IconName } from '../lib/icons'
-  import type { Project, ProjectStatus } from '../lib/types'
+  import type { GoalId, Project, ProjectStatus } from '../lib/types'
 
   let creating = $state(false)
   let draft = $state('')
@@ -39,11 +41,42 @@
   // Roles and goals load when the pane opens; the count beside the row has
   // to be right before anybody has opened it, or the sidebar would read
   // "Goals" with nothing beside it until it was clicked once.
+  // The same goes for how each goal is doing against its targets, which is
+  // the meter on its row.
   $effect(() => {
-    if (app.supportsOverview) void purpose.load()
+    if (app.supportsOverview) void purpose.load().then(() => targets.refresh())
   })
 
   const openGoals = $derived(purpose.openGoals.length)
+
+  /**
+   * Every goal still being pursued, one row each, in role order.
+   *
+   * The count alone used to be all the sidebar said, so a goal written under
+   * a role showed up nowhere you could click it -- only as a number going up
+   * beside a row that opened the whole pane. Grouped by role without a
+   * heading per role: the role's glyph and colour on each row say which part
+   * of life it belongs to, and a sidebar with one subheading per role would
+   * push the projects below the fold.
+   */
+  const goalRows = $derived(
+    purpose.activeRoles.flatMap((role) =>
+      purpose.openGoals
+        .filter((g) => g.roleId === role.id)
+        .sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title))
+        .map((goal) => ({ goal, role })),
+    ),
+  )
+
+  /** Open the goals pane with its rail already on this goal. */
+  async function openGoal(id: GoalId | null) {
+    purpose.selected = id
+    await todo.setScope({ kind: 'goals' })
+  }
+
+  function goalSelected(id: GoalId | null): boolean {
+    return todo.scope.kind === 'goals' && purpose.selected === id
+  }
 
   async function create() {
     const name = draft.trim()
@@ -203,15 +236,46 @@
         <Icon name="settings" size={14} />
       </button>
     </div>
-    <button
-      class="row"
-      class:sel={selected({ kind: 'goals' })}
-      onclick={() => todo.setScope({ kind: 'goals' })}
-    >
+    <button class="row" class:sel={goalSelected(null)} onclick={() => openGoal(null)}>
       <span class="icon"><Icon name="target" size={15} /></span>
       <span class="text">What this is all for</span>
       {#if openGoals > 0}<span class="count">{openGoals}</span>{/if}
     </button>
+    {#each goalRows as { goal, role } (goal.id)}
+      {@const measure = targets.headline(goal.id)}
+      {@const words = measure ? describeProgress(measure.tracker, measure.progress) : null}
+      <button
+        class="row"
+        class:sel={goalSelected(goal.id)}
+        class:paused={goal.status === 'paused'}
+        style="--dot: {role.color}"
+        onclick={() => openGoal(goal.id)}
+        title="{role.name} · {goal.title}"
+      >
+        <span class="icon">
+          {#if role.icon}{role.icon}{:else}<Icon name="target" size={14} />{/if}
+        </span>
+        <span class="text">{goal.title}</span>
+        {#if words}
+          <!-- Its first target, this period: a fill in the role's colour and
+               the numbers beside it, so the bar is never the only reading.
+               Past a limit is the one state drawn in the danger colour, and
+               it says so in the tooltip as well. -->
+          <span
+            class="gmeter"
+            class:over={words.over}
+            title="{words.line}{words.status ? ` — ${words.status}` : ''}"
+          >
+            <span class="gtrack"
+              ><span class="gfill" style="width: {Math.min(1, words.ratio) * 100}%"></span></span
+            >
+            <span class="count">{words.short}</span>
+          </span>
+        {:else}
+          <span class="dot" aria-hidden="true"></span>
+        {/if}
+      </button>
+    {/each}
   {/if}
 
   <div class="head">
@@ -350,7 +414,7 @@
     color: var(--fg);
     font-weight: 550;
   }
-  /* A paused project is still there, just not shouting. */
+  /* A paused project or goal is still there, just not shouting. */
   .row.paused .text {
     opacity: 0.6;
   }
@@ -381,6 +445,35 @@
   /* Something has already slipped, which is worth a colour. */
   .count.late {
     color: var(--danger);
+  }
+
+  .gmeter {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: none;
+  }
+  /* The track is a lighter step of the fill's own hue, as in `Meter`, so the
+     state reads across the whole bar. */
+  .gtrack {
+    position: relative;
+    width: 28px;
+    height: 4px;
+    border-radius: 2px;
+    background: color-mix(in oklab, var(--dot) 22%, transparent);
+    overflow: hidden;
+  }
+  .gfill {
+    display: block;
+    height: 100%;
+    border-radius: 2px;
+    background: var(--dot);
+  }
+  .gmeter.over .gfill {
+    background: var(--danger);
+  }
+  .gmeter.over .gtrack {
+    background: color-mix(in oklab, var(--danger) 22%, transparent);
   }
 
   .dot {

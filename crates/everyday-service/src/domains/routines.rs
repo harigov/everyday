@@ -198,9 +198,9 @@ fn templates(calendars: bool) -> Vec<Template> {
         Template {
             name: "Morning brief".into(),
             instructions: "Look at what is due today and overdue, what is on the calendar, \
-                 and any habit I am behind on. Write me a short note called \"Brief for \
-                 <today's date>\" with the three or four things that actually matter, and \
-                 say plainly if there is nothing much on."
+                 and any habit or goal target I am behind on. Write me a short note called \
+                 \"Brief for <today's date>\" with the three or four things that actually \
+                 matter, and say plainly if there is nothing much on."
                 .into(),
             trigger: Trigger::Schedule {
                 at: time(7, 0, 0, 0),
@@ -213,9 +213,9 @@ fn templates(calendars: bool) -> Vec<Template> {
         Template {
             name: "Weekly review".into(),
             instructions: "Look back over the last seven days: where the time went by role, \
-                 which goals were touched and which were not, how the habits went against \
-                 their cadence, and what is still open from last week. Write it up as a \
-                 note. Be honest about the roles that got nothing."
+                 which goals were touched and which were not, how each goal and habit stood \
+                 against its targets, and what is still open from last week. Write it up as \
+                 a note. Be honest about the roles that got nothing."
                 .into(),
             trigger: Trigger::Schedule {
                 at: time(17, 0, 0, 0),
@@ -228,9 +228,10 @@ fn templates(calendars: bool) -> Vec<Template> {
         Template {
             name: "Weekend planner".into(),
             instructions: "Look at the weekend: what is already on the calendar, what is due, \
-                 and which parts of my life have had no time at all this week. Suggest a \
-                 shape for Saturday and Sunday and block out time for two or three things \
-                 worth doing. Leave plenty of the day unbooked."
+                 which parts of my life have had no time at all this week, and which goals \
+                 are still short of a weekly time target. Suggest a shape for Saturday and \
+                 Sunday and block out time for two or three things worth doing, filed under \
+                 the goal they are for. Leave plenty of the day unbooked."
                 .into(),
             trigger: Trigger::Schedule {
                 at: time(18, 0, 0, 0),

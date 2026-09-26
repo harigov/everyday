@@ -159,11 +159,19 @@
     open = null
   }
 
-  /** Fraction of the day's goal met, or null when there is no goal. */
+  /**
+   * Fraction of the day's amount reached, or null when nothing is asked of
+   * a day. Read from the first daily target that adds values up -- "30
+   * minutes a day", or "at most 60" filling towards its limit -- since that
+   * is the only kind a single day's readings can be measured against.
+   */
   function progress(tracker: Tracker): number | null {
-    if (!tracker.target || tracker.kind === 'scale') return null
+    if (tracker.kind === 'scale' || tracker.kind === 'check') return null
+    const daily = tracker.targets?.find((t) => t.per === 'day' && t.tally === 'value')
+    const bound = daily?.min ?? daily?.max
+    if (!bound) return null
     const done = dayValue(tracker, readingsOf(tracker))
-    return Math.max(0, Math.min(1, done / tracker.target))
+    return Math.max(0, Math.min(1, done / bound))
   }
 
   function step(tracker: Tracker, by: number) {

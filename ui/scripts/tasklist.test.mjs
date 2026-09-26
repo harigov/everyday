@@ -17,6 +17,8 @@ const {
   sectionPatch,
   zoneAt,
   dueBucket,
+  daysLate,
+  lateLabel,
   numberOrder,
   moveCard,
   ORDER_STEP,
@@ -351,6 +353,32 @@ check(
   ],
   ['today', 'blocked', 'high', 'goal:g1', 'all'],
 )
+
+// ── how late ──────────────────────────────────────────────────────────
+//
+// The badge under a slipped task. Due Monday, read on Wednesday, is two days.
+
+check('due Monday, read Wednesday', daysLate(task('x', { dueDate: '2026-09-14' }), '2026-09-16'), 2)
+check('due yesterday', daysLate(task('x', { dueDate: '2026-09-13' }), TODAY), 1)
+check('due today is not late yet', daysLate(task('x', { dueDate: TODAY }), TODAY), 0)
+check('due later is not late', daysLate(task('x', { dueDate: '2026-09-20' }), TODAY), 0)
+check('no date, no lateness', daysLate(task('x'), TODAY), 0)
+check(
+  'a finished task is not late',
+  daysLate(task('x', { dueDate: '2026-09-01', status: 'done' }), TODAY),
+  0,
+)
+check(
+  'nor a cancelled one',
+  daysLate(task('x', { dueDate: '2026-09-01', status: 'cancelled' }), TODAY),
+  0,
+)
+// Across the end of March, where most of Europe loses an hour, and a month
+// and a year boundary: whole days, not 23-hour ones rounded the wrong way.
+check('across a clock change', daysLate(task('x', { dueDate: '2026-03-28' }), '2026-03-30'), 2)
+check('across a year', daysLate(task('x', { dueDate: '2025-12-30' }), '2026-01-02'), 3)
+check('one day is singular', lateLabel(1), 'Delayed by 1 day')
+check('more are plural', lateLabel(2), 'Delayed by 2 days')
 
 await close()
 finish('tasklist')

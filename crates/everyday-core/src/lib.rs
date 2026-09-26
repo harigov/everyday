@@ -180,6 +180,8 @@ pub use task::{
     TaskStatus, TimeBlock,
 };
 pub use timestamped::Timestamped;
-pub use tracker::{Aggregate, Reading, Tracker, TrackerKind};
+pub use tracker::{
+    Aggregate, Period, Reading, Standing, Tally, Target, Tracker, TrackerKind, TrackerSource,
+};
 pub use vault::{Vault, VaultConfig, VaultHeader, VaultStatus};
 pub use websearch::{Fetcher, SearchRequest, SearchResult, Source, WebSearch};

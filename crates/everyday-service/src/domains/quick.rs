@@ -276,10 +276,38 @@ pub struct Reading {
     pub label: String,
 }
 
-fn readings_from(trackers: &[Tracker], answer: quick::ReadingsAnswer) -> Vec<Reading> {
+/// The trackers a model may suggest a reading against, and the names it may
+/// not propose a new one under.
+///
+/// Only the ones recorded by hand are offered: a derived tracker -- time
+/// filed under a goal, books finished -- refuses a reading, so offering it
+/// would only teach the model to propose "30 min of piano" as a reading the
+/// vault then turns down. Its name is held back as well, because left out of
+/// the list it would read to the model as a tracker nobody has made yet, and
+/// the reading would arrive as a new one that shares the derived one's name.
+async fn recordable_trackers(
+    vault: &Arc<everyday_core::Vault>,
+) -> CommandResult<(Vec<Tracker>, Vec<String>)> {
+    let vault = vault.clone();
+    blocking(move || {
+        let (manual, derived): (Vec<Tracker>, Vec<Tracker>) =
+            vault.trackers()?.into_iter().partition(Tracker::is_manual);
+        Ok((manual, derived.into_iter().map(|t| t.name.to_lowercase()).collect()))
+    })
+    .await
+}
+
+fn readings_from(
+    trackers: &[Tracker],
+    reserved: &[String],
+    answer: quick::ReadingsAnswer,
+) -> Vec<Reading> {
     answer
         .readings
         .into_iter()
+        // A new tracker proposed under a derived one's name is dropped. See
+        // `recordable_trackers`.
+        .filter(|r| r.tracker.is_some() || !reserved.contains(&r.name.trim().to_lowercase()))
         .map(|r| {
             let tracker = r.tracker.and_then(|n| n.checked_sub(1)).and_then(|i| trackers.get(i));
             Reading {
@@ -574,10 +602,7 @@ async fn quick_entry_readings(
     args: EntryRef,
 ) -> CommandResult<Vec<Reading>> {
     let vault = svc.require()?;
-    let trackers = {
-        let vault = vault.clone();
-        blocking(move || Ok(vault.trackers()?)).await?
-    };
+    let (trackers, reserved) = recordable_trackers(&vault).await?;
     let id = args.entry_id;
     let list = trackers.clone();
     let mut answer: quick::ReadingsAnswer =
@@ -587,7 +612,7 @@ async fn quick_entry_readings(
         })
         .await?;
     answer.clamp();
-    Ok(readings_from(&trackers, answer))
+    Ok(readings_from(&trackers, &reserved, answer))
 }
 
 /// J2 — a title for a day.
@@ -679,10 +704,7 @@ async fn quick_reading_from_line(
     args: Line,
 ) -> CommandResult<Option<Reading>> {
     let vault = svc.require()?;
-    let trackers = {
-        let vault = vault.clone();
-        blocking(move || Ok(vault.trackers()?)).await?
-    };
+    let (trackers, reserved) = recordable_trackers(&vault).await?;
     let (list, line) = (trackers.clone(), args.line);
     let mut draft: quick::ReadingDraft = ask(&svc, &ctx, "tracker.parse", move |_, qctx| {
         Ok(quick::tracker_parse(qctx, &line, &list))
@@ -692,7 +714,7 @@ async fn quick_reading_from_line(
         return Ok(None);
     }
     let answer = quick::ReadingsAnswer { readings: vec![draft] };
-    Ok(readings_from(&trackers, answer).into_iter().next())
+    Ok(readings_from(&trackers, &reserved, answer).into_iter().next())
 }
 
 #[derive(Deserialize)]

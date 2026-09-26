@@ -215,11 +215,13 @@ const REFUSED_WHILE_DRAFTING: &[&str] = &[
     "delete_item",
     "log_reading",
     // Roles and goals are the shape of a life, set up deliberately and
-    // rarely -- not something a dream drafts on somebody's behalf.
+    // rarely -- not something a dream drafts on somebody's behalf. A target
+    // is part of that: how much of a goal is wanted is theirs to say.
     "create_goal",
     "update_goal",
     "delete_goal",
     "set_purpose",
+    "set_target",
     // Projects are not `task`, `block`, `memory`, `routine`, `note` or
     // `mail` either.
     "create_project",

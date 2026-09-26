@@ -218,3 +218,169 @@ fn definitions_left_inside_a_journal_are_moved_once_and_then_left_alone() {
     assert_eq!(vault.migrate_journal_trackers().unwrap(), 0);
     assert_eq!(vault.tracker(old_id).unwrap().name, "Sertraline 50");
 }
+
+// ---- derived trackers ------------------------------------------------------
+//
+// A tracker whose readings are worked out from records the vault already
+// keeps: time blocks for "an hour or two of piano a week", the library's log
+// for "twelve books this year". Nothing is stored for them, so these check
+// the numbers come out of the ordinary calls -- `tracker_days` and
+// `readings` -- and that nothing can be written in.
+
+mod derived {
+    use super::support::vault;
+    use everyday_core::library::{Item, Kind, LogEntry, LogEvent};
+    use everyday_core::purpose::{Goal, Role};
+    use everyday_core::store::trackers::ReadingQuery;
+    use everyday_core::task::{BlockKind, BlockSubject, Project, Task, TimeBlock};
+    use everyday_core::{Period, Reading, Target, Tracker, TrackerKind, TrackerSource};
+    use jiff::civil::{Date, date};
+
+    fn block(task: &Task, day: Date, hour: i8, minutes: u32, kind: BlockKind) -> TimeBlock {
+        let at = day.at(hour, 0, 0, 0).in_tz("UTC").unwrap().timestamp();
+        TimeBlock::new(BlockSubject::Task { id: task.id }, at, minutes, "UTC").of_kind(kind)
+    }
+
+    fn days_of(v: &everyday_core::Vault, t: &Tracker, from: Date, to: Date) -> Vec<(Date, f64)> {
+        let query = ReadingQuery { tracker_ids: vec![t.id], ..ReadingQuery::between(from, to) };
+        v.tracker_days(&query).unwrap().into_iter().map(|d| (d.date, d.sum)).collect()
+    }
+
+    #[test]
+    fn time_on_a_goal_is_the_actual_minutes_filed_under_it_per_day() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+        let role = Role::new("Myself");
+        v.save_role(&role).unwrap();
+        let piano = Goal::new(role.id, "Learn piano");
+        v.save_goal(&piano).unwrap();
+        let other = Goal::new(role.id, "Run 10k");
+        v.save_goal(&other).unwrap();
+
+        // Filed once, on the project; every block under it inherits.
+        let mut project = Project::new("Piano");
+        project.purpose = Some(piano.purpose());
+        v.save_project(&project).unwrap();
+        let scales = Task::new("Scales").in_project(project.id);
+        v.save_task(&scales).unwrap();
+        let mut run = Task::new("Run");
+        run.purpose = Some(other.purpose());
+        v.save_task(&run).unwrap();
+
+        let (mon, tue) = (date(2026, 9, 21), date(2026, 9, 22));
+        for b in [
+            block(&scales, mon, 7, 30, BlockKind::Actual),
+            block(&scales, mon, 20, 15, BlockKind::Actual),
+            block(&scales, tue, 7, 40, BlockKind::Planned),
+            block(&run, tue, 8, 50, BlockKind::Actual),
+        ] {
+            v.save_block(&b).unwrap();
+        }
+
+        let mut time = Tracker::new("Time on piano", TrackerKind::Check).aiming(Target::between(
+            60.0,
+            120.0,
+            Period::Week,
+        ));
+        time.source = TrackerSource::Time;
+        time.purpose = Some(piano.purpose());
+        v.save_tracker(&time).unwrap();
+        let time = v.tracker(time.id).unwrap();
+        assert_eq!(time.kind, TrackerKind::Amount, "a derived tracker is an amount");
+        assert_eq!(time.unit, "min");
+
+        assert_eq!(
+            days_of(&v, &time, mon, tue),
+            vec![(mon, 45.0)],
+            "Monday's two blocks, and neither a planned hour nor another goal's run"
+        );
+
+        // Filed under the role instead, it counts every goal under it.
+        let mut myself = time.clone();
+        myself.id = everyday_core::TrackerId::new();
+        myself.purpose = Some(role.purpose());
+        v.save_tracker(&myself).unwrap();
+        assert_eq!(days_of(&v, &myself, mon, tue), vec![(mon, 45.0), (tue, 50.0)]);
+
+        // The same numbers come back as readings, with ids that hold still.
+        let query = ReadingQuery { tracker_ids: vec![time.id], ..ReadingQuery::between(mon, tue) };
+        let first = v.readings(&query).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].value, 45.0);
+        assert_eq!(first[0].at, None, "nothing derived happened at a minute");
+        assert_eq!(v.readings(&query).unwrap()[0].id, first[0].id, "the same id every time");
+
+        // A caller that asked for recorded readings only -- the calendar --
+        // is not handed any, and so never pays to work them out.
+        let recorded = ReadingQuery { recorded_only: true, ..ReadingQuery::between(mon, tue) };
+        assert!(v.readings(&recorded).unwrap().is_empty());
+        assert!(v.tracker_days(&recorded).unwrap().is_empty());
+
+        // Nothing derived was ticked on a journal's page.
+        let in_journal =
+            ReadingQuery { journal_id: Some(everyday_core::JournalId::new()), ..query.clone() };
+        assert!(v.tracker_days(&in_journal).unwrap().is_empty());
+    }
+
+    #[test]
+    fn books_finished_are_counted_from_the_log_by_shelf() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+        let books = Kind::new("books", "Books", "Book");
+        v.save_kind(&books).unwrap();
+        let films = Kind::new("films", "Films", "Film");
+        v.save_kind(&films).unwrap();
+
+        let novel = Item::new(books.id, "A novel");
+        v.save_item(&novel).unwrap();
+        let film = Item::new(films.id, "A film");
+        v.save_item(&film).unwrap();
+
+        let (jan, feb) = (date(2026, 1, 10), date(2026, 2, 3));
+        for log in [
+            LogEntry::new(novel.id, LogEvent::Finished, jan, "UTC"),
+            // A re-read is a second book read this year.
+            LogEntry::new(novel.id, LogEvent::Revisited, feb, "UTC"),
+            // Starting one is not finishing it.
+            LogEntry::new(novel.id, LogEvent::Started, feb, "UTC"),
+            LogEntry::new(film.id, LogEvent::Finished, feb, "UTC"),
+        ] {
+            v.save_log(&log).unwrap();
+        }
+
+        let mut read = Tracker::new("Books read", TrackerKind::Amount)
+            .aiming(Target::at_least(12.0, Period::Year));
+        read.source = TrackerSource::Finished { kind_id: Some(books.id) };
+        v.save_tracker(&read).unwrap();
+        assert_eq!(
+            days_of(&v, &read, date(2026, 1, 1), date(2026, 12, 31)),
+            vec![(jan, 1.0), (feb, 1.0)]
+        );
+
+        let mut anything = read.clone();
+        anything.id = everyday_core::TrackerId::new();
+        anything.source = TrackerSource::Finished { kind_id: None };
+        v.save_tracker(&anything).unwrap();
+        assert_eq!(
+            days_of(&v, &anything, date(2026, 1, 1), date(2026, 12, 31)),
+            vec![(jan, 1.0), (feb, 2.0)],
+            "every shelf, when the tracker names none"
+        );
+    }
+
+    #[test]
+    fn a_derived_tracker_cannot_be_recorded_to_or_merged() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+        let mut books = Tracker::new("Books read", TrackerKind::Amount);
+        books.source = TrackerSource::Finished { kind_id: None };
+        v.save_tracker(&books).unwrap();
+        let manual = Tracker::new("Pages", TrackerKind::Amount);
+        v.save_tracker(&manual).unwrap();
+
+        let err = v.save_reading(&Reading::on(books.id, date(2026, 3, 1), 1.0)).unwrap_err();
+        assert_eq!(err.code(), "invalid", "got {err}");
+        assert_eq!(v.merge_trackers(manual.id, books.id).unwrap_err().code(), "invalid");
+        assert_eq!(v.merge_trackers(books.id, manual.id).unwrap_err().code(), "invalid");
+    }
+}

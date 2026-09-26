@@ -16,6 +16,7 @@
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { taskMenu } from '../lib/menus'
+  import { lateLabel } from '../lib/tasklist'
   import { proposals, recordAs } from '../lib/proposals.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
@@ -194,6 +195,9 @@
                       <Icon name="calendar" size={10} weight={1.8} />
                       {friendlyDate(task.dueDate)}
                     </span>
+                  {/if}
+                  {#if todo.daysLate(task) > 0}
+                    <span class="chip late">{lateLabel(todo.daysLate(task))}</span>
                   {/if}
                   {#if task.estimateMinutes}
                     <span class="chip">
@@ -377,6 +381,11 @@
   .chip.due.late {
     color: var(--danger);
     background: color-mix(in oklab, var(--danger) 12%, transparent);
+  }
+  /* How far behind, filled so it outranks the tinted date beside it. */
+  .chip.late {
+    color: #fff;
+    background: var(--danger);
   }
   .chip.p-high {
     color: #b45309;

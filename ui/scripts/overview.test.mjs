@@ -23,7 +23,18 @@ const {
   modules: [habits, balance],
   close,
 } = await load(['/src/lib/habits.ts', '/src/lib/balance.ts'])
-const { describeStreak, periodEnd, periodStart, periodsBetween, summarise } = habits
+const {
+  DAILY,
+  describeStreak,
+  periodEnd,
+  periodStart,
+  periodsBetween,
+  periodValue,
+  progress,
+  recorded,
+  streakTarget,
+  summarise,
+} = habits
 const { byRole, neglected, roleOf, totalMinutes } = balance
 
 const { check, finish } = makeCheck()
@@ -48,6 +59,15 @@ check('a short month ends where it ends', periodEnd('2027-02-01', 'month'), '202
 check('a leap February does too', periodEnd('2028-02-01', 'month'), '2028-02-29')
 
 check(
+  'a quarter starts on its first month',
+  periodStart('2026-09-09', 'quarter', MONDAY),
+  '2026-07-01',
+)
+check('a year starts in January', periodStart('2026-09-09', 'year', MONDAY), '2026-01-01')
+check('a quarter ends where its third month does', periodEnd('2026-07-01', 'quarter'), '2026-09-30')
+check('a year ends on the last of December', periodEnd('2026-01-01', 'year'), '2026-12-31')
+
+check(
   'the periods between two days cover both ends',
   periodsBetween('2026-09-07', '2026-09-20', 'week', MONDAY),
   ['2026-09-07', '2026-09-14'],
@@ -56,7 +76,8 @@ check(
 // ── streaks ────────────────────────────────────────────────────────────
 
 const days = (...list) => list.map((date) => ({ trackerId: 't', date, count: 1, sum: 1, max: 1 }))
-const week3 = { times: 3, per: 'week' }
+const check3 = { kind: 'check' }
+const week3 = { min: 3, per: 'week', tally: 'days' }
 
 {
   // Three runs in each of two closed weeks, and three already this week.
@@ -72,6 +93,7 @@ const week3 = { times: 3, per: 'week' }
       '2026-09-08',
       '2026-09-09',
     ),
+    check3,
     week3,
     { from: '2026-08-24', to: '2026-09-13', today: '2026-09-09' },
     MONDAY,
@@ -95,12 +117,14 @@ const week3 = { times: 3, per: 'week' }
       '2026-09-04',
       '2026-09-07',
     ),
+    check3,
     week3,
     { from: '2026-08-24', to: '2026-09-13', today: '2026-09-09' },
     MONDAY,
   )
   check('a week still running does not break the streak', summary.streak, 2)
   check('...and does not count against the rate', summary.rate, 1)
+  check('...and reads as open, not missed', summary.periods.at(-1).state, 'open')
 }
 
 {
@@ -108,6 +132,7 @@ const week3 = { times: 3, per: 'week' }
   // not forget what came before it.
   const summary = summarise(
     days('2026-08-24', '2026-08-26', '2026-08-28', '2026-09-07', '2026-09-08', '2026-09-09'),
+    check3,
     week3,
     { from: '2026-08-24', to: '2026-09-13', today: '2026-09-09' },
     MONDAY,
@@ -120,37 +145,189 @@ const week3 = { times: 3, per: 'week' }
 {
   // Several readings on one day are one day. "Did I do it" is not "how many
   // times did I write it down", or three doses on Monday would meet a
-  // three-a-week cadence on its own.
+  // three-a-week target on its own.
   const summary = summarise(
     [
       { trackerId: 't', date: '2026-09-07', count: 3, sum: 3, max: 1 },
       { trackerId: 't', date: '2026-09-08', count: 1, sum: 1, max: 1 },
     ],
+    check3,
     week3,
     { from: '2026-09-07', to: '2026-09-13', today: '2026-09-09' },
     MONDAY,
   )
-  check('a day with three readings is still one day', summary.periods[0].hits, 2)
-  check('so a three-a-week cadence is not met by it', summary.periods[0].met, false)
+  check('a day with three readings is still one day', summary.periods[0].value, 2)
+  check('so a three-a-week target is not met by it yet', summary.periods[0].state, 'open')
 }
 
 {
-  // No cadence at all falls back to daily, which is what an untracked habit
+  // A check ticked as *not* done is a zero, and is not a day it was done.
+  const notDone = { trackerId: 't', date: '2026-09-08', count: 1, sum: 0, max: 0 }
+  check('a check recorded as not done is not a hit', recorded(notDone, check3), false)
+  check('...but a scale of 0 is a real answer', recorded(notDone, { kind: 'scale' }), true)
+}
+
+{
+  // No target at all falls back to daily, which is what an untracked habit
   // should read as rather than as a crash.
   const summary = summarise(
     days('2026-09-08', '2026-09-09'),
+    check3,
     null,
     { from: '2026-09-07', to: '2026-09-09', today: '2026-09-09' },
     MONDAY,
   )
-  check('no cadence means daily', summary.streak, 2)
+  check('no target means daily', summary.streak, 2)
   check(
     'an empty history has no rate rather than a zero one',
-    summarise([], week3, { from: '2026-09-07', to: '2026-09-13', today: '2026-09-09' }, MONDAY)
-      .rate,
+    summarise(
+      [],
+      check3,
+      week3,
+      { from: '2026-09-07', to: '2026-09-13', today: '2026-09-09' },
+      MONDAY,
+    ).rate,
     null,
   )
 }
+
+// ── which target a streak is held to ───────────────────────────────────
+
+{
+  // What every tracker's old daily goal became. It drives the chip's ring
+  // and must not break a chain: a 25-minute run on a 30-minute goal is still
+  // a run, where a day off is not.
+  const run = { targets: [{ min: 30, per: 'day', tally: 'value' }] }
+  check('a daily amount is not what a streak counts', streakTarget(run), DAILY)
+  const summary = summarise(
+    [{ trackerId: 't', date: '2026-09-08', count: 1, sum: 25, max: 25 }],
+    { kind: 'amount' },
+    streakTarget(run),
+    { from: '2026-09-08', to: '2026-09-09', today: '2026-09-09' },
+    MONDAY,
+  )
+  check('...so a short run still keeps the streak', summary.streak, 1)
+
+  const both = {
+    targets: [
+      { min: 30, per: 'day', tally: 'value' },
+      { min: 3, per: 'week', tally: 'days' },
+    ],
+  }
+  check('three days a week is the habit, whichever came first', streakTarget(both).per, 'week')
+  const tvLimit = { targets: [{ max: 60, per: 'day', tally: 'value' }] }
+  check('a limit is its own streak', streakTarget(tvLimit).max, 60)
+  const piano = { targets: [{ min: 60, max: 120, per: 'week', tally: 'value' }] }
+  check('so is a weekly amount', streakTarget(piano).per, 'week')
+  check('no targets is daily, as it always was', streakTarget({}), DAILY)
+}
+
+// ── limits and ranges ──────────────────────────────────────────────────
+
+const tv = { kind: 'amount', source: { type: 'manual' } }
+const atMostAnHour = { max: 60, per: 'day', tally: 'value' }
+function mins(date, sum) {
+  return { trackerId: 't', date, count: 1, sum, max: sum }
+}
+
+{
+  // An hour of TV a day at most: 45 and 60 are within (the bound is
+  // inclusive), 90 is over, and a day with nothing written down is not a day
+  // you stayed under -- it is one nobody recorded.
+  const summary = summarise(
+    [mins('2026-09-05', 45), mins('2026-09-06', 90), mins('2026-09-08', 60)],
+    tv,
+    atMostAnHour,
+    { from: '2026-09-05', to: '2026-09-09', today: '2026-09-09' },
+    MONDAY,
+  )
+  check(
+    'each day stands against the limit',
+    summary.periods.map((p) => p.state),
+    ['met', 'missed', 'unrecorded', 'met', 'open'],
+  )
+  check('an unrecorded day neither extends nor breaks the streak', summary.streak, 1)
+  check('...and is left out of the rate', summary.rate, 2 / 3)
+}
+
+{
+  // Past the limit today is past it for good: the day is already decided.
+  const summary = summarise(
+    [mins('2026-09-09', 75)],
+    tv,
+    atMostAnHour,
+    { from: '2026-09-09', to: '2026-09-09', today: '2026-09-09' },
+    MONDAY,
+  )
+  check('over the limit today is missed today', summary.periods[0].state, 'missed')
+}
+
+{
+  // A derived tracker's zero is a real zero: no time filed under the goal
+  // is no time, not an unrecorded day.
+  const summary = summarise(
+    [],
+    { kind: 'amount', source: { type: 'time' } },
+    atMostAnHour,
+    { from: '2026-09-07', to: '2026-09-08', today: '2026-09-09' },
+    MONDAY,
+  )
+  check('nothing derived is nothing, and within a limit', summary.periods[0].state, 'met')
+}
+
+{
+  // Between one and two hours of piano a week, as minutes.
+  const piano = { min: 60, max: 120, per: 'week', tally: 'value' }
+  const time = { kind: 'amount', source: { type: 'time' } }
+  const week = (sum) =>
+    summarise(
+      [mins('2026-08-31', sum)],
+      time,
+      piano,
+      { from: '2026-08-31', to: '2026-09-06', today: '2026-09-09' },
+      MONDAY,
+    ).periods[0]
+  check('under the range is short', week(45).standing, 'short')
+  check('inside it is within', week(90).state, 'met')
+  check('over it is over, and missed', [week(150).standing, week(150).state], ['over', 'missed'])
+}
+
+check(
+  'a severity averages over every reading in the period',
+  periodValue(
+    [
+      { trackerId: 't', date: '2026-09-07', count: 2, sum: 10, max: 7 },
+      { trackerId: 't', date: '2026-09-08', count: 1, sum: 2, max: 2 },
+    ],
+    { kind: 'scale' },
+    'value',
+  ),
+  4,
+)
+
+// ── progress and pace ──────────────────────────────────────────────────
+
+{
+  // Twelve books this year, one finished by the 26th of September.
+  const p = progress(
+    [{ trackerId: 't', date: '2026-09-02', count: 1, sum: 1, max: 1 }],
+    { kind: 'amount', source: { type: 'finished' } },
+    { min: 12, per: 'year', tally: 'value' },
+    '2026-09-26',
+    MONDAY,
+  )
+  check('the year runs from January', [p.start, p.end], ['2026-01-01', '2026-12-31'])
+  check('one book so far', p.value, 1)
+  // 269 of 365 days gone: nearly nine books would be on pace.
+  check('pace is the minimum spread evenly over the period', Math.round(p.expected * 10) / 10, 8.8)
+  check('and a year still running is open, not missed', p.state, 'open')
+}
+
+check(
+  'a daily target has no pace to be behind',
+  progress([], tv, atMostAnHour, '2026-09-26', MONDAY).expected,
+  null,
+)
 
 check('a streak reads in its own period', describeStreak(3, 'week'), '3 weeks')
 check('...and in the singular', describeStreak(1, 'day'), '1 day')

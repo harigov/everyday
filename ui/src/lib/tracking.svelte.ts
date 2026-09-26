@@ -11,7 +11,8 @@
 // this store does, so `days` asks and does not cache.
 
 import { api } from './api'
-import { parseQuickTrack } from './quicktrack'
+import { describeQuickTrack, isRecordable, parseQuickTrack } from './quicktrack'
+import { isManual } from './tracker'
 import { app, handle, isLocked, quietly } from './state.svelte'
 import { latest } from './store/latest'
 import { todayIso } from './time'
@@ -86,6 +87,15 @@ class TrackingState {
     return this.trackers
       .filter((t) => !t.archived)
       .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt))
+  }
+
+  /**
+   * What can be recorded by hand: `live`, less the derived trackers, whose
+   * numbers the core works out from blocks and the library and refuses to
+   * be told. Every place that offers to log something reads this.
+   */
+  get loggable(): Tracker[] {
+    return this.live.filter(isManual)
   }
 
   /**
@@ -259,6 +269,11 @@ class TrackingState {
     if (!this.enabled) return null
     const parsed = parseQuickTrack(line, this.trackers)
     if (!parsed.target) return null
+    if (!isRecordable(parsed)) {
+      // Said rather than silently dropped: the person typed its name.
+      await handle(new Error(describeQuickTrack(parsed)))
+      return null
+    }
 
     let tracker: Tracker | null = null
     let created = false

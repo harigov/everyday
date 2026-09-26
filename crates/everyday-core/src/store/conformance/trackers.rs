@@ -64,12 +64,13 @@ fn tracking_starts_empty(store: &dyn JournalStore) {
 
 fn tracker_crud(store: &dyn JournalStore) {
     let t = tracker_store(store);
-    let mut tracker =
-        Tracker::new("Sertraline", TrackerKind::Dose).with_unit("mg").every(1, Period::Day);
+    let mut tracker = Tracker::new("Sertraline", TrackerKind::Dose)
+        .with_unit("mg")
+        .every(1, Period::Day)
+        .aiming(Target::at_least(50.0, Period::Day));
     tracker.icon = "pill".into();
     tracker.color = "#0f766e".into();
     tracker.default_value = 50.0;
-    tracker.target = Some(50.0);
     tracker.on_calendar = true;
     tracker.sort_order = 2;
     t.put_tracker(&tracker).unwrap();
@@ -82,11 +83,14 @@ fn tracker_crud(store: &dyn JournalStore) {
     assert_eq!(t.list_trackers().unwrap().len(), 1, "putting twice must not make two");
 
     tracker.archived = true;
-    tracker.cadence = Cadence::new(3, Period::Week);
+    tracker.targets =
+        vec![Target::days(3, Period::Week), Target::between(60.0, 120.0, Period::Quarter)];
+    tracker.source = TrackerSource::Finished { kind_id: Some(KindId::new()) };
     t.put_tracker(&tracker).unwrap();
     let back = t.get_tracker(tracker.id).unwrap();
     assert!(back.archived, "an archived tracker is still stored; it only leaves the page");
-    assert_eq!(back.cadence, Cadence::new(3, Period::Week));
+    assert_eq!(back.targets, tracker.targets, "targets survive, in their order");
+    assert_eq!(back.source, tracker.source);
     assert_eq!(t.list_trackers().unwrap().len(), 1, "archiving is not deleting");
 
     t.delete_tracker(tracker.id).unwrap();
@@ -322,7 +326,7 @@ fn a_tracker_can_measure_a_goal(store: &dyn JournalStore) {
 
     let mut tracker = Tracker::new("Run", TrackerKind::Amount).with_unit("min");
     tracker.purpose = Some(goal.purpose());
-    tracker.cadence = Cadence::new(3, Period::Week);
+    tracker.targets = vec![Target::days(3, Period::Week)];
     t.put_tracker(&tracker).unwrap();
 
     assert_eq!(t.get_tracker(tracker.id).unwrap().purpose, Some(goal.purpose()));

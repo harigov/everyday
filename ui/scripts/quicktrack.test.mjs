@@ -15,7 +15,7 @@
 import { load, makeCheck } from './harness.mjs'
 
 const { module: quicktrack, close } = await load('/src/lib/quicktrack.ts')
-const { describeQuickTrack, parseQuickTrack, readValue } = quicktrack
+const { describeQuickTrack, isRecordable, parseQuickTrack, readValue } = quicktrack
 
 const { check, finish } = makeCheck()
 
@@ -27,7 +27,7 @@ const tracker = (over = {}) => ({
   color: '#000',
   unit: 'min',
   defaultValue: 30,
-  target: null,
+  targets: [],
   scaleMax: 10,
   onCalendar: false,
   archived: false,
@@ -217,6 +217,30 @@ check(
   describeQuickTrack(parseQuickTrack('weight 78.40kg')),
   'New tracker “weight” (in kg) — 78.4',
 )
+
+// ── a tracker the vault works out for itself ───────────────────────────
+//
+// Its name has to be matched, not skipped: skipped, "Time on piano 30" would
+// read as a new tracker of that name, and recording it would make a second
+// one beside the derived one. Matched, it is refused, and says why.
+
+{
+  const derived = tracker({ id: 'd', name: 'Time on piano', source: { type: 'time' } })
+  const parsed = parseQuickTrack('Time on piano 30', [derived])
+  check('a derived name matches its tracker', parsed.target?.kind, 'existing')
+  check('...and is not recordable', isRecordable(parsed), false)
+  check(
+    '...and says why rather than offering to record it',
+    describeQuickTrack(parsed),
+    '“Time on piano” is worked out for you, not recorded by hand',
+  )
+  check(
+    'a tracker kept by hand still is',
+    isRecordable(parseQuickTrack('swim 30', [tracker({ name: 'swim' })])),
+    true,
+  )
+  check('and so is a new one', isRecordable(parseQuickTrack('sauna 20 min', [derived])), true)
+}
 
 await close()
 finish('quick-track')

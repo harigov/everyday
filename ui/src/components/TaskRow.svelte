@@ -28,7 +28,7 @@
   import { friendlyDate, formatClock, formatMinutes } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import { taskMenu } from '../lib/menus'
-  import { zoneAt } from '../lib/tasklist'
+  import { lateLabel, zoneAt } from '../lib/tasklist'
   import { tick } from 'svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
@@ -53,6 +53,7 @@
   // A tuple in one binding: `$derived` initialises a single declaration.
   const progress = $derived(todo.progressOf(task.id))
   const overdue = $derived(todo.overdue(task))
+  const late = $derived(todo.daysLate(task))
   const project = $derived(todo.projectOf(task.projectId))
   /** The project badge is noise inside a project and orientation outside it. */
   const showProject = $derived(project !== null && todo.scope.kind !== 'project')
@@ -238,6 +239,7 @@
                 {friendlyDate(task.dueDate)}{task.dueTime ? ` ${formatClock(task.dueTime)}` : ''}
               </span>
             {/if}
+            {#if late > 0}<span class="chip state late">{lateLabel(late)}</span>{/if}
             {#if task.estimateMinutes}
               <span class="chip"
                 ><Icon name="clock" size={11} weight={1.7} />
@@ -544,6 +546,12 @@
   .chip.due.late {
     color: var(--danger);
     background: color-mix(in oklab, var(--danger) 12%, transparent);
+  }
+  /* Filled rather than tinted like the due chip beside it: that one says
+     when, this one says how far behind, and it should be the louder. */
+  .chip.state.late {
+    color: #fff;
+    background: var(--danger);
   }
   .chip.state.doing {
     color: #0369a1;

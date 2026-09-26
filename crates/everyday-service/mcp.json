@@ -1704,6 +1704,92 @@
       "title": "Set purpose"
     },
     {
+      "domain": "trackers",
+      "effect": "write",
+      "name": "set_target",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "count_days": {
+            "description": "Count days with something recorded rather than adding values up — 'run 3 times a week' is min 3, per week, count_days.",
+            "type": "boolean"
+          },
+          "goal_id": {
+            "description": "File the tracker under this goal. From list_goals.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "For 'new': 'check' for a yes/no habit, 'amount' for a quantity (the default), 'dose' for medication.",
+            "enum": [
+              "check",
+              "amount",
+              "dose"
+            ],
+            "type": "string"
+          },
+          "max": {
+            "description": "At most this much per period. In the tracker's unit.",
+            "type": "number"
+          },
+          "measure": {
+            "description": "When there is no tracker_id, what to count: 'time' is minutes of logged time filed under the goal or role; 'finished' is things finished off a shelf (a re-read counts); 'new' makes a tracker recorded by hand, named by `name`.",
+            "enum": [
+              "time",
+              "finished",
+              "new"
+            ],
+            "type": "string"
+          },
+          "min": {
+            "description": "At least this much per period. In the tracker's unit.",
+            "type": "number"
+          },
+          "name": {
+            "description": "For 'new': what is being recorded, e.g. 'TV'.",
+            "type": "string"
+          },
+          "per": {
+            "description": "The calendar period the target is counted over.",
+            "enum": [
+              "day",
+              "week",
+              "month",
+              "quarter",
+              "year"
+            ],
+            "type": "string"
+          },
+          "remove": {
+            "description": "Remove the tracker's target for this period instead of setting it.",
+            "type": "boolean"
+          },
+          "role_id": {
+            "description": "Or under this role directly. From list_roles.",
+            "type": "string"
+          },
+          "shelf_id": {
+            "description": "For 'finished': which shelf. From list_shelves. Omit for every shelf.",
+            "type": "string"
+          },
+          "tracker_id": {
+            "description": "An existing tracker to set a target on. From list_trackers. Omit to make a new one with `measure`.",
+            "type": "string"
+          },
+          "unit": {
+            "description": "For 'new': the unit, e.g. 'min', 'pages'. Empty for a count.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "per"
+        ],
+        "type": "object"
+      },
+      "scope": "trackers",
+      "sensitivity": "ordinary",
+      "title": "Set target"
+    },
+    {
       "domain": "mail",
       "effect": "write",
       "name": "snooze_thread",

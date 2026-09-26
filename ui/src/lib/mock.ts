@@ -251,7 +251,7 @@ function tracker(
     color,
     unit: '',
     defaultValue: 1,
-    target: null,
+    targets: [],
     scaleMax: 10,
     onCalendar: false,
     archived: false,
@@ -878,13 +878,17 @@ function fakeResults(query: string, limit: number): SearchResult[] {
 
 // The vault's trackers, out of the journals that used to hold them.
 //
-// One of them measures a goal and carries a cadence, because a habits view
-// drawn against five daily checks looks finished when it is not: three runs
-// a week is the shape that actually needs the arithmetic.
+// One of them measures a goal and is held to three days a week, because a
+// habits view drawn against five daily checks looks finished when it is not:
+// three runs a week is the shape that actually needs the arithmetic.
+//
+// The last two are derived: nobody records them, the backend works them out
+// -- minutes of time filed under a goal, and books finished -- and they are
+// what a goal's Targets section is made of.
 const trackers: Tracker[] = [
   tracker('t-walk', 'Walk the dog', 'check', 'paw', '#16a34a', {
     sortOrder: 0,
-    cadence: { times: 1, per: 'day' },
+    targets: [{ min: 1, per: 'day', tally: 'days' }],
   }),
   tracker('t-vitd', 'Vitamin D', 'dose', 'tablet', '#f59e0b', {
     unit: 'iu',
@@ -898,17 +902,34 @@ const trackers: Tracker[] = [
   tracker('t-run', 'Run', 'amount', 'run', '#0284c7', {
     unit: 'min',
     defaultValue: 30,
-    target: 30,
     onCalendar: true,
     sortOrder: 3,
-    cadence: { times: 3, per: 'week' },
+    // What a run tracker from before targets folds into: its cadence first,
+    // then its daily amount.
+    targets: [
+      { min: 3, per: 'week', tally: 'days' },
+      { min: 30, per: 'day', tally: 'value' },
+    ],
     purpose: { type: 'goal', id: 'g-run' },
   }),
   tracker('t-read', 'Pages read', 'amount', 'book', '#4f46e5', {
     unit: 'pages',
     defaultValue: 20,
-    target: 20,
+    targets: [{ min: 20, per: 'day', tally: 'value' }],
     sortOrder: 4,
+  }),
+  tracker('t-ship-time', 'Time on the rewrite', 'amount', 'clock', '#0284c7', {
+    unit: 'min',
+    sortOrder: 5,
+    source: { type: 'time' },
+    targets: [{ min: 300, max: 600, per: 'week', tally: 'value' }],
+    purpose: { type: 'goal', id: 'g-ship' },
+  }),
+  tracker('t-books', 'Books finished', 'amount', 'book', '#9333ea', {
+    sortOrder: 6,
+    source: { type: 'finished', kindId: 'k-book' },
+    targets: [{ min: 12, per: 'year', tally: 'value' }],
+    purpose: { type: 'goal', id: 'g-read' },
   }),
 ]
 
@@ -1219,7 +1240,7 @@ const routines: Routine[] = [
     id: 'ro-brief',
     name: 'Morning brief',
     instructions:
-      'Look at what is due today and overdue, what is on the calendar, and any habit I am behind on. Write me a short note with the three or four things that actually matter.',
+      'Look at what is due today and overdue, what is on the calendar, and any habit or goal target I am behind on. Write me a short note with the three or four things that actually matter.',
     trigger: { type: 'schedule', at: '07:00', days: ['mon', 'tue', 'wed', 'thu', 'fri'] },
     graceMinutes: 60,
     enabled: true,
@@ -1328,7 +1349,7 @@ const TEMPLATES: Template[] = [
   {
     name: 'Morning brief',
     instructions:
-      'Look at what is due today and overdue, what is on the calendar, and any habit I am behind on. Write me a short note with the three or four things that actually matter, and say plainly if there is nothing much on.',
+      'Look at what is due today and overdue, what is on the calendar, and any habit or goal target I am behind on. Write me a short note with the three or four things that actually matter, and say plainly if there is nothing much on.',
     trigger: { type: 'schedule', at: '07:00', days: ['mon', 'tue', 'wed', 'thu', 'fri'] },
     note: 'What is on today, before you open anything.',
     available: true,
@@ -1336,7 +1357,7 @@ const TEMPLATES: Template[] = [
   {
     name: 'Weekly review',
     instructions:
-      'Look back over the last seven days: where the time went by role, which goals were touched and which were not, how the habits went against their cadence, and what is still open. Write it up as a note. Be honest about the roles that got nothing.',
+      'Look back over the last seven days: where the time went by role, which goals were touched and which were not, how each goal and habit stood against its targets, and what is still open. Write it up as a note. Be honest about the roles that got nothing.',
     trigger: { type: 'schedule', at: '17:00', days: ['fri'] },
     note: 'An honest account of the week, written down.',
     available: true,
@@ -1344,7 +1365,7 @@ const TEMPLATES: Template[] = [
   {
     name: 'Weekend planner',
     instructions:
-      'Look at the weekend: what is on the calendar, what is due, and which parts of my life have had no time this week. Suggest a shape for Saturday and Sunday and block out time for two or three things worth doing. Leave plenty unbooked.',
+      'Look at the weekend: what is on the calendar, what is due, which parts of my life have had no time this week, and which goals are still short of a weekly time target. Suggest a shape for Saturday and Sunday and block out time for two or three things worth doing, filed under the goal they are for. Leave plenty unbooked.',
     trigger: { type: 'schedule', at: '18:00', days: ['thu'] },
     note: 'Something planned for the weekend, before it arrives.',
     available: true,
@@ -2166,6 +2187,7 @@ const goals: Goal[] = [
   // Nothing points at this one, which is what makes it the interesting row:
   // the Overview has to say "not touched since March" well.
   goal('g-write', 'r-self', 'Write something every week', 'active', null, 0),
+  goal('g-read', 'r-self', 'Read twelve books this year', 'active', null, 1),
 ]
 
 function goal(
@@ -3037,6 +3059,91 @@ function matchReadings(q: ReadingQuery, paginate = true): Reading[] {
         a.id.localeCompare(b.id),
     )
     .slice(0, (paginate ? q.limit : null) ?? undefined)
+}
+
+/**
+ * A derived tracker's days, worked out the way the vault's `derived_days`
+ * does: actual minutes of blocks whose resolved purpose is the tracker's own
+ * (a role counting its goals too), or library items finished or re-read,
+ * per day. Nothing derived was ticked on a page, beside an entry, or at a
+ * known minute, so a query asking for any of those gets none.
+ */
+function derivedDays(q: ReadingQuery): TrackerDay[] {
+  if (q.recordedOnly || q.journalId || q.entryId || q.timedOnly) return []
+  const within = (d: string) => (!q.from || d >= q.from) && (!q.to || d <= q.to)
+  const out: TrackerDay[] = []
+  for (const t of trackers) {
+    if (!t.source || t.source.type === 'manual') continue
+    if (q.trackerIds?.length && !q.trackerIds.includes(t.id)) continue
+    const byDay = new Map<string, number>()
+    if (t.source.type === 'time') {
+      const mine = t.purpose
+      if (!mine) continue
+      for (const b of blocks) {
+        if (b.kind !== 'actual' || !within(b.localDate)) continue
+        const p = purposeOfBlock(b)
+        const counts =
+          samePurpose(p, mine) ||
+          (mine.type === 'role' &&
+            p?.type === 'goal' &&
+            goals.find((g) => g.id === p.id)?.roleId === mine.id)
+        if (!counts) continue
+        const minutes = Math.max(
+          0,
+          Math.round((new Date(b.end).getTime() - new Date(b.start).getTime()) / 60_000),
+        )
+        byDay.set(b.localDate, (byDay.get(b.localDate) ?? 0) + minutes)
+      }
+    } else {
+      const kindId = t.source.kindId ?? null
+      for (const log of logs) {
+        if (log.event !== 'finished' && log.event !== 'revisited') continue
+        if (!within(log.date)) continue
+        if (kindId && items.find((i) => i.id === log.itemId)?.kindId !== kindId) continue
+        byDay.set(log.date, (byDay.get(log.date) ?? 0) + 1)
+      }
+    }
+    for (const [date, value] of byDay) {
+      if (value <= 0) continue
+      out.push({
+        trackerId: t.id,
+        date,
+        count: 1,
+        sum: value,
+        max: value,
+        firstAt: null,
+        lastAt: null,
+      })
+    }
+  }
+  return out
+}
+
+/** A derived day as the one reading it stands for. The id holds still. */
+function derivedReading(d: TrackerDay): Reading {
+  return {
+    id: `derived-${d.trackerId}-${d.date}`,
+    journalId: null,
+    trackerId: d.trackerId,
+    entryId: null,
+    localDate: d.date,
+    at: null,
+    tz: 'UTC',
+    value: d.sum,
+    note: '',
+    createdAt: iso(0),
+    updatedAt: iso(0),
+  }
+}
+
+/** The vault refuses to be told what it works out for itself. */
+function refuseDerived(tracker: Tracker | undefined) {
+  if (tracker?.source && tracker.source.type !== 'manual') {
+    throw new VaultError(
+      'invalid',
+      `“${tracker.name}” is worked out from what the vault already records, and cannot be recorded by hand`,
+    )
+  }
 }
 
 /** What the real vault does on the way in: a value has to mean something. */
@@ -3935,7 +4042,7 @@ export const mockInvoke = async <T>(
         color: '#e11d48',
         unit: '',
         defaultValue: 1,
-        target: null,
+        targets: [],
         scaleMax: 10,
         onCalendar: false,
         archived: false,
@@ -3947,7 +4054,15 @@ export const mockInvoke = async <T>(
 
     case 'list_readings': {
       requireUnlocked()
-      return matchReadings((args.query ?? {}) as ReadingQuery).map((r) => structuredClone(r)) as T
+      const q = (args.query ?? {}) as ReadingQuery
+      const derived = derivedDays(q).map(derivedReading)
+      const all = [...matchReadings(q, false), ...derived].sort(
+        (a, b) =>
+          a.localDate.localeCompare(b.localDate) ||
+          (a.at ?? '').localeCompare(b.at ?? '') ||
+          a.id.localeCompare(b.id),
+      )
+      return all.slice(0, q.limit ?? undefined).map((r) => structuredClone(r)) as T
     }
 
     case 'tracker_days': {
@@ -3973,6 +4088,7 @@ export const mockInvoke = async <T>(
         }
         days.set(key, d)
       }
+      for (const d of derivedDays(args.query ?? {})) days.set(`${d.date}/${d.trackerId}`, d)
       return [...days.values()].sort(
         (a, b) => a.date.localeCompare(b.date) || a.trackerId.localeCompare(b.trackerId),
       ) as T
@@ -3984,6 +4100,7 @@ export const mockInvoke = async <T>(
       const today = day(0)
       const at = (args.at as string | null) ?? (date === today ? new Date().toISOString() : null)
       const tracker = trackers.find((t) => t.id === args.trackerId)
+      refuseDerived(tracker)
       const raw = Number(args.value)
       const value = clampReading(tracker, raw)
       const now = new Date().toISOString()
@@ -4010,6 +4127,7 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       const r = structuredClone(args.reading as Reading)
       const tracker = trackers.find((t) => t.id === r.trackerId)
+      refuseDerived(tracker)
       r.value = clampReading(tracker, r.value)
       r.updatedAt = new Date().toISOString()
       const i = readings.findIndex((x) => x.id === r.id)
@@ -4032,6 +4150,13 @@ export const mockInvoke = async <T>(
     case 'save_tracker': {
       requireUnlocked()
       const t = structuredClone(args.tracker as Tracker)
+      // `Tracker::normalize`, the parts a derived tracker depends on.
+      if (t.source && t.source.type !== 'manual') {
+        t.kind = 'amount'
+        t.onCalendar = false
+        t.unit = t.source.type === 'time' ? 'min' : ''
+      }
+      t.targets = (t.targets ?? []).filter((x) => x.min != null || x.max != null)
       const at = trackers.findIndex((x) => x.id === t.id)
       if (at >= 0) trackers[at] = t
       else trackers.push(t)

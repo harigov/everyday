@@ -27,7 +27,9 @@
 
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{GoalId, RoleId};
-use everyday_core::purpose::{Goal, GoalActivity, Purpose, PurposeMinutes, Role, RoleEventMinutes};
+use everyday_core::purpose::{
+    Goal, GoalActivity, Purpose, PurposeDayMinutes, PurposeMinutes, Role, RoleEventMinutes,
+};
 use everyday_core::record::RecordKind;
 use everyday_core::store::purpose::{GoalQuery, PurposeStore, PurposeWindow, goal_aad, role_aad};
 
@@ -290,6 +292,46 @@ impl PurposeStore for SqlStore {
             slot.blocks += blocks;
         }
         Ok(out)
+    }
+
+    fn actual_minutes_by_day(&self, window: PurposeWindow) -> Result<Vec<PurposeDayMinutes>> {
+        // `time_by_purpose`'s scan, cut by day instead of by kind: the same
+        // three-link chain and the same pair of COALESCEs, for the reasons
+        // given there. Actual blocks only.
+        let sql = format!(
+            "SELECT b.local_date,
+                    COALESCE(pb.purpose_kind, pt.purpose_kind, pp.purpose_kind),
+                    COALESCE(pb.purpose_id,   pt.purpose_id,   pp.purpose_id),
+                    CAST(COALESCE(SUM({greatest}(b.end_us - b.start_us, 0)), 0) AS BIGINT)
+             FROM time_blocks b
+             LEFT JOIN tasks t ON t.id = b.task_id
+             LEFT JOIN purposes pb ON pb.record_kind = 'block' AND pb.record_id = b.id
+             LEFT JOIN purposes pt ON pt.record_kind = 'task'  AND pt.record_id = b.task_id
+             LEFT JOIN purposes pp ON pp.record_kind = 'project'
+                                  AND pp.record_id = COALESCE(b.project_id, t.project_id)
+             WHERE b.kind = 'actual' AND b.local_date >= ?1 AND b.local_date <= ?2
+             GROUP BY b.local_date,
+                      COALESCE(pb.purpose_kind, pt.purpose_kind, pp.purpose_kind),
+                      COALESCE(pb.purpose_id,   pt.purpose_id,   pp.purpose_id)",
+            greatest = self.dialect.greatest(),
+        );
+        let rows =
+            self.read().query(&sql, &vals![window.from.to_string(), window.to.to_string()])?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(PurposeDayMinutes {
+                    date: row
+                        .text(0)?
+                        .parse::<jiff::civil::Date>()
+                        .map_err(|e| Error::Invalid(e.to_string()))?,
+                    purpose: Purpose::from_columns(
+                        row.opt_text(1)?.as_deref(),
+                        row.opt_text(2)?.as_deref(),
+                    ),
+                    minutes: (row.i64(3)?.max(0) / 1_000_000 / 60) as u64,
+                })
+            })
+            .collect()
     }
 
     fn events_by_role(&self, window: PurposeWindow) -> Result<Vec<RoleEventMinutes>> {

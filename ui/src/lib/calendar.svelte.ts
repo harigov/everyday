@@ -436,7 +436,11 @@ class CalendarState {
             api.tasks({ statuses: OPEN_STATUSES, sort: 'dueAsc', limit: 300 }),
             api.projects(),
             api.entries({ from, to, sort: 'dateAsc', limit: 500 }),
-            app.supportsTrackers ? api.readings({ from, to }) : Promise.resolve([]),
+            // Recorded only: a derived tracker is never drawn on the grid, and
+            // working its days out would be a scan of every block to discard.
+            app.supportsTrackers
+              ? api.readings({ from, to, recordedOnly: true })
+              : Promise.resolve([]),
           ])
         // Only the newest navigation may land. `step`, `goto` and `setView`
         // each fire this without waiting for the last call to answer, so
@@ -471,7 +475,7 @@ class CalendarState {
     if (!app.supportsTrackers) return
     const [from, to] = this.range
     try {
-      this.readings = await api.readings({ from, to })
+      this.readings = await api.readings({ from, to, recordedOnly: true })
     } catch (e) {
       await quietly(e)
     }

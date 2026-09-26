@@ -20,13 +20,20 @@
   import { purpose } from '../lib/purpose.svelte'
   import { todo } from '../lib/todo.svelte'
   import { app } from '../lib/state.svelte'
-  import type { GoalId, GoalStatus, QuickBackfillPick, RoleId } from '../lib/types'
+  import type { GoalId, GoalStatus, QuickBackfillPick, RoleId, Target, Tracker } from '../lib/types'
   import { api } from '../lib/api'
   import { ask, quick, slot } from '../lib/quick.svelte'
+  import { library } from '../lib/library.svelte'
+  import { targets } from '../lib/targets.svelte'
+  import { tracking } from '../lib/tracking.svelte'
+  import { describeProgress, isManual } from '../lib/tracker'
   import Suggestions from './Suggestions.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
+  import Meter from './Meter.svelte'
+  import TargetEditor from './TargetEditor.svelte'
+  import TrackerIcon from './TrackerIcon.svelte'
 
   let newGoal = $state<Record<string, string>>({})
   let pendingDelete = $state<{ id: string; title: string } | null>(null)
@@ -121,6 +128,183 @@
         run: () => (pendingDelete = { id, title }),
       },
     ])
+  }
+
+  // ── targets ──────────────────────────────────────────────────────────
+  //
+  // A goal measures itself through the trackers filed under it. What this
+  // section adds is the other direction: starting from the goal, pick what
+  // to count -- time filed under it, things finished off a shelf, a tracker
+  // you already keep, or a new one -- and say how much of it, per what.
+  // Behind "time on this goal" and "books finished" is a derived tracker the
+  // core works out for itself; the section never says so, because from here
+  // it is a target, not a tracker.
+
+  const measured = $derived(goal ? targets.trackersOf(goal.id) : [])
+  const measures = $derived(goal ? targets.measuresOf(goal.id) : [])
+
+  /** The tracker whose targets are open for editing, if any. */
+  let editingTargets = $state<string | null>(null)
+  /**
+   * What its editor shows: the saved targets plus any still being written.
+   * Only the ones with a number are saved, on every change, so a row just
+   * added is not dropped by the save before anybody has typed into it.
+   */
+  let editDraft = $state<Target[]>([])
+
+  function toggleEditing(tracker: Tracker) {
+    if (editingTargets === tracker.id) {
+      editingTargets = null
+      return
+    }
+    editDraft = structuredClone($state.snapshot(tracker.targets ?? []))
+    editingTargets = tracker.id
+  }
+
+  /** The add form: what to count, and the targets drafted for it. */
+  let adding = $state<{
+    measure: string
+    name: string
+    unit: string
+    draft: Target[]
+  } | null>(null)
+
+  $effect(() => {
+    // A new goal selected is a different form.
+    void purpose.selected
+    adding = null
+    editingTargets = null
+  })
+
+  /** A shelf in its own words: "Books: read", "Restaurants: been". */
+  function shelfWords(shelf: { name: string; verbs: { done: string } }): string {
+    return `${shelf.name}: ${shelf.verbs.done.toLowerCase()}`
+  }
+
+  /** Manual trackers not already filed under this goal: "use one I keep". */
+  const reusable = $derived(
+    goal
+      ? tracking.loggable.filter((t) => !(t.purpose?.type === 'goal' && t.purpose.id === goal.id))
+      : [],
+  )
+
+  function startAdding() {
+    if (library.kinds.length === 0) void library.refreshKinds()
+    adding = {
+      measure: 'time',
+      name: '',
+      unit: 'min',
+      draft: [{ min: null, max: null, per: 'week', tally: 'value' }],
+    }
+  }
+
+  /** The shape the draft is being written against, for the editor's words. */
+  const addingShape = $derived.by((): Pick<Tracker, 'kind' | 'unit' | 'source'> => {
+    const m = adding?.measure ?? 'time'
+    if (m === 'time') return { kind: 'amount', unit: 'min', source: { type: 'time' } }
+    if (m.startsWith('finished:')) return { kind: 'amount', unit: '', source: { type: 'finished' } }
+    if (m.startsWith('tracker:')) {
+      const t = tracking.tracker(m.slice('tracker:'.length))
+      if (t) return t
+    }
+    return { kind: 'amount', unit: adding?.unit ?? '', source: { type: 'manual' } }
+  })
+
+  /**
+   * Bring the draft's tallies in line with what is being counted.
+   *
+   * The editor shows a fixed word for a derived measure or a check, but the
+   * draft keeps whatever tally was picked before the switch -- so "days",
+   * chosen against a tracker kept by hand and then carried onto time filed
+   * under the goal, would save as "60 days a week".
+   */
+  function fitTallies(draft: Target[], shape: Pick<Tracker, 'kind' | 'source'>): Target[] {
+    const derived = !!shape.source && shape.source.type !== 'manual'
+    const tally =
+      derived || shape.kind === 'scale' ? 'value' : shape.kind === 'check' ? 'days' : null
+    return tally ? draft.map((t) => ({ ...t, tally })) : draft
+  }
+
+  const ready = $derived(
+    !!adding &&
+      adding.draft.some((t) => t.min != null || t.max != null) &&
+      (adding.measure !== 'new' || adding.name.trim() !== ''),
+  )
+
+  async function commitAdding() {
+    const form = adding
+    const g = goal
+    if (!form || !g || !ready) return
+    const draft = fitTallies(
+      form.draft.filter((t) => t.min != null || t.max != null),
+      addingShape,
+    )
+    const filed = { type: 'goal' as const, id: g.id }
+
+    if (form.measure.startsWith('tracker:')) {
+      const existing = tracking.tracker(form.measure.slice('tracker:'.length))
+      if (!existing) return
+      await tracking.saveTracker({
+        ...$state.snapshot(existing),
+        purpose: filed,
+        targets: [...(existing.targets ?? []), ...draft],
+      })
+    } else {
+      let name: string
+      let source: Tracker['source'] = { type: 'manual' }
+      let icon = 'target'
+      if (form.measure === 'time') {
+        name = `Time on ${g.title}`
+        source = { type: 'time' }
+        icon = 'clock'
+      } else if (form.measure.startsWith('finished:')) {
+        const kindId = form.measure.slice('finished:'.length) || null
+        const shelf = kindId ? library.kinds.find((k) => k.id === kindId) : null
+        name = shelf ? shelfWords(shelf) : 'Things finished'
+        source = { type: 'finished', kindId }
+        icon = 'trophy'
+      } else {
+        name = form.name.trim()
+      }
+      const made = await tracking.addTracker(name, 'amount')
+      if (!made) return
+      await tracking.saveTracker({
+        ...$state.snapshot(made),
+        icon,
+        unit: form.measure === 'new' ? form.unit.trim() : made.unit,
+        source,
+        purpose: filed,
+        targets: draft,
+      })
+    }
+    adding = null
+    await targets.refresh()
+  }
+
+  async function saveTargets(tracker: Tracker, next: Target[]) {
+    editDraft = next
+    await tracking.saveTracker({
+      ...$state.snapshot(tracker),
+      targets: next.filter((t) => t.min != null || t.max != null),
+    })
+    await targets.refresh()
+  }
+
+  /**
+   * Stop measuring the goal by this tracker.
+   *
+   * A derived tracker exists only to measure, and holds nothing that is not
+   * worked out afresh from blocks or the library, so it goes. A tracker you
+   * record by hand keeps its history and its targets and is only unfiled.
+   */
+  async function stopMeasuring(tracker: Tracker) {
+    if (isManual(tracker)) {
+      await tracking.saveTracker({ ...$state.snapshot(tracker), purpose: null })
+    } else {
+      await tracking.deleteTracker(tracker.id)
+    }
+    editingTargets = null
+    await targets.refresh()
   }
 
   /** The pane itself, where there is no goal under the pointer. */
@@ -309,6 +493,111 @@
       onchange={(e) => purpose.saveGoal({ ...$state.snapshot(goal), notes: e.currentTarget.value })}
     ></textarea>
 
+    <h3>Targets</h3>
+    {#if measured.length === 0 && !adding}
+      <p class="dim small">
+        How you would know it is happening: an hour or two a week on it, twelve books this year, no
+        more than an hour of TV a day.
+      </p>
+    {/if}
+    {#each measured as tracker (tracker.id)}
+      {@const mine = measures.filter((m) => m.tracker.id === tracker.id)}
+      <div class="measure">
+        <div class="mhead">
+          <TrackerIcon name={tracker.icon} color={tracker.color} size={16} />
+          <span class="mname">{tracker.name}</span>
+          <button
+            class="quiet"
+            title="Edit targets"
+            aria-label="Edit targets for {tracker.name}"
+            onclick={() => toggleEditing(tracker)}
+          >
+            <Icon name="pencil" size={13} />
+          </button>
+        </div>
+        {#each mine as m, i (i)}
+          {@const words = describeProgress(tracker, m.progress)}
+          <Meter
+            label={words.line}
+            value={words.ratio}
+            color={words.over ? 'var(--danger)' : tracker.color}
+            note={words.status ?? undefined}
+          />
+        {/each}
+        {#if mine.length === 0 && editingTargets !== tracker.id}
+          <p class="dim small">Filed here, with nothing asked of it yet.</p>
+        {/if}
+        {#if editingTargets === tracker.id}
+          <div class="edit">
+            <TargetEditor
+              {tracker}
+              targets={editDraft}
+              onchange={(next: Target[]) => saveTargets(tracker, next)}
+            />
+            <button class="link-danger" onclick={() => stopMeasuring(tracker)}>
+              {isManual(tracker) ? 'Unfile from this goal' : 'Stop measuring this'}
+            </button>
+          </div>
+        {/if}
+      </div>
+    {/each}
+
+    {#if adding}
+      <div class="adding">
+        <label class="lab" for="t-measure">Count</label>
+        <select
+          id="t-measure"
+          value={adding.measure}
+          onchange={(e) => {
+            if (!adding) return
+            adding.measure = e.currentTarget.value
+            adding.draft = fitTallies(adding.draft, addingShape)
+          }}
+        >
+          <option value="time">Time filed under this goal</option>
+          {#each library.kinds as shelf (shelf.id)}
+            <option value="finished:{shelf.id}">{shelfWords(shelf)}</option>
+          {/each}
+          <option value="finished:">Anything finished, on any shelf</option>
+          {#each reusable as t (t.id)}
+            <option value="tracker:{t.id}">{t.name}</option>
+          {/each}
+          <option value="new">Something new…</option>
+        </select>
+        {#if adding.measure === 'new'}
+          <div class="pair">
+            <input placeholder="What, e.g. TV" aria-label="Name" bind:value={adding.name} />
+            <input class="unit" placeholder="min" aria-label="Unit" bind:value={adding.unit} />
+          </div>
+        {/if}
+        {#if adding.measure.startsWith('tracker:')}
+          {@const t = tracking.tracker(adding.measure.slice('tracker:'.length))}
+          {#if t?.purpose?.type === 'goal'}
+            <p class="dim small">
+              It counts towards “{purpose.label(t.purpose)}” now, and moves here.
+            </p>
+          {/if}
+        {/if}
+        <div class="draft">
+          <TargetEditor
+            tracker={addingShape}
+            targets={adding.draft}
+            addLabel="Another target"
+            onchange={(next: Target[]) => adding && (adding.draft = next)}
+          />
+        </div>
+        <div class="formfoot">
+          <button class="btn btn-primary" disabled={!ready} onclick={commitAdding}>Add</button>
+          <button class="btn" onclick={() => (adding = null)}>Cancel</button>
+        </div>
+      </div>
+    {:else if tracking.enabled}
+      <button class="mini-quick" onclick={startAdding}>
+        <Icon name="plus" size={12} />
+        Add a target
+      </button>
+    {/if}
+
     {#if activity}
       <h3>Against it</h3>
       <ul class="tally">
@@ -322,7 +611,7 @@
         {#if activity.readings > 0}<li>{plural(activity.readings, 'reading')}</li>{/if}
         {#if activity.items > 0}<li>{plural(activity.items, 'thing')} on a shelf</li>{/if}
       </ul>
-      {#if activity.openTasks === 0 && activity.actualMinutes === 0 && activity.entries === 0 && activity.readings === 0}
+      {#if activity.openTasks === 0 && activity.actualMinutes === 0 && activity.entries === 0 && activity.readings === 0 && measured.length === 0}
         <p class="dim small">
           Nothing points at this yet. File a project, an hour or a tracker under it and it starts
           adding up.
@@ -643,5 +932,66 @@
   }
   .danger:disabled {
     opacity: 0.4;
+  }
+
+  /* ── Targets ────────────────────────────────────────────────────── */
+
+  .measure {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-4);
+  }
+  .mhead {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .mname {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-sm);
+    font-weight: 600;
+  }
+  .edit,
+  .adding {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+  }
+  .adding {
+    margin-bottom: var(--sp-2);
+  }
+  .adding .lab {
+    margin-top: 0;
+  }
+  .pair {
+    display: flex;
+    gap: var(--sp-2);
+  }
+  .detail .pair .unit {
+    width: 5rem;
+    flex: none;
+  }
+  .formfoot {
+    display: flex;
+    gap: var(--sp-2);
+  }
+  .link-danger {
+    align-self: flex-start;
+    color: var(--fg-subtle);
+    font-size: var(--text-xs);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .link-danger:hover {
+    color: var(--danger);
   }
 </style>

@@ -6,7 +6,9 @@
 // a reading is a moment or a span -- and it is worth being able to test that
 // without a store, a backend or a browser.
 
-import type { Journal, Reading, Tracker } from './types'
+import { formatMinutes } from './format'
+import type { TargetProgress } from './habits'
+import type { Journal, Period, Reading, Target, Tracker } from './types'
 import { aggregateOf } from './types'
 
 /** Rounded the way a person writes a number: 45, not 45.0000001. */
@@ -70,7 +72,10 @@ export function dayValue(tracker: Tracker, readings: Reading[]): number {
  * logic the interface needs its own copy of, because the grid asks about
  * every reading on screen sixty times a minute.
  */
-export function durationMinutes(tracker: Tracker, value: number): number | null {
+export function durationMinutes(
+  tracker: Pick<Tracker, 'kind' | 'unit'>,
+  value: number,
+): number | null {
   if (tracker.kind !== 'amount') return null
   const unit = tracker.unit.trim().toLowerCase()
   let minutes: number
@@ -78,6 +83,116 @@ export function durationMinutes(tracker: Tracker, value: number): number | null 
   else if (['h', 'hr', 'hrs', 'hour', 'hours'].includes(unit)) minutes = value * 60
   else return null
   return Number.isFinite(minutes) && minutes > 0 ? minutes : null
+}
+
+/** Is this a tracker somebody records readings of, rather than a derived one? */
+export function isManual(tracker: Pick<Tracker, 'source'>): boolean {
+  return !tracker.source || tracker.source.type === 'manual'
+}
+
+/**
+ * A quantity of this tracker, the way a target or a total reads it.
+ *
+ * Time reads as time -- "1h 30m", not "90 min" -- because a weekly target
+ * of an hour or two is thought of in hours. A days tally reads in days.
+ */
+export function formatAmount(
+  tracker: Pick<Tracker, 'kind' | 'unit'>,
+  value: number,
+  tally: Target['tally'] = 'value',
+): string {
+  if (tally === 'days' || tracker.kind === 'check') {
+    return `${formatNumber(value)} ${value === 1 ? 'day' : 'days'}`
+  }
+  const perUnit = durationMinutes(tracker, 1)
+  if (perUnit !== null) return formatMinutes(value * perUnit)
+  return tracker.unit ? `${formatNumber(value)} ${tracker.unit}` : formatNumber(value)
+}
+
+/**
+ * A target in a sentence: "at least 3 days a week", "between 1h and 2h a
+ * week", "at most 1h a day", "at least 12 a year". Mirrors
+ * `Target::describe` in the core, which says the same to the assistant.
+ */
+export function describeTarget(tracker: Pick<Tracker, 'kind' | 'unit'>, target: Target): string {
+  const amount = (v: number) => formatAmount(tracker, v, target.tally)
+  const { min, max } = target
+  // The commonest habit of all, which "at least 1 day a day" is not how
+  // anybody says.
+  if (target.per === 'day' && min === 1 && max == null) {
+    if (target.tally === 'days' || tracker.kind === 'check') return 'every day'
+  }
+  let bound: string
+  if (min != null && max != null) {
+    bound = min === max ? `exactly ${amount(min)}` : `between ${amount(min)} and ${amount(max)}`
+  } else if (min != null) bound = `at least ${amount(min)}`
+  else if (max != null) bound = `at most ${amount(max)}`
+  else return 'no target'
+  return `${bound} a ${target.per}`
+}
+
+const THIS: Record<Period, string> = {
+  day: 'today',
+  week: 'this week',
+  month: 'this month',
+  quarter: 'this quarter',
+  year: 'this year',
+}
+
+/** How a target's current period reads, in the words every view uses. */
+export interface ProgressWords {
+  /** How far towards the minimum (or the limit, for a maximum), `0..`. */
+  ratio: number
+  /** Compact, for a sidebar row: "40m/1h", "1/12". */
+  short: string
+  /** One line: "40m this week · between 1h and 2h a week". */
+  line: string
+  /**
+   * What is worth saying about it, if anything: "over by 20m", "8 behind
+   * pace", "on pace", "done". Always words, so the state is never carried
+   * by a colour alone.
+   */
+  status: string | null
+  /** Past a maximum: the one state drawn in the danger colour. */
+  over: boolean
+}
+
+/**
+ * Put one target's current period into words.
+ *
+ * Pace is only spoken of for a month or longer. Over a week it is noise --
+ * "0.4 days behind pace" on a Monday -- and a day has none.
+ */
+export function describeProgress(
+  tracker: Pick<Tracker, 'kind' | 'unit'>,
+  p: TargetProgress,
+): ProgressWords {
+  const { target, value } = p
+  const amount = (v: number) => formatAmount(tracker, v, target.tally)
+  const bare = (v: number) =>
+    target.tally === 'days' || tracker.kind === 'check' ? formatNumber(v) : amount(v)
+  const bound = target.min ?? target.max ?? 0
+  const ratio = bound > 0 ? value / bound : value > 0 ? 1 : 0
+  const over = p.standing === 'over'
+
+  let status: string | null = null
+  if (over && target.max != null) status = `over by ${amount(value - target.max)}`
+  else if (p.state === 'met') status = 'done'
+  else if (
+    p.expected !== null &&
+    (target.per === 'month' || target.per === 'quarter' || target.per === 'year')
+  ) {
+    const behind = Math.round(p.expected - value)
+    status = behind >= 1 ? `${bare(behind)} behind pace` : 'on pace'
+  }
+
+  return {
+    ratio,
+    short: `${bare(value)}/${bare(bound)}`,
+    line: `${amount(value)} ${THIS[target.per]} · ${describeTarget(tracker, target)}`,
+    status,
+    over,
+  }
 }
 
 /**
@@ -90,8 +205,11 @@ export function durationMinutes(tracker: Tracker, value: number): number | null 
  */
 export function shownTrackers(journal: Journal | null, all: Tracker[]): Tracker[] {
   if (!journal) return []
-  return journal.shownTrackers
-    .map((id) => all.find((t) => t.id === id))
-    .filter((t): t is Tracker => !!t && !t.archived)
-    .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt))
+  return (
+    journal.shownTrackers
+      .map((id) => all.find((t) => t.id === id))
+      // A derived tracker is never a chip: there is nothing to tick.
+      .filter((t): t is Tracker => !!t && !t.archived && isManual(t))
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt))
+  )
 }

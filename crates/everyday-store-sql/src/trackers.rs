@@ -6,7 +6,7 @@
 //! a monthly average, a streak, minutes per week -- is a `GROUP BY` over an
 //! index rather than a decryption of the vault. What stays sealed is the
 //! only part that identifies anything: the tracker's *name*, its unit and
-//! its cadence, all inside the definition's payload, and the note attached
+//! its targets, all inside the definition's payload, and the note attached
 //! to a reading. The database says tracker `7f3a...` was `500` at 08:12 on
 //! the 14th and never what `7f3a...` is.
 

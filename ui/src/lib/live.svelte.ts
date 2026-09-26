@@ -32,6 +32,7 @@ import { purpose } from './purpose.svelte'
 import { panels } from './panels.svelte'
 import { app } from './state.svelte'
 import { todo } from './todo.svelte'
+import { targets as goalTargets } from './targets.svelte'
 import { tracking } from './tracking.svelte'
 import type { ChangeEvent, ChangeKind } from './types'
 
@@ -80,6 +81,9 @@ export const RELOAD = {
   // pane, every purpose picker, and whatever the Overview has on it. One
   // reload for all of them, because there is one copy -- see `purpose`.
   purpose: () => purpose.load(true),
+  // How each goal is doing against its targets: the meters on the todo
+  // sidebar's goal rows and in a goal's Targets section. See `TARGET_FEEDING`.
+  goalTargets: () => goalTargets.refresh(),
   // Settings that moved: the auto-lock, the assistant's configuration. What
   // draws them re-reads on open, so the useful thing is the status word.
   status: () => app.refreshStatus(),
@@ -124,6 +128,29 @@ const PURPOSE_BEARING: ReadonlySet<ChangeKind> = new Set([
   'tracker',
   'reading',
   'calendar',
+])
+
+/**
+ * The kinds a goal's target meters are read off.
+ *
+ * A target counts a tracker's days, and a derived tracker's days are worked
+ * out from blocks (through the task and project they inherit a purpose
+ * from) and from the library's log. So an hour logged on another machine,
+ * or a book finished there, moves a meter while the change event says only
+ * "block" or "log" -- the same shape of problem `PURPOSE_BEARING` solves for
+ * the Overview, and solved the same way: only while the todo app, which is
+ * where the meters are drawn, is on screen. It re-reads them when opened.
+ */
+const TARGET_FEEDING: ReadonlySet<ChangeKind> = new Set([
+  'block',
+  'log',
+  'item',
+  'task',
+  'project',
+  'tracker',
+  'reading',
+  'goal',
+  'role',
 ])
 
 /** Which of those a change of each kind asks for. */
@@ -194,7 +221,11 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
  * Its own function so the collapsing is testable without the stores: it is a
  * rule about a table, and the rule is the part that was wrong.
  */
-export function targetsFor(kinds: ChangeKind[], overviewShowing = false): ReloadTarget[] {
+export function targetsFor(
+  kinds: ChangeKind[],
+  overviewShowing = false,
+  todoShowing = false,
+): ReloadTarget[] {
   const targets = new Set(kinds.map((kind) => RELOADS[kind]).filter((t) => t !== null))
   // See `PURPOSE_BEARING`: these do not name the Overview and still change what
   // it says, but only matter while somebody is looking at it.
@@ -205,6 +236,9 @@ export function targetsFor(kinds: ChangeKind[], overviewShowing = false): Reload
   // store reload above only refreshes the lists behind them.
   if (overviewShowing && kinds.some((kind) => kind === 'role' || kind === 'goal')) {
     targets.add('overview')
+  }
+  if (todoShowing && kinds.some((kind) => TARGET_FEEDING.has(kind))) {
+    targets.add('goalTargets')
   }
   return [...targets]
 }
@@ -223,11 +257,12 @@ export function targetsFor(kinds: ChangeKind[], overviewShowing = false): Reload
 export function planBatch(
   changes: ChangeWithIds[],
   overviewShowing = false,
+  todoShowing = false,
 ): { applied: ReloadTarget[]; refreshed: ReloadTarget[] } {
   const kinds = changes.map((c) => c.kind)
   const applied: ReloadTarget[] = []
   const refreshed: ReloadTarget[] = []
-  for (const target of targetsFor(kinds, overviewShowing)) {
+  for (const target of targetsFor(kinds, overviewShowing, todoShowing)) {
     const relevant = changes.filter((c) => RELOADS[c.kind] === target)
     const apply = applierFor(target)
     if (apply && apply(relevant)) applied.push(target)
@@ -302,7 +337,7 @@ class Live {
       // project both reload the todo app, and doing it twice is a wasted round
       // trip on a connection that may be a phone's. `applied` targets need
       // nothing further -- their store already patched itself.
-      const { refreshed } = planBatch(changes, app.section === 'overview')
+      const { refreshed } = planBatch(changes, app.section === 'overview', app.section === 'todo')
       for (const target of refreshed) {
         void Promise.resolve(RELOAD[target]()).catch(() => {})
       }

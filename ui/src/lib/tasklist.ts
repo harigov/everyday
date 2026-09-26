@@ -9,7 +9,14 @@
 
 import { friendlyDate } from './format'
 import { addDays } from './time'
-import type { Priority, Purpose, Task, TaskId, TaskStatus } from './types'
+import {
+  isOpen,
+  type Priority,
+  type Purpose,
+  type Task,
+  type TaskId,
+  type TaskStatus,
+} from './types'
 
 export type GroupBy = 'none' | 'status' | 'due' | 'priority' | 'purpose'
 
@@ -36,6 +43,30 @@ export function dueBucket(task: Task, today: string): Bucket {
     return { key: task.dueDate, label: friendlyDate(task.dueDate), order: 2 }
   }
   return { key: 'later', label: 'Later', order: 8 }
+}
+
+/**
+ * How many whole days an open task has slipped past its deadline, or zero.
+ *
+ * Counted in calendar days from the date alone, the same line
+ * `todo.overdue` draws: a task due Monday is one day late on Tuesday
+ * whatever time it is, and a task due today is not late yet even after its
+ * time has passed. Done by UTC arithmetic on the two ISO dates so a
+ * daylight-saving change in between cannot make a day 23 hours long.
+ */
+export function daysLate(task: Task, today: string): number {
+  if (!isOpen(task.status) || !task.dueDate || task.dueDate >= today) return 0
+  return Math.round((utcDay(today) - utcDay(task.dueDate)) / 86_400_000)
+}
+
+/** The words on the badge under a late task: "Delayed by 2 days". */
+export function lateLabel(days: number): string {
+  return days === 1 ? 'Delayed by 1 day' : `Delayed by ${days} days`
+}
+
+function utcDay(iso: string): number {
+  const [y, m, d] = iso.split('-').map(Number)
+  return Date.UTC(y!, m! - 1, d)
 }
 
 /** How a purpose is spelled as a section key. */

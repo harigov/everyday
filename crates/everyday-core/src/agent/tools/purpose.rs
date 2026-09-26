@@ -43,7 +43,12 @@ pub(super) static TOOLS: &[Tool] = &[
         "What somebody has said they want, under which part of their life. With \
          include_activity, each goal also reports its hours, its open tasks and \
          when it was last touched \u{2014} which is how to find the ones that have \
-         gone quiet.",
+         gone quiet \u{2014} and its targets: how it is measured (by the trackers \
+         filed under it, e.g. 'between 60 and 120 min a week' of time on it, or \
+         'at least 12 a year' books read) and where the current period stands, \
+         with its dates, the value so far, short/within/over, and the pace an even \
+         spread would have reached by today. Weeks run Monday to Sunday. To give a \
+         goal a target, use set_target.",
         run_list_goals
     ),
     tool!(
@@ -59,7 +64,8 @@ pub(super) static TOOLS: &[Tool] = &[
             ],
             &["role_id", "title"]
         ),
-        "Add a goal under a role.",
+        "Add a goal under a role. To say how it will be measured \u{2014} an hour or \
+         two a week, twelve a year \u{2014} follow with set_target.",
         run_create_goal
     ),
     tool!(
@@ -115,8 +121,9 @@ pub(super) static TOOLS: &[Tool] = &[
         ),
         "Say what a record is for: a goal, or a part of a life directly. Filing a \
          project is worth more than filing its tasks \u{2014} everything under it \
-         inherits, so one call attributes the lot. Pass exactly one of goal_id, \
-         role_id or clear.",
+         inherits, so one call attributes the lot, and time logged against it then \
+         counts towards the goal's time targets. A tracker filed under a goal is \
+         how that goal is measured. Pass exactly one of goal_id, role_id or clear.",
         run_set_purpose
     ),
     tool!(
@@ -158,7 +165,12 @@ fn run_list_roles(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
     Ok(json!({ "count": rows.len(), "roles": rows }))
 }
 
-fn goal_json(goal: &Goal, role: Option<&str>, activity: Option<&GoalActivity>) -> Value {
+fn goal_json(
+    goal: &Goal,
+    role: Option<&str>,
+    activity: Option<&GoalActivity>,
+    targets: Vec<Value>,
+) -> Value {
     let mut out = json!({
         "id": goal.id.to_string(),
         "title": goal.title,
@@ -209,6 +221,9 @@ fn goal_json(goal: &Goal, role: Option<&str>, activity: Option<&GoalActivity>) -
         }
         m.insert("activity".into(), Value::Object(had));
     }
+    if !targets.is_empty() {
+        m.insert("targets".into(), Value::Array(targets));
+    }
     out
 }
 
@@ -221,6 +236,20 @@ fn run_list_goals(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 
     let roles = ctx.vault.roles()?;
     let with_activity = args.bool_or("include_activity", false);
+    // Every target of every tracker filed under a goal, measured once for
+    // the whole list rather than once per goal. A vault without trackers
+    // has goals and no targets, which is not an error.
+    let measured = if with_activity && ctx.vault.supports_trackers() {
+        let filed: Vec<_> = ctx
+            .vault
+            .trackers()?
+            .into_iter()
+            .filter(|t| !t.archived && matches!(t.purpose, Some(Purpose::Goal { .. })))
+            .collect();
+        ctx.vault.target_progress(&filed, ctx.today)?
+    } else {
+        Vec::new()
+    };
     let rows: Vec<Value> = ctx
         .vault
         .goals(&query)?
@@ -228,7 +257,20 @@ fn run_list_goals(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         .map(|goal| {
             let role = roles.iter().find(|r| r.id == goal.role_id).map(|r| r.name.as_str());
             let activity = if with_activity { ctx.vault.goal_activity(goal.id).ok() } else { None };
-            goal_json(&goal, role, activity.as_ref())
+            let targets = measured
+                .iter()
+                .filter(|(t, _)| t.purpose == Some(goal.purpose()))
+                .flat_map(|(t, each)| {
+                    each.iter().map(move |(g, p)| {
+                        let mut row = super::trackers::progress_json(t, g, p);
+                        let m = row.as_object_mut().expect("an object");
+                        m.insert("tracker".into(), json!(t.name));
+                        m.insert("tracker_id".into(), json!(t.id.to_string()));
+                        row
+                    })
+                })
+                .collect();
+            goal_json(&goal, role, activity.as_ref(), targets)
         })
         .collect();
     Ok(json!({ "count": rows.len(), "goals": rows }))

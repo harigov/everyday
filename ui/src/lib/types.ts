@@ -226,21 +226,46 @@ export function aggregateOf(kind: TrackerKind): Aggregate {
   return 'sum'
 }
 
-/** How often a habit is meant to happen. */
-export const PERIODS = ['day', 'week', 'month'] as const
+/**
+ * The calendar span a target is counted over.
+ *
+ * Calendar-aligned rather than rolling: "this week" starts on the week's
+ * first day (`localeWeekStart`) and "this year" on the first of January.
+ */
+export const PERIODS = ['day', 'week', 'month', 'quarter', 'year'] as const
 export type Period = (typeof PERIODS)[number]
 
 /**
- * A count and a period: "3× a week".
- *
- * `Tracker.target` answers "how much, in a day" and cannot say this — and a
- * streak counted against a daily target reads every rest day as a failure,
- * which is the shape of habit tracking that makes people stop.
+ * What a target counts within its period: the tracker's own aggregate
+ * (minutes summed, severity averaged), or days with something recorded.
+ * A check only ever counts days.
  */
-export interface Cadence {
-  times: number
+export type Tally = 'value' | 'days'
+
+/**
+ * How much, over which period: "at least 3 days a week", "at most 60 min a
+ * day", "between 60 and 120 min a week", "at least 12 a year".
+ *
+ * One shape for what used to be a daily `target` number and a `cadence` of
+ * times per period. Both bounds are inclusive and at least one is present.
+ */
+export interface Target {
+  min?: number | null
+  max?: number | null
   per: Period
+  tally: Tally
 }
+
+/**
+ * Where a tracker's readings come from.
+ *
+ * `manual` is somebody recording them. The others are worked out by the core
+ * from records the vault already keeps, and cannot be logged to: `time` is
+ * actual minutes of time blocks filed under the tracker's own purpose, and
+ * `finished` is library items finished (or re-read), on one shelf or all.
+ */
+export type TrackerSource =
+  { type: 'manual' } | { type: 'time' } | { type: 'finished'; kindId?: KindId | null }
 
 /**
  * A thing you have decided to record.
@@ -261,8 +286,6 @@ export interface Tracker {
   unit: string
   /** What the input prefills and the step its buttons take. */
   defaultValue: number
-  /** A daily goal, if there is one. Drives the ring on the chip. */
-  target?: number | null
   /** Top of a scale's range; the bottom is always 0. */
   scaleMax: number
   /** Draw this tracker's readings on the calendar. */
@@ -276,13 +299,14 @@ export interface Tracker {
    * keeps arriving.
    */
   purpose?: Purpose | null
+  /** Absent is `manual`. See `TrackerSource`. */
+  source?: TrackerSource | null
   /**
-   * How often it is meant to happen, if it is a habit.
-   *
-   * Absent means it is not one — a dose is taken when it is taken and a
-   * symptom is felt when it is felt, and neither has a streak.
+   * What it is meant to come to, first one first. Absent or empty means
+   * nothing is asked of it — a dose is taken when it is taken, and has no
+   * streak.
    */
-  cadence?: Cadence | null
+  targets?: Target[]
   /** Retired: keeps its history, leaves the day's chips. */
   archived: boolean
   sortOrder: number
@@ -337,6 +361,8 @@ export interface ReadingQuery {
   to?: string | null
   /** Only readings that know their time of day. */
   timedOnly?: boolean
+  /** Only readings somebody recorded: no derived tracker's worked-out days. */
+  recordedOnly?: boolean
   limit?: number | null
 }
 

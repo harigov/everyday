@@ -110,6 +110,21 @@ assert.deepEqual(targetsFor(['transcript']), [])
 // both just mean "re-read the lists `meetings.svelte.ts` owns".
 assert.deepEqual(targetsFor(['recording', 'voiceprint']), ['meetings'])
 
+// ── A goal's meters are read off blocks and the library ──────────────
+//
+// A time target counts the hours filed under a goal, and a books target the
+// library's log, so an hour logged on another machine moves a meter on this
+// one while the event says only "block". Refreshed only while the todo app,
+// where the meters are drawn, is on screen.
+assert.deepEqual(targetsFor(['block']), ['calendar'], 'the todo app is not showing')
+assert.deepEqual(
+  new Set(targetsFor(['block'], false, true)),
+  new Set(['calendar', 'goalTargets']),
+  'an hour logged elsewhere moves a goal meter',
+)
+assert.deepEqual(new Set(targetsFor(['log'], false, true)), new Set(['library', 'goalTargets']))
+assert.deepEqual(targetsFor(['memory'], false, true), [], 'nothing a meter reads')
+
 // ── A purpose changes the reports without naming them ────────────────
 //
 // A purpose is a pointer on a task, a block, an entry, a shelf item and a

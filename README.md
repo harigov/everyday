@@ -854,23 +854,37 @@ through every journal to find anything. What stays on a journal is the only
 part that really was a per-journal setting — which chips that page offers,
 ticked in its settings.
 
-Both halves are sealed. A tracker's *name*, its unit and its cadence are as
+Both halves are sealed. A tracker's *name*, its unit and its targets are as
 private as the entries beside them; the readings are a table of their own,
 because there are thousands of them and their whole purpose is to be scanned.
 The database says tracker `7f3a…` was `500` at 08:12 on the 14th and never
 what `7f3a…` is.
 
-### A habit has a cadence, not just a target
+### A target is a bound and a period
 
-A daily `target` drives the ring on a chip and cannot express the commonest
-habit there is: three times a week. That gap is not academic — a streak
-counted against a daily target reads every rest day as a failure, which is
-exactly the shape of habit tracking that makes people stop. So a tracker can
-carry a **cadence**: a count and a period. Streaks and hit rates are counted
-in periods, the period you are in the middle of is never counted as a failure,
-and the arithmetic lives in `ui/src/lib/habits.ts` with a test beside it,
-because every way it can be wrong is a discouraging number rather than an
-error.
+A tracker can carry **targets**, each a minimum, a maximum or both, over a
+day, a week, a month, a quarter or a year: *at least 3 days a week*, *at most
+1h a day*, *between 1h and 2h a week*, *at least 12 a year*. A target counts
+either the tracker's own value over the period — minutes summed, a severity
+averaged — or the **days** in it with something recorded, which is what "run
+three times a week" means: a short run and a long one are both a run. A check
+only ever counts days.
+
+This replaced two fields that could not say most of that: a daily amount that
+drove the ring on a chip, and a cadence of times per period. A tracker saved
+before targets still has both in its sealed payload, and they are read back
+as targets — the cadence first, since it drove the streak — so nothing
+recorded against them changes meaning.
+
+Periods follow the calendar rather than rolling: this week starts on the
+week's first day and this year on the first of January. The period you are in
+the middle of is never counted as a failure, unless it has already passed a
+maximum, which cannot be undone. And a limit is honest about missing data: a
+closed day with no reading of a hand-recorded tracker is *unrecorded*, not a
+day you stayed under an hour of TV, and it neither extends a streak nor
+counts against one. The arithmetic lives in `ui/src/lib/habits.ts` with a
+test beside it, because every way it can be wrong is a discouraging number
+rather than an error.
 
 ### Recording something there is no chip for
 
@@ -952,8 +966,9 @@ time is for. A run that should do both is two records.
 Journal settings (the cog beside a journal, or right-click) is where both
 halves live: the journal's name, symbol and colour, and which of the vault's
 trackers it draws — the tick beside each row. A tracker is a name, one of four
-kinds, an icon and a colour, with the fiddly fields — unit, usual amount,
-daily goal — appearing only once a kind that needs them is chosen. There is also a shelf of ready-made ones, because
+kinds, an icon and a colour, with the fiddly fields — unit, usual amount —
+appearing only once a kind that needs them is chosen, and its targets written
+as the sentences they read as. There is also a shelf of ready-made ones, because
 answering five questions before recording anything is how a good feature gets
 abandoned at the form.
 
@@ -1018,6 +1033,27 @@ what keeps the pointer from being a chore. So the highest-value place in the
 application to file something is a project's right-click menu, and the todo
 app's list can group by goal — which buckets by the *resolved* purpose, so a
 task under a filed project appears in that project's section.
+
+### How a goal knows it is happening
+
+A goal measures itself through the trackers filed under it, and a tracker
+need not be one anybody records. Its **source** can be *time* — actual minutes
+of blocks whose purpose resolves to the tracker's own goal (or, filed under a
+role, to that role and all its goals) — or *finished*: things got to the end
+of on a shelf, a re-read included. Those readings are worked out by the core
+at query time, from the blocks and the library's log, through the same
+`tracker_days` every chart already reads; nothing is stored, so nothing goes
+stale when a block is moved, and the vault refuses a reading written against
+one by hand.
+
+So "an hour or two of piano a week" is a target of *between 1h and 2h a week*
+on a derived tracker of time filed under *Learn piano*; "twelve books this
+year" is *at least 12 a year* on one counting the Books shelf; and "no more
+than an hour of TV a day" is *at most 1h a day* on a TV tracker you record.
+A goal's detail rail has a **Targets** section that makes these from the goal
+outward, and draws each against its current period — with pace for a month or
+longer, since "5 of 12" means nothing without the date. The goal's row in the
+todo sidebar carries its first target as a small meter.
 
 ### The Overview
 

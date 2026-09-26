@@ -27,7 +27,7 @@
   import { tracking } from '../lib/tracking.svelte'
   import { notes as noteStore } from '../lib/notes.svelte'
   import { byRole, type RoleTotals } from '../lib/balance'
-  import { describeStreak } from '../lib/habits'
+  import { describeStreak, streakTarget } from '../lib/habits'
   import { addDays, localeWeekStart, startOfWeek, todayIso } from '../lib/time'
   import { formatValue } from '../lib/tracker'
   import { byTimeOrLast, type Widget } from '../lib/dashboard'
@@ -315,14 +315,14 @@
 
   <!-- ── Today's habits ────────────────────────────────────────────── -->
 {:else if widget.type === 'habitsToday'}
-  {#if tracking.live.length === 0}
+  {#if tracking.loggable.length === 0}
     <p class="dim">
       Nothing is tracked yet. “Record something” at the top of this page makes one out of what you
       type.
     </p>
   {:else}
     <div class="chips">
-      {#each tracking.live as tracker (tracker.id)}
+      {#each tracking.loggable as tracker (tracker.id)}
         {@const summary = overview.habit(tracker.id)}
         {@const done = summary.days.includes(today)}
         <button
@@ -469,7 +469,7 @@
             <span class="dim">{Math.round(row.summary.rate * 100)}% kept</span>
           {/if}
           <span class="chain">
-            {describeStreak(row.summary.streak, row.tracker.cadence?.per ?? 'day')}
+            {describeStreak(row.summary.streak, streakTarget(row.tracker).per)}
           </span>
         </li>
       {/each}

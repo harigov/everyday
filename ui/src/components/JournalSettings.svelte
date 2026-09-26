@@ -16,15 +16,17 @@
   import { api } from '../lib/api'
   import { app } from '../lib/state.svelte'
   import { tracking } from '../lib/tracking.svelte'
+  import { describeTarget, isManual } from '../lib/tracker'
   import { KIND_COPY, TRACKER_PRESETS, fromPreset } from '../lib/tracker-presets'
   import { TRACKER_ICON_GROUPS } from '../lib/tracker-icons'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import { DEFAULT_COLORS } from '../lib/colors'
-  import type { Journal, Tracker, TrackerKind } from '../lib/types'
+  import type { Journal, Target, Tracker, TrackerKind } from '../lib/types'
   import { TRACKER_KINDS } from '../lib/types'
   import Icon from './Icon.svelte'
   import TrackerIcon from './TrackerIcon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
+  import TargetEditor from './TargetEditor.svelte'
 
   let { journal, onclose }: { journal: Journal; onclose: () => void } = $props()
 
@@ -55,8 +57,8 @@
    * where a tracker is defined, and where a journal says which chips it
    * draws. The second is `shown`, the tick beside each row.
    */
-  const live = $derived(tracking.live)
-  const archived = $derived(tracking.trackers.filter((t) => t.archived))
+  const live = $derived(tracking.loggable)
+  const archived = $derived(tracking.trackers.filter((t) => t.archived && isManual(t)))
 
   const PALETTE = [
     '#e11d48',
@@ -160,12 +162,13 @@
     if (!tracker.name.trim()) return
     tracker.scaleMax = Math.min(sane(tracker.scaleMax, 10), 100)
     tracker.defaultValue = sane(tracker.defaultValue, 1)
-    tracker.target = tracker.target && Number.isFinite(tracker.target) ? tracker.target : null
-    // A check has nothing to measure, so it keeps neither unit nor goal.
+    // A target left without a number is one nobody finished writing.
+    tracker.targets = (tracker.targets ?? []).filter((t) => t.min != null || t.max != null)
+    // A check has nothing to measure, so it keeps no unit, and counts days.
     if (tracker.kind === 'check') {
       tracker.unit = ''
-      tracker.target = null
       tracker.defaultValue = 1
+      tracker.targets = tracker.targets.map((t) => ({ ...t, tally: 'days' }))
     }
     tracker.updatedAt = new Date().toISOString()
     await upsert(tracker)
@@ -237,16 +240,15 @@
    * only tells you which of four buttons was pressed.
    */
   function describe(tracker: Tracker): string {
-    const goal = tracker.target
-      ? ` · goal ${tracker.target}${tracker.unit ? ` ${tracker.unit}` : ''}`
-      : ''
+    const first = tracker.targets?.[0]
+    const goal = first ? ` · ${describeTarget(tracker, first)}` : ''
     switch (tracker.kind) {
       case 'check':
-        return 'Done, or not yet'
+        return `Done, or not yet${goal}`
       case 'dose':
         return `Doses in ${tracker.unit || 'units'}${goal}`
       case 'scale':
-        return `Severity out of ${tracker.scaleMax}`
+        return `Severity out of ${tracker.scaleMax}${goal}`
       default:
         return `${tracker.unit ? `Counted in ${tracker.unit}` : 'A number'}${goal}`
     }
@@ -476,21 +478,6 @@
                       bind:value={editing.defaultValue}
                     />
                   </label>
-                  <label class="lbl narrow">
-                    Daily goal
-                    <input
-                      class="text mid"
-                      type="number"
-                      min="0"
-                      step="any"
-                      placeholder="none"
-                      value={editing.target ?? ''}
-                      onchange={(e) => {
-                        const v = Number(e.currentTarget.value)
-                        if (editing) editing.target = e.currentTarget.value && v > 0 ? v : null
-                      }}
-                    />
-                  </label>
                 {:else}
                   <label class="lbl narrow">
                     Worst is
@@ -505,6 +492,18 @@
                 {/if}
               </div>
             {/if}
+
+            <!-- What it is meant to come to. A habit is "at least 3 days a
+                 week"; a limit is "at most 60 min a day". Empty is fine: a
+                 dose is taken when it is taken. -->
+            <div class="lbl">
+              Target
+              <TargetEditor
+                tracker={editing}
+                targets={editing.targets ?? []}
+                onchange={(next: Target[]) => editing && (editing.targets = next)}
+              />
+            </div>
 
             <label class="check">
               <input type="checkbox" bind:checked={editing.onCalendar} />

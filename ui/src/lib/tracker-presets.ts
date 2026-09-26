@@ -161,7 +161,7 @@ export function fromPreset(tracker: Tracker, preset: TrackerPreset): Tracker {
     color: preset.color,
     unit: preset.unit ?? '',
     defaultValue: preset.defaultValue ?? 1,
-    target: preset.target ?? null,
+    targets: preset.target ? [{ min: preset.target, per: 'day', tally: 'value' }] : [],
     onCalendar: preset.onCalendar ?? false,
   }
 }

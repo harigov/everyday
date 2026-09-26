@@ -18,8 +18,17 @@
 import { load, makeCheck } from './harness.mjs'
 
 const { module: trackerLib, close } = await load('/src/lib/tracker.ts')
-const { dayValue, durationMinutes, formatDay, formatNumber, formatValue, shownTrackers } =
-  trackerLib
+const {
+  dayValue,
+  describeProgress,
+  describeTarget,
+  durationMinutes,
+  formatAmount,
+  formatDay,
+  formatNumber,
+  formatValue,
+  shownTrackers,
+} = trackerLib
 
 const { check, finish } = makeCheck()
 
@@ -33,7 +42,7 @@ function tracker(rest = {}) {
     color: '#000',
     unit: '',
     defaultValue: 1,
-    target: null,
+    targets: [],
     scaleMax: 10,
     onCalendar: false,
     archived: false,
@@ -144,6 +153,97 @@ check(
   shownTrackers({ shownTrackers: ['a', 'deleted', 'b'] }, all).map((t) => t.id),
   ['a', 'b'],
 )
+
+check(
+  'a derived tracker is never a chip, even when a journal names it',
+  shownTrackers({ shownTrackers: ['a', 'd'] }, [
+    tracker({ id: 'a' }),
+    tracker({ id: 'd', kind: 'amount', source: { type: 'time' } }),
+  ]).map((t) => t.id),
+  ['a'],
+)
+
+// ── targets in words ───────────────────────────────────────────────────
+
+const minutes = tracker({ kind: 'amount', unit: 'min' })
+const books = tracker({ kind: 'amount', unit: '', source: { type: 'finished' } })
+
+check('time reads as time', formatAmount(minutes, 90), '1h 30m')
+check('...including none of it', formatAmount(minutes, 0), '0m')
+check('a count reads as a number', formatAmount(books, 12), '12')
+check('days read as days', formatAmount(minutes, 3, 'days'), '3 days')
+check('one day is one day', formatAmount(minutes, 1, 'days'), '1 day')
+
+check(
+  'a range reads in hours',
+  describeTarget(minutes, { min: 60, max: 120, per: 'week', tally: 'value' }),
+  'between 1h and 2h a week',
+)
+check(
+  'a limit',
+  describeTarget(minutes, { max: 60, per: 'day', tally: 'value' }),
+  'at most 1h a day',
+)
+check(
+  'a count over a year',
+  describeTarget(books, { min: 12, per: 'year', tally: 'value' }),
+  'at least 12 a year',
+)
+check(
+  'a habit',
+  describeTarget(tracker(), { min: 3, per: 'week', tally: 'days' }),
+  'at least 3 days a week',
+)
+check(
+  'a daily habit is said the way people say it',
+  describeTarget(tracker(), { min: 1, per: 'day', tally: 'days' }),
+  'every day',
+)
+
+{
+  const year = { min: 12, per: 'year', tally: 'value' }
+  const words = describeProgress(books, {
+    target: year,
+    start: '2026-01-01',
+    end: '2026-12-31',
+    value: 1,
+    standing: 'short',
+    state: 'open',
+    expected: 8.8,
+  })
+  check('progress is compact for a sidebar', words.short, '1/12')
+  check('...and a line for the rail', words.line, '1 this year · at least 12 a year')
+  check('...and says how far behind pace, in words', words.status, '8 behind pace')
+  check('...and is not over anything', words.over, false)
+}
+
+{
+  const words = describeProgress(minutes, {
+    target: { max: 60, per: 'day', tally: 'value' },
+    start: '2026-09-26',
+    end: '2026-09-26',
+    value: 80,
+    standing: 'over',
+    state: 'missed',
+    expected: null,
+  })
+  check('past a limit says by how much', words.status, 'over by 20m')
+  check('...and is the one state marked over', words.over, true)
+}
+
+{
+  const words = describeProgress(minutes, {
+    target: { min: 60, max: 120, per: 'week', tally: 'value' },
+    start: '2026-09-21',
+    end: '2026-09-27',
+    value: 40,
+    standing: 'short',
+    state: 'open',
+    expected: 51,
+  })
+  check('a week speaks of no pace', words.status, null)
+  check('its compact form is against the minimum', words.short, '40m/1h')
+}
 
 await close()
 finish('tracking')

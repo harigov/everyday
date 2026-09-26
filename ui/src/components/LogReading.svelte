@@ -18,7 +18,12 @@
 
   import { api } from '../lib/api'
   import { slot } from '../lib/quick.svelte'
-  import { QUICK_TRACK_HINT, describeQuickTrack, parseQuickTrack } from '../lib/quicktrack'
+  import {
+    QUICK_TRACK_HINT,
+    describeQuickTrack,
+    isRecordable,
+    parseQuickTrack,
+  } from '../lib/quicktrack'
   import { tracking } from '../lib/tracking.svelte'
   import { formatValue } from '../lib/tracker'
   import type { EntryId, JournalId, QuickReading, Tracker } from '../lib/types'
@@ -49,7 +54,7 @@
 
   const parsed = $derived(parseQuickTrack(draft, tracking.trackers))
   const preview = $derived(describeQuickTrack(parsed))
-  const ready = $derived(!!parsed.target)
+  const ready = $derived(isRecordable(parsed))
 
   // ── the lines the grammar could not read ─────────────────────────────
   //
@@ -180,9 +185,9 @@
     <p class="hint">{QUICK_TRACK_HINT}</p>
   {/if}
 
-  {#if tracking.live.length > 0}
+  {#if tracking.loggable.length > 0}
     <div class="known">
-      {#each tracking.live as tracker (tracker.id)}
+      {#each tracking.loggable as tracker (tracker.id)}
         <button
           class="chip"
           style="--c: {tracker.color}"

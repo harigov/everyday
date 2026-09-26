@@ -23,6 +23,7 @@ pub fn run_purpose_suite(store: &dyn JournalStore) {
     role_goal_counts_are_answered_by_the_backend(store);
     a_purpose_survives_a_round_trip_on_every_record(store);
     time_is_attributed_down_the_inheritance_chain(store);
+    actual_time_is_cut_by_day(store);
     unattributed_time_is_reported_rather_than_dropped(store);
     clearing_a_purpose_removes_it_from_the_reports(store);
     deleting_a_record_takes_its_purpose_with_it(store);
@@ -358,6 +359,62 @@ fn time_is_attributed_down_the_inheritance_chain(store: &dyn JournalStore) {
     tasks.delete_project(project.id).unwrap();
     p.delete_goal(goal.id).unwrap();
     p.delete_goal(other.id).unwrap();
+    p.delete_role(role.id).unwrap();
+}
+
+fn actual_time_is_cut_by_day(store: &dyn JournalStore) {
+    // What a time-derived tracker's readings are: the balance report's
+    // attribution, one row per day, actual blocks only.
+    let Some(tasks) = store.tasks() else { return };
+    let p = purpose_store(store);
+    let role = seeded_role(store, "Daily");
+    let goal = seeded_goal(store, &role, "learn piano");
+
+    let mut project = Project::new("piano");
+    project.purpose = Some(goal.purpose());
+    tasks.put_project(&project).unwrap();
+    let mut practise = Task::new("scales");
+    practise.project_id = Some(project.id);
+    tasks.put_task(&practise).unwrap();
+
+    let block = |d: jiff::civil::Date, hour: i8, minutes: u32, kind: BlockKind| {
+        let at = d.at(hour, 0, 0, 0).in_tz("UTC").unwrap().timestamp();
+        TimeBlock::new(BlockSubject::Task { id: practise.id }, at, minutes, "UTC").of_kind(kind)
+    };
+    let (monday, wednesday) = (date(2026, 9, 21), date(2026, 9, 23));
+    for b in [
+        block(monday, 8, 30, BlockKind::Actual),
+        block(monday, 19, 45, BlockKind::Actual),
+        block(wednesday, 8, 20, BlockKind::Actual),
+        // An intention is not practice.
+        block(wednesday, 9, 90, BlockKind::Planned),
+    ] {
+        tasks.put_block(&b).unwrap();
+    }
+
+    let rows = p.actual_minutes_by_day(PurposeWindow::new(monday, wednesday)).unwrap();
+    let on = |d: jiff::civil::Date| {
+        rows.iter()
+            .filter(|r| r.date == d && r.purpose == Some(goal.purpose()))
+            .map(|r| r.minutes)
+            .sum::<u64>()
+    };
+    assert_eq!(on(monday), 75, "two blocks on one day are one row, summed");
+    assert_eq!(on(wednesday), 20, "planned time is not counted");
+    assert!(
+        rows.iter().all(|r| r.date >= monday && r.date <= wednesday),
+        "nothing outside the window: {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|r| r.date == date(2026, 9, 22) && r.purpose == Some(goal.purpose())),
+        "a day with no time has no row rather than a zero"
+    );
+
+    let before = p.actual_minutes_by_day(PurposeWindow::new(monday, monday)).unwrap();
+    assert!(before.iter().all(|r| r.date == monday));
+
+    tasks.delete_project(project.id).unwrap();
+    p.delete_goal(goal.id).unwrap();
     p.delete_role(role.id).unwrap();
 }
 

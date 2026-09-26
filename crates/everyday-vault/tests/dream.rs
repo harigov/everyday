@@ -141,6 +141,33 @@ fn the_month_digest_names_a_goal_with_no_activity() {
 }
 
 #[test]
+fn a_tracker_with_a_target_says_where_its_period_stands_even_when_nothing_was_logged() {
+    // "An hour or two of piano a week" with no practice yet is the finding;
+    // a digest that only listed trackers with readings would never say so.
+    let (_dir, vault) = vault_for_test();
+    let piano = everyday_core::Tracker::new("Piano", everyday_core::TrackerKind::Amount)
+        .with_unit("min")
+        .aiming(everyday_core::Target::between(60.0, 120.0, everyday_core::Period::Week));
+    vault.save_tracker(&piano).unwrap();
+
+    // Thursday the 10th, reading Wednesday: the week began on Monday the 7th.
+    let now = zoned(2026, 9, 10, 4, 0);
+    let d = dream::digest(&vault, DreamScope::Day, &now).unwrap();
+    let line = d.readings.iter().find(|r| r.starts_with("Piano")).expect("a line for Piano");
+    assert!(line.contains("target between 60 and 120 min a week"), "{line}");
+    assert!(line.contains("0 so far for 2026-09-07..2026-09-13, short"), "{line}");
+    assert!(line.contains("even pace"), "{line}");
+
+    // Retired, it is no longer a finding: an archived habit is not one the
+    // dream should be proposing time for.
+    let mut retired = vault.tracker(piano.id).unwrap();
+    retired.archived = true;
+    vault.save_tracker(&retired).unwrap();
+    let d = dream::digest(&vault, DreamScope::Day, &now).unwrap();
+    assert!(!d.readings.iter().any(|r| r.starts_with("Piano")), "{:?}", d.readings);
+}
+
+#[test]
 fn the_month_digest_names_birthdays_in_the_month_ahead() {
     use everyday_core::library::{Item, LogEntry, LogEvent};
     let (_dir, vault) = vault_for_test();

@@ -43,6 +43,7 @@
 // comes back in `rest` for the caller to keep, exactly as an unrecognised
 // quick-add token stays in a task's title.
 
+import { isManual } from './tracker'
 import type { Tracker, TrackerKind } from './types'
 
 /** What the hint under the field says. Kept beside the grammar it describes. */
@@ -200,6 +201,7 @@ export function describeQuickTrack(parsed: QuickTrack): string {
 
   if (target.kind === 'existing') {
     const t = target.tracker
+    if (!isManual(t)) return `“${t.name}” is worked out for you, not recorded by hand`
     if (t.kind === 'check') return `${t.name} — done`
     const unit = t.unit ? ` ${t.unit}` : ''
     if (t.kind === 'scale') return `${t.name} — ${value} out of ${t.scaleMax}`
@@ -219,6 +221,22 @@ export function describeQuickTrack(parsed: QuickTrack): string {
   return `New tracker “${target.name}” (${what}) — ${
     target.trackerKind === 'check' ? 'done' : format(value)
   }`
+}
+
+/**
+ * Can this line be recorded as it stands?
+ *
+ * Not when it names a derived tracker -- time filed under a goal, books
+ * finished -- which the vault works out for itself and refuses to be told.
+ * Matching it rather than leaving it out of the list is the point: left
+ * out, "Time on Learn piano 30" would read as a new tracker of that name,
+ * and recording it would make a second one.
+ */
+export function isRecordable(
+  parsed: QuickTrack,
+): parsed is QuickTrack & { target: NonNullable<QuickTrack['target']> } {
+  const { target } = parsed
+  return !!target && (target.kind === 'new' || isManual(target.tracker))
 }
 
 /** A number without a pointless trailing zero. Mirrors `formatNumber`. */

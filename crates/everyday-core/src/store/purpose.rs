@@ -50,7 +50,9 @@
 
 use crate::error::Result;
 use crate::id::{GoalId, RoleId};
-use crate::purpose::{Goal, GoalActivity, GoalStatus, PurposeMinutes, Role, RoleEventMinutes};
+use crate::purpose::{
+    Goal, GoalActivity, GoalStatus, PurposeDayMinutes, PurposeMinutes, Role, RoleEventMinutes,
+};
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 
@@ -208,6 +210,17 @@ pub trait PurposeStore: Send + Sync {
     /// business and callers must not depend on it; the interface groups by
     /// role and sorts for itself.
     fn time_by_purpose(&self, window: PurposeWindow) -> Result<Vec<PurposeMinutes>>;
+
+    /// Actual minutes per resolved purpose per day over a window.
+    ///
+    /// The same resolution as [`time_by_purpose`](PurposeStore::time_by_purpose)
+    /// — the block's own pointer, else its task's, else the project's — cut
+    /// by the block's `local_date` rather than summed over the window, and
+    /// over actual blocks only. What a time-derived tracker's readings are.
+    ///
+    /// One row per day per purpose that has any time; days with none are
+    /// absent rather than zero. Ordering is the implementation's business.
+    fn actual_minutes_by_day(&self, window: PurposeWindow) -> Result<Vec<PurposeDayMinutes>>;
 
     /// Minutes of subscribed-calendar events per role over a window.
     ///
