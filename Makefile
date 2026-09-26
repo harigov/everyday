@@ -37,11 +37,7 @@ setup: ## Install prerequisites: system headers, Tauri CLI, npm packages
 		cargo install tauri-cli --version '^2' --locked; \
 	fi
 	npm --prefix $(UI_DIR) install
-	@node -e 'const v=process.versions.node.split(".").map(Number); \
-		if (v[0] < 22 || (v[0] === 22 && v[1] < 12)) { \
-			console.warn("\nwarning: Node " + process.versions.node + \
-				" is below the 22.12 this project expects (see ui/.nvmrc). Vite may refuse to start."); \
-		}'
+	@node scripts/check-node.mjs
 
 # A clean clone has no node_modules, and every target that touches the
 # interface needs them. Re-runs only when the lockfile moves.
