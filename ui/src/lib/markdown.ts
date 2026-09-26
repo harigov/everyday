@@ -42,9 +42,19 @@
 // end-of-input rather than requiring its closing marker, and the output is
 // always well-formed HTML even when the Markdown is not.
 
+export interface RenderOptions {
+  /**
+   * Draw a list whose every item opens with `[ ]` or `[x]` as the editor's
+   * checklist -- TipTap's own `taskList` markup -- rather than as the text
+   * it is. Off for a chat reply, which has no boxes to tick; on for a paste
+   * into an editor that has checklists.
+   */
+  taskLists?: boolean
+}
+
 /** Turn Markdown into HTML that is safe to put in the document. */
-export function renderMarkdown(source: string): string {
-  return blocks(prepare(source))
+export function renderMarkdown(source: string, options: RenderOptions = {}): string {
+  return blocks(prepare(source), options)
 }
 
 /**
@@ -84,13 +94,41 @@ function prepare(source: string): string[] {
 
 // ── Block level ──────────────────────────────────────────────────────────
 
-const FENCE = /^ {0,3}(`{3,}|~{3,})\s*([^`]*)$/
-const HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/
+// Exported for `markdown-paste.ts`, which has to recognise the same blocks
+// this draws; a second copy of any of them would drift from this one.
+export const FENCE = /^ {0,3}(`{3,}|~{3,})\s*([^`]*)$/
+export const HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/
 const RULE = /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/
-const QUOTE = /^ {0,3}> ?(.*)$/
-const BULLET = /^(\s*)([-*+])\s+(.*)$/
-const NUMBER = /^(\s*)(\d{1,9})[.)]\s+(.*)$/
+export const QUOTE = /^ {0,3}> ?(.*)$/
+export const BULLET = /^(\s*)([-*+])\s+(.*)$/
+export const NUMBER = /^(\s*)(\d{1,9})[.)]\s+(.*)$/
 const TABLE_RULE = /^ {0,3}\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/
+const TASK = /^\[([ xX])\]\s+/
+
+/**
+ * Does a pipe table start at `at`: a line with a pipe in it, and under it a
+ * rule with one `---` for every cell of that line?
+ *
+ * The count is what keeps `a | b` over a lone `---` a line of prose with a
+ * rule under it, and it is the same test `richtext.rs` applies, so the
+ * editor and the Markdown it exports agree about what is a table.
+ */
+export function isTableStart(lines: string[], at: number): boolean {
+  const line = lines[at]!
+  const rule = lines[at + 1]
+  if (rule === undefined || !line.includes('|') || !TABLE_RULE.test(rule)) return false
+  return tableCells(rule).length === tableCells(line).length
+}
+
+/** A table row's cells. `\|` is a pipe inside a cell rather than the end of one. */
+function tableCells(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/(?<!\\)\|$/, '')
+    .split(/(?<!\\)\|/)
+    .map((cell) => cell.trim().replace(/\\\|/g, '|'))
+}
 
 /**
  * Walk the lines, emitting one block at a time.
@@ -99,7 +137,7 @@ const TABLE_RULE = /^ {0,3}\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/
  * because every construct here is decided by the first line of it. The one
  * thing that nests is a list, and that recurses through `listBlock`.
  */
-function blocks(lines: string[]): string {
+function blocks(lines: string[], options: RenderOptions): string {
   const out: string[] = []
   let i = 0
 
@@ -150,12 +188,12 @@ function blocks(lines: string[]): string {
         body.push(match ? match[1]! : lines[i]!)
         i++
       }
-      out.push(`<blockquote>${blocks(body)}</blockquote>`)
+      out.push(`<blockquote>${blocks(body, options)}</blockquote>`)
       continue
     }
 
     if (BULLET.test(line) || NUMBER.test(line)) {
-      const [html, next] = listBlock(lines, i)
+      const [html, next] = listBlock(lines, i, options)
       out.push(html)
       i = next
       continue
@@ -175,7 +213,7 @@ function blocks(lines: string[]): string {
       continue
     }
 
-    if (i + 1 < lines.length && line.includes('|') && TABLE_RULE.test(lines[i + 1]!)) {
+    if (isTableStart(lines, i)) {
       const [html, next] = tableBlock(lines, i)
       out.push(html)
       i = next
@@ -205,7 +243,7 @@ function startsBlock(lines: string[], at: number): boolean {
     QUOTE.test(line) ||
     BULLET.test(line) ||
     NUMBER.test(line) ||
-    (at + 1 < lines.length && line.includes('|') && TABLE_RULE.test(lines[at + 1]!))
+    isTableStart(lines, at)
   )
 }
 
@@ -234,7 +272,7 @@ interface Item {
  * list, a paragraph or a fenced block inside an item all work without this
  * function knowing about any of them.
  */
-function listBlock(lines: string[], start: number): [string, number] {
+function listBlock(lines: string[], start: number, options: RenderOptions): [string, number] {
   const first = BULLET.exec(lines[start]!) ?? NUMBER.exec(lines[start]!)!
   const ordered = !BULLET.test(lines[start]!)
   const baseIndent = first[1]!.length
@@ -282,19 +320,30 @@ function listBlock(lines: string[], start: number): [string, number] {
     break
   }
 
+  // A checklist only when every item has a box: one item without would be
+  // a list item inside a checklist, which the editor has no shape for.
+  const tasks =
+    !ordered && !!options.taskLists && items.every((item) => TASK.test(item.content[0]!))
   const rendered = items.map((item) => {
-    const inner = blocks(item.content)
+    let open = '<li>'
+    if (tasks) {
+      const checked = TASK.exec(item.content[0]!)![1] !== ' '
+      item.content[0] = item.content[0]!.replace(TASK, '')
+      open = `<li data-type="taskItem" data-checked="${checked}">`
+    }
+    const inner = blocks(item.content, options)
     // A tight list is `<li>text</li>`; a loose one keeps its paragraphs,
     // which is what puts the air between items that a blank line asked for.
     // Only the item's *first* paragraph is unwrapped, so a bullet with a
     // nested list under it still reads as one line with a list beneath.
     const lead = loose ? null : /^<p>([^]*?)<\/p>/.exec(inner)
-    return `<li>${lead ? lead[1]! + inner.slice(lead[0].length) : inner}</li>`
+    return `${open}${lead ? lead[1]! + inner.slice(lead[0].length) : inner}</li>`
   })
 
   const tag = ordered ? 'ol' : 'ul'
   const startAt = ordered && first[2] !== '1' ? ` start="${Number(first[2])}"` : ''
-  return [`<${tag}${startAt}>${rendered.join('')}</${tag}>`, i]
+  const type = tasks ? ' data-type="taskList"' : ''
+  return [`<${tag}${startAt}${type}>${rendered.join('')}</${tag}>`, i]
 }
 
 function leadingSpaces(line: string): number {
@@ -303,29 +352,28 @@ function leadingSpaces(line: string): number {
 
 /** A pipe table: a header row, an alignment rule, and the body. */
 function tableBlock(lines: string[], start: number): [string, number] {
-  const cells = (line: string) =>
-    line
-      .trim()
-      .replace(/^\|/, '')
-      .replace(/\|$/, '')
-      .split('|')
-      .map((cell) => cell.trim())
-
-  const alignments = cells(lines[start + 1]!).map((spec) =>
+  const alignments = tableCells(lines[start + 1]!).map((spec) =>
     spec.startsWith(':') && spec.endsWith(':')
       ? ' style="text-align:center"'
       : spec.endsWith(':')
         ? ' style="text-align:right"'
         : '',
   )
-  const head = cells(lines[start]!)
+  const head = tableCells(lines[start]!)
     .map((cell, n) => `<th${alignments[n] ?? ''}>${inline(cell)}</th>`)
     .join('')
 
   const body: string[] = []
   let i = start + 2
-  while (i < lines.length && lines[i]!.trim() && lines[i]!.includes('|')) {
-    const row = cells(lines[i]!)
+  // The body runs to the first line without a pipe -- or with one, but
+  // that starts something else: `- note | aside` is a list item.
+  while (
+    i < lines.length &&
+    lines[i]!.trim() &&
+    lines[i]!.includes('|') &&
+    !startsBlock(lines, i)
+  ) {
+    const row = tableCells(lines[i]!)
       .map((cell, n) => `<td${alignments[n] ?? ''}>${inline(cell)}</td>`)
       .join('')
     body.push(`<tr>${row}</tr>`)

@@ -84,7 +84,8 @@ impl RichDoc {
     ///
     /// Deliberately not a CommonMark implementation. It covers what
     /// `to_markdown` emits -- headings, the three list flavours, block
-    /// quotes, fenced code, rules, and the inline marks the editor has --
+    /// quotes, fenced code, rules, pipe tables, and the inline marks the
+    /// editor has --
     /// because closing that loop is the whole job. Anything it does not
     /// recognise stays as the text it was, which is the same thing the
     /// editor does when you paste it.
@@ -166,6 +167,27 @@ impl RichDoc {
                 continue;
             }
 
+            // A pipe table is a header row with the `|---|` rule under it.
+            // The rule is what makes it one: a `|` in prose is just a `|`.
+            // A list item or a heading with a pipe in it is still a list item
+            // or a heading, which is also how `markdown.ts` reads it.
+            if !starts_a_block(trimmed)
+                && let Some(width) = table_header(trimmed, lines.get(i + 1).copied())
+            {
+                let mut rows = vec![table_row(trimmed, width, "tableHeader")];
+                i += 2;
+                while i < lines.len()
+                    && lines[i].contains('|')
+                    && !lines[i].trim().is_empty()
+                    && !starts_a_block(lines[i].trim_start())
+                {
+                    rows.push(table_row(lines[i], width, "tableCell"));
+                    i += 1;
+                }
+                blocks.push(json!({ "type": "table", "content": rows }));
+                continue;
+            }
+
             if let Some(first) = list_item(trimmed) {
                 let (kind, node_type, item_type) = match first.marker {
                     Marker::Task(_) => ("task", "taskList", "taskItem"),
@@ -207,7 +229,10 @@ impl RichDoc {
             i += 1;
             while i < lines.len() {
                 let next = lines[i].trim_start();
-                if next.is_empty() || starts_a_block(next) {
+                if next.is_empty()
+                    || starts_a_block(next)
+                    || table_header(next, lines.get(i + 1).copied()).is_some()
+                {
                     break;
                 }
                 para.push(lines[i].trim_end());
@@ -531,6 +556,30 @@ fn markdown_node(node: &Value, out: &mut String, d: usize, list_depth: usize) {
             }
             out.push('\n');
         }
+        "table" => {
+            let rows = table_grid(node, d);
+            let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+            if width == 0 {
+                return;
+            }
+            // Markdown has no table without a header row, so the first row
+            // is the header whether or not the editor drew it as one.
+            for (n, row) in rows.iter().enumerate() {
+                out.push('|');
+                for c in 0..width {
+                    out.push(' ');
+                    out.push_str(row.get(c).map(String::as_str).unwrap_or(""));
+                    out.push_str(" |");
+                }
+                out.push('\n');
+                if n == 0 {
+                    out.push('|');
+                    out.push_str(&" --- |".repeat(width));
+                    out.push('\n');
+                }
+            }
+            out.push('\n');
+        }
         "horizontalRule" => out.push_str("---\n\n"),
         MEDIA_NODE => {
             let a = attrs.cloned().unwrap_or(Value::Null);
@@ -646,6 +695,125 @@ fn starts_a_block(line: &str) -> bool {
         || is_rule(line)
         || heading(line).is_some()
         || list_item(line).is_some()
+}
+
+/// The widest a merged cell is taken to be. Real tables are a handful of
+/// columns; the cap is so a damaged `colspan` cannot ask for a billion.
+const MAX_SPAN: u64 = 1000;
+
+/// A table's cells laid out on the grid they occupy.
+///
+/// Markdown has no merged cells, so a cell spanning several keeps its text
+/// in the first slot it covers and leaves the rest empty. Writing the cells
+/// out one after another instead would put every cell after a merged one in
+/// the wrong column, and the round trip would save it there.
+fn table_grid(table: &Value, d: usize) -> Vec<Vec<String>> {
+    let rows = children(table);
+    let mut grid: Vec<Vec<Option<String>>> = vec![Vec::new(); rows.len()];
+    for (r, row) in rows.iter().enumerate() {
+        let mut c = 0;
+        for cell in children(row) {
+            // Past any slot a cell above has already reached down into.
+            while grid[r].get(c).is_some_and(Option::is_some) {
+                c += 1;
+            }
+            let span = |key: &str| {
+                cell.get("attrs")
+                    .and_then(|a| a.get(key))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(1)
+                    .clamp(1, MAX_SPAN) as usize
+            };
+            let (across, down) = (span("colspan"), span("rowspan"));
+            let mut text = Some(table_cell(cell, d + 2));
+            for slots in grid.iter_mut().skip(r).take(down) {
+                if slots.len() < c + across {
+                    slots.resize(c + across, None);
+                }
+                for slot in &mut slots[c..c + across] {
+                    *slot = Some(text.take().unwrap_or_default());
+                }
+            }
+            c += across;
+        }
+    }
+    grid.into_iter().map(|row| row.into_iter().map(Option::unwrap_or_default).collect()).collect()
+}
+
+/// A cell's contents on one line, which is all a Markdown table has room
+/// for. Each block in it is written as Markdown -- so a photograph in a cell
+/// keeps its `![caption](media/...)` rather than vanishing -- and the lines
+/// are run together with a space, with every `|` escaped so it does not end
+/// the cell early.
+fn table_cell(cell: &Value, d: usize) -> String {
+    let mut markdown = String::new();
+    for block in children(cell) {
+        markdown_node(block, &mut markdown, d + 1, 0);
+    }
+    markdown
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('|', "\\|")
+}
+
+/// The cells of one table row, split on the pipes that are not escaped.
+fn table_cells(line: &str) -> Vec<String> {
+    let line = line.trim();
+    let line = line.strip_prefix('|').unwrap_or(line);
+    let line =
+        if line.ends_with('|') && !line.ends_with("\\|") { &line[..line.len() - 1] } else { line };
+    let mut cells = Vec::new();
+    let mut cell = String::new();
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek() == Some(&'|') => {
+                cell.push('|');
+                chars.next();
+            }
+            '|' => cells.push(std::mem::take(&mut cell).trim().to_string()),
+            _ => cell.push(c),
+        }
+    }
+    cells.push(cell.trim().to_string());
+    cells
+}
+
+/// How many columns the table starting at `line` has, if it is one: the line
+/// has a pipe, and the line under it is a rule with a `---` per column.
+fn table_header(line: &str, next: Option<&str>) -> Option<usize> {
+    let rule = next?.trim();
+    if !line.contains('|') || !rule.contains('-') {
+        return None;
+    }
+    let width = table_cells(line).len();
+    let specs = table_cells(rule);
+    let is_rule = specs.iter().all(|spec| {
+        let dashes = spec.trim_start_matches(':').trim_end_matches(':');
+        !dashes.is_empty() && dashes.chars().all(|c| c == '-')
+    });
+    (is_rule && specs.len() == width).then_some(width)
+}
+
+/// One row of a table, padded or cut to the header's width -- the editor's
+/// tables are rectangular, and Markdown's are only by convention.
+fn table_row(line: &str, width: usize, cell_type: &str) -> Value {
+    let mut cells = table_cells(line);
+    cells.resize(width, String::new());
+    let content: Vec<Value> = cells
+        .iter()
+        .map(|text| {
+            let mut paragraph = json!({ "type": "paragraph" });
+            if !text.is_empty() {
+                paragraph["content"] = json!(inline_nodes(text));
+            }
+            json!({ "type": cell_type, "content": [paragraph] })
+        })
+        .collect();
+    json!({ "type": "tableRow", "content": content })
 }
 
 /// One line of Markdown into ProseMirror text nodes with marks.
@@ -943,6 +1111,96 @@ mod tests {
         // Half a bold run is prose, not a parse failure.
         let doc = RichDoc::from_markdown("2 ** 3 is not bold");
         assert_eq!(doc.plain_text().trim(), "2 ** 3 is not bold");
+    }
+
+    #[test]
+    fn a_pipe_table_becomes_a_table_with_its_first_row_as_the_header() {
+        let doc = RichDoc::from_markdown(
+            "Miles this week:\n| Day | Miles |\n|:---|---:|\n| Mon | **3** |\n| Tue |\n",
+        );
+        let blocks = doc.0["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "paragraph", "the table interrupts the paragraph");
+        let rows = blocks[1]["content"].as_array().unwrap();
+        assert_eq!(blocks[1]["type"], "table");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0]["content"][0]["type"], "tableHeader");
+        assert_eq!(rows[1]["content"][0]["type"], "tableCell");
+        assert_eq!(rows[1]["content"][1]["content"][0]["content"][0]["marks"][0]["type"], "bold");
+        // A short row is padded, because the editor's tables are rectangular.
+        assert_eq!(rows[2]["content"].as_array().unwrap().len(), 2);
+        assert_eq!(rows[2]["content"][1]["content"][0], json!({ "type": "paragraph" }));
+    }
+
+    #[test]
+    fn a_pipe_without_a_rule_under_it_is_prose() {
+        // The rule has to have a column for every header cell, or it is a
+        // rule under a line that happens to have a pipe in it.
+        for text in ["either this | or that", "a | b\n---", "a | b\n| --- | --- | --- |"] {
+            let doc = RichDoc::from_markdown(text);
+            assert!(
+                doc.0["content"].as_array().unwrap().iter().all(|b| b["type"] != "table"),
+                "{text:?} is not a table"
+            );
+        }
+    }
+
+    #[test]
+    fn a_table_survives_a_round_trip_through_markdown() {
+        let cell = |ty: &str, text: &str| {
+            json!({ "type": ty, "content": [
+                { "type": "paragraph", "content": [{ "type": "text", "text": text }] }
+            ]})
+        };
+        let d = doc(json!([{ "type": "table", "content": [
+            { "type": "tableRow", "content": [cell("tableHeader", "Day"), cell("tableHeader", "Note")] },
+            { "type": "tableRow", "content": [cell("tableCell", "Mon"), cell("tableCell", "this | that")] },
+        ]}]));
+        let md = d.to_markdown();
+        assert_eq!(md, "| Day | Note |\n| --- | --- |\n| Mon | this \\| that |");
+        assert_eq!(RichDoc::from_markdown(&md), d);
+        assert_eq!(d.plain_text(), "Day\nNote\n\nMon\nthis | that");
+    }
+
+    #[test]
+    fn a_list_item_or_heading_with_a_pipe_in_it_is_not_a_table_row() {
+        let blocks = RichDoc::from_markdown("- a | b\n| --- | --- |").0["content"].clone();
+        assert_eq!(blocks[0]["type"], "bulletList", "a list item does not head a table");
+
+        let doc = RichDoc::from_markdown("| x | y |\n|---|---|\n| 1 | 2 |\n- note | aside");
+        let blocks = doc.0["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["content"].as_array().unwrap().len(), 2, "header and one row");
+        assert_eq!(blocks[1]["type"], "bulletList", "and the list under it is kept");
+    }
+
+    #[test]
+    fn a_merged_cell_keeps_every_column_after_it_in_its_own_column() {
+        let cell = |text: &str, attrs: Value| {
+            json!({ "type": "tableCell", "attrs": attrs, "content": [
+                { "type": "paragraph", "content": [{ "type": "text", "text": text }] }
+            ]})
+        };
+        let one = json!({});
+        let d = doc(json!([{ "type": "table", "content": [
+            { "type": "tableRow", "content": [cell("a", one.clone()), cell("b", one.clone()), cell("c", one.clone())] },
+            { "type": "tableRow", "content": [cell("wide", json!({ "colspan": 2 })), cell("c1", one.clone())] },
+            { "type": "tableRow", "content": [cell("tall", json!({ "rowspan": 2 })), cell("b2", one.clone()), cell("c2", one.clone())] },
+            { "type": "tableRow", "content": [cell("b3", one.clone()), cell("c3", one.clone())] },
+        ]}]));
+        assert_eq!(
+            d.to_markdown(),
+            "| a | b | c |\n| --- | --- | --- |\n| wide |  | c1 |\n| tall | b2 | c2 |\n|  | b3 | c3 |"
+        );
+    }
+
+    #[test]
+    fn a_photograph_in_a_cell_is_written_out_rather_than_lost() {
+        let d = doc(json!([{ "type": "table", "content": [
+            { "type": "tableRow", "content": [{ "type": "tableHeader", "content": [
+                { "type": "paragraph", "content": [{ "type": "text", "text": "Before" }] },
+                { "type": "media", "attrs": { "blob": "abc", "kind": "image", "caption": "the fence" } },
+            ]}]},
+        ]}]));
+        assert_eq!(d.to_markdown(), "| Before ![the fence](media/abc) |\n| --- |");
     }
 
     #[test]
