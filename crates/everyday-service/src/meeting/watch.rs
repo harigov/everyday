@@ -225,7 +225,6 @@ mod tests {
     use everyday_core::calendar::{AccountCalendarSource, CalendarOrigin, EventStatus};
     use everyday_core::id::{AccountId, EventId, TemplateId};
     use everyday_core::meeting::{EventRef, MeetingSettings, Recording};
-    use jiff::civil::date;
     use std::sync::Mutex as StdMutex;
 
     fn env() -> (Arc<Service>, Arc<Vault>, tempfile::TempDir) {
@@ -280,6 +279,11 @@ mod tests {
         let now = Timestamp::now();
         let start = Timestamp::from_second(now.as_second() + offset_secs).unwrap();
         let end = Timestamp::from_second(start.as_second() + 1_800).unwrap();
+        // The day it falls on where the test runs, as a real sync would
+        // file it. `tick` asks for events a day either side of today by
+        // this date, so a fixed one quietly stopped matching a day after
+        // it was written.
+        let day = |at: Timestamp| at.to_zoned(TimeZone::system()).date();
         Event {
             id: EventId::new(),
             calendar_id,
@@ -289,8 +293,8 @@ mod tests {
             location: String::new(),
             start,
             end,
-            local_date: date(2026, 9, 16),
-            end_date: date(2026, 9, 16),
+            local_date: day(start),
+            end_date: day(end),
             tz: "UTC".into(),
             all_day: false,
             status: EventStatus::Confirmed,
