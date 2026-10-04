@@ -643,6 +643,18 @@ async fn every_offline_write_announces_what_was_written_down() {
     )
     .await;
 
+    // The same for a stop: nothing is running on a thread nobody has
+    // written in, and `Pending::cancel` answers false rather than erroring
+    // (see `crate::agent`'s own unit tests). A stop announces nothing of its
+    // own -- the turn it stops does, as it winds up.
+    run(
+        &svc,
+        &h,
+        "cancel_turn",
+        json!({ "conversationId": everyday_core::ConversationId::new().to_string() }),
+    )
+    .await;
+
     // ---- proposals -------------------------------------------------------
     let proposal1 = seed_note_proposal(&vault, "Trip notes");
     run(&svc, &h, "accept_proposal", json!({ "id": proposal1.id.to_string() })).await;

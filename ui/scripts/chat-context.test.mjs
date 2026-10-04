@@ -29,7 +29,6 @@ function base(section, overrides = {}) {
     library: { shelfName: null },
     notes: { openTitle: null },
     overview: { widgets: [] },
-    assistant: { paneLabel: 'Runs' },
     mail: { subject: null, mailboxName: null },
     entry: null,
     ...overrides,
@@ -97,9 +96,9 @@ check(
 // ── assistant ────────────────────────────────────────────────────────
 
 check(
-  'assistant, on a pane',
-  chatContext(base('assistant', { assistant: { paneLabel: 'Proposals' } })),
-  'your own routines and what they did, on the "Proposals" page',
+  'assistant, the conversation page',
+  chatContext(base('assistant')),
+  'this conversation, in the Assistant app, with nothing else on screen',
 )
 
 // ── journal ──────────────────────────────────────────────────────────

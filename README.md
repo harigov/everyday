@@ -74,7 +74,9 @@ of filters over the list below it. **Settings** and **Lock** are at the foot
 of the bar, under a rule, for the same reason: they belong to the vault
 rather than to whichever app is open.
 
-Settings is a dialog with tabs — General, About You, Accounts, Assistant, Meetings, Data, Vault — rather than a
+Settings is a dialog with tabs — General, About You, Accounts, Assistant (and,
+under it, Routines, What it did, Memory and Waiting for you), Meetings, Data,
+Vault — rather than a
 popover hanging out of the side of the bar. It outgrew the popover twice:
 once when it acquired an instructions box somebody is expected to write a
 paragraph into, and again when that box had to become a *second* dialog
@@ -87,17 +89,23 @@ whose vault this is (see [Who it works for](#who-it-works-for)) and where the
 which is where the vault is written out as files anything can read and read
 back again — see [leaving with your writing](#leaving-with-your-writing).
 
-Talking to the assistant is deliberately *not* on the bar. It is a round
-button in the bottom right-hand corner of whatever app is open, because that
-is what it acts on: the task you can see, the entry you are writing. It opens
-a rail beside that app rather than replacing it, and the rail can be dragged
-wider — a table or a fenced block of configuration in a 340px column is a
-column of wrapped fragments.
+The **Assistant** app is the conversation: the whole window, one long thread
+that carries on from wherever it was left, with the earlier ones down the
+sidebar. See [Talking to it](#talking-to-it).
 
-The **Assistant** app is a different thing from that rail and is on the bar
-for a different reason: it is not about what you are looking at. It is where
-its standing work is set up and where what it did while you were elsewhere
-waits to be read. See [An assistant that keeps its own
+The same conversation follows you into every other app as a round button in
+the bottom right-hand corner, because that is what it acts on there: the task
+you can see, the entry you are writing. It opens a rail beside that app rather
+than replacing it, and the rail can be dragged wider — a table or a fenced
+block of configuration in a 340px column is a column of wrapped fragments. It
+is the same thread as the page, not a second assistant, so a question started
+in one is finished in the other.
+
+Its standing work — routines, what they did, what it remembers, what it left
+for you to decide — is in Settings, under Assistant. Those are things set up
+once and looked over now and then, which is what Settings is for; they were
+the Assistant app's four panes, and the one thing nobody could do in an app
+called Assistant was talk to it. See [An assistant that keeps its own
 appointments](#an-assistant-that-keeps-its-own-appointments).
 
 The todo app has projects, tasks and subtasks — a subtask is just a task with
@@ -1224,12 +1232,52 @@ lets the same command bodies back this window, a server answering three
 machines, and a mobile shell later — and it is why the interface's own client
 is *generated* from that table rather than written beside it.
 
+## Talking to it
+
+### One conversation
+
+The Assistant app opens on the last conversation rather than a blank one, and
+it goes on until you press New. It used to start a fresh thread every session,
+which made it something you asked one question at a time and then lost — and
+made "what did we decide yesterday" a trip to a history list.
+
+A thread months long would be a bill months long if the model were sent all of
+it, so it is not: each turn sends the recent part of the conversation (the
+last eighty messages or so, and never more than about sixty thousand
+characters of them), and the model is told when the start has been left out.
+What has to survive longer than that is what its [memory](#who-it-works-for)
+is for. The vault keeps every word either way; this is only what is read back.
+
+### While it works
+
+A turn that searches twice, reads a page and checks a forecast takes the
+better part of a minute, and the rail used to show three dots until the first
+tool card appeared and then nothing at all — so a turn that was working and a
+turn that had wedged looked exactly alike. Now a running turn always ends in
+one line saying what it is doing and for how long: *Thinking*, *Searching the
+web for "…"*, *Reading bbc.co.uk*, *Waiting for your answer*, with the seconds
+beside it. The words come from the tool's name — `list_tasks` is "Listing
+tasks" while it runs and "Listed tasks" once it has — rather than from a table
+that would go stale the first time the catalogue changed; the few tools that
+reach outside the vault say what they reached for.
+
+For anything that takes more than a couple of steps it lays out a **plan** —
+a short checklist that ticks itself off as it goes — and once the turn is
+over, a long list of steps folds under one line ("Worked for 18s · 5 steps")
+so the answer is what is left to read. A model that streams its reasoning
+(most local ones do) shows it folded under the turn; it is not kept.
+
+**Stop** is where Send was, and Escape does the same. What it had said and
+done is kept, a question it was waiting on is withdrawn as though declined,
+and the box stays writable throughout, so the next question can be typed
+while this one is answered.
+
 ## An assistant that keeps its own appointments
 
 A **routine** is a time, an instruction in your own words, and a switch.
 "Every weekday at seven, look at what is due and what is on the calendar and
-leave me a note with the three things that matter." Set one up in the
-Assistant app, or by saying so in the rail — it can make its own.
+leave me a note with the three things that matter." Set one up in Settings →
+Routines, or by saying so in conversation — it can make its own.
 
 Every periodic thing in this application used to be polled by a *window*: the
 calendar refreshes on a five-minute timer in the interface, and the argument
@@ -1283,7 +1331,7 @@ writes down what it was unsure about.
 
 There is no queue of drafts to approve. Every run keeps its whole transcript —
 every tool call, in order, with what came back — and one click from its
-summary opens it in the rail.
+summary opens it in the Assistant app.
 
 That is the honest version of the same promise. A review queue asks you to
 check everything in advance, including the nine times out of ten it was right;
@@ -1295,9 +1343,11 @@ and nothing built here has to be undone for it.
 ### How you find out
 
 A number on the app bar, and nothing else. Work done at seven in the morning
-is a queue rather than an interruption. *Reading* clears it: opening the pane
-marks what is on screen as seen, because a button you had to press would leave
-a number nobody could get rid of by doing the thing the number was asking for.
+is a queue rather than an interruption. *Reading* clears it: opening Settings →
+What it did marks what is on screen as seen, because a button you had to press
+would leave a number nobody could get rid of by doing the thing the number was
+asking for. Pressing Assistant because of the number finds a row at the top of
+its sidebar that leads there, for as long as there is something to read.
 
 One notification per run reaches the operating system, and its title names the
 routine and never what it found — "Morning brief is ready". This is the one
@@ -1369,29 +1419,56 @@ no way to see why the bill grew.
 
 ### Looking things up
 
-`web_search` is the only tool the assistant has that is not in the core's
-catalogue, and the only one that leaves this computer for somewhere you did
-not choose. It is off until you turn it on, and the sentence beside the switch
-says what it costs: your question — and, preparing for a meeting, the names of
-the people in it — go to a search engine. Everything else the assistant does
-happens between this machine and the model endpoint you configured.
+Three tools leave this computer for somewhere you did not choose, and they
+share one switch, **Let it use the web**: `web_search` finds pages,
+`read_web_page` reads one, and `get_weather` asks
+[Open-Meteo](https://open-meteo.com) for the conditions and a forecast up to
+sixteen days out — where you live, from About You, unless you name somewhere
+else. None needs a key or an account, for the reason every lookup in this
+application does not. The switch is off until you turn it on, and the
+sentence beside it says what each costs: a search sends your question (and,
+preparing for a meeting, the names of the people in it) to a search engine;
+reading a page tells that site the page was asked for; a forecast sends a
+place name. Everything else the assistant does happens between this machine
+and the model endpoint you configured. With the switch off it says so when
+asked for something current, and where to turn it on, rather than answering
+from a memory of the world that ended when it was trained.
 
-It lives in the service rather than the core for the reason the calendar and
+They live in the service rather than the core for the reason the calendar and
 the library features are both built on: `everyday-core` has no async runtime,
-no TLS stack and no way to open a socket, and that stays true.
+no TLS stack and no way to open a socket, and that stays true. What can be
+pure is: the forecast's URLs, its parsing and the words for a weather code
+are in the core, under test, offline.
 
-The second risk is not squeamishness either. A search result is text written
-by a stranger arriving in a context window that can call tools, which is the
-same shape as a fetched page or an imported calendar — and the answer is the
-one already in place: no secret domain is ever offered to a model, a scheduled
-run cannot delete anything, and the transcript says what was done.
+The second risk is not squeamishness either. A search result or a page is
+text written by a stranger arriving in a context window that can call tools,
+which is the same shape as an imported calendar — and the answer is the one
+already in place: no secret domain is ever offered to a model, a scheduled
+run cannot delete anything, the transcript says what was done, and a page is
+read for its *visible* words — what a person looking at it would see — so
+white-on-white instructions to a model are not among them.
+
+**An address is a way out.** `web_search` only ever talks to one search
+engine; `read_web_page` will fetch any address it is given, and an address
+can carry words — `https://somewhere.example/?note=…` — so a model talked
+into it by a page it just read could post your journal to a stranger by
+"reading" a URL it wrote itself. So it reads freely only what came from
+somewhere other than its own say-so: an address you typed, one a search
+returned, or a link on a page it has already read — each exactly as written
+— and, when you are the one asking, any page on a site you named whose
+address carries no query string, since a query is where data rides. Anything
+else stops on a card that shows the whole address and asks; a scheduled run,
+with nobody to ask, is refused. Once mail has been read in a turn, every
+address asks. It cannot reach this
+machine or your network at all, whoever gave it the address: names are
+resolved through the same filter that guards a message's remote images.
 
 **Mail is the same risk, doubled.** It is the first domain whose contents
 are written by strangers *and* whose tools reach strangers, so once a mail
-tool has returned content in a turn, `web_search` in that same turn asks
-first and shows its query — a model that has just read a stranger's words
-can put those words in a search and send them somewhere else entirely, and
-a turn that never touched mail is unchanged.
+tool has returned content in a turn, `web_search` and `read_web_page` in that
+same turn ask first and show what they would send — a model that has just
+read a stranger's words can put those words in a search and send them
+somewhere else entirely, and a turn that never touched mail is unchanged.
 
 ### Reading and answering your mail
 
@@ -2417,9 +2494,10 @@ with what the platform or the webview has already taken.
 | | |
 |---|---|
 | `G` then `J` / `N` / `T` / `C` / `L` / `M` / `O` / `A` | journal, notes, todo, calendar, library, mail, overview, assistant |
-| `C` | start the next thing — an entry, a note, the task capture line, an hour set aside, the "add to shelf" field, a goal, a routine |
+| `C` | start the next thing — an entry, a note, the task capture line, an hour set aside, the "add to shelf" field, a goal, a conversation |
 | `/` | search this app |
-| `A` | the assistant's rail |
+| `A` | the assistant's rail — or, in the Assistant app, its message box |
+| `Esc` | in the message box, stop a turn that is running |
 | `?` | this list |
 | `Ctrl/Cmd J` | cycle through the apps |
 | `Ctrl/Cmd N` | the same as `C` |

@@ -18,6 +18,8 @@
 
   import { api } from '../lib/api'
   import { agent } from '../lib/agent.svelte'
+  import { assistant, PANE_LABELS, type Pane } from '../lib/assistant.svelte'
+  import { proposals } from '../lib/proposals.svelte'
   import { humanBytes, plural } from '../lib/format'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import { panels, type SettingsTab } from '../lib/panels.svelte'
@@ -26,6 +28,7 @@
   import { tray } from '../lib/tray.svelte'
   import AccountsPanel from './AccountsPanel.svelte'
   import AgentPanel from './AgentPanel.svelte'
+  import AssistantPanes from './AssistantPanes.svelte'
   import DataPanel from './DataPanel.svelte'
   import MeetingsPanel from './MeetingsPanel.svelte'
   import McpPanel from './McpPanel.svelte'
@@ -76,7 +79,8 @@
   const status = $derived(app.status)
   const tab = $derived(panels.settings ?? 'general')
 
-  const TABS: { id: SettingsTab; label: string; icon: IconName }[] = [
+  /** `sub` marks a tab drawn indented under the one before it. */
+  const TABS: { id: SettingsTab; label: string; icon: IconName; sub?: true }[] = [
     { id: 'general', label: 'General', icon: 'settings' },
     // "About You" rather than "You": the tab now holds the roles as well as
     // the six fields, and "You" beside a list of the parts of a life read as
@@ -84,18 +88,41 @@
     { id: 'profile', label: 'About You', icon: 'star' },
     { id: 'accounts', label: 'Accounts', icon: 'inbox' },
     { id: 'assistant', label: 'Assistant', icon: 'sparkle' },
+    // The assistant's standing work, which was the Assistant app's four
+    // panes until that app became the conversation. Under the Assistant tab
+    // rather than beside it, because they are its, and a flat list of eleven
+    // tabs would hide that. See `AssistantPanes.svelte`.
+    { id: 'routines', label: PANE_LABELS.routines, icon: 'clock', sub: true },
+    { id: 'runs', label: PANE_LABELS.runs, icon: 'inbox', sub: true },
+    { id: 'memory', label: 'Memory', icon: 'sparkle', sub: true },
+    { id: 'proposals', label: PANE_LABELS.proposals, icon: 'tick', sub: true },
     { id: 'meetings', label: 'Meetings', icon: 'mic' },
     { id: 'data', label: 'Data', icon: 'upload' },
     { id: 'vault', label: 'Vault', icon: 'lock' },
   ]
-  // The assistant tab is not offered on a backend that cannot store a
+
+  const PANES: readonly SettingsTab[] = ['routines', 'runs', 'memory', 'proposals']
+  function isPane(t: SettingsTab): t is Pane {
+    return PANES.includes(t)
+  }
+
+  /** The count a tab carries -- the same two the app bar adds together. */
+  function count(t: SettingsTab): number {
+    if (t === 'runs') return assistant.unseen
+    if (t === 'proposals') return proposals.unseen
+    return 0
+  }
+
+  // The assistant tabs are not offered on a backend that cannot store a
   // conversation, for the same reason the rail is not: an empty tab that
-  // explains why it is empty is worse than no tab. Meetings rides the notes
-  // capability -- see `meetings.svelte.ts`'s own `supported`.
+  // explains why it is empty is worse than no tab. The panes under it follow
+  // what the vault can hold, as they did in the app. Meetings rides the
+  // notes capability -- see `meetings.svelte.ts`'s own `supported`.
   const shown = $derived(
-    TABS.filter((t) => t.id !== 'assistant' || agent.supported).filter(
-      (t) => t.id !== 'meetings' || meetings.supported,
-    ),
+    TABS.filter((t) => (t.id !== 'assistant' && !isPane(t.id)) || agent.supported)
+      .filter((t) => (t.id !== 'routines' && t.id !== 'runs') || app.supportsRoutines)
+      .filter((t) => t.id !== 'proposals' || app.supportsProposals)
+      .filter((t) => t.id !== 'meetings' || meetings.supported),
   )
 
   async function changePassword(e: Event) {
@@ -220,11 +247,13 @@
         <button
           class="tab"
           class:on={tab === t.id}
+          class:sub={t.sub}
           aria-current={tab === t.id ? 'page' : undefined}
           onclick={() => panels.openSettings(t.id)}
         >
-          <Icon name={t.icon} size={16} />
-          {t.label}
+          <Icon name={t.icon} size={t.sub ? 14 : 16} />
+          <span class="label">{t.label}</span>
+          {#if count(t.id) > 0}<span class="count">{count(t.id)}</span>{/if}
         </button>
       {/each}
     </nav>
@@ -232,6 +261,8 @@
     <div class="body scroll">
       {#if tab === 'assistant'}
         <AgentPanel />
+      {:else if isPane(tab)}
+        <AssistantPanes pane={tab} />
       {:else if tab === 'meetings'}
         <MeetingsPanel />
       {:else if tab === 'profile'}
@@ -492,8 +523,8 @@
     margin: auto;
     display: flex;
     flex-direction: column;
-    width: min(720px, calc(100vw - var(--sp-8)));
-    height: min(620px, calc(100vh - var(--sp-8)));
+    width: min(780px, calc(100vw - var(--sp-8)));
+    height: min(660px, calc(100vh - var(--sp-8)));
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     background: var(--bg-raised);
@@ -540,7 +571,7 @@
     flex-direction: column;
     gap: 2px;
     flex: none;
-    width: 176px;
+    width: 212px;
     padding: var(--sp-3);
     border-right: 1px solid var(--border);
     background: var(--bg-panel);
@@ -564,6 +595,30 @@
     background: var(--bg-active);
     color: var(--fg);
     font-weight: 600;
+  }
+  .tab.sub {
+    gap: var(--sp-2);
+    height: calc(var(--row-h) - 4px);
+    padding-left: calc(var(--sp-3) + 10px);
+    font-size: var(--text-sm);
+  }
+  .label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .count {
+    flex: none;
+    min-width: 18px;
+    padding: 1px 5px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    text-align: center;
   }
 
   .body {

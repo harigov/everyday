@@ -362,7 +362,10 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     label: 'The assistant',
     group: 'Everywhere',
     when: () => anywhere() && agent.supported,
-    run: () => void agent.toggle(),
+    // In its own app the conversation is already the page, so the key that
+    // would open the rail puts the caret in the box instead -- the thing
+    // somebody pressing it there wanted.
+    run: () => (app.section === 'assistant' ? agent.focusComposer() : void agent.toggle()),
   },
   {
     keys: 'mod+,',
@@ -924,9 +927,9 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     icon: 'inbox',
     tray: true,
     when: () => app.screen === 'main' && app.supportsAssistant,
-    run: async () => {
-      if (await app.goTo('assistant')) assistant.setPane('runs')
-    },
+    // Settings rather than the app: the run log is a tab there now, and the
+    // app is the conversation. See `AssistantPanes.svelte`.
+    run: () => assistant.setPane('runs'),
   },
   {
     id: 'assistant:new-routine',
@@ -936,9 +939,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     icon: 'clock',
     tray: true,
     when: () => app.screen === 'main' && app.supportsRoutines,
-    run: async () => {
-      if (await app.goTo('assistant')) await assistant.draft()
-    },
+    run: () => void assistant.draft(),
   },
   {
     label: 'What the assistant remembers',
@@ -946,9 +947,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     keywords: ['memory', 'facts', 'forget'],
     icon: 'sparkle',
     when: () => app.screen === 'main' && app.supportsAssistant,
-    run: async () => {
-      if (await app.goTo('assistant')) assistant.setPane('memory')
-    },
+    run: () => assistant.setPane('memory'),
   },
   {
     id: 'notes:new',
@@ -1083,6 +1082,7 @@ function create() {
     mail,
     overview,
     assistant,
+    agent,
     focusNewGoal,
   })
 }

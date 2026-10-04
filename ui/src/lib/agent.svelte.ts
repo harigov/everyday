@@ -1,11 +1,17 @@
-// The assistant's rail, which works in every app.
+// The conversation with the assistant: the Assistant app's whole page, and the
+// rail that works in every other app.
 //
-// A store beside the apps' own rather than one of them -- the Assistant app's
-// three panes are `assistant.svelte.ts` -- and the only one whose state is
-// mostly *in flight*: a turn arrives over a channel as a stream of events,
-// and this is what turns those into something a panel can draw. See
-// `AgentEvent` in `types.ts` for the shapes, and `crate::agent` in the shell
-// for what emits them.
+// One store for both, and one thread on screen in both, on purpose. The app
+// is where somebody sits down to talk; the rail is the same conversation
+// carried into whichever app they went to next, so "add that to my list"
+// from the todo app means the thing they were just discussing. Routines,
+// runs, memory and proposals are `assistant.svelte.ts`, and are drawn in
+// Settings now -- this store is only the talking.
+//
+// It is the only store whose state is mostly *in flight*: a turn arrives over
+// a channel as a stream of events, and this is what turns those into
+// something a panel can draw. See `AgentEvent` in `types.ts` for the shapes,
+// and `crate::agent` in the shell for what emits them.
 //
 // What is deliberately not here: any notion of what a tool does. The panel
 // draws a card saying `create_task` ran and what it said about itself; it has
@@ -13,7 +19,7 @@
 // the moment the catalogue changed and nobody would notice.
 
 import { api, sendMessage } from './api'
-import { applyEvent, emptyTurn, isLoopback, replay, settle, type Turn } from './agent'
+import { applyEvent, emptyTurn, isLoopback, liveTurn, replay, settle, type Turn } from './agent'
 import { pref } from './prefs'
 import { app, handle, isLocked, quietly } from './state.svelte'
 import type { AgentSettings, ConversationId, ConversationSummary, Memory } from './types'
@@ -43,6 +49,14 @@ class AgentState {
   busy = $state(false)
   /** Shown above the composer. Cleared by the next send. */
   error = $state<string | null>(null)
+  /**
+   * Bumped to ask whichever composer is on screen to take the caret.
+   *
+   * A counter rather than a flag, so asking twice in a row still moves it:
+   * the composer watches the number, and a flag already `true` would not
+   * change when it was asked again.
+   */
+  focusTick = $state(0)
 
   constructor() {
     // A conversation quotes the vault back at you — entry titles, task names,
@@ -139,12 +153,27 @@ class AgentState {
     }
   }
 
+  /**
+   * Settings and threads, and a conversation to be in.
+   *
+   * The conversation is the last one, not a fresh one. It used to start a new
+   * thread every time the rail first opened in a session, which made the
+   * assistant something you asked one question at a time and then lost --
+   * and made "what did we decide yesterday" a trip to the history list. Now
+   * it is one long conversation that carries on until somebody presses New;
+   * the service keeps the model's view of it to the recent part, so a thread
+   * months long costs no more per turn than one a day old.
+   */
   async load() {
     if (!this.supported) return
     try {
       this.settings = await api.agentSettings()
       this.threads = await api.conversations(50)
-      if (!this.conversationId) await this.startThread()
+      if (!this.conversationId) {
+        const last = this.threads[0]
+        if (last) await this.openThread(last.id)
+        else await this.startThread()
+      }
     } catch (e) {
       if (isLocked(e)) return void (await handle(e))
       this.error = e instanceof Error ? e.message : String(e)
@@ -159,9 +188,20 @@ class AgentState {
       this.conversationId = conversation.id
       this.turns = []
       this.error = null
+      this.focusComposer()
     } catch (e) {
       await handle(e)
     }
+  }
+
+  /** Ask the composer on screen to take the caret. See `focusTick`. */
+  focusComposer() {
+    this.focusTick += 1
+  }
+
+  /** The thread on screen, as the list knows it -- for a title to draw. */
+  get current(): ConversationSummary | null {
+    return this.threads.find((t) => t.id === this.conversationId) ?? null
   }
 
   /** Open a thread from the history list and replay it. */
@@ -216,11 +256,13 @@ class AgentState {
     // nothing on screen -- no prose, no tool cards, and so no confirm
     // buttons on a destructive call. Everything below must go through the
     // array.
-    this.turns.push(emptyTurn('assistant', this.#nextLocalId()))
+    this.turns.push(liveTurn(this.#nextLocalId()))
     const reply = this.turns[this.turns.length - 1]!
+    this.#reply = reply
+    const conversationId = this.conversationId
 
     try {
-      await sendMessage(this.conversationId, text, context, (event) => applyEvent(reply, event))
+      await sendMessage(conversationId, text, context, (event) => applyEvent(reply, event))
       // The thread has a title now, and has moved to the top of the list.
       this.threads = await api.conversations(50)
     } catch (e) {
@@ -234,11 +276,35 @@ class AgentState {
       reply.error = e instanceof Error ? e.message : String(e)
     } finally {
       this.busy = false
+      this.#reply = null
       // A card still open when the turn ends is stranded: the run has gone,
       // so no result can arrive and no answer can reach it.
       settle(reply)
     }
     return true
+  }
+
+  /** The reply being streamed into, while there is one. For `stop`. */
+  #reply: Turn | null = null
+
+  /**
+   * Stop the turn that is running.
+   *
+   * Marked on the turn before the request goes, so the panel says "Stopped"
+   * at once rather than after a round trip, and so `settle` draws a card
+   * that was still running as stopped rather than failed. The turn then
+   * ends the ordinary way -- the service sends `finished` with whatever had
+   * been said -- which is what clears `busy`.
+   */
+  async stop() {
+    const reply = this.#reply
+    if (!this.busy || !reply || !this.conversationId || reply.stopped) return
+    reply.stopped = true
+    try {
+      await api.cancelTurn(this.conversationId)
+    } catch (e) {
+      await handle(e)
+    }
   }
 
   /**

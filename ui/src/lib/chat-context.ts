@@ -31,7 +31,6 @@ export interface ChatContext {
   library: { shelfName: string | null }
   notes: { openTitle: string | null }
   overview: { widgets: { type: WidgetType }[] }
-  assistant: { paneLabel: string }
   mail: {
     /** The open thread's subject, or `null` when none is selected. */
     subject: string | null
@@ -77,7 +76,11 @@ export function chatContext(ctx: ChatContext): string {
         : 'their overview page, which they have not put anything on yet'
     }
     case 'assistant':
-      return `your own routines and what they did, on the "${ctx.assistant.paneLabel}" page`
+      // The page is the conversation and nothing else -- the routines and
+      // the memory that used to share it are in Settings now -- so there is
+      // no "this" for the sentence to point at. Said plainly rather than
+      // left out, so the model does not go looking for something on screen.
+      return 'this conversation, in the Assistant app, with nothing else on screen'
     case 'mail':
       if (ctx.mail.subject) return `the mail app, thread "${ctx.mail.subject}"`
       if (ctx.mail.mailboxName) return `the mail app, mailbox "${ctx.mail.mailboxName}"`

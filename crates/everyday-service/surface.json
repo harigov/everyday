@@ -402,6 +402,23 @@
     {
       "args": [
         {
+          "name": "conversationId",
+          "required": true,
+          "type": "ConversationId"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "cancel_turn",
+      "orScope": null,
+      "returns": "boolean",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "current",
           "required": true,
           "type": "string"

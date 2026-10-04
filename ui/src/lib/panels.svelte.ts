@@ -19,7 +19,19 @@
  * iterated anywhere.
  */
 export type SettingsTab =
-  'general' | 'profile' | 'accounts' | 'assistant' | 'meetings' | 'data' | 'vault'
+  | 'general'
+  | 'profile'
+  | 'accounts'
+  | 'assistant'
+  // The assistant's standing work, drawn under its own tab -- see
+  // `assistant.svelte.ts`'s `Pane`, which is these four by name.
+  | 'runs'
+  | 'routines'
+  | 'memory'
+  | 'proposals'
+  | 'meetings'
+  | 'data'
+  | 'vault'
 
 class Panels {
   /** Which settings tab is showing, or `null` when the dialog is closed. */

@@ -1,140 +1,145 @@
 <script lang="ts">
-  // The Assistant app's half of the sidebar: three panes, and the routines
-  // under them.
+  // The Assistant app's half of the sidebar: the conversations.
   //
-  // The routines are here for the reason the Overview's roles are: a thing is
-  // defined where its data is seen, and a routine you have to go to Settings
-  // for is a routine you will not edit.
+  // It held the four panes and the routines, which are in Settings now; what
+  // a sidebar beside a conversation is for is the other conversations. The
+  // current one is highlighted, and the list is grouped by when each was
+  // last spoken in, because "the one from yesterday" is how anybody goes
+  // looking for one.
+  //
+  // Two rows sit above the list, and only when they have something to say:
+  // what the routines did since anybody looked, and what is waiting for an
+  // answer. They are the other half of the count on the app bar -- pressing
+  // Assistant because of a number has to lead somewhere the number can be
+  // cleared -- and they open the Settings tab that holds it.
 
+  import { threadGroups } from '../lib/agent'
+  import { agent } from '../lib/agent.svelte'
+  import { assistant } from '../lib/assistant.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
-  import { assistant, PANES, PANE_LABELS, type Pane } from '../lib/assistant.svelte'
+  import { panels } from '../lib/panels.svelte'
   import { proposals } from '../lib/proposals.svelte'
   import { app } from '../lib/state.svelte'
-  import type { IconName } from '../lib/icons'
-  import type { RoutineInfo } from '../lib/types'
+  import type { ConversationSummary } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
 
-  let pendingDelete = $state<RoutineInfo | null>(null)
+  let pendingDelete = $state<ConversationSummary | null>(null)
 
-  const PANE_ICONS: Record<Pane, IconName> = {
-    runs: 'inbox',
-    routines: 'clock',
-    memory: 'sparkle',
-    proposals: 'tick',
-  }
+  const groups = $derived(threadGroups(agent.threads))
 
-  /** The badge on a pane's row. Only `runs` and `proposals` carry one. */
-  const PANE_COUNTS: Partial<Record<Pane, () => number>> = {
-    runs: () => assistant.unseen,
-    proposals: () => proposals.unseen,
-  }
-
-  const shown = $derived(
-    PANES.filter((p) => p !== 'routines' || app.supportsRoutines).filter(
-      (p) => p !== 'proposals' || app.supportsProposals,
-    ),
-  )
-
-  /**
-   * A dream cannot be deleted by hand -- the application owns it, and
-   * switching dreaming off is how it goes away. See `docs/plans/dreaming.md`.
-   */
-  function routineMenu(routine: RoutineInfo): MenuItem[] {
-    const items: MenuItem[] = [
-      { label: 'Edit', icon: 'pencil', run: () => assistant.edit(routine) },
-      { label: 'Run now', icon: 'play', run: () => void assistant.runNow(routine.id) },
+  function threadMenu(thread: ConversationSummary): MenuItem[] {
+    return tidyMenu([
       {
-        label: routine.enabled ? 'Switch off' : 'Switch on',
-        icon: routine.enabled ? 'stop' : 'play',
-        run: () => void assistant.toggle(routine),
+        label: 'Open',
+        icon: 'quote',
+        disabled: agent.busy,
+        run: () => void agent.openThread(thread.id),
       },
-    ]
-    if (routine.kind?.type !== 'dream') {
-      items.push(SEP, {
-        label: 'Delete routine…',
+      SEP,
+      {
+        label: 'Delete conversation…',
         icon: 'trash',
         danger: true,
-        run: () => (pendingDelete = routine),
-      })
-    }
-    return tidyMenu(items)
+        disabled: agent.busy && thread.id === agent.conversationId,
+        run: () => (pendingDelete = thread),
+      },
+    ])
   }
 
   function navMenu(): MenuItem[] {
     return tidyMenu([
-      { label: 'New routine', icon: 'plus', hint: 'Ctrl+N', run: () => void assistant.draft() },
+      {
+        label: 'New conversation',
+        icon: 'plus',
+        hint: 'C',
+        disabled: agent.busy,
+        run: () => void agent.startThread(),
+      },
       SEP,
-      ...shown.map((p) => ({
-        label: PANE_LABELS[p],
-        icon: PANE_ICONS[p],
-        checked: assistant.pane === p,
-        run: () => assistant.setPane(p),
-      })),
+      { label: 'Routines', icon: 'clock', run: () => assistant.setPane('routines') },
+      { label: 'What it remembers', icon: 'sparkle', run: () => assistant.setPane('memory') },
+      {
+        label: 'Assistant settings',
+        icon: 'settings',
+        run: () => panels.openSettings('assistant'),
+      },
     ])
   }
 
   async function remove() {
-    const routine = pendingDelete
+    const thread = pendingDelete
     pendingDelete = null
-    if (routine) await assistant.remove(routine.id)
+    if (thread) await agent.deleteThread(thread.id)
   }
 </script>
 
 <nav class="scroll nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
-  {#each shown as pane (pane)}
-    <button class="row" class:sel={assistant.pane === pane} onclick={() => assistant.setPane(pane)}>
-      <span class="icon"><Icon name={PANE_ICONS[pane]} /></span>
-      <span class="text">{PANE_LABELS[pane]}</span>
-      {#if PANE_COUNTS[pane]?.() ?? 0}
-        <span class="count">{PANE_COUNTS[pane]!()}</span>
-      {/if}
-    </button>
-  {/each}
+  <button
+    class="row new"
+    onclick={() => void agent.startThread()}
+    disabled={agent.busy || !agent.ready}
+  >
+    <span class="icon"><Icon name="plus" /></span>
+    <span class="text">New conversation</span>
+  </button>
 
-  {#if app.supportsRoutines}
-    <div class="head">
-      <span class="eyebrow">Routines</span>
-      <button
-        class="plus"
-        title="New routine"
-        aria-label="New routine"
-        onclick={() => void assistant.draft()}
-      >
-        <Icon name="plus" size={15} />
+  {#if (app.supportsRoutines && assistant.unseen > 0) || (app.supportsProposals && proposals.unseen > 0)}
+    <div class="head"><span class="eyebrow">While you were away</span></div>
+    {#if app.supportsRoutines && assistant.unseen > 0}
+      <button class="row" onclick={() => assistant.setPane('runs')}>
+        <span class="icon"><Icon name="inbox" /></span>
+        <span class="text">What it did</span>
+        <span class="count">{assistant.unseen}</span>
       </button>
-    </div>
-
-    {#if assistant.routines.length === 0}
-      <p class="hint">Nothing standing by yet.</p>
-    {:else}
-      {#each assistant.routines as routine (routine.id)}
-        <button
-          class="row"
-          class:muted={!routine.enabled}
-          class:sel={assistant.editing?.id === routine.id}
-          onclick={() => assistant.edit(routine)}
-          oncontextmenu={(e) => menu.show(e, routineMenu(routine))}
-        >
-          <span class="icon"><Icon name={routine.enabled ? 'clock' : 'stop'} size={14} /></span>
-          <span class="text">
-            <span class="name">{routine.name}</span>
-            <span class="sub">{routine.when}</span>
-          </span>
-        </button>
-      {/each}
+    {/if}
+    {#if app.supportsProposals && proposals.unseen > 0}
+      <button class="row" onclick={() => assistant.setPane('proposals')}>
+        <span class="icon"><Icon name="tick" /></span>
+        <span class="text">Waiting for you</span>
+        <span class="count">{proposals.unseen}</span>
+      </button>
     {/if}
   {/if}
+
+  {#each groups as group (group.label)}
+    <div class="head"><span class="eyebrow">{group.label}</span></div>
+    {#each group.threads as thread (thread.id)}
+      <button
+        class="row"
+        class:sel={thread.id === agent.conversationId}
+        onclick={() => void agent.openThread(thread.id)}
+        oncontextmenu={(e) => {
+          e.stopPropagation()
+          menu.show(e, threadMenu(thread))
+        }}
+        title={thread.title || 'Untitled'}
+      >
+        <span class="text">
+          <span class="name">{thread.title || 'Untitled'}</span>
+        </span>
+      </button>
+    {/each}
+  {:else}
+    <p class="hint">Conversations you have with it are kept here.</p>
+  {/each}
 </nav>
+
+<footer class="foot">
+  <button class="row" onclick={() => assistant.setPane('routines')}>
+    <span class="icon"><Icon name="clock" size={15} /></span>
+    <span class="text">Routines and memory</span>
+  </button>
+</footer>
 
 {#if pendingDelete}
   <ConfirmDialog
-    title="Delete this routine?"
+    title="Delete this conversation?"
     detail={'“' +
-      pendingDelete.name +
-      '” and its run log will be removed. Anything it made — notes, tasks — is left alone. This cannot be undone.'}
-    confirmLabel="Delete routine"
+      (pendingDelete.title || 'Untitled') +
+      '” and everything said in it will be removed. Anything it made — notes, tasks — is left alone. This cannot be undone.'}
+    confirmLabel="Delete conversation"
     onconfirm={remove}
     oncancel={() => (pendingDelete = null)}
   />
@@ -149,22 +154,7 @@
   .head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     padding: var(--sp-5) var(--sp-2) var(--sp-2);
-  }
-
-  .plus {
-    display: grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    border-radius: var(--radius-sm);
-    color: var(--fg-faint);
-  }
-
-  .plus:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
   }
 
   .row {
@@ -183,9 +173,13 @@
       color var(--fast) var(--ease);
   }
 
-  .row:hover {
+  .row:hover:not(:disabled) {
     background: var(--bg-hover);
     color: var(--fg);
+  }
+
+  .row:disabled {
+    opacity: 0.5;
   }
 
   .row.sel {
@@ -194,8 +188,9 @@
     font-weight: 550;
   }
 
-  .row.muted {
-    opacity: 0.55;
+  .row.new {
+    color: var(--fg);
+    font-weight: 550;
   }
 
   .icon {
@@ -210,19 +205,12 @@
     display: grid;
     flex: 1;
     min-width: 0;
-    gap: 1px;
   }
 
-  .name,
-  .sub {
+  .name {
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
-  }
-
-  .sub {
-    color: var(--fg-faint);
-    font-size: var(--text-xs);
   }
 
   .count {
@@ -238,8 +226,19 @@
   }
 
   .hint {
-    padding: var(--sp-2);
+    padding: var(--sp-4) var(--sp-2);
     color: var(--fg-faint);
+    font-size: var(--text-sm);
+  }
+
+  .foot {
+    flex: none;
+    padding: var(--sp-2);
+    border-top: 1px solid var(--line);
+  }
+
+  .foot .row {
+    color: var(--fg-subtle);
     font-size: var(--text-sm);
   }
 </style>

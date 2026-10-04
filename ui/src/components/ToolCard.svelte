@@ -6,11 +6,12 @@
   // to have added a task and did not is a thing that happens, and the card is
   // the part that cannot lie about it.
   //
-  // Its most important state is `waiting`. That is a destructive call stopped
-  // before it ran, and the two buttons on it are the last point at which
-  // anything can be undone, because this application has no undo.
+  // Its most important state is `waiting`. That is a call stopped before it
+  // ran, and the buttons on it are the last point at which anything can be
+  // undone, because this application has no undo.
 
-  import type { ToolCard } from '../lib/agent'
+  import { toolLabel, type ToolCard } from '../lib/agent'
+  import type { IconName } from '../lib/icons'
   import { mail } from '../lib/mail.svelte'
   import Icon from './Icon.svelte'
 
@@ -20,30 +21,51 @@
   }: { card: ToolCard; onanswer: (answer: 'confirm' | 'decline' | 'later') => void } = $props()
 
   /**
-   * The tool's name as a phrase.
-   *
-   * Derived from the name rather than looked up in a table: the catalogue is
-   * the Rust core's and grows there, and a mapping kept here would go stale
-   * silently. `create_task` reads as "create task", which is not elegant and
-   * is never wrong.
+   * What the call is called, in the tense the card is in -- "Searching the
+   * web for", "Listed tasks". Derived from the name rather than looked up;
+   * see `toolLabel` for why, and for the few tools that say more.
    */
-  const phrase = $derived(card.name.replaceAll('_', ' '))
+  const label = $derived(toolLabel(card.name, card.arguments, card.state))
 
   /**
-   * Whether this card is asking about something leaving the vault --
-   * sending mail -- rather than something being removed. Drawn in its own
-   * colour and with its own question, because the two are different kinds
-   * of decision: one asks "can this be undone" and the other asks "should
-   * this reach them at all". See `ConfirmKind` in `lib/types.ts`.
+   * The tools that reach outside the vault get a mark of their own. They
+   * are the ones somebody scanning a long turn most wants to find: what it
+   * looked up, and where.
    */
-  const outward = $derived(card.confirmKind === 'outward')
-  const ask = $derived(
-    outward
-      ? 'This will reach somebody outside the vault.'
-      : card.confirmKind === 'search'
-        ? 'This would send words from mail just read to a search provider.'
-        : 'This cannot be undone.',
+  const ICONS: Record<string, IconName> = {
+    web_search: 'search',
+    read_web_page: 'globe',
+    get_weather: 'sun',
+  }
+  const icon = $derived(ICONS[card.name] ?? null)
+
+  /**
+   * Whether this card is asking about something leaving the vault rather
+   * than something being removed. Drawn in the accent colour rather than
+   * the danger one, because these are a different kind of decision: one
+   * asks "can this be undone" and the others ask "should this go out at
+   * all". See `ConfirmKind` in `lib/types.ts`.
+   */
+  const outward = $derived(
+    card.confirmKind === 'outward' || card.confirmKind === 'search' || card.confirmKind === 'fetch',
   )
+
+  /** The question, and the button that says yes to it, per kind. */
+  const ASKS = {
+    destructive: { ask: 'This cannot be undone.', yes: 'Delete', icon: 'trash' },
+    outward: { ask: 'This will reach somebody outside the vault.', yes: 'Send', icon: 'mail' },
+    search: {
+      ask: 'This would send words from mail just read to a search engine.',
+      yes: 'Search',
+      icon: 'search',
+    },
+    fetch: {
+      ask: 'Neither you nor a search gave it this address. Opening it tells that site it was asked for.',
+      yes: 'Open',
+      icon: 'globe',
+    },
+  } as const satisfies Record<string, { ask: string; yes: string; icon: IconName }>
+  const asking = $derived(ASKS[card.confirmKind ?? 'destructive'])
 </script>
 
 <div
@@ -53,10 +75,20 @@
   class:bad={card.state === 'failed'}
 >
   <div class="row">
-    <span class="dot" data-state={card.state} class:outward></span>
+    {#if card.state === 'running'}
+      <span class="spin" aria-hidden="true"></span>
+    {:else if icon}
+      <span class="mark" data-state={card.state}><Icon name={icon} size={13} weight={1.9} /></span>
+    {:else}
+      <span class="dot" data-state={card.state} class:outward></span>
+    {/if}
     <span class="what">
-      {phrase}
-      {#if card.subject}<b>{card.subject}</b>{/if}
+      {label.text}
+      <!-- A question names its subject in full -- the whole address a page
+           would be fetched from, the task a delete would remove -- because
+           that is what is being decided. Otherwise the short form: a host,
+           a query, a place. -->
+      {#if card.subject}<b>{card.subject}</b>{:else if label.detail}<b>{label.detail}</b>{/if}
     </span>
     {#if card.state === 'done' && card.mailLink}
       <!-- What the plan calls "the transcript links to what the assistant
@@ -77,19 +109,21 @@
       <span class="said">declined</span>
     {:else if card.state === 'later'}
       <span class="said">saved for later</span>
+    {:else if card.state === 'stopped'}
+      <span class="said">stopped</span>
     {/if}
   </div>
 
   {#if card.state === 'waiting'}
-    <p class="ask">{ask}</p>
+    <p class="ask">{asking.ask}</p>
     <div class="answer">
       <button class="no" onclick={() => onanswer('decline')}>Don't</button>
       {#if card.canPark}
         <button class="later" onclick={() => onanswer('later')}>Later</button>
       {/if}
       <button class="yes" class:outward onclick={() => onanswer('confirm')}>
-        <Icon name={outward ? 'mail' : 'trash'} size={13} />
-        {outward ? 'Send' : 'Delete'}
+        <Icon name={asking.icon} size={13} />
+        {asking.yes}
       </button>
     </div>
   {/if}
@@ -160,6 +194,40 @@
     text-decoration: underline;
   }
 
+  /* A running call turns, rather than blinks: a dot pulsing at the same
+     rate as every other dot in a long turn reads as decoration, and the one
+     thing this card has to say while it runs is "still going". */
+  .spin {
+    width: 10px;
+    height: 10px;
+    flex: none;
+    align-self: center;
+    border: 1.5px solid color-mix(in oklab, var(--accent) 25%, transparent);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: turn 0.8s linear infinite;
+  }
+  @keyframes turn {
+    to {
+      rotate: 360deg;
+    }
+  }
+  .mark {
+    display: grid;
+    flex: none;
+    align-self: center;
+    place-items: center;
+    color: var(--accent);
+  }
+  .mark[data-state='failed'] {
+    color: var(--danger);
+  }
+  .mark[data-state='declined'],
+  .mark[data-state='later'],
+  .mark[data-state='stopped'] {
+    color: var(--fg-faint);
+  }
+
   .dot {
     width: 6px;
     height: 6px;
@@ -194,6 +262,9 @@
   @media (prefers-reduced-motion: reduce) {
     .dot[data-state='running'] {
       animation: none;
+    }
+    .spin {
+      animation: pulse 1.1s ease-in-out infinite;
     }
   }
 

@@ -66,6 +66,8 @@ pub mod supervisor;
 pub mod token_cache;
 pub mod touched;
 pub mod transfers;
+pub mod weather;
+pub mod webpage;
 pub mod websearch;
 
 pub use command::{Command, Signature};

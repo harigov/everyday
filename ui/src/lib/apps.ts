@@ -39,6 +39,7 @@ import type { calendar as calendarSingleton } from './calendar.svelte'
 import type { mail as mailSingleton } from './mail.svelte'
 import type { overview as overviewSingleton } from './overview.svelte'
 import type { assistant as assistantSingleton } from './assistant.svelte'
+import type { agent as agentSingleton } from './agent.svelte'
 import { chatContext, type ChatContext } from './chat-context'
 
 type AppLike = typeof appSingleton
@@ -49,6 +50,7 @@ type CalendarLike = typeof calendarSingleton
 type MailLike = typeof mailSingleton
 type OverviewLike = typeof overviewSingleton
 type AssistantLike = typeof assistantSingleton
+type AgentLike = typeof agentSingleton
 
 /**
  * The order every app appears in -- the app bar's cycling order
@@ -86,6 +88,8 @@ export interface CreateDeps {
   mail: MailLike
   overview: OverviewLike
   assistant: AssistantLike
+  /** The conversation, which is what the Assistant app starts a new one of. */
+  agent: AgentLike
   /** The todo app's goals pane has no task line to put a cursor in -- see
    *  `shortcuts.svelte.ts`'s own `focusNewGoal`. */
   focusNewGoal: () => void
@@ -175,7 +179,10 @@ export const APPS: Record<Section, AppModule> = {
     icon: 'sparkle',
     supported: (app) => app.supportsAssistant,
     accent: () => CONSTANT_ACCENT,
-    create: (d) => d.assistant.draft(),
+    // A new conversation. It was a new routine, back when routines were
+    // what this app was made of; they are in Settings now, and the next
+    // thing anybody starts on a page that is a conversation is another one.
+    create: (d) => d.agent.startThread(),
     chatContext,
   },
   journal: {

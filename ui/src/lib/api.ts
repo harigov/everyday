@@ -1095,6 +1095,14 @@ export const api = {
   confirmToolCall: (callId: string, approved: boolean, later = false) =>
     call('confirmToolCall', { callId, approved, later }),
 
+  /**
+   * Stop the turn running in a thread. What it had said and done so far is
+   * kept; a question it was waiting on is withdrawn, as though declined.
+   * False means nothing was running -- it finished on its own between the
+   * press and the request -- which is not worth telling anybody about.
+   */
+  cancelTurn: (conversationId: ConversationId) => call('cancelTurn', { conversationId }),
+
   memories: () => call('listMemories', {}),
 
   /** A blank memory with an id, pinned. The core allocates it. */

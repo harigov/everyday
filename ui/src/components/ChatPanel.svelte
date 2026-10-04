@@ -7,34 +7,30 @@
   // shape. It is also why the composer sends what you are looking at along
   // with what you typed: "file this under tomorrow" means nothing without it.
   //
+  // It is the same conversation the Assistant app shows across the whole
+  // window, carried into whichever app somebody went to next -- so the rail
+  // is the narrow view of one thread, not a second assistant with a memory of
+  // its own. The conversation itself is `ChatThread`, drawn by both; what is
+  // here is only what a rail has and a page does not: a width to drag, and
+  // the history folded into a header button rather than a sidebar. What the
+  // person is looking at -- the line sent with every message so "this"
+  // resolves -- is worked out by the thread itself, from whichever app is
+  // open.
+  //
   // Three states, and the middle one matters most. The panel is not offered
   // at all on a backend with no assistant storage; it is offered but shows a
   // way into settings when it is not configured; and it talks when it is. A
   // panel that looked ready and then failed on the first message would be the
   // worst of the three.
 
-  import { onDestroy } from 'svelte'
   import { agent } from '../lib/agent.svelte'
-  import { APPS } from '../lib/apps'
-  import { splitDigest } from '../lib/dream'
-  import { renderMarkdown } from '../lib/markdown'
   import { panels } from '../lib/panels.svelte'
   import { pref } from '../lib/prefs'
   import { app } from '../lib/state.svelte'
-  import { todo } from '../lib/todo.svelte'
-  import { assistant, PANE_LABELS } from '../lib/assistant.svelte'
-  import { mail } from '../lib/mail.svelte'
-  import { overview } from '../lib/overview.svelte'
-  import { purpose } from '../lib/purpose.svelte'
-  import { library } from '../lib/library.svelte'
-  import { notes } from '../lib/notes.svelte'
+  import ChatThread from './ChatThread.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
-  import ToolCardView from './ToolCard.svelte'
 
-  let draft = $state('')
-  let box = $state<HTMLTextAreaElement | null>(null)
-  let scroller = $state<HTMLDivElement | null>(null)
   let showHistory = $state(false)
 
   // ── How wide the rail is ─────────────────────────────────────────────
@@ -128,79 +124,6 @@
     widthPref.set(width)
   }
 
-  /** Which turn's copy button has just been pressed, for the tick. */
-  let copied = $state<string | null>(null)
-  let copiedTimer: ReturnType<typeof setTimeout> | null = null
-
-  /**
-   * Put a reply on the clipboard as the Markdown it arrived as.
-   *
-   * Deliberately the source rather than the rendered text: what comes back
-   * is usually going somewhere that understands Markdown -- a note, an
-   * issue, the entry you were writing -- and flattening the list you are
-   * copying is not a kindness. Selecting by hand still gets the plain text,
-   * which is the other half of why the log is selectable at all.
-   */
-  async function copy(id: string, text: string) {
-    try {
-      await navigator.clipboard.writeText(text)
-      copied = id
-      if (copiedTimer) clearTimeout(copiedTimer)
-      copiedTimer = setTimeout(() => {
-        copiedTimer = null
-        copied = null
-      }, 1600)
-    } catch {
-      /* a clipboard the webview refuses is not worth a dialog */
-    }
-  }
-  onDestroy(() => {
-    if (copiedTimer) clearTimeout(copiedTimer)
-  })
-
-  /**
-   * What the person is looking at, in one line.
-   *
-   * Sent with every message so "this", "here" and "that one" resolve. It is
-   * prose rather than ids on purpose: the assistant has tools for finding
-   * records and does not need to be handed one, but it does need to know
-   * which app is open and what is selected in it.
-   */
-  const context = $derived.by(() =>
-    APPS[app.section].chatContext({
-      section: app.section,
-      todo: {
-        showingGoals: todo.showingGoals,
-        goalTitle: (purpose.selected ? purpose.goal(purpose.selected) : undefined)?.title ?? null,
-        projectName: todo.project?.name ?? null,
-      },
-      library: { shelfName: library.kind?.name ?? null },
-      notes: { openTitle: notes.open ? notes.title : null },
-      overview: { widgets: overview.widgets },
-      assistant: { paneLabel: PANE_LABELS[assistant.pane] },
-      mail: {
-        subject: mail.openThread?.thread.subject ?? null,
-        mailboxName: mail.mailbox?.remoteName ?? null,
-      },
-      entry: app.entry,
-    }),
-  )
-
-  // Follow the reply as it streams, but only from the bottom: a person who
-  // has scrolled up to read something is reading it, and yanking them back
-  // down every few tokens is the single most irritating thing a chat panel
-  // can do.
-  let pinned = $state(true)
-  function onScroll() {
-    if (!scroller) return
-    pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 60
-  }
-  $effect(() => {
-    // Touch what should retrigger this: the turns and the text growing.
-    agent.turns.map((t) => t.text.length)
-    if (pinned && scroller) scroller.scrollTop = scroller.scrollHeight
-  })
-
   // The rail can be on screen without anyone having clicked it this session
   // -- restored at startup, or still open after a lock cleared its state --
   // so it loads its own settings rather than relying on the toggle. Without
@@ -209,40 +132,6 @@
   $effect(() => {
     void agent.ensureLoaded()
   })
-
-  // The panel is opened in order to type in it, so the caret starts here
-  // rather than making the first thing anyone does be a click.
-  //
-  // Depends on the textarea existing and on nothing else. It used to read
-  // `agent.ready`, which reads the settings -- so every save in the Assistant
-  // dialog re-ran this and pulled focus out of the dialog into the composer
-  // behind it, and the next thing typed went to the wrong box.
-  $effect(() => {
-    box?.focus()
-  })
-
-  async function send() {
-    const text = draft
-    // Cleared optimistically, because the box is disabled for the whole turn
-    // and leaving the question in it reads as though nothing was sent. Put
-    // back if the store refuses it -- which it does when there is no thread
-    // open -- so a paragraph is never silently eaten.
-    draft = ''
-    const accepted = await agent.send(text, context)
-    if (!accepted) draft = text
-    // A turn takes seconds with the box disabled, which drops focus. Putting
-    // it back is what makes a second question as cheap to ask as the first.
-    box?.focus()
-  }
-
-  function onKeydown(e: KeyboardEvent) {
-    // Enter sends, Shift+Enter breaks the line. The other way round is
-    // defensible and is not what anyone's fingers expect here.
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      void send()
-    }
-  }
 </script>
 
 <!-- The rail is re-fitted when the window changes shape, without the stored
@@ -289,6 +178,17 @@
     >
       <Icon name="plus" size={16} />
     </button>
+    <!-- The way from the rail to the page, for a conversation that has
+         outgrown a column. The thread comes with it: they are one store. -->
+    {#if app.canShow('assistant')}
+      <button
+        class="ghost"
+        onclick={() => void app.goTo('assistant')}
+        title="Open in the Assistant app"
+      >
+        <Icon name="monitor" size={16} />
+      </button>
+    {/if}
     <button class="ghost" onclick={() => void agent.toggle()} title="Close">
       <Icon name="close" size={16} />
     </button>
@@ -337,108 +237,7 @@
       </EmptyState>
     </div>
   {:else}
-    <div class="log" bind:this={scroller} onscroll={onScroll}>
-      {#if agent.turns.length === 0}
-        <EmptyState lead="Ask about anything in this vault.">
-          {#snippet icon()}<Icon name="sparkle" size={28} weight={1.4} />{/snippet}
-          {#snippet note()}
-            It can read and change your journal, tasks, calendar, shelves and trackers. Deletions
-            stop and ask first.
-          {/snippet}
-        </EmptyState>
-      {/if}
-
-      {#each agent.turns as turn (turn.id)}
-        <article class="turn {turn.role}">
-          {#if turn.role === 'user'}
-            <!-- A dream's opening message is its digest wearing a sentence.
-                 The words ahead of the marker are drawn as any other turn;
-                 what follows it is data the person did not write and would
-                 not otherwise see, so it is folded rather than dropped -- see
-                 `splitDigest` and docs/plans/dreaming.md. -->
-            {@const { text, digest } = splitDigest(turn.text)}
-            {#if text}<p class="said">{text}</p>{/if}
-            {#if digest}
-              <details class="digest">
-                <summary>What it looked at</summary>
-                <!-- Safe by the same construction as the reply below: see the
-                     note on `renderMarkdown` there. -->
-                <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                <div class="reply md">{@html renderMarkdown(digest)}</div>
-              </details>
-            {/if}
-          {:else}
-            {#each turn.cards as card (card.callId)}
-              <ToolCardView
-                {card}
-                onanswer={(answer: 'confirm' | 'decline' | 'later') =>
-                  void agent.confirm(card.callId, answer)}
-              />
-            {/each}
-            {#if turn.text}
-              <!-- Rendered rather than shown as it arrived. A model answers
-                   in Markdown whatever it is asked, so `white-space:
-                   pre-wrap` meant literal asterisks around every bold
-                   phrase, numbered lists run together and shell commands in
-                   the same face as the sentence around them. See
-                   `lib/markdown.ts` -- in particular why the renderer is in
-                   this repository and what it escapes before it does
-                   anything else. -->
-              <!-- The rule below is right in general and this is the case
-                   it does not cover: `renderMarkdown` HTML-escapes its input
-                   before a single pattern runs, so every tag in what comes
-                   back was written by that module. It is checked from five
-                   directions in `scripts/markdown.test.mjs`, including a raw
-                   `<script>`, an `onerror` attribute and a `javascript:`
-                   link. -->
-              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-              <div class="reply md">{@html renderMarkdown(turn.text)}</div>
-              <!-- Under the reply rather than over it, and quiet until the
-                   turn is hovered: a copy button is wanted after reading. -->
-              <div class="acts">
-                <button
-                  class="copy"
-                  onclick={() => void copy(turn.id, turn.text)}
-                  title="Copy this reply"
-                >
-                  <Icon name={copied === turn.id ? 'tick' : 'copy'} size={13} weight={1.8} />
-                  {copied === turn.id ? 'Copied' : 'Copy'}
-                </button>
-              </div>
-            {/if}
-            {#if turn.error}
-              <p class="failed">{turn.error}</p>
-            {/if}
-            {#if !turn.text && !turn.error && agent.busy && turn.cards.length === 0}
-              <div class="thinking" aria-label="Thinking"><i></i><i></i><i></i></div>
-            {/if}
-          {/if}
-        </article>
-      {/each}
-    </div>
-
-    {#if agent.error}
-      <p class="failed banner">{agent.error}</p>
-    {/if}
-
-    <div class="composer">
-      <textarea
-        bind:this={box}
-        bind:value={draft}
-        onkeydown={onKeydown}
-        placeholder="Ask, or tell it what to do…"
-        rows="2"
-        disabled={agent.busy}
-      ></textarea>
-      <button
-        class="send"
-        onclick={() => void send()}
-        disabled={agent.busy || draft.trim() === ''}
-        title="Send"
-      >
-        <Icon name="arrow-up" size={16} />
-      </button>
-    </div>
+    <ChatThread variant="rail" />
   {/if}
 </aside>
 
@@ -563,290 +362,12 @@
     font-size: var(--text-xs);
   }
 
-  .log {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    padding: var(--sp-4) var(--sp-4) var(--sp-6);
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-5);
-    /* The window sets `user-select: none` so that dragging across a list of
-       rows does not paint them blue. A conversation is the opposite case:
-       it is prose, and an answer you cannot select is an answer you have to
-       retype. Everything inside the log -- and the composer -- opts back in. */
-    user-select: text;
-    cursor: auto;
-  }
-
   .unset {
     display: flex;
     flex: 1;
     min-height: 0;
   }
 
-  .turn {
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-2);
-  }
-  /* The person's turn is a bubble and the assistant's is not, which is the
-     cheapest way to make a long exchange scannable: your own words are the
-     landmarks you scroll to find. */
-  .said {
-    align-self: flex-end;
-    max-width: 88%;
-    margin: 0;
-    padding: var(--sp-2) var(--sp-3);
-    border-radius: var(--radius-lg);
-    background: var(--bg-selected);
-    font-size: var(--text-base);
-    line-height: var(--leading-snug);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-  .reply {
-    font-size: var(--text-base);
-    line-height: var(--leading-normal);
-    color: var(--fg);
-    overflow-wrap: anywhere;
-  }
-
-  /* The digest a dream was given, folded under its opening message. Aligned
-     with the reply below rather than with the person's own bubble, since it
-     is the assistant's material even though it arrived on a `user` turn. */
-  .digest {
-    align-self: flex-start;
-    max-width: 100%;
-    font-size: var(--text-sm);
-  }
-  .digest summary {
-    color: var(--fg-faint);
-    cursor: pointer;
-    user-select: none;
-  }
-  .digest summary:hover {
-    color: var(--fg-muted);
-  }
-  .digest[open] summary {
-    margin-bottom: var(--sp-2);
-  }
-  .digest .reply {
-    font-size: var(--text-sm);
-    color: var(--fg-muted);
-  }
-
-  /* Quiet, and only there once the pointer is on the turn: a copy button on
-     every reply, permanently, is a column of grey buttons down the rail. */
-  .acts {
-    display: flex;
-    opacity: 0;
-    transition: opacity var(--fast) var(--ease);
-  }
-  .turn:hover .acts,
-  .acts:focus-within {
-    opacity: 1;
-  }
-  .copy {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    height: 24px;
-    padding: 0 var(--sp-2);
-    margin-left: -6px;
-    border-radius: var(--radius-sm);
-    font-size: var(--text-xs);
-    font-weight: 550;
-    color: var(--fg-faint);
-  }
-  .copy:hover {
-    background: var(--bg-hover);
-    color: var(--fg-muted);
-  }
-
-  /* ── A rendered reply ──────────────────────────────────────────────
-     The markup all comes from `lib/markdown.ts`, so this is the complete
-     list of what can appear. Sized down from the journal's prose: this is a
-     rail beside the thing being talked about, not the page itself. */
-
-  .md :global(> * + *) {
-    margin-top: 0.7em;
-  }
-  .md :global(h1),
-  .md :global(h2),
-  .md :global(h3),
-  .md :global(h4),
-  .md :global(h5),
-  .md :global(h6) {
-    font-size: var(--text-base);
-    font-weight: 650;
-    line-height: var(--leading-snug);
-    margin-top: 1.3em;
-  }
-  .md :global(h1) {
-    font-size: var(--text-md);
-  }
-  .md :global(strong) {
-    font-weight: 650;
-  }
-  .md :global(em) {
-    font-style: italic;
-  }
-  .md :global(del) {
-    color: var(--fg-subtle);
-  }
-  .md :global(a) {
-    color: var(--accent);
-  }
-  .md :global(ul),
-  .md :global(ol) {
-    padding-left: 1.35em;
-  }
-  .md :global(li + li) {
-    margin-top: 0.25em;
-  }
-  .md :global(li > p) {
-    margin: 0;
-  }
-  .md :global(li > p + p) {
-    margin-top: 0.5em;
-  }
-  .md :global(blockquote) {
-    margin-left: 0;
-    padding-left: 0.9em;
-    border-left: 2px solid var(--border-strong);
-    color: var(--fg-muted);
-  }
-  .md :global(hr) {
-    border: none;
-    border-top: 1px solid var(--border);
-    margin: 1.2em 0;
-  }
-  .md :global(code) {
-    font-family: var(--font-mono);
-    font-size: 0.88em;
-    padding: 0.1em 0.35em;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--bg-sunken);
-  }
-  .md :global(pre) {
-    padding: var(--sp-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-sunken);
-    /* Scrolled rather than wrapped: a wrapped command is a command that
-       cannot be copied and pasted. */
-    overflow-x: auto;
-    font-size: var(--text-sm);
-    line-height: var(--leading-normal);
-  }
-  .md :global(pre code) {
-    padding: 0;
-    border: none;
-    background: none;
-    font-size: inherit;
-    white-space: pre;
-  }
-  .md :global(table) {
-    border-collapse: collapse;
-    width: 100%;
-    font-size: var(--text-sm);
-  }
-  .md :global(th),
-  .md :global(td) {
-    padding: 4px var(--sp-2);
-    border: 1px solid var(--border);
-    text-align: left;
-  }
-  .md :global(th) {
-    background: var(--bg-sunken);
-    font-weight: 650;
-  }
-
-  .failed {
-    margin: 0;
-    font-size: var(--text-sm);
-    color: var(--danger);
-  }
-  .banner {
-    padding: var(--sp-2) var(--sp-3);
-    border-top: 1px solid var(--border);
-  }
-
-  .thinking {
-    display: flex;
-    gap: 4px;
-    padding: var(--sp-1) 0;
-  }
-  .thinking i {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--fg-faint);
-    animation: blink 1.2s ease-in-out infinite;
-  }
-  .thinking i:nth-child(2) {
-    animation-delay: 0.15s;
-  }
-  .thinking i:nth-child(3) {
-    animation-delay: 0.3s;
-  }
-  @keyframes blink {
-    0%,
-    100% {
-      opacity: 0.25;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .thinking i {
-      animation: none;
-      opacity: 0.5;
-    }
-  }
-
-  .composer {
-    display: flex;
-    gap: var(--sp-2);
-    align-items: flex-end;
-    padding: var(--sp-2);
-    border-top: 1px solid var(--border);
-  }
-  textarea {
-    flex: 1;
-    resize: none;
-    user-select: text;
-    padding: var(--sp-2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-raised);
-    color: var(--fg);
-    font: inherit;
-    font-size: var(--text-base);
-    line-height: var(--leading-snug);
-  }
-  textarea:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
-  .send {
-    display: grid;
-    place-items: center;
-    width: 32px;
-    height: 32px;
-    border: 0;
-    border-radius: var(--radius);
-    background: var(--accent);
-    color: var(--fg-on-accent);
-    cursor: pointer;
-  }
-  .send:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
   .none {
     margin: 0;
     padding: var(--sp-3);

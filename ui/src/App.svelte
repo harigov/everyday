@@ -244,8 +244,11 @@
           <main class="main"><Editor /></main>
         {/if}
         <!-- Last in the row, so it is the right-hand rail whichever app is
-             open: the assistant works on every one of them. -->
-        {#if agent.open && agent.supported}
+             open: the assistant works on every one of them. Except its own,
+             where the conversation already has the whole window -- the rail
+             there would be the same thread again, narrower. Whether it was
+             open is kept, so leaving the Assistant app brings it back. -->
+        {#if agent.open && agent.supported && app.section !== 'assistant'}
           <ChatPanel />
         {/if}
 
@@ -259,7 +262,7 @@
              the bottom right of a window is the most conventional gesture in
              software, and this is the feature least likely to be discovered
              by anybody hunting through a bar of grey labels. -->
-        {#if agent.supported && !agent.open}
+        {#if agent.supported && !agent.open && app.section !== 'assistant'}
           <button
             class="float"
             onclick={() => void agent.toggle()}

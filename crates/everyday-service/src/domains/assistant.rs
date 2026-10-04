@@ -5,7 +5,8 @@
 //! [`crate::agent`] rather than from here. What is left is configuration, the
 //! threads, and the two halves of one exchange -- `send_message`, which answers
 //! with a stream and so is served by [`crate::service::Service::send_message`],
-//! and the confirmation that answers it.
+//! and the two things a person can say back while it runs: the confirmation
+//! that answers a card, and `cancel_turn`, which stops it.
 
 use crate::command;
 use crate::ctx::Ctx;
@@ -74,6 +75,12 @@ pub struct Confirm {
     /// Phase 5 and `everyday_service::agent::ConfirmAnswer`.
     #[serde(default)]
     pub later: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelTurn {
+    pub conversation_id: ConversationId,
 }
 
 #[derive(Deserialize)]
@@ -272,6 +279,18 @@ async fn confirm_tool_call(svc: Arc<Service>, _ctx: Ctx, args: Confirm) -> Comma
     Ok(svc.pending().answer(&args.call_id, answer))
 }
 
+/// Stop whatever the assistant is doing on a conversation.
+///
+/// Returns whether a turn was running there. The turn itself does the rest:
+/// it stops reading from the model, keeps what it had said and done by
+/// then, and ends with `finished` rather than `failed` -- see
+/// `everyday_service::agent`'s "Stopping a turn". No change is raised here,
+/// because nothing has changed yet: the turn's own `send_message` raises
+/// the thread's change when it winds up, exactly as it would have anyway.
+async fn cancel_turn(svc: Arc<Service>, _ctx: Ctx, args: CancelTurn) -> CommandResult<bool> {
+    Ok(svc.pending().cancel(args.conversation_id))
+}
+
 async fn list_memories(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<Memory>> {
     svc.on_vault(move |vault| vault.memories()).await
 }
@@ -435,6 +454,12 @@ pub static COMMANDS: &[crate::command::Command] = &[
             ("later", "boolean", false),
         ],
         run: confirm_tool_call,
+    },
+    command! {
+        name: "cancel_turn", scope: Agent, effect: Write,
+        args: CancelTurn, returns: "boolean",
+        signature: &[("conversationId", "ConversationId", true)],
+        run: cancel_turn,
     },
     command! {
         name: "list_memories", scope: Agent, effect: Read,

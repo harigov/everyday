@@ -28,7 +28,22 @@ const {
   modules: [agent, svelteInternal],
   close,
 } = await load(['/src/lib/agent.ts', 'svelte/internal/client'])
-const { applyEvent, emptyTurn, isLoopback, replay, settle } = agent
+const {
+  activity,
+  applyEvent,
+  elapsed,
+  emptyTurn,
+  gerund,
+  isLoopback,
+  liveTurn,
+  pastTense,
+  planOf,
+  replay,
+  settle,
+  threadGroups,
+  toolLabel,
+  workSummary,
+} = agent
 
 // ── folding a stream into a turn ──────────────────────────────────────
 
@@ -430,6 +445,266 @@ for (const url of [
 
 assert.ok(!isLoopback(null), 'no override means the provider default, which is remote')
 assert.ok(!isLoopback(''), 'and an empty one is not an override at all')
+
+// ── saying what a running turn is doing ───────────────────────────────
+//
+// The status line is the one thing a long turn shows the whole time it
+// runs, and every way it can be wrong is quiet: stuck on "Searching" after
+// the search came back, saying nothing in the gap after a tool while the
+// model reads what it returned, or still talking after the turn has ended.
+
+{
+  const turn = liveTurn('t', 1000)
+  assert.equal(turn.phase, 'thinking', 'a reply that has not started is thinking')
+  assert.equal(activity(turn), 'Thinking', 'and says so, before any event has arrived')
+
+  applyEvent(turn, { type: 'thinking', text: 'They want the weekend. ' })
+  assert.equal(turn.thinking, 'They want the weekend. ', 'reasoning is kept apart from the reply')
+  assert.equal(turn.text, '', 'and never leaks into it')
+
+  applyEvent(turn, { type: 'toolPreparing', callId: 'c1', name: 'web_search' })
+  assert.equal(activity(turn), 'Deciding what to search for', 'a call still being written')
+
+  applyEvent(turn, {
+    type: 'toolStarted',
+    callId: 'c1',
+    name: 'web_search',
+    arguments: { query: 'lisbon events' },
+  })
+  assert.equal(turn.preparing, null, 'a call that has started is no longer being prepared')
+  assert.equal(activity(turn), 'Searching the web for “lisbon events”')
+
+  applyEvent(turn, {
+    type: 'toolFinished',
+    callId: 'c1',
+    name: 'web_search',
+    ok: true,
+    summary: '',
+  })
+  assert.equal(
+    activity(turn),
+    'Thinking',
+    'after a result comes back the model is reading it -- the gap that used to show nothing',
+  )
+
+  applyEvent(turn, { type: 'delta', text: 'Here' })
+  assert.equal(activity(turn), 'Writing')
+  applyEvent(turn, { type: 'thinking', text: 'more' })
+  assert.equal(activity(turn), 'Writing', 'prose on screen outranks a late scrap of reasoning')
+
+  settle(turn, 4000)
+  assert.equal(activity(turn), null, 'a settled turn says nothing')
+  assert.equal(turn.endedAt, 4000, 'and is off the clock')
+  assert.equal(workSummary(turn), 'Worked for 3s · 1 step')
+}
+
+// Two calls in flight: the line names the newest still running, and goes
+// back to thinking only once neither is.
+{
+  const turn = liveTurn('t')
+  applyEvent(turn, { type: 'toolStarted', callId: 'a', name: 'list_tasks', arguments: {} })
+  applyEvent(turn, { type: 'toolStarted', callId: 'b', name: 'get_weather', arguments: {} })
+  assert.equal(activity(turn), 'Checking the weather where you live')
+  applyEvent(turn, {
+    type: 'toolFinished',
+    callId: 'b',
+    name: 'get_weather',
+    ok: true,
+    summary: '',
+  })
+  assert.equal(turn.phase, 'tool', 'one is still running')
+  assert.equal(activity(turn), 'Listing tasks')
+  applyEvent(turn, { type: 'toolFinished', callId: 'a', name: 'list_tasks', ok: true, summary: '' })
+  assert.equal(activity(turn), 'Thinking')
+}
+
+// A question outranks everything: the turn is waiting on the person.
+{
+  const turn = liveTurn('t')
+  applyEvent(turn, {
+    type: 'confirmationRequired',
+    callId: 'f',
+    name: 'read_web_page',
+    subject: 'https://example.org/?q=secret',
+    arguments: { url: 'https://example.org/?q=secret' },
+    kind: 'fetch',
+    canPark: false,
+  })
+  assert.equal(activity(turn), 'Waiting for your answer')
+  assert.equal(turn.cards[0].confirmKind, 'fetch')
+}
+
+// A failure ends the turn, so nothing goes on saying "Thinking".
+{
+  const turn = liveTurn('t')
+  applyEvent(turn, { type: 'failed', message: 'refused' })
+  assert.equal(activity(turn), null)
+}
+
+// Stop: a card still running is drawn as stopped, not as failed -- nothing
+// went wrong, somebody asked it to stop -- and a result that straggles in
+// afterwards does not flip it back.
+{
+  const turn = liveTurn('t')
+  applyEvent(turn, { type: 'toolStarted', callId: 'r', name: 'read_web_page', arguments: {} })
+  turn.stopped = true
+  settle(turn)
+  assert.equal(turn.cards[0].state, 'stopped')
+  applyEvent(turn, {
+    type: 'toolFinished',
+    callId: 'r',
+    name: 'read_web_page',
+    ok: true,
+    summary: '',
+  })
+  assert.equal(turn.cards[0].state, 'stopped', 'a late result does not overwrite the stop')
+}
+
+// ── what a card calls itself ─────────────────────────────────────────
+
+// Derived from the name, in the tense of the card's state.
+check('list_tasks', 'running', 'Listing tasks')
+check('list_tasks', 'done', 'Listed tasks')
+check('create_note', 'running', 'Creating note')
+check('create_note', 'done', 'Created note')
+check('delete_task', 'waiting', 'Delete task')
+check('log_reading', 'done', 'Logged reading')
+check('get_transcript', 'done', 'Got transcript')
+check('remember', 'running', 'Remembering')
+check('label_thread', 'done', 'Labelled thread')
+check('snooze_thread', 'running', 'Snoozing thread')
+
+function check(name, state, want) {
+  assert.equal(toolLabel(name, {}, state).text, want, `${name} while ${state}`)
+}
+
+assert.equal(gerund('stop'), 'stopping')
+assert.equal(gerund('tie'), 'tying')
+assert.equal(pastTense('apply'), 'applied')
+assert.equal(pastTense('plan'), 'planned')
+assert.equal(pastTense('send'), 'sent')
+
+// The tools that reach outside the vault say what they reached for.
+assert.deepEqual(toolLabel('web_search', { query: 'rain' }, 'done'), {
+  text: 'Searched the web for',
+  detail: 'rain',
+})
+assert.deepEqual(
+  toolLabel('read_web_page', { url: 'https://www.bbc.co.uk/news/x' }, 'running'),
+  { text: 'Reading', detail: 'bbc.co.uk' },
+  'a page is named by its host, without the www',
+)
+assert.deepEqual(toolLabel('get_weather', { place: 'Porto' }, 'running'), {
+  text: 'Checking the weather in',
+  detail: 'Porto',
+})
+// Arguments are whatever the model wrote. Nothing in them may throw.
+for (const junk of [null, 'a string', 7, { query: 3 }, { url: 'not a url' }]) {
+  toolLabel('web_search', junk, 'running')
+  toolLabel('read_web_page', junk, 'done')
+  toolLabel('get_weather', junk, 'waiting')
+}
+
+// ── the plan ─────────────────────────────────────────────────────────
+
+{
+  const turn = liveTurn('t')
+  assert.equal(planOf(turn), null, 'no plan until one is made')
+  const steps = (...statuses) => statuses.map((status, i) => ({ text: `Step ${i + 1}`, status }))
+  applyEvent(turn, {
+    type: 'toolStarted',
+    callId: 'p1',
+    name: 'update_plan',
+    arguments: { steps: steps('active', 'pending') },
+  })
+  applyEvent(turn, {
+    type: 'toolStarted',
+    callId: 'p2',
+    name: 'update_plan',
+    arguments: { steps: steps('done', 'active') },
+  })
+  assert.deepEqual(
+    planOf(turn).map((s) => s.status),
+    ['done', 'active'],
+    'every call sends the whole list, so the last one is the plan',
+  )
+  assert.equal(workSummary({ ...turn, startedAt: null }), '0 steps', 'a plan is not a step')
+
+  // Revising it reads as revising, not as making one.
+  applyEvent(turn, { type: 'toolPreparing', callId: 'p3', name: 'update_plan' })
+  assert.equal(activity(turn), 'Updating the plan')
+
+  const stopped = { ...turn, cards: [...turn.cards], stopped: true }
+  settle(stopped)
+  assert.deepEqual(
+    planOf(stopped).map((s) => s.status),
+    ['done', 'pending'],
+    'a stopped turn had not finished the step it was on',
+  )
+
+  applyEvent(turn, { type: 'delta', text: 'Here is the weekend.' })
+  settle(turn)
+  assert.deepEqual(
+    planOf(turn).map((s) => s.status),
+    ['done', 'done'],
+    'a turn that answered was answering the step it was on',
+  )
+}
+{
+  const turn = liveTurn('t')
+  applyEvent(turn, {
+    type: 'toolStarted',
+    callId: 'p',
+    name: 'update_plan',
+    arguments: { steps: [{ text: '  ' }, { text: 'Real', status: 'nonsense' }, 4, null] },
+  })
+  assert.deepEqual(planOf(turn), [{ text: 'Real', status: 'pending' }], 'junk steps are dropped')
+}
+
+// ── the clock and the folded summary ────────────────────────────────
+
+assert.equal(elapsed(0), '0s')
+assert.equal(elapsed(4400), '4s')
+assert.equal(elapsed(72_000), '1m 12s')
+{
+  // A replayed turn has no clock, and says how many steps it took instead.
+  const turn = emptyTurn('assistant', 'old')
+  turn.cards = ['done', 'failed', 'done'].map((state, i) => ({ callId: `${i}`, name: 'x', state }))
+  assert.equal(workSummary(turn), '3 steps · 1 did not work')
+}
+
+// ── the history list ─────────────────────────────────────────────────
+
+{
+  const now = new Date(2026, 9, 4, 15, 0)
+  const at = (month, d, h = 12) => new Date(2026, month, d, h).toISOString()
+  const t = (id, updatedAt) => ({ id, title: id, createdAt: updatedAt, updatedAt, messages: 2 })
+  const groups = threadGroups(
+    [
+      t('a', at(9, 4, 9)),
+      t('b', at(9, 4, 0)),
+      t('c', at(9, 3, 23)),
+      t('d', at(9, 1)),
+      t('e', at(8, 20)),
+    ],
+    now,
+  )
+  assert.deepEqual(
+    groups.map((g) => [g.label, g.threads.map((x) => x.id)]),
+    [
+      ['Today', ['a', 'b']],
+      ['Yesterday', ['c']],
+      ['Previous 7 days', ['d']],
+      ['Previous 30 days', ['e']],
+    ],
+  )
+  const older = threadGroups([t('x', new Date(2026, 6, 1).toISOString())], now)
+  assert.deepEqual(
+    older.map((g) => g.label),
+    ['Older'],
+  )
+  assert.deepEqual(threadGroups([], now), [], 'nothing yet is no headings at all')
+}
 
 await close()
 console.log('agent: all checks passed')

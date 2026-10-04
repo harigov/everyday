@@ -208,6 +208,7 @@ export interface Commands {
   calendarProviders: { args: Record<string, never>; result: ProviderInfo[] }
   cancelOauthSignIn: { args: { signInId: string }; result: void }
   cancelSpeechModelDownload: { args: { id: string }; result: void }
+  cancelTurn: { args: { conversationId: ConversationId }; result: boolean }
   changePassword: { args: { current: string; next: string }; result: void }
   clearAgentKey: { args: Record<string, never>; result: void }
   collectGarbage: { args: Record<string, never>; result: number }
@@ -554,6 +555,7 @@ export const COMMAND_NAMES = {
   calendarProviders: 'calendar_providers',
   cancelOauthSignIn: 'cancel_oauth_sign_in',
   cancelSpeechModelDownload: 'cancel_speech_model_download',
+  cancelTurn: 'cancel_turn',
   changePassword: 'change_password',
   clearAgentKey: 'clear_agent_key',
   collectGarbage: 'collect_garbage',
@@ -816,6 +818,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'calendar_providers',
   'cancel_oauth_sign_in',
   'cancel_speech_model_download',
+  'cancel_turn',
   'change_password',
   'clear_agent_key',
   'collect_garbage',
@@ -1067,6 +1070,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'begin_recording',
   'cancel_oauth_sign_in',
   'cancel_speech_model_download',
+  'cancel_turn',
   'change_password',
   'clear_agent_key',
   'collect_garbage',

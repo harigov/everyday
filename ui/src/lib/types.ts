@@ -2589,11 +2589,14 @@ export interface ProposalPolicy {
 /**
  * Why a `confirmationRequired` event is asking: `'destructive'` removes
  * something with no undo, `'outward'` reaches somebody who is not the
- * vault's owner (sending mail), and `'search'` is `web_search` asked about
- * after mail was read this turn -- see `agent::tools::mail`'s module docs
- * in the Rust core for the whole of the reasoning behind each.
+ * vault's owner (sending mail), `'search'` is `web_search` asked about
+ * after mail was read this turn, and `'fetch'` is `read_web_page` asked to
+ * open an address nobody gave it -- not the person, not a search, not a page
+ * it read -- which is the shape a model talked into sending something out
+ * would take. See `agent::tools::mail`'s module docs in the Rust core, and
+ * `ConfirmGate` in the service, for the whole of the reasoning behind each.
  */
-export const CONFIRM_KINDS = ['destructive', 'outward', 'search'] as const
+export const CONFIRM_KINDS = ['destructive', 'outward', 'search', 'fetch'] as const
 export type ConfirmKind = (typeof CONFIRM_KINDS)[number]
 
 /**
@@ -2606,6 +2609,18 @@ export type ConfirmKind = (typeof CONFIRM_KINDS)[number]
 export type AgentEvent =
   | { type: 'started'; messageId: MessageId }
   | { type: 'delta'; text: string }
+  /**
+   * A fragment of the model's own reasoning, when the provider streams any
+   * -- most local models do, most hosted ones do not. Drawn folded, and not
+   * kept: it is how the turn got to its answer, not part of the answer.
+   */
+  | { type: 'thinking'; text: string }
+  /**
+   * The model has begun writing a call to `name` and has not finished its
+   * arguments yet. A long note can take many seconds to write, and without
+   * this the panel would have nothing to say for all of them.
+   */
+  | { type: 'toolPreparing'; callId: string; name: string }
   | { type: 'toolStarted'; callId: string; name: string; arguments: unknown }
   | {
       type: 'toolFinished'

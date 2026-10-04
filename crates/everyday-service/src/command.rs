@@ -665,6 +665,11 @@ mod tests {
             // Answers a question a turn is parked on. What follows is the
             // turn's own writes, each of which announces itself.
             "confirm_tool_call",
+            // Stops a turn in flight. It writes nothing itself; the turn it
+            // stops winds up through `send_message`, which announces the
+            // thread and whatever its tools wrote, exactly as it would have
+            // at the end of a turn nobody stopped.
+            "cancel_turn",
             // The one write that touches many kinds at once. A single
             // `change:` would name one of them and leave every other list
             // stale, so it emits one event per kind an imported app could

@@ -408,17 +408,20 @@
         <input type="checkbox" bind:checked={draft.remember} />
         <span>
           <b>Let it remember things about you</b>
-          <small>Short notes it keeps between conversations. Listed below.</small>
+          <small>Short notes it keeps between conversations. Listed under Memory.</small>
         </span>
       </label>
       <label class="toggle">
         <input type="checkbox" bind:checked={draft.web} />
         <span>
-          <b>Let it search the web</b>
+          <b>Let it use the web</b>
           <small>
-            The one thing it does that leaves this computer for somewhere you did not choose. Your
-            question — and, preparing for a meeting, the names of the people in it — go to a search
-            engine. Everything else stays between here and the model endpoint above.
+            Searching, reading pages and checking the weather — the one thing it does that leaves
+            this computer for somewhere you did not choose. A search sends your question (and,
+            preparing for a meeting, the names of the people in it) to a search engine; reading a
+            page tells that site the page was asked for; a forecast sends a place name to
+            Open-Meteo. An address nobody gave it asks you first. Everything else stays between here
+            and the model endpoint above.
           </small>
         </span>
       </label>
@@ -471,8 +474,8 @@
           </div>
           <p class="hint">
             Switched off, a kind is never proposed -- the assistant behaves as though it had nothing
-            to say about it. The three dream routines themselves are edited from the Assistant app,
-            under Routines.
+            to say about it. The three dream routines themselves are edited under Routines, just
+            below this tab.
           </p>
         {/if}
 
@@ -513,10 +516,10 @@
     </section>
 
     <!-- The list used to be here, and this is what is left of it: a pointer.
-         It grew past what a settings tab should hold the moment a fact could
-         be edited, pinned and traced back to the conversation that taught it,
+         It grew past what one section should hold the moment a fact could be
+         edited, pinned and traced back to the conversation that taught it,
          and a list you can only delete from is not a list you can correct. It
-         lives in the Assistant app now, beside the routines that read it. -->
+         has a tab of its own, under this one. -->
     {#if agent.memories.length > 0}
       <section>
         <span class="eyebrow">What it remembers</span>
@@ -524,15 +527,7 @@
           {agent.memories.length}
           {agent.memories.length === 1 ? 'thing' : 'things'}, read at the start of every
           conversation.
-          <button
-            class="link"
-            onclick={() => {
-              panels.closeSettings()
-              void app.goTo('assistant').then(() => assistant.setPane('memory'))
-            }}
-          >
-            See them
-          </button>
+          <button class="link" onclick={() => panels.openSettings('memory')}>See them</button>
         </p>
       </section>
     {/if}

@@ -1,15 +1,21 @@
-// State for the Assistant app.
+// The assistant's standing work: what it has done, what it is standing by to
+// do, what it remembers, and what it left waiting for an answer.
 //
-// Three panes over three lists: what the assistant has done, what it is
-// standing by to do, and what it remembers. The rail is not here -- it lives
-// in `agent.svelte.ts` and works in every app, including this one.
+// These were the Assistant app's four panes, and are four tabs of Settings
+// now. The app is the conversation -- `agent.svelte.ts` -- and the things
+// here are what you set up and look over now and then rather than what you
+// sit down to do, which is what Settings is for. Nothing about the lists
+// themselves changed in the move; `AssistantPanes.svelte` draws them, in
+// whichever tab is open.
 //
 // The one rule worth knowing is about the count on the app bar. A run is
-// unseen until somebody looks at the Runs pane, and *looking* is what clears
-// it: opening the pane marks what is on screen as seen. A button that had to
-// be pressed would leave a number that nobody could get rid of by reading.
+// unseen until somebody looks at "What it did", and *looking* is what clears
+// it: showing the tab marks what is on screen as seen -- see `show`. A button
+// that had to be pressed would leave a number that nobody could get rid of
+// by reading.
 
 import { api } from './api'
+import { panels } from './panels.svelte'
 import { proposals } from './proposals.svelte'
 import { app, handle, isLocked } from './state.svelte'
 import type { Memory, RoutineId, RoutineInfo, RoutineRun, RoutineRunId, Template } from './types'
@@ -28,7 +34,6 @@ export const PANE_LABELS: Record<Pane, string> = {
 }
 
 class AssistantState {
-  pane = $state<Pane>('runs')
   routines = $state<RoutineInfo[]>([])
   runs = $state<RoutineRun[]>([])
   memories = $state<Memory[]>([])
@@ -64,9 +69,20 @@ class AssistantState {
     return app.supportsAssistant
   }
 
-  /** Load everything the app draws. Idempotent, so coming back refreshes. */
-  async start() {
-    if (!this.enabled) return
+  /** The load in flight, so `show` can wait for it rather than race it. */
+  #loading: Promise<void> | null = null
+
+  /**
+   * Load everything the tabs draw. Coming back refreshes, and asking twice
+   * while a load is running waits for that one rather than starting another.
+   */
+  start(): Promise<void> {
+    if (!this.enabled) return Promise.resolve()
+    this.#loading ??= this.#load().finally(() => (this.#loading = null))
+    return this.#loading
+  }
+
+  async #load() {
     this.loading = true
     try {
       await this.refresh()
@@ -75,18 +91,22 @@ class AssistantState {
     } finally {
       this.loading = false
     }
-    // Opens on "Waiting for you" when there is something waiting and the run
-    // log has nothing fresher to say -- a run just finished outranks a
-    // proposal that has been sitting there all week either way.
-    if (this.pane === 'runs' && proposals.unseen > 0 && this.unseen === 0) {
-      this.pane = 'proposals'
-    }
-    // *After* the load, and unconditional. Reading is what clears the count,
-    // and the pane just chosen is the one this app opens on -- so arriving
-    // here by pressing Assistant never goes through `setPane` and would
-    // otherwise leave a badge that no amount of reading could clear.
-    if (this.pane === 'runs') await this.markSeen()
-    else if (this.pane === 'proposals') await proposals.markSeen(proposals.pending)
+  }
+
+  /**
+   * A tab has been put on screen: mark what it shows as looked at.
+   *
+   * *After* any load that is running, because what it marks is what was
+   * loaded -- marking before the runs arrive marks nothing, and leaves a
+   * badge that no amount of reading could clear. Called for every way a tab
+   * can appear (the settings nav, a link from the conversation page, a
+   * shortcut), which is why it is keyed on the tab being shown rather than
+   * on how anybody got there.
+   */
+  async show(pane: Pane) {
+    if (this.#loading) await this.#loading
+    if (pane === 'runs') await this.markSeen()
+    else if (pane === 'proposals') await proposals.markSeen(proposals.pending)
   }
 
   async refresh() {
@@ -119,10 +139,9 @@ class AssistantState {
     }
   }
 
+  /** Open one of the tabs. What it shows is marked seen by `show`. */
   setPane(pane: Pane) {
-    this.pane = pane
-    if (pane === 'runs') void this.markSeen()
-    else if (pane === 'proposals') void proposals.markSeen(proposals.pending)
+    panels.openSettings(pane)
   }
 
   /** A routine's run log, shown or hidden under its card. */
@@ -170,7 +189,7 @@ class AssistantState {
         trigger: template?.trigger ?? blank.trigger,
         when: '',
       }
-      this.pane = 'routines'
+      this.setPane('routines')
     } catch (e) {
       await handle(e)
     }
@@ -178,7 +197,7 @@ class AssistantState {
 
   edit(routine: RoutineInfo) {
     this.editing = { ...routine }
-    this.pane = 'routines'
+    this.setPane('routines')
   }
 
   cancelEdit() {
@@ -225,8 +244,8 @@ class AssistantState {
   /**
    * Drop one run from the log.
    *
-   * Here rather than in the view, like every other action this app offers.
-   * `AssistantView` called `api.deleteRun` directly and awaited it from a
+   * Here rather than in the view, like every other action these tabs offer.
+   * The view called `api.deleteRun` directly and awaited it from a
    * `void` context, so a failure -- a read-only vault, one another window had
    * locked -- left the row on screen, said nothing, and became an unhandled
    * rejection nobody sees.
