@@ -328,8 +328,10 @@ icons: ## Regenerate the app icons from crates/everyday-app/icons/icon.svg
 # to an icon through the .desktop file that claims that id. A binary run
 # straight out of target/ has no .desktop file, so it gets the generic icon.
 # Installing the .deb solves that; this is for running a build in place.
+# It looks under CARGO_TARGET_DIR when set; ARGS names a binary explicitly.
+# The entry points at that one build, so re-run it when you switch builds.
 desktop-entry: ## Give a locally built binary its name and icon in the desktop
-	./scripts/desktop-entry.sh
+	./scripts/desktop-entry.sh $(ARGS)
 
 undesktop-entry: ## Undo `make desktop-entry`
 	./scripts/desktop-entry.sh --remove
