@@ -58,6 +58,8 @@ const ALLOWED = new Set([
   'em',
   'strong',
   'del',
+  'mark',
+  'u',
   'code',
   'pre',
   'a',
@@ -98,6 +100,10 @@ for (const attack of [
   '# <script>alert(1)</script>',
   '- <script>alert(1)</script>',
   '| <script>alert(1)</script> |\n| - |\n| x |',
+  // The one tag Markdown is written with here, carrying something it should not.
+  '<u onclick="steal()">x</u>',
+  '<u><script>alert(1)</script></u>',
+  '<javascript:alert(1)>',
 ]) {
   const html = renderMarkdown(attack)
   for (const tag of tagsIn(html)) {
@@ -268,6 +274,20 @@ for (const half of [
 
 // A NUL in the input cannot be made to point at a parked slot.
 assert.ok(!renderMarkdown(' 0  `code`').includes('<code>code</code><code>'))
+
+// ── What the editor's copy writes ─────────────────────────────────────
+//
+// A note copied out of the editor is Markdown with three things a chat reply
+// rarely has; pasted back, or anywhere this renders, each is drawn.
+
+renders('==marked==', '<p><mark>marked</mark></p>')
+renders('<u>under</u>lined', '<p><u>under</u>lined</p>')
+renders('<u>**both**</u>', '<p><u><strong>both</strong></u></p>')
+includes('see <https://example.org/a_b?x=1&y=2>', '<a href="https://example.org/a_b?x=1&amp;y=2"')
+includes('see <https://example.org/a_b>', '>https://example.org/a_b</a>')
+includes('<mailto:me@example.org>', '<a href="mailto:me@example.org"')
+renders('a == b == c', '<p>a == b == c</p>', 'a comparison is not a highlight')
+renders('if a <u and b> c', '<p>if a &lt;u and b&gt; c</p>', 'nor is an angle bracket a tag')
 
 // ── A whole reply ─────────────────────────────────────────────────────
 //

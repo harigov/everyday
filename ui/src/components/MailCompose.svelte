@@ -17,11 +17,13 @@
   import StarterKit from '@tiptap/starter-kit'
   import Link from '@tiptap/extension-link'
   import Placeholder from '@tiptap/extension-placeholder'
+  import { TableKit } from '@tiptap/extension-table'
   import { api } from '../lib/api'
   import { Autosave } from '../lib/autosave'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import * as mailApi from '../lib/mail-api'
   import { isBlankDraft } from '../lib/mail'
+  import { MarkdownClipboard } from '../lib/markdown-clipboard'
   import { mail } from '../lib/mail.svelte'
   import { DECLINE_REASONS, proposals } from '../lib/proposals.svelte'
   import { toLocalInputValue } from '../lib/format'
@@ -142,6 +144,10 @@
 
   let host = $state<HTMLDivElement>()
   let editor: Editor | null = null
+  // Nothing the editor reads back as content: a `font-weight` here would
+  // come back as bold on every header, and a `text-align` as the column's
+  // alignment, the next time the draft is opened.
+  const CELL = 'border: 1px solid #c8ccd1; padding: 4px 8px; vertical-align: top'
 
   $effect(() => {
     const el = host
@@ -149,13 +155,27 @@
     const ed = new Editor({
       element: el,
       extensions: [
-        StarterKit.configure({ heading: false }),
+        // StarterKit carries a link of its own; this one is configured below.
+        StarterKit.configure({ heading: false, link: false }),
         Placeholder.configure({ placeholder: 'Write something…' }),
         Link.configure({
           openOnClick: true,
           autolink: true,
           protocols: ['http', 'https', 'mailto'],
         }),
+        // For the table a pasted note or answer brings with it, which would
+        // otherwise run its cells together into one line. Styled inline,
+        // because the HTML is sent as it is and most mail clients drop a
+        // stylesheet; no fill, so it reads the same light or dark.
+        TableKit.configure({
+          table: { resizable: false, HTMLAttributes: { style: 'border-collapse: collapse' } },
+          tableHeader: { HTMLAttributes: { style: CELL } },
+          tableCell: { HTMLAttributes: { style: CELL } },
+        }),
+        // Markdown out on a copy, and in on a paste. A message has no
+        // headings and no boxes to tick, so those arrive as a bold line and
+        // as `[x]`.
+        MarkdownClipboard.configure({ taskLists: false, headings: 0 }),
       ],
       content: working.bodyHtml,
       editorProps: { attributes: { class: 'ed-content', spellcheck: 'true' } },
@@ -656,6 +676,16 @@
     outline: none;
     font-size: var(--text-base);
     line-height: var(--leading-normal);
+  }
+  .prose :global(table) {
+    margin: var(--sp-2) 0;
+  }
+  .prose :global(td p),
+  .prose :global(th p) {
+    margin: 0;
+  }
+  .prose :global(.selectedCell) {
+    background: color-mix(in oklab, var(--accent) 14%, transparent);
   }
   .prose :global(p.is-editor-empty:first-child::before) {
     content: attr(data-placeholder);

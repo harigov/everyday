@@ -26,7 +26,7 @@
   import CharacterCount from '@tiptap/extension-character-count'
   import { TableKit } from '@tiptap/extension-table'
   import { Media } from '../lib/media-node'
-  import { markdownToPaste } from '../lib/markdown-paste'
+  import { MarkdownClipboard } from '../lib/markdown-clipboard'
   import { app } from '../lib/state.svelte'
   import { api } from '../lib/api'
   import type { Attachment, MediaKind, RichDoc } from '../lib/types'
@@ -97,8 +97,6 @@
   /** Which record the ProseMirror document currently holds. */
   let loadedId: string | null = null
   let wordTimer: ReturnType<typeof setTimeout> | null = null
-  /** Whether the paste on its way was asked for as plain text. */
-  let plainPaste = false
   const HEADING_LEVELS: (1 | 2 | 3)[] = [1, 2, 3]
 
   export function insertDroppedFiles(files: File[]): boolean {
@@ -134,42 +132,11 @@
         // than the table pushing the whole column sideways.
         TableKit.configure({ table: { resizable: false, renderWrapper: true } }),
         Media,
+        // Markdown out on a copy, and in on a paste.
+        MarkdownClipboard.configure({ taskLists: true, headings: Math.max(...HEADING_LEVELS) }),
       ],
       editorProps: {
         attributes: { class: 'ed-content', spellcheck: 'true' },
-        // Ctrl+Shift+V (Cmd on a Mac) asks for the text as typed. Re-read on
-        // every key, so a Shift+V typed into a word earlier cannot turn a
-        // later paste from the Edit menu into a plain one.
-        handleKeyDown: (_view, event) => {
-          plainPaste =
-            event.shiftKey && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v'
-          return false
-        },
-        handleDOMEvents: {
-          // Ahead of ProseMirror's own paste rather than inside
-          // `handlePaste`, which runs after the clipboard has already been
-          // parsed -- a parse that would be thrown away.
-          paste: (view, event) => {
-            const plain = plainPaste
-            plainPaste = false
-            const data = event.clipboardData
-            // Files are `handlePaste`'s, below. Inside a code block Markdown
-            // is what is being written, not formatted.
-            if (!data || plain || data.files.length > 0) return false
-            if (view.state.selection.$from.parent.type.spec.code) return false
-            const html = markdownToPaste(data.getData('text/plain'), data.getData('text/html'), {
-              taskLists: true,
-              maxHeading: HEADING_LEVELS.at(-1),
-            })
-            if (html === null) return false
-            event.preventDefault()
-            // Through ProseMirror's own paste, so a table lands the way a
-            // pasted `<table>` would -- fitted around the caret -- and the
-            // paste is one step to undo.
-            view.pasteHTML(html)
-            return true
-          },
-        },
         handlePaste: (_view, event) => insertFiles(Array.from(event.clipboardData?.files ?? [])),
         handleDrop: (_view, event) => {
           const dt = event.dataTransfer

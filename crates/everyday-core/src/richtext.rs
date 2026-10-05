@@ -108,11 +108,15 @@ impl RichDoc {
             // A fenced block swallows everything up to its closing fence, so
             // it is tested first: a `# comment` inside one is code, not a
             // heading.
-            if let Some(lang) = trimmed.strip_prefix("```") {
-                let lang = lang.trim().to_string();
+            let ticks = trimmed.len() - trimmed.trim_start_matches('`').len();
+            if ticks >= 3 {
+                let lang = trimmed[ticks..].trim().to_string();
                 let mut body = Vec::new();
                 i += 1;
-                while i < lines.len() && !lines[i].trim_start().starts_with("```") {
+                // Closed by a run at least as long as the one that opened
+                // it, so code with a fence of its own in it is written --
+                // and read back -- inside a longer one.
+                while i < lines.len() && !closes_fence(lines[i], ticks) {
                     body.push(lines[i]);
                     i += 1;
                 }
@@ -174,14 +178,15 @@ impl RichDoc {
             if !starts_a_block(trimmed)
                 && let Some(width) = table_header(trimmed, lines.get(i + 1).copied())
             {
-                let mut rows = vec![table_row(trimmed, width, "tableHeader")];
+                let aligns = column_aligns(lines[i + 1]);
+                let mut rows = vec![table_row(trimmed, width, "tableHeader", &aligns)];
                 i += 2;
                 while i < lines.len()
                     && lines[i].contains('|')
                     && !lines[i].trim().is_empty()
                     && !starts_a_block(lines[i].trim_start())
                 {
-                    rows.push(table_row(lines[i], width, "tableCell"));
+                    rows.push(table_row(lines[i], width, "tableCell", &aligns));
                     i += 1;
                 }
                 blocks.push(json!({ "type": "table", "content": rows }));
@@ -204,15 +209,27 @@ impl RichDoc {
                     if item.marker.kind() != kind {
                         break;
                     }
+                    let mut content = inline_nodes(&item.text);
+                    i += 1;
+                    // A line indented under an item, and not an item itself,
+                    // is the item's text carrying on after a line break.
+                    while i < lines.len()
+                        && lines[i].starts_with([' ', '\t'])
+                        && !lines[i].trim().is_empty()
+                        && !starts_a_block(lines[i].trim_start())
+                    {
+                        content.push(json!({ "type": "hardBreak" }));
+                        content.extend(inline_nodes(lines[i].trim()));
+                        i += 1;
+                    }
                     let mut node = json!({
                         "type": item_type,
-                        "content": [{ "type": "paragraph", "content": inline_nodes(&item.text) }],
+                        "content": [{ "type": "paragraph", "content": content }],
                     });
                     if let Marker::Task(checked) = item.marker {
                         node["attrs"] = json!({ "checked": checked });
                     }
                     items.push(node);
-                    i += 1;
                 }
                 let mut list = json!({ "type": node_type, "content": items });
                 if node_type == "orderedList" && start != 1 {
@@ -307,27 +324,11 @@ impl RichDoc {
         out
     }
 
-    /// Render to Markdown. Used by the Markdown storage backend and by
-    /// "export entry" in the UI. Unknown node types degrade to their text.
+    /// Render to Markdown. Used by the Markdown storage backend, by "export
+    /// entry" in the UI and wherever the assistant reads a document. Unknown
+    /// node types degrade to their text.
     pub fn to_markdown(&self) -> String {
-        let mut out = String::new();
-        markdown_node(&self.0, &mut out, 0, 0);
-        // Normalise: at most one blank line between blocks, no trailing space.
-        let mut result = String::new();
-        let mut blank_run = 0usize;
-        for line in out.lines() {
-            if line.trim().is_empty() {
-                blank_run += 1;
-                if blank_run > 1 {
-                    continue;
-                }
-            } else {
-                blank_run = 0;
-            }
-            result.push_str(line.trim_end());
-            result.push('\n');
-        }
-        result.trim().to_string()
+        md_blocks(children(&self.0), 1, false)
     }
 }
 
@@ -409,205 +410,337 @@ fn collect_blobs(node: &Value, out: &mut BTreeSet<BlobId>, d: usize) {
     }
 }
 
-/// Wrap `text` in the Markdown delimiters implied by its ProseMirror marks.
-fn apply_marks(node: &Value, text: &str) -> String {
-    let Some(marks) = node.get("marks").and_then(Value::as_array) else {
-        return text.to_string();
-    };
-    let mut s = text.to_string();
-    let mut link: Option<String> = None;
-    for mark in marks {
-        match mark.get("type").and_then(Value::as_str).unwrap_or("") {
-            "bold" | "strong" => s = format!("**{s}**"),
-            "italic" | "em" => s = format!("*{s}*"),
-            "code" => s = format!("`{s}`"),
-            "strike" => s = format!("~~{s}~~"),
-            "highlight" => s = format!("=={s}=="),
-            "underline" => s = format!("<u>{s}</u>"),
-            "link" => {
-                link = mark
-                    .get("attrs")
-                    .and_then(|a| a.get("href"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-            }
-            _ => {}
-        }
-    }
-    if let Some(href) = link {
-        s = format!("[{s}]({href})");
-    }
-    s
-}
+// ---- Markdown out ----------------------------------------------------------
+//
+// Mirrored line for line by `ui/src/lib/markdown-copy.ts`, which writes the
+// same Markdown onto the clipboard when text is copied out of the editor. The
+// cases in `tests/fixtures/markdown.json` are checked against both, so an
+// exported note and a copied one cannot drift apart.
+
+/// A line break inside a paragraph: two spaces and a newline, which is what
+/// Markdown reads as a break rather than as a space.
+const HARD_BREAK: &str = "  \n";
 
 fn children(node: &Value) -> &[Value] {
     node.get("content").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
 }
 
-fn inline_text(node: &Value, out: &mut String, d: usize) {
+fn node_type(node: &Value) -> &str {
+    node.get("type").and_then(Value::as_str).unwrap_or("")
+}
+
+fn attr<'a>(node: &'a Value, key: &str) -> Option<&'a Value> {
+    node.get("attrs").and_then(|a| a.get(key))
+}
+
+fn is_list(ty: &str) -> bool {
+    matches!(ty, "bulletList" | "orderedList" | "taskList")
+}
+
+/// Blocks one after another, with a blank line between them.
+///
+/// Inside a list item a list follows the line above it directly, which is
+/// what keeps a nested list tight rather than spreading every item apart.
+fn md_blocks(nodes: &[Value], d: usize, in_item: bool) -> String {
+    let mut out = String::new();
     if d > MAX_DEPTH {
-        return;
+        return out;
     }
-    let ty = node.get("type").and_then(Value::as_str).unwrap_or("");
-    match ty {
-        "text" => {
-            let t = node.get("text").and_then(Value::as_str).unwrap_or("");
-            out.push_str(&apply_marks(node, t));
+    for node in nodes {
+        let md = md_block(node, d);
+        if md.trim().is_empty() {
+            continue;
         }
-        "hardBreak" => out.push_str("  \n"),
-        _ => {
-            for c in children(node) {
-                inline_text(c, out, d + 1);
+        if !out.is_empty() {
+            out.push_str(if in_item && is_list(node_type(node)) { "\n" } else { "\n\n" });
+        }
+        out.push_str(&md);
+    }
+    out
+}
+
+fn md_block(node: &Value, d: usize) -> String {
+    if d > MAX_DEPTH {
+        return String::new();
+    }
+    let ty = node_type(node);
+    match ty {
+        "paragraph" => md_inline(children(node), d + 1).trim_end().to_string(),
+        "heading" => {
+            let level = attr(node, "level").and_then(Value::as_u64).unwrap_or(1).clamp(1, 6);
+            // A heading is one line in Markdown; a break inside it would end it.
+            let text = md_inline(children(node), d + 1).replace(HARD_BREAK, " ");
+            format!("{} {}", "#".repeat(level as usize), text.trim_end())
+        }
+        "blockquote" => md_blocks(children(node), d + 1, false)
+            .split('\n')
+            .map(|line| if line.is_empty() { ">".to_string() } else { format!("> {line}") })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "codeBlock" => {
+            let body: String = children(node)
+                .iter()
+                .filter_map(|c| c.get("text").and_then(Value::as_str))
+                .collect();
+            // One backtick more than the longest run inside, so a fence in
+            // the code does not end the block early.
+            let fence = "`".repeat(3.max(longest_backtick_run(&body) + 1));
+            let language = attr(node, "language").and_then(Value::as_str).unwrap_or_default();
+            if body.is_empty() {
+                format!("{fence}{language}\n{fence}")
+            } else {
+                format!("{fence}{language}\n{body}\n{fence}")
             }
         }
+        "bulletList" | "orderedList" | "taskList" => md_list(node, d),
+        "table" => md_table(node, d),
+        "horizontalRule" => "---".to_string(),
+        MEDIA_NODE => {
+            let text = |key| attr(node, key).and_then(Value::as_str).unwrap_or_default();
+            let (caption, blob) = (text("caption"), text("blob"));
+            // Images use image syntax; other media degrade to a link so that
+            // the Markdown stays readable in any other editor.
+            if text("kind") == "image" {
+                format!("![{caption}](media/{blob})")
+            } else {
+                let filename = text("filename");
+                let label = [caption, filename, blob].into_iter().find(|s| !s.is_empty());
+                format!("[{}](media/{blob})", label.unwrap_or_default())
+            }
+        }
+        "text" | "hardBreak" => md_inline(std::slice::from_ref(node), d),
+        // Unknown block: its text, so nothing is silently lost.
+        _ => md_blocks(children(node), d + 1, false),
     }
 }
 
-fn markdown_node(node: &Value, out: &mut String, d: usize, list_depth: usize) {
-    if d > MAX_DEPTH {
-        return;
-    }
-    let ty = node.get("type").and_then(Value::as_str).unwrap_or("");
-    let attrs = node.get("attrs");
-
-    match ty {
-        "doc" => {
-            for c in children(node) {
-                markdown_node(c, out, d + 1, list_depth);
-            }
-        }
-        "paragraph" => {
-            let mut line = String::new();
-            for c in children(node) {
-                inline_text(c, &mut line, d + 1);
-            }
-            out.push_str(&line);
-            out.push_str("\n\n");
-        }
-        "heading" => {
-            let level =
-                attrs.and_then(|a| a.get("level")).and_then(Value::as_u64).unwrap_or(1).clamp(1, 6);
-            out.push_str(&"#".repeat(level as usize));
-            out.push(' ');
-            for c in children(node) {
-                inline_text(c, out, d + 1);
-            }
-            out.push_str("\n\n");
-        }
-        "blockquote" => {
-            let mut inner = String::new();
-            for c in children(node) {
-                markdown_node(c, &mut inner, d + 1, list_depth);
-            }
-            for line in inner.trim_end().lines() {
-                out.push_str("> ");
-                out.push_str(line);
+fn md_list(list: &Value, d: usize) -> String {
+    let ordered = node_type(list) == "orderedList";
+    let start = attr(list, "start").and_then(Value::as_u64).unwrap_or(1);
+    children(list)
+        .iter()
+        .enumerate()
+        .map(|(n, item)| {
+            let marker = if ordered { format!("{}. ", start + n as u64) } else { "- ".into() };
+            let check = match attr(item, "checked").and_then(Value::as_bool) {
+                Some(true) => "[x] ",
+                Some(false) => "[ ] ",
+                None => "",
+            };
+            // What follows the first line lines up under the item's text,
+            // which is where Markdown looks for what belongs to it. Under
+            // the marker, not the box: as far as Markdown knows, the box is
+            // part of the text.
+            let pad = " ".repeat(marker.len());
+            let body = md_blocks(children(item), d + 2, true);
+            let mut lines = body.split('\n');
+            let mut out = match lines.next().unwrap_or_default() {
+                "" => format!("{marker}{check}").trim_end().to_string(),
+                first => format!("{marker}{check}{first}"),
+            };
+            for line in lines {
                 out.push('\n');
-            }
-            out.push('\n');
-        }
-        "codeBlock" => {
-            let lang =
-                attrs.and_then(|a| a.get("language")).and_then(Value::as_str).unwrap_or_default();
-            out.push_str("```");
-            out.push_str(lang);
-            out.push('\n');
-            let mut body = String::new();
-            for c in children(node) {
-                if let Some(t) = c.get("text").and_then(Value::as_str) {
-                    body.push_str(t);
-                }
-            }
-            out.push_str(&body);
-            if !body.ends_with('\n') {
-                out.push('\n');
-            }
-            out.push_str("```\n\n");
-        }
-        "bulletList" | "orderedList" | "taskList" => {
-            let ordered = ty == "orderedList";
-            let start =
-                attrs.and_then(|a| a.get("start")).and_then(Value::as_u64).unwrap_or(1) as usize;
-            for (i, item) in children(node).iter().enumerate() {
-                let indent = "  ".repeat(list_depth);
-                let checked =
-                    item.get("attrs").and_then(|a| a.get("checked")).and_then(Value::as_bool);
-                let bullet = match (ordered, checked) {
-                    (_, Some(true)) => "- [x] ".to_string(),
-                    (_, Some(false)) => "- [ ] ".to_string(),
-                    (true, None) => format!("{}. ", start + i),
-                    (false, None) => "- ".to_string(),
-                };
-                let mut inner = String::new();
-                for c in children(item) {
-                    markdown_node(c, &mut inner, d + 2, list_depth + 1);
-                }
-                let inner = inner.trim_end();
-                for (n, line) in inner.lines().enumerate() {
-                    out.push_str(&indent);
-                    if n == 0 {
-                        out.push_str(&bullet);
-                    } else if !line.trim().is_empty() {
-                        out.push_str(&" ".repeat(bullet.chars().count()));
-                    }
+                if !line.is_empty() {
+                    out.push_str(&pad);
                     out.push_str(line);
-                    out.push('\n');
                 }
             }
-            out.push('\n');
+            out
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A pipe table. Markdown has no table without a header row, so the first
+/// row is the header whether or not the editor drew it as one.
+fn md_table(table: &Value, d: usize) -> String {
+    let (rows, aligns) = table_grid(table, d);
+    let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+    if width == 0 {
+        return String::new();
+    }
+    let line = |row: &Vec<String>| {
+        let mut out = String::from("|");
+        for c in 0..width {
+            out.push(' ');
+            out.push_str(row.get(c).map(String::as_str).unwrap_or(""));
+            out.push_str(" |");
         }
-        "table" => {
-            let rows = table_grid(node, d);
-            let width = rows.iter().map(Vec::len).max().unwrap_or(0);
-            if width == 0 {
-                return;
+        out
+    };
+    let rule: String = (0..width)
+        .map(|c| match aligns.get(c).copied().flatten() {
+            Some("left") => " :--- |",
+            Some("center") => " :---: |",
+            Some("right") => " ---: |",
+            _ => " --- |",
+        })
+        .collect();
+    let mut lines = vec![line(&rows[0]), format!("|{rule}")];
+    lines.extend(rows[1..].iter().map(line));
+    lines.join("\n")
+}
+
+fn longest_backtick_run(text: &str) -> usize {
+    text.split(|c| c != '`').map(str::len).max().unwrap_or(0)
+}
+
+/// Marks written as a pair of delimiters round their text, in the order they
+/// are opened when several start together: a link outermost, so its label
+/// can carry marks of its own, and bold before italic, so `***` opens as
+/// `**` then `*` -- the reading the parser below expects.
+const DELIMITED: [(&str, &str, &str); 6] = [
+    ("link", "[", ""),
+    ("bold", "**", "**"),
+    ("italic", "*", "*"),
+    ("strike", "~~", "~~"),
+    ("highlight", "==", "=="),
+    ("underline", "<u>", "</u>"),
+];
+
+fn delimiters(mark: &Value) -> Option<(usize, &'static str, &'static str)> {
+    // `strong` and `em` are what other ProseMirror schemas call them, and an
+    // imported document may still say so; the editor's own never does.
+    let ty = match node_type(mark) {
+        "strong" => "bold",
+        "em" => "italic",
+        ty => ty,
+    };
+    DELIMITED.iter().position(|(t, ..)| *t == ty).map(|rank| {
+        let (_, open, close) = DELIMITED[rank];
+        (rank, open, close)
+    })
+}
+
+fn same_mark(a: &Value, b: &Value) -> bool {
+    node_type(a) == node_type(b) && a.get("attrs") == b.get("attrs")
+}
+
+/// A paragraph's text with its marks written as delimiters.
+///
+/// A mark is opened where it starts and closed where it ends, rather than
+/// round each text node: a run of bold with an italic word in the middle is
+/// three nodes, and wrapping each in its own marks wrote `**a *****b***** c**`.
+fn md_inline(nodes: &[Value], d: usize) -> String {
+    /// The marks open at the end of `out`, outermost first, and where each began.
+    struct Open<'a> {
+        mark: &'a Value,
+        at: usize,
+    }
+
+    // `**word **` is not bold: a delimiter after a space cannot close. The
+    // space goes outside instead, where it reads the same.
+    fn close_to(out: &mut String, open: &mut Vec<Open<'_>>, depth: usize) {
+        if open.len() <= depth {
+            return;
+        }
+        let trailing = out.split_off(out.trim_end().len());
+        while open.len() > depth {
+            let Some(Open { mark, at }) = open.pop() else { break };
+            if node_type(mark) == "link" {
+                close_link(out, mark, at);
+            } else if let Some((_, _, close)) = delimiters(mark) {
+                out.push_str(close);
             }
-            // Markdown has no table without a header row, so the first row
-            // is the header whether or not the editor drew it as one.
-            for (n, row) in rows.iter().enumerate() {
-                out.push('|');
-                for c in 0..width {
-                    out.push(' ');
-                    out.push_str(row.get(c).map(String::as_str).unwrap_or(""));
-                    out.push_str(" |");
+        }
+        out.push_str(&trailing);
+    }
+
+    let mut out = String::new();
+    if d > MAX_DEPTH {
+        return out;
+    }
+    let mut open: Vec<Open<'_>> = Vec::new();
+    for node in nodes {
+        match node_type(node) {
+            // Every mark is closed before a break and opened again after it,
+            // so each line reads on its own -- the way the parser below, and
+            // most others, take a paragraph.
+            "hardBreak" => {
+                close_to(&mut out, &mut open, 0);
+                out.push_str(HARD_BREAK);
+            }
+            "text" => {
+                let text = node.get("text").and_then(Value::as_str).unwrap_or_default();
+                // Whitespace alone neither opens nor closes anything.
+                if text.trim().is_empty() {
+                    out.push_str(text);
+                    continue;
                 }
-                out.push('\n');
-                if n == 0 {
-                    out.push('|');
-                    out.push_str(&" --- |".repeat(width));
-                    out.push('\n');
+                let all: &[Value] =
+                    node.get("marks").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+                let mut marks: Vec<&Value> =
+                    all.iter().filter(|m| delimiters(m).is_some()).collect();
+                marks.sort_by_key(|m| delimiters(m).map(|(rank, ..)| rank));
+                let mut keep = 0;
+                while keep < open.len() && marks.iter().any(|m| same_mark(m, open[keep].mark)) {
+                    keep += 1;
+                }
+                close_to(&mut out, &mut open, keep);
+
+                let code = all.iter().any(|m| node_type(m) == "code");
+                let lead = if code { "" } else { &text[..text.len() - text.trim_start().len()] };
+                out.push_str(lead);
+                for mark in marks {
+                    if open.iter().any(|o| same_mark(o.mark, mark)) {
+                        continue;
+                    }
+                    open.push(Open { mark, at: out.len() });
+                    out.push_str(delimiters(mark).map(|(_, open, _)| open).unwrap_or_default());
+                }
+                if code {
+                    out.push_str(&code_span(text));
+                } else {
+                    out.push_str(&text[lead.len()..]);
                 }
             }
-            out.push('\n');
-        }
-        "horizontalRule" => out.push_str("---\n\n"),
-        MEDIA_NODE => {
-            let a = attrs.cloned().unwrap_or(Value::Null);
-            let caption = a.get("caption").and_then(Value::as_str).unwrap_or("");
-            let blob = a.get("blob").and_then(Value::as_str).unwrap_or("");
-            let kind = a.get("kind").and_then(Value::as_str).unwrap_or("file");
-            let name = a.get("filename").and_then(Value::as_str).unwrap_or(blob);
-            // Images use image syntax; other media degrade to a link so that
-            // the Markdown stays readable in any other editor.
-            if kind == "image" {
-                out.push_str(&format!("![{caption}](media/{blob})\n\n"));
-            } else {
-                let label = if caption.is_empty() { name } else { caption };
-                out.push_str(&format!("[{label}](media/{blob})\n\n"));
-            }
-        }
-        "text" | "hardBreak" => {
-            let mut line = String::new();
-            inline_text(node, &mut line, d);
-            out.push_str(&line);
-        }
-        _ => {
-            // Unknown block: emit its text so nothing is silently lost.
-            for c in children(node) {
-                markdown_node(c, out, d + 1, list_depth);
+            _ => {
+                close_to(&mut out, &mut open, 0);
+                out.push_str(&md_inline(children(node), d + 1));
             }
         }
     }
+    close_to(&mut out, &mut open, 0);
+    // A break at the very end of a paragraph breaks nothing.
+    while out.ends_with(HARD_BREAK) {
+        out.truncate(out.len() - HARD_BREAK.len());
+    }
+    out
+}
+
+/// `[label](href)`, or `<href>` for an address that is its own label.
+///
+/// The address is written with its spaces and parentheses escaped, because
+/// either would end it early.
+fn close_link(out: &mut String, mark: &Value, at: usize) {
+    let href = attr(mark, "href").and_then(Value::as_str).unwrap_or_default();
+    let label = &out[at + 1..];
+    if href.is_empty() {
+        out.remove(at);
+    } else if label == href && is_autolink(href) {
+        out.replace_range(at..at + 1, "<");
+        out.push('>');
+    } else {
+        out.push_str("](");
+        out.push_str(&href.replace(' ', "%20").replace('(', "%28").replace(')', "%29"));
+        out.push(')');
+    }
+}
+
+/// Can `href` be written as `<href>` and read back as the same link?
+fn is_autolink(href: &str) -> bool {
+    ["http://", "https://", "mailto:"].iter().any(|scheme| href.starts_with(scheme))
+        && !href.chars().any(|c| c.is_whitespace() || c == '<' || c == '>')
+}
+
+/// Fenced with one backtick more than the longest run inside, so none ends
+/// it, and padded with a space where Markdown would otherwise take one off
+/// or run a backtick at the edge into the fence.
+fn code_span(text: &str) -> String {
+    let ticks = "`".repeat(longest_backtick_run(text) + 1);
+    let spaced = text.starts_with(' ') && text.ends_with(' ') && !text.trim().is_empty();
+    let pad = if text.starts_with('`') || text.ends_with('`') || spaced { " " } else { "" };
+    format!("{ticks}{pad}{text}{pad}{ticks}")
 }
 
 /// `---`, `***` or `___`: three or more of one character and nothing else.
@@ -707,9 +840,13 @@ const MAX_SPAN: u64 = 1000;
 /// in the first slot it covers and leaves the rest empty. Writing the cells
 /// out one after another instead would put every cell after a merged one in
 /// the wrong column, and the round trip would save it there.
-fn table_grid(table: &Value, d: usize) -> Vec<Vec<String>> {
+///
+/// Each column's alignment comes back beside it: the first cell in the
+/// column that has one decides, since Markdown aligns columns, not cells.
+fn table_grid(table: &Value, d: usize) -> (Vec<Vec<String>>, Vec<Option<&str>>) {
     let rows = children(table);
     let mut grid: Vec<Vec<Option<String>>> = vec![Vec::new(); rows.len()];
+    let mut aligns: Vec<Option<&str>> = Vec::new();
     for (r, row) in rows.iter().enumerate() {
         let mut c = 0;
         for cell in children(row) {
@@ -725,6 +862,14 @@ fn table_grid(table: &Value, d: usize) -> Vec<Vec<String>> {
                     .clamp(1, MAX_SPAN) as usize
             };
             let (across, down) = (span("colspan"), span("rowspan"));
+            if aligns.len() <= c {
+                aligns.resize(c + 1, None);
+            }
+            if aligns[c].is_none() {
+                aligns[c] = attr(cell, "align")
+                    .and_then(Value::as_str)
+                    .filter(|a| matches!(*a, "left" | "center" | "right"));
+            }
             let mut text = Some(table_cell(cell, d + 2));
             for slots in grid.iter_mut().skip(r).take(down) {
                 if slots.len() < c + across {
@@ -737,7 +882,8 @@ fn table_grid(table: &Value, d: usize) -> Vec<Vec<String>> {
             c += across;
         }
     }
-    grid.into_iter().map(|row| row.into_iter().map(Option::unwrap_or_default).collect()).collect()
+    let grid = grid.into_iter().map(|row| row.into_iter().map(Option::unwrap_or_default).collect());
+    (grid.collect(), aligns)
 }
 
 /// A cell's contents on one line, which is all a Markdown table has room
@@ -746,11 +892,7 @@ fn table_grid(table: &Value, d: usize) -> Vec<Vec<String>> {
 /// are run together with a space, with every `|` escaped so it does not end
 /// the cell early.
 fn table_cell(cell: &Value, d: usize) -> String {
-    let mut markdown = String::new();
-    for block in children(cell) {
-        markdown_node(block, &mut markdown, d + 1, 0);
-    }
-    markdown
+    md_blocks(children(cell), d + 1, false)
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
@@ -798,19 +940,38 @@ fn table_header(line: &str, next: Option<&str>) -> Option<usize> {
     (is_rule && specs.len() == width).then_some(width)
 }
 
+/// Each column's alignment, from the colons on the rule under the header:
+/// `:---` left, `---:` right, `:---:` centre, and none for a bare `---`.
+fn column_aligns(rule: &str) -> Vec<Option<&'static str>> {
+    table_cells(rule)
+        .iter()
+        .map(|spec| match (spec.starts_with(':'), spec.ends_with(':')) {
+            (true, true) => Some("center"),
+            (true, false) => Some("left"),
+            (false, true) => Some("right"),
+            (false, false) => None,
+        })
+        .collect()
+}
+
 /// One row of a table, padded or cut to the header's width -- the editor's
 /// tables are rectangular, and Markdown's are only by convention.
-fn table_row(line: &str, width: usize, cell_type: &str) -> Value {
+fn table_row(line: &str, width: usize, cell_type: &str, aligns: &[Option<&str>]) -> Value {
     let mut cells = table_cells(line);
     cells.resize(width, String::new());
     let content: Vec<Value> = cells
         .iter()
-        .map(|text| {
+        .enumerate()
+        .map(|(c, text)| {
             let mut paragraph = json!({ "type": "paragraph" });
             if !text.is_empty() {
                 paragraph["content"] = json!(inline_nodes(text));
             }
-            json!({ "type": cell_type, "content": [paragraph] })
+            let mut cell = json!({ "type": cell_type, "content": [paragraph] });
+            if let Some(align) = aligns.get(c).copied().flatten() {
+                cell["attrs"] = json!({ "align": align });
+            }
+            cell
         })
         .collect();
     json!({ "type": "tableRow", "content": content })
@@ -839,58 +1000,93 @@ fn inline_nodes(text: &str) -> Vec<Value> {
             && let Some((label, href, next)) = link_at(&chars, i)
         {
             flush(&mut plain, &mut out);
-            for mut node in inline_nodes(&label) {
-                let marks = node
-                    .get_mut("marks")
-                    .and_then(Value::as_array_mut)
-                    .map(std::mem::take)
-                    .unwrap_or_default();
-                let mut marks = marks;
-                marks.push(json!({ "type": "link", "attrs": { "href": href } }));
-                node["marks"] = Value::Array(marks);
-                out.push(node);
-            }
+            out.extend(with_mark(
+                inline_nodes(&label),
+                json!({ "type": "link", "attrs": { "href": href } }),
+            ));
             i = next;
             continue;
         }
 
+        // A code span: a run of backticks, closed by a run of the same
+        // length, so a span can hold a shorter run of its own. Literal all
+        // the way down -- nothing inside is read for marks.
+        if chars[i] == '`' {
+            let ticks = run_length(&chars, i, '`');
+            let Some(end) = code_span_end(&chars, i + ticks, ticks) else {
+                plain.extend(&chars[i..i + ticks]);
+                i += ticks;
+                continue;
+            };
+            let mut inner: String = chars[i + ticks..end].iter().collect();
+            // One space either side is padding, there to keep a backtick at
+            // the edge clear of the fence; it is not part of the code.
+            if inner.len() > 2
+                && inner.starts_with(' ')
+                && inner.ends_with(' ')
+                && !inner.trim().is_empty()
+            {
+                inner = inner[1..inner.len() - 1].to_string();
+            }
+            if !inner.is_empty() {
+                flush(&mut plain, &mut out);
+                out.push(json!({ "type": "text", "text": inner, "marks": [{ "type": "code" }] }));
+            }
+            i = end + ticks;
+            continue;
+        }
+
+        // `<https://...>`, an address that is its own label, and `<u>`, the
+        // one tag Markdown is written with here because it has no underline.
+        if chars[i] == '<' {
+            if let Some((href, next)) = autolink_at(&chars, i) {
+                flush(&mut plain, &mut out);
+                out.push(json!({
+                    "type": "text",
+                    "text": href,
+                    "marks": [{ "type": "link", "attrs": { "href": href } }],
+                }));
+                i = next;
+                continue;
+            }
+            let (open, close) = (['<', 'u', '>'], ['<', '/', 'u', '>']);
+            if chars[i..].starts_with(&open)
+                && let Some(end) = find_closing(&chars, i + open.len(), &close)
+                && end > i + open.len()
+            {
+                flush(&mut plain, &mut out);
+                let inner: String = chars[i + open.len()..end].iter().collect();
+                out.extend(with_mark(inline_nodes(&inner), json!({ "type": "underline" })));
+                i = end + close.len();
+                continue;
+            }
+        }
+
         let mut matched = false;
         for (delim, mark) in
-            [("**", "bold"), ("~~", "strike"), ("==", "highlight"), ("`", "code"), ("*", "italic")]
+            [("**", "bold"), ("~~", "strike"), ("==", "highlight"), ("*", "italic")]
         {
             let d: Vec<char> = delim.chars().collect();
-            if chars[i..].starts_with(&d[..])
-                && let Some(end) = closing_delimiter(&chars, i + d.len(), &d)
-            {
-                let inner: String = chars[i + d.len()..end].iter().collect();
-                if inner.is_empty() {
-                    continue;
-                }
-                flush(&mut plain, &mut out);
-                // Code spans are literal all the way down; everything else
-                // may nest, so its contents are parsed again.
-                if mark == "code" {
-                    out.push(json!({
-                        "type": "text",
-                        "text": inner,
-                        "marks": [{ "type": "code" }],
-                    }));
-                } else {
-                    for mut node in inline_nodes(&inner) {
-                        let mut marks = node
-                            .get_mut("marks")
-                            .and_then(Value::as_array_mut)
-                            .map(std::mem::take)
-                            .unwrap_or_default();
-                        marks.push(json!({ "type": mark }));
-                        node["marks"] = Value::Array(marks);
-                        out.push(node);
-                    }
-                }
-                i = end + d.len();
-                matched = true;
-                break;
+            if !chars[i..].starts_with(&d[..]) {
+                continue;
             }
+            let end = if mark == "italic" {
+                italic_close(&chars, i + 1)
+            } else {
+                closing_delimiter(&chars, i + d.len(), &d)
+            };
+            let Some(end) = end else { continue };
+            let inner: String = chars[i + d.len()..end].iter().collect();
+            if inner.is_empty() {
+                continue;
+            }
+            flush(&mut plain, &mut out);
+            // Everything but a code span may nest, so its contents are
+            // parsed again.
+            out.extend(with_mark(inline_nodes(&inner), json!({ "type": mark })));
+            i = end + d.len();
+            matched = true;
+            break;
         }
         if matched {
             continue;
@@ -902,6 +1098,79 @@ fn inline_nodes(text: &str) -> Vec<Value> {
 
     flush(&mut plain, &mut out);
     out
+}
+
+/// `nodes` with `mark` added to each: the contents of a delimited run.
+fn with_mark(nodes: Vec<Value>, mark: Value) -> impl Iterator<Item = Value> {
+    nodes.into_iter().map(move |mut node| {
+        let mut marks = node
+            .get_mut("marks")
+            .and_then(Value::as_array_mut)
+            .map(std::mem::take)
+            .unwrap_or_default();
+        marks.push(mark.clone());
+        node["marks"] = Value::Array(marks);
+        node
+    })
+}
+
+/// How many `c` in a row start at `at`.
+fn run_length(chars: &[char], at: usize, c: char) -> usize {
+    chars[at..].iter().take_while(|ch| **ch == c).count()
+}
+
+/// Where the code span whose opening run of `ticks` backticks ends just
+/// before `from` closes: the next run of exactly that many.
+fn code_span_end(chars: &[char], from: usize, ticks: usize) -> Option<usize> {
+    let mut i = from;
+    while i < chars.len() {
+        if chars[i] == '`' {
+            let run = run_length(chars, i, '`');
+            if run == ticks {
+                return Some(i);
+            }
+            i += run;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Where a single-`*` emphasis closes: the next lone `*`, stepping over the
+/// `**` pairs of any bold nested inside it -- `*a **b** c*` is italic round
+/// a bold word, not an italic `a ` and a stray asterisk. A run of three or
+/// more closes the bold and the italic together, the italic's last.
+fn italic_close(chars: &[char], from: usize) -> Option<usize> {
+    let mut i = from;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => i += 2,
+            '*' => match run_length(chars, i, '*') {
+                1 => return Some(i),
+                2 => i += 2,
+                run => return Some(i + run - 1),
+            },
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// `<https://...>` starting at `i`: the address, and where it ends.
+fn autolink_at(chars: &[char], i: usize) -> Option<(String, usize)> {
+    let len = chars[i + 1..].iter().position(|c| *c == '>' || *c == '<' || c.is_whitespace())?;
+    if chars[i + 1 + len] != '>' {
+        return None;
+    }
+    let href: String = chars[i + 1..i + 1 + len].iter().collect();
+    is_autolink(&href).then_some((href, i + len + 2))
+}
+
+/// Does `line` close a fence opened with `ticks` backticks?
+fn closes_fence(line: &str, ticks: usize) -> bool {
+    let line = line.trim();
+    line.len() >= ticks && line.chars().all(|c| c == '`')
 }
 
 /// Where a run of emphasis actually closes.
@@ -1299,6 +1568,102 @@ mod tests {
         // when it is dropped.
         let hostile = format!("{}{}", "[".repeat(4096), "]".repeat(4096));
         assert!(serde_json::from_str::<RichDoc>(&hostile).is_err());
+    }
+
+    /// The cases `ui/scripts/markdown-copy.test.mjs` checks the clipboard
+    /// against: an exported note and a copied one are the same Markdown.
+    #[test]
+    fn markdown_is_written_as_the_cases_shared_with_the_clipboard() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/markdown.json")).unwrap();
+        for case in fixture["cases"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let want = case["markdown"].as_str().unwrap();
+            assert_eq!(doc(case["doc"].clone()).to_markdown(), want, "{name}");
+            if case["readsBack"] != false {
+                let back = RichDoc::from_markdown(want);
+                back.validate().unwrap();
+                assert_eq!(back.to_markdown(), want, "{name}: should read back as itself");
+            }
+        }
+    }
+
+    /// Each run of text in the first block, with the marks on it.
+    fn runs(d: &RichDoc) -> Vec<(String, Vec<String>)> {
+        children(&d.0["content"][0])
+            .iter()
+            .map(|n| {
+                let mut marks: Vec<String> = n["marks"]
+                    .as_array()
+                    .map(|ms| ms.iter().map(|m| m["type"].as_str().unwrap().to_string()).collect())
+                    .unwrap_or_default();
+                marks.sort();
+                (n["text"].as_str().unwrap_or("\n").to_string(), marks)
+            })
+            .collect()
+    }
+
+    fn run(text: &str, marks: &[&str]) -> (String, Vec<String>) {
+        (text.to_string(), marks.iter().map(|m| m.to_string()).collect())
+    }
+
+    #[test]
+    fn italic_round_bold_reads_as_italic_round_bold() {
+        // The italic used to close on the first asterisk of the bold.
+        let d = RichDoc::from_markdown("*a **b** c*");
+        assert_eq!(
+            runs(&d),
+            [run("a ", &["italic"]), run("b", &["bold", "italic"]), run(" c", &["italic"])]
+        );
+        assert_eq!(runs(&RichDoc::from_markdown("*a**b***")).len(), 2);
+    }
+
+    #[test]
+    fn a_code_span_can_hold_a_backtick() {
+        let d = RichDoc::from_markdown("``a`b`` and `` `x ``");
+        assert_eq!(runs(&d), [run("a`b", &["code"]), run(" and ", &[]), run("`x", &["code"])]);
+        // An unmatched run is the text it was.
+        assert_eq!(RichDoc::from_markdown("a `` b").plain_text(), "a `` b");
+    }
+
+    #[test]
+    fn a_fence_is_closed_only_by_one_at_least_as_long() {
+        let d = RichDoc::from_markdown("````\n```\ninside\n```\n````\nafter");
+        let blocks = d.0["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["content"][0]["text"], "```\ninside\n```");
+        assert_eq!(blocks[1]["type"], "paragraph");
+    }
+
+    #[test]
+    fn an_address_in_angle_brackets_is_a_link() {
+        let d = RichDoc::from_markdown("see <https://x.test/a_b> or <mailto:me@x.test>");
+        let nodes = children(&d.0["content"][0]);
+        assert_eq!(nodes[1]["text"], "https://x.test/a_b");
+        assert_eq!(nodes[1]["marks"][0]["attrs"]["href"], "https://x.test/a_b");
+        assert_eq!(nodes[3]["marks"][0]["attrs"]["href"], "mailto:me@x.test");
+        // Only an address: a comparison is not a link, and nor is a script.
+        for prose in ["a <b> c", "if a < b > c", "<javascript:alert(1)>"] {
+            assert_eq!(RichDoc::from_markdown(prose).plain_text(), prose);
+        }
+    }
+
+    #[test]
+    fn underline_is_read_back_from_the_tag_it_is_written_as() {
+        let d = RichDoc::from_markdown("an <u>**underlined**</u> word");
+        assert_eq!(
+            runs(&d),
+            [run("an ", &[]), run("underlined", &["bold", "underline"]), run(" word", &[])]
+        );
+    }
+
+    #[test]
+    fn a_line_indented_under_a_list_item_carries_it_on() {
+        let d = RichDoc::from_markdown("- first\n  second\n- third");
+        let items = d.0["content"][0]["content"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        let first = children(&items[0]["content"][0]);
+        assert_eq!(first[1]["type"], "hardBreak");
+        assert_eq!(first[2]["text"], "second");
     }
 
     #[test]

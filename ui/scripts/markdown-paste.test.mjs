@@ -26,6 +26,9 @@ for (const text of [
   '```\ncode\n```',
   // A table without its outer pipes is still a table.
   'a | b\n--|--\n1 | 2',
+  // A link has no paste rule of TipTap's to catch it, so it counts alone.
+  'See [the plan](https://example.com/plan).',
+  'See <https://example.com/plan>.',
 ]) {
   assert.ok(looksLikeMarkdown(text), `should read as Markdown:\n${text}`)
 }
@@ -47,6 +50,9 @@ for (const text of [
   '# helpers\nimport os\n\ndef run(__name__, **kw):\n    return os.path.join(__file__, __name__)',
   '# install it\napt install ripgrep',
   'def f():\n    # not a heading\n\n    - not a list',
+  // Brackets in prose are not a link.
+  'See note [1] (below).',
+  'Tuple [a, b] (x, y)',
 ]) {
   assert.ok(!looksLikeMarkdown(text), `should stay plain text:\n${text}`)
 }
@@ -59,6 +65,13 @@ for (const text of [
   assert.ok(html.includes('<th>Day</th>'), `its first row is the header: ${html}`)
   assert.ok(html.includes('<td style="text-align:right">5</td>'), `with its cells: ${html}`)
   assert.ok(!html.includes('---'), `and the rule under the header is gone: ${html}`)
+}
+{
+  // Left is said out loud too: the editor keeps it, and copies it back out.
+  const html = markdownToPaste('| a | b | c |\n| :--- | :---: | --- |\n| 1 | 2 | 3 |', '')
+  assert.ok(html?.includes('<td style="text-align:left">1</td>'), `left: ${html}`)
+  assert.ok(html.includes('<td style="text-align:center">2</td>'), `centre: ${html}`)
+  assert.ok(html.includes('<td>3</td>'), `and none: ${html}`)
 }
 {
   // What exporting a cell with a pipe in it writes, read back.
@@ -102,6 +115,16 @@ assert.equal(
   markdownToPaste('#### Step 1\n\nDo it.', '', EDITOR),
   '<h3>Step 1</h3><p>Do it.</p>',
   'a heading deeper than the editor has is drawn at its deepest, not lost',
+)
+assert.equal(
+  markdownToPaste('## Summary\n\nAll done.', '', { maxHeading: 0 }),
+  '<p><strong>Summary</strong></p><p>All done.</p>',
+  'in an editor with no headings -- mail -- a heading is a bold line',
+)
+assert.equal(
+  markdownToPaste('See [the plan](https://example.com/plan).', ''),
+  '<p>See <a href="https://example.com/plan" target="_blank" rel="noreferrer noopener">the plan</a>.</p>',
+  'a link pasted alone arrives as a link',
 )
 assert.ok(
   markdownToPaste('| x | y |\n|---|---|\n| 1 | 2 |\n- note | aside', '')?.endsWith(

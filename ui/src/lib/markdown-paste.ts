@@ -30,13 +30,20 @@ export interface PasteOptions extends RenderOptions {
   /**
    * The deepest heading the editor has. A `####` is drawn at this level
    * rather than arriving as a paragraph, which is what a heading level the
-   * schema has no rule for would otherwise become.
+   * schema has no rule for would otherwise become. `0` for an editor with no
+   * headings at all -- mail -- where a heading is drawn as a bold line.
    */
   maxHeading?: number
 }
 
 /**
- * Does this text have Markdown's block structure anywhere in it?
+ * A link written as Markdown: `[label](https://…)` or `<https://…>`. No
+ * paste rule of TipTap's reads either, and neither turns up in prose.
+ */
+const LINK = /\[[^\]\n]+\]\((?:https?:\/\/|mailto:)[^)\s]+\)|<(?:https?:\/\/|mailto:)[^\s<>]+>/
+
+/**
+ * Does this text have Markdown's block structure anywhere in it, or a link?
  *
  * The blocks are `markdown.ts`'s own patterns, so what is recognised here is
  * exactly what the renderer will draw. Inline marks are deliberately not on
@@ -52,6 +59,7 @@ export interface PasteOptions extends RenderOptions {
 export function looksLikeMarkdown(text: string): boolean {
   const lines = text.replace(/\r\n?/g, '\n').split('\n')
   if (looksLikeCode(lines)) return false
+  if (LINK.test(text)) return true
   return lines.some(
     (line, i) =>
       FENCE.test(line) ||
@@ -116,10 +124,12 @@ export function markdownToPaste(
   if (html && !htmlIsOnlyText(html)) return null
   const out = renderMarkdown(text, options)
   const max = options.maxHeading
-  if (!max) return out
+  if (max === undefined) return out
   // The renderer writes its heading tags bare, and escapes every `<` in the
   // text, so nothing but its own headings can match.
-  return out.replace(/<(\/?)h([1-6])>/g, (all, close: string, level: string) =>
-    Number(level) > max ? `<${close}h${max}>` : all,
-  )
+  return out.replace(/<(\/?)h([1-6])>/g, (all, close: string, level: string) => {
+    if (Number(level) <= max) return all
+    if (max > 0) return `<${close}h${max}>`
+    return close ? '</strong></p>' : '<p><strong>'
+  })
 }

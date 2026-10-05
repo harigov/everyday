@@ -28,9 +28,11 @@
 //
 // What a chat reply actually contains: headings, emphasis, inline code,
 // fenced and indented code, ordered and unordered lists (nested), block
-// quotes, rules, tables, links and bare URLs. What it deliberately does not:
-// raw HTML (escaped, on purpose), reference links, footnotes, and setext
-// headings. Anything unrecognised comes out as the text that was typed,
+// quotes, rules, tables, links and bare URLs -- and what the editor's own
+// copy writes besides: `==highlight==`, `<u>underline</u>` and `<https://…>`.
+// What it deliberately does not: raw HTML (escaped, on purpose -- the one
+// `<u>` is matched after escaping, and the tag put back is this file's),
+// reference links, footnotes, and setext headings. Anything unrecognised comes out as the text that was typed,
 // which is the correct failure for a renderer nobody can debug from the
 // other end of an API.
 //
@@ -352,12 +354,16 @@ function leadingSpaces(line: string): number {
 
 /** A pipe table: a header row, an alignment rule, and the body. */
 function tableBlock(lines: string[], start: number): [string, number] {
+  // Left is drawn as it would be anyway, but said all the same: the editor
+  // keeps a column's alignment, and copies it back out as the `:---` it was.
   const alignments = tableCells(lines[start + 1]!).map((spec) =>
     spec.startsWith(':') && spec.endsWith(':')
       ? ' style="text-align:center"'
       : spec.endsWith(':')
         ? ' style="text-align:right"'
-        : '',
+        : spec.startsWith(':')
+          ? ' style="text-align:left"'
+          : '',
   )
   const head = tableCells(lines[start]!)
     .map((cell, n) => `<th${alignments[n] ?? ''}>${inline(cell)}</th>`)
@@ -419,6 +425,13 @@ function inline(text: string): string {
     park(`<code>${body.trim()}</code>`),
   )
 
+  // `<https://...>`: an address written as its own link, which is how the
+  // editor's copy writes one. Escaped by now, so its brackets are entities.
+  out = out.replace(/&lt;((?:https?:\/\/|mailto:)(?:(?!&lt;|&gt;)\S)+)&gt;/g, (all, href) => {
+    const url = decodeEntities(String(href))
+    return SAFE_SCHEME.test(url) ? park(`${anchor(url)}${escapeHtml(url)}</a>`) : all
+  })
+
   out = out.replace(/\[([^\]]*)\]\(([^\s)]+)(?:\s+&quot;[^)]*&quot;)?\)/g, (all, label, href) => {
     const url = decodeEntities(String(href))
     if (!SAFE_SCHEME.test(url)) return all
@@ -455,6 +468,10 @@ function inline(text: string): string {
     .replace(/(?<![\w*])\*(?=\S)([^*\n]*?\S)\*(?![\w*])/g, '<em>$1</em>')
     .replace(/(?<![\w_])_(?=\S)([^_\n]*?\S)_(?![\w_])/g, '<em>$1</em>')
     .replace(/~~(?=\S)([^]*?\S)~~/g, '<del>$1</del>')
+    .replace(/==(?=\S)([^]*?\S)==/g, '<mark>$1</mark>')
+    // Markdown has no underline, so the editor's copy writes the one tag.
+    // It is matched in its escaped form, and the tags put back are these.
+    .replace(/&lt;u&gt;([^]*?)&lt;\/u&gt;/g, '<u>$1</u>')
 
   // Two trailing spaces, or a bare newline inside a paragraph: both are a
   // line the writer meant to break. Markdown says only the first is, and
