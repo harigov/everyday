@@ -15,9 +15,11 @@
 //!
 //! Facts that *do* change are memories -- "I moved to Boston", "Ravi is my
 //! brother-in-law now", "I have stopped drinking". The assistant writes those
-//! itself, and they are capped, evictable and dated. Nothing writes this: it
-//! is typed in Settings, by hand, once. That split is why there is no
-//! `set_profile` tool, and it is deliberate rather than an omission.
+//! itself, and they are capped, evictable and dated. This is typed in
+//! Settings, and the assistant changes it only when told to in so many words
+//! -- `update_profile`, for "I've moved to Denver", because the location here
+//! is what the weather reads and a memory saying otherwise would not move it.
+//! An unattended run may not call it, and no dream can propose it.
 //!
 //! # Why it is not part of [`AgentSettings`]
 //!

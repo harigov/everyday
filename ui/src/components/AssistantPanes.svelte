@@ -45,6 +45,7 @@
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import ProposalGhost from './ProposalGhost.svelte'
+  import SkillProposalPreview from './SkillProposalPreview.svelte'
 
   let { pane }: { pane: Pane } = $props()
 
@@ -177,6 +178,9 @@
         break
       case 'routine':
         assistant.setPane('routines')
+        break
+      case 'skill':
+        panels.openSettings('skills')
         break
     }
   }
@@ -735,7 +739,13 @@
           {#if rows.length > 0}
             <p class="lead heading">{PROPOSAL_KIND_LABELS[kind]}</p>
             {#each rows as p (p.id)}
-              <ProposalGhost proposal={p} color="var(--accent)" onopen={() => openAbout(p)} />
+              {#if kind === 'skill'}
+                <ProposalGhost proposal={p} color="var(--accent)" onopen={() => openAbout(p)}>
+                  <SkillProposalPreview proposal={p} />
+                </ProposalGhost>
+              {:else}
+                <ProposalGhost proposal={p} color="var(--accent)" onopen={() => openAbout(p)} />
+              {/if}
             {/each}
           {/if}
         {/each}

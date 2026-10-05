@@ -1,20 +1,27 @@
 <script lang="ts">
-  // Processes the assistant follows for a certain kind of request, managed
-  // from Settings rather than by asking the assistant to write one itself --
-  // see `everyday_core::agent::Skill`'s module docs, "Skills, and
-  // progressive disclosure". A skill's name and description are the only
-  // part that reaches every conversation, as an index the assistant is told
-  // to load from before it acts on a matching request; the instructions
-  // themselves are read in full only when it actually does, through
-  // `read_skill`.
+  // Processes the assistant follows for a certain kind of request. Written
+  // here by hand, or written by the assistant itself and left as a
+  // proposal for a yes or a no -- see `AssistantPanes.svelte`'s "Waiting
+  // for you" pane and `SkillProposalPreview.svelte` for that path. Either
+  // way this is where every skill ends up, and where one already switched
+  // off is turned back on: the assistant may create, change and delete a
+  // skill, but never re-enable one, which is why `editing.enabled` here has
+  // no counterpart in what it can ask for. See
+  // `everyday_core::agent::Skill`'s module docs, "Skills, and progressive
+  // disclosure". A skill's name and description are the only part that
+  // reaches every conversation, as an index the assistant is told to load
+  // from before it acts on a matching request; the instructions themselves
+  // are read in full only when it actually does, through `read_skill`.
   //
   // The shape here is Routines', not Memory's: a skill is a short form with
   // several fields rather than one sentence typed and blurred, so it gets an
   // explicit editor with a Save and a Cancel the same way a routine does,
   // not an autosaving line.
 
+  import { onDestroy } from 'svelte'
   import { api } from '../lib/api'
   import { notify } from '../lib/notify.svelte'
+  import { proposals } from '../lib/proposals.svelte'
   import type { Skill, SkillId } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import EmptyState from './EmptyState.svelte'
@@ -36,6 +43,14 @@
     }
   }
   void load()
+
+  // A skill proposal accepted from "Waiting for you" -- a different tab of
+  // Settings, open in the same window -- does not come back as a change
+  // event this window raises itself; see `onAccepted` on
+  // `proposals.svelte.ts`. This is the one list that record went into, so
+  // it is the one store this view has to reload for itself.
+  const unsubscribeSkillAccepted = proposals.onAccepted('skill', () => load())
+  onDestroy(unsubscribeSkillAccepted)
 
   async function draft() {
     try {

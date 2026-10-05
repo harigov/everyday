@@ -41,7 +41,8 @@
 //! Declaring a tool is a few lines; the run function and the JSON
 //! projections behind it are a few hundred, so each domain has its own file
 //! — `journals`, `notes`, `tasks`, `time`, `library`, `trackers`, `purpose`,
-//! `routines`, `memory`, `skills` — ending in a `TOOLS` slice this module
+//! `routines`, `proposals`, `memory`, `conversations`, `skills`, `mail`,
+//! `meetings` — ending in a `TOOLS` slice this module
 //! concatenates in catalogue order. Orientation (`overview`, `search`)
 //! travels with `journals`, since both use [`Domain::Journals`] and neither
 //! is big enough to want a file of its own.
@@ -102,12 +103,14 @@ macro_rules! tool {
     };
 }
 
+mod conversations;
 mod journals;
 mod library;
 mod mail;
 mod meetings;
 mod memory;
 mod notes;
+mod proposals;
 mod purpose;
 mod routines;
 mod skills;
@@ -1137,7 +1140,9 @@ fn all() -> &'static [Tool] {
             trackers::TOOLS,
             purpose::TOOLS,
             routines::TOOLS,
+            proposals::TOOLS,
             memory::TOOLS,
+            conversations::TOOLS,
             skills::TOOLS,
             mail::TOOLS,
             meetings::TOOLS,
@@ -1277,8 +1282,8 @@ fn dispatch_drafting(
     let Some(build) = tool.build else {
         return Err(Error::Invalid(format!(
             "while dreaming you can only propose tasks, time on the calendar, memories, \
-             routines and notes, or write a mail draft; {:?} is not something you can \
-             propose; mention it in your note instead.",
+             routines, notes and skills, or write a mail draft; {:?} is not something you \
+             can propose; mention it in your note instead.",
             tool.name
         )));
     };

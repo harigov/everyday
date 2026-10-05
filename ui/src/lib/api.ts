@@ -703,9 +703,10 @@ export const api = {
   /**
    * Who the vault belongs to.
    *
-   * Read into every prompt the assistant sends. Written only from Settings:
-   * there is no tool for it, deliberately, because a fact that changes is a
-   * memory and this is for the ones that do not.
+   * Read into every prompt the assistant sends. Written from Settings, and by
+   * the assistant's `update_profile` only when the person says so in chat --
+   * a fact that changes is otherwise a memory, and this is for the ones that
+   * do not.
    */
   profile: () => call('profile', {}),
   saveProfile: (profile: Profile) => call('saveProfile', { profile }),

@@ -131,8 +131,10 @@ These were settled in discussion and the plan does not reopen them.
   scheduler rather than after it. The confirmation is seeing it in the
   list.
 - **The profile is edited by hand and read by the assistant.** Facts that
-  change — a move, a new job — are what memory is for; the profile is the
-  handful of things that do not. There is no tool that writes it.
+  change — a new job, a new habit — are what memory is for; the profile is
+  the handful of things that do not. The assistant changes it only when told
+  to in so many words (`update_profile`, for "I've moved to Denver", since
+  the location is what the weather reads), never from a routine or a dream.
 - **Memory stays small.** The existing sixty-four sentences, pinned or not,
   are the whole of it. The vault — roles, goals, notes, the journal — is the
   real memory, and the assistant reaches it with tools. Memory gets a page,

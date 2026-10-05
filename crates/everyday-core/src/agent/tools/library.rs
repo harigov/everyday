@@ -8,12 +8,16 @@ use super::{
     list, load_by_id, number, one_of, run_delete, schema, text,
 };
 use crate::error::Result;
-use crate::id::ItemId;
+use crate::id::{ItemId, LogId};
 use crate::library::{Item, ItemStatus, LogEntry, LogEvent};
-use crate::store::library::ItemQuery;
+use crate::store::library::{ItemQuery, LogQuery};
 use crate::timestamped::Timestamped;
 
 const ITEM_STATUSES: &[&str] = &["wishlist", "active", "paused", "done", "abandoned"];
+
+/// Wire spellings for [`LogEvent`], in the order [`LogEvent::ALL`] gives
+/// them -- shared by `list_logs`' filter and `log_item`'s own argument.
+const LOG_EVENTS: &[&str] = &["started", "progress", "finished", "revisited", "note", "stopped"];
 
 pub(super) static TOOLS: &[Tool] = &[
     tool!(
@@ -86,10 +90,20 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("started_on", day("The day you started.")),
                 ("finished_on", day("The day you finished.")),
                 ("tags", list("Replaces the tags entirely.")),
+                (
+                    "position",
+                    number(
+                        "Where you have got to -- a page, an episode, whatever this shelf \
+                         counts in. Recording progress on a wishlist item counts as starting \
+                         it. Also logged, the same way a status change is."
+                    )
+                ),
+                ("total", number("The finishing line, if you know it, in the same unit.")),
             ],
             &["item_id"]
         ),
-        "Change something on a shelf: finish it, rate it, make it a favourite.",
+        "Change something on a shelf: finish it, rate it, make it a favourite, or say how \
+         far through you are.",
         run_update_item
     ),
     tool!(
@@ -102,10 +116,75 @@ pub(super) static TOOLS: &[Tool] = &[
         run_delete_item,
         Some(describe_delete_item)
     ),
+    tool!(
+        "list_logs",
+        Read,
+        Library,
+        schema(
+            vec![
+                ("item_id", text("Restrict to one item's own history. From list_items.")),
+                ("from", day("On or after this day.")),
+                ("to", day("On or before this day.")),
+                ("event", one_of("Restrict to one kind of entry.", LOG_EVENTS)),
+                limit_arg(),
+            ],
+            &[]
+        ),
+        "The log behind a shelf: every time something was started, made progress, finished, \
+         revisited, noted or set aside. Give an item_id for its own history, or a date range \
+         for what happened across the whole library -- the way to answer 'what did I finish \
+         in March'. update_item already adds a line here on a real status change; this is \
+         where to read it back.",
+        run_list_logs
+    ),
+    tool!(
+        "log_item",
+        Write,
+        Library,
+        schema(
+            vec![
+                ("item_id", text("Which item this is about. From list_items.")),
+                ("event", one_of("What happened.", LOG_EVENTS)),
+                ("date", day("When. Defaults to today.")),
+                ("note", text("A thought, if you have one.")),
+                ("rating", decimal("Out of 10, if this occasion is worth rating on its own.")),
+                ("position", number("Where you got to, for a progress entry.")),
+                ("minutes", number("How long you spent, if you care to say.")),
+            ],
+            &["item_id", "event"]
+        ),
+        "Add a line to an item's own history directly: a re-read, a passing thought, or an \
+         entry you want to date in the past. update_item already adds one of these on its \
+         own whenever a status actually changes -- started, finished, paused or abandoned -- \
+         so reach for this beside that, not instead of it.",
+        run_log_item
+    ),
+    tool!(
+        "delete_log",
+        Destructive,
+        Library,
+        schema(vec![("log_id", text("Id from list_logs."))], &["log_id"]),
+        "Permanently delete one line from an item's history, leaving the item itself alone.",
+        run_delete_log,
+        Some(describe_delete_log)
+    ),
 ];
 
 fn describe_delete_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
     describe_by_id::<ItemId, Item>(args, "item_id", "item", |id| ctx.vault.item(id), |i| i.title)
+}
+
+/// Named by what happened and -- where the item itself still exists -- what
+/// it happened to, the same way `describe_delete_time_block` names a block
+/// by what it is for rather than by its id.
+fn describe_delete_log(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
+    let id: LogId = args.opt_id("log_id", "log entry").ok()??;
+    let log = ctx.vault.log(id).ok()?;
+    let what = ctx.vault.item(log.item_id).ok().map(|i| i.title);
+    Some(match what {
+        Some(title) => format!("the {} entry for {title} on {}", log.event.as_str(), log.date),
+        None => format!("the {} entry on {}", log.event.as_str(), log.date),
+    })
 }
 
 /// A rating as the tools speak it, converted to how the vault stores it.
@@ -148,6 +227,13 @@ fn item_json(i: &Item) -> Value {
     }
     if !i.tags.is_empty() {
         m.insert("tags".into(), json!(i.tags));
+    }
+    if let Some(p) = &i.progress {
+        let mut progress = json!({ "position": p.position, "unit": p.unit });
+        if let Some(total) = p.total {
+            progress.as_object_mut().unwrap().insert("total".into(), json!(total));
+        }
+        m.insert("progress".into(), progress);
     }
     v
 }
@@ -244,6 +330,15 @@ fn run_update_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         item.tags = args.strings("tags");
     }
 
+    // Where you have got to, through the same `Item::set_progress` the
+    // interface's own progress control uses.
+    let position = args.opt_u32("position");
+    if let Some(position) = position {
+        let kind_id = item.kind_id;
+        let shelf_unit = || ctx.vault.kind(kind_id).map(|k| k.progress_unit).unwrap_or_default();
+        item.set_progress(position, args.opt_u32("total"), shelf_unit, ctx.today);
+    }
+
     item.touch();
     ctx.vault.save_item(&item)?;
 
@@ -269,6 +364,13 @@ fn run_update_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
             }
         }
     }
+    if let Some(position) = position {
+        let mut log = LogEntry::new(item.id, LogEvent::Progress, ctx.today, ctx.tz);
+        log.position = Some(position);
+        if let Err(e) = ctx.vault.save_log(&log) {
+            tracing::warn!(error = %e, "could not log a progress update the assistant made");
+        }
+    }
     done("updated", "item", &item.title, item.id.to_string())
 }
 
@@ -280,5 +382,71 @@ fn run_delete_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         |id| ctx.vault.item(id),
         |id| ctx.vault.delete_item(id),
         |item| item.title,
+    )
+}
+
+fn log_json(l: &LogEntry) -> Value {
+    let mut v = json!({
+        "id": l.id.to_string(),
+        "item_id": l.item_id.to_string(),
+        "event": l.event.as_str(),
+        "date": l.date.to_string(),
+    });
+    let m = v.as_object_mut().unwrap();
+    if !l.note.trim().is_empty() {
+        m.insert("note".into(), json!(l.note));
+    }
+    if let Some(r) = l.rating {
+        m.insert("rating_out_of_10".into(), json!(f64::from(r) / 10.0));
+    }
+    if let Some(p) = l.position {
+        m.insert("position".into(), json!(p));
+    }
+    if let Some(min) = l.minutes {
+        m.insert("minutes".into(), json!(min));
+    }
+    v
+}
+
+fn run_list_logs(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let query = LogQuery {
+        item_id: args.opt_id("item_id", "item")?,
+        from: args.opt_date("from")?,
+        to: args.opt_date("to")?,
+        events: args.opt_enum::<LogEvent>("event", LOG_EVENTS)?.into_iter().collect(),
+        limit: Some(args.limit()),
+    };
+    let rows = ctx.vault.logs(&query)?;
+    Ok(json!({
+        "count": rows.len(),
+        "logs": rows.iter().map(log_json).collect::<Vec<_>>(),
+    }))
+}
+
+fn run_log_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let item_id: ItemId = args.id("item_id", "item")?;
+    let item = ctx.vault.item(item_id)?;
+    let event: LogEvent =
+        args.opt_enum("event", LOG_EVENTS)?.ok_or_else(|| args.bad("`event` is required"))?;
+    let date = args.opt_date("date")?.unwrap_or(ctx.today);
+
+    let mut log = LogEntry::new(item_id, event, date, ctx.tz);
+    log.note = args.opt_str("note").unwrap_or_default().to_string();
+    log.rating = rating_out_of_ten(args)?;
+    log.position = args.opt_u32("position");
+    log.minutes = args.opt_u32("minutes");
+
+    ctx.vault.save_log(&log)?;
+    done("logged", "entry", &format!("{} on {date}", item.title), log.id.to_string())
+}
+
+fn run_delete_log(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    run_delete::<LogId, LogEntry>(
+        args,
+        "log_id",
+        "log entry",
+        |id| ctx.vault.log(id),
+        |id| ctx.vault.delete_log(id),
+        |log| format!("{} on {}", log.event.as_str(), log.date),
     )
 }

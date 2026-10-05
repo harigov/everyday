@@ -573,6 +573,15 @@ check('get_transcript', 'done', 'Got transcript')
 check('remember', 'running', 'Remembering')
 check('label_thread', 'done', 'Labelled thread')
 check('snooze_thread', 'running', 'Snoozing thread')
+check('update_time_block', 'running', 'Updating time block')
+check('update_time_block', 'done', 'Updated time block')
+check('log_item', 'running', 'Logging item')
+check('log_item', 'done', 'Logged item')
+check('delete_log', 'waiting', 'Delete log')
+// `unstar_thread`'s own verb doubles like `star`'s does: `un-` is a prefix,
+// not a stressed syllable, so the short verb underneath is still `star`.
+check('unstar_thread', 'running', 'Unstarring thread')
+check('unstar_thread', 'done', 'Unstarred thread')
 
 function check(name, state, want) {
   assert.equal(toolLabel(name, {}, state).text, want, `${name} while ${state}`)
@@ -580,9 +589,11 @@ function check(name, state, want) {
 
 assert.equal(gerund('stop'), 'stopping')
 assert.equal(gerund('tie'), 'tying')
+assert.equal(gerund('unstar'), 'unstarring')
 assert.equal(pastTense('apply'), 'applied')
 assert.equal(pastTense('plan'), 'planned')
 assert.equal(pastTense('send'), 'sent')
+assert.equal(pastTense('unstar'), 'unstarred', 'not "unstared"')
 
 // The tools that reach outside the vault say what they reached for.
 assert.deepEqual(toolLabel('web_search', { query: 'rain' }, 'done'), {
@@ -597,6 +608,16 @@ assert.deepEqual(
 assert.deepEqual(toolLabel('get_weather', { place: 'Porto' }, 'running'), {
   text: 'Checking the weather in',
   detail: 'Porto',
+})
+// Also not strictly a web tool by name, but offered beside them and worth
+// a detail for the same reason web_search is: which title it looked up.
+assert.deepEqual(toolLabel('look_up_item', { title: 'Dune' }, 'running'), {
+  text: 'Looking up',
+  detail: 'Dune',
+})
+assert.deepEqual(toolLabel('look_up_item', { title: 'Dune' }, 'done'), {
+  text: 'Looked up',
+  detail: 'Dune',
 })
 // Not a web tool, but it still earns a detail: the name alone -- "Reading
 // skill" -- would lose which skill was actually followed.
@@ -613,6 +634,7 @@ for (const junk of [null, 'a string', 7, { query: 3 }, { url: 'not a url' }]) {
   toolLabel('web_search', junk, 'running')
   toolLabel('read_web_page', junk, 'done')
   toolLabel('get_weather', junk, 'waiting')
+  toolLabel('look_up_item', junk, 'waiting')
   toolLabel('read_skill', junk, 'waiting')
 }
 

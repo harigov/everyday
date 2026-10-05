@@ -2619,7 +2619,15 @@ export interface Skill {
 // `everyday_core::proposal`. A proposal carries a whole record, never a tool
 // call, so it reads the same after an upgrade. See docs/plans/dreaming.md.
 
-export const PROPOSAL_KINDS = ['task', 'block', 'memory', 'routine', 'note', 'mail'] as const
+export const PROPOSAL_KINDS = [
+  'task',
+  'block',
+  'memory',
+  'routine',
+  'note',
+  'mail',
+  'skill',
+] as const
 export type ProposalKind = (typeof PROPOSAL_KINDS)[number]
 
 export type ProposedRecord =
@@ -2628,6 +2636,7 @@ export type ProposedRecord =
   | { kind: 'memory'; value: Memory }
   | { kind: 'routine'; value: Routine }
   | { kind: 'note'; value: Note }
+  | { kind: 'skill'; value: Skill }
 
 export type ProposalPayload =
   /** Save a record that does not exist yet. */

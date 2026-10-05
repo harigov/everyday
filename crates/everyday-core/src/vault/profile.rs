@@ -18,9 +18,10 @@ impl Vault {
 
     /// Write the profile.
     ///
-    /// There is deliberately no tool for this. Facts that change are what
-    /// [`Memory`](crate::agent::Memory) is for; this is the handful that do
-    /// not, and they are typed in Settings once. See [`crate::profile`].
+    /// Facts that change are what [`Memory`](crate::agent::Memory) is for;
+    /// this is the handful that do not, typed in Settings, and changed by the
+    /// assistant's `update_profile` only when the person says so in chat. See
+    /// [`crate::profile`].
     pub fn save_profile(&self, profile: &Profile) -> Result<()> {
         self.writable()?;
         profile.validate()?;

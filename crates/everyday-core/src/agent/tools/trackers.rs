@@ -5,15 +5,16 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 use super::{
-    Args, Tool, ToolContext, Window, day, decimal, empty_schema, flag, limit_arg, one_of, schema,
-    text,
+    Args, Tool, ToolContext, Window, day, decimal, describe_by_id, empty_schema, flag, limit_arg,
+    one_of, resolve_purpose, run_delete, schema, text,
 };
-use crate::error::Result;
-use crate::id::{GoalId, KindId, RoleId, TrackerId};
+use crate::error::{Error, Result};
+use crate::id::{GoalId, KindId, ReadingId, RoleId, TrackerId};
 use crate::purpose::Purpose;
 use crate::store::trackers::ReadingQuery;
 use crate::tracker::{
     Period, Reading, Standing, Tally, Target, TargetProgress, Tracker, TrackerKind, TrackerSource,
+    format_number,
 };
 
 const PERIODS: [&str; 5] = ["day", "week", "month", "quarter", "year"];
@@ -37,6 +38,38 @@ pub(super) static TOOLS: &[Tool] = &[
         run_list_trackers
     ),
     tool!(
+        "create_tracker",
+        Write,
+        Trackers,
+        schema(
+            vec![
+                ("name", text("What is being recorded, e.g. 'Water', 'Creatine', 'Flossed'.")),
+                (
+                    "kind",
+                    one_of(
+                        "'check' for a yes/no habit, 'amount' for a quantity (the \
+                         default), 'dose' for medication taken in the unit given.",
+                        &["check", "amount", "dose"]
+                    )
+                ),
+                ("unit", text("The unit, e.g. 'min', 'glasses', 'mg'. Empty for a plain count.")),
+                ("goal_id", text("File it under this goal, from list_goals.")),
+                ("role_id", text("Or under this role directly, from list_roles.")),
+            ],
+            &["name"]
+        ),
+        "Start tracking something new by hand \u{2014} a habit, a dose, a count \u{2014} \
+         so there is a tracker log_reading can record against afterwards. Refuses a \
+         second tracker of a name already in use; log_reading against the existing \
+         one instead, or tracker_summary to see what it already holds. File it under \
+         a goal or role straight away with goal_id or role_id, or leave both out and \
+         do it later with set_target. For something already worked out from logged \
+         time or the library \u{2014} list_trackers calls these 'time' and 'finished' \
+         \u{2014} there is nothing to create here: set_target makes one of those \
+         itself.",
+        run_create_tracker
+    ),
+    tool!(
         "log_reading",
         Write,
         Trackers,
@@ -54,6 +87,43 @@ pub(super) static TOOLS: &[Tool] = &[
          the others are worked out from time blocks and the library, and are \
          changed by logging time or finishing something there.",
         run_log_reading
+    ),
+    tool!(
+        "update_reading",
+        Write,
+        Trackers,
+        schema(
+            vec![
+                ("reading_id", text("From list_readings.")),
+                ("value", decimal("The corrected number. For a yes/no tracker, 1 or 0.")),
+                ("date", day("The corrected day it belongs to.")),
+                ("note", text("Replaces the note entirely.")),
+            ],
+            &["reading_id"]
+        ),
+        "Correct a reading that was logged wrong \u{2014} the wrong number, the wrong \
+         day, or a note that needs fixing \u{2014} rather than leaving a bad row \
+         beside a good one. Give only what changed. The value is clamped to the \
+         tracker's scale the same way log_reading already clamps it, and moving a \
+         reading to a different day drops whatever time of day it carried, since \
+         that time belonged to the old day and not the new one. Refused for a \
+         reading on a derived tracker ('time', 'finished' in list_trackers): there \
+         is no row there to correct, only the time blocks or the library log it was \
+         worked out from.",
+        run_update_reading
+    ),
+    tool!(
+        "delete_reading",
+        Destructive,
+        Trackers,
+        schema(vec![("reading_id", text("From list_readings."))], &["reading_id"]),
+        "Delete one reading that should never have been logged \u{2014} not a \
+         correction, which is update_reading. Refused for a reading on a derived \
+         tracker ('time', 'finished' in list_trackers): there is no row there to \
+         delete, only the time blocks or the library log it was worked out from \
+         \u{2014} change those instead if they are wrong.",
+        run_delete_reading,
+        Some(describe_delete_reading)
     ),
     tool!(
         "tracker_summary",
@@ -89,10 +159,12 @@ pub(super) static TOOLS: &[Tool] = &[
             ],
             &[]
         ),
-        "Every individual reading over a window, with its day and \u{2014} where it is \
-         known \u{2014} its time. Prefer tracker_summary for 'how has my sleep been': \
-         this is for questions that need the readings themselves, such as lining up \
-         the days one thing happened against what another said the day after.",
+        "Every individual reading over a window, with its id, its day and \u{2014} \
+         where it is known \u{2014} its time. Prefer tracker_summary for 'how has my \
+         sleep been': this is for questions that need the readings themselves, such \
+         as lining up the days one thing happened against what another said the day \
+         after, or finding the id of one to fix with update_reading or delete it \
+         with delete_reading.",
         run_list_readings
     ),
     tool!(
@@ -228,6 +300,55 @@ pub(super) fn progress_json(tracker: &Tracker, target: &Target, p: &TargetProgre
     out
 }
 
+fn run_create_tracker(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let name = args.str("name")?.trim();
+    let existing = ctx.vault.trackers()?;
+    if let Some(dup) = find_by_name(&existing, name) {
+        return Err(args.bad(format!(
+            "there is already a tracker called {name:?} (id {}); log_reading against \
+             it, or pick a different name",
+            dup.id
+        )));
+    }
+
+    let kind = match args.opt_str("kind").map(|k| k.trim().to_lowercase()).as_deref() {
+        Some("check") => TrackerKind::Check,
+        Some("dose") => TrackerKind::Dose,
+        None | Some("amount") => TrackerKind::Amount,
+        Some(other) => {
+            return Err(args.bad(format!("`kind` must be check, amount or dose, not {other:?}")));
+        }
+    };
+
+    let mut tracker = Tracker::new(name, kind);
+    tracker.unit = args.opt_str("unit").unwrap_or_default().trim().to_string();
+    tracker.purpose = resolve_purpose(ctx, args)?;
+
+    ctx.vault.save_tracker(&tracker)?;
+    let saved = ctx.vault.tracker(tracker.id)?;
+    Ok(json!({
+        "ok": true,
+        "action": "created",
+        "kind": "tracker",
+        "name": saved.name,
+        "id": saved.id.to_string(),
+        "filed_under": filed_under(ctx, saved.purpose),
+    }))
+}
+
+/// The live tracker already called `name`, matched the same
+/// case-insensitive way [`existing_for`]'s "new" case already treats a
+/// manual tracker's name as its identity. Unlike that one, `create_tracker`
+/// is "start tracking something new": a match here is refused rather than
+/// silently reused, so a second "Water" is never made by mistake. An
+/// archived tracker's name is free again -- the point of archiving rather
+/// than deleting is that the name can be picked up once more without the
+/// old history in the way. Pulled out so the matching can be tested without
+/// a vault behind it.
+fn find_by_name<'a>(trackers: &'a [Tracker], name: &str) -> Option<&'a Tracker> {
+    trackers.iter().find(|t| !t.archived && t.name.eq_ignore_ascii_case(name))
+}
+
 fn run_log_reading(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let tracker_id: TrackerId = args.id("tracker_id", "tracker")?;
     let value = args
@@ -253,6 +374,108 @@ fn run_log_reading(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         "date": date.to_string(),
         "value": stored.value,
     }))
+}
+
+/// Refuse to edit or delete a reading whose tracker works its numbers out
+/// rather than taking them by hand -- see [`TrackerSource`]. In practice
+/// this can never actually fire through a `reading_id`: a derived day's
+/// reading is synthesised on the spot and never stored (see
+/// `Vault::derived_reading`), so looking one up by id already answers "not
+/// found" before either `run_update_reading` or `run_delete_reading` gets
+/// this far. Kept anyway, the same way `Vault::save_reading` keeps its own
+/// `refuse_derived` for a call that reaches it directly: a defence that is
+/// currently unreachable through this door is cheaper than explaining later
+/// why editing a number the vault computed was ever allowed.
+fn refuse_if_derived(tracker: &Tracker) -> Result<()> {
+    if tracker.is_manual() {
+        return Ok(());
+    }
+    Err(Error::Invalid(format!(
+        "\u{201c}{}\u{201d} is worked out from what the vault already records, and its \
+         readings cannot be edited or deleted by hand",
+        tracker.name
+    )))
+}
+
+/// How one reading is named for a person to recognise: the tracker it
+/// belongs to, what was recorded, and the day. Shared between
+/// `describe_delete_reading`'s confirmation card and the receipt
+/// `run_update_reading` and `run_delete_reading` each hand back, so the
+/// question and the answer agree on what they were talking about.
+fn reading_label(tracker: &Tracker, reading: &Reading) -> String {
+    let value = if tracker.kind == TrackerKind::Check {
+        if reading.value > 0.0 { "done".to_string() } else { "not done".to_string() }
+    } else if tracker.unit.is_empty() {
+        format_number(reading.value)
+    } else {
+        format!("{} {}", format_number(reading.value), tracker.unit)
+    };
+    format!("{}: {value} on {}", tracker.name, reading.local_date)
+}
+
+fn run_update_reading(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let id: ReadingId = args.id("reading_id", "reading")?;
+    let mut reading = ctx.vault.reading(id)?;
+    let tracker = ctx.vault.tracker(reading.tracker_id)?;
+    refuse_if_derived(&tracker)?;
+
+    if let Some(v) = args.opt_f64("value") {
+        reading.value = v;
+    }
+    if let Some(d) = args.opt_date("date")? {
+        // A reading's day and its instant have to agree, and `save_reading`
+        // derives the day straight back from `at` whenever it is still set
+        // -- so correcting the day means the old time no longer belongs to
+        // it, the same trade `log_reading` already makes for a day with no
+        // known minute.
+        reading.local_date = d;
+        reading.at = None;
+    }
+    if let Some(note) = args.opt_str("note") {
+        reading.note = note.to_string();
+    }
+
+    ctx.vault.save_reading(&reading)?;
+    let saved = ctx.vault.reading(id)?;
+    Ok(json!({
+        "ok": true,
+        "action": "updated",
+        "kind": "reading",
+        "name": reading_label(&tracker, &saved),
+        "id": saved.id.to_string(),
+        "date": saved.local_date.to_string(),
+        "value": saved.value,
+    }))
+}
+
+fn run_delete_reading(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    run_delete::<ReadingId, (Tracker, Reading)>(
+        args,
+        "reading_id",
+        "reading",
+        |id| {
+            let reading = ctx.vault.reading(id)?;
+            let tracker = ctx.vault.tracker(reading.tracker_id)?;
+            refuse_if_derived(&tracker)?;
+            Ok((tracker, reading))
+        },
+        |id| ctx.vault.delete_reading(id),
+        |(tracker, reading)| reading_label(&tracker, &reading),
+    )
+}
+
+fn describe_delete_reading(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
+    describe_by_id::<ReadingId, (Tracker, Reading)>(
+        args,
+        "reading_id",
+        "reading",
+        |id| {
+            let reading = ctx.vault.reading(id)?;
+            let tracker = ctx.vault.tracker(reading.tracker_id)?;
+            Ok((tracker, reading))
+        },
+        |(tracker, reading)| reading_label(&tracker, &reading),
+    )
 }
 
 fn run_tracker_summary(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -497,6 +720,7 @@ fn run_list_readings(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         .into_iter()
         .map(|r| {
             let mut row = json!({
+                "id": r.id.to_string(),
                 "date": r.local_date.to_string(),
                 "value": r.value,
                 "tracker": names.get(&r.tracker_id).cloned().unwrap_or_default(),
@@ -523,4 +747,65 @@ fn run_list_readings(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         "count": rows.len(),
         "readings": rows,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jiff::civil::date;
+
+    // ---- create_tracker ----------------------------------------------------
+
+    #[test]
+    fn a_tracker_with_the_same_name_is_found_case_insensitively() {
+        let trackers = vec![Tracker::new("Water", TrackerKind::Amount)];
+        assert!(find_by_name(&trackers, "water").is_some());
+        assert!(find_by_name(&trackers, "WATER").is_some());
+        assert!(find_by_name(&trackers, "Juice").is_none());
+    }
+
+    #[test]
+    fn an_archived_trackers_name_is_free_again() {
+        let mut t = Tracker::new("Water", TrackerKind::Amount);
+        t.archived = true;
+        assert!(
+            find_by_name(&[t], "Water").is_none(),
+            "archiving rather than deleting frees the name up"
+        );
+    }
+
+    // ---- editing and deleting readings --------------------------------------
+
+    #[test]
+    fn only_a_manual_trackers_readings_can_be_touched_by_hand() {
+        let manual = Tracker::new("Water", TrackerKind::Amount);
+        assert!(refuse_if_derived(&manual).is_ok());
+
+        let mut piano = Tracker::new("Time on Piano", TrackerKind::Amount);
+        piano.source = TrackerSource::Time;
+        let err = refuse_if_derived(&piano).unwrap_err().to_string();
+        assert!(err.contains("Time on Piano"), "got {err}");
+    }
+
+    #[test]
+    fn a_readings_label_names_the_tracker_the_value_and_the_day() {
+        let mut water = Tracker::new("Water", TrackerKind::Amount);
+        water.unit = "glasses".into();
+        let r = Reading::on(water.id, date(2026, 9, 10), 2.0);
+        assert_eq!(reading_label(&water, &r), "Water: 2 glasses on 2026-09-10");
+
+        let floss = Tracker::new("Flossed", TrackerKind::Check);
+        let done = Reading::on(floss.id, date(2026, 9, 10), 1.0);
+        assert_eq!(reading_label(&floss, &done), "Flossed: done on 2026-09-10");
+        let not_done = Reading::on(floss.id, date(2026, 9, 10), 0.0);
+        assert_eq!(reading_label(&floss, &not_done), "Flossed: not done on 2026-09-10");
+
+        let count = Tracker::new("Push-ups", TrackerKind::Amount);
+        let r = Reading::on(count.id, date(2026, 9, 10), 20.0);
+        assert_eq!(
+            reading_label(&count, &r),
+            "Push-ups: 20 on 2026-09-10",
+            "no unit is still named"
+        );
+    }
 }

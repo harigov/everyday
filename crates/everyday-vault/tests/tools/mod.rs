@@ -83,8 +83,30 @@ fn a_confirmation_names_what_it_will_destroy_rather_than_its_id() {
     )["blocks"][0]["id"]
         .clone();
 
+    let log = call(
+        &vault,
+        "log_item",
+        serde_json::json!({ "item_id": item["id"], "event": "finished", "date": "2026-09-08" }),
+    );
+    let skill = call(
+        &vault,
+        "create_skill",
+        serde_json::json!({
+            "name": "Plan a trip",
+            "description": "Use when asked to plan travel.",
+            "instructions": "Check the calendar first.",
+        }),
+    );
+
     let cases = [
         ("delete_project", "project_id", project["id"].clone(), "The deck"),
+        (
+            "delete_log",
+            "log_id",
+            log["id"].clone(),
+            "the finished entry for Piranesi on 2026-09-08",
+        ),
+        ("delete_skill", "skill_id", skill["id"].clone(), "Plan a trip"),
         ("delete_task", "task_id", task["id"].clone(), "Order the timber"),
         ("delete_item", "item_id", item["id"].clone(), "Piranesi"),
         ("delete_entry", "entry_id", entry["id"].clone(), "Cut the joists."),
@@ -139,9 +161,12 @@ fn the_catalogue_marks_exactly_the_tools_the_confirmation_gate_must_catch() {
             "delete_task",
             "delete_time_block",
             "delete_item",
+            "delete_log",
+            "delete_reading",
             "delete_goal",
             "delete_routine",
             "forget",
+            "delete_skill",
         ]
     );
 }

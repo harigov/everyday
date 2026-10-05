@@ -9,8 +9,8 @@
 use serde_json::{Value, json};
 
 use super::{
-    Args, Built, Tool, ToolContext, Window, day, done, limit_arg, one_of, resolve_purpose,
-    run_delete, schema, text,
+    Args, Built, Tool, ToolContext, Window, day, done, limit_arg, load_by_id, one_of,
+    resolve_purpose, run_delete, schema, text,
 };
 use crate::error::Result;
 use crate::id::{BlockId, ProjectId, TaskId};
@@ -84,6 +84,32 @@ pub(super) static TOOLS: &[Tool] = &[
         run_create_block,
         None,
         Some(build_create_block)
+    ),
+    tool!(
+        "update_time_block",
+        Write,
+        Tasks,
+        schema(
+            vec![
+                ("block_id", text("Id from list_time_blocks.")),
+                ("date", day("Move it to this day. Omitted, it stays where it is.")),
+                ("start_time", text("New start, as HH:MM. Omitted, it stays where it is.")),
+                ("end_time", text("New end, as HH:MM. Must be after the start.")),
+                ("task_id", text("Move it onto this task instead.")),
+                ("project_id", text("Or onto this project instead.")),
+                ("label", text("Or give it this free-text label instead.")),
+                ("goal_id", text("File it under this goal, from list_goals.")),
+                ("role_id", text("Or under this role directly, from list_roles.")),
+            ],
+            &["block_id"]
+        ),
+        "Move a block of time to a new day or time, or change what it is for -- the one call \
+         instead of deleting it and creating another. Every field but block_id is optional \
+         and anything left out stays as it is; give exactly one of task_id, project_id or \
+         label if you are changing what the time is for.",
+        run_update_block,
+        None,
+        Some(build_update_block)
     ),
     tool!(
         "delete_time_block",
@@ -173,6 +199,79 @@ fn block_subject_label(b: &TimeBlock) -> Value {
     }
 }
 
+/// Exactly one of `task_id`, `project_id` or `label`, read off a call --
+/// shared by `create_time_block`, which must be given one, and
+/// `update_time_block`, which is free to give none. `Ok(None)` is "none of
+/// the three was named", which the two tools read differently; anything
+/// beyond one is always a mistake, whichever is asking, since a block for
+/// both a task and a project is not a thing this domain has.
+fn subject_from_args(args: &Args<'_>) -> Result<Option<(BlockSubject, Option<String>)>> {
+    let task: Option<TaskId> = args.opt_id("task_id", "task")?;
+    let project: Option<ProjectId> = args.opt_id("project_id", "project")?;
+    let label = args.opt_str("label");
+    match (task, project, label) {
+        (Some(id), None, None) => Ok(Some((BlockSubject::Task { id }, None))),
+        (None, Some(id), None) => Ok(Some((BlockSubject::Project { id }, None))),
+        (None, None, Some(text)) => Ok(Some((BlockSubject::Adhoc, Some(text.to_string())))),
+        (None, None, None) => Ok(None),
+        _ => Err(args.bad("give only one of `task_id`, `project_id` or `label`")),
+    }
+}
+
+/// What a block's subject is called: the task's title, the project's name,
+/// or -- for an ad-hoc block -- its own label. Resolved eagerly, before a
+/// block is built or changed, so the reply can say what the time is for and
+/// so a subject naming a task or project that does not exist fails here
+/// rather than becoming an hour against nothing.
+///
+/// `describe_delete_time_block` asks the same question about a block that
+/// may already be in that state and settles for silence; this always either
+/// answers or fails, which is the right trade for a call still choosing
+/// what to build.
+fn subject_name(
+    ctx: &ToolContext<'_>,
+    subject: &BlockSubject,
+    label: Option<&str>,
+) -> Result<String> {
+    Ok(match subject {
+        BlockSubject::Task { id } => ctx.vault.task(*id)?.title,
+        BlockSubject::Project { id } => ctx.vault.project(*id)?.name,
+        BlockSubject::Adhoc => label.unwrap_or_default().to_string(),
+    })
+}
+
+/// The absolute instants `start`/`end` resolve to on `date`, in zone `tz` --
+/// shared by `block_from_args` and `apply_update_block_args` once each has
+/// worked out which day and which two clock times actually apply.
+///
+/// Local wall-clock times, resolved in the person's zone. A block is stored
+/// as two absolute instants -- so that durations and overlaps are
+/// unambiguous -- but "two till three" means two till three where they are
+/// sitting, not in UTC.
+fn block_timestamps(
+    args: &Args<'_>,
+    tz: &str,
+    date: jiff::civil::Date,
+    start: jiff::civil::Time,
+    end: jiff::civil::Time,
+) -> Result<(jiff::Timestamp, jiff::Timestamp)> {
+    let zone = jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC);
+    let start_ts = date
+        .at(start.hour(), start.minute(), 0, 0)
+        .to_zoned(zone.clone())
+        .map_err(|e| args.bad(format!("{date} {start} does not exist in {tz}: {e}")))?
+        .timestamp();
+    let end_ts = date
+        .at(end.hour(), end.minute(), 0, 0)
+        .to_zoned(zone)
+        .map_err(|e| args.bad(format!("{date} {end} does not exist in {tz}: {e}")))?
+        .timestamp();
+    if end_ts <= start_ts {
+        return Err(args.bad("`end_time` must be after `start_time`"));
+    }
+    Ok((start_ts, end_ts))
+}
+
 /// Everything `create_time_block` does to build the record, without saving
 /// it -- the half `run_create_block` and `build_create_block` share. Returns
 /// the block and the name of what it is for, which both the plain reply and
@@ -186,27 +285,9 @@ fn block_from_args(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<(TimeBlock,
     // reading of the description: a block for both a task and a project is
     // not a thing this domain has, and silently preferring one would put the
     // time against something nobody chose.
-    let task: Option<TaskId> = args.opt_id("task_id", "task")?;
-    let project: Option<ProjectId> = args.opt_id("project_id", "project")?;
-    let label = args.opt_str("label");
-    let (subject, label) = match (task, project, label) {
-        (Some(id), None, None) => (BlockSubject::Task { id }, None),
-        (None, Some(id), None) => (BlockSubject::Project { id }, None),
-        (None, None, Some(text)) => (BlockSubject::Adhoc, Some(text)),
-        (None, None, None) => {
-            return Err(args.bad("give one of `task_id`, `project_id` or `label`"));
-        }
-        _ => return Err(args.bad("give only one of `task_id`, `project_id` or `label`")),
-    };
-
-    // Named before the block is built, so the reply can say what the time is
-    // for -- and so a block against a task that does not exist fails here
-    // rather than becoming an hour against nothing.
-    let name = match &subject {
-        BlockSubject::Task { id } => ctx.vault.task(*id)?.title,
-        BlockSubject::Project { id } => ctx.vault.project(*id)?.name,
-        BlockSubject::Adhoc => label.unwrap_or_default().to_string(),
-    };
+    let (subject, label) = subject_from_args(args)?
+        .ok_or_else(|| args.bad("give one of `task_id`, `project_id` or `label`"))?;
+    let name = subject_name(ctx, &subject, label.as_deref())?;
 
     let kind = match args.opt_str("kind") {
         Some("actual") => BlockKind::Actual,
@@ -216,24 +297,7 @@ fn block_from_args(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<(TimeBlock,
         }
     };
 
-    // Local wall-clock times, resolved in the person's zone. A block is
-    // stored as two absolute instants -- so that durations and overlaps are
-    // unambiguous -- but "two till three" means two till three where they
-    // are sitting, not in UTC.
-    let zone = jiff::tz::TimeZone::get(ctx.tz).unwrap_or(jiff::tz::TimeZone::UTC);
-    let start_ts = date
-        .at(start.hour(), start.minute(), 0, 0)
-        .to_zoned(zone.clone())
-        .map_err(|e| args.bad(format!("{date} {start} does not exist in {}: {e}", ctx.tz)))?
-        .timestamp();
-    let end_ts = date
-        .at(end.hour(), end.minute(), 0, 0)
-        .to_zoned(zone)
-        .map_err(|e| args.bad(format!("{date} {end} does not exist in {}: {e}", ctx.tz)))?
-        .timestamp();
-    if end_ts <= start_ts {
-        return Err(args.bad("`end_time` must be after `start_time`"));
-    }
+    let (start_ts, end_ts) = block_timestamps(args, ctx.tz, date, start, end)?;
     let minutes = u32::try_from((end_ts.as_second() - start_ts.as_second()) / 60).unwrap_or(0);
 
     let mut block = TimeBlock::new(subject, start_ts, minutes, ctx.tz);
@@ -303,6 +367,96 @@ fn clock(args: &Args<'_>, key: &str) -> Result<jiff::civil::Time> {
         // parser wants seconds, so the common form is tried with them added.
         .or_else(|_| format!("{}:00", raw.trim()).parse::<jiff::civil::Time>())
         .map_err(|_| args.bad(format!("`{key}` must be a time like 09:30, got {raw:?}")))
+}
+
+/// Everything `update_time_block` does to the loaded record, without saving
+/// it -- the half `run_update_block` and `build_update_block` share, on the
+/// same terms `apply_update_routine_args` already keeps for a routine. Only
+/// a field actually named in `args` changes; a schedule is one pair of
+/// instants, though, so naming any one of `date`, `start_time` or
+/// `end_time` means re-deriving both -- the two left unsaid are read back
+/// off the block exactly as it already was, so omitting all three leaves it
+/// exactly where it was. Returns the block and the name of what it is for:
+/// the new one, when the subject changed, otherwise the one it already had.
+fn apply_update_block_args(
+    ctx: &ToolContext<'_>,
+    args: &Args<'_>,
+    mut block: TimeBlock,
+) -> Result<(TimeBlock, String)> {
+    let name = match subject_from_args(args)? {
+        Some((subject, label)) => {
+            let name = subject_name(ctx, &subject, label.as_deref())?;
+            block.subject = subject;
+            block.title = label.unwrap_or_default();
+            name
+        }
+        None => subject_name(ctx, &block.subject, Some(block.title.as_str()))?,
+    };
+
+    // Only a call that names a day or a time moves the block. Recomputing
+    // the instants from unchanged inputs would not be a no-op for a block
+    // filed in another zone -- one planned while travelling -- since its
+    // wall-clock times would be re-read in the person's zone today.
+    let retimed = ["date", "start_time", "end_time"].iter().any(|k| args.opt_str(k).is_some());
+    if retimed {
+        let zone = jiff::tz::TimeZone::get(ctx.tz).unwrap_or(jiff::tz::TimeZone::UTC);
+        let date = args.opt_date("date")?.unwrap_or(block.local_date);
+        let start = match args.opt_str("start_time") {
+            Some(_) => clock(args, "start_time")?,
+            None => block.start.to_zoned(zone.clone()).time(),
+        };
+        let end = match args.opt_str("end_time") {
+            Some(_) => clock(args, "end_time")?,
+            None => block.end.to_zoned(zone).time(),
+        };
+        let (start_ts, end_ts) = block_timestamps(args, ctx.tz, date, start, end)?;
+        block.start = start_ts;
+        block.end = end_ts;
+        block.local_date = date;
+        block.tz = ctx.tz.to_string();
+    }
+
+    if let Some(purpose) = resolve_purpose(ctx, args)? {
+        block.purpose = Some(purpose);
+    }
+
+    // `TimeBlock` carries no `Timestamped` impl of its own to `touch()` --
+    // unlike a task or an item, nothing else stamps this for a plain
+    // `save_block`, so it is done by hand here.
+    block.updated_at = jiff::Timestamp::now();
+    Ok((block, name))
+}
+
+fn run_update_block(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let block: TimeBlock = load_by_id(args, "block_id", "time block", |id| ctx.vault.block(id))?;
+    let (block, name) = apply_update_block_args(ctx, args, block)?;
+    let date = block.local_date;
+    ctx.vault.save_block(&block)?;
+    done("updated", "time block", &format!("{name} on {date}"), block.id.to_string())
+}
+
+fn build_update_block(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
+    let block: TimeBlock = load_by_id(args, "block_id", "time block", |id| ctx.vault.block(id))?;
+    let expected_updated_at = block.updated_at;
+    let (block, name) = apply_update_block_args(ctx, args, block)?;
+    let id = block.id;
+    let about = task_about(&block).or(Some(About { kind: AboutKind::Block, id: id.to_string() }));
+    let zone = jiff::tz::TimeZone::get(ctx.tz).unwrap_or(jiff::tz::TimeZone::UTC);
+    let start = block.start.to_zoned(zone.clone()).time();
+    let end = block.end.to_zoned(zone).time();
+    let caption = format!(
+        "Move block to {} {:02}:{:02}\u{2013}{:02}:{:02}: {name}",
+        weekday_abbrev(block.local_date),
+        start.hour(),
+        start.minute(),
+        end.hour(),
+        end.minute(),
+    );
+    Ok(Built {
+        payload: Payload::Replace { record: ProposedRecord::Block(block), expected_updated_at },
+        caption,
+        about,
+    })
 }
 
 fn run_delete_block(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {

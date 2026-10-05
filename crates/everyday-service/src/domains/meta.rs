@@ -474,8 +474,9 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
 fn mail_tool_change_kind(name: &str) -> Option<(Kind, Op)> {
     match name {
         "draft_reply" | "draft_message" => Some((Kind::Draft, Op::Created)),
-        "update_draft" | "send_draft" => Some((Kind::Draft, Op::Updated)),
-        "mark_read" | "label_thread" | "move_thread" | "snooze_thread" | "archive_thread"
+        "update_draft" | "send_draft" | "discard_draft" => Some((Kind::Draft, Op::Updated)),
+        "mark_read" | "mark_unread" | "star_thread" | "unstar_thread" | "label_thread"
+        | "move_thread" | "snooze_thread" | "unsnooze_thread" | "archive_thread"
         | "trash_thread" => Some((Kind::Thread, Op::Updated)),
         _ => None,
     }

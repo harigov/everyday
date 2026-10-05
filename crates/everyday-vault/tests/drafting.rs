@@ -13,6 +13,7 @@
 mod support;
 
 use everyday_core::account::{Account, Provider};
+use everyday_core::agent::Skill;
 use everyday_core::agent::tools::{self, Drafting, Effect};
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ProposalId, ThreadId};
 use everyday_core::mail::{Address, CategorySource, Mailbox, MailboxRole, Message, MessageFlags};
@@ -38,6 +39,7 @@ struct Fixtures {
     memory: Memory,
     routine: Routine,
     note: Note,
+    skill: Skill,
     account_id: AccountId,
     message_id: MailMessageId,
     /// An existing, editable draft with recipients -- `send_draft`'s target.
@@ -121,6 +123,11 @@ fn seed(v: &Vault) -> Fixtures {
     let note = Note::written("Ideas", "Some notes worth keeping");
     v.save_note(&note, None).unwrap();
 
+    let mut skill = Skill::new("Plan a trip");
+    skill.description = "Use when asked to plan a trip or a multi-day journey.".into();
+    skill.instructions = "Check the calendar, check the weather, propose blocks.".into();
+    v.save_skill(&skill).unwrap();
+
     let account = seed_account(v);
     let inbox = seed_mailbox(v, account.id, MailboxRole::Inbox);
     let message_id = seed_message(v, account.id, inbox);
@@ -142,7 +149,17 @@ fn seed(v: &Vault) -> Fixtures {
     .expect("seeding the send_draft target");
     let draft_id = drafted["id"].as_str().unwrap().to_string();
 
-    Fixtures { task, block, memory, routine, note, account_id: account.id, message_id, draft_id }
+    Fixtures {
+        task,
+        block,
+        memory,
+        routine,
+        note,
+        skill,
+        account_id: account.id,
+        message_id,
+        draft_id,
+    }
 }
 
 // ---- counting every domain table -------------------------------------------
@@ -157,6 +174,7 @@ struct Counts {
     memories: usize,
     routines: usize,
     notes: usize,
+    skills: usize,
     entries: usize,
     items: usize,
     goals: usize,
@@ -187,6 +205,7 @@ fn counts(v: &Vault) -> Counts {
         memories: v.memories().unwrap().len(),
         routines: v.routines().unwrap().len(),
         notes: v.notes(&everyday_core::store::notes::NoteQuery::default()).unwrap().len(),
+        skills: v.skills().unwrap().len(),
         entries: v.entries(&everyday_core::store::EntryQuery::default()).unwrap().len(),
         items: v.items(&everyday_core::store::library::ItemQuery::default()).unwrap().len(),
         goals: v.goals(&everyday_core::store::purpose::GoalQuery::default()).unwrap().len(),
@@ -213,7 +232,12 @@ const REFUSED_WHILE_DRAFTING: &[&str] = &[
     "create_item",
     "update_item",
     "delete_item",
+    "log_item",
+    "delete_log",
     "log_reading",
+    "create_tracker",
+    "update_reading",
+    "delete_reading",
     // Roles and goals are the shape of a life, set up deliberately and
     // rarely -- not something a dream drafts on somebody's behalf. A target
     // is part of that: how much of a goal is wanted is theirs to say.
@@ -235,13 +259,29 @@ const REFUSED_WHILE_DRAFTING: &[&str] = &[
     // outright: nobody is there to say yes to a mailbox being reorganised
     // by a dream.
     "update_draft",
+    "discard_draft",
     "mark_read",
+    "mark_unread",
+    "star_thread",
+    "unstar_thread",
     "label_thread",
     "move_thread",
     "snooze_thread",
+    "unsnooze_thread",
     "archive_thread",
     "trash_thread",
     "respond_to_invite",
+    // Answering a proposal is the person's decision, and a dream answering
+    // its own would be the one loop with nobody in it.
+    "accept_proposal",
+    "decline_proposal",
+    // Agreeing that an inferred memory is right is the person's act; a dream
+    // says "still true" through its "Confirmed memories:" section instead,
+    // which moves `last_supported` and leaves the origin alone.
+    "confirm_memory",
+    // Who somebody is, typed in Settings -- changed when they say so, never
+    // on a dream's guess.
+    "update_profile",
 ];
 
 /// The two tools that write a real `Draft` while drafting and gain a linked
@@ -251,10 +291,11 @@ const MAIL_DRAFT_WRITERS: &[&str] = &["draft_reply", "draft_message"];
 fn expected_kind(tool: &str) -> ProposalKind {
     match tool {
         "create_task" | "update_task" | "delete_task" => ProposalKind::Task,
-        "create_time_block" | "delete_time_block" => ProposalKind::Block,
+        "create_time_block" | "update_time_block" | "delete_time_block" => ProposalKind::Block,
         "remember" | "forget" => ProposalKind::Memory,
         "create_routine" | "update_routine" | "delete_routine" => ProposalKind::Routine,
         "create_note" | "update_note" | "delete_note" => ProposalKind::Note,
+        "create_skill" | "update_skill" | "delete_skill" => ProposalKind::Skill,
         "send_draft" => ProposalKind::Mail,
         other => panic!("no expected proposal kind recorded for {other}"),
     }
@@ -274,6 +315,11 @@ fn args_for(f: &Fixtures, tool: &str) -> Value {
             "end_time": "10:00",
             "task_id": f.task.id.to_string(),
         }),
+        "update_time_block" => json!({
+            "block_id": f.block.id.to_string(),
+            "start_time": "10:00",
+            "end_time": "11:00",
+        }),
         "delete_time_block" => json!({ "block_id": f.block.id.to_string() }),
         "remember" => json!({ "fact": "Prefers tea to coffee" }),
         "forget" => json!({ "memory_id": f.memory.id.to_string() }),
@@ -285,6 +331,13 @@ fn args_for(f: &Fixtures, tool: &str) -> Value {
         "create_note" => json!({ "body": "Something worth writing down" }),
         "update_note" => json!({ "note_id": f.note.id.to_string(), "title": "Renamed" }),
         "delete_note" => json!({ "note_id": f.note.id.to_string() }),
+        "create_skill" => json!({
+            "name": "Learn a new process",
+            "description": "Use when asked to learn a new process.",
+            "instructions": "Write down the steps.",
+        }),
+        "update_skill" => json!({ "skill_id": f.skill.id.to_string(), "name": "Renamed" }),
+        "delete_skill" => json!({ "skill_id": f.skill.id.to_string() }),
         "send_draft" => json!({ "draft_id": f.draft_id }),
         "draft_reply" => {
             json!({ "message_id": f.message_id.to_string(), "body_html": "<p>Sure, works for me</p>" })
@@ -371,6 +424,7 @@ fn every_non_read_tool_is_either_proposable_or_explicitly_refused_while_drafting
     assert_eq!(before.memories, after.memories, "no memory was ever actually written");
     assert_eq!(before.routines, after.routines, "no routine was ever actually written");
     assert_eq!(before.notes, after.notes, "no note was ever actually written");
+    assert_eq!(before.skills, after.skills, "no skill was ever actually written");
     assert_eq!(before.entries, after.entries, "the journal is untouched");
     assert_eq!(before.items, after.items, "the library is untouched");
     assert_eq!(before.goals, after.goals, "roles and goals are untouched");
@@ -623,6 +677,35 @@ fn update_routine_proposes_a_replace_carrying_the_loaded_updated_at() {
         f.routine.name,
         "the routine itself never moved"
     );
+}
+
+#[test]
+fn update_skill_proposes_a_replace_carrying_the_loaded_updated_at() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(dir.path());
+    let f = seed(&v);
+    let drafting_ctx = ctx_drafting(&v, Drafting::default());
+
+    let out = tools::dispatch(
+        &drafting_ctx,
+        "update_skill",
+        &json!({ "skill_id": f.skill.id.to_string(), "name": "Renamed" }),
+    )
+    .unwrap();
+    let id: ProposalId = out["id"].as_str().unwrap().parse().unwrap();
+    let p = v.proposal(id).unwrap();
+    match p.payload {
+        Payload::Replace { record: ProposedRecord::Skill(s), expected_updated_at } => {
+            assert_eq!(s.name, "Renamed");
+            assert_eq!(s.id, f.skill.id);
+            assert_eq!(expected_updated_at, f.skill.updated_at);
+        }
+        other => panic!("expected a Replace of a skill, got {other:?}"),
+    }
+
+    // And the skill itself never moved.
+    let still_there = v.skills().unwrap().into_iter().find(|s| s.id == f.skill.id).unwrap();
+    assert_eq!(still_there.name, f.skill.name);
 }
 
 // ---- (f) remember while drafting builds an Inferred memory ---------------

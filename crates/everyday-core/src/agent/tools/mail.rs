@@ -138,6 +138,31 @@ pub(super) static TOOLS: &[Tool] = &[
         run_search_mail
     ),
     tool!(
+        "find_address",
+        Read,
+        Mail,
+        schema(
+            vec![
+                (
+                    "query",
+                    text(
+                        "A name or part of an email address to look for, such as \"Sarah\" \
+                         or \"sarah@\"."
+                    )
+                ),
+                ("limit", number("Most addresses to return. Defaults to 10, capped at 25.")),
+            ],
+            &["query"]
+        ),
+        "Turn a name into the email address or addresses the person has actually exchanged \
+         mail with, so draft_message can be addressed correctly rather than guessed from \
+         memory. Matches names and addresses across every account, ranked by how often the \
+         person writes to them and then by how often they hear back. Answers with nothing \
+         for someone with no mail history here \u{2014} this is not a directory lookup, and \
+         it cannot find an address nobody here has ever used.",
+        run_find_address
+    ),
+    tool!(
         "list_threads",
         Read,
         Mail,
@@ -239,6 +264,23 @@ pub(super) static TOOLS: &[Tool] = &[
         run_update_draft
     ),
     tool!(
+        "discard_draft",
+        Write,
+        Mail,
+        schema(
+            vec![(
+                "draft_id",
+                text("Id of an existing draft from draft_reply, draft_message or update_draft.")
+            )],
+            &["draft_id"]
+        ),
+        "Throw away a draft; unlike update_draft, there is no way to get it back once this \
+         runs. Refused unless you wrote the draft yourself \u{2014} a draft the person wrote \
+         by hand, or one a different caller wrote, is left for them to discard. If the draft \
+         had already reached the server, the copy there is removed too.",
+        run_discard_draft
+    ),
+    tool!(
         "mark_read",
         Write,
         Mail,
@@ -251,6 +293,30 @@ pub(super) static TOOLS: &[Tool] = &[
         ),
         "Mark a thread read or unread.",
         run_mark_read
+    ),
+    tool!(
+        "mark_unread",
+        Write,
+        Mail,
+        schema(vec![("thread_id", text("Id from list_threads or search_mail."))], &["thread_id"]),
+        "Mark a thread unread \u{2014} the inverse of mark_read.",
+        run_mark_unread
+    ),
+    tool!(
+        "star_thread",
+        Write,
+        Mail,
+        schema(vec![("thread_id", text("Id from list_threads or search_mail."))], &["thread_id"]),
+        "Star a thread, so it stands out in a starred view.",
+        run_star_thread
+    ),
+    tool!(
+        "unstar_thread",
+        Write,
+        Mail,
+        schema(vec![("thread_id", text("Id from list_threads or search_mail."))], &["thread_id"]),
+        "Remove the star from a thread \u{2014} the inverse of star_thread.",
+        run_unstar_thread
     ),
     tool!(
         "label_thread",
@@ -300,6 +366,15 @@ pub(super) static TOOLS: &[Tool] = &[
         ),
         "Hide a thread until a later time, when it returns to the inbox on its own.",
         run_snooze_thread
+    ),
+    tool!(
+        "unsnooze_thread",
+        Write,
+        Mail,
+        schema(vec![("thread_id", text("Id from list_threads or search_mail."))], &["thread_id"]),
+        "Bring a snoozed thread back to the inbox early \u{2014} the inverse of \
+         snooze_thread.",
+        run_unsnooze_thread
     ),
     tool!(
         "archive_thread",
@@ -512,13 +587,14 @@ fn readable_account_ids(ctx: &ToolContext<'_>, permission: Permission) -> Vec<Ac
 /// -- see the plan's table, where its own column reads "\u{2014}".
 fn permission_for(tool: &str) -> Option<Permission> {
     match tool {
-        "search_mail" | "list_threads" | "read_thread" => Some(Permission::Read),
+        "search_mail" | "list_threads" | "read_thread" | "find_address" => Some(Permission::Read),
         "draft_reply" | "draft_message" => Some(Permission::Draft),
-        "update_draft" | "mark_read" | "label_thread" | "move_thread" | "snooze_thread" => {
+        "update_draft" | "mark_read" | "mark_unread" | "star_thread" | "unstar_thread"
+        | "label_thread" | "move_thread" | "snooze_thread" | "unsnooze_thread" => {
             Some(Permission::Edit)
         }
         "archive_thread" => Some(Permission::Archive),
-        "trash_thread" => Some(Permission::Remove),
+        "trash_thread" | "discard_draft" => Some(Permission::Remove),
         "send_draft" | "respond_to_invite" => Some(Permission::Send),
         _ => None,
     }
@@ -884,6 +960,69 @@ fn run_read_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     }))
 }
 
+/// [`run_find_address`]'s default result count, matching
+/// `suggest_addresses`'s own `default_suggest_limit`.
+const ADDRESS_SUGGEST_DEFAULT: u32 = 10;
+/// [`run_find_address`]'s hard cap.
+const ADDRESS_SUGGEST_CAP: u32 = 25;
+
+fn run_find_address(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let query = args.str("query")?;
+    let limit = args.opt_u32("limit").unwrap_or(ADDRESS_SUGGEST_DEFAULT);
+    let limit = limit.clamp(1, ADDRESS_SUGGEST_CAP) as usize;
+    if readable_account_ids(ctx, Permission::Read).is_empty() {
+        return Ok(json!({
+            "count": 0,
+            "addresses": [],
+            "note": "no mail account you may read right now",
+        }));
+    }
+    // Tolerant of a missing or unreadable row on the same terms
+    // `ContactIndex::load` already is: a derived index is never worth
+    // refusing the call over, only worth answering with nothing from.
+    let book = ctx.vault.mail_contacts().unwrap_or_default();
+    let rows: Vec<Value> = suggest_contacts(&book, query, limit)
+        .into_iter()
+        .map(|a| json!({ "name": a.name, "email": a.email }))
+        .collect();
+    Ok(json!({ "count": rows.len(), "addresses": rows }))
+}
+
+/// Match `query` against every contact's name and address, case-insensitively,
+/// ranked the way the plan's own "how often you write to them" ordering asks:
+/// sent-to first, received-from second, then alphabetically so a tie is
+/// stable rather than however [`crate::mail::ContactBook`] happens to have
+/// stored them.
+///
+/// A plainer, dependency-free cousin of
+/// `everyday_service::mailsync::contacts::ContactIndex::suggest`'s own
+/// fuzzy, typo-tolerant match: `frizbee` is a dependency of
+/// `everyday-service`, not of this crate (see [`run_find_address`]'s own
+/// tool description and this module's docs for why a core tool's reach
+/// stops at what `everyday-core` itself can link against), so the best a
+/// tool reached from here can do is a substring match. That is still enough
+/// to turn "Sarah" into `sarah@example.com` — just not enough to forgive a
+/// typo the way the compose window's own "To" field already does.
+fn suggest_contacts(book: &crate::mail::ContactBook, query: &str, limit: usize) -> Vec<Address> {
+    let needle = query.trim().to_lowercase();
+    let mut matches: Vec<_> = book
+        .contacts
+        .iter()
+        .filter(|c| c.name.to_lowercase().contains(&needle) || c.address.contains(&needle))
+        .collect();
+    matches.sort_by(|a, b| {
+        b.sent_to
+            .cmp(&a.sent_to)
+            .then(b.received_from.cmp(&a.received_from))
+            .then(a.address.cmp(&b.address))
+    });
+    matches
+        .into_iter()
+        .take(limit)
+        .map(|c| Address::new(c.name.clone(), c.address.clone()))
+        .collect()
+}
+
 // ---- drafts ---------------------------------------------------------------
 
 fn run_draft_reply(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -1029,6 +1168,60 @@ fn update_addresses(args: &Args<'_>, key: &str) -> Result<Option<Vec<Address>>> 
         return Ok(None);
     }
     Ok(Some(parse_addresses(args, key)?))
+}
+
+fn run_discard_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let draft_id: DraftId = args.id("draft_id", "draft")?;
+    let draft = ctx.vault.draft(draft_id)?;
+    let account = ctx.vault.account(draft.account_id)?;
+    require_permission(ctx, &account, Permission::Remove, "discard_draft")?;
+    only_own_draft(ctx, &draft, "discard_draft")?;
+
+    let thread_id = draft_thread_id(ctx, &draft);
+    let (draft, op) = ctx.vault.discard_draft(draft_id)?;
+    // Matches `domains::mail::discard_draft`'s own choice: wake the account
+    // task only when discarding actually left an `OpKind::DiscardDraft` to
+    // drain -- a draft that never reached the server before this call has
+    // nothing for the account task to do.
+    if op.is_some() {
+        after_write(ctx, account.id);
+    }
+    draft_result("discarded", &draft, thread_id)
+}
+
+/// Refuse to discard a draft this non-person caller did not itself write.
+///
+/// `discard_draft` stays [`super::Effect::Write`] rather than
+/// [`super::Effect::Destructive`]: the naming rule behind
+/// `agent::tools::every_tool_that_deletes_says_so` ties `Destructive` to a
+/// `delete_`-prefixed tool name (or `forget`), and "discard" is the domain's
+/// own word for this everywhere else it appears --
+/// [`crate::mail::DraftState::Discarded`], [`crate::mail::OpKind::DiscardDraft`],
+/// the compose window's own "Discard" button -- so renaming the tool just to
+/// fit that test would be the tail wagging the dog. The same protection
+/// [`super::Effect::Destructive`] would have bought is built here instead,
+/// in the one place it actually matters: `update_draft` leaves a draft just
+/// as recoverable as it found it -- the person can still read and correct
+/// whatever an agent wrote -- but [`crate::vault::Vault::discard_draft`] has
+/// no way back, which is exactly the asymmetry that matters. So a non-person
+/// caller may discard only a draft carrying its own [`Origin`]: a draft the
+/// person wrote by hand, or one a different caller wrote, is left for them
+/// to discard. The vault's owner acting directly is unrestricted, the same
+/// "no restriction at all" every other tool in this file gives them.
+fn only_own_draft(ctx: &ToolContext<'_>, draft: &Draft, tool: &str) -> Result<()> {
+    let Some(agent) = agent_caller(ctx.caller.as_ref()) else { return Ok(()) };
+    let mine = match agent {
+        AgentCaller::Assistant => matches!(draft.origin, Origin::Assistant { .. }),
+        AgentCaller::Mcp => matches!(draft.origin, Origin::Mcp { .. }),
+    };
+    if mine {
+        return Ok(());
+    }
+    Err(Error::Invalid(format!(
+        "{tool}: this draft was not written by {who}, so {who} may not discard it. Ask the \
+         person to discard it themselves, or draft a fresh one instead.",
+        who = who_word(agent)
+    )))
 }
 
 /// Who a non-person [`Origin`] reads as, in a sentence a person reads on a
@@ -1326,6 +1519,39 @@ fn run_mark_read(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     done_thread(if read { "marked read" } else { "marked unread" }, &thread, thread_id)
 }
 
+fn run_mark_unread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let thread_id: ThreadId = args.id("thread_id", "thread")?;
+    let (thread, account) = thread_and_account(ctx, thread_id)?;
+    require_permission(ctx, &account, Permission::Edit, "mark_unread")?;
+    let origin = origin_of(ctx);
+    enqueue_gate(ctx, &origin)?;
+    ctx.vault.apply_thread_ops(&[thread_id], OpKind::MarkUnread, origin)?;
+    after_write(ctx, account.id);
+    done_thread("marked unread", &thread, thread_id)
+}
+
+fn run_star_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let thread_id: ThreadId = args.id("thread_id", "thread")?;
+    let (thread, account) = thread_and_account(ctx, thread_id)?;
+    require_permission(ctx, &account, Permission::Edit, "star_thread")?;
+    let origin = origin_of(ctx);
+    enqueue_gate(ctx, &origin)?;
+    ctx.vault.apply_thread_ops(&[thread_id], OpKind::Star, origin)?;
+    after_write(ctx, account.id);
+    done_thread("starred", &thread, thread_id)
+}
+
+fn run_unstar_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let thread_id: ThreadId = args.id("thread_id", "thread")?;
+    let (thread, account) = thread_and_account(ctx, thread_id)?;
+    require_permission(ctx, &account, Permission::Edit, "unstar_thread")?;
+    let origin = origin_of(ctx);
+    enqueue_gate(ctx, &origin)?;
+    ctx.vault.apply_thread_ops(&[thread_id], OpKind::Unstar, origin)?;
+    after_write(ctx, account.id);
+    done_thread("unstarred", &thread, thread_id)
+}
+
 fn run_label_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let thread_id: ThreadId = args.id("thread_id", "thread")?;
     let (thread, account) = thread_and_account(ctx, thread_id)?;
@@ -1366,6 +1592,22 @@ fn run_snooze_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     ctx.vault.apply_thread_ops(&[thread_id], OpKind::Snooze { until }, origin)?;
     after_write(ctx, account.id);
     done_thread("snoozed", &thread, thread_id)
+}
+
+/// No [`Origin`], no [`enqueue_gate`] and no [`after_write`] -- unlike every
+/// other write in this section, this one never enqueues an [`crate::mail::Op`]
+/// at all. [`crate::vault::Vault::release_snooze`]'s own doc explains why:
+/// snooze never told the server anything to begin with, so there is nothing
+/// for the server to be told is over either, and nothing for an account
+/// task's sync pass to drain. Matches `domains::mail::unsnooze`, the
+/// person's own equivalent, exactly -- it skips `Service::notify_mail_write`
+/// for the same reason.
+fn run_unsnooze_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let thread_id: ThreadId = args.id("thread_id", "thread")?;
+    let (thread, account) = thread_and_account(ctx, thread_id)?;
+    require_permission(ctx, &account, Permission::Edit, "unsnooze_thread")?;
+    ctx.vault.release_snooze(thread_id)?;
+    done_thread("unsnoozed", &thread, thread_id)
 }
 
 fn run_archive_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -1481,4 +1723,170 @@ fn run_respond_to_invite(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value
         map.insert("thread_id".into(), json!(message.thread_id.to_string()));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::id::ConversationId;
+    use crate::mail::{ContactBook, MailContact};
+    use crate::vault::{Vault, VaultConfig};
+
+    /// A vault with nothing in it beyond what [`crate::testing::MemStore`]
+    /// carries -- no mail backend at all, since that store only ever
+    /// implements `JournalStore` (see its own module docs). Good enough for
+    /// the tests below, which only ever read [`ToolContext::caller`] or call
+    /// a pure function -- never a method that actually asks the vault for
+    /// an account or a thread.
+    fn test_vault() -> (Vault, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(
+            dir.path(),
+            VaultConfig {
+                name: "Test".into(),
+                backend: "memory".into(),
+                password: None,
+                ..Default::default()
+            },
+            crate::testing::registry(),
+        )
+        .unwrap();
+        (v, dir)
+    }
+
+    fn ctx_with(vault: &Vault, caller: Option<Caller>) -> ToolContext<'_> {
+        let base = ToolContext::new(vault, jiff::civil::Date::constant(2026, 9, 16), "UTC");
+        match caller {
+            Some(c) => base.with_caller(c),
+            None => base,
+        }
+    }
+
+    // ---- the permission table ---------------------------------------------
+
+    #[test]
+    fn permission_for_covers_every_new_tool() {
+        assert_eq!(permission_for("mark_unread"), Some(Permission::Edit));
+        assert_eq!(permission_for("star_thread"), Some(Permission::Edit));
+        assert_eq!(permission_for("unstar_thread"), Some(Permission::Edit));
+        assert_eq!(permission_for("unsnooze_thread"), Some(Permission::Edit));
+        assert_eq!(permission_for("discard_draft"), Some(Permission::Remove));
+        assert_eq!(permission_for("find_address"), Some(Permission::Read));
+    }
+
+    #[test]
+    fn every_new_tool_is_in_the_catalogue_with_a_usable_schema() {
+        for name in [
+            "mark_unread",
+            "star_thread",
+            "unstar_thread",
+            "unsnooze_thread",
+            "discard_draft",
+            "find_address",
+        ] {
+            let tool = TOOLS.iter().find(|t| t.name == name);
+            assert!(tool.is_some(), "{name} is missing from TOOLS");
+            let tool = tool.unwrap();
+            assert!(!tool.description.trim().is_empty(), "{name} has no description");
+            let schema = tool.parameters();
+            assert_eq!(schema["type"], "object", "{name} has a non-object schema");
+        }
+    }
+
+    // ---- find_address, and the plain substring match behind it -----------
+
+    fn contact(address: &str, name: &str, sent_to: u32, received_from: u32) -> MailContact {
+        MailContact { address: address.into(), name: name.into(), sent_to, received_from }
+    }
+
+    #[test]
+    fn suggest_contacts_matches_name_or_address_case_insensitively() {
+        let book = ContactBook {
+            contacts: vec![
+                contact("sarah@example.com", "Sarah Lee", 3, 1),
+                contact("other@example.com", "Someone Else", 0, 0),
+            ],
+        };
+        let found = suggest_contacts(&book, "sarah", 10);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].email, "sarah@example.com");
+
+        let found = suggest_contacts(&book, "SARAH@EXAMPLE", 10);
+        assert_eq!(found.len(), 1, "matches the address too, case-insensitively");
+    }
+
+    #[test]
+    fn suggest_contacts_ranks_by_how_often_you_write_to_them() {
+        let book = ContactBook {
+            contacts: vec![
+                contact("alan@example.com", "Alan", 1, 0),
+                contact("alice@example.com", "Alice", 5, 0),
+            ],
+        };
+        let found = suggest_contacts(&book, "al", 10);
+        assert_eq!(found[0].email, "alice@example.com", "written to more often, ranks first");
+    }
+
+    #[test]
+    fn suggest_contacts_respects_the_limit() {
+        let book = ContactBook {
+            contacts: (0..5).map(|i| contact(&format!("a{i}@example.com"), "A", 0, 0)).collect(),
+        };
+        assert_eq!(suggest_contacts(&book, "a", 2).len(), 2);
+    }
+
+    #[test]
+    fn suggest_contacts_answers_with_nothing_for_an_unknown_name() {
+        let book = ContactBook { contacts: vec![contact("sarah@example.com", "Sarah Lee", 3, 1)] };
+        assert!(suggest_contacts(&book, "zephyr", 10).is_empty());
+    }
+
+    // ---- discard_draft's origin check --------------------------------------
+
+    #[test]
+    fn only_own_draft_allows_the_assistant_its_own_drafts_and_refuses_the_rest() {
+        let (v, _dir) = test_vault();
+        let caller = Caller::Assistant { conversation: ConversationId::new() };
+        let ctx = ctx_with(&v, Some(caller));
+
+        let own = Draft::new(
+            AccountId::new(),
+            "me@example.com",
+            Origin::Assistant { conversation: "some-other-conversation".into() },
+        );
+        assert!(
+            only_own_draft(&ctx, &own, "discard_draft").is_ok(),
+            "the assistant wrote this one, even in a different conversation"
+        );
+
+        let theirs = Draft::new(AccountId::new(), "me@example.com", Origin::Person);
+        let err = only_own_draft(&ctx, &theirs, "discard_draft").unwrap_err().to_string();
+        assert!(err.contains("not written by"), "{err}");
+    }
+
+    #[test]
+    fn only_own_draft_allows_mcp_its_own_drafts_and_refuses_the_rest() {
+        let (v, _dir) = test_vault();
+        let caller = Caller::Mcp { client: "claude".into() };
+        let ctx = ctx_with(&v, Some(caller));
+
+        let own =
+            Draft::new(AccountId::new(), "me@example.com", Origin::Mcp { client: "claude".into() });
+        assert!(only_own_draft(&ctx, &own, "discard_draft").is_ok());
+
+        let assistants = Draft::new(
+            AccountId::new(),
+            "me@example.com",
+            Origin::Assistant { conversation: "c".into() },
+        );
+        assert!(only_own_draft(&ctx, &assistants, "discard_draft").is_err());
+    }
+
+    #[test]
+    fn only_own_draft_is_unrestricted_for_the_vaults_owner() {
+        let (v, _dir) = test_vault();
+        let ctx = ctx_with(&v, None);
+        let draft = Draft::new(AccountId::new(), "me@example.com", Origin::Person);
+        assert!(only_own_draft(&ctx, &draft, "discard_draft").is_ok());
+    }
 }

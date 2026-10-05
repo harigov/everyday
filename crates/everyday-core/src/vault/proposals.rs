@@ -7,7 +7,7 @@ use super::Vault;
 use super::session::Domain;
 use crate::agent::MemoryOrigin;
 use crate::error::{Error, Result};
-use crate::id::{BlockId, MemoryId, NoteId, ProposalId, RoutineId, TaskId};
+use crate::id::{BlockId, MemoryId, NoteId, ProposalId, RoutineId, SkillId, TaskId};
 use crate::proposal::{
     DeclineReason, MAX_PENDING_PROPOSALS, Outcome, Payload, Proposal, ProposalKind, ProposedRecord,
 };
@@ -297,7 +297,7 @@ impl Vault {
                 self.check_purpose(b.purpose)?;
             }
             ProposedRecord::Note(n) => self.check_purpose(n.purpose)?,
-            ProposedRecord::Memory(_) | ProposedRecord::Routine(_) => {}
+            ProposedRecord::Memory(_) | ProposedRecord::Routine(_) | ProposedRecord::Skill(_) => {}
         }
         Ok(())
     }
@@ -327,6 +327,9 @@ impl Vault {
             }
             ProposedRecord::Routine(r) => self.routine(r.id).is_ok(),
             ProposedRecord::Note(n) => self.note(n.id).is_ok(),
+            ProposedRecord::Skill(s) => {
+                self.skills().is_ok_and(|ss| ss.iter().any(|x| x.id == s.id))
+            }
         }
     }
 
@@ -348,6 +351,13 @@ impl Vault {
                 self.routine(r.id).map(|x| x.updated_at).map_err(|_| gone())
             }
             ProposedRecord::Note(n) => self.note(n.id).map(|x| x.updated_at).map_err(|_| gone()),
+            ProposedRecord::Skill(s) => self
+                .skills()
+                .map_err(|_| gone())?
+                .into_iter()
+                .find(|x| x.id == s.id)
+                .map(|x| x.updated_at)
+                .ok_or_else(gone),
         }
     }
 
@@ -404,6 +414,10 @@ impl Vault {
                 n.updated_at = now;
                 self.overwrite_note(n)
             }
+            ProposedRecord::Skill(s) => {
+                s.updated_at = now;
+                self.save_skill(s)
+            }
         };
         result.map(|()| id).map_err(|e| e.to_string())
     }
@@ -445,6 +459,13 @@ impl Vault {
                 let note_id = NoteId::parse(id).map_err(|_| gone())?;
                 self.note(note_id).map_err(|_| gone())?;
                 self.delete_note(note_id).map_err(|e| e.to_string())?;
+            }
+            ProposalKind::Skill => {
+                let skill_id = SkillId::parse(id).map_err(|_| gone())?;
+                if !self.skills().is_ok_and(|ss| ss.iter().any(|s| s.id == skill_id)) {
+                    return Err(gone());
+                }
+                self.delete_skill(skill_id).map_err(|e| e.to_string())?;
             }
             ProposalKind::Mail => return Err("a mail proposal cannot delete anything".into()),
         }

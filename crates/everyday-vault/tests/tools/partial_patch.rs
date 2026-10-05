@@ -75,6 +75,10 @@ fn every_update_tool_is_covered_by_a_partial_patch_test() {
         "update_goal",
         "update_routine",
         "update_draft",
+        "update_time_block",
+        "update_skill",
+        "update_reading",
+        "update_profile",
     ];
     for tool in tools::catalog() {
         if tool.name.starts_with("update_") {
@@ -654,4 +658,197 @@ fn update_draft_touches_only_the_named_field() {
             d.body_html = "<p>Or Saturday?</p>".into();
         },
     );
+}
+
+#[test]
+fn update_time_block_touches_only_the_named_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let task = call(&vault, "create_task", serde_json::json!({ "title": "Order the timber" }));
+    call(
+        &vault,
+        "create_time_block",
+        serde_json::json!({
+            "date": "2026-09-09",
+            "start_time": "09:00",
+            "end_time": "10:00",
+            "task_id": task["id"],
+        }),
+    );
+    let block_id = call(
+        &vault,
+        "list_time_blocks",
+        serde_json::json!({ "from": "2026-09-09", "to": "2026-09-09" }),
+    )["blocks"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let bid: everyday_core::BlockId = block_id.parse().unwrap();
+    let mut expected = vault.block(bid).unwrap();
+
+    // Each check names one thing and copies across only the fields that
+    // thing is allowed to move; everything else must come back as it was.
+    let mut check =
+        |field: &str,
+         args: serde_json::Value,
+         apply: &mut dyn FnMut(&mut everyday_core::TimeBlock, &everyday_core::TimeBlock)| {
+            call(&vault, "update_time_block", args);
+            let after = vault.block(bid).unwrap();
+            apply(&mut expected, &after);
+            expected.updated_at = after.updated_at;
+            assert_eq!(after, expected, "naming only `{field}` must leave every other field alone");
+        };
+
+    check(
+        "start_time",
+        serde_json::json!({"block_id": block_id, "start_time": "08:30"}),
+        &mut |b, after| {
+            assert!(after.start < b.start, "the start moved earlier");
+            b.start = after.start;
+        },
+    );
+    check(
+        "date",
+        serde_json::json!({"block_id": block_id, "date": "2026-09-10"}),
+        &mut |b, after| {
+            assert_eq!(after.local_date.to_string(), "2026-09-10");
+            b.local_date = after.local_date;
+            b.start = after.start;
+            b.end = after.end;
+        },
+    );
+    check(
+        "label",
+        serde_json::json!({"block_id": block_id, "label": "Errands"}),
+        &mut |b, after| {
+            assert_ne!(after.subject, b.subject, "the subject became a label");
+            b.subject = after.subject;
+            b.title = after.title.clone();
+        },
+    );
+}
+
+#[test]
+fn update_skill_touches_only_the_named_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let skill_id = call(
+        &vault,
+        "create_skill",
+        serde_json::json!({
+            "name": "Plan a trip",
+            "description": "Use when asked to plan travel.",
+            "instructions": "Check the calendar first.",
+        }),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let find = |vault: &everyday_core::Vault| {
+        vault.skills().unwrap().into_iter().find(|s| s.id.to_string() == skill_id).unwrap()
+    };
+    let mut expected = find(&vault);
+
+    let mut check =
+        |field: &str, args: serde_json::Value, apply: &mut dyn FnMut(&mut everyday_core::Skill)| {
+            call(&vault, "update_skill", args);
+            apply(&mut expected);
+            let after = find(&vault);
+            expected.updated_at = after.updated_at;
+            assert_eq!(after, expected, "naming only `{field}` must leave every other field alone");
+        };
+
+    check("name", serde_json::json!({"skill_id": skill_id, "name": "Plan travel"}), &mut |s| {
+        s.name = "Plan travel".into();
+    });
+    check(
+        "description",
+        serde_json::json!({"skill_id": skill_id, "description": "Use for any trip."}),
+        &mut |s| {
+            s.description = "Use for any trip.".into();
+        },
+    );
+    check(
+        "instructions",
+        serde_json::json!({"skill_id": skill_id, "instructions": "Check the weather too."}),
+        &mut |s| {
+            s.instructions = "Check the weather too.".into();
+        },
+    );
+}
+
+#[test]
+fn update_reading_touches_only_the_named_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let tracker = call(
+        &vault,
+        "create_tracker",
+        serde_json::json!({ "name": "Water", "kind": "amount", "unit": "glasses" }),
+    );
+    let reading_id = call(
+        &vault,
+        "log_reading",
+        serde_json::json!({
+            "tracker_id": tracker["id"],
+            "value": 2,
+            "date": "2026-09-07",
+            "note": "after the run",
+        }),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let rid: everyday_core::ReadingId = reading_id.parse().unwrap();
+    let mut expected = vault.reading(rid).unwrap();
+
+    let mut check = |field: &str,
+                     args: serde_json::Value,
+                     apply: &mut dyn FnMut(&mut everyday_core::Reading)| {
+        call(&vault, "update_reading", args);
+        apply(&mut expected);
+        let after = vault.reading(rid).unwrap();
+        expected.updated_at = after.updated_at;
+        assert_eq!(after, expected, "naming only `{field}` must leave every other field alone");
+    };
+
+    check("value", serde_json::json!({"reading_id": reading_id, "value": 3}), &mut |r| {
+        r.value = 3.0;
+    });
+    check("note", serde_json::json!({"reading_id": reading_id, "note": "hot day"}), &mut |r| {
+        r.note = "hot day".into();
+    });
+    check("date", serde_json::json!({"reading_id": reading_id, "date": "2026-09-06"}), &mut |r| {
+        r.local_date = "2026-09-06".parse().unwrap();
+        r.at = None;
+    });
+}
+
+#[test]
+fn update_profile_touches_only_the_named_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let mut profile = vault.profile().unwrap();
+    profile.first_name = "Sam".into();
+    profile.location = "Seattle".into();
+    profile.about = "Works nights.".into();
+    vault.save_profile(&profile).unwrap();
+    let mut expected = vault.profile().unwrap();
+
+    let mut check = |field: &str,
+                     args: serde_json::Value,
+                     apply: &mut dyn FnMut(&mut everyday_core::Profile)| {
+        call(&vault, "update_profile", args);
+        apply(&mut expected);
+        let after = vault.profile().unwrap();
+        expected.updated_at = after.updated_at;
+        assert_eq!(after, expected, "naming only `{field}` must leave every other field alone");
+    };
+
+    check("location", serde_json::json!({"location": "Denver"}), &mut |p| {
+        p.location = "Denver".into();
+    });
+    check("born", serde_json::json!({"born": "1990-04-02"}), &mut |p| {
+        p.born = Some("1990-04-02".parse().unwrap());
+    });
 }

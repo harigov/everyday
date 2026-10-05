@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::{
     Args, Tool, ToolContext, day, describe_by_id, done, empty_schema, flag, limit_arg, list,
-    load_by_id, run_delete, schema, text,
+    load_by_id, one_of, run_delete, schema, text,
 };
 use crate::error::{Error, Result};
 use crate::id::{EntryId, JournalId};
@@ -18,6 +18,12 @@ use crate::search::{Found, SearchScope};
 use crate::store::purpose::GoalQuery;
 use crate::store::{EntryQuery, SortOrder};
 use crate::timestamped::Timestamped;
+
+/// What [`Args::opt_str`] on `scope` may say, and what the error that names
+/// the alternatives lists. Not `SearchScope`'s own variant names, because
+/// that type carries a journal id on one of them and cannot be the thing a
+/// schema enumerates or an argument deserializes into directly.
+const SEARCH_SCOPES: &[&str] = &["everything", "entries", "notes"];
 
 pub(super) static TOOLS: &[Tool] = &[
     // ---- orientation ------------------------------------------------------
@@ -37,15 +43,36 @@ pub(super) static TOOLS: &[Tool] = &[
         Journals,
         schema(
             vec![
-                ("query", text("Words to look for. Full-text over entry titles and bodies.")),
-                ("journal_id", text("Restrict to one journal. Omit to search all of them.")),
+                (
+                    "query",
+                    text(
+                        "Words to look for. Full-text over entry titles and bodies, and over \
+                         note titles and bodies."
+                    )
+                ),
+                (
+                    "scope",
+                    one_of(
+                        "What kind of writing to search. Defaults to everything.",
+                        SEARCH_SCOPES
+                    )
+                ),
+                (
+                    "journal_id",
+                    text(
+                        "Restrict to one journal. Narrows the search to that journal's entries \
+                         \u{2014} cannot be combined with scope \"notes\"."
+                    )
+                ),
                 limit_arg(),
             ],
             &["query"]
         ),
-        "Full-text search across journal entries. The way to find an entry when \
-         you know roughly what it said but not when it was written. Searches \
-         entries only \u{2014} use list_tasks or list_items to find those.",
+        "Full-text search over journal entries and notes together, or over either \
+         one on its own with scope. The way to find something \u{2014} an entry or a \
+         note \u{2014} when you know roughly what it said but not where it is filed. \
+         This is also how a note is found by what is in it; list_notes only filters \
+         by tag and pinned state.",
         run_search
     ),
     // ---- journals and entries -----------------------------------------------
@@ -301,14 +328,43 @@ fn run_overview(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
     Ok(out)
 }
 
-fn run_search(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+/// Read `scope` and `journal_id` into the [`SearchScope`] `run_search` should
+/// actually search, rejecting the one combination that cannot mean
+/// anything: a journal named under scope `"notes"`, which is in no journal at
+/// all.
+///
+/// A plain string match rather than [`Args::opt_enum`], because
+/// [`SearchScope`] is not an enum `opt_enum` could deserialize into on its
+/// own -- one of its variants carries an optional journal id, which is a
+/// second argument's business, not the wire spelling of this one.
+fn parse_search_scope(args: &Args<'_>) -> Result<SearchScope> {
     let journal: Option<JournalId> = args.opt_id("journal_id", "journal")?;
-    // Naming a journal narrows to entries, because a note is in no journal
-    // and silently returning some anyway would answer a different question.
-    let scope = match journal {
-        Some(id) => SearchScope::Entries(Some(id)),
-        None => SearchScope::Everything,
-    };
+    match args.opt_str("scope").map(|s| s.trim().to_lowercase()).as_deref() {
+        Some("notes") => {
+            if journal.is_some() {
+                return Err(args.bad(
+                    "`journal_id` narrows the search to that journal's entries; it cannot be \
+                     combined with scope \"notes\", which is in no journal",
+                ));
+            }
+            Ok(SearchScope::Notes)
+        }
+        Some("entries") => Ok(SearchScope::Entries(journal)),
+        // Naming a journal narrows to entries even when scope is left at its
+        // default, because a note is in no journal and silently returning
+        // some anyway would answer a different question.
+        Some("everything") | None => {
+            Ok(journal.map_or(SearchScope::Everything, |id| SearchScope::Entries(Some(id))))
+        }
+        Some(other) => {
+            Err(args
+                .bad(format!("`scope` must be one of {}, got {other:?}", SEARCH_SCOPES.join(", "))))
+        }
+    }
+}
+
+fn run_search(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let scope = parse_search_scope(args)?;
     let hits = ctx.vault.search(args.str("query")?, scope, args.limit() as usize)?;
     Ok(json!({
         "count": hits.len(),
@@ -437,4 +493,58 @@ fn run_delete_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         |id| ctx.vault.delete_entry(id),
         |entry| entry.display_title(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(v: Value) -> (&'static str, Value) {
+        ("search", v)
+    }
+
+    #[test]
+    fn scope_defaults_to_everything() {
+        let (name, v) = args(json!({}));
+        assert_eq!(parse_search_scope(&Args::new(name, &v)).unwrap(), SearchScope::Everything);
+    }
+
+    #[test]
+    fn a_journal_id_narrows_to_entries_even_at_the_default_scope() {
+        // The rule predates `scope`: a note is in no journal, so naming one
+        // has to mean entries whatever `scope` was left at.
+        let jid = JournalId::new();
+        let (name, v) = args(json!({ "journal_id": jid.to_string() }));
+        assert_eq!(
+            parse_search_scope(&Args::new(name, &v)).unwrap(),
+            SearchScope::Entries(Some(jid))
+        );
+    }
+
+    #[test]
+    fn scope_entries_with_no_journal_searches_every_journal() {
+        let (name, v) = args(json!({ "scope": "entries" }));
+        assert_eq!(parse_search_scope(&Args::new(name, &v)).unwrap(), SearchScope::Entries(None));
+    }
+
+    #[test]
+    fn scope_is_case_insensitive() {
+        let (name, v) = args(json!({ "scope": "Notes" }));
+        assert_eq!(parse_search_scope(&Args::new(name, &v)).unwrap(), SearchScope::Notes);
+    }
+
+    #[test]
+    fn a_journal_id_cannot_be_combined_with_scope_notes() {
+        let jid = JournalId::new();
+        let (name, v) = args(json!({ "scope": "notes", "journal_id": jid.to_string() }));
+        let err = parse_search_scope(&Args::new(name, &v)).unwrap_err().to_string();
+        assert!(err.contains("notes"), "got {err}");
+    }
+
+    #[test]
+    fn an_unknown_scope_lists_the_alternatives() {
+        let (name, v) = args(json!({ "scope": "projects" }));
+        let err = parse_search_scope(&Args::new(name, &v)).unwrap_err().to_string();
+        assert!(err.contains("everything, entries, notes"), "got {err}");
+    }
 }

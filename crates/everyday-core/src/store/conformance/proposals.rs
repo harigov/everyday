@@ -2,6 +2,7 @@
 //! and did not do, waiting for a yes or a no.
 
 use super::*;
+use crate::agent::Skill;
 use crate::id::{DraftId, ProposalId};
 use crate::proposal::{
     About, AboutKind, DeclineReason, Outcome as ProposalOutcome, Payload, Proposal, ProposalKind,
@@ -57,6 +58,13 @@ fn any_block() -> TimeBlock {
     TimeBlock::new(BlockSubject::Adhoc, now(), 30, "UTC")
 }
 
+fn any_skill() -> Skill {
+    let mut s = Skill::new("Plan a trip");
+    s.description = "Use when asked to plan a trip or a multi-day journey.".into();
+    s.instructions = "Check the calendar for conflicts, check the weather, propose blocks.".into();
+    s
+}
+
 fn seeded(store: &dyn JournalStore, payload: Payload, caption: &str) -> Proposal {
     let proposal = Proposal::new(payload, caption, now(), "UTC");
     proposal_store(store).put_proposal(&proposal).expect("put_proposal");
@@ -109,6 +117,7 @@ fn proposal_round_trips_every_payload_and_outcome(store: &dyn JournalStore) {
             "Create routine",
         ),
         (note_payload("A plan"), "Create note"),
+        (Payload::Create { record: ProposedRecord::Skill(any_skill()) }, "Create skill"),
     ];
 
     for (payload, caption) in payloads {

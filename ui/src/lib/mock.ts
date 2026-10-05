@@ -2747,6 +2747,32 @@ const proposals: Proposal[] = [
     updatedAt: iso(0),
   },
   {
+    id: 'prop-skill',
+    kind: 'skill',
+    payload: {
+      type: 'replace',
+      record: {
+        kind: 'skill',
+        value: {
+          ...skills[0]!,
+          instructions:
+            skills[0]!.instructions +
+            ' Ask whether the trip is for work or for leisure before proposing any blocks.',
+          updatedAt: iso(0),
+        },
+      },
+      expectedUpdatedAt: skills[0]!.updatedAt,
+    },
+    caption: 'Change skill: Plan a trip',
+    why: 'Twice yesterday you asked whether a trip was for work before planning it.',
+    madeBy: { type: 'run', runId: DREAM_RUN },
+    madeAt: iso(0),
+    expiresAt: iso(-14),
+    outcome: { type: 'pending' },
+    seen: false,
+    updatedAt: iso(0),
+  },
+  {
     id: 'prop-memory',
     kind: 'memory',
     payload: {
@@ -2977,6 +3003,7 @@ function applyProposal(p: Proposal, edited: ProposedRecord | null, confirm: bool
       memory: memories,
       routine: routines,
       note: notes,
+      skill: skills,
     }
     const list = lists[payload.kind]
     const at = list?.findIndex((r) => r.id === payload.id) ?? -1
@@ -3007,6 +3034,8 @@ function applyProposal(p: Proposal, edited: ProposedRecord | null, confirm: bool
       return upsert(routines, { ...record.value, kind: { type: 'custom' } })
     case 'note':
       return upsert(notes, record.value)
+    case 'skill':
+      return upsert(skills, record.value)
   }
 }
 

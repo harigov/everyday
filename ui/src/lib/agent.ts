@@ -304,13 +304,13 @@ export function replay(messages: AgentMessage[]): Turn[] {
 //
 // The exceptions are the handful of calls worth naming a detail for -- *what*
 // it searched for, *which* page it opened, *where* it checked the weather,
-// *which* skill it followed -- rather than only the verb a generic name
-// would give. Most of those reach outside the vault and are declared in the
-// service beside this panel rather than in the core's catalogue, so they
-// change in step with it; `read_skill` is the one core tool that earns a
-// case here anyway, because the name alone -- "Reading skill" -- loses the
-// one thing a person scanning a long turn most wants to see, which skill it
-// reached for.
+// *what* it looked up for a shelf, *which* skill it followed -- rather than
+// only the verb a generic name would give. Most of those reach outside the
+// vault and are declared in the service beside this panel rather than in the
+// core's catalogue, so they change in step with it; `read_skill` is the one
+// core tool that earns a case here anyway, because the name alone --
+// "Reading skill" -- loses the one thing a person scanning a long turn most
+// wants to see, which skill it reached for.
 
 /** Past tenses that are not "add -ed". */
 const IRREGULAR_PAST: Record<string, string> = {
@@ -330,9 +330,16 @@ const IRREGULAR_PAST: Record<string, string> = {
 }
 
 /** Short verbs ending consonant-vowel-consonant double the last letter --
- *  stop, plan, log, pin -- and so does `label`, the British way. */
+ *  stop, plan, log, pin -- and so does `label`, the British way. `unstar`
+ *  is the same case wearing a prefix: `un-` carries no stress of its own,
+ *  so the verb the rule is actually about is still the short, stressed
+ *  `star` underneath -- `starred`/`starring`, not `stared`/`staring`. */
 function doubles(verb: string): boolean {
-  return (verb.length <= 4 && /[^aeiou][aeiou][bdglmnprt]$/.test(verb)) || verb.endsWith('el')
+  return (
+    (verb.length <= 4 && /[^aeiou][aeiou][bdglmnprt]$/.test(verb)) ||
+    verb.endsWith('el') ||
+    verb === 'unstar'
+  )
 }
 
 export function gerund(verb: string): string {
@@ -414,6 +421,11 @@ export function toolLabel(name: string, args: unknown, state: ToolCard['state'])
         detail: place,
       }
     }
+    case 'look_up_item':
+      return {
+        text: running ? 'Looking up' : done ? 'Looked up' : 'Look up',
+        detail: arg(args, 'title'),
+      }
     case 'update_plan':
       return {
         text: running ? 'Updating the plan' : done ? 'Updated the plan' : 'Update the plan',

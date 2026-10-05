@@ -28,6 +28,7 @@ import type {
   ProposalQuery,
   ProposedRecord,
   Routine,
+  Skill,
   Task,
   TimeBlock,
 } from './types'
@@ -39,6 +40,7 @@ export interface RecordByKind {
   memory: Memory
   routine: Routine
   note: Note
+  skill: Skill
 }
 
 type Listener = (p: Proposal) => void | Promise<void>

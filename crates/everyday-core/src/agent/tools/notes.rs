@@ -28,7 +28,8 @@ pub(super) static TOOLS: &[Tool] = &[
             &[]
         ),
         "Notes matching a filter, most recently changed first. Returns summaries \u{2014} \
-         id, title, tags, the first line \u{2014} not the text. Call get_note for the body.",
+         id, title, tags, the first line \u{2014} not the text. Call get_note for the body, \
+         or search to find one by what it says rather than by tag.",
         run_list_notes
     ),
     tool!(

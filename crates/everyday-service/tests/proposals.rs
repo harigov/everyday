@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use everyday_core::account::{Account, Provider};
 use everyday_core::mail::{Address, Draft, DraftState, Origin as MailOrigin};
 use everyday_core::proposal::{Outcome as ProposalOutcome, Payload, ProposedRecord};
-use everyday_core::{DraftId, Note, Proposal, Vault};
+use everyday_core::{DraftId, Note, Proposal, Skill, Vault};
 use everyday_service::Service;
 use everyday_service::ctx::Ctx;
 use everyday_service::error::CommandError;
@@ -45,6 +45,20 @@ fn seed_note_proposal(vault: &Vault, title: &str) -> Proposal {
     let proposal = Proposal::new(
         Payload::Create { record: ProposedRecord::Note(Note::written(title, "x")) },
         "Create note",
+        Timestamp::now(),
+        "UTC",
+    );
+    vault.save_proposal(&proposal).unwrap();
+    proposal
+}
+
+fn seed_skill_proposal(vault: &Vault, name: &str) -> Proposal {
+    let mut skill = Skill::new(name);
+    skill.description = "Use when asked to do the thing.".into();
+    skill.instructions = "Do the thing.".into();
+    let proposal = Proposal::new(
+        Payload::Create { record: ProposedRecord::Skill(skill) },
+        "Create skill",
         Timestamp::now(),
         "UTC",
     );
@@ -122,6 +136,32 @@ async fn accept_proposal_on_a_bad_reference_declines_and_reports_no_second_chang
         !changes.iter().any(|c| c.kind == Kind::Task),
         "nothing was saved, so nothing should be reported as a task change"
     );
+}
+
+#[tokio::test]
+async fn accepting_a_skill_proposal_saves_it_and_raises_a_skill_change() {
+    let (svc, _dir) = service();
+    let events = Arc::new(Collector::default());
+    svc.set_events(events.clone());
+    let vault = svc.get().unwrap();
+    let proposal = seed_skill_proposal(&vault, "Plan a trip");
+
+    let result = call(&svc, "accept_proposal", json!({ "id": proposal.id.to_string() })).await;
+    assert_eq!(result["outcome"]["type"].as_str(), Some("accepted"));
+
+    let changes = events.changes.lock().unwrap();
+    assert!(
+        changes.iter().any(|c| c.kind == Kind::Proposal),
+        "the command table's own change must still fire"
+    );
+    assert!(
+        changes.iter().any(|c| c.kind == Kind::Skill),
+        "and a second change for the skill it actually saved"
+    );
+    drop(changes);
+
+    let saved = vault.skills().unwrap();
+    assert!(saved.iter().any(|s| s.name == "Plan a trip"));
 }
 
 #[tokio::test]

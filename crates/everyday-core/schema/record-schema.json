@@ -4496,7 +4496,8 @@
           "memory",
           "routine",
           "note",
-          "mail"
+          "mail",
+          "skill"
         ],
         "type": "string"
       },
@@ -4616,6 +4617,22 @@
               },
               "value": {
                 "$ref": "#/$defs/Note"
+              }
+            },
+            "required": [
+              "kind",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "skill",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Skill"
               }
             },
             "required": [
@@ -4758,6 +4775,49 @@
             "type": "object"
           }
         ]
+      },
+      "Skill": {
+        "description": "A process the assistant was given for a certain kind of request. See the\nmodule docs' \"Skills, and progressive disclosure\".",
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "description": {
+            "description": "One or two sentences on *when* to reach for this skill — \"Use when\nasked to plan a trip or a multi-day journey.\" Read by a model\nchoosing between however many skills exist, so it has to name the\ntrigger rather than describe what happens once it is loaded; the\nlatter is what [`instructions`](Self::instructions) is for.",
+            "type": "string"
+          },
+          "enabled": {
+            "description": "Off skills are left out of the prompt's index and cannot be loaded —\nfor a process written for an occasion that has passed, kept rather\nthan deleted.",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "instructions": {
+            "description": "The process itself, in as much prose as it takes. Never sent with the\nprompt — only the name and description are — so this is free to be\nlong. Markdown, like a note: numbered steps, a checklist, whatever\nreads clearly to the person who wrote it, because the model reading\nit back is the same one that will have read a note.",
+            "type": "string"
+          },
+          "name": {
+            "description": "What to call it — \"Plan a trip\", \"Weekly review\". Shown in Settings\nand in the prompt's index, and what `read_skill` is given to find it\nby.",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "instructions",
+          "enabled",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
       },
       "Task": {
         "description": "One thing to do.\n\nA task with no `project_id` is in the inbox — captured but not filed —\nwhich is what makes capture cheap enough to actually do.",

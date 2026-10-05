@@ -46,11 +46,11 @@
 //!
 //! # The tools that are not in the catalogue
 //!
-//! Four tools are declared here rather than in the core, each for the reason
-//! [`web_search_tool`] gives: three of them open a socket, which the core
-//! cannot, and the fourth, `update_plan`, touches nothing at all -- it is a
+//! Five tools are declared here rather than in the core, each for the reason
+//! [`web_search_tool`] gives: four of them open a socket, which the core
+//! cannot, and the fifth, `update_plan`, touches nothing at all -- it is a
 //! checklist the panel draws from the call's own arguments, so there is no
-//! vault record for the core to own. The three that reach the web are
+//! vault record for the core to own. The four that reach the web are
 //! offered only when the person has said so; `read_web_page` is further
 //! gated on where its address came from -- see [`webpage::Provenance`] and
 //! [`must_confirm_fetch`].
@@ -79,8 +79,9 @@ use everyday_core::agent::{
 };
 use everyday_core::mail::Origin as MailOrigin;
 use everyday_core::model::system_tz;
-use everyday_core::proposal::ProposalSource;
-use everyday_core::{ConversationId, Vault};
+use everyday_core::proposal::{ProposalKind, ProposalSource};
+use everyday_core::record::RecordKind;
+use everyday_core::{ConversationId, KindId, Vault};
 use rig_agent::agent::hook::{
     ToolCall as HookToolCall, ToolCallAction, ToolResultAction, ToolResultEvent,
 };
@@ -504,6 +505,10 @@ struct Ran {
     /// What lets [`written`] report a `Change` with the record it actually
     /// touched rather than none at all.
     ids: Vec<String>,
+    /// The `kind` a successful write's own JSON result named, if any. Only
+    /// [`written`] reads it, and only for `accept_proposal`, whose record is
+    /// of whatever kind the proposal was rather than of its own domain.
+    saved_kind: Option<String>,
     /// The thread a mail write named itself, if any -- see
     /// [`mail_link_of`]. Carried through to [`write_results`] so a
     /// reopened thread shows the same link the live turn drew.
@@ -588,6 +593,7 @@ fn take_one(budget: &AtomicU32) -> bool {
 const WEB_SEARCH: &str = "web_search";
 const READ_WEB_PAGE: &str = "read_web_page";
 const GET_WEATHER: &str = "get_weather";
+const LOOK_UP_ITEM: &str = "look_up_item";
 const UPDATE_PLAN: &str = "update_plan";
 
 impl AgentHook for ConfirmGate {
@@ -611,6 +617,7 @@ impl AgentHook for ConfirmGate {
             },
             outcome: None,
             ids: Vec::new(),
+            saved_kind: None,
             mail_link: None,
         });
 
@@ -646,7 +653,10 @@ impl AgentHook for ConfirmGate {
             let trust = self.provenance.lock().unwrap().check(address);
             must_confirm_fetch(trust, mail_read)
         } else {
-            let tainted_search = name == WEB_SEARCH && mail_read;
+            // `look_up_item` sends its title to a catalogue the way
+            // `web_search` sends its query to a search engine, so a title
+            // lifted out of a stranger's mail is the same way out.
+            let tainted_search = (name == WEB_SEARCH || name == LOOK_UP_ITEM) && mail_read;
             must_confirm(tools::find(&name).map(|t| t.effect), self.enabled, tainted_search)
         };
         let Some(kind) = kind else {
@@ -733,7 +743,8 @@ impl AgentHook for ConfirmGate {
 
         let subject = match kind {
             "search" => {
-                arguments.get("query").and_then(|v| v.as_str()).unwrap_or_default().to_string()
+                let words = if name == LOOK_UP_ITEM { "title" } else { "query" };
+                arguments.get(words).and_then(|v| v.as_str()).unwrap_or_default().to_string()
             }
             // The whole address, untrimmed and unshortened: it is the thing
             // being asked about, and the part that would carry anything out
@@ -840,6 +851,13 @@ impl AgentHook for ConfirmGate {
             ran.outcome = Some(if ok { Ok(summary.clone()) } else { Err(summary.clone()) });
             if ok {
                 ran.ids = result_ids(event.raw_result.output());
+                ran.saved_kind = event
+                    .raw_result
+                    .output()
+                    .as_json()
+                    .and_then(|json| json.get("kind"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
                 ran.mail_link = mail_link.clone();
             }
         }
@@ -1087,7 +1105,7 @@ fn build(
     let mut offered: Vec<PortableDynamicTool> = available.into_iter().map(wrap).collect();
 
     // The tools declared here rather than in the core -- see the module
-    // doc's "the tools that are not in the catalogue". The three that reach
+    // doc's "the tools that are not in the catalogue". The four that reach
     // the web are one switch, because to the person they are one decision:
     // whether the assistant may talk to strangers' computers at all.
     let web = !is_dream && settings.web;
@@ -1095,6 +1113,7 @@ fn build(
         offered.push(web_search_tool());
         offered.push(read_web_page_tool());
         offered.push(get_weather_tool(profile.location.trim().to_string()));
+        offered.push(look_up_item_tool(vault.clone()));
     }
     let planning = !is_dream;
     if planning {
@@ -1161,8 +1180,10 @@ impl std::fmt::Display for Guidance {
         match self.web {
             Some(true) => f.write_str(
                 "\n\nYou can reach the web. Use web_search to find things, read_web_page to \
-                 read a page, and get_weather for forecasts, wind and air quality (it \
-                 defaults to where they live). \
+                 read a page, get_weather for forecasts, wind and air quality (it defaults \
+                 to where they live), and look_up_item for a book's, film's or anything \
+                 else's own details -- author, year, a blurb -- before you create_item or \
+                 update_item it on a shelf. \
                  A page at an address they gave you, or that a search or a page you read \
                  returned, opens straight away; any other address asks them first, so use \
                  addresses exactly as you found them. For anything current -- news, prices, \
@@ -1437,6 +1458,132 @@ fn weather_args(arguments: &Value, home: &str) -> Result<WeatherArgs, String> {
     };
 
     Ok(WeatherArgs { place: place.to_string(), days, units })
+}
+
+/// Candidates for an item's own metadata, before it is added or changed:
+/// [`crate::websearch::lookup`], as a tool.
+///
+/// Beside [`web_search_tool`] for the same reason: it opens a socket, which
+/// the core cannot. Unlike a plain search, it already knows which source a
+/// shelf prefers -- Open Library for a book, iTunes for a film -- and falls
+/// back to Wikipedia and then the open web exactly as the library app's own
+/// "look it up" button does, through
+/// [`SearchRequest::attempts`](everyday_core::websearch::SearchRequest::attempts).
+/// It only reads: a shelf that never looks anything up (Contacts) comes back
+/// with nothing, the same way its own button never offers to. Picking a
+/// candidate and saving it is the model's own next call, to create_item or
+/// update_item; no cover is fetched here, which is the interface's own
+/// fetch, or a later `apply_metadata`, to do.
+///
+/// `vault` is read once per call, on the blocking pool, to turn `shelf_id`
+/// into the [`everyday_core::library::Kind`] the lookup needs -- the same
+/// step `everyday_service::domains::web::lookup_metadata` takes before
+/// calling the very function this does.
+fn look_up_item_tool(vault: Arc<Vault>) -> PortableDynamicTool {
+    PortableDynamicTool::new(
+        LOOK_UP_ITEM,
+        "Look up a book, film or anything else a shelf tracks, before adding it or fixing \
+         its details. Tries whichever source that shelf prefers -- Open Library for books, \
+         iTunes for films, and so on -- falling back to a general web search when that finds \
+         nothing. Returns a few candidates with their creator, year, a blurb and a rating \
+         where there is one; call create_item or update_item with the fields from whichever \
+         matches. Does not create or change anything itself, and a shelf that never looks \
+         things up (Contacts) always comes back empty.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "shelf_id": {
+                    "type": "string",
+                    "description": "Which shelf this is for, from list_shelves -- it decides \
+                                     which source is tried first.",
+                },
+                "title": { "type": "string", "description": "What to look up." },
+                "limit": {
+                    "type": "integer",
+                    "description": "How many candidates, up to 10. Default 5.",
+                },
+            },
+            "required": ["shelf_id", "title"],
+            "additionalProperties": false,
+        }),
+        move |arguments: serde_json::Value| {
+            let vault = vault.clone();
+            Box::pin(async move {
+                let title = arguments
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .ok_or_else(|| {
+                        ToolExecutionError::invalid_args("look_up_item: `title` is required")
+                    })?
+                    .to_string();
+                let shelf_id: KindId = arguments
+                    .get("shelf_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        ToolExecutionError::invalid_args("look_up_item: `shelf_id` is required")
+                    })?
+                    .parse()
+                    .map_err(|_| {
+                        ToolExecutionError::invalid_args(
+                            "look_up_item: `shelf_id` must be a shelf id. Call list_shelves \
+                             and use an id from it.",
+                        )
+                    })?;
+                let limit =
+                    arguments.get("limit").and_then(Value::as_u64).unwrap_or(5).clamp(1, 10) as u32;
+
+                let kind = tokio::task::spawn_blocking(move || vault.kind(shelf_id))
+                    .await
+                    .map_err(|e| {
+                        ToolExecutionError::other(format!("the lookup did not finish: {e}"))
+                    })?
+                    .map_err(|_| {
+                        ToolExecutionError::invalid_args(
+                            "look_up_item: no shelf with that id. Call list_shelves and use \
+                             an id from it.",
+                        )
+                    })?;
+
+                let hits = crate::websearch::lookup(&title, &kind, limit)
+                    .await
+                    .map_err(|e| ToolExecutionError::other(e.message))?;
+                Ok(ToolOutput::json(serde_json::json!({
+                    "count": hits.len(),
+                    "results": hits.iter().map(look_up_item_result).collect::<Vec<_>>(),
+                })))
+            })
+        },
+    )
+}
+
+/// One [`everyday_core::websearch::SearchResult`] as `look_up_item` hands it
+/// to the model: the title, creator, year and rating line up with
+/// create_item's and update_item's own arguments -- rating out of ten, the
+/// same scale those use -- and the summary and address are kept alongside
+/// for a note and a citation, since neither tool has a field of its own for
+/// either. Omits whatever the hit did not have, the same reasoning
+/// `agent::tools::library::item_json` gives for doing the same with an
+/// `Item`, rather than sending the model an empty string to puzzle over.
+fn look_up_item_result(hit: &everyday_core::websearch::SearchResult) -> Value {
+    let mut v = serde_json::json!({ "title": hit.title, "url": hit.url });
+    let m = v.as_object_mut().expect("built as an object");
+    if !hit.creator.trim().is_empty() {
+        m.insert("creator".into(), serde_json::json!(hit.creator));
+    }
+    if let Some(year) = hit.year {
+        m.insert("year".into(), serde_json::json!(year));
+    }
+    if !hit.summary.trim().is_empty() {
+        m.insert("summary".into(), serde_json::json!(hit.summary));
+    }
+    if let Some(rating) = hit.rating {
+        m.insert("rating_out_of_10".into(), serde_json::json!(f64::from(rating) / 10.0));
+    }
+    v
 }
 
 /// A checklist the panel draws while a long piece of work is under way.
@@ -1715,34 +1862,54 @@ pub struct Turned {
 /// a reason to reload anything.
 fn written(ran: &[Ran]) -> Vec<(Kind, Vec<String>)> {
     let mut out: Vec<(Kind, Vec<String>)> = Vec::new();
+    let mut add = |kind: Kind, ids: &[String]| match out.iter_mut().find(|(k, _)| *k == kind) {
+        Some((_, have)) => have.extend(ids.iter().cloned()),
+        None => out.push((kind, ids.to_vec())),
+    };
     for entry in ran {
         let Some(tool) = tools::find(&entry.call.name) else { continue };
         if !tool.effect.is_write() {
             continue;
         }
-        let kind = match tool.domain {
-            tools::Domain::Journals => Kind::Entry,
-            tools::Domain::Notes => Kind::Note,
-            tools::Domain::Tasks => Kind::Task,
-            tools::Domain::Calendars => Kind::Block,
-            tools::Domain::Library => Kind::Item,
-            tools::Domain::Trackers => Kind::Reading,
-            tools::Domain::Purpose => Kind::Goal,
-            tools::Domain::Routines => Kind::Routine,
-            tools::Domain::Agent => Kind::Memory,
-            tools::Domain::Mail => Kind::Thread,
-            // Read-only today -- `agent::tools::meetings` starts and ends
-            // at `list_meeting_notes`/`get_transcript` -- but the match has
-            // to cover the type, not just the tools that currently write.
-            // A meeting note is a note (`docs/plans/meeting-notes.md`'s
-            // Phase 3), so this is the same `Kind` a write through
-            // `update_note` would already report for the same row.
-            tools::Domain::Meetings => Kind::Note,
-        };
-        match out.iter_mut().find(|(k, _)| *k == kind) {
-            Some((_, ids)) => ids.extend(entry.ids.iter().cloned()),
-            None => out.push((kind, entry.ids.clone())),
+        // Answering a proposal changes the list of proposals, and accepting
+        // one saves a record of the proposal's own kind -- a task, a note --
+        // which `Domain::Agent` would misreport as a memory and leave the
+        // app that draws it stale.
+        if matches!(entry.call.name.as_str(), "accept_proposal" | "decline_proposal") {
+            add(Kind::Proposal, &[]);
+            let saved = entry.saved_kind.as_deref().and_then(ProposalKind::parse);
+            if let Some(kind) = saved.and_then(|k| Kind::try_from(RecordKind::from(k)).ok()) {
+                add(kind, &entry.ids);
+            }
+            continue;
         }
+        let kind = match entry.call.name.as_str() {
+            // `Domain::Agent` holds more than memories now; these are the
+            // writes in it that are not one.
+            "create_skill" | "update_skill" | "delete_skill" => Kind::Skill,
+            // What `save_profile`'s own command row raises.
+            "update_profile" => Kind::Settings,
+            _ => match tool.domain {
+                tools::Domain::Journals => Kind::Entry,
+                tools::Domain::Notes => Kind::Note,
+                tools::Domain::Tasks => Kind::Task,
+                tools::Domain::Calendars => Kind::Block,
+                tools::Domain::Library => Kind::Item,
+                tools::Domain::Trackers => Kind::Reading,
+                tools::Domain::Purpose => Kind::Goal,
+                tools::Domain::Routines => Kind::Routine,
+                tools::Domain::Agent => Kind::Memory,
+                tools::Domain::Mail => Kind::Thread,
+                // Read-only today -- `agent::tools::meetings` starts and ends
+                // at `list_meeting_notes`/`get_transcript` -- but the match has
+                // to cover the type, not just the tools that currently write.
+                // A meeting note is a note (`docs/plans/meeting-notes.md`'s
+                // Phase 3), so this is the same `Kind` a write through
+                // `update_note` would already report for the same row.
+                tools::Domain::Meetings => Kind::Note,
+            },
+        };
+        add(kind, &entry.ids);
     }
     out
 }
@@ -2546,6 +2713,7 @@ mod tests {
         }
         .to_string();
         assert!(on.contains("read_web_page") && on.contains("get_weather"));
+        assert!(on.contains("look_up_item"));
         assert!(on.contains("update_plan"));
         assert!(!on.contains("long conversation"));
 
@@ -2559,6 +2727,7 @@ mod tests {
         assert!(off.contains("cannot reach the web"));
         assert!(off.contains("Settings \u{2192} Assistant"));
         assert!(!off.contains("read_web_page"));
+        assert!(!off.contains("look_up_item"));
 
         let dream =
             Guidance { web: None, planning: false, history_trimmed: false, can_remember: true }
@@ -2601,6 +2770,50 @@ mod tests {
         );
         let search = ToolOutput::json(serde_json::json!({ "count": 2, "results": [] }));
         assert_eq!(summarise(WEB_SEARCH, &search), "2 results");
+        // `look_up_item` has no case of its own: it is a `Read` tool whose
+        // result carries a `count`, same as `web_search`'s, so the fallback
+        // already gives it a line.
+        let lookup = ToolOutput::json(serde_json::json!({ "count": 3, "results": [] }));
+        assert_eq!(summarise(LOOK_UP_ITEM, &lookup), "3 results");
+    }
+
+    // ---- look_up_item's results ---------------------------------------------
+
+    #[test]
+    fn a_looked_up_result_keeps_only_what_it_had() {
+        use everyday_core::websearch::SearchResult;
+
+        let full = SearchResult {
+            title: "Dune".into(),
+            creator: "Frank Herbert".into(),
+            year: Some(1965),
+            summary: "A desert planet.".into(),
+            url: "https://openlibrary.org/works/OL893415W".into(),
+            rating: Some(90),
+            ..Default::default()
+        };
+        assert_eq!(
+            look_up_item_result(&full),
+            serde_json::json!({
+                "title": "Dune",
+                "url": "https://openlibrary.org/works/OL893415W",
+                "creator": "Frank Herbert",
+                "year": 1965,
+                "summary": "A desert planet.",
+                "rating_out_of_10": 9.0,
+            })
+        );
+
+        // A hit nothing but a title and an address came back for -- the
+        // common case for an obscure film or a self-published book -- sends
+        // only those two, rather than a creator and a summary the model
+        // would have to be told are empty.
+        let bare =
+            SearchResult { title: "A film nobody has heard of".into(), ..Default::default() };
+        assert_eq!(
+            look_up_item_result(&bare),
+            serde_json::json!({ "title": "A film nobody has heard of", "url": "" })
+        );
     }
 
     fn ran(name: &str) -> Ran {
@@ -2616,6 +2829,7 @@ mod tests {
             },
             outcome: None,
             ids: id.map(|i| vec![i.to_string()]).unwrap_or_default(),
+            saved_kind: None,
             mail_link: None,
         }
     }
@@ -2653,6 +2867,22 @@ mod tests {
                 tool.name
             );
         }
+    }
+
+    /// Accepting a proposal from chat reloads the proposals and whatever the
+    /// proposal saved -- a task here -- rather than the memories its
+    /// `Domain::Agent` would otherwise suggest.
+    #[test]
+    fn accepting_a_proposal_reports_the_proposals_and_what_it_saved() {
+        let id = "0192f8b2-0000-7000-8000-000000000000";
+        let mut accepted = ran_with_id("accept_proposal", Some(id));
+        accepted.saved_kind = Some("task".into());
+        let out = written(&[accepted]);
+        assert_eq!(out, vec![(Kind::Proposal, vec![]), (Kind::Task, vec![id.to_string()])]);
+
+        let skill = written(&[ran("create_skill"), ran("update_profile")]);
+        let kinds: Vec<Kind> = skill.into_iter().map(|(k, _)| k).collect();
+        assert_eq!(kinds, vec![Kind::Skill, Kind::Settings]);
     }
 
     /// A mail write's own id, read out of its `done()` result, rides along

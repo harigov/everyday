@@ -418,10 +418,12 @@ Account.assistant_provider_acknowledged: Option<String>
                person chose to connect that client
 ```
 
-`edit` covers `update_draft`, `mark_read`, `label_thread`, `move_thread` and
-`snooze_thread`; `remove` covers `trash_thread`; `archive` covers
-`archive_thread`. Each is a switch under the account in Settings → Accounts,
-two columns — Assistant and MCP — one row per permission.
+`edit` covers `update_draft`, `mark_read`, `mark_unread`, `star_thread`,
+`unstar_thread`, `label_thread`, `move_thread`, `snooze_thread` and
+`unsnooze_thread`; `remove` covers `trash_thread` and `discard_draft`;
+`archive` covers `archive_thread`. Each is a switch under the account in
+Settings → Accounts, two columns — Assistant and MCP — one row per
+permission.
 
 Drafts are records rather than compose-box state because three writers
 make them — the person typing, the assistant asked to, and the auto-draft
@@ -593,19 +595,20 @@ Depends on 3 (drafts, the outbox, origins) and 4 (search through the trait).
 The catalogue, in `everyday-core/src/agent/tools/mail.rs`, named in the
 domain's words:
 
-| Tool | Effect | What it does |
-|---|---|---|
 | Tool | Effect | Permission | What it does |
 |---|---|---|---|
 | `list_accounts` | Read | — | Addresses, which services are on, and what this caller may do on each. Never a secret, never an endpoint. |
 | `search_mail` | Read | read | The interface's query syntax, through `MailSearch`, across the accounts this caller may read. Thread ids, subjects, senders, dates, a snippet. Capped at 25. |
+| `find_address` | Read | read | A name or partial address against the sealed contact book (`ContactBook`, phase 4's "address autocomplete"), ranked by how often the person writes to them. A plain substring match, not the compose window's own typo-tolerant one — see "Gaps filled after shipping" below. |
 | `list_threads` | Read | read | By mailbox, category or `is:unread`, newest first, capped. |
 | `read_thread` | Read | read | Each message's model text — quoted text and signatures removed, never HTML, never a remote URL fetched — capped in length, attachments named but not opened. |
 | `draft_reply`, `draft_message` | Write | draft | A `Draft` with `origin = Assistant` or `Mcp`. It appears in the thread and in Drafts, marked as such. |
-| `update_draft`, `mark_read`, `label_thread`, `move_thread`, `snooze_thread` | Write | edit | One write or outbox op each, reversible the same way the person's are. |
+| `update_draft`, `mark_read`, `mark_unread`, `star_thread`, `unstar_thread`, `label_thread`, `move_thread`, `snooze_thread`, `unsnooze_thread` | Write | edit | One write or outbox op each, reversible the same way the person's are. `unsnooze_thread` is local-only, like the person's own `unsnooze`: snooze never told the server anything, so there is nothing to tell it is over. |
+| `discard_draft` | Write | remove | Marks the draft `Discarded`; there is no tool that un-discards one. Refused for a non-person caller unless the draft's own `origin` is that caller's — the person's own draft, or one a different caller wrote, is left for them to discard. See "Gaps filled after shipping" below for why this stays `Write` rather than `Destructive`. |
 | `archive_thread` | Write | archive | One outbox op. |
 | `trash_thread` | Write | remove | Moves to Trash, which the server keeps and the person can restore — so it is not `Destructive` by this catalogue's definition. Permanent deletion is not a tool. |
 | `send_draft` | **Outward** | send | Queues the draft through the undo window. Takes a draft id and nothing else: a model cannot compose and send in one call. |
+| `respond_to_invite` | **Outward** | send | Accepts, tentatively accepts or declines a calendar invitation carried in a message, sending the reply to the organiser. Reaches somebody outside the vault exactly as `send_draft` does. |
 
 Permissions are checked per account at call time: a tool acting on a thread
 of an account whose switch is off is refused with the account and the switch
@@ -667,6 +670,108 @@ Interface:
   away.
 - The confirmation card for `Outward`, distinct in colour from the delete
   card, because it is a different kind of decision.
+
+#### Gaps filled after shipping
+
+Six tools the first pass of this phase left out, added once the gap was
+noticed rather than at the time:
+
+- **`mark_unread`** is the inverse of `mark_read`'s own `read: false` — a
+  separate tool because the service itself already splits `mark_read` and
+  `mark_unread` into two commands (`domains/mail.rs`), and a model choosing
+  between tool *names* does better with "mark_unread" to reach for than with
+  remembering that `mark_read` takes a flag that un-does its own name.
+- **`star_thread`/`unstar_thread`** wrap `OpKind::Star`/`Unstar`, which
+  already existed for the person's own `star`/`unstar` commands but had no
+  tool. `edit`, the same category `label_thread` and `move_thread` are in.
+- **`unsnooze_thread`** wraps `Vault::release_snooze`, the person's own
+  `unsnooze` command's equivalent. Unlike every other write in the `edit`
+  group it enqueues no `Op` and stamps no `Origin` — snooze is purely local
+  (nothing was ever told to the server), so there is nothing for the server
+  to be told is over, and nothing for `ToolContext::after_mail_write` to
+  wake a sync task over either. `permission_for` still gates it on `edit`.
+- **`discard_draft`** wraps `Vault::discard_draft`. The question worth
+  recording is why it is `Effect::Write` rather than `Effect::Destructive`,
+  given that discarding a draft has no way back — unlike `trash_thread`,
+  there is no server-side Trash a discarded draft can be restored from, so
+  by the letter of `Effect::Destructive`'s own definition ("removes
+  something that cannot be reconstructed from what remains") this looks
+  like the one write in the file that should have been destructive. Two
+  things rule that out. First, a mechanical one: the confirmation-gate test
+  `every_tool_that_deletes_says_so` (`agent/tools/mod.rs`) ties
+  `Destructive` to a tool named `delete_*` or `forget`, and this tool is
+  named `discard_draft` to match the domain's own word for the action
+  everywhere else it appears — `DraftState::Discarded`,
+  `OpKind::DiscardDraft`, the compose window's own "Discard" button, and the
+  service's own `discard_draft` command, which is itself `Effect::Write`.
+  Renaming the tool just to satisfy that test would be solving a naming
+  problem with a worse name. Second, and the reason this is a defensible
+  choice rather than a loophole: the real risk `Destructive` exists to catch
+  — the assistant misreading which record a person meant and destroying the
+  wrong one — is closed a different way here. `only_own_draft`
+  (`agent/tools/mail.rs`) refuses the call outright, before anything is
+  discarded, unless the draft's own `Origin` belongs to the caller asking:
+  the assistant may discard a draft it wrote in any conversation, MCP may
+  discard a draft it wrote, and the vault's owner acting directly is
+  unrestricted as everywhere else in this file — but neither agent may ever
+  discard a draft the *person* wrote by hand, or one the other agent wrote.
+  That is the plan's own "allow it freely only for drafts whose origin is
+  this caller" option, chosen over "treat every discard as destructive"
+  because the latter was never available to a tool named `discard_draft` in
+  the first place.
+- **`find_address`** turns a name into the addresses the person has
+  actually corresponded with, so `draft_message` can be addressed from a
+  name like "Sarah" instead of a guessed domain. The service's own
+  `suggest_addresses` command (`domains/mailsearch.rs`) answers the same
+  question for the compose window's "To" field, fuzzy and typo-tolerant,
+  through `frizbee::Matcher` in `mailsync::contacts::ContactIndex` — a
+  dependency of `everyday-service`, not of `everyday-core`, so a core tool
+  cannot call it. What a core tool *can* reach is the sealed row underneath
+  it: `Vault::mail_contacts()` (`everyday-core/src/vault/mail.rs`), the same
+  `ContactBook` `ContactIndex::load` reads once at startup. `find_address` is
+  built on that directly, with its own small, dependency-free substring
+  match (`suggest_contacts`, case-insensitive on name and address, ranked by
+  `sent_to` then `received_from`) rather than frizbee's fuzzy one. The
+  trade-off this leaves: a typo a person's own "To" field would forgive,
+  `find_address` will not, and the sealed row it reads lags the live index
+  by up to one sync pass or one send (`ContactIndex::persist_if_dirty`'s own
+  cadence), rather than being current to the keystroke. Closing that gap
+  properly needs one of two changes neither of which lives in
+  `agent/tools/mail.rs`: a new hook on `ToolContext` (parallel to
+  `mail_search`), wired by `agent.rs` and `domains/meta.rs` over
+  `Service::mail_contacts()`/`ContactIndex::suggest`, so the assistant's
+  address lookup is the person's own autocomplete rather than a plainer
+  cousin of it; or moving `frizbee` and the matching logic itself down into
+  `everyday-core` so a core tool can call it directly. Neither has been
+  done.
+- **The MCP `run_tool` change event.** `domains/meta.rs`'s
+  `mail_tool_change_kind` is a hand-maintained `match` from tool name to
+  `(Kind, Op)`, mirroring each direct command's own `change:` declaration,
+  that `run_tool` reads to raise the same `Change` an MCP-driven write
+  should. It has not been taught the six names above — see "What this
+  leaves for `everyday-service`" below.
+
+#### What this leaves for `everyday-service`
+
+Two changes this phase's tool file cannot make itself, because they live in
+`everyday-service`, not `everyday-core`:
+
+- `domains/meta.rs`'s `mail_tool_change_kind` needs the six new tool names
+  added to its `match`, the same way every existing mail tool already is,
+  so an MCP-driven call through `run_tool` raises the same `Change` a
+  person's own click does (the chat assistant's own path does not need
+  this: `agent.rs`'s `written` derives its `Change` from `tool.domain`
+  alone, not from a per-name table). Concretely:
+
+  ```rust
+  "mark_read" | "mark_unread" | "label_thread" | "move_thread" | "snooze_thread"
+  | "unsnooze_thread" | "star_thread" | "unstar_thread" | "archive_thread"
+  | "trash_thread" => Some((Kind::Thread, Op::Updated)),
+  "discard_draft" => Some((Kind::Draft, Op::Updated)),
+  ```
+
+- `find_address`'s fuzzy, typo-tolerant match — see "Gaps filled after
+  shipping" above for exactly what it would take.
 
 ### Phase 6 — Calendars that sign in
 

@@ -877,6 +877,36 @@ impl Item {
         self.touch();
     }
 
+    /// Record where you have got to.
+    ///
+    /// The unit is the one the item already carries, falling back to
+    /// `shelf_unit` -- copied onto the item rather than read live, see
+    /// [`Progress`], which explains why changing a shelf from pages to
+    /// minutes must not relabel four hundred books. A `total` left unsaid
+    /// keeps whatever total was already there. Recording progress on
+    /// something you had only wished for is you saying you have started it.
+    ///
+    /// One function for the interface's `set_item_progress` and the
+    /// assistant's `update_item` both, so the two cannot drift apart.
+    pub fn set_progress(
+        &mut self,
+        position: u32,
+        total: Option<u32>,
+        shelf_unit: impl FnOnce() -> String,
+        today: Date,
+    ) {
+        let unit = match &self.progress {
+            Some(p) if !p.unit.is_empty() => p.unit.clone(),
+            _ => shelf_unit(),
+        };
+        let total = total.or_else(|| self.progress.as_ref().and_then(|p| p.total));
+        self.progress = Some(Progress::new(position, total, unit));
+        if self.status == ItemStatus::Wishlist {
+            self.set_status(ItemStatus::Active, today);
+        }
+        self.touch();
+    }
+
     /// The best guess at a headline byline: the creator, then the year.
     pub fn byline(&self) -> String {
         match (self.creator.trim(), self.year) {

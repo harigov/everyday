@@ -8,7 +8,7 @@ use support::vault;
 use everyday_core::proposal::{DeclineReason, MAX_PENDING_PROPOSALS, Outcome as ProposalOutcome};
 use everyday_core::{
     BlockSubject, DreamScope, Memory, MemoryOrigin, Note, Payload, Project, Proposal, ProposalKind,
-    ProposedRecord, Purpose, Role, Routine, RoutineKind, Task, TimeBlock, Trigger,
+    ProposedRecord, Purpose, Role, Routine, RoutineKind, Skill, Task, TimeBlock, Trigger,
 };
 use jiff::Timestamp;
 
@@ -302,6 +302,148 @@ fn accepting_a_note_saves_it_through_the_force_path() {
 
     vault.accept_proposal(proposal.id, None, false, now()).unwrap();
     assert_eq!(vault.note(note_id).unwrap().title, "Trip notes");
+}
+
+// ---- accept: skill --------------------------------------------------------
+
+fn any_skill(name: &str) -> Skill {
+    let mut s = Skill::new(name);
+    s.description = "Use when asked to do the thing.".into();
+    s.instructions = "Do the thing.".into();
+    s
+}
+
+#[test]
+fn accepting_a_create_saves_the_skill_and_closes_accepted() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+
+    let skill = any_skill("Plan a trip");
+    let skill_id = skill.id;
+    let proposal = create(ProposedRecord::Skill(skill), "Create skill");
+    vault.save_proposal(&proposal).unwrap();
+
+    let closed = vault.accept_proposal(proposal.id, None, false, now()).unwrap();
+    match closed.outcome {
+        ProposalOutcome::Accepted { saved_as, edited, .. } => {
+            assert_eq!(saved_as, skill_id.to_string());
+            assert!(!edited);
+        }
+        other => panic!("expected Accepted, got {other:?}"),
+    }
+    let saved = vault.skills().unwrap().into_iter().find(|s| s.id == skill_id);
+    assert_eq!(saved.map(|s| s.name), Some("Plan a trip".to_string()));
+}
+
+#[test]
+fn a_fresh_skill_replace_is_saved() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+
+    let skill = any_skill("Plan a trip");
+    vault.save_skill(&skill).unwrap();
+
+    let mut edited = skill.clone();
+    edited.name = "Plan a journey".into();
+    let replace = Proposal::new(
+        Payload::Replace {
+            record: ProposedRecord::Skill(edited),
+            expected_updated_at: skill.updated_at,
+        },
+        "Change skill",
+        now(),
+        "UTC",
+    );
+    vault.save_proposal(&replace).unwrap();
+
+    let closed = vault.accept_proposal(replace.id, None, false, now()).unwrap();
+    assert!(matches!(closed.outcome, ProposalOutcome::Accepted { .. }));
+    let saved = vault.skills().unwrap().into_iter().find(|s| s.id == skill.id).unwrap();
+    assert_eq!(saved.name, "Plan a journey");
+}
+
+#[test]
+fn a_stale_skill_replace_is_declined_and_the_newer_write_survives() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+
+    let mut skill = any_skill("Plan a trip");
+    vault.save_skill(&skill).unwrap();
+    let original_updated_at = skill.updated_at;
+
+    // Somebody else edits it before the proposal is answered.
+    skill.name = "Plan a trip (edited directly)".into();
+    skill.updated_at = now() + jiff::SignedDuration::from_secs(1);
+    vault.save_skill(&skill).unwrap();
+
+    let mut proposed = skill.clone();
+    proposed.name = "Plan a journey".into();
+    proposed.updated_at = original_updated_at;
+    let replace = Proposal::new(
+        Payload::Replace {
+            record: ProposedRecord::Skill(proposed),
+            expected_updated_at: original_updated_at,
+        },
+        "Change skill",
+        now(),
+        "UTC",
+    );
+    vault.save_proposal(&replace).unwrap();
+
+    let err = vault.accept_proposal(replace.id, None, false, now()).unwrap_err();
+    assert_eq!(err.code(), "invalid");
+    assert_eq!(
+        vault.skills().unwrap().into_iter().find(|s| s.id == skill.id).unwrap().name,
+        "Plan a trip (edited directly)",
+        "the newer write must survive a stale proposal"
+    );
+}
+
+#[test]
+fn accepting_a_delete_removes_the_skill() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+
+    let skill = any_skill("No longer needed");
+    vault.save_skill(&skill).unwrap();
+
+    let proposal = Proposal::new(
+        Payload::Delete { kind: ProposalKind::Skill, id: skill.id.to_string() },
+        "Delete skill",
+        now(),
+        "UTC",
+    );
+    vault.save_proposal(&proposal).unwrap();
+
+    let closed = vault.accept_proposal(proposal.id, None, false, now()).unwrap();
+    match closed.outcome {
+        ProposalOutcome::Accepted { saved_as, .. } => assert_eq!(saved_as, skill.id.to_string()),
+        other => panic!("expected Accepted, got {other:?}"),
+    }
+    assert!(vault.skills().unwrap().into_iter().all(|s| s.id != skill.id));
+}
+
+#[test]
+fn accepting_a_skill_delete_of_something_already_gone_is_declined() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+
+    let skill = any_skill("Already deleted by someone else");
+    let proposal = Proposal::new(
+        Payload::Delete { kind: ProposalKind::Skill, id: skill.id.to_string() },
+        "Delete skill",
+        now(),
+        "UTC",
+    );
+    vault.save_proposal(&proposal).unwrap();
+
+    let err = vault.accept_proposal(proposal.id, None, false, now()).unwrap_err();
+    assert_eq!(err.code(), "invalid");
+    let closed = vault.proposal(proposal.id).unwrap();
+    assert!(matches!(
+        closed.outcome,
+        ProposalOutcome::Declined { reason: Some(DeclineReason::Other { .. }), .. }
+    ));
 }
 
 // ---- accept: block, and a purpose that has gone --------------------------

@@ -86,10 +86,10 @@ async fn get_proposal(svc: Arc<Service>, _ctx: Ctx, args: ProposalRef) -> Comman
 /// closed on the result rather than inside the vault call.
 ///
 /// Either way, a successful accept also raises a second [`Change`] for the
-/// record it saved -- the task, block, memory, routine, note or draft --
-/// beside the `Proposal` change the command table raises for every write in
-/// this file, so a window showing that list refreshes without having to
-/// special-case where a row came from.
+/// record it saved -- the task, block, memory, routine, note, skill or
+/// draft -- beside the `Proposal` change the command table raises for every
+/// write in this file, so a window showing that list refreshes without
+/// having to special-case where a row came from.
 async fn accept_proposal(svc: Arc<Service>, ctx: Ctx, args: Accept) -> CommandResult<Proposal> {
     let vault = svc.require()?;
     let id = args.id;
@@ -138,6 +138,7 @@ fn change_for_accept(proposal: &Proposal) -> Option<(Kind, Op, String)> {
         ProposalKind::Routine => Kind::Routine,
         ProposalKind::Note => Kind::Note,
         ProposalKind::Mail => Kind::Draft,
+        ProposalKind::Skill => Kind::Skill,
     };
     let op = match &proposal.payload {
         Payload::Create { .. } => Op::Created,

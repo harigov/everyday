@@ -18,7 +18,7 @@ use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use crate::websearch;
-use everyday_core::library::{Item, ItemStatus, Kind, LibraryStats, LogEntry, LogEvent, Progress};
+use everyday_core::library::{Item, ItemStatus, Kind, LibraryStats, LogEntry, LogEvent};
 use everyday_core::model::{system_tz, today_local};
 use everyday_core::store::library::{ItemQuery, LogQuery};
 use everyday_core::{ItemId, KindId, LogId};
@@ -353,20 +353,9 @@ async fn set_item_progress(svc: Arc<Service>, _ctx: Ctx, args: SetProgress) -> C
     let now = svc.now();
     blocking(move || {
         let mut item = vault.item(args.id)?;
-        // The unit comes from the shelf, and is copied onto the item rather
-        // than read live -- see `library::Progress`, which explains why changing
-        // a shelf from pages to minutes must not relabel four hundred books.
-        let unit = match &item.progress {
-            Some(p) if !p.unit.is_empty() => p.unit.clone(),
-            _ => vault.kind(item.kind_id).map(|k| k.progress_unit).unwrap_or_default(),
-        };
-        let total = args.total.or_else(|| item.progress.as_ref().and_then(|p| p.total));
-        item.progress = Some(Progress::new(args.position, total, unit));
-        // Recording progress on something you had only wished for is you
-        // telling us you have started it.
-        if item.status == ItemStatus::Wishlist {
-            item.set_status(ItemStatus::Active, today);
-        }
+        let kind_id = item.kind_id;
+        let shelf_unit = || vault.kind(kind_id).map(|k| k.progress_unit).unwrap_or_default();
+        item.set_progress(args.position, args.total, shelf_unit, today);
         item.updated_at = now;
         vault.save_item(&item)?;
 

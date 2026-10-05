@@ -1,6 +1,27 @@
 {
   "tools": [
     {
+      "domain": "agent",
+      "effect": "write",
+      "name": "accept_proposal",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "proposal_id": {
+            "description": "Id from list_proposals.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "proposal_id"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Accept proposal"
+    },
+    {
       "domain": "mail",
       "effect": "write",
       "name": "archive_thread",
@@ -20,6 +41,27 @@
       "scope": "mail",
       "sensitivity": "ordinary",
       "title": "Archive thread"
+    },
+    {
+      "domain": "agent",
+      "effect": "write",
+      "name": "confirm_memory",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "description": "From list_memories.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "memory_id"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Confirm memory"
     },
     {
       "domain": "journals",
@@ -296,6 +338,37 @@
       "title": "Create routine"
     },
     {
+      "domain": "agent",
+      "effect": "write",
+      "name": "create_skill",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "description": "One or two sentences on when to reach for this — the trigger, not the process. This is what every other conversation is told; say what kind of request it applies to.",
+            "type": "string"
+          },
+          "instructions": {
+            "description": "The process itself, in as much detail as it takes. Markdown. Never sent with the prompt — only read_skill sees it, and only once a request actually matches.",
+            "type": "string"
+          },
+          "name": {
+            "description": "What to call it. Short: it is matched by this name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "instructions"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Create skill"
+    },
+    {
       "domain": "tasks",
       "effect": "write",
       "name": "create_task",
@@ -446,6 +519,83 @@
       "title": "Create time block"
     },
     {
+      "domain": "trackers",
+      "effect": "write",
+      "name": "create_tracker",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "goal_id": {
+            "description": "File it under this goal, from list_goals.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "'check' for a yes/no habit, 'amount' for a quantity (the default), 'dose' for medication taken in the unit given.",
+            "enum": [
+              "check",
+              "amount",
+              "dose"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "description": "What is being recorded, e.g. 'Water', 'Creatine', 'Flossed'.",
+            "type": "string"
+          },
+          "role_id": {
+            "description": "Or under this role directly, from list_roles.",
+            "type": "string"
+          },
+          "unit": {
+            "description": "The unit, e.g. 'min', 'glasses', 'mg'. Empty for a plain count.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "scope": "trackers",
+      "sensitivity": "ordinary",
+      "title": "Create tracker"
+    },
+    {
+      "domain": "agent",
+      "effect": "write",
+      "name": "decline_proposal",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "note": {
+            "description": "One line, only with reason \"other\": what they actually said.",
+            "type": "string"
+          },
+          "proposal_id": {
+            "description": "Id from list_proposals.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why, only if they said so — omit rather than guess.",
+            "enum": [
+              "not_now",
+              "wrong_time",
+              "never_this",
+              "other"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "proposal_id"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Decline proposal"
+    },
+    {
       "domain": "journals",
       "effect": "destructive",
       "name": "delete_entry",
@@ -509,6 +659,27 @@
       "title": "Delete item"
     },
     {
+      "domain": "library",
+      "effect": "destructive",
+      "name": "delete_log",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "log_id": {
+            "description": "Id from list_logs.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "log_id"
+        ],
+        "type": "object"
+      },
+      "scope": "library",
+      "sensitivity": "ordinary",
+      "title": "Delete log"
+    },
+    {
       "domain": "notes",
       "effect": "destructive",
       "name": "delete_note",
@@ -551,6 +722,27 @@
       "title": "Delete project"
     },
     {
+      "domain": "trackers",
+      "effect": "destructive",
+      "name": "delete_reading",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "reading_id": {
+            "description": "From list_readings.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reading_id"
+        ],
+        "type": "object"
+      },
+      "scope": "trackers",
+      "sensitivity": "ordinary",
+      "title": "Delete reading"
+    },
+    {
       "domain": "routines",
       "effect": "destructive",
       "name": "delete_routine",
@@ -570,6 +762,27 @@
       "scope": "agent",
       "sensitivity": "ordinary",
       "title": "Delete routine"
+    },
+    {
+      "domain": "agent",
+      "effect": "destructive",
+      "name": "delete_skill",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "skill_id": {
+            "description": "Id of the skill to delete.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "skill_id"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Delete skill"
     },
     {
       "domain": "tasks",
@@ -612,6 +825,27 @@
       "scope": "tasks",
       "sensitivity": "ordinary",
       "title": "Delete time block"
+    },
+    {
+      "domain": "mail",
+      "effect": "write",
+      "name": "discard_draft",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "draft_id": {
+            "description": "Id of an existing draft from draft_reply, draft_message or update_draft.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "draft_id"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Discard draft"
     },
     {
       "domain": "mail",
@@ -697,6 +931,31 @@
       "title": "Draft reply"
     },
     {
+      "domain": "mail",
+      "effect": "read",
+      "name": "find_address",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Most addresses to return. Defaults to 10, capped at 25.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "A name or part of an email address to look for, such as \"Sarah\" or \"sarah@\".",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Find address"
+    },
+    {
       "domain": "agent",
       "effect": "destructive",
       "name": "forget",
@@ -758,6 +1017,27 @@
       "scope": "notes",
       "sensitivity": "ordinary",
       "title": "Get note"
+    },
+    {
+      "domain": "agent",
+      "effect": "read",
+      "name": "get_proposal",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "proposal_id": {
+            "description": "Id from list_proposals.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "proposal_id"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Get proposal"
     },
     {
       "domain": "tasks",
@@ -1024,6 +1304,49 @@
       "title": "List journals"
     },
     {
+      "domain": "library",
+      "effect": "read",
+      "name": "list_logs",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "description": "Restrict to one kind of entry.",
+            "enum": [
+              "started",
+              "progress",
+              "finished",
+              "revisited",
+              "note",
+              "stopped"
+            ],
+            "type": "string"
+          },
+          "from": {
+            "description": "On or after this day. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "item_id": {
+            "description": "Restrict to one item's own history. From list_items.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "to": {
+            "description": "On or before this day. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "library",
+      "sensitivity": "ordinary",
+      "title": "List logs"
+    },
+    {
       "domain": "meetings",
       "effect": "read",
       "name": "list_meeting_notes",
@@ -1128,6 +1451,47 @@
       "title": "List projects"
     },
     {
+      "domain": "agent",
+      "effect": "read",
+      "name": "list_proposals",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "description": "Only proposals that would create or change this kind of record.",
+            "enum": [
+              "task",
+              "block",
+              "memory",
+              "routine",
+              "note",
+              "mail",
+              "skill"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "status": {
+            "description": "Which to include: pending (the default) is still waiting for an answer, answered is accepted, declined or expired, and all is every proposal there is.",
+            "enum": [
+              "pending",
+              "answered",
+              "all"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "List proposals"
+    },
+    {
       "domain": "trackers",
       "effect": "read",
       "name": "list_readings",
@@ -1226,6 +1590,20 @@
       "scope": "library",
       "sensitivity": "ordinary",
       "title": "List shelves"
+    },
+    {
+      "domain": "agent",
+      "effect": "read",
+      "name": "list_skills",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "List skills"
     },
     {
       "domain": "tasks",
@@ -1382,6 +1760,60 @@
       "title": "List trackers"
     },
     {
+      "domain": "library",
+      "effect": "write",
+      "name": "log_item",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "date": {
+            "description": "When. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "event": {
+            "description": "What happened.",
+            "enum": [
+              "started",
+              "progress",
+              "finished",
+              "revisited",
+              "note",
+              "stopped"
+            ],
+            "type": "string"
+          },
+          "item_id": {
+            "description": "Which item this is about. From list_items.",
+            "type": "string"
+          },
+          "minutes": {
+            "description": "How long you spent, if you care to say.",
+            "type": "integer"
+          },
+          "note": {
+            "description": "A thought, if you have one.",
+            "type": "string"
+          },
+          "position": {
+            "description": "Where you got to, for a progress entry.",
+            "type": "integer"
+          },
+          "rating": {
+            "description": "Out of 10, if this occasion is worth rating on its own.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "item_id",
+          "event"
+        ],
+        "type": "object"
+      },
+      "scope": "library",
+      "sensitivity": "ordinary",
+      "title": "Log item"
+    },
+    {
       "domain": "trackers",
       "effect": "write",
       "name": "log_reading",
@@ -1443,6 +1875,27 @@
     {
       "domain": "mail",
       "effect": "write",
+      "name": "mark_unread",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "thread_id": {
+            "description": "Id from list_threads or search_mail.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Mark unread"
+    },
+    {
+      "domain": "mail",
+      "effect": "write",
       "name": "move_thread",
       "parameters": {
         "additionalProperties": false,
@@ -1479,6 +1932,31 @@
       "scope": "journals",
       "sensitivity": "ordinary",
       "title": "Overview"
+    },
+    {
+      "domain": "agent",
+      "effect": "read",
+      "name": "read_conversation",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "description": "Id from search_conversations.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most recent messages to keep; earlier ones in the thread are left out. Defaults to 50, capped at 200.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "conversation_id"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Read conversation"
     },
     {
       "domain": "agent",
@@ -1607,7 +2085,7 @@
         "additionalProperties": false,
         "properties": {
           "journal_id": {
-            "description": "Restrict to one journal. Omit to search all of them.",
+            "description": "Restrict to one journal. Narrows the search to that journal's entries — cannot be combined with scope \"notes\".",
             "type": "string"
           },
           "limit": {
@@ -1615,7 +2093,16 @@
             "type": "integer"
           },
           "query": {
-            "description": "Words to look for. Full-text over entry titles and bodies.",
+            "description": "Words to look for. Full-text over entry titles and bodies, and over note titles and bodies.",
+            "type": "string"
+          },
+          "scope": {
+            "description": "What kind of writing to search. Defaults to everything.",
+            "enum": [
+              "everything",
+              "entries",
+              "notes"
+            ],
             "type": "string"
           }
         },
@@ -1627,6 +2114,37 @@
       "scope": "journals",
       "sensitivity": "ordinary",
       "title": "Search"
+    },
+    {
+      "domain": "agent",
+      "effect": "read",
+      "name": "search_conversations",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "Earliest day the conversation started, inclusive. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "Case-insensitive substring to look for in what either of you said. Omit to just list recent conversations.",
+            "type": "string"
+          },
+          "to": {
+            "description": "Latest day the conversation started, inclusive. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Search conversations"
     },
     {
       "domain": "mail",
@@ -1837,6 +2355,27 @@
       "title": "Snooze thread"
     },
     {
+      "domain": "mail",
+      "effect": "write",
+      "name": "star_thread",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "thread_id": {
+            "description": "Id from list_threads or search_mail.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Star thread"
+    },
+    {
       "domain": "purpose",
       "effect": "read",
       "name": "time_by_role",
@@ -1906,6 +2445,48 @@
       "scope": "mail",
       "sensitivity": "ordinary",
       "title": "Trash thread"
+    },
+    {
+      "domain": "mail",
+      "effect": "write",
+      "name": "unsnooze_thread",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "thread_id": {
+            "description": "Id from list_threads or search_mail.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Unsnooze thread"
+    },
+    {
+      "domain": "mail",
+      "effect": "write",
+      "name": "unstar_thread",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "thread_id": {
+            "description": "Id from list_threads or search_mail.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id"
+        ],
+        "type": "object"
+      },
+      "scope": "mail",
+      "sensitivity": "ordinary",
+      "title": "Unstar thread"
     },
     {
       "domain": "mail",
@@ -2075,6 +2656,10 @@
             "description": "Replace the notes.",
             "type": "string"
           },
+          "position": {
+            "description": "Where you have got to -- a page, an episode, whatever this shelf counts in. Recording progress on a wishlist item counts as starting it. Also logged, the same way a status change is.",
+            "type": "integer"
+          },
           "rating": {
             "description": "Out of 10.",
             "type": "number"
@@ -2104,6 +2689,10 @@
           "title": {
             "description": "Rename it.",
             "type": "string"
+          },
+          "total": {
+            "description": "The finishing line, if you know it, in the same unit.",
+            "type": "integer"
           }
         },
         "required": [
@@ -2154,6 +2743,45 @@
       "scope": "notes",
       "sensitivity": "ordinary",
       "title": "Update note"
+    },
+    {
+      "domain": "agent",
+      "effect": "write",
+      "name": "update_profile",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "about": {
+            "description": "A paragraph in their own words about their work, family and what they care about. Replaces whatever is there now.",
+            "type": "string"
+          },
+          "born": {
+            "description": "Date of birth. Cannot be in the future. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "first_name": {
+            "description": "Given name.",
+            "type": "string"
+          },
+          "gender": {
+            "description": "One word, in their own words — there is no fixed list.",
+            "type": "string"
+          },
+          "last_name": {
+            "description": "Family name.",
+            "type": "string"
+          },
+          "location": {
+            "description": "Roughly where they live now, e.g. a city. This is what get_weather reads.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Update profile"
     },
     {
       "domain": "tasks",
@@ -2221,6 +2849,39 @@
       "title": "Update project"
     },
     {
+      "domain": "trackers",
+      "effect": "write",
+      "name": "update_reading",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "date": {
+            "description": "The corrected day it belongs to. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "note": {
+            "description": "Replaces the note entirely.",
+            "type": "string"
+          },
+          "reading_id": {
+            "description": "From list_readings.",
+            "type": "string"
+          },
+          "value": {
+            "description": "The corrected number. For a yes/no tracker, 1 or 0.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "reading_id"
+        ],
+        "type": "object"
+      },
+      "scope": "trackers",
+      "sensitivity": "ordinary",
+      "title": "Update reading"
+    },
+    {
       "domain": "routines",
       "effect": "write",
       "name": "update_routine",
@@ -2267,6 +2928,39 @@
       "scope": "agent",
       "sensitivity": "ordinary",
       "title": "Update routine"
+    },
+    {
+      "domain": "agent",
+      "effect": "write",
+      "name": "update_skill",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "description": "Replaces the description. Omit to leave it alone.",
+            "type": "string"
+          },
+          "instructions": {
+            "description": "Replaces the instructions. Omit to leave them alone.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Replaces the name. Omit to leave it alone.",
+            "type": "string"
+          },
+          "skill_id": {
+            "description": "Id from list_skills.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "skill_id"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Update skill"
     },
     {
       "domain": "tasks",
@@ -2370,6 +3064,59 @@
       "scope": "tasks",
       "sensitivity": "ordinary",
       "title": "Update task"
+    },
+    {
+      "domain": "tasks",
+      "effect": "write",
+      "name": "update_time_block",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "block_id": {
+            "description": "Id from list_time_blocks.",
+            "type": "string"
+          },
+          "date": {
+            "description": "Move it to this day. Omitted, it stays where it is. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "end_time": {
+            "description": "New end, as HH:MM. Must be after the start.",
+            "type": "string"
+          },
+          "goal_id": {
+            "description": "File it under this goal, from list_goals.",
+            "type": "string"
+          },
+          "label": {
+            "description": "Or give it this free-text label instead.",
+            "type": "string"
+          },
+          "project_id": {
+            "description": "Or onto this project instead.",
+            "type": "string"
+          },
+          "role_id": {
+            "description": "Or under this role directly, from list_roles.",
+            "type": "string"
+          },
+          "start_time": {
+            "description": "New start, as HH:MM. Omitted, it stays where it is.",
+            "type": "string"
+          },
+          "task_id": {
+            "description": "Move it onto this task instead.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "block_id"
+        ],
+        "type": "object"
+      },
+      "scope": "tasks",
+      "sensitivity": "ordinary",
+      "title": "Update time block"
     }
   ]
 }

@@ -42,11 +42,11 @@ pub struct SaveProfile {
 
 /// Who this vault belongs to.
 ///
-/// Under `Journals` rather than `Agent`, and read-write by hand rather than
-/// by any tool. The assistant reads it into every prompt, but it is not the
-/// assistant's: a birthday is a calendar's business and a location is the
-/// weather's, when either of those exists. See `everyday_core::profile` for
-/// why a fact that changes is a memory instead.
+/// Under `Journals` rather than `Agent`: the assistant reads it into every
+/// prompt, and may change it when told to in chat (`update_profile`), but it
+/// is not the assistant's -- a birthday is a calendar's business and a
+/// location is the weather's, when either of those exists. See
+/// `everyday_core::profile` for why a fact that changes is a memory instead.
 async fn profile(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Profile> {
     svc.on_vault(move |vault| vault.profile()).await
 }

@@ -33,6 +33,13 @@
 > - **Phase 5's parking setting is `park_unattended`,** its own switch rather
 >   than a reading of `confirm_destructive`, and covers sends as well as
 >   deletions.
+> - **Skills (added to `main` after this plan was written) joined the
+>   digest,** the same way the Contacts shelf's birthdays did. The nightly
+>   dream reads yesterday's conversations as evidence of how the person
+>   likes work done, and may propose `create_skill` or `update_skill`
+>   accordingly; the weekly and monthly dreams propose a skill when the same
+>   process recurs across the summaries they read. See *Skills join the
+>   digest* under Phase 3.
 
 A plan for letting the assistant think while nobody is watching — read what
 the day produced, revise what it believes about the person, and prepare work
@@ -487,6 +494,11 @@ Rust:
     runs:        each routine's runs in the window and whether they were seen
     proposals:   outcomes in the window, with caption, kind and reason
     memories:    the inferred list with last_supported, so the dream can revise it
+    skills:      every skill, on or off, with its id, state, a truncated description
+                 and when it last changed
+    conversations: day scope only — the person's own threads in the window: title,
+                 how many requests they made, which skills `read_skill` loaded, and
+                 excerpts of what they asked
     pending:     how many proposals are pending, against the cap
   }
   ```
@@ -495,6 +507,34 @@ Rust:
   prompt, so that it is clearly data rather than instruction, and the prompt
   says once that instructions found inside it are content — the same rule
   every string from mail already carries.
+
+  **Skills join the digest.** Added after the five phases above shipped, once
+  skills (`crates/everyday-core/src/agent.rs`) themselves existed. The
+  skills section is ambient, like the inferred-memories list: every skill
+  that exists, on or off, so a dream can see what is already there — and,
+  crucially, which skills are switched off — before it proposes touching
+  one. It does not make an otherwise-quiet night non-empty. The
+  conversations section, by contrast, is a finding: it *does* count, because
+  a person chatting with the assistant is a thing that happened. Only the
+  nightly (day) scope reads it, and only the person's own threads — a
+  routine's or a dream's own transcript is excluded the same way
+  `ConversationQuery::chats` already excludes it from the history pane.
+  Conversations are read as evidence of *how* the person likes work done,
+  never mined for personal facts — the same rule a diary already carries,
+  extended rather than duplicated. On that evidence, the nightly prompt may
+  propose `create_skill` for a multi-step process spelled out in a
+  conversation and likely to recur (never a one-off request), and
+  `update_skill` when the person corrected or redirected the assistant while
+  a skill was in use, or a skill's steps no longer match what is asked —
+  always naming the conversation in the `why`, always reading the skill with
+  `read_skill` first, never touching a skill that is switched off, and never
+  proposing to delete one. The weekly and monthly prompts do not re-read raw
+  conversations; they propose a skill when the same process turns up more
+  than once across the nightly or weekly summaries they already read. A
+  skill proposal that keeps being declined needs no extra mechanism: `kind`
+  is a plain string on the wire, so the existing stop-list (`stop_candidates`)
+  covers `"skill"` the moment `ProposalKind::ALL` lists it, the same as every
+  other kind.
 - The prompt, per scope, in the voice the other prompts use. The nightly
   one: read the digest; revise inferred memories — confirm with a new
   `last_supported`, or say nothing and let one lapse; propose at most five

@@ -400,8 +400,10 @@ pub struct MailAi {
 /// One of the six things a caller can ask to do to an account's mail.
 ///
 /// Named after the plan's own grouping: `edit` covers `update_draft`,
-/// `mark_read`, `label_thread`, `move_thread` and `snooze_thread`; `remove`
-/// covers `trash_thread`; `archive` covers `archive_thread`. The tool
+/// `mark_read`, `mark_unread`, `star_thread`, `unstar_thread`,
+/// `label_thread`, `move_thread`, `snooze_thread` and `unsnooze_thread`;
+/// `remove` covers `trash_thread` and `discard_draft`; `archive` covers
+/// `archive_thread`. The tool
 /// catalogue that reads this arrives in phase 5; the switch exists from
 /// phase 1 so the account record never needs a column added later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,9 +1,9 @@
 //! Proposals: work the assistant prepared and did not do.
 //!
 //! A [`Proposal`] is a finished record -- a task, a planned block, a memory,
-//! a routine, a note -- that the assistant built but did not save, or a mail
-//! draft it wrote but did not send, or a deletion it wants. The person
-//! accepts or declines it where the record would have been drawn. See
+//! a routine, a note, a skill -- that the assistant built but did not save,
+//! or a mail draft it wrote but did not send, or a deletion it wants. The
+//! person accepts or declines it where the record would have been drawn. See
 //! `docs/plans/dreaming.md` for the whole design; this module is its data.
 //!
 //! # Only unasked work drafts
@@ -36,7 +36,7 @@ use jiff::civil::Date;
 use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 
-use crate::agent::Memory;
+use crate::agent::{Memory, Skill};
 use crate::error::{Error, Result};
 use crate::id::{ConversationId, DraftId, ProposalId, RoutineRunId};
 use crate::note::Note;
@@ -79,16 +79,18 @@ pub enum ProposalKind {
     Routine,
     Note,
     Mail,
+    Skill,
 }
 
 impl ProposalKind {
-    pub const ALL: [ProposalKind; 6] = [
+    pub const ALL: [ProposalKind; 7] = [
         ProposalKind::Task,
         ProposalKind::Block,
         ProposalKind::Memory,
         ProposalKind::Routine,
         ProposalKind::Note,
         ProposalKind::Mail,
+        ProposalKind::Skill,
     ];
 
     /// The clear-column spelling. Stable: it is stored.
@@ -100,6 +102,7 @@ impl ProposalKind {
             ProposalKind::Routine => "routine",
             ProposalKind::Note => "note",
             ProposalKind::Mail => "mail",
+            ProposalKind::Skill => "skill",
         }
     }
 
@@ -121,14 +124,15 @@ impl From<ProposalKind> for RecordKind {
             ProposalKind::Routine => RecordKind::Routine,
             ProposalKind::Note => RecordKind::Note,
             ProposalKind::Mail => RecordKind::Draft,
+            ProposalKind::Skill => RecordKind::Skill,
         }
     }
 }
 
-/// The reverse of [`From<ProposalKind> for RecordKind`], for the six kinds a
-/// proposal can actually carry. `Err(())` for the other twenty-five -- there
-/// is no proposal kind for a journal entry or a mailbox, and returning that
-/// plainly is more honest than picking one.
+/// The reverse of [`From<ProposalKind> for RecordKind`], for the seven kinds
+/// a proposal can actually carry. `Err(())` for the other twenty-four --
+/// there is no proposal kind for a journal entry or a mailbox, and returning
+/// that plainly is more honest than picking one.
 impl TryFrom<RecordKind> for ProposalKind {
     type Error = ();
 
@@ -140,6 +144,7 @@ impl TryFrom<RecordKind> for ProposalKind {
             RecordKind::Routine => Ok(ProposalKind::Routine),
             RecordKind::Note => Ok(ProposalKind::Note),
             RecordKind::Draft => Ok(ProposalKind::Mail),
+            RecordKind::Skill => Ok(ProposalKind::Skill),
             RecordKind::Journal
             | RecordKind::Entry
             | RecordKind::Project
@@ -163,8 +168,7 @@ impl TryFrom<RecordKind> for ProposalKind {
             | RecordKind::Op
             | RecordKind::Recording
             | RecordKind::Transcript
-            | RecordKind::Voiceprint
-            | RecordKind::Skill => Err(()),
+            | RecordKind::Voiceprint => Err(()),
         }
     }
 }
@@ -179,6 +183,7 @@ pub enum ProposedRecord {
     Memory(Memory),
     Routine(Routine),
     Note(Note),
+    Skill(Skill),
 }
 
 impl ProposedRecord {
@@ -189,6 +194,7 @@ impl ProposedRecord {
             ProposedRecord::Memory(_) => ProposalKind::Memory,
             ProposedRecord::Routine(_) => ProposalKind::Routine,
             ProposedRecord::Note(_) => ProposalKind::Note,
+            ProposedRecord::Skill(_) => ProposalKind::Skill,
         }
     }
 
@@ -200,6 +206,7 @@ impl ProposedRecord {
             ProposedRecord::Memory(r) => r.id.to_string(),
             ProposedRecord::Routine(r) => r.id.to_string(),
             ProposedRecord::Note(r) => r.id.to_string(),
+            ProposedRecord::Skill(r) => r.id.to_string(),
         }
     }
 
@@ -210,6 +217,7 @@ impl ProposedRecord {
             ProposedRecord::Memory(r) => r.updated_at,
             ProposedRecord::Routine(r) => r.updated_at,
             ProposedRecord::Note(r) => r.updated_at,
+            ProposedRecord::Skill(r) => r.updated_at,
         }
     }
 
@@ -228,6 +236,7 @@ impl ProposedRecord {
             ProposedRecord::Memory(m) => m.validate(),
             ProposedRecord::Routine(r) => r.validate(),
             ProposedRecord::Note(n) => n.validate(),
+            ProposedRecord::Skill(s) => s.validate(),
         }
     }
 
@@ -603,6 +612,7 @@ impl Proposal {
 /// | Memory | thirty days |
 /// | Routine | fourteen days |
 /// | Note | seven days |
+/// | Skill | fourteen days |
 /// | Mail | thirty days; the draft's own fate closes it sooner |
 /// | Delete | seven days |
 pub fn expiry_for(payload: &Payload, now: Timestamp, tz: &str) -> Timestamp {
@@ -625,7 +635,11 @@ pub fn expiry_for(payload: &Payload, now: Timestamp, tz: &str) -> Timestamp {
                 }
             }
             ProposedRecord::Memory(_) => days(30),
-            ProposedRecord::Routine(_) => days(14),
+            // The same fourteen days as a routine: both are standing
+            // changes to how the assistant behaves rather than to one
+            // day's plan, so neither is worth the urgency a task's due
+            // date or a block's own end carries.
+            ProposedRecord::Routine(_) | ProposedRecord::Skill(_) => days(14),
             ProposedRecord::Note(_) => days(7),
         },
     }
@@ -692,7 +706,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_routine_note_delete_and_mail_have_fixed_lifetimes() {
+    fn memory_routine_note_skill_delete_and_mail_have_fixed_lifetimes() {
         let day = |n: i64| now() + SignedDuration::from_hours(24 * n);
         let cases = [
             (Payload::Create { record: ProposedRecord::Memory(Memory::new("x")) }, day(30)),
@@ -707,6 +721,7 @@ mod tests {
                 day(14),
             ),
             (Payload::Create { record: ProposedRecord::Note(Note::new("n")) }, day(7)),
+            (Payload::Create { record: ProposedRecord::Skill(Skill::new("s")) }, day(14)),
             (Payload::Delete { kind: ProposalKind::Task, id: "x".into() }, day(7)),
             (Payload::SendMail { draft_id: DraftId::new() }, day(30)),
         ];

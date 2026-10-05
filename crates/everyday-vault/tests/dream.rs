@@ -210,6 +210,156 @@ fn the_month_digest_names_birthdays_in_the_month_ahead() {
     assert!(dana_at < own_at, "soonest first");
 }
 
+// ---- skills -----------------------------------------------------------------
+
+#[test]
+fn the_skills_section_lists_on_and_off_skills_and_stays_ambient() {
+    let (_dir, vault) = vault_for_test();
+
+    let mut plan = everyday_core::Skill::new("Plan a trip");
+    plan.description = "Use when asked to plan a trip or a multi-day journey.".into();
+    plan.instructions = "Check the calendar, check the weather, propose blocks.".into();
+    plan.updated_at = ts("2026-09-10T00:00:00Z");
+    vault.save_skill(&plan).unwrap();
+
+    let mut retired = everyday_core::Skill::new("Retired review");
+    retired.description = "No longer run.".into();
+    retired.instructions = "Old steps nobody follows now.".into();
+    retired.enabled = false;
+    retired.updated_at = ts("2026-01-01T00:00:00Z");
+    vault.save_skill(&retired).unwrap();
+
+    // Nothing else happened, so the digest would otherwise be empty -- the
+    // skills section must not be what breaks that.
+    let now = zoned(2026, 9, 16, 9, 0);
+    let d = dream::digest(&vault, DreamScope::Day, &now).unwrap();
+    assert!(d.is_empty(), "skills are ambient state, not a finding in the window: {:?}", d.skills);
+
+    assert!(
+        d.skills.iter().any(|s| s.contains(&plan.id.to_string())
+            && s.contains("Plan a trip")
+            && s.contains("-- on --")),
+        "{:?}",
+        d.skills
+    );
+    assert!(
+        d.skills.iter().any(|s| s.contains(&retired.id.to_string())
+            && s.contains("Retired review")
+            && s.contains("-- off --")),
+        "a switched-off skill is listed too: {:?}",
+        d.skills
+    );
+}
+
+// ---- conversations ------------------------------------------------------
+
+#[test]
+fn the_conversations_section_names_requests_and_the_skills_loaded_for_them() {
+    let (_dir, vault) = vault_for_test();
+
+    // `save_message` bumps a conversation's `updated_at` to the *later* of
+    // the message's own and whatever it already was, so it has to start
+    // older than every message below -- otherwise the real wall clock
+    // `Conversation::new` stamped it with would win the comparison instead.
+    let mut conversation = everyday_core::Conversation::new();
+    conversation.updated_at = ts("2000-01-01T00:00:00Z");
+    vault.save_conversation(&conversation).unwrap();
+
+    let mut ask =
+        everyday_core::Message::user(conversation.id, "Can you plan a week in Portugal for May?");
+    ask.created_at = ts("2026-09-15T09:00:00Z");
+    vault.save_message(&ask).unwrap();
+
+    let mut loads_skill =
+        everyday_core::Message::assistant(conversation.id, "").with_tool_calls(vec![
+            everyday_core::ToolCall {
+                id: "call_1".into(),
+                name: "read_skill".into(),
+                arguments: serde_json::json!({ "name": "Plan a trip" }),
+            },
+        ]);
+    loads_skill.created_at = ts("2026-09-15T09:00:05Z");
+    vault.save_message(&loads_skill).unwrap();
+
+    let mut follow_up = everyday_core::Message::user(
+        conversation.id,
+        "Actually make it ten days, starting the second Monday",
+    );
+    follow_up.created_at = ts("2026-09-15T09:05:00Z");
+    vault.save_message(&follow_up).unwrap();
+
+    // A dream's own transcript, updated the same day, must not be read as
+    // one of the person's own conversations.
+    let mut transcript =
+        everyday_core::Conversation::for_run(everyday_core::RoutineRunId::new(), "Nightly run");
+    transcript.updated_at = ts("2000-01-01T00:00:00Z");
+    vault.save_conversation(&transcript).unwrap();
+    let mut dream_message = everyday_core::Message::user(transcript.id, "the digest itself");
+    dream_message.created_at = ts("2026-09-15T03:00:00Z");
+    vault.save_message(&dream_message).unwrap();
+
+    let now = zoned(2026, 9, 16, 9, 0);
+    let d = dream::digest(&vault, DreamScope::Day, &now).unwrap();
+    assert!(!d.is_empty(), "somebody chatting with the assistant is a thing that happened");
+    assert_eq!(d.conversations.len(), 1, "{:?}", d.conversations);
+    let line = &d.conversations[0];
+    assert!(line.contains("2 requests"), "{line}");
+    assert!(line.contains("skills loaded: Plan a trip"), "{line}");
+    assert!(line.contains("plan a week in Portugal"), "{line}");
+    assert!(line.contains("ten days"), "{line}");
+    assert!(!line.contains("the digest itself"), "a dream's own transcript is not a conversation");
+}
+
+#[test]
+fn the_conversations_section_caps_how_many_conversations_it_lists() {
+    let (_dir, vault) = vault_for_test();
+    for i in 0..(dream::MAX_DIGEST_CONVERSATIONS + 2) {
+        let mut conversation = everyday_core::Conversation::new();
+        conversation.updated_at = ts("2000-01-01T00:00:00Z");
+        vault.save_conversation(&conversation).unwrap();
+        let mut msg = everyday_core::Message::user(conversation.id, format!("request {i}"));
+        msg.created_at = ts("2026-09-15T09:00:00Z");
+        vault.save_message(&msg).unwrap();
+    }
+
+    let now = zoned(2026, 9, 16, 9, 0);
+    let d = dream::digest(&vault, DreamScope::Day, &now).unwrap();
+    assert_eq!(d.conversations.len(), dream::MAX_DIGEST_CONVERSATIONS + 1, "{:?}", d.conversations);
+    assert!(d.conversations.last().unwrap().contains("and 2 more"), "{:?}", d.conversations);
+}
+
+#[test]
+fn the_conversations_section_caps_excerpts_and_their_length() {
+    let (_dir, vault) = vault_for_test();
+    let mut conversation = everyday_core::Conversation::new();
+    conversation.updated_at = ts("2000-01-01T00:00:00Z");
+    vault.save_conversation(&conversation).unwrap();
+
+    let cap = dream::MAX_CONVERSATION_EXCERPTS;
+    let long_text = "a".repeat(dream::MAX_EXCERPT_CHARS + 50);
+    let mut long_msg = everyday_core::Message::user(conversation.id, long_text.clone());
+    long_msg.created_at = zoned(2026, 9, 15, 9, 0).timestamp();
+    vault.save_message(&long_msg).unwrap();
+
+    for i in 1..=(cap + 1) {
+        let mut msg = everyday_core::Message::user(conversation.id, format!("request number {i}"));
+        msg.created_at = zoned(2026, 9, 15, 9, i as i8).timestamp();
+        vault.save_message(&msg).unwrap();
+    }
+
+    let now = zoned(2026, 9, 16, 9, 0);
+    let d = dream::digest(&vault, DreamScope::Day, &now).unwrap();
+    assert_eq!(d.conversations.len(), 1, "{:?}", d.conversations);
+    let line = &d.conversations[0];
+    assert!(line.contains(&format!("{} requests", cap + 2)), "{line}");
+    assert!(line.contains('\u{2026}'), "a long excerpt is cut with an ellipsis: {line}");
+    assert!(!line.contains(&long_text), "the cut excerpt must not contain the whole thing: {line}");
+    assert!(
+        !line.contains(&format!("\"request number {}\"", cap + 1)),
+        "only the capped number of excerpts are quoted: {line}"
+    );
+}
+
 // ---- set_dreaming ----------------------------------------------------------
 
 #[test]
