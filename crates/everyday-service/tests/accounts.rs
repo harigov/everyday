@@ -58,6 +58,30 @@ async fn saving_an_account_with_mail_on_starts_its_task() {
 }
 
 #[tokio::test]
+async fn an_oauth_account_saves_in_the_shape_the_add_account_sheet_sends() {
+    // `auth` written out by hand, as `AddAccount.svelte` builds it, rather
+    // than serialised from Rust: the bug was the two sides disagreeing, so a
+    // round trip through Rust's own spelling would have passed all along.
+    // This failed with "missing field `client_id`".
+    let (svc, _dir) = service();
+    let mut account = serde_json::to_value(Account::new(Provider::Google, "me@gmail.com")).unwrap();
+    account["auth"] = json!({
+        "type": "oAuth",
+        "clientId": "me.apps.googleusercontent.com",
+        "authUrl": "https://accounts.google.com/o/oauth2/v2/auth",
+        "tokenUrl": "https://oauth2.googleapis.com/token",
+        "scopes": ["https://mail.google.com/"],
+    });
+    let id = account["id"].clone();
+
+    call(&svc, "save_account", json!({ "account": account })).await;
+
+    let saved = call(&svc, "get_account", json!({ "id": id })).await;
+    assert_eq!(saved["auth"]["clientId"], "me.apps.googleusercontent.com", "got {saved}");
+    assert!(saved["auth"]["tokenUrl"].is_string(), "camelCase back out too: got {saved}");
+}
+
+#[tokio::test]
 async fn switching_mail_off_stops_the_task_and_back_on_starts_it_again() {
     let (svc, _dir) = service();
     let mut account = account(true);
