@@ -13,7 +13,8 @@
 //!   looking for one, and a remote client must not be able to make the server
 //!   open a different vault.
 //! * **`ready_to_close`**, which destroys the window.
-//! * **The tray**, which is a platform menu this process owns.
+//! * **The tray**, which is a platform menu this process owns, and the badge
+//!   on the application's icon, which is the same kind of thing.
 //! * **`put_blob`**, which is bytes rather than JSON -- see its own comment.
 //! * **`send_message`**, which answers with a stream rather than a value.
 //!
@@ -35,6 +36,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{Manager, State};
 
+use crate::badge::{Badge, BadgeSources};
 use crate::remote::{self, Remote};
 use crate::remotes;
 use crate::state::AppState;
@@ -823,6 +825,26 @@ pub async fn hide_tray(app: tauri::AppHandle) -> CommandResult<()> {
 pub async fn set_tray_meeting(app: tauri::AppHandle, on: bool) -> CommandResult<()> {
     blocking(move || {
         app.state::<Tray>().set_meeting_enabled(&app, on)?;
+        Ok(())
+    })
+    .await
+}
+
+// ---- the badge on the application's icon ----------------------------------
+
+/// Choose what the number on the application's icon counts -- tasks, unread
+/// mail, the assistant's unseen work, added together -- and show it at once.
+/// Nothing chosen takes the badge off.
+///
+/// A machine preference rather than a vault one, the same as the tray's
+/// switches: an icon in this desktop's dock is a fact about this machine, and
+/// the choice has to be known before anything is unlocked. See
+/// `ui/src/lib/badge.svelte.ts`, where it is stored, and `badge.rs`, which
+/// does the counting.
+#[tauri::command]
+pub async fn set_badge(app: tauri::AppHandle, sources: BadgeSources) -> CommandResult<()> {
+    blocking(move || {
+        app.state::<Badge>().set_sources(&app, sources);
         Ok(())
     })
     .await

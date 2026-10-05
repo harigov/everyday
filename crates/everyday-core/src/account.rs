@@ -255,9 +255,14 @@ pub struct Identity {
 /// project registers. `Password` covers everyone else -- an app password for
 /// iCloud, Fastmail or Yahoo, or a plain one for a self-hosted server that
 /// has no OAuth story at all.
+// `rename_all` names the variants, `rename_all_fields` the fields inside
+// them. Without the second, `client_id` went out in snake_case against an
+// interface sending `clientId`, and no OAuth account -- Google, Microsoft --
+// could be saved at all ("missing field `client_id`"). The aliases keep any
+// record sealed in the old spelling readable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AuthMethod {
     OAuth {
         /// The user's own, per the plan's decision not to ship a built-in
@@ -265,8 +270,11 @@ pub enum AuthMethod {
         /// to be visible in a redirect URL -- but kept on the record rather
         /// than in `AccountSecret` because it is configuration, not a
         /// credential: knowing it lets nobody sign in as anybody.
+        #[serde(alias = "client_id")]
         client_id: String,
+        #[serde(alias = "auth_url")]
         auth_url: String,
+        #[serde(alias = "token_url")]
         token_url: String,
         scopes: Vec<String>,
     },
@@ -694,6 +702,38 @@ mod tests {
             }
             AuthMethod::Password { .. } => panic!("google has an oauth preset"),
         }
+    }
+
+    #[test]
+    fn oauth_fields_are_camel_case_on_the_wire_and_the_old_spelling_still_reads() {
+        let auth = AuthMethod::OAuth {
+            client_id: "id".into(),
+            auth_url: "https://a".into(),
+            token_url: "https://t".into(),
+            scopes: vec!["s".into()],
+        };
+        let wire = serde_json::to_value(&auth).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "type": "oAuth",
+                "clientId": "id",
+                "authUrl": "https://a",
+                "tokenUrl": "https://t",
+                "scopes": ["s"],
+            }),
+            "what the interface sends and reads"
+        );
+        assert_eq!(serde_json::from_value::<AuthMethod>(wire).unwrap(), auth);
+
+        let sealed = serde_json::json!({
+            "type": "oAuth",
+            "client_id": "id",
+            "auth_url": "https://a",
+            "token_url": "https://t",
+            "scopes": ["s"],
+        });
+        assert_eq!(serde_json::from_value::<AuthMethod>(sealed).unwrap(), auth);
     }
 
     #[test]

@@ -1897,6 +1897,24 @@ export type TrayMenuItem =
   | { kind: 'separator' }
   | { kind: 'submenu'; label: string; enabled: boolean; items: TrayMenuItem[] }
 
+// ── The badge on the application's icon ───────────────────────────────────
+//
+// What `set_badge` takes: which counts the shell adds up into the number on
+// the Dock or taskbar icon. Mirrors `everyday-app`'s `badge::BadgeSources`.
+
+export interface BadgeSources {
+  /**
+   * Which tasks, if any: those due today or already overdue (the count
+   * beside "Today"), or every open one (beside "All tasks"). One choice
+   * rather than two switches, because the first is a subset of the second.
+   */
+  tasks: 'off' | 'due' | 'open'
+  /** Unread messages in each mail account's inbox, snoozed threads aside. */
+  mail: boolean
+  /** Runs and proposals not yet looked at -- the assistant button's count. */
+  assistant: boolean
+}
+
 // ── The library domain ───────────────────────────────────────────────────
 //
 // Mirrors `everyday-core`'s `library` module. Three records, and the middle

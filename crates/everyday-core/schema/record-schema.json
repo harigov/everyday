@@ -89,10 +89,10 @@
         "oneOf": [
           {
             "properties": {
-              "auth_url": {
+              "authUrl": {
                 "type": "string"
               },
-              "client_id": {
+              "clientId": {
                 "description": "The user's own, per the plan's decision not to ship a built-in\none. Not secret in the OAuth sense -- a public client id is meant\nto be visible in a redirect URL -- but kept on the record rather\nthan in `AccountSecret` because it is configuration, not a\ncredential: knowing it lets nobody sign in as anybody.",
                 "type": "string"
               },
@@ -102,7 +102,7 @@
                 },
                 "type": "array"
               },
-              "token_url": {
+              "tokenUrl": {
                 "type": "string"
               },
               "type": {
@@ -112,9 +112,9 @@
             },
             "required": [
               "type",
-              "client_id",
-              "auth_url",
-              "token_url",
+              "clientId",
+              "authUrl",
+              "tokenUrl",
               "scopes"
             ],
             "type": "object"

@@ -13,6 +13,7 @@ import type {
   AgentEvent,
   AgentMailAccess,
   AgentSettings,
+  BadgeSources,
   BlockId,
   BlockKind,
   BlockQuery,
@@ -804,6 +805,12 @@ export const api = {
    * itself being on) rather than mirroring a vault write.
    */
   setTrayMeeting: (on: boolean) => invoke<void>('set_tray_meeting', { on }),
+  /**
+   * Choose what the number on the application's icon counts; nothing chosen
+   * takes it off. The shell does the counting, and keeps it current with the
+   * window hidden -- see `crates/everyday-app/src/badge.rs`.
+   */
+  setBadge: (sources: BadgeSources) => invoke<void>('set_badge', { sources }),
 
   /** All tags in use, most frequent first. */
   tags: () => call('listTags', {}),

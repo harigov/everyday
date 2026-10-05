@@ -5756,6 +5756,11 @@ export const mockInvoke = async <T>(
     case 'set_tray_meeting':
       return undefined as T
 
+    // The badge on the application's icon. Unreachable for the same reason:
+    // `badge.supported` is `!isMock` -- see `lib/badge.svelte.ts`.
+    case 'set_badge':
+      return undefined as T
+
     // ── The shell's half: capture, called by name -- see `api.ts`'s
     //    "Meeting capture, in the Tauri shell" ───────────────────────────
 

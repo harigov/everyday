@@ -93,6 +93,12 @@ hound = "3.5"
 # see `make setup` and `.github/workflows/check.yml`.
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { version = "0.18", features = ["pipewire"] }
+# The application icon's badge on Linux is one D-Bus signal --
+# `com.canonical.Unity.LauncherEntry.Update` -- sent on a connection held for
+# the life of the process; see `src/badge.rs` for why not through Tauri's own
+# `set_badge_count`. Already in the build: the opener and single-instance
+# plugins use the same crate, with the same default features.
+zbus = "5"
 
 [dev-dependencies]
 # `protocol.rs`'s mail route tests build their URLs from a real

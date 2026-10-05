@@ -2,42 +2,154 @@
   Every Day — application mark. Master artwork; every PNG, .ico and .icns
   beside this file is generated from it by `make icons`.
 
-  A sun clearing the horizon, and the horizon is the first line of an entry.
-  The three bars taper the way a short paragraph does, so at large sizes the
-  mark reads as writing and at small sizes it reads as a sunrise — which is
-  the right pair of meanings for a journal called Every Day.
+  Three cards in a cascade: one application made of several, and the days
+  piling up behind today. Each card carries one of the things a day is made
+  of — the assistant's sparkle at the back, a ticked task in the middle, and
+  in front, where the eye lands first, the pen nib of the journal the whole
+  application grew from. The symbols are their own drawings, not the
+  interface's icons: those are 1.5px outlines meant for 16px buttons, and
+  these are solid glyphs meant to be seen on a tile.
 
-  Everything is a circle or a rounded bar on the centre line. That is what
-  survives being scaled to 16 pixels and re-rasterised by three different
-  operating systems.
+  Built on Apple's icon grid so it sits level with the icons beside it: a
+  1024 canvas, an 824 tile with 100 of margin all round, and the shadow
+  falling into that margin. The tile and the cards are continuous-corner
+  squircles rather than rounded rects — radius 22.5% (cards 26%) with
+  Figma's 60% corner smoothing, which is the curve macOS draws. GNOME's own
+  icons keep a similar margin, so the same file is right for the Linux dock.
+
+  At 32px and below the glyphs are gone and what is left is three coloured
+  cards stepping down a dark tile, which is still the mark.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <defs>
-    <!-- Warm at the top-left, deepening to the interface accent (#b4530f)
-         at the bottom-right, so the icon and the app agree on their colour. -->
-    <linearGradient id="sky" x1=".12" y1="0" x2=".88" y2="1">
-      <stop offset="0" stop-color="#ffc768"/>
-      <stop offset=".42" stop-color="#f18a2b"/>
-      <stop offset="1" stop-color="#ab440a"/>
+    <path id="tile" d="M627.36 100c103.83 0 155.75 0 195.41 20.21a185.4 185.4 0 0 1 81.02 81.02c20.21 39.66 20.21 91.58 20.21 195.41L924 627.36c0 103.83 0 155.75 -20.21 195.41a185.4 185.4 0 0 1 -81.02 81.02c-39.66 20.21 -91.58 20.21 -195.41 20.21L396.64 924c-103.83 0 -155.75 0 -195.41 -20.21a185.4 185.4 0 0 1 -81.02 -81.02c-20.21 -39.66 -20.21 -91.58 -20.21 -195.41L100 396.64c0 -103.83 0 -155.75 20.21 -195.41a185.4 185.4 0 0 1 81.02 -81.02c39.66 -20.21 91.58 -20.21 195.41 -20.21Z"/>
+    <clipPath id="clip"><use href="#tile"/></clipPath>
+    <!-- One card, 360 square, centred on the origin. -->
+    <path id="card" d="M30.24 -180c52.42 0 78.63 0 98.65 10.2a93.6 93.6 0 0 1 40.9 40.9c10.2 20.02 10.2 46.23 10.2 98.65L180 30.24c0 52.42 0 78.63 -10.2 98.65a93.6 93.6 0 0 1 -40.9 40.9c-20.02 10.2 -46.23 10.2 -98.65 10.2L-30.24 180c-52.42 0 -78.63 0 -98.65 -10.2a93.6 93.6 0 0 1 -40.9 -40.9c-10.2 -20.02 -10.2 -46.23 -10.2 -98.65L-180 -30.24c0 -52.42 0 -78.63 10.2 -98.65a93.6 93.6 0 0 1 40.9 -40.9c20.02 -10.2 46.23 -10.2 98.65 -10.2Z"/>
+
+    <!-- The glyphs, each on a 100-unit box centred on the origin. -->
+    <!-- A four-point sparkle with a small one beside it. -->
+    <g id="sparkle" fill="#fff">
+      <path d="M0 -50C5 -16 16 -5 50 0C16 5 5 16 0 50C-5 16 -16 5 -50 0C-16 -5 -5 -16 0 -50Z"/>
+      <path d="M0 -50C5 -16 16 -5 50 0C16 5 5 16 0 50C-5 16 -16 5 -50 0C-16 -5 -5 -16 0 -50Z"
+            transform="translate(36 -34) scale(.32)"/>
+    </g>
+    <path id="check" d="M-34 2L-11 25L35 -24" fill="none" stroke="#fff" stroke-width="17"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- A fountain-pen nib, tip down, with its breather hole and slit cut
+         through so the card shows behind them. -->
+    <path id="nib" fill="#fff" fill-rule="evenodd"
+          d="M0 52L-31 2C-36 -7 -33 -19 -24 -26L-24 -50L24 -50L24 -26C33 -19 36 -7 31 2Z
+             M0 -14a8 8 0 1 0 .01 0Z
+             M-2.4 -6L2.4 -6L1.6 40L0 44L-1.6 40Z"/>
+
+    <!-- macOS's two-part shadow under the tile: a tight contact shadow and
+         a soft one further down. Both land inside the 100 of margin. -->
+    <filter id="drop" x="-10%" y="-10%" width="120%" height="125%" color-interpolation-filters="sRGB">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="6" result="near"/>
+      <feOffset in="near" dy="4" result="near"/>
+      <feFlood flood-color="#000" flood-opacity=".22"/>
+      <feComposite in2="near" operator="in" result="near"/>
+      <feGaussianBlur in="SourceAlpha" stdDeviation="16" result="far"/>
+      <feOffset in="far" dy="14" result="far"/>
+      <feFlood flood-color="#000" flood-opacity=".26"/>
+      <feComposite in2="far" operator="in" result="far"/>
+      <feMerge>
+        <feMergeNode in="far"/>
+        <feMergeNode in="near"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <!-- Each card's shadow on the one behind it, and on the tile. -->
+    <filter id="lift" x="-30%" y="-30%" width="160%" height="170%" color-interpolation-filters="sRGB">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="26"/>
+      <feOffset dy="22" result="s"/>
+      <feFlood flood-color="#05030c" flood-opacity=".5"/>
+      <feComposite in2="s" operator="in"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <!-- And a glyph's, much smaller, on its card. -->
+    <filter id="press" x="-40%" y="-40%" width="180%" height="190%" color-interpolation-filters="sRGB">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="5"/>
+      <feOffset dy="5" result="s"/>
+      <feFlood flood-color="#3a1030" flood-opacity=".3"/>
+      <feComposite in2="s" operator="in"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="haze" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="70"/>
+    </filter>
+
+    <linearGradient id="night" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a1f47"/>
+      <stop offset="1" stop-color="#120d22"/>
     </linearGradient>
-    <!-- A single soft highlight along the top edge. Enough to keep the tile
-         from looking like flat vinyl, not enough to read as a gloss. -->
-    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#fff" stop-opacity=".2"/>
+    <!-- Violet, coral, amber: cooler at the back, the interface's warm
+         orange at the front. -->
+    <linearGradient id="violet" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6f6cff"/>
+      <stop offset="1" stop-color="#a557ff"/>
+    </linearGradient>
+    <linearGradient id="coral" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff4f8b"/>
+      <stop offset="1" stop-color="#ff7a59"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff8f2e"/>
+      <stop offset="1" stop-color="#ffc24a"/>
+    </linearGradient>
+    <!-- Glass: light falling on each card from the top left, and a bright
+         edge where it catches. -->
+    <linearGradient id="sheen" x1="0" y1="0" x2=".8" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".5"/>
       <stop offset=".5" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".9"/>
+      <stop offset=".5" stop-color="#fff" stop-opacity=".15"/>
+      <stop offset="1" stop-color="#fff" stop-opacity=".35"/>
+    </linearGradient>
+    <!-- The tile's own edge: lit along the top, faintly dark along the
+         bottom, so it keeps an outline against a dark dock. -->
+    <linearGradient id="rim" x1="0" y1="100" x2="0" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff" stop-opacity=".55"/>
+      <stop offset=".2" stop-color="#fff" stop-opacity=".08"/>
+      <stop offset=".8" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000" stop-opacity=".12"/>
     </linearGradient>
   </defs>
 
-  <rect width="512" height="512" rx="114" fill="url(#sky)"/>
-  <rect width="512" height="512" rx="114" fill="url(#sheen)"/>
+  <g filter="url(#drop)">
+    <g clip-path="url(#clip)">
+      <rect width="1024" height="1024" fill="url(#night)"/>
+      <!-- The cards' colour lighting the tile around them. -->
+      <circle cx="512" cy="540" r="260" fill="#ff5a6a" opacity=".28" filter="url(#haze)"/>
 
-  <!-- The sun is cropped by the first bar rather than sitting above it: it is
-       rising, not floating. -->
-  <circle cx="256" cy="190" r="86" fill="#fff9f2"/>
+      <!-- Back to front, each 128 further down and to the right and turned
+           8 degrees more. A back card's glyph sits in its top-left corner,
+           the part of it the next card leaves showing. -->
+      <g transform="translate(384 384) rotate(-8)">
+        <use href="#card" fill="url(#violet)" opacity=".92" filter="url(#lift)"/>
+        <use href="#card" fill="url(#sheen)"/>
+        <use href="#card" fill="none" stroke="url(#edge)" stroke-width="4"/>
+        <use href="#sparkle" transform="translate(-112 -112) rotate(8) scale(.92)" filter="url(#press)"/>
+      </g>
+      <g transform="translate(512 512)">
+        <use href="#card" fill="url(#coral)" opacity=".92" filter="url(#lift)"/>
+        <use href="#card" fill="url(#sheen)"/>
+        <use href="#card" fill="none" stroke="url(#edge)" stroke-width="4"/>
+        <use href="#check" transform="translate(-112 -112) scale(.92)" filter="url(#press)"/>
+      </g>
+      <g transform="translate(640 640) rotate(8)">
+        <use href="#card" fill="url(#amber)" opacity=".96" filter="url(#lift)"/>
+        <use href="#card" fill="url(#sheen)"/>
+        <use href="#card" fill="none" stroke="url(#edge)" stroke-width="4"/>
+        <!-- Turned so the tip points down to the left, the way a pen sits
+             in a right hand. -->
+        <use href="#nib" transform="rotate(37) scale(1.9)" filter="url(#press)"/>
+      </g>
 
-  <!-- Widths taper 352 / 258 / 164 and the opacity falls with them, so the
-       eye reads a horizon receding rather than three equal rules. -->
-  <rect x="80"  y="250" width="352" height="30" rx="15" fill="#fff9f2"/>
-  <rect x="127" y="314" width="258" height="30" rx="15" fill="#fff9f2" opacity=".74"/>
-  <rect x="174" y="378" width="164" height="30" rx="15" fill="#fff9f2" opacity=".5"/>
+      <use href="#tile" fill="none" stroke="url(#rim)" stroke-width="6"/>
+    </g>
+  </g>
 </svg>

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Register (or with --remove, unregister) Every Day with the desktop, for the
-# current user only.
+# current user only. Pass a binary's path to register that build rather than
+# the one found under the target directory.
 #
 # Why this is needed at all:
 #
@@ -27,19 +28,39 @@ if [ "${1:-}" = "--remove" ]; then
   echo "Removed $APPS/$ID.desktop and its icons."
 else
   root="$(cd "$(dirname "$0")/.." && pwd)"
-  # Prefer a release build, fall back to the debug one `make run` produces.
   bin=""
-  for c in "$root/target/release/$ID" "$root/target/debug/$ID"; do
-    [ -x "$c" ] && bin="$c" && break
-  done
-  if [ -z "$bin" ]; then
-    echo "No binary found. Run 'make build' (or 'make run' once) first." >&2
+  if [ -n "${1:-}" ]; then
+    [ -x "$1" ] && [ -f "$1" ] || { echo "$1 is not an executable file." >&2; exit 1; }
+    bin="$1"
+  else
+    # Look where cargo actually put the build -- CARGO_TARGET_DIR moves it out
+    # of the checkout. Prefer a release build, fall back to the debug one
+    # `make run` produces.
+    target="${CARGO_TARGET_DIR:-$root/target}"
+    for c in "$target/release/$ID" "$target/debug/$ID"; do
+      [ -x "$c" ] && bin="$c" && break
+    done
+    if [ -z "$bin" ]; then
+      echo "No binary under $target. Build first, or name the one to use:" >&2
+      echo "  make desktop-entry ARGS=/path/to/$ID" >&2
+      exit 1
+    fi
+  fi
+  bin="$(realpath "$bin")"
+  # The app id is the file name the binary was started as, so a renamed copy
+  # would never match this desktop file.
+  if [ "$(basename "$bin")" != "$ID" ]; then
+    echo "$bin must be named $ID for GNOME to match its window to this entry." >&2
     exit 1
   fi
 
   mkdir -p "$APPS"
   # An absolute Exec is what makes this work for an uninstalled build: the
   # desktop file is only a description, the binary stays where it was built.
+  # It is also what goes stale. GLib discards a desktop file whose Exec does
+  # not exist, so once that build is deleted or moved the entry silently stops
+  # counting and the window falls back to the generic icon. Run this again
+  # against whichever build you are running now.
   cat > "$APPS/$ID.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
