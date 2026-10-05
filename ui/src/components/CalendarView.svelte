@@ -68,7 +68,11 @@
     }).formatRange(first, last)
   })
 
-  /** The one-line summary: what is booked, and what it came to. */
+  /** What the summary line below says, and no longer always one line --
+   *  see `.summary`'s own doc for why it wraps now. Each bit's own spaces
+   *  are non-breaking, so a wrap (week and month view, with more days
+   *  behind the totals, are the ones long enough to need it) only ever
+   *  falls at a `·`, never inside "2h 30m" or "10 events". */
   const summary = $derived.by(() => {
     let planned = 0
     let logged = 0
@@ -78,10 +82,12 @@
       logged += t.logged
     }
     const bits: string[] = []
-    if (planned > 0) bits.push(`${formatMinutes(planned)} planned`)
-    if (logged > 0) bits.push(`${formatMinutes(logged)} logged`)
+    if (planned > 0) bits.push(`${formatMinutes(planned)} planned`.replace(/ /g, '\u00a0'))
+    if (logged > 0) bits.push(`${formatMinutes(logged)} logged`.replace(/ /g, '\u00a0'))
     const meetings = calendar.events.length
-    if (meetings > 0) bits.push(`${meetings} ${meetings === 1 ? 'event' : 'events'}`)
+    if (meetings > 0) {
+      bits.push(`${meetings}\u00a0${meetings === 1 ? 'event' : 'events'}`)
+    }
     return bits.join(' · ')
   })
 
@@ -301,9 +307,21 @@
     font-variant-numeric: tabular-nums;
   }
   .summary {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    /* Was `nowrap` + ellipsis, which in week/month view (more days, so
+       longer totals and an event count on top) clipped the count itself --
+       Bug: "10 eve…" with no way to read the rest. The empty `.toolbar-end`
+       on the other side of `.filters` (there solely to balance it, see
+       above) claims its own equal share of the row as the window narrows,
+       whether or not it has anything to show, which is what left the
+       summary short of room before the row itself ran out of it. Wrapping
+       the text instead of this `div` taking less space is the smaller
+       change: the toolbar grows a second line precisely when the summary
+       needs one, rather than needing a sizing rule of its own.
+       `min-width: 0` is what lets a flex item wrap at all instead of
+       holding its one-line width regardless of what it is given. */
+    flex: 1;
+    min-width: 0;
+    text-align: right;
   }
   .note {
     color: var(--fg-subtle);

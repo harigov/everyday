@@ -155,6 +155,14 @@
 
 <nav class="scroll nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
   <!-- ── The small month ─────────────────────────────────────────────── -->
+  <!-- `isOn` below: `calendar.days` in month view is `monthGrid` -- the same
+       42 days this very mini month draws -- so every day came back "on" and
+       the whole grid painted as one solid block (Bug), telling you nothing a
+       plain month view doesn't already show by being the thing on screen. A
+       day or a week is a meaningful range to pick out against the fuller
+       month around it; a month against itself is not, so month view
+       highlights nothing here and leaves `.today`/`.out` to carry the grid
+       alone. -->
   <MiniMonth
     anchor={miniAnchor}
     weekStart={calendar.weekStart}
@@ -162,7 +170,7 @@
     nextLabel="Next month"
     onstep={(months: number) => (miniAnchor = addMonths(miniAnchor, months))}
     ontitle={() => calendar.goto(miniAnchor)}
-    isOn={(iso: string) => shown.has(iso)}
+    isOn={(iso: string) => calendar.view !== 'month' && shown.has(iso)}
     isMarked={busy}
     onpick={(iso: string) => calendar.goto(iso)}
     oncontext={(e: MouseEvent, iso: string) => menu.show(e, dayMenu(iso))}

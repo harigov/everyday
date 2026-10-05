@@ -265,7 +265,7 @@
       {#if rows.length === 0}
         <p class="empty">Nothing here does that.</p>
       {:else}
-        <ul class="rows">
+        <ul class="rows scroll">
           {#each rows as row, i (row.kind === 'action' ? `a:${row.action.group}:${row.action.label}` : `c:${row.label}`)}
             {@const head = heading(row, i)}
             {#if head}
@@ -323,8 +323,8 @@
     max-height: 60vh;
     display: flex;
     flex-direction: column;
-    background: var(--surface);
-    border: 1px solid var(--rule);
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
     border-radius: calc(var(--radius) + 4px);
     box-shadow: 0 18px 48px rgb(0 0 0 / 0.28);
     overflow: hidden;
@@ -335,15 +335,15 @@
     align-items: center;
     gap: 0.55rem;
     padding: 0.7rem 0.85rem;
-    border-bottom: 1px solid var(--rule);
-    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+    color: var(--fg-muted);
   }
 
   .query input {
     flex: 1;
     border: none;
     background: none;
-    color: var(--text);
+    color: var(--fg);
     font: inherit;
     font-size: var(--text-md);
     outline: none;
@@ -358,7 +358,7 @@
 
   .head {
     padding: 0.5rem 0.6rem 0.25rem;
-    color: var(--text-muted);
+    color: var(--fg-muted);
     font-size: var(--text-xs);
     font-weight: 600;
     letter-spacing: 0.04em;
@@ -388,7 +388,7 @@
     display: inline-flex;
     width: 1.1rem;
     justify-content: center;
-    color: var(--text-muted);
+    color: var(--fg-muted);
   }
 
   .label {
@@ -405,14 +405,14 @@
 
   .hint,
   kbd {
-    color: var(--text-muted);
+    color: var(--fg-muted);
     font-size: var(--text-xs);
     white-space: nowrap;
   }
 
   kbd {
     font-family: inherit;
-    border: 1px solid var(--rule);
+    border: 1px solid var(--border);
     border-radius: 4px;
     padding: 0.05rem 0.3rem;
   }
@@ -420,7 +420,7 @@
   .empty {
     margin: 0;
     padding: 1.1rem 0.9rem;
-    color: var(--text-muted);
+    color: var(--fg-muted);
     font-size: var(--text-sm);
   }
 </style>

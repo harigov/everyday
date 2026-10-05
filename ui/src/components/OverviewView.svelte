@@ -20,7 +20,7 @@
   // two-column card in a 320px pane is not a card, it is a sliver.
 
   import { dismissable } from '../lib/dismiss'
-  import { specOf, SPAN, type WidgetType } from '../lib/dashboard'
+  import { fillRows, specOf, SPAN, type Widget, type WidgetType } from '../lib/dashboard'
   import { friendlyDate } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
@@ -87,6 +87,41 @@
       ? 'This week'
       : `${friendlyDate(overview.weekStart)} – ${friendlyDate(overview.weekEnd)}`,
   )
+
+  /**
+   * Whether the grid should draw each card at the size it is actually set
+   * to, rather than stretched to close out its row.
+   *
+   * True while arranging or while a picked card is looking for a home: a
+   * resize handle that reads "Half" on a card drawn full-width, or a "Put it
+   * here" target sized for the row it would leave rather than the row it is
+   * joining, is the layout lying to the one person who needs it to be exact.
+   */
+  const trueSizes = $derived(overview.editing || placing !== null)
+  /**
+   * How many columns the grid is drawing: the two breakpoints in the style
+   * block below, read here too so `fillRows` packs the rows the browser is
+   * actually laying out rather than six-column ones.
+   */
+  let columns = $state(6)
+  $effect(() => {
+    const three = matchMedia('(max-width: 1180px)')
+    const one = matchMedia('(max-width: 720px)')
+    const read = () => (columns = one.matches ? 1 : three.matches ? 3 : 6)
+    read()
+    three.addEventListener('change', read)
+    one.addEventListener('change', read)
+    return () => {
+      three.removeEventListener('change', read)
+      one.removeEventListener('change', read)
+    }
+  })
+  /** Spans widened to fill every row, computed only when they will be used. */
+  const filled = $derived(trueSizes ? null : fillRows(overview.widgets, columns))
+  /** What a slot's `--span` should read, given the toggle above. */
+  function spanOf(w: Widget): number {
+    return trueSizes ? SPAN[w.size] : (filled?.get(w.id) ?? SPAN[w.size])
+  }
 
   /** The page itself, where there is no card under the pointer. */
   function pageMenu(): MenuItem[] {
@@ -249,7 +284,7 @@
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             class="slot"
-            style="--span: {SPAN[w.size]}"
+            style="--span: {spanOf(w)}"
             draggable={overview.editing}
             ondragstart={(e) => onDragStart(e, w.id)}
             ondragend={() => {

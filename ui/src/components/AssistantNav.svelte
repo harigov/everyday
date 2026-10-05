@@ -234,7 +234,7 @@
   .foot {
     flex: none;
     padding: var(--sp-2);
-    border-top: 1px solid var(--line);
+    border-top: 1px solid var(--border);
   }
 
   .foot .row {

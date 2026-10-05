@@ -684,6 +684,11 @@
     flex: none;
     height: var(--header-h);
     padding: 0 var(--sp-4);
+    /* Same cap as `.rolegroup` below, so "Goals" and its count sit directly
+       over the list they describe instead of spanning the full pane while
+       the rows under them stop at a readable width -- on a wide window the
+       count was ending up hundreds of pixels right of the last row. */
+    max-width: 56rem;
   }
 
   .heading {

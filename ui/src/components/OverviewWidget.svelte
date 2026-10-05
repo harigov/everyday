@@ -694,9 +694,15 @@
     list-style: none;
   }
 
-  .plan-list li {
-    display: flex;
-  }
+  /* Not `display: flex`: each `<li>` wraps exactly one `ProposalGhost`, and
+     a row-flex parent sizes a lone, non-growing child from its *content*
+     rather than stretching it -- which `ProposalGhost`'s own
+     `container-type: inline-size` (for its own internal wrap query) cannot
+     supply, having removed content-based sizing from the contract. Left as
+     a plain block, the `<li>` stretches to the list's width the way every
+     other `ProposalGhost` caller's container already does, and the ghost
+     fills it; row-flexed, every proposal on this card drew its time and
+     title at zero width and showed only the "proposed" badge and buttons. */
   .plan-time {
     flex: none;
     margin-right: var(--sp-2);

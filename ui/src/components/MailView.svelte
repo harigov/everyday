@@ -462,6 +462,16 @@
     padding: var(--sp-1) var(--sp-3);
     border-bottom: 1px solid var(--border);
     overflow-x: auto;
+    /* Five tabs run a few pixels past the `--list-w` column at the app's
+       narrower widths -- real overflow, so it stays scrollable, but a
+       track under a *tab strip* (as opposed to a list) reads as a stray
+       scrollbar rather than "there's more here"; the global thin bar in
+       `app.css` is still a bar. Hidden on both engines, same as a carousel
+       would. */
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar {
+    display: none;
   }
   .tab {
     flex: none;

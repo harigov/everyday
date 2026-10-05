@@ -216,6 +216,13 @@
     flex-direction: column;
     gap: var(--sp-3);
   }
+  /* Missing here, the mailbox list ran straight into "Remote images" with no
+     air between them -- every other tab's own sections get this space from
+     `SettingsView`'s own rule, which only reaches literal sibling `<section>`
+     tags in that file and not a child component's. */
+  section + section {
+    margin-top: var(--sp-6);
+  }
 
   .head {
     display: flex;

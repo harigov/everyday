@@ -497,7 +497,7 @@
 
       {#if calendar.calendars.length > 0}
         <div class="pick-list">
-          <span class="pick-label">Calendars</span>
+          <span class="eyebrow">Calendars</span>
           {#each calendar.calendars as c (c.id)}
             <label class="job">
               <input
@@ -514,7 +514,7 @@
       {/if}
       {#if purpose.roles.length > 0}
         <div class="pick-list">
-          <span class="pick-label">Roles</span>
+          <span class="eyebrow">Roles</span>
           {#each purpose.roles as r (r.id)}
             <label class="job">
               <input
@@ -551,7 +551,7 @@
 
       {#if draft.skippedSeries.length > 0}
         <div class="pick-list">
-          <span class="pick-label">Never for these meetings</span>
+          <span class="eyebrow">Never for these meetings</span>
           {#each draft.skippedSeries as uid (uid)}
             <div class="skip-row">
               <span>{uid}</span>
@@ -945,12 +945,10 @@
     flex-direction: column;
     gap: var(--sp-2);
   }
-  .pick-label {
-    font-size: var(--text-xs);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--fg-faint);
-  }
+  /* "Calendars" and "Roles" used to carry their own `.pick-label`, a copy of
+     the shared `.eyebrow` missing its `font-weight`, so a sub-heading inside
+     a section read lighter than every other section heading on the page
+     instead of just smaller. They use `.eyebrow` directly now. */
   .job {
     display: flex;
     align-items: center;

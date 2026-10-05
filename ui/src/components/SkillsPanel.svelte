@@ -181,6 +181,12 @@
         {/snippet}
       </EmptyState>
     {:else}
+      <!-- Accounts and Memory both open with a sentence saying what the list
+           below is; a populated Skills list had none. -->
+      <p class="lead">
+        A skill is a process to follow for a certain kind of request, written once and used whenever
+        it applies.
+      </p>
       {#each skills as skill (skill.id)}
         <article class="card" class:off={!skill.enabled}>
           <header class="cardhead">
@@ -239,6 +245,12 @@
     font-size: var(--text-sm);
   }
 
+  .lead {
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    line-height: 1.55;
+  }
+
   .body {
     display: grid;
     align-content: start;
@@ -250,7 +262,7 @@
     display: grid;
     gap: var(--sp-2);
     padding: var(--sp-4);
-    border: 1px solid var(--line);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--bg);
   }
@@ -289,7 +301,7 @@
     display: grid;
     gap: var(--sp-4);
     padding: var(--sp-4);
-    border: 1px solid var(--line);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--bg);
   }

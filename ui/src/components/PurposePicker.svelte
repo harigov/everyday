@@ -219,7 +219,7 @@
     border: 0;
     border-radius: var(--radius-sm);
     background: none;
-    color: var(--text);
+    color: var(--fg);
     font: inherit;
     font-size: var(--text-sm);
     text-align: left;
@@ -237,11 +237,11 @@
 
   .row.goal {
     padding-left: var(--sp-3);
-    color: var(--text-muted);
+    color: var(--fg-muted);
   }
 
   .row.goal.on {
-    color: var(--text);
+    color: var(--fg);
   }
 
   .name {
@@ -301,7 +301,7 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--bg-raised);
-    color: var(--text);
+    color: var(--fg);
     font: inherit;
     font-size: var(--text-sm);
   }
@@ -313,7 +313,7 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--bg-raised);
-    color: var(--text-muted);
+    color: var(--fg-muted);
     font: inherit;
     font-size: var(--text-xs);
   }
@@ -327,7 +327,7 @@
     border: 0;
     border-radius: var(--radius-sm);
     background: none;
-    color: var(--text-muted);
+    color: var(--fg-muted);
     cursor: pointer;
   }
 
@@ -338,7 +338,7 @@
 
   .go:not(:disabled):hover {
     background: var(--bg-sunken);
-    color: var(--text);
+    color: var(--fg);
   }
 
   .blank-note {

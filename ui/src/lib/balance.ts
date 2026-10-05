@@ -35,7 +35,13 @@ export interface RoleTotals {
 /** What the unattributed row is called and drawn in. */
 export const UNFILED = {
   name: 'Not filed',
-  color: 'var(--text-faint)',
+  // `--fg-faint`, not the `--text-faint` this was until it was traced from
+  // `BalanceBars`: that token is not in `theme.css`, so the browser dropped
+  // the whole declaration and drew no fill at all. The row still counted
+  // toward the chart's scale -- see `BalanceBars`' `ceiling` -- so an
+  // all-day event nobody could see was quietly squashing every real bar
+  // down to a sliver of the track.
+  color: 'var(--fg-faint)',
   icon: '',
 } as const
 

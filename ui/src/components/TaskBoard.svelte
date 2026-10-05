@@ -259,7 +259,13 @@
     flex: 1;
     display: flex;
     gap: var(--sp-3);
-    align-items: flex-start;
+    /* Stretch (the flex default) rather than `flex-start`: every column
+       should read as one row of boxes, each as tall as the board itself,
+       with its own cards scrolling inside -- not as tall as its own cards,
+       which left a short column (one card) and a long one (six cards)
+       sitting side by side with ragged bottoms. `.col`'s `max-height: 100%`
+       below only does anything once stretch gives it a 100% to be capped
+       to. */
     padding: var(--sp-2) var(--sp-4) var(--sp-8);
     overflow-x: auto;
   }
@@ -316,6 +322,13 @@
     display: flex;
     flex-direction: column;
     gap: var(--sp-2);
+    /* `flex: 1` is what makes the column's own scrollbar do the work: with
+       the column now stretched to the board's height, the card list is the
+       part that has to give, not the column around it. `min-height: 0`
+       because a flex child's content-based minimum height otherwise wins
+       over `flex: 1` and the scrollbar never appears. */
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
   }
 

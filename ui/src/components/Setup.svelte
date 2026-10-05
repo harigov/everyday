@@ -255,7 +255,7 @@
     display: flex;
     gap: 0.25rem;
     padding: 0.2rem;
-    border: 1px solid var(--rule);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
     margin-bottom: 0.4rem;
   }
@@ -266,15 +266,15 @@
     border: none;
     border-radius: calc(var(--radius) - 2px);
     background: none;
-    color: var(--text-muted);
+    color: var(--fg-muted);
     font: inherit;
     font-size: var(--text-sm);
     cursor: pointer;
   }
 
   .modes button.on {
-    background: var(--surface-raised, var(--surface));
-    color: var(--text);
+    background: var(--bg-raised);
+    color: var(--fg);
     font-weight: 600;
   }
 

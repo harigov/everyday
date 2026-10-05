@@ -113,7 +113,7 @@
     height: var(--header-h);
     flex: none;
     padding: 0 var(--sp-3) 0 var(--sp-5);
-    border-bottom: 1px solid var(--line);
+    border-bottom: 1px solid var(--border);
   }
 
   h1 {

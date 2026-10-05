@@ -139,17 +139,6 @@
     return PANES.includes(t)
   }
 
-  /**
-   * Tabs that read better with the room a page has and a 268px popover
-   * never did: a list of accounts or of a standing job wants a row each, not
-   * a form squeezed to the width a password field is comfortable at.
-   * Everything else gets the same measure-width column the journal's own
-   * editor uses, because most of a settings page is a short form, and a
-   * short form read as a long line is not more readable for the width.
-   */
-  const WIDE: readonly SettingsTab[] = ['accounts', 'skills', ...PANES]
-  const wide = $derived(WIDE.includes(tab))
-
   /** The count a tab carries -- the same two the app bar adds together. */
   function count(t: SettingsTab): number {
     if (t === 'runs') return assistant.unseen
@@ -309,7 +298,7 @@
      caught locally -- see the header comment, and the `Escape` row in
      `shortcuts.svelte.ts`'s table for how this closes instead. -->
 <main class="pane scroll" aria-label="Settings">
-  <div class="content" class:wide>
+  <div class="content">
     {#if tab === 'assistant'}
       <AgentPanel />
     {:else if isPane(tab)}
@@ -415,7 +404,7 @@
         {/if}
         <div>
           <button
-            class="btn"
+            class="btn btn-outline"
             onclick={() => {
               panels.closeSettings()
               panels.shortcuts = true
@@ -563,7 +552,9 @@
             </form>
           {:else}
             <div>
-              <button class="btn" onclick={() => (changing = true)}>Change password…</button>
+              <button class="btn btn-outline" onclick={() => (changing = true)}>
+                Change password…
+              </button>
             </div>
           {/if}
         </section>
@@ -575,7 +566,12 @@
 
       {#if notice}<p class="notice">{notice}</p>{/if}
 
-      <section>
+      <!-- `vault-facts`: this section's own `margin-top`, not the generic
+           `section + section` rule below -- that rule only reaches a literal
+           sibling `<section>` written in this file, and the element directly
+           above this one is drawn by `SharePanel` or `McpPanel` (or is
+           absent, on a build with neither), never that. -->
+      <section class="vault-facts">
         <span class="eyebrow">This vault</span>
         <div class="facts">
           <div><span>Name</span><b>{status?.name}</b></div>
@@ -702,28 +698,29 @@
 
   /* The page's own flex item, next to `.nav` the way every other app's main
      view sits next to its sidebar. Padding lives here rather than on
-     `.content`, so a wide tab's rows still clear the window's edge; the
-     bottom figure is `Editor.svelte`'s own `.page`, so a long Accounts list
-     does not end up with its last row behind the floating assistant button. */
+     `.content`, so the same top padding applies above every tab regardless
+     of its own height; the bottom figure is `Editor.svelte`'s own `.page`,
+     so a long Accounts list does not end up with its last row behind the
+     floating assistant button. */
   .pane {
     flex: 1;
     min-width: 0;
     padding: var(--sp-8) var(--sp-8) var(--fab-size);
   }
 
-  /* A readable line for a form, the same `--measure` the journal's own
-     editor is wrapped to -- most of what Settings holds is a handful of
-     toggles and a sentence of explanation under each, and that reads worse
-     stretched across a wide window than it does narrow. The list-heavy tabs
-     named above (`WIDE`) opt out: a row of email accounts or of routines is
-     better served by the width that is actually there. */
+  /* One column, every tab: the same `--measure` the journal's own editor is
+     wrapped to, centred the same way. This used to opt a handful of
+     list-heavy tabs out to the pane's full width -- a row of email accounts
+     reads fine stretched, the thinking went -- but the width and the left
+     edge then changed walking from tab to tab, which read as broken rather
+     than considered. A row of accounts or of routines is no harder to read
+     at this width than a row in any other list in this application, and a
+     settings page people visit rarely is not the place to ask them to
+     relearn where the edge is. */
   .content {
     width: 100%;
     max-width: calc(var(--measure) + var(--sp-8) * 2);
     margin: 0 auto;
-  }
-  .content.wide {
-    max-width: none;
   }
 
   section {
@@ -733,6 +730,12 @@
     min-width: 0;
   }
   section + section {
+    margin-top: var(--sp-6);
+  }
+  /* See the comment on the markup above: this section's predecessor in the
+     Vault tab is drawn by a different component, so it cannot rely on
+     `section + section` the way the rest of this file's sections do. */
+  .vault-facts {
     margin-top: var(--sp-6);
   }
 
@@ -831,6 +834,7 @@
   }
 
   .notice {
+    margin-top: var(--sp-6);
     font-size: var(--text-sm);
     color: var(--fg-muted);
   }

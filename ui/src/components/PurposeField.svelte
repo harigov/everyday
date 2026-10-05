@@ -70,7 +70,7 @@
     border: 1px solid transparent;
     border-radius: var(--radius-sm);
     background: none;
-    color: var(--text-muted);
+    color: var(--fg-muted);
     font: inherit;
     font-size: var(--text-sm);
     text-align: left;
@@ -84,7 +84,7 @@
   }
 
   .value.set {
-    color: var(--text);
+    color: var(--fg);
   }
 
   .swatch {
@@ -101,7 +101,7 @@
   }
 
   .name.muted {
-    color: var(--text-faint);
+    color: var(--fg-faint);
   }
 
   .pop {

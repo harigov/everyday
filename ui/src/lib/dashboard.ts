@@ -491,6 +491,62 @@ export function setDays(list: Widget[], id: string, days: number): Widget[] {
   return list.map((w) => (w.id === id ? { ...w, days } : w))
 }
 
+/**
+ * Column spans, widened so every row reaches the grid's far edge.
+ *
+ * A row whose widgets add up to less than `totalCols` is a hole: three
+ * small cards and a lone medium one three rows down both leave empty grid
+ * tracks nobody put there on purpose, because the person who dragged a card
+ * to "Half" was choosing a size, not choosing to leave the other half of
+ * the row blank. The browser's own auto-placement already decides which
+ * widgets share a row -- `grid-auto-flow` is left at its sparse default, so
+ * a widget that does not fit what is left of the row wraps rather than
+ * backfilling an earlier gap -- so the rows below are found by walking the
+ * list in order and reproducing that same wrap rule, not by reading the
+ * DOM.
+ *
+ * Only the last widget on a row grows, and by exactly the row's leftover
+ * columns. Splitting the slack across every card on the row would mean a
+ * two-column widget silently resizing itself depending on who it happens to
+ * share a row with, which is not what "Narrow" meant when somebody picked
+ * it -- and it would make the same widget a different width on two
+ * refreshes if a card above it changed size and shifted the wrap.
+ *
+ * Returns a span per widget id, in the same column units `SPAN` already
+ * uses, so a caller sets `--span` from this map exactly the way it would
+ * set it from `SPAN` directly. `totalCols` is how many columns the grid is
+ * drawing right now -- six, or three and one at the narrower breakpoints,
+ * where the style block caps every span at the grid's width. Each span is
+ * capped the same way here, or a narrow window would be packed as if it were
+ * six columns wide: two small cards no longer fit side by side in three, so
+ * each sat alone on its row beside an empty column.
+ */
+export function fillRows(widgets: Widget[], totalCols = 6): Map<string, number> {
+  const spanOf = (w: Widget) => Math.min(SPAN[w.size], totalCols)
+  const rows: Widget[][] = []
+  let row: Widget[] = []
+  let used = 0
+  for (const w of widgets) {
+    const span = spanOf(w)
+    if (row.length > 0 && used + span > totalCols) {
+      rows.push(row)
+      row = []
+      used = 0
+    }
+    row.push(w)
+    used += span
+  }
+  if (row.length > 0) rows.push(row)
+
+  const out = new Map<string, number>()
+  for (const r of rows) {
+    const rowUsed = r.reduce((sum, w) => sum + spanOf(w), 0)
+    const leftover = totalCols - rowUsed
+    r.forEach((w, i) => out.set(w.id, i === r.length - 1 ? spanOf(w) + leftover : spanOf(w)))
+  }
+  return out
+}
+
 /** Everything the page needs fetched, once each. */
 export function needsOf(list: Widget[]): Set<Need> {
   const out = new Set<Need>()

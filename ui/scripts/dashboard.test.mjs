@@ -32,6 +32,7 @@ const {
   aqiTier,
   byTimeOrLast,
   defaultLayout,
+  fillRows,
   moveWidget,
   needsOf,
   nextId,
@@ -43,6 +44,7 @@ const {
   SPAN,
   trackerWindow,
   weatherIcon,
+  widget,
   WIDGETS,
   WIDGET_SIZES,
   WIDGET_TYPES,
@@ -163,6 +165,92 @@ check('ids on the default page are distinct', new Set(ids(start)).size, start.le
     'taskTally:1',
   )
 }
+
+// ── filling rows so the grid has no holes ──────────────────────────────
+//
+// The bug this exists for: a layout where some row's widgets add up to less
+// than six columns draws a gap nobody put there, and at a wide window it is
+// not a sliver -- a lone medium card is half the page with nothing beside
+// it. `fillRows` is asked to reproduce the browser's own sparse auto-flow
+// (never backfilling an earlier row) and then widen only the last widget on
+// each row by what is left over.
+
+{
+  // Three smalls exactly fill a row (2+2+2=6): nothing to grow.
+  const page = [
+    widget('dueToday', null, 'a'),
+    widget('onNow', null, 'b'),
+    widget('recordedToday', null, 'c'),
+  ]
+  check('a row that already sums to six is untouched', [...fillRows(page).values()], [2, 2, 2])
+}
+
+{
+  // The regression this was written for: "Goals under way" (medium, 3) is
+  // the only thing on its row because the real default layout's other rows
+  // close at exactly six. Alone, it should take the whole width rather than
+  // leaving the other half of a wide window blank.
+  const page = defaultLayout()
+  const filled = fillRows(page)
+  check('a lone medium widget on its own row fills it', filled.get('goalProgress:1'), 6)
+  // The rows above it close exactly on six already, so nothing about them
+  // should move.
+  check(
+    'a row that already closes on six keeps its members as they were',
+    [filled.get('dueToday:1'), filled.get('recordedToday:1'), filled.get('onNow:1')],
+    [2, 2, 2],
+  )
+}
+
+{
+  // A row with one column left over (3 + 2 = 5): only the last widget on
+  // the row grows, and only the row's own hole, not the whole remainder of
+  // the grid.
+  const page = [widget('weather', null, 'w'), widget('dueToday', null, 'd')]
+  check(
+    'the last widget on a short row takes exactly the leftover columns',
+    [...fillRows(page).values()],
+    [3, 3],
+  )
+}
+
+{
+  // A hole mid-page, not just at the end: the row above a full row should
+  // fill too, because the wrap rule that opens a new row is about what
+  // *follows*, not about which row happens to be last.
+  const page = [
+    widget('goalTally', null, 'a'), // small, 2
+    widget('habitsToday', null, 'b'), // large, 6 -- does not fit the 4 left on row a's line, wraps
+    widget('goalTally', null, 'c'), // small, 2
+  ]
+  const filled = fillRows(page)
+  check('a short row in the middle of the page fills too', filled.get('a'), 6)
+  check('the row it wrapped to is unaffected by the row above it', filled.get('b'), 6)
+  check('a lone widget on the last row still fills it', filled.get('c'), 6)
+}
+
+check('an empty page has nothing to fill', [...fillRows([]).values()], [])
+
+{
+  // The 1180px breakpoint draws three columns. Two smalls (2 + 2) no longer
+  // share a row there, so each must fill its own row rather than leave a
+  // column empty beside it; a medium already spans the whole three.
+  const page = [
+    widget('dueToday', null, 'a'),
+    widget('onNow', null, 'b'),
+    widget('weather', null, 'c'),
+  ]
+  check('at three columns a lone small fills its row', [...fillRows(page, 3).values()], [3, 3, 3])
+  check('at one column everything is one column', [...fillRows(page, 1).values()], [1, 1, 1])
+}
+
+check(
+  'every span fillRows returns is a real grid width',
+  [...fillRows(WIDGET_TYPES.map((t, i) => widget(t, null, `${t}:${i}`))).values()].every(
+    (span) => span >= 2 && span <= 6,
+  ),
+  true,
+)
 
 // ── what the page costs ────────────────────────────────────────────────
 

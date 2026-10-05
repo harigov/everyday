@@ -106,9 +106,15 @@
     gap: var(--sp-1);
   }
 
+  /* The track takes the rest of the card, so the longest bar runs right up to
+     the hours at the far edge. It looked as if the track were too wide only
+     while the scale was being set by a "Not filed" bar that never painted --
+     its colour named a variable that does not exist (see `balance.ts`) -- so
+     every visible bar stopped a third of the way across. Capping the track
+     instead left the right half of a full-width card empty. */
   .row {
     display: grid;
-    grid-template-columns: minmax(96px, 168px) 1fr auto;
+    grid-template-columns: minmax(96px, 168px) minmax(120px, 1fr) auto;
     align-items: center;
     gap: var(--sp-3);
     width: 100%;
