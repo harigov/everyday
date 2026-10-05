@@ -82,36 +82,42 @@
     {:else}
       <span class="dot" data-state={card.state} class:outward></span>
     {/if}
-    <span class="what">
-      {label.text}
-      <!-- A question names its subject in full -- the whole address a page
-           would be fetched from, the task a delete would remove -- because
-           that is what is being decided. Otherwise the short form: a host,
-           a query, a place. -->
-      {#if card.subject}<b>{card.subject}</b>{:else if label.detail}<b>{label.detail}</b>{/if}
-    </span>
-    {#if card.state === 'done' && card.mailLink}
-      <!-- What the plan calls "the transcript links to what the assistant
-           did": a mail write's own result named a thread, so the sentence
-           that already describes it opens Mail there rather than sitting
-           inert beside a card nobody can act on. -->
-      <button
-        class="said link"
-        onclick={() => void mail.openFromElsewhere(card.mailLink!.threadId)}
-      >
-        {card.summary || `Opened ${card.mailLink.subject}`} &rarr;
-      </button>
-    {:else if card.state === 'done' && card.summary}
-      <span class="said">{card.summary}</span>
-    {:else if card.state === 'failed'}
-      <span class="said bad">{card.summary || 'failed'}</span>
-    {:else if card.state === 'declined'}
-      <span class="said">declined</span>
-    {:else if card.state === 'later'}
-      <span class="said">saved for later</span>
-    {:else if card.state === 'stopped'}
-      <span class="said">stopped</span>
-    {/if}
+    <!-- The label and what came of it share a line when both fit. A result
+         that does not -- a remembered fact is a whole sentence -- drops to a
+         line of its own under the label and wraps there, rather than
+         squeezing the label down to one letter a line. -->
+    <div class="text">
+      <span class="what">
+        {label.text}
+        <!-- A question names its subject in full -- the whole address a page
+             would be fetched from, the task a delete would remove -- because
+             that is what is being decided. Otherwise the short form: a host,
+             a query, a place. -->
+        {#if card.subject}<b>{card.subject}</b>{:else if label.detail}<b>{label.detail}</b>{/if}
+      </span>
+      {#if card.state === 'done' && card.mailLink}
+        <!-- What the plan calls "the transcript links to what the assistant
+             did": a mail write's own result named a thread, so the sentence
+             that already describes it opens Mail there rather than sitting
+             inert beside a card nobody can act on. -->
+        <button
+          class="said link"
+          onclick={() => void mail.openFromElsewhere(card.mailLink!.threadId)}
+        >
+          {card.summary || `Opened ${card.mailLink.subject}`} &rarr;
+        </button>
+      {:else if card.state === 'done' && card.summary}
+        <span class="said">{card.summary}</span>
+      {:else if card.state === 'failed'}
+        <span class="said bad">{card.summary || 'failed'}</span>
+      {:else if card.state === 'declined'}
+        <span class="said">declined</span>
+      {:else if card.state === 'later'}
+        <span class="said">saved for later</span>
+      {:else if card.state === 'stopped'}
+        <span class="said">stopped</span>
+      {/if}
+    </div>
   </div>
 
   {#if card.state === 'waiting'}
@@ -155,10 +161,21 @@
     border-color: color-mix(in oklab, var(--danger) 45%, var(--border));
   }
 
+  /* The mark is pinned to the label's first line rather than centred on the
+     whole card, which once the result has wrapped is two lines or more. Each
+     mark below is offset by half of what its own height leaves of a line. */
   .row {
     display: flex;
-    align-items: baseline;
+    align-items: flex-start;
     gap: var(--sp-2);
+    min-width: 0;
+  }
+  .text {
+    display: flex;
+    flex: 1;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: var(--sp-2);
     min-width: 0;
   }
   .what {
@@ -169,11 +186,15 @@
     color: var(--fg);
     font-weight: 600;
   }
+  /* Free to shrink, so that once it has a line of its own it wraps inside it
+     instead of running off the card. Right-aligned while it shares the
+     label's line, as before. */
   .said {
     margin-left: auto;
-    flex: none;
+    min-width: 0;
     color: var(--fg-faint);
     font-size: var(--text-xs);
+    overflow-wrap: anywhere;
   }
   .said.bad {
     color: var(--danger);
@@ -201,7 +222,7 @@
     width: 10px;
     height: 10px;
     flex: none;
-    align-self: center;
+    margin-top: calc((1lh - 10px) / 2);
     border: 1.5px solid color-mix(in oklab, var(--accent) 25%, transparent);
     border-top-color: var(--accent);
     border-radius: 50%;
@@ -215,7 +236,7 @@
   .mark {
     display: grid;
     flex: none;
-    align-self: center;
+    height: 1lh;
     place-items: center;
     color: var(--accent);
   }
@@ -232,7 +253,7 @@
     width: 6px;
     height: 6px;
     flex: none;
-    align-self: center;
+    margin-top: calc((1lh - 6px) / 2);
     border-radius: 50%;
     background: var(--fg-faint);
   }
