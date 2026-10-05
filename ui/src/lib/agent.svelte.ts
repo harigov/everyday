@@ -57,6 +57,11 @@ class AgentState {
    * change when it was asked again.
    */
   focusTick = $state(0)
+  /**
+   * Whether somebody has something typed in the composer and not yet sent.
+   * Only the dog reads it -- it listens while you write to it.
+   */
+  composing = $state(false)
 
   constructor() {
     // A conversation quotes the vault back at you — entry titles, task names,
@@ -73,6 +78,7 @@ class AgentState {
     this.memories = []
     this.busy = false
     this.error = null
+    this.composing = false
   }
 
   /**

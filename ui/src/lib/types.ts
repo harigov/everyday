@@ -2346,6 +2346,16 @@ export interface QuickPolicy {
   denied?: string[]
 }
 
+/**
+ * Which dog the assistant is. Words from the lists in `companion.ts`; one
+ * this build does not know, or one left out, is drawn as the default.
+ */
+export interface Companion {
+  breed?: string
+  coat?: string
+  markings?: string
+}
+
 export interface AgentSettings {
   /** Off until somebody turns it on, and off in a new vault. */
   enabled: boolean
@@ -2354,6 +2364,12 @@ export interface AgentSettings {
    * assistant" in the rail's header and in its own system prompt.
    */
   name: string
+  /**
+   * The dog in the header, or `null` for none. A record from before there
+   * was a dog arrives as `{}`, the default dog. Optional only because a
+   * backend older than the field leaves it out, which reads the same way.
+   */
+  companion?: Companion | null
   /** Where the models are. Shared by every model this vault asks for. */
   providerConfig: LLMProviderConfig
   /** The model that holds conversations: tools, memories, a turn budget. */

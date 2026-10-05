@@ -24,14 +24,35 @@
   // worst of the three.
 
   import { agent } from '../lib/agent.svelte'
+  import { lookOf } from '../lib/companion'
   import { panels } from '../lib/panels.svelte'
   import { pref } from '../lib/prefs'
   import { app } from '../lib/state.svelte'
+  import AssistantDog from './AssistantDog.svelte'
   import ChatThread from './ChatThread.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
 
   let showHistory = $state(false)
+
+  // ── The dog ─────────────────────────────────────────────────────────
+  //
+  // Not in a title bar. It floats over the top of the conversation, centred,
+  // sitting on a pill with its name in it, and what was said scrolls up
+  // underneath it and fades -- so it reads as somebody in the room with the
+  // thread rather than an icon in its chrome. The buttons keep to the
+  // corners either side. With no dog, the header is the plain row it was.
+  //
+  // Floating while the settings are still loading, because a dog is the
+  // default: the one person who chose none sees the row settle in once,
+  // rather than everybody else seeing it jump.
+
+  const dog = $derived(agent.settings === null || lookOf(agent.settings.companion) !== null)
+  /** The dog's canvas, in CSS pixels. */
+  const DOG_W = 124
+  const DOG_H = 104
+  /** How far down the conversation starts: below the dog and its name. */
+  const STAGE_H = 124
 
   // ── How wide the rail is ─────────────────────────────────────────────
   //
@@ -138,7 +159,15 @@
      preference being rewritten: see `width` and `applied`. -->
 <svelte:window onresize={() => (viewport = window.innerWidth)} />
 
-<aside class="panel" class:dragging style="--panel-w: {applied}px" aria-label={agent.displayName}>
+{#snippet sparkle()}<Icon name="sparkle" size={28} weight={1.4} />{/snippet}
+
+<aside
+  class="panel"
+  class:dragging
+  class:floating={dog}
+  style="--panel-w: {applied}px; --thread-top: {dog ? STAGE_H : 0}px"
+  aria-label={agent.displayName}
+>
   <!-- The rail's own left edge, as a control. `separator` with an
        orientation and a value is what a resizer is called in ARIA, and it
        takes the arrow keys for the same reason every other control here
@@ -169,7 +198,15 @@
     >
       <Icon name="layers" size={16} />
     </button>
-    <span class="title">{agent.displayName}</span>
+    {#if dog}
+      <div class="stage">
+        <AssistantDog width={DOG_W} height={DOG_H} />
+        <span class="pill">{agent.displayName}</span>
+      </div>
+      <span class="spacer"></span>
+    {:else}
+      <span class="title">{agent.displayName}</span>
+    {/if}
     <button
       class="ghost"
       onclick={() => void agent.startThread()}
@@ -201,7 +238,15 @@
       {:else}
         {#each agent.threads as thread (thread.id)}
           <div class="thread" class:on={thread.id === agent.conversationId}>
-            <button class="threadname" onclick={() => void agent.openThread(thread.id)}>
+            <button
+              class="threadname"
+              onclick={() => {
+                void agent.openThread(thread.id)
+                // Dropped down over the thread, it is in the way of the
+                // thread just chosen.
+                if (dog) showHistory = false
+              }}
+            >
               <span class="threadtitle">{thread.title || 'Untitled'}</span>
               <span class="count">{thread.messages}</span>
             </button>
@@ -223,8 +268,8 @@
          what is missing and where to fix it, rather than presenting a box
          that fails on the first message. -->
     <div class="unset">
-      <EmptyState lead="{agent.displayName} is not set up yet.">
-        {#snippet icon()}<Icon name="sparkle" size={28} weight={1.4} />{/snippet}
+      <!-- No sparkle under a dog: the dog, asleep, is the picture. -->
+      <EmptyState lead="{agent.displayName} is not set up yet." icon={dog ? undefined : sparkle}>
         {#snippet note()}
           Choose a model and add a key in Settings. A model running on this machine — Ollama or LM
           Studio — needs only its address, and nothing you write leaves the machine.
@@ -293,11 +338,66 @@
     padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
     border-bottom: 1px solid var(--border);
   }
+
+  /* Over the conversation rather than above it: the panel's colour at the
+     top, fading out, so a reply scrolled up goes under the dog and is gone
+     by the time it reaches its name. Clicks fall through the fade to the
+     thread; only the buttons and the dog itself take them. */
+  .panel.floating .head {
+    position: absolute;
+    inset: 0 0 auto;
+    z-index: 3;
+    align-items: flex-start;
+    height: calc(var(--thread-top) + var(--sp-3));
+    border-bottom: 0;
+    background: linear-gradient(var(--bg-panel) 72%, transparent);
+    pointer-events: none;
+  }
+  .panel.floating .head > * {
+    pointer-events: auto;
+  }
+  .stage {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    transform: translateX(-50%);
+  }
+  /* The dog sits on it: tucked up under its paws, and behind it, so a
+     laptop or a raised paw comes out in front of the name. */
+  .stage :global(.dog) {
+    position: relative;
+    z-index: 1;
+  }
+  .pill {
+    position: relative;
+    max-width: 180px;
+    margin-top: -6px;
+    padding: 3px var(--sp-3);
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--bg-raised);
+    box-shadow:
+      0 0 0 1px var(--border),
+      0 2px 8px rgb(0 0 0 / 0.06);
+    font-size: var(--text-sm);
+    font-weight: 620;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .spacer {
+    flex: 1;
+  }
   .title {
     flex: 1;
-    font-size: var(--text-sm);
-    font-weight: 600;
-    color: var(--fg-muted);
+    min-width: 0;
+    overflow: hidden;
+    font-size: var(--text-md);
+    font-weight: 620;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
   .ghost {
     display: grid;
@@ -324,6 +424,20 @@
     overflow-y: auto;
     padding: var(--sp-1);
     border-bottom: 1px solid var(--border);
+  }
+  /* Under the dog, there is no row for the list to push down, so it drops
+     down over the conversation instead. */
+  .panel.floating .history {
+    position: absolute;
+    top: calc(var(--sp-2) + 30px);
+    left: var(--sp-2);
+    right: var(--sp-2);
+    z-index: 4;
+    max-height: 260px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-raised);
+    box-shadow: 0 6px 24px rgb(0 0 0 / 0.12);
   }
   .thread {
     display: flex;
@@ -366,6 +480,7 @@
     display: flex;
     flex: 1;
     min-height: 0;
+    padding-top: var(--thread-top);
   }
 
   .none {

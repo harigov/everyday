@@ -2581,6 +2581,7 @@ let agentSettings: AgentSettings = {
   dreaming: false,
   proposals: {},
   parkUnattended: false,
+  companion: {},
   hasKey: true,
 }
 let agentKey = 'sk-mock'

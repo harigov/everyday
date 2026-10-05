@@ -23,6 +23,7 @@
   import { activity, elapsed, isPlan, planOf, workSummary, type Turn } from '../lib/agent'
   import { agent } from '../lib/agent.svelte'
   import { APPS } from '../lib/apps'
+  import { lookOf } from '../lib/companion'
   import { splitDigest } from '../lib/dream'
   import { library } from '../lib/library.svelte'
   import { mail } from '../lib/mail.svelte'
@@ -188,6 +189,15 @@
     fit()
   })
 
+  // The dog listens while something is typed and not yet sent. Cleared on
+  // the way out, so a rail closed mid-sentence does not leave it listening.
+  $effect(() => {
+    agent.composing = draft.trim() !== ''
+  })
+  onDestroy(() => {
+    agent.composing = false
+  })
+
   async function send(text = draft) {
     if (agent.busy || !text.trim()) return
     // Cleared optimistically, because leaving the question in the box reads
@@ -221,6 +231,9 @@
 
   const web = $derived(agent.settings?.web === true)
 
+  /** A dog floats over the top of the thread, and is its face: no sparkle. */
+  const dog = $derived(agent.settings !== null && lookOf(agent.settings.companion) !== null)
+
   /**
    * Somewhere to start, on the page. Each is a thing it can actually do in
    * this vault with these settings -- a suggestion that ends in "web access
@@ -243,13 +256,17 @@
   )
 </script>
 
+{#snippet sparkle()}<Icon name="sparkle" size={28} weight={1.4} />{/snippet}
+
 <div class="thread {variant}">
   <div class="log scroll" bind:this={scroller} onscroll={onScroll}>
     <div class="column">
       {#if agent.turns.length === 0}
         {#if variant === 'page'}
           <div class="hello">
-            <span class="glyph"><Icon name="sparkle" size={30} weight={1.4} /></span>
+            {#if !dog}
+              <span class="glyph"><Icon name="sparkle" size={30} weight={1.4} /></span>
+            {/if}
             <h2>What can I do for you?</h2>
             <p>
               It can read and change your journal, notes, tasks, calendar, library and trackers{web
@@ -271,8 +288,7 @@
             {/if}
           </div>
         {:else}
-          <EmptyState lead="Ask about anything in this vault.">
-            {#snippet icon()}<Icon name="sparkle" size={28} weight={1.4} />{/snippet}
+          <EmptyState lead="Ask about anything in this vault." icon={dog ? undefined : sparkle}>
             {#snippet note()}
               It can read and change your journal, tasks, calendar, shelves and trackers{web
                 ? ', and look things up on the web'
@@ -478,11 +494,13 @@
     user-select: text;
     cursor: auto;
   }
+  /* `--thread-top` is room for whatever floats over the top of the thread
+     -- the dog and its name -- which the conversation scrolls under. */
   .column {
     display: flex;
     flex-direction: column;
     gap: var(--sp-5);
-    padding: var(--sp-4) var(--sp-4) var(--sp-6);
+    padding: calc(var(--thread-top, 0px) + var(--sp-4)) var(--sp-4) var(--sp-6);
   }
   /* On the page, a reading column rather than the window's whole width: a
      line of prose 1400px long is a line nobody can find the start of the
@@ -490,7 +508,7 @@
   .page .column {
     max-width: 760px;
     margin: 0 auto;
-    padding: var(--sp-8) var(--sp-6) var(--sp-10);
+    padding: calc(var(--thread-top, 0px) + var(--sp-8)) var(--sp-6) var(--sp-10);
     gap: var(--sp-6);
   }
 
@@ -501,7 +519,9 @@
     flex-direction: column;
     align-items: center;
     gap: var(--sp-3);
-    margin-top: 12vh;
+    /* The same drop from the top of the page with a dog over it or not: the
+       dog's room counts towards it, so the greeting sits under the dog. */
+    margin-top: max(var(--sp-4), calc(12vh - var(--thread-top, 0px)));
     text-align: center;
   }
   .glyph {
