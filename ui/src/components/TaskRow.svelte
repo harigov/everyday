@@ -252,17 +252,6 @@
       </button>
     {/if}
 
-    {#if deleteProposal}
-      <!-- A dream wants this gone. Shown as a chip rather than folded into
-           the row's own menu, because "somebody proposed deleting this" is
-           not a thing you want to notice only after opening a menu. -->
-      <div class="delete-chip">
-        <ProposalGhost proposal={deleteProposal} compact color="var(--danger)">
-          Proposed: delete
-        </ProposalGhost>
-      </div>
-    {/if}
-
     <!-- On hover, or when the keyboard is in the row: the things done to a
          task often enough to be worth one click rather than a right-click. -->
     <div class="actions" class:held={menu.at !== null && menuOwner.id === task.id}>
@@ -320,6 +309,22 @@
         <span class="progress">{progress[0]}/{progress[1]}</span>
         <Icon name="chevron" size={13} weight={1.8} />
       </button>
+    {/if}
+
+    {#if deleteProposal}
+      <!-- A dream wants this gone. Shown as a chip rather than folded into
+           the row's own menu, because "somebody proposed deleting this" is
+           not a thing you want to notice only after opening a menu. Last in
+           the row, after the hover actions and the disclosure, so it lands
+           flush with the right edge the way that other right-hand meta
+           does -- earlier it sat between the title and the actions, which
+           left it stranded wherever the invisible, hover-only action icons
+           happened to end. -->
+      <div class="delete-chip">
+        <ProposalGhost proposal={deleteProposal} compact color="var(--danger)">
+          Proposed: delete
+        </ProposalGhost>
+      </div>
     {/if}
   </div>
 

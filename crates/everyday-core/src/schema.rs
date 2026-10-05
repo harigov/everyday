@@ -67,6 +67,7 @@ pub fn bundle() -> Value {
         schema_of::<crate::agent::Conversation>("Conversation"),
         schema_of::<crate::agent::Message>("AgentMessage"),
         schema_of::<crate::agent::Memory>("Memory"),
+        schema_of::<crate::agent::Skill>("Skill"),
         schema_of::<crate::account::Account>("Account"),
         schema_of::<crate::mail::Mailbox>("Mailbox"),
         schema_of::<crate::mail::Message>("MailMessage"),

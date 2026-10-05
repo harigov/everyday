@@ -261,6 +261,15 @@
 {/if}
 
 <style>
+  /* `SharePanel` sits above this in the Vault tab, and `SettingsView`'s own
+     `section + section` rule -- which gives every other pair of sections in
+     that tab their gap -- only reaches literal sibling `<section>` tags
+     written in that file, not a child component's. Without this, this
+     section's top edge touched whatever was drawn above it. */
+  section {
+    margin-top: var(--sp-6);
+  }
+
   .field-row {
     display: flex;
     align-items: center;

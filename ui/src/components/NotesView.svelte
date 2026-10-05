@@ -284,7 +284,9 @@
           </div>
 
           {#if app.supportsOverview}
-            <PurposeField value={note.purpose} onchange={setPurpose} />
+            <div class="purpose-row">
+              <PurposeField value={note.purpose} onchange={setPurpose} />
+            </div>
           {/if}
 
           {#if quick.enabled('notes.tasks') || quick.enabled('notes.labels')}
@@ -538,8 +540,8 @@
     align-items: center;
     gap: var(--sp-3);
     padding: var(--sp-3) var(--sp-5);
-    border-bottom: 1px solid var(--line);
-    background: color-mix(in oklab, var(--warning) 12%, var(--bg-raised));
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in oklab, var(--accent) 12%, var(--bg-raised));
     color: var(--fg);
     font-size: var(--text-sm);
   }
@@ -555,6 +557,15 @@
     align-items: center;
     gap: var(--sp-2);
     margin-top: var(--sp-3);
+  }
+
+  /* `PurposeField` carries no margin of its own -- inside `TaskDetail` it
+     sits in a label/field grid that already spaces its rows. Here, under
+     the tag row, it needs the same breathing room the journal gives the
+     tracker strip under its own tag row (see `.strip` in `TrackerStrip`):
+     without it, "Not filed" sat flush against Pin/tags with no gap at all. */
+  .purpose-row {
+    margin-top: var(--sp-4);
   }
 
   .chip,
@@ -595,7 +606,7 @@
     width: 6rem;
     height: 22px;
     padding: 0 var(--sp-2);
-    border: 1px solid var(--line);
+    border: 1px solid var(--border);
     border-radius: 999px;
     background: var(--bg);
     color: var(--fg);

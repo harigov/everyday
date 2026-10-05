@@ -140,10 +140,15 @@ typed_id!(GoalId, "goal");
 // across all of them. The third is separate from the first two for the
 // reason readings are separate from trackers: a memory outlives the
 // conversation that produced it, and deleting a thread must not quietly
-// retract what it taught.
+// retract what it taught. A `SkillId` names a process the assistant was
+// given for a certain kind of request -- planning a trip, a weekly review --
+// kept apart from a memory because it is instructions rather than a fact,
+// loaded in full only when `read_skill` asks for it by name. See
+// `crate::agent::Skill`.
 typed_id!(ConversationId, "conversation");
 typed_id!(MessageId, "message");
 typed_id!(MemoryId, "memory");
+typed_id!(SkillId, "skill");
 
 // The mail domain's storage groundwork, laid in phase 0 of the mail plan
 // ahead of the domain itself. A `PackId` names one pack -- a file of raw

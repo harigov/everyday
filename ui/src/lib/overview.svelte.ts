@@ -47,10 +47,11 @@ import { periodStart, streakTarget, summarise, type HabitSummary } from './habit
 import { purpose } from './purpose.svelte'
 import { pref } from './prefs'
 import { proposals } from './proposals.svelte'
-import { app, handle } from './state.svelte'
+import { app, errorMessage, handle, isLocked } from './state.svelte'
 import { latest } from './store/latest'
 import { addDays, isoDate, localeWeekStart, minutesBetween, startOfWeek, todayIso } from './time'
 import { tracking } from './tracking.svelte'
+import { VaultError } from './types'
 import type {
   BalanceReport,
   EntrySummary,
@@ -59,10 +60,32 @@ import type {
   Task,
   TaskStats,
   TrackerDay,
+  WeatherReport,
 } from './types'
 
 /** How far back a heatmap looks. Long enough for a streak to mean something. */
 const HABIT_DAYS = 120
+
+/**
+ * How often the Weather widget re-reads the forecast while the Overview is
+ * open. A little past the service's own per-place cache window
+ * (`weather_cache.rs`'s `TTL`), so a tick almost never pays for two live
+ * fetches of the same place in a row, while still reading as "every fifteen
+ * minutes" to somebody watching the clock.
+ */
+const WEATHER_POLL_MS = 15 * 60 * 1000
+
+/** What `fetchWeather` resolves with: a report, or which of the two quiet
+ *  states the Weather widget should show instead of one. */
+interface WeatherOutcome {
+  report: WeatherReport | null
+  noLocation: boolean
+  error: string | null
+}
+
+/** The blank answer `ask` falls back to when nothing on the page needs the
+ *  weather, or when `refresh`'s own generation has already moved on. */
+const NO_WEATHER: WeatherOutcome = { report: null, noLocation: false, error: null }
 
 const layoutPref = pref<Widget[]>(
   'everyday.overview.layout',
@@ -109,8 +132,24 @@ class OverviewState {
   bookedToday = $state<{ logged: number; planned: number }>({ logged: 0, planned: 0 })
   loading = $state(false)
 
+  /** The forecast where you live, for the Weather widget. `null` until a
+   *  read lands, or while the card is showing one of the two states below
+   *  instead. */
+  weather = $state<WeatherReport | null>(null)
+  /** No place was named and the profile has none either -- the Weather
+   *  widget's own empty state, distinct from `weatherError`: this names
+   *  Settings rather than reading like a network fault. */
+  weatherNoLocation = $state(false)
+  /** The Weather widget's own quiet message, when its read failed for any
+   *  other reason. Never raised as a banner over the window -- see
+   *  `fetchWeather` -- because a stranger's server being unreachable is not
+   *  worth interrupting the rest of the page for. */
+  weatherError = $state<string | null>(null)
+
   #generation = latest()
   #weekStart = localeWeekStart()
+  #weatherGeneration = latest()
+  #weatherTimer: ReturnType<typeof setInterval> | null = null
 
   constructor() {
     // Registered once, here, rather than in `start()`. The view calls
@@ -312,6 +351,8 @@ class OverviewState {
 
   reset() {
     this.#generation.next()
+    this.#weatherGeneration.next()
+    this.#stopWeatherPoll()
     this.report = null
     this.habitDays = []
     this.taskStats = null
@@ -320,6 +361,9 @@ class OverviewState {
     this.entries = []
     this.notes = []
     this.bookedToday = { logged: 0, planned: 0 }
+    this.weather = null
+    this.weatherNoLocation = false
+    this.weatherError = null
     this.loading = false
     this.editing = false
     this.anchor = todayIso()
@@ -374,10 +418,17 @@ class OverviewState {
     // why this is idempotent -- so "Plan for tomorrow" only has to ask once,
     // the same as every other app view does on its own way in.
     if (needs.has('proposals') && !proposals.loaded) await proposals.refresh()
+    // The Weather widget redraws itself every fifteen minutes on its own,
+    // independent of whatever else makes this page refresh -- see
+    // `pollWeather`. Started or stopped here so adding or removing the
+    // widget takes effect on the very next refresh rather than the next
+    // mount.
+    if (needs.has('weather')) this.#startWeatherPoll()
+    else this.#stopWeatherPoll()
 
     try {
       const today = todayIso()
-      const [report, days, taskStats, weekTasks, libraryStats, entries, notes, blocks] =
+      const [report, days, taskStats, weekTasks, libraryStats, entries, notes, blocks, weather] =
         await Promise.all([
           ask(needs.has('balance'), () => api.balance(this.weekStart, this.weekEnd), null),
           ask(
@@ -399,6 +450,7 @@ class OverviewState {
           ),
           ask(needs.has('notes'), () => api.notes({ limit: 6 }), []),
           ask(needs.has('today'), () => api.blocks({ from: today, to: today }), []),
+          ask(needs.has('weather'), () => this.fetchWeather(), NO_WEATHER),
         ])
       if (!this.#generation.isCurrent(mine)) return
 
@@ -419,6 +471,9 @@ class OverviewState {
         },
         { logged: 0, planned: 0 },
       )
+      this.weather = weather.report
+      this.weatherNoLocation = weather.noLocation
+      this.weatherError = weather.error
 
       // Roles, goals and what has happened against them belong to `purpose`,
       // which the todo app and the pickers also read. Asked for here rather
@@ -436,6 +491,60 @@ class OverviewState {
     } finally {
       if (this.#generation.isCurrent(mine)) this.loading = false
     }
+  }
+
+  /**
+   * Read the forecast and fold the answer into one of three outcomes: a
+   * report, "no place to ask about", or anything else. Used both by
+   * `refresh`'s own batch above and by `pollWeather` below, so a vault
+   * locking mid-read is the only failure this does not already resolve --
+   * `ask` and `pollWeather` each treat that the same way every other read
+   * on this page does, by letting it through to `handle`.
+   *
+   * Never reported as a banner over the window: `weatherError` is read by
+   * `OverviewWidget.svelte` as a quiet line under the card instead, because
+   * a stranger's server being unreachable is not worth interrupting
+   * somebody's dashboard for.
+   */
+  private async fetchWeather(): Promise<WeatherOutcome> {
+    try {
+      return { report: await api.weather(), noLocation: false, error: null }
+    } catch (e) {
+      if (isLocked(e)) throw e
+      if (e instanceof VaultError && e.code === 'no_location') {
+        return { report: null, noLocation: true, error: null }
+      }
+      return { report: null, noLocation: false, error: errorMessage(e) }
+    }
+  }
+
+  /**
+   * `fetchWeather`, on its own rather than inside `refresh`'s wider batch --
+   * what the fifteen-minute timer calls, so a Weather widget sitting alone
+   * on an otherwise-quiet page does not pay for the rest of the dashboard
+   * every time it redraws itself.
+   */
+  private async pollWeather(): Promise<void> {
+    const mine = this.#weatherGeneration.next()
+    try {
+      const outcome = await this.fetchWeather()
+      if (!this.#weatherGeneration.isCurrent(mine)) return
+      this.weather = outcome.report
+      this.weatherNoLocation = outcome.noLocation
+      this.weatherError = outcome.error
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
+  #startWeatherPoll() {
+    if (this.#weatherTimer) return
+    this.#weatherTimer = setInterval(() => void this.pollWeather(), WEATHER_POLL_MS)
+  }
+
+  #stopWeatherPoll() {
+    if (this.#weatherTimer) clearInterval(this.#weatherTimer)
+    this.#weatherTimer = null
   }
 
   /** How far back the writing widget's longest window reaches. */

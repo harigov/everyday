@@ -24,7 +24,9 @@
 //! # What leaves the machine
 //!
 //! A place name, to the geocoder, and then a latitude and longitude rounded
-//! to what the geocoder itself answered, to the forecast. Nothing else: no
+//! to what the geocoder itself answered, to the forecast -- and, best-effort,
+//! to a second host, `air-quality-api.open-meteo.com`, for what is in the air
+//! there; see [`crate::air_quality`]'s own doc. Nothing else leaves at all: no
 //! identifier, no history, and the place is the one the person named or the
 //! one they typed into Settings → About You as roughly where they live.
 //!
@@ -284,8 +286,10 @@ pub fn choose(places: Vec<Place>, qualifiers: &[String]) -> Option<Place> {
 pub fn forecast_url(place: &Place, days: u8, units: Units) -> String {
     format!(
         "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}\
-         &current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m\
-         &daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,sunrise,sunset\
+         &current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,\
+         wind_speed_10m,wind_direction_10m,wind_gusts_10m\
+         &daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,\
+         precipitation_sum,sunrise,sunset,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant\
          &timezone=auto&forecast_days={}{}",
         place.latitude,
         place.longitude,
@@ -294,9 +298,14 @@ pub fn forecast_url(place: &Place, days: u8, units: Units) -> String {
     )
 }
 
-/// What the tool hands the model. Field names are the wire: see the
-/// assistant tool's own description in `everyday_service::agent`.
+/// What the tool hands the model, and what `weather` (the command) hands the
+/// interface. Both read the same JSON, which is why it is spelled in
+/// camelCase like every other record on the wire rather than left in the
+/// Rust fields' own snake_case -- the assistant tool got away with that
+/// because nothing typed ever read a key out of it, and a command's caller
+/// does.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Report {
     /// "Seattle, Washington, United States". See [`Place::label`].
     pub place: String,
@@ -309,12 +318,19 @@ pub struct Report {
     pub current: Option<Current>,
     /// Today first.
     pub days: Vec<Day>,
+    /// What's in the air there, best-effort -- `None` when the second
+    /// request this costs (see [`crate::air_quality`]) failed on its own;
+    /// the rest of the forecast is never held back for it. Set by
+    /// `everyday_service::weather::forecast`, not by [`parse_forecast`],
+    /// which only ever hears the first host.
+    pub air_quality: Option<crate::air_quality::AirQualityReport>,
 }
 
 /// Conditions now. Every number is optional because Open-Meteo sends `null`
 /// for a variable a station has stopped reporting, and a missing humidity is
 /// no reason to throw the temperature away.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Current {
     /// Local time, `2026-10-04T10:15`.
     pub time: String,
@@ -324,12 +340,19 @@ pub struct Current {
     pub humidity: Option<i64>,
     pub precipitation: Option<f64>,
     pub wind_speed: Option<f64>,
+    /// Degrees, 0 to 360, the direction the wind is blowing *from* --
+    /// Open-Meteo's own convention, and a meteorologist's.
+    pub wind_direction: Option<i64>,
+    /// [`wind_direction`](Self::wind_direction), in words. See [`compass`].
+    pub wind_direction_compass: Option<&'static str>,
+    pub wind_gusts: Option<f64>,
     /// See [`describe`].
     pub condition: String,
 }
 
 /// One day of the forecast.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Day {
     /// `2026-10-04`.
     pub date: String,
@@ -340,6 +363,14 @@ pub struct Day {
     pub precipitation_chance: Option<i64>,
     /// The day's total.
     pub precipitation: Option<f64>,
+    /// The day's highest sustained wind speed.
+    pub wind_max: Option<f64>,
+    /// The day's highest gust.
+    pub wind_gusts_max: Option<f64>,
+    /// The direction the wind blew from most, over the day.
+    pub wind_direction_dominant: Option<i64>,
+    /// [`wind_direction_dominant`](Self::wind_direction_dominant), in words.
+    pub wind_direction_dominant_compass: Option<&'static str>,
     /// Local time.
     pub sunrise: Option<String>,
     pub sunset: Option<String>,
@@ -373,6 +404,8 @@ pub fn parse_forecast(body: &str, place: &Place, units: Units) -> Result<Report>
         precipitation: Option<f64>,
         weather_code: Option<f64>,
         wind_speed_10m: Option<f64>,
+        wind_direction_10m: Option<f64>,
+        wind_gusts_10m: Option<f64>,
     }
     #[derive(Deserialize)]
     struct RawDaily {
@@ -388,6 +421,12 @@ pub fn parse_forecast(body: &str, place: &Place, units: Units) -> Result<Report>
         precipitation_probability_max: Vec<Option<f64>>,
         #[serde(default)]
         precipitation_sum: Vec<Option<f64>>,
+        #[serde(default)]
+        wind_speed_10m_max: Vec<Option<f64>>,
+        #[serde(default)]
+        wind_gusts_10m_max: Vec<Option<f64>>,
+        #[serde(default)]
+        wind_direction_10m_dominant: Vec<Option<f64>>,
         #[serde(default)]
         sunrise: Vec<Option<String>>,
         #[serde(default)]
@@ -412,6 +451,9 @@ pub fn parse_forecast(body: &str, place: &Place, units: Units) -> Result<Report>
         humidity: c.relative_humidity_2m.map(|h| h.round() as i64),
         precipitation: c.precipitation,
         wind_speed: c.wind_speed_10m,
+        wind_direction: c.wind_direction_10m.map(|d| d.round() as i64),
+        wind_direction_compass: c.wind_direction_10m.map(compass),
+        wind_gusts: c.wind_gusts_10m,
         condition: describe_code(c.weather_code),
     });
 
@@ -435,6 +477,12 @@ pub fn parse_forecast(body: &str, place: &Place, units: Units) -> Result<Report>
                     precipitation_chance: at(&d.precipitation_probability_max, i)
                         .map(|p| p.round() as i64),
                     precipitation: at(&d.precipitation_sum, i),
+                    wind_max: at(&d.wind_speed_10m_max, i),
+                    wind_gusts_max: at(&d.wind_gusts_10m_max, i),
+                    wind_direction_dominant: at(&d.wind_direction_10m_dominant, i)
+                        .map(|v| v.round() as i64),
+                    wind_direction_dominant_compass: at(&d.wind_direction_10m_dominant, i)
+                        .map(compass),
                     sunrise: text(&d.sunrise, i),
                     sunset: text(&d.sunset, i),
                 })
@@ -452,6 +500,9 @@ pub fn parse_forecast(body: &str, place: &Place, units: Units) -> Result<Report>
         units: units.labels(),
         current,
         days,
+        // Only `everyday_service::weather::forecast` has made the second
+        // request this would come from; see `Report::air_quality`'s own doc.
+        air_quality: None,
     })
 }
 
@@ -507,6 +558,25 @@ pub fn describe(code: u16) -> String {
         other => return format!("unknown (WMO code {other})"),
     };
     words.to_string()
+}
+
+/// A wind direction in degrees, 0 to 360, as one of sixteen compass words --
+/// "NNE" rather than "23°", which is what a person actually wants read aloud
+/// or glanced at on a widget.
+///
+/// Each word's slice is centred on its own heading rather than starting
+/// there, so 354° -- four degrees short of a full turn -- is already "N"
+/// rather than reading as nearly "NNW". [`f64::rem_euclid`] folds anything
+/// outside 0..360 (Open-Meteo never sends such a thing, but a defensive
+/// caller might) back into range before the slice is picked.
+pub fn compass(degrees: f64) -> &'static str {
+    const POINTS: [&str; 16] = [
+        "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW",
+        "NW", "NNW",
+    ];
+    let normalized = degrees.rem_euclid(360.0);
+    let index = ((normalized + 11.25) / 22.5).floor() as usize % 16;
+    POINTS[index]
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -615,7 +685,8 @@ mod tests {
         "current_units": {"time": "iso8601", "temperature_2m": "°F"},
         "current": {"time": "2026-10-04T10:15", "interval": 900, "temperature_2m": 57.6,
                     "apparent_temperature": 55.2, "relative_humidity_2m": 71,
-                    "precipitation": 0.0, "weather_code": 3, "wind_speed_10m": 5.8},
+                    "precipitation": 0.0, "weather_code": 3, "wind_speed_10m": 5.8,
+                    "wind_direction_10m": 354, "wind_gusts_10m": 12.1},
         "daily_units": {"time": "iso8601"},
         "daily": {
             "time": ["2026-10-04", "2026-10-05", "2026-10-06"],
@@ -624,6 +695,9 @@ mod tests {
             "temperature_2m_min": [49.8, 50.3, 48.0],
             "precipitation_probability_max": [10, 80, 35],
             "precipitation_sum": [0.0, 0.31, 0.02],
+            "wind_speed_10m_max": [9.2, 11.0, 12.5],
+            "wind_gusts_10m_max": [22.0, 24.1, 19.4],
+            "wind_direction_10m_dominant": [14, 185, 6],
             "sunrise": ["2026-10-04T07:12", "2026-10-05T07:13", "2026-10-06T07:15"],
             "sunset": ["2026-10-04T18:42", "2026-10-05T18:40"]
         }
@@ -750,11 +824,12 @@ mod tests {
         ));
         assert!(metric.contains(
             "&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,\
-             weather_code,wind_speed_10m&"
+             weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m&"
         ));
         assert!(metric.contains(
             "&daily=weather_code,temperature_2m_max,temperature_2m_min,\
-             precipitation_probability_max,precipitation_sum,sunrise,sunset&"
+             precipitation_probability_max,precipitation_sum,sunrise,sunset,wind_speed_10m_max,\
+             wind_gusts_10m_max,wind_direction_10m_dominant&"
         ));
         assert!(metric.ends_with("&timezone=auto&forecast_days=3"));
         assert!(!metric.contains("fahrenheit"));
@@ -784,6 +859,9 @@ mod tests {
         assert_eq!(now.feels_like, Some(55.2));
         assert_eq!(now.humidity, Some(71));
         assert_eq!(now.condition, "overcast");
+        assert_eq!(now.wind_direction, Some(354));
+        assert_eq!(now.wind_direction_compass, Some("N"), "354° rounds up into N's own slice");
+        assert_eq!(now.wind_gusts, Some(12.1));
 
         assert_eq!(report.days.len(), 3);
         assert_eq!(report.days[1].date, "2026-10-05");
@@ -793,17 +871,29 @@ mod tests {
         assert_eq!(report.days[0].high, Some(61.2));
         assert_eq!(report.days[0].low, Some(49.8));
         assert_eq!(report.days[0].sunset.as_deref(), Some("2026-10-04T18:42"));
+        assert_eq!(report.days[0].wind_max, Some(9.2));
+        assert_eq!(report.days[0].wind_gusts_max, Some(22.0));
+        assert_eq!(report.days[0].wind_direction_dominant, Some(14));
+        assert_eq!(
+            report.days[0].wind_direction_dominant_compass,
+            Some("NNE"),
+            "14° is past N's slice, which ends at 11.25°"
+        );
+        assert_eq!(report.days[1].wind_direction_dominant_compass, Some("S"));
         // A null code and a short column are missing values, not lost days.
         assert_eq!(report.days[2].condition, "unknown");
         assert_eq!(report.days[2].sunset, None);
         assert_eq!(report.days[2].sunrise.as_deref(), Some("2026-10-06T07:15"));
+        assert_eq!(report.air_quality, None, "only the service layer ever sets this");
     }
 
     #[test]
-    fn the_report_serialises_in_the_shape_the_tool_promises() {
+    fn the_report_serialises_in_camel_case() {
         let report = parse_forecast(FORECAST, &seattle(), Units::Metric).unwrap();
         let json = serde_json::to_value(&report).unwrap();
-        for key in ["place", "latitude", "longitude", "timezone", "units", "current", "days"] {
+        for key in
+            ["place", "latitude", "longitude", "timezone", "units", "current", "days", "airQuality"]
+        {
             assert!(json.get(key).is_some(), "missing {key}");
         }
         assert_eq!(
@@ -813,10 +903,13 @@ mod tests {
         for key in [
             "time",
             "temperature",
-            "feels_like",
+            "feelsLike",
             "humidity",
             "precipitation",
-            "wind_speed",
+            "windSpeed",
+            "windDirection",
+            "windDirectionCompass",
+            "windGusts",
             "condition",
         ] {
             assert!(json["current"].get(key).is_some(), "current is missing {key}");
@@ -826,12 +919,20 @@ mod tests {
             "condition",
             "high",
             "low",
-            "precipitation_chance",
+            "precipitationChance",
             "precipitation",
+            "windMax",
+            "windGustsMax",
+            "windDirectionDominant",
+            "windDirectionDominantCompass",
             "sunrise",
             "sunset",
         ] {
             assert!(json["days"][0].get(key).is_some(), "a day is missing {key}");
+        }
+        // None of the snake_case spellings survive -- the wire is camelCase.
+        for bad in ["feels_like", "wind_speed", "precipitation_chance"] {
+            assert!(json["current"].get(bad).is_none() && json["days"][0].get(bad).is_none());
         }
     }
 
@@ -869,5 +970,19 @@ mod tests {
         assert_eq!(Units::customary_in("us"), Units::Imperial);
         assert_eq!(Units::customary_in("GB"), Units::Metric);
         assert_eq!(Units::customary_in(""), Units::Metric);
+    }
+
+    #[test]
+    fn a_compass_word_is_centred_on_its_own_heading() {
+        assert_eq!(compass(0.0), "N");
+        assert_eq!(compass(11.0), "N", "just short of NNE's own slice");
+        assert_eq!(compass(11.3), "NNE", "just inside it");
+        assert_eq!(compass(90.0), "E");
+        assert_eq!(compass(180.0), "S");
+        assert_eq!(compass(270.0), "W");
+        assert_eq!(compass(348.8), "N", "nearly a full turn is already back to N");
+        assert_eq!(compass(360.0), "N");
+        assert_eq!(compass(-10.0), "N", "a negative reading folds back into range");
+        assert_eq!(compass(720.0 + 45.0), "NE", "more than one full turn folds back too");
     }
 }

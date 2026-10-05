@@ -39,6 +39,7 @@ export type ReadingId = string
 export type ConversationId = string
 export type MessageId = string
 export type MemoryId = string
+export type SkillId = string
 export type RoleId = string
 export type GoalId = string
 export type KindId = string
@@ -2194,6 +2195,112 @@ export interface SourceInfo {
   hasImages: boolean
 }
 
+// ── Weather ──────────────────────────────────────────────────────────────
+//
+// Mirrors `everyday_core::weather` and `everyday_core::air_quality`. Read by
+// both the `weather` command (the Overview's Weather widget) and, loosely --
+// it is never typed on that side -- the assistant's own `get_weather` tool,
+// which answers with the same JSON.
+
+export interface WeatherUnitLabels {
+  temperature: string
+  wind: string
+  precipitation: string
+}
+
+/** Conditions right now. Every number is `null` rather than missing when a
+ *  station has stopped reporting it -- see `weather::Current`'s own doc. */
+export interface WeatherCurrent {
+  /** Local time, `2026-10-04T10:15`. */
+  time: string
+  temperature: number | null
+  feelsLike: number | null
+  /** Percent. */
+  humidity: number | null
+  precipitation: number | null
+  windSpeed: number | null
+  /** Degrees, 0 to 360: the direction the wind is blowing *from*. */
+  windDirection: number | null
+  windDirectionCompass: string | null
+  windGusts: number | null
+  condition: string
+}
+
+/** One day of the forecast. */
+export interface WeatherDay {
+  /** `2026-10-04`. */
+  date: string
+  condition: string
+  high: number | null
+  low: number | null
+  /** Percent: the day's highest hourly chance. */
+  precipitationChance: number | null
+  /** The day's total. */
+  precipitation: number | null
+  windMax: number | null
+  windGustsMax: number | null
+  windDirectionDominant: number | null
+  windDirectionDominantCompass: string | null
+  sunrise: string | null
+  sunset: string | null
+}
+
+export type AqiScale = 'us' | 'european'
+
+/** Air quality right now. Best-effort throughout -- see
+ *  `AirQualityReport`'s own doc on why a whole report can be absent. */
+export interface AirQualityCurrent {
+  time: string
+  usAqi: number | null
+  europeanAqi: number | null
+  /** Which of the two numbers above `aqi` repeats, and `category` is in
+   *  words for -- see `AqiScale::customary_in`. */
+  scale: AqiScale
+  aqi: number | null
+  /** "Good", "Moderate", "Unhealthy for sensitive groups", … */
+  category: string | null
+  pm25: number | null
+  pm10: number | null
+  ozone: number | null
+  nitrogenDioxide: number | null
+}
+
+/** One day's worst hourly reading, in `AirQualityCurrent.scale`'s units. */
+export interface AirQualityDay {
+  date: string
+  maxAqi: number | null
+}
+
+/**
+ * What's in the air beside the weather -- `WeatherReport.airQuality` is
+ * `null` when this second, smaller request failed on its own; the rest of
+ * the forecast is still returned. See `everyday_core::air_quality`'s "A
+ * third request, allowed to fail on its own".
+ */
+export interface AirQualityReport {
+  current: AirQualityCurrent | null
+  /** Today first, aligned by date with `WeatherReport.days`. Can be shorter
+   *  than that list, or empty. */
+  daily: AirQualityDay[]
+}
+
+/** What the `weather` command, and the assistant's `get_weather` tool,
+ *  answer with. */
+export interface WeatherReport {
+  /** "Seattle, Washington, United States". */
+  place: string
+  latitude: number
+  longitude: number
+  /** The place's own zone, which every time above is in. */
+  timezone: string
+  units: WeatherUnitLabels
+  /** `null` only if the forecast came back without it. */
+  current: WeatherCurrent | null
+  /** Today first. */
+  days: WeatherDay[]
+  airQuality: AirQualityReport | null
+}
+
 // ── The assistant ────────────────────────────────────────────────────────
 //
 // Mirrors `everyday_core::agent`. Note what is *not* here: the API key. It
@@ -2484,6 +2591,27 @@ export const MEMORY_ORIGINS = ['told', 'inferred', 'confirmed', 'rejected'] as c
  * assume" so a later dream cannot learn them again.
  */
 export type MemoryOrigin = (typeof MEMORY_ORIGINS)[number]
+
+/**
+ * A process the assistant was given for a certain kind of request -- plan a
+ * trip, run a weekly review. Modelled on Claude's Agent Skills:
+ * `description` is what the system prompt's index carries for every enabled
+ * skill, and `instructions` is read in full only once `read_skill` asks for
+ * it by name, which is what lets a vault hold as many of these as somebody
+ * writes without crowding the prompt.
+ */
+export interface Skill {
+  id: SkillId
+  name: string
+  /** When to use it, in one or two sentences -- not what it does once loaded. */
+  description: string
+  /** The process itself. Never sent with the prompt; only read_skill sees it. */
+  instructions: string
+  /** Off skills are left out of the prompt's index and cannot be loaded. */
+  enabled: boolean
+  createdAt: string
+  updatedAt: string
+}
 
 // ── Proposals ────────────────────────────────────────────────────────────
 //

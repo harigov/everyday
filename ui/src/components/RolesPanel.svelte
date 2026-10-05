@@ -119,7 +119,7 @@
       one this application gets to make.
     </p>
     <div>
-      <button class="btn" disabled={!writable} onclick={() => void purpose.seed()}>
+      <button class="btn btn-outline" disabled={!writable} onclick={() => void purpose.seed()}>
         Start me off with a few
       </button>
     </div>
@@ -180,7 +180,7 @@
     />
   {:else}
     <div>
-      <button class="btn" disabled={!writable} onclick={() => (creating = true)}>
+      <button class="btn btn-outline" disabled={!writable} onclick={() => (creating = true)}>
         <Icon name="plus" size={13} /> Add a role
       </button>
     </div>
@@ -232,7 +232,7 @@
     display: grid;
     gap: var(--sp-2);
     padding: var(--sp-4) 0;
-    border-bottom: 1px solid var(--line);
+    border-bottom: 1px solid var(--border);
   }
 
   .hint {

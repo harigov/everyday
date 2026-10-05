@@ -27,12 +27,12 @@
 //! and touch only `data` -- both narrower than the generic helper, which
 //! always rewrites every column [`Record::columns`] names.
 
-use everyday_core::agent::{AgentSettings, Conversation, Memory, Message};
+use everyday_core::agent::{AgentSettings, Conversation, Memory, Message, Skill};
 use everyday_core::error::{Error, Result};
-use everyday_core::id::{ConversationId, MemoryId, MessageId};
+use everyday_core::id::{ConversationId, MemoryId, MessageId, SkillId};
 use everyday_core::store::agent::{
     AgentStore, ConversationQuery, conversation_aad, memory_aad, message_aad, secret_aad,
-    settings_aad,
+    settings_aad, skill_aad,
 };
 
 use crate::conn::{SqlExt, ToValue, Value};
@@ -66,6 +66,17 @@ impl Record for Memory {
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![("created_us", to_us(self.created_at).to_value())]
+    }
+}
+
+impl Record for Skill {
+    const TABLE: &'static str = "skills";
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("created_us", to_us(self.created_at).to_value()),
+            ("updated_us", to_us(self.updated_at).to_value()),
+        ]
     }
 }
 
@@ -275,6 +286,28 @@ impl AgentStore for SqlStore {
 
     fn delete_memory(&self, id: MemoryId) -> Result<()> {
         self.delete_by_id::<Memory>(id)?;
+        Ok(())
+    }
+
+    // ---- skills -----------------------------------------------------------
+
+    fn list_skills(&self) -> Result<Vec<Skill>> {
+        let rows = self.read().records("SELECT id, data FROM skills ORDER BY created_us", &[])?;
+        self.collect(rows, skill_aad)
+    }
+
+    fn put_skill(&self, skill: &Skill) -> Result<()> {
+        // The name, the description and the instructions are all inside
+        // `data`. A database that said "Plan a trip" in the clear would be
+        // telling somebody what this vault's owner has taught the assistant
+        // to do for them, which is exactly the kind of thing this domain
+        // exists to keep out of the clear -- see this file's own module
+        // docs.
+        self.upsert(skill)
+    }
+
+    fn delete_skill(&self, id: SkillId) -> Result<()> {
+        self.delete_by_id::<Skill>(id)?;
         Ok(())
     }
 }

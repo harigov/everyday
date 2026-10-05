@@ -65,7 +65,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use session::Unlocked;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
@@ -149,6 +149,15 @@ pub struct Vault {
     /// Milliseconds since `epoch` at the last user-initiated operation.
     last_activity_ms: AtomicU64,
     epoch: Instant,
+    /// Cached answer to "is this vault's key being kept in this computer's
+    /// keychain right now". `false` until something that already knows the
+    /// answer says otherwise -- the auto-unlock this vault was opened with,
+    /// an explicit unlock while the switch was already on, or the switch
+    /// itself -- never computed in here, because asking the keychain is a
+    /// blocking call this struct has no business making and the idle timer
+    /// below polls every few seconds. See [`Vault::set_key_in_keychain`] and
+    /// `everyday_vault::autounlock`'s module doc for who sets it and why.
+    key_in_keychain: AtomicBool,
     /// The exclusive write claim on this directory, or `None` if another
     /// process holds it and this vault is therefore read-only. Dropped with
     /// the vault, which is what releases it. See [`crate::lockfile`].
@@ -244,6 +253,7 @@ impl Vault {
             registry,
             last_activity_ms: AtomicU64::new(0),
             epoch: Instant::now(),
+            key_in_keychain: AtomicBool::new(false),
             // A vault nobody could write to is not worth creating, so unlike
             // `open` this does not fall back to read-only. In practice it is
             // always ours: `create` refused an existing vault above, and the
@@ -358,6 +368,7 @@ impl Vault {
             registry,
             last_activity_ms: AtomicU64::new(0),
             epoch: Instant::now(),
+            key_in_keychain: AtomicBool::new(false),
             write_lock,
         };
         if activate && !encrypted {

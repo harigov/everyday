@@ -85,7 +85,10 @@
     </ul>
 
     {#if anyMedia}
-      <label class="toggle">
+      <!-- `.tick`, the same class the rows above use, not a different
+           "toggle" style of its own -- it is one more thing to include in
+           the export, not a setting of a different kind. -->
+      <label class="tick">
         <input
           type="checkbox"
           checked={transfer.media}
@@ -116,8 +119,6 @@
     </div>
   {/if}
 </section>
-
-<hr />
 
 <section>
   <span class="eyebrow">Import</span>
@@ -220,7 +221,9 @@
     </div>
   {:else}
     <div class="row">
-      <button class="btn" disabled={transfer.busy} onclick={startImport}>Choose a file…</button>
+      <button class="btn btn-outline" disabled={transfer.busy} onclick={startImport}>
+        Choose a file…
+      </button>
     </div>
   {/if}
 
@@ -264,8 +267,6 @@
   <p class="notice good">{transfer.outcome}</p>
 {/if}
 
-<hr />
-
 <section>
   <span class="eyebrow">This is not a backup</span>
   <p class="hint">
@@ -278,10 +279,18 @@
 </section>
 
 <style>
-  hr {
-    margin: var(--sp-5) 0;
-    border: 0;
-    border-top: 1px solid var(--border);
+  /* This tab had no `section` rule of its own -- the three sections above
+     relied on a pair of `<hr>`s for the space between them instead of the
+     gap every other tab gets from its own section rhythm, which is what made
+     Data read as its own thing rather than one more tab of the same page.
+     Gone now, in favour of the rule the rest of Settings already uses. */
+  section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+  }
+  section + section {
+    margin-top: var(--sp-6);
   }
 
   .parts {
@@ -293,11 +302,16 @@
     list-style: none;
   }
 
+  /* No horizontal inset: a `.job` or `.toggle` row elsewhere in Settings puts
+     its checkbox flush with the section text above it, and this one was
+     indented a few pixels past it by padding meant only to give the hover
+     highlight some room to breathe. The vertical half of that padding still
+     does that job; only the horizontal half moved the row. */
   .tick {
     display: flex;
     gap: var(--sp-3);
     align-items: start;
-    padding: var(--sp-2) var(--sp-2);
+    padding: var(--sp-2) 0;
     border-radius: var(--radius-sm);
     cursor: pointer;
   }

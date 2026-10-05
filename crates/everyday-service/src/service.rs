@@ -32,6 +32,7 @@ use crate::signin::SignIns;
 use crate::supervisor::Supervisor;
 use crate::token_cache::TokenCache;
 use crate::transfers::Transfers;
+use crate::weather_cache::WeatherCache;
 use everyday_core::id::{AccountId, DraftId, RecordingId, ThreadId};
 use everyday_core::mail::Origin;
 use everyday_core::mail::rate_limit::RateLimitRefusal;
@@ -135,6 +136,9 @@ pub struct Service {
     /// appended, and which expiring recordings have already been warned
     /// about. See [`crate::runtime::meeting::MeetingRuntime`].
     meetings: MeetingRuntime,
+    /// This session's short memory of one place's forecast -- see
+    /// [`crate::weather_cache`].
+    weather_cache: WeatherCache,
 }
 
 impl Default for Service {
@@ -169,6 +173,7 @@ impl Service {
             ),
             clock: RwLock::new(clock),
             meetings: MeetingRuntime::default(),
+            weather_cache: WeatherCache::new(),
         }
     }
 
@@ -223,6 +228,17 @@ impl Service {
 
     pub fn mail_summary_cache_put(&self, thread: ThreadId, message_count: u32, summary: String) {
         self.mail.summary_cache_put(thread, message_count, summary);
+    }
+
+    /// A still-fresh cached forecast for `place` -- see
+    /// [`crate::weather_cache::WeatherCache`]'s own doc on how long "fresh"
+    /// is and why it exists.
+    pub fn weather_cached(&self, place: &str) -> Option<everyday_core::weather::Report> {
+        self.weather_cache.get(place, self.now())
+    }
+
+    pub fn weather_cache_put(&self, place: &str, report: everyday_core::weather::Report) {
+        self.weather_cache.put(place, self.now(), report);
     }
 
     /// OAuth sign-ins this session is driving, or has already finished

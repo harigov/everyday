@@ -50,7 +50,7 @@
   import ChatPanel from './components/ChatPanel.svelte'
   import Icon from './components/Icon.svelte'
   import MeetingOfferBanner from './components/MeetingOfferBanner.svelte'
-  import SettingsDialog from './components/SettingsDialog.svelte'
+  import SettingsView from './components/SettingsView.svelte'
   import ShortcutsHelp from './components/ShortcutsHelp.svelte'
   import Palette from './components/Palette.svelte'
 
@@ -65,6 +65,12 @@
   // And for the same reason: an open menu is quoting the row it was raised
   // on -- an entry title, a project name -- and those are vault contents.
   app.onLock(() => menu.close(false))
+  // Settings is a page in the panes now rather than a dialog that used to
+  // simply vanish with everything else behind the lock screen, so closing it
+  // has to be said here -- otherwise `panels.settings` survives the lock
+  // unchanged and whoever unlocks lands back in Settings instead of back in
+  // whatever app they had open. See `panels.svelte.ts`'s own note.
+  app.onLock(() => panels.closeSettings())
 
   // Notice writes that happened somewhere else. On a local vault that is this
   // window's own commands and it already knows; under server mode it is another
@@ -218,30 +224,41 @@
       <MeetingOfferBanner />
       <div class="panes">
         <AppBar />
-        <!-- The Overview has no sidebar. Its half used to be the widget
-             catalogue, a column spent on every visit on a list somebody
-             reads when rearranging; that is the Add button's dialog now, and
-             the page gets the width. -->
-        {#if app.section !== 'overview'}
-          <Sidebar />
-        {/if}
-        {#if app.section === 'assistant'}
-          <AssistantView />
-        {:else if app.section === 'notes'}
-          <NotesView />
-        {:else if app.section === 'todo'}
-          <TodoView />
-        {:else if app.section === 'calendar'}
-          <CalendarView />
-        {:else if app.section === 'library'}
-          <LibraryView />
-        {:else if app.section === 'mail'}
-          <MailView />
-        {:else if app.section === 'overview'}
-          <OverviewView />
+        <!-- Settings stands in the place the current app's own sidebar and
+             view would fill, not over them -- see `SettingsView.svelte`'s
+             header comment for why it moved here. It draws its own
+             sidebar-shaped nav of tabs, so none of the apps' is shown
+             underneath, and `app.section` is left exactly as it was: closing
+             Settings (the X, Escape, or choosing a different app) returns to
+             whatever was open before. -->
+        {#if panels.settings !== null}
+          <SettingsView />
         {:else}
-          <EntryList />
-          <main class="main"><Editor /></main>
+          <!-- The Overview has no sidebar. Its half used to be the widget
+               catalogue, a column spent on every visit on a list somebody
+               reads when rearranging; that is the Add button's dialog now,
+               and the page gets the width. -->
+          {#if app.section !== 'overview'}
+            <Sidebar />
+          {/if}
+          {#if app.section === 'assistant'}
+            <AssistantView />
+          {:else if app.section === 'notes'}
+            <NotesView />
+          {:else if app.section === 'todo'}
+            <TodoView />
+          {:else if app.section === 'calendar'}
+            <CalendarView />
+          {:else if app.section === 'library'}
+            <LibraryView />
+          {:else if app.section === 'mail'}
+            <MailView />
+          {:else if app.section === 'overview'}
+            <OverviewView />
+          {:else}
+            <EntryList />
+            <main class="main"><Editor /></main>
+          {/if}
         {/if}
         <!-- Last in the row, so it is the right-hand rail whichever app is
              open: the assistant works on every one of them. Except its own,
@@ -275,11 +292,10 @@
       </div>
     </div>
 
-    <!-- Over everything, and outside the pane switch: settings and the
-         shortcut sheet are the window's, not any one app's. -->
-    {#if panels.settings !== null}
-      <SettingsDialog />
-    {/if}
+    <!-- Over everything, and outside the pane switch: the shortcut sheet is
+         the window's, not any one app's. Settings used to be drawn here
+         too, the same way, when it was a dialog; it is one of the panes
+         now, with `AppBar` beside it, so it is up inside `.panes` above. -->
     {#if panels.shortcuts}
       <ShortcutsHelp />
     {/if}

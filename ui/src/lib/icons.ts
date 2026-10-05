@@ -315,4 +315,48 @@ export const ICONS = {
     '<rect width="6" height="12" x="9" y="2.5" rx="3"/>' +
     '<path d="M5.5 11a6.5 6.5 0 0 0 13 0"/>' +
     '<path d="M12 17.5v4"/><path d="M8.5 21.5h7"/>',
+
+  // ── Weather ────────────────────────────────────────────────────────────
+  //
+  // `sun`, above, already draws "clear" -- the Overview's Weather widget and
+  // the assistant's own `get_weather` card (see `ToolCard.svelte`'s `ICONS`)
+  // reuse it rather than this file keeping two. The rest of
+  // `dashboard.ts`'s `weatherIcon` picks between these by condition word.
+
+  // A single cloud, for "overcast" and "partly cloudy" alike -- the widget
+  // does not also draw a sun peeking out from behind it, which would be a
+  // second shape to keep aligned with this one at 16px for no real gain in
+  // what it tells you over the condition's own words beside it.
+  cloud: '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>',
+
+  // The same cloud, with three drops: drizzle, rain and rain showers all
+  // read as this one shape, the way `describe` in `everyday_core::weather`
+  // reads eleven WMO codes down into "light rain" and friends.
+  rain:
+    '<path d="M4 14.9A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.24"/>' +
+    '<path d="M8 17v3"/><path d="M12 18v3"/><path d="M16 17v3"/>',
+
+  // The same cloud again, with flakes for dots: snow, snow grains and snow
+  // showers.
+  snow:
+    '<path d="M4 14.9A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.24"/>' +
+    '<path d="M8 18h.01"/><path d="M12 19h.01"/><path d="M16 18h.01"/>',
+
+  // The cloud with a bolt rather than drops: thunderstorms, with or without
+  // hail -- `describe` does not distinguish the two in words either.
+  storm:
+    '<path d="M6 16.3A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 .5 8.97"/>' +
+    '<path d="m13 12-3 5h4l-3 5"/>',
+
+  // Not a cloud at all: fog sits on the ground rather than overhead, which
+  // is what the two bars without a cloud above them say.
+  fog:
+    '<path d="M17.5 13H9a5.5 5.5 0 1 1 5.5-6.4"/>' + '<path d="M4.5 17h15"/><path d="M6.5 21h11"/>',
+
+  // Three swooshes of falling length: the widget's wind row, not tied to
+  // any one condition the way the clouds above are.
+  wind:
+    '<path d="M12.8 18.6a2 2 0 1 0 1.2-3.6H3"/>' +
+    '<path d="M17.5 8.5a2.5 2.5 0 1 1 2 4H3"/>' +
+    '<path d="M9.8 5.4a2 2 0 1 1 1.2 3.6H3"/>',
 } as const

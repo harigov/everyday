@@ -1481,6 +1481,27 @@
       "title": "Overview"
     },
     {
+      "domain": "agent",
+      "effect": "read",
+      "name": "read_skill",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "A skill's name, exactly as it was given to you in your instructions.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Read skill"
+    },
+    {
       "domain": "mail",
       "effect": "read",
       "name": "read_thread",

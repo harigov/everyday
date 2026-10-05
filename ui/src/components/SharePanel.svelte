@@ -175,6 +175,15 @@
 {/if}
 
 <style>
+  /* This is the first section drawn in the Vault tab after the password
+     section `SettingsView` itself draws, and that file's own
+     `section + section` rule -- which spaces every other pair of sections in
+     that tab -- only reaches literal sibling `<section>` tags written in
+     that file, not a child component's. Without this, the two touched. */
+  section {
+    margin-top: var(--sp-6);
+  }
+
   .field-row {
     display: flex;
     align-items: center;
@@ -185,9 +194,9 @@
   .field-row select {
     flex: 1;
     padding: 0.35rem 0.5rem;
-    border: 1px solid var(--rule);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
-    background: var(--surface);
+    background: var(--bg-raised);
     color: inherit;
     font: inherit;
   }
@@ -197,7 +206,7 @@
     gap: 0.9rem;
     align-items: flex-start;
     padding: 0.75rem;
-    border: 1px solid var(--rule);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
   }
 
@@ -226,8 +235,8 @@
     display: block;
     overflow-wrap: anywhere;
     font-size: var(--text-xs);
-    color: var(--text-muted);
-    background: var(--surface-sunken, transparent);
+    color: var(--fg-muted);
+    background: var(--bg-sunken);
     padding: 0.35rem 0.45rem;
     border-radius: 4px;
   }
@@ -243,7 +252,7 @@
     align-items: center;
     gap: 0.6rem;
     padding: 0.45rem 0.55rem;
-    border: 1px solid var(--rule);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
   }
 
@@ -259,15 +268,15 @@
   }
 
   .device small {
-    color: var(--text-muted);
+    color: var(--fg-muted);
     font-size: var(--text-xs);
   }
 
   .caveat {
     margin: 0;
     padding-top: 0.6rem;
-    border-top: 1px solid var(--rule);
-    color: var(--text-muted);
+    border-top: 1px solid var(--border);
+    color: var(--fg-muted);
     font-size: var(--text-xs);
     line-height: 1.55;
   }

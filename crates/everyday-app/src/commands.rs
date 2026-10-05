@@ -90,8 +90,18 @@ pub async fn set_opens_itself(
     // long is a window that has stopped answering.
     if !on {
         let at = path.clone();
+        // `get`, not `require`: a vault that is not currently open has
+        // nothing to flip the cached flag on, and forgetting the keychain
+        // entry must still succeed regardless.
+        let vault = state.service().get();
         return blocking(move || {
             everyday_vault::autounlock::forget(&at)?;
+            // Brings the stored `autoLockSeconds`/`forgetKeySeconds` straight
+            // back into effect -- see `Vault::seconds_until_forget_key`. The
+            // settings themselves were never touched, only this cached bit.
+            if let Some(vault) = &vault {
+                vault.set_key_in_keychain(false);
+            }
             Ok(false)
         })
         .await;
@@ -100,6 +110,10 @@ pub async fn set_opens_itself(
     blocking(move || {
         let key = vault.export_data_key(password.as_deref())?;
         everyday_vault::autounlock::remember(&path, &key)?;
+        // From this moment, signing in to this computer is what unlocks this
+        // vault, so its own idle timer stops forgetting the key -- see
+        // `Vault::seconds_until_forget_key`.
+        vault.set_key_in_keychain(true);
         Ok(true)
     })
     .await
@@ -165,6 +179,16 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
                     if !vault.is_unlocked() {
                         vault.unlock_with_key(key.as_str())?;
                     }
+                    // The recalled key is what just opened this vault, or was
+                    // already right for it -- either way the keychain holds a
+                    // working key for it right now, so the idle timer that
+                    // forgets the key for lack of activity has nothing left
+                    // to protect against: a reboot gets it back on its own.
+                    // Signing in to this computer *is* unlocking this vault
+                    // from here on, until somebody turns the switch off or
+                    // locks it themselves. See
+                    // `Vault::seconds_until_forget_key`.
+                    vault.set_key_in_keychain(true);
                     Ok(())
                 })
                 .await;
@@ -781,6 +805,24 @@ pub async fn set_tray_menu(app: tauri::AppHandle, items: Vec<TrayItem>) -> Comma
 pub async fn hide_tray(app: tauri::AppHandle) -> CommandResult<()> {
     blocking(move || {
         app.state::<Tray>().hide();
+        Ok(())
+    })
+    .await
+}
+
+/// Turn the tray's "show the next meeting" line on or off, and show the
+/// effect immediately rather than waiting for the next minute's tick.
+///
+/// A machine preference, not a vault one, the same way the tray switch
+/// above it is: it says nothing a vault needs sealed, and it has to be
+/// known for a window that opens with no vault unlocked yet to clear it
+/// rather than leave a stale title up from a previous session. See
+/// `ui/src/lib/tray.svelte.ts`'s `meetingPref`, where it is stored, and
+/// `tray::Tray::set_meeting_enabled`, which does the work.
+#[tauri::command]
+pub async fn set_tray_meeting(app: tauri::AppHandle, on: bool) -> CommandResult<()> {
+    blocking(move || {
+        app.state::<Tray>().set_meeting_enabled(&app, on)?;
         Ok(())
     })
     .await

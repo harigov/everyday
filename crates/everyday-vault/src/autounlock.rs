@@ -29,6 +29,23 @@
 //! It lives in this crate, which is the assembly point, because two front ends
 //! want it: the desktop app's switch, and `everyday serve --keychain` on a
 //! machine under a desk that reboots overnight.
+//!
+//! # The idle timers, once this is on
+//!
+//! Signing in to this computer already is unlocking this vault, so neither
+//! idle clock has anything left to protect: the window's own screen timer
+//! would only hide what the OS login already reopens, and the key's own
+//! idle timeout (`forget_key_seconds`) would only make the assistant's
+//! routines wait for somebody to notice and type a password a reboot was
+//! going to hand back anyway. Both are suspended while this is on --
+//! `Vault::set_key_in_keychain` is the cached bit a caller here sets once it
+//! knows the key actually unlocked the vault, and
+//! `Vault::seconds_until_forget_key` reads it, rather than this module ever
+//! being asked on the five-second poll that watches for idleness. The
+//! stored timeouts are untouched either way, so turning the switch back off
+//! brings them straight back. Locking the vault by hand -- Ctrl/Cmd+L, the
+//! Lock button, the tray -- is unaffected either way: none of those go
+//! through this flag at all.
 
 use everyday_core::crypto::KeyText;
 use everyday_core::{Error, Result};

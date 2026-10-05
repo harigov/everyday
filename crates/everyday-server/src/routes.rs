@@ -202,11 +202,16 @@ impl IntoResponse for Failure {
             // `locked` says about a vault: understood, cannot be honoured
             // as it stands, and there is a specific known step -- sign in
             // again -- that fixes it.
+            // `no_location` says the same thing about `weather` (the
+            // command) that `invalid_grant` says about an account: a
+            // specific, known step -- adding a location in Settings → About
+            // You -- fixes it.
             codes::LOCKED
             | codes::NO_VAULT
             | codes::UNSUPPORTED
             | codes::CONFIRM_REQUIRED
             | codes::NOT_AN_IMAGE
+            | codes::NO_LOCATION
             | codes::INVALID_GRANT => StatusCode::UNPROCESSABLE_ENTITY,
             // Another copy of this process holds the write claim. Distinct
             // from `conflict`'s optimistic-concurrency meaning -- nothing
@@ -793,6 +798,7 @@ mod status_tests {
             (codes::INTERNAL, StatusCode::INTERNAL_SERVER_ERROR),
             (codes::NETWORK, StatusCode::BAD_GATEWAY),
             (codes::NOT_AN_IMAGE, StatusCode::UNPROCESSABLE_ENTITY),
+            (codes::NO_LOCATION, StatusCode::UNPROCESSABLE_ENTITY),
             (codes::PANIC, StatusCode::INTERNAL_SERVER_ERROR),
             (codes::QUICK, StatusCode::BAD_GATEWAY),
             (codes::RATE_LIMITED, StatusCode::TOO_MANY_REQUESTS),

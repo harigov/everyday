@@ -124,6 +124,7 @@
   .ghost {
     position: relative;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--sp-2);
     padding: var(--sp-1) var(--sp-2);
@@ -133,6 +134,17 @@
     color: var(--fg-muted);
     font-size: var(--text-sm);
     min-width: 0;
+  }
+  .ghost:not(.compact) {
+    /* So `.answers` below can ask, by its own width, for a line of its own
+       once the caption and the two buttons no longer fit side by side --
+       narrower than the row they share in the notes sidebar, where the
+       buttons used to overlap the title instead of wrapping under it. Not
+       on `.compact`: that variant is sized by its own content (a chip on a
+       task row, a block on the time grid) and `contain: inline-size` -- what
+       this property implies -- would stop that content from being able to
+       size it, collapsing it instead. */
+    container-type: inline-size;
   }
   .ghost.compact {
     padding: 2px var(--sp-1);
@@ -192,6 +204,17 @@
     display: flex;
     gap: var(--sp-1);
     flex: none;
+  }
+  /* Below this, "Accept"/"Decline" at full size no longer fit beside even a
+     short caption -- a goal row in the Todo list or a card in Settings has
+     room to spare, but the notes sidebar does not. `flex-basis: 100%` is
+     what forces the wrap: on a `flex-wrap` parent, an item asking for the
+     whole row can only go on a line of its own. */
+  @container (max-width: 280px) {
+    .ghost:not(.compact) .answers {
+      flex-basis: 100%;
+      justify-content: flex-end;
+    }
   }
   .answers > button {
     display: inline-flex;

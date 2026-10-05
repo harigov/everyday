@@ -126,7 +126,7 @@ impl From<ProposalKind> for RecordKind {
 }
 
 /// The reverse of [`From<ProposalKind> for RecordKind`], for the six kinds a
-/// proposal can actually carry. `Err(())` for the other twenty-four -- there
+/// proposal can actually carry. `Err(())` for the other twenty-five -- there
 /// is no proposal kind for a journal entry or a mailbox, and returning that
 /// plainly is more honest than picking one.
 impl TryFrom<RecordKind> for ProposalKind {
@@ -163,7 +163,8 @@ impl TryFrom<RecordKind> for ProposalKind {
             | RecordKind::Op
             | RecordKind::Recording
             | RecordKind::Transcript
-            | RecordKind::Voiceprint => Err(()),
+            | RecordKind::Voiceprint
+            | RecordKind::Skill => Err(()),
         }
     }
 }
@@ -337,7 +338,7 @@ impl From<AboutKind> for RecordKind {
 }
 
 /// The reverse, for the nine kinds a proposal's "about" can actually name.
-/// `Err(())` for the other twenty-one -- nothing has ever reacted to a
+/// `Err(())` for the other twenty-two -- nothing has ever reacted to a
 /// mailbox or a recording, so there is no `AboutKind` for one.
 impl TryFrom<RecordKind> for AboutKind {
     type Error = ();
@@ -373,7 +374,8 @@ impl TryFrom<RecordKind> for AboutKind {
             | RecordKind::Op
             | RecordKind::Recording
             | RecordKind::Transcript
-            | RecordKind::Voiceprint => Err(()),
+            | RecordKind::Voiceprint
+            | RecordKind::Skill => Err(()),
         }
     }
 }

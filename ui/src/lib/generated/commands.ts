@@ -125,6 +125,8 @@ import type {
   SearchMailResult,
   SearchRequest,
   SearchResult,
+  Skill,
+  SkillId,
   SourceInfo,
   SpeechModelInfo,
   StoreStats,
@@ -154,6 +156,7 @@ import type {
   VaultStatus,
   VoiceprintId,
   VoiceprintInfo,
+  WeatherReport,
 } from '../types'
 
 /** The command surface this build of the interface was generated against. */
@@ -234,6 +237,7 @@ export interface Commands {
   deleteRole: { args: { id: RoleId }; result: void }
   deleteRoutine: { args: { id: RoutineId }; result: void }
   deleteRun: { args: { id: RoutineRunId }; result: void }
+  deleteSkill: { args: { id: SkillId }; result: void }
   deleteSpeechModel: { args: { id: string }; result: void }
   deleteTask: { args: { id: TaskId }; result: void }
   deleteTracker: { args: { id: TrackerId }; result: number }
@@ -301,6 +305,7 @@ export interface Commands {
   listRoles: { args: Record<string, never>; result: RoleInfo[] }
   listRoutines: { args: Record<string, never>; result: RoutineInfo[] }
   listRuns: { args: { query?: RunQuery }; result: RoutineRun[] }
+  listSkills: { args: Record<string, never>; result: Skill[] }
   listTags: { args: Record<string, never>; result: string[] }
   listTasks: { args: { query: TaskQuery }; result: Task[] }
   listThreads: {
@@ -371,6 +376,7 @@ export interface Commands {
   newProject: { args: { name: string }; result: Project }
   newRole: { args: { name: string }; result: Role }
   newRoutine: { args: Record<string, never>; result: Routine }
+  newSkill: { args: Record<string, never>; result: Skill }
   newTask: {
     args: { projectId?: ProjectId | null; parentId?: TaskId | null; status?: TaskStatus | null }
     result: Task
@@ -460,6 +466,7 @@ export interface Commands {
   saveReading: { args: { reading: Reading }; result: void }
   saveRole: { args: { role: Role }; result: void }
   saveRoutine: { args: { routine: Routine }; result: Routine }
+  saveSkill: { args: { skill: Skill }; result: Skill }
   saveTask: { args: { task: Task }; result: void }
   saveTasks: { args: { tasks: Task[] }; result: void }
   saveTracker: { args: { tracker: Tracker }; result: void }
@@ -532,6 +539,7 @@ export interface Commands {
   unstar: { args: { threads: ThreadId[] }; result: Op[] }
   vaultStats: { args: Record<string, never>; result: StoreStats }
   verifyPassword: { args: { password: string }; result: void }
+  weather: { args: { place?: string | null }; result: WeatherReport }
   webSearch: { args: { request: SearchRequest }; result: SearchResult[] }
   writeImport: { args: { handle: string; offset: number; data: string }; result: ImportProgress }
 }
@@ -581,6 +589,7 @@ export const COMMAND_NAMES = {
   deleteRole: 'delete_role',
   deleteRoutine: 'delete_routine',
   deleteRun: 'delete_run',
+  deleteSkill: 'delete_skill',
   deleteSpeechModel: 'delete_speech_model',
   deleteTask: 'delete_task',
   deleteTracker: 'delete_tracker',
@@ -639,6 +648,7 @@ export const COMMAND_NAMES = {
   listRoles: 'list_roles',
   listRoutines: 'list_routines',
   listRuns: 'list_runs',
+  listSkills: 'list_skills',
   listTags: 'list_tags',
   listTasks: 'list_tasks',
   listThreads: 'list_threads',
@@ -671,6 +681,7 @@ export const COMMAND_NAMES = {
   newProject: 'new_project',
   newRole: 'new_role',
   newRoutine: 'new_routine',
+  newSkill: 'new_skill',
   newTask: 'new_task',
   newTracker: 'new_tracker',
   noteTags: 'note_tags',
@@ -736,6 +747,7 @@ export const COMMAND_NAMES = {
   saveReading: 'save_reading',
   saveRole: 'save_role',
   saveRoutine: 'save_routine',
+  saveSkill: 'save_skill',
   saveTask: 'save_task',
   saveTasks: 'save_tasks',
   saveTracker: 'save_tracker',
@@ -785,6 +797,7 @@ export const COMMAND_NAMES = {
   unstar: 'unstar',
   vaultStats: 'vault_stats',
   verifyPassword: 'verify_password',
+  weather: 'weather',
   webSearch: 'web_search',
   writeImport: 'write_import',
 } as const
@@ -844,6 +857,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_role',
   'delete_routine',
   'delete_run',
+  'delete_skill',
   'delete_speech_model',
   'delete_task',
   'delete_tracker',
@@ -902,6 +916,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_roles',
   'list_routines',
   'list_runs',
+  'list_skills',
   'list_tags',
   'list_tasks',
   'list_threads',
@@ -934,6 +949,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'new_project',
   'new_role',
   'new_routine',
+  'new_skill',
   'new_task',
   'new_tracker',
   'note_tags',
@@ -999,6 +1015,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_reading',
   'save_role',
   'save_routine',
+  'save_skill',
   'save_task',
   'save_tasks',
   'save_tracker',
@@ -1047,6 +1064,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'unstar',
   'vault_stats',
   'verify_password',
+  'weather',
   'web_search',
   'write_import',
 ])
@@ -1095,6 +1113,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_role',
   'delete_routine',
   'delete_run',
+  'delete_skill',
   'delete_speech_model',
   'delete_task',
   'delete_tracker',
@@ -1153,6 +1172,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_reading',
   'save_role',
   'save_routine',
+  'save_skill',
   'save_task',
   'save_tasks',
   'save_tracker',
@@ -1218,6 +1238,7 @@ export const CHANGE_KINDS = {
   delete_role: 'role',
   delete_routine: 'routine',
   delete_run: 'routineRun',
+  delete_skill: 'skill',
   delete_speech_model: 'settings',
   delete_task: 'task',
   delete_tracker: 'tracker',
@@ -1265,6 +1286,7 @@ export const CHANGE_KINDS = {
   save_reading: 'reading',
   save_role: 'role',
   save_routine: 'routine',
+  save_skill: 'skill',
   save_task: 'task',
   save_tasks: 'task',
   save_tracker: 'tracker',

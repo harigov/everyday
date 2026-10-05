@@ -11,7 +11,18 @@
 //! stranger-proof [`crate::http::public_client`]: both hosts are fixed in
 //! the core and neither is a name a model or a web page chose, which is the
 //! line `http`'s own module doc draws between the two.
+//!
+//! # A third request, allowed to fail on its own
+//!
+//! [`forecast`] also asks [`everyday_core::air_quality`]'s host what is in
+//! the air, and folds the answer into [`Report::air_quality`] -- but only if
+//! that answer arrives. A weather forecast somebody is reading right now
+//! must not disappear because a second, smaller request to a second host
+//! timed out or the day's air quality model has not run yet; see
+//! [`air_quality_for`], which turns any failure there into a `tracing::warn!`
+//! and a quiet `None` rather than a [`CommandError`].
 
+use everyday_core::air_quality;
 use everyday_core::weather::{
     self, Lookup, MAX_RESPONSE_BYTES, PROVIDER, Place, Report, Units, lookups,
 };
@@ -29,13 +40,38 @@ pub async fn forecast(place: &str, days: u8, units: Option<Units>) -> CommandRes
     let units = units.unwrap_or_else(|| Units::customary_in(&found.country_code));
     let url = weather::forecast_url(&found, days, units);
     let body = get(&url, "the forecast").await?;
-    weather::parse_forecast(&body, &found, units).map_err(|e| {
+    let mut report = weather::parse_forecast(&body, &found, units).map_err(|e| {
         tracing::warn!(error = %e, "could not read a forecast");
         CommandError::new(
             codes::UNREADABLE,
             format!("{PROVIDER} answered with a forecast this app could not read."),
         )
-    })
+    })?;
+    report.air_quality = air_quality_for(&found, days).await;
+    Ok(report)
+}
+
+/// The air quality at `place`, best-effort -- see the module doc's "A third
+/// request, allowed to fail on its own". `None` for a failed request, a
+/// refused one, or a body this app could not read; every one of those is
+/// logged here rather than turned into an error the forecast would be lost
+/// behind.
+async fn air_quality_for(place: &Place, days: u8) -> Option<air_quality::AirQualityReport> {
+    let url = air_quality::url(place.latitude, place.longitude, days);
+    let body = match get(&url, "air quality").await {
+        Ok(body) => body,
+        Err(e) => {
+            tracing::warn!(error = %e, "air quality unavailable");
+            return None;
+        }
+    };
+    match air_quality::parse(&body, &place.country_code) {
+        Ok(report) => Some(report),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read air quality");
+            None
+        }
+    }
 }
 
 /// Which place `place` is, asking the geocoder each of the core's

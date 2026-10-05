@@ -122,7 +122,11 @@
       {
         label: `Open ${entry.label}`,
         icon: entry.icon,
-        disabled: app.section === entry.id,
+        // Not disabled while Settings covers it, for the same reason the
+        // button itself does not read as current then: `app.section` names
+        // this app but it is not what is on screen, so "Open" is still a
+        // real action -- it is what leaves Settings and shows it.
+        disabled: app.section === entry.id && panels.settings === null,
         run: () => app.setSection(entry.id),
       },
       SEP,
@@ -151,7 +155,11 @@
   {#if shown.length > 1}
     <nav aria-label="Apps">
       {#each shown as a (a.id)}
-        {@const on = app.section === a.id}
+        <!-- Not current while Settings is showing: Settings stands in this
+             app's place rather than over it, so the app underneath reading
+             as "current" at the same time as the Settings button would be
+             two buttons both claiming to be where you are. -->
+        {@const on = app.section === a.id && panels.settings === null}
         <button
           class="barbtn"
           class:on
@@ -177,7 +185,7 @@
        assistant's own page of conversations, memory and routines. -->
   <div class="foot">
     {#if app.canShow(ASSISTANT.id)}
-      {@const on = app.section === ASSISTANT.id}
+      {@const on = app.section === ASSISTANT.id && panels.settings === null}
       <button
         class="barbtn"
         class:on

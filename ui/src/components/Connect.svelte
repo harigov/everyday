@@ -109,13 +109,13 @@
   .lead,
   .caveat {
     margin: 0;
-    color: var(--text-muted);
+    color: var(--fg-muted);
     font-size: var(--text-sm);
     line-height: 1.55;
   }
 
   .caveat {
-    border-top: 1px solid var(--rule);
+    border-top: 1px solid var(--border);
     padding-top: 0.75rem;
   }
 
@@ -140,9 +140,9 @@
     align-items: center;
     gap: 0.6rem;
     padding: 0.55rem 0.7rem;
-    border: 1px solid var(--rule);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
-    background: var(--surface);
+    background: var(--bg-raised);
     text-align: left;
     cursor: pointer;
   }
@@ -162,7 +162,7 @@
   }
 
   .host {
-    color: var(--text-muted);
+    color: var(--fg-muted);
     font-size: var(--text-xs);
   }
 
@@ -170,7 +170,7 @@
     padding: 0.4rem 0.6rem;
     border: none;
     background: none;
-    color: var(--text-muted);
+    color: var(--fg-muted);
     font-size: var(--text-xs);
     cursor: pointer;
   }
@@ -188,9 +188,9 @@
 
   .field input {
     padding: 0.5rem 0.6rem;
-    border: 1px solid var(--rule);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
-    background: var(--surface);
+    background: var(--bg-raised);
     color: inherit;
     font-family: var(--font-mono, monospace);
     font-size: var(--text-sm);

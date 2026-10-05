@@ -464,10 +464,59 @@
     box-shadow: var(--shadow-sm);
   }
 
+  /* `.toolbar`'s three children (this, `.filters`, `.toolbar-end.right`)
+     share `app.css`'s `flex: 1 1 0` and `min-width: 0` -- fine with two
+     short, similar-sized ends either side of a row of chips, which is every
+     other app's toolbar, but with the detail panel also narrowing this
+     pane, nothing here protected either end's own *content* from shrinking
+     past what it actually needs. The two overrides below give each end back
+     a floor at its own irreducible width (a button's text, the capture
+     line's icons with its field run all the way down) -- see `.filters`,
+     below, for where the space those floors claim actually comes from. */
+  .toolbar-end:not(.right) {
+    min-width: 120px;
+  }
+  /* Wide enough for the field to stay a field -- at the icons-only floor it
+     was a shelf picker and two buttons with nowhere to type. The status tabs
+     scroll to make the room. */
+  .toolbar-end.right {
+    min-width: 220px;
+  }
+
   .capture {
     flex: 1;
+    /* Without this, the capture line's own incompressible content (the
+       shelf-picker lead and the two icon buttons either side of the field)
+       set this flex item's automatic minimum, which is what the overflow
+       above was: the line kept its full width and overflowed `.toolbar-end
+       .right` leftward over the status tabs rather than shrinking into it --
+       Bug: the add box drawn on top of them, "Given up" hidden behind it.
+       `.field` inside already shrinks its placeholder text away first; this
+       is what lets the box itself follow it down to the floor above. */
+    min-width: 0;
     max-width: 380px;
     margin-left: auto;
+  }
+
+  /* `app.css`'s own `.filters` wraps its chips onto a second line rather
+     than overflow -- fine on its own, but as a flex *item* here it held its
+     full seven-tab width rather than ever giving any of it up, which is what
+     left the two ends above nothing to shrink into in the first place, and
+     wrapping would have changed the toolbar's height every time the detail
+     panel opened or closed. Scrolling this row instead costs neither: it
+     stays one line, and a chip that is off the edge is a drag (or a focus
+     move -- the browser scrolls a focused button into view on its own) away
+     rather than gone. */
+  .filters {
+    flex: 0 1 auto;
+    min-width: 0;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .filters::-webkit-scrollbar {
+    display: none;
   }
 
   .star,
@@ -495,11 +544,32 @@
 
   .shelves {
     display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
+    /* Centred wrapping wants its last line close to full: with seven chips
+       it was six, centred, above a seventh centred alone on its own line --
+       a small count that reads as a mistake rather than a shelf. Scrolling
+       keeps it one line and centred stays meaningful (there is nothing
+       to the left of "Books" worth seeing), same reasoning as `.filters`,
+       above. */
+    flex-wrap: nowrap;
+    /* Centred by the auto margins below rather than by `justify-content:
+       center`, which centres an overflowing row too -- pushing "Books" off
+       the left edge, where no scroll can reach it. Auto margins centre while
+       there is room and give way to zero once there is not. */
+    justify-content: flex-start;
     gap: var(--sp-2);
     flex: none;
     padding: 0 var(--sp-4) var(--sp-3);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .shelves::-webkit-scrollbar {
+    display: none;
+  }
+  .shelves > :first-child {
+    margin-left: auto;
+  }
+  .shelves > :last-child {
+    margin-right: auto;
   }
   .shelfchip {
     display: inline-flex;

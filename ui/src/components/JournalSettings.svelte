@@ -772,8 +772,11 @@
 
   /* ── The tracker list ──────────────────────────────────────────────── */
 
+  /* `padding: 0` because a `<ul>` keeps the browser's 40px indent otherwise,
+     which set the whole list in from the section text above it. */
   .trackers {
     list-style: none;
+    padding: 0;
     display: flex;
     flex-direction: column;
     gap: 2px;

@@ -263,7 +263,7 @@
     padding: 0 var(--sp-1);
     color: var(--fg-faint);
     font-size: var(--text-xs);
-    line-height: var(--leading);
+    line-height: 1.5;
   }
 
   .preview {

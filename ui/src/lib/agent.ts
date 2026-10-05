@@ -302,11 +302,15 @@ export function replay(messages: AgentMessage[]): Turn[] {
 // and "Listed tasks" once it has -- and the only tables below are English
 // grammar, which changes more slowly than the catalogue does.
 //
-// The exceptions are the tools that reach outside the vault. Those are the
-// ones a person most wants to see the detail of -- *what* it searched for,
-// *which* page it opened, *where* it checked the weather -- and they are
-// declared in the service beside this panel rather than in the core's
-// catalogue, so they change in step with it.
+// The exceptions are the handful of calls worth naming a detail for -- *what*
+// it searched for, *which* page it opened, *where* it checked the weather,
+// *which* skill it followed -- rather than only the verb a generic name
+// would give. Most of those reach outside the vault and are declared in the
+// service beside this panel rather than in the core's catalogue, so they
+// change in step with it; `read_skill` is the one core tool that earns a
+// case here anyway, because the name alone -- "Reading skill" -- loses the
+// one thing a person scanning a long turn most wants to see, which skill it
+// reached for.
 
 /** Past tenses that are not "add -ed". */
 const IRREGULAR_PAST: Record<string, string> = {
@@ -414,6 +418,11 @@ export function toolLabel(name: string, args: unknown, state: ToolCard['state'])
       return {
         text: running ? 'Updating the plan' : done ? 'Updated the plan' : 'Update the plan',
         detail: null,
+      }
+    case 'read_skill':
+      return {
+        text: running ? 'Following' : done ? 'Followed' : 'Follow',
+        detail: arg(args, 'name'),
       }
   }
   const [verb = name, ...rest] = name.split('_')

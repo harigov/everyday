@@ -86,6 +86,14 @@ export const NEEDS = [
   /** Events and blocks for today, and the running timer. */
   'today',
   /**
+   * The forecast where you live: current conditions, wind, air quality, and
+   * the next couple of days. Its own need rather than folded into `today`,
+   * because it is the one read here that leaves the machine -- see
+   * `everyday_service::domains::weather`'s own doc on why it is not gated on
+   * the assistant's "let it use the web" switch.
+   */
+  'weather',
+  /**
    * Pending proposals -- a dream's task and block drafts.
    *
    * Not one of the reads `refresh`'s `Promise.all` fetches: the proposals
@@ -175,6 +183,15 @@ export const WIDGETS = {
     size: 'medium',
     sizes: ['medium', 'large'],
     needs: ['proposals'],
+  },
+  weather: {
+    label: 'Weather',
+    note: 'Current conditions where you live, with air quality and the next couple of days.',
+    group: 'Today',
+    icon: 'cloud',
+    size: 'medium',
+    sizes: ['small', 'medium', 'large'],
+    needs: ['weather'],
   },
 
   // ── Your time ──────────────────────────────────────────────────────
@@ -474,6 +491,62 @@ export function setDays(list: Widget[], id: string, days: number): Widget[] {
   return list.map((w) => (w.id === id ? { ...w, days } : w))
 }
 
+/**
+ * Column spans, widened so every row reaches the grid's far edge.
+ *
+ * A row whose widgets add up to less than `totalCols` is a hole: three
+ * small cards and a lone medium one three rows down both leave empty grid
+ * tracks nobody put there on purpose, because the person who dragged a card
+ * to "Half" was choosing a size, not choosing to leave the other half of
+ * the row blank. The browser's own auto-placement already decides which
+ * widgets share a row -- `grid-auto-flow` is left at its sparse default, so
+ * a widget that does not fit what is left of the row wraps rather than
+ * backfilling an earlier gap -- so the rows below are found by walking the
+ * list in order and reproducing that same wrap rule, not by reading the
+ * DOM.
+ *
+ * Only the last widget on a row grows, and by exactly the row's leftover
+ * columns. Splitting the slack across every card on the row would mean a
+ * two-column widget silently resizing itself depending on who it happens to
+ * share a row with, which is not what "Narrow" meant when somebody picked
+ * it -- and it would make the same widget a different width on two
+ * refreshes if a card above it changed size and shifted the wrap.
+ *
+ * Returns a span per widget id, in the same column units `SPAN` already
+ * uses, so a caller sets `--span` from this map exactly the way it would
+ * set it from `SPAN` directly. `totalCols` is how many columns the grid is
+ * drawing right now -- six, or three and one at the narrower breakpoints,
+ * where the style block caps every span at the grid's width. Each span is
+ * capped the same way here, or a narrow window would be packed as if it were
+ * six columns wide: two small cards no longer fit side by side in three, so
+ * each sat alone on its row beside an empty column.
+ */
+export function fillRows(widgets: Widget[], totalCols = 6): Map<string, number> {
+  const spanOf = (w: Widget) => Math.min(SPAN[w.size], totalCols)
+  const rows: Widget[][] = []
+  let row: Widget[] = []
+  let used = 0
+  for (const w of widgets) {
+    const span = spanOf(w)
+    if (row.length > 0 && used + span > totalCols) {
+      rows.push(row)
+      row = []
+      used = 0
+    }
+    row.push(w)
+    used += span
+  }
+  if (row.length > 0) rows.push(row)
+
+  const out = new Map<string, number>()
+  for (const r of rows) {
+    const rowUsed = r.reduce((sum, w) => sum + spanOf(w), 0)
+    const leftover = totalCols - rowUsed
+    r.forEach((w, i) => out.set(w.id, i === r.length - 1 ? spanOf(w) + leftover : spanOf(w)))
+  }
+  return out
+}
+
 /** Everything the page needs fetched, once each. */
 export function needsOf(list: Widget[]): Set<Need> {
   const out = new Set<Need>()
@@ -521,6 +594,70 @@ export function byTimeOrLast<T>(items: T[], timeOf: (item: T) => string | null):
     if (tb === null) return -1
     return ta < tb ? -1 : ta > tb ? 1 : 0
   })
+}
+
+// ── The Weather widget ───────────────────────────────────────────────────
+
+/**
+ * Which weather icon (see `icons.ts`) a condition's own words call for.
+ *
+ * `describe` in `everyday_core::weather` is where the words come from --
+ * WMO code 63 arrives as `"moderate rain"`, never as a bare number -- so
+ * this only has to recognise a double handful of phrases, not fifty codes.
+ * An unrecognised one (a wording this has not seen, or `"unknown (WMO code
+ * n)"` for a code nobody has mapped yet) draws `cloud`, which is the right
+ * shape for everything between clear and a storm anyway.
+ */
+export function weatherIcon(condition: string): IconName {
+  const c = condition.trim().toLowerCase()
+  if (c.includes('thunder')) return 'storm'
+  if (c.includes('snow')) return 'snow'
+  if (c.includes('drizzle') || c.includes('rain')) return 'rain'
+  if (c.includes('fog')) return 'fog'
+  if (c === 'clear sky' || c === 'mainly clear') return 'sun'
+  return 'cloud'
+}
+
+/** The six AQI bands, worst last -- what `--aqi-1` through `--aqi-6` in
+ *  `theme.css` are keyed on. */
+export type AqiTier = 1 | 2 | 3 | 4 | 5 | 6
+
+const US_AQI_TIER: Record<string, AqiTier> = {
+  good: 1,
+  moderate: 2,
+  'unhealthy for sensitive groups': 3,
+  unhealthy: 4,
+  'very unhealthy': 5,
+  hazardous: 6,
+}
+
+const EUROPEAN_AQI_TIER: Record<string, AqiTier> = {
+  good: 1,
+  fair: 2,
+  moderate: 3,
+  poor: 4,
+  'very poor': 5,
+  'extremely poor': 6,
+}
+
+/**
+ * Which of the six AQI bands `category` -- as `everyday_core::air_quality`
+ * spells it, read case-insensitively -- falls into on `scale`. `null` for a
+ * word this does not recognise, so a widget can fall back to no colour at
+ * all rather than guess at one.
+ *
+ * Takes the scale rather than matching the word alone because the same word
+ * is a different band on each one: European "Moderate" is its third band,
+ * American "Moderate" is its second. See `everyday_core::air_quality`'s
+ * `us_category`/`european_category`, which this mirrors in order rather
+ * than in the band thresholds themselves -- those stay in the core, as
+ * tested pure functions of their own, and the service already did the
+ * number-to-word step before this ever sees it.
+ */
+export function aqiTier(scale: 'us' | 'european', category: string | null): AqiTier | null {
+  if (!category) return null
+  const table = scale === 'us' ? US_AQI_TIER : EUROPEAN_AQI_TIER
+  return table[category.trim().toLowerCase()] ?? null
 }
 
 // ── Storage ──────────────────────────────────────────────────────────────

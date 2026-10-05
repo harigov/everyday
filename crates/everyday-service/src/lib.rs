@@ -67,6 +67,7 @@ pub mod token_cache;
 pub mod touched;
 pub mod transfers;
 pub mod weather;
+pub(crate) mod weather_cache;
 pub mod webpage;
 pub mod websearch;
 

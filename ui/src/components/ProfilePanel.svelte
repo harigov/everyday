@@ -164,7 +164,7 @@
     display: grid;
     gap: var(--sp-2);
     padding: var(--sp-4) 0;
-    border-bottom: 1px solid var(--line);
+    border-bottom: 1px solid var(--border);
   }
 
   .lead {

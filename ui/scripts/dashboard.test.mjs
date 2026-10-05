@@ -29,8 +29,10 @@ import { load, makeCheck } from './harness.mjs'
 const { module: dashboard, close } = await load('/src/lib/dashboard.ts')
 const {
   addWidget,
+  aqiTier,
   byTimeOrLast,
   defaultLayout,
+  fillRows,
   moveWidget,
   needsOf,
   nextId,
@@ -41,6 +43,8 @@ const {
   setSize,
   SPAN,
   trackerWindow,
+  weatherIcon,
+  widget,
   WIDGETS,
   WIDGET_SIZES,
   WIDGET_TYPES,
@@ -162,6 +166,92 @@ check('ids on the default page are distinct', new Set(ids(start)).size, start.le
   )
 }
 
+// ── filling rows so the grid has no holes ──────────────────────────────
+//
+// The bug this exists for: a layout where some row's widgets add up to less
+// than six columns draws a gap nobody put there, and at a wide window it is
+// not a sliver -- a lone medium card is half the page with nothing beside
+// it. `fillRows` is asked to reproduce the browser's own sparse auto-flow
+// (never backfilling an earlier row) and then widen only the last widget on
+// each row by what is left over.
+
+{
+  // Three smalls exactly fill a row (2+2+2=6): nothing to grow.
+  const page = [
+    widget('dueToday', null, 'a'),
+    widget('onNow', null, 'b'),
+    widget('recordedToday', null, 'c'),
+  ]
+  check('a row that already sums to six is untouched', [...fillRows(page).values()], [2, 2, 2])
+}
+
+{
+  // The regression this was written for: "Goals under way" (medium, 3) is
+  // the only thing on its row because the real default layout's other rows
+  // close at exactly six. Alone, it should take the whole width rather than
+  // leaving the other half of a wide window blank.
+  const page = defaultLayout()
+  const filled = fillRows(page)
+  check('a lone medium widget on its own row fills it', filled.get('goalProgress:1'), 6)
+  // The rows above it close exactly on six already, so nothing about them
+  // should move.
+  check(
+    'a row that already closes on six keeps its members as they were',
+    [filled.get('dueToday:1'), filled.get('recordedToday:1'), filled.get('onNow:1')],
+    [2, 2, 2],
+  )
+}
+
+{
+  // A row with one column left over (3 + 2 = 5): only the last widget on
+  // the row grows, and only the row's own hole, not the whole remainder of
+  // the grid.
+  const page = [widget('weather', null, 'w'), widget('dueToday', null, 'd')]
+  check(
+    'the last widget on a short row takes exactly the leftover columns',
+    [...fillRows(page).values()],
+    [3, 3],
+  )
+}
+
+{
+  // A hole mid-page, not just at the end: the row above a full row should
+  // fill too, because the wrap rule that opens a new row is about what
+  // *follows*, not about which row happens to be last.
+  const page = [
+    widget('goalTally', null, 'a'), // small, 2
+    widget('habitsToday', null, 'b'), // large, 6 -- does not fit the 4 left on row a's line, wraps
+    widget('goalTally', null, 'c'), // small, 2
+  ]
+  const filled = fillRows(page)
+  check('a short row in the middle of the page fills too', filled.get('a'), 6)
+  check('the row it wrapped to is unaffected by the row above it', filled.get('b'), 6)
+  check('a lone widget on the last row still fills it', filled.get('c'), 6)
+}
+
+check('an empty page has nothing to fill', [...fillRows([]).values()], [])
+
+{
+  // The 1180px breakpoint draws three columns. Two smalls (2 + 2) no longer
+  // share a row there, so each must fill its own row rather than leave a
+  // column empty beside it; a medium already spans the whole three.
+  const page = [
+    widget('dueToday', null, 'a'),
+    widget('onNow', null, 'b'),
+    widget('weather', null, 'c'),
+  ]
+  check('at three columns a lone small fills its row', [...fillRows(page, 3).values()], [3, 3, 3])
+  check('at one column everything is one column', [...fillRows(page, 1).values()], [1, 1, 1])
+}
+
+check(
+  'every span fillRows returns is a real grid width',
+  [...fillRows(WIDGET_TYPES.map((t, i) => widget(t, null, `${t}:${i}`))).values()].every(
+    (span) => span >= 2 && span <= 6,
+  ),
+  true,
+)
+
 // ── what the page costs ────────────────────────────────────────────────
 
 check('an empty page asks for nothing', [...needsOf([])], [])
@@ -176,9 +266,11 @@ check(
   ['trackerDays'],
 )
 // The whole catalogue at once is still a handful of queries, not one per card.
+// Twelve since the weather card, whose one need is a forecast rather than
+// another read of the vault.
 ok(
   'the union of every need is bounded',
-  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 11,
+  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 12,
 )
 
 // The readings window is the longest any *tracker* card asks for, never
@@ -318,6 +410,52 @@ check('an empty list means nobody has arranged one', parseLayout('[]'), null)
     byTimeOrLast([], () => null),
     [],
   )
+}
+
+// ── The Weather widget ───────────────────────────────────────────────
+
+{
+  check('clear sky draws the sun', weatherIcon('clear sky'), 'sun')
+  check('mainly clear draws the sun too', weatherIcon('mainly clear'), 'sun')
+  check('overcast is just a cloud', weatherIcon('overcast'), 'cloud')
+  check('partly cloudy is a cloud, not a sun-and-cloud', weatherIcon('partly cloudy'), 'cloud')
+  check('fog is its own shape', weatherIcon('fog'), 'fog')
+  check('drizzle rains', weatherIcon('light drizzle'), 'rain')
+  check('every flavour of rain', weatherIcon('heavy rain showers'), 'rain')
+  check('freezing rain still rains', weatherIcon('freezing rain'), 'rain')
+  check('snow snows', weatherIcon('heavy snow showers'), 'snow')
+  check('a thunderstorm storms', weatherIcon('thunderstorm with hail'), 'storm')
+  check(
+    'an unrecognised reading falls back to a cloud',
+    weatherIcon('unknown (WMO code 4)'),
+    'cloud',
+  )
+  check('matching is not case-sensitive', weatherIcon('CLEAR SKY'), 'sun')
+}
+
+{
+  check('US good is the first tier', aqiTier('us', 'Good'), 1)
+  check('US moderate is the second', aqiTier('us', 'Moderate'), 2)
+  check(
+    'US unhealthy for sensitive groups is the third',
+    aqiTier('us', 'Unhealthy for sensitive groups'),
+    3,
+  )
+  check('US hazardous is the worst, sixth tier', aqiTier('us', 'Hazardous'), 6)
+  check('European good is also the first tier', aqiTier('european', 'Good'), 1)
+  check(
+    'the same word is a different tier on each scale',
+    [aqiTier('us', 'Moderate'), aqiTier('european', 'Moderate')],
+    [2, 3],
+  )
+  check(
+    'European extremely poor is the worst, sixth tier',
+    aqiTier('european', 'Extremely poor'),
+    6,
+  )
+  check('matching is not case-sensitive', aqiTier('us', 'good'), 1)
+  check('a null category has no tier', aqiTier('us', null), null)
+  check('a word neither scale uses has no tier', aqiTier('us', 'Fair'), null)
 }
 
 await close()

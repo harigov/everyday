@@ -334,6 +334,23 @@
     outline: none;
   }
 
+  /* `.toolbar`'s ends carry more than most of the shared filter bar's other
+     callers: two `<select>`s on the left, a status line that can run to
+     three figures on the right. Its `.toolbar-end` sets `min-width: 0` so
+     the centred chips always win any argument over space, which at a
+     narrow window left both ends with nowhere to shrink to -- the selects
+     painted straight over the filter chips instead of wrapping below them,
+     and the status line was squeezed into a column a few characters wide
+     and wrapped line by line rather than word by word. Restoring a real
+     minimum on both ends and letting the row wrap is what lets each one
+     drop to a line of its own instead. */
+  .toolbar {
+    flex-wrap: wrap;
+  }
+  .toolbar-end {
+    min-width: max-content;
+  }
+
   .bar {
     padding: 0 var(--sp-4) var(--sp-2);
     flex: none;
@@ -382,13 +399,20 @@
     color: var(--fg);
   }
 
+  /* `.toolbar-end.right` is always the same width as the left end (see the
+     centring comment on `.toolbar-end` in app.css), not the width its own
+     content needs -- so at a narrow window this line is often squeezed well
+     below what "N open · N overdue · N estimated" needs. Wrapping onto a
+     second line keeps every count readable; truncating it with an ellipsis
+     would silently hide whichever one ran out of room first. */
   .summary {
+    flex: 1;
+    min-width: 0;
     font-size: var(--text-xs);
     color: var(--fg-faint);
     font-variant-numeric: tabular-nums;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    text-align: right;
+    white-space: normal;
   }
 
   /* Visually hidden, still announced. */

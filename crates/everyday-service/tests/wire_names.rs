@@ -64,6 +64,7 @@ fn all_kinds() -> Vec<Kind> {
         Kind::RoutineRun,
         Kind::Proposal,
         Kind::Memory,
+        Kind::Skill,
         Kind::Recording,
         Kind::Transcript,
         Kind::Voiceprint,
@@ -105,6 +106,7 @@ fn assert_every_kind_is_named(k: Kind) {
         | Kind::RoutineRun
         | Kind::Proposal
         | Kind::Memory
+        | Kind::Skill
         | Kind::Recording
         | Kind::Transcript
         | Kind::Voiceprint

@@ -47,7 +47,7 @@ export interface PurposeLabel {
  */
 export const UNATTRIBUTED: PurposeLabel = {
   name: 'Unattributed',
-  color: 'var(--text-faint)',
+  color: 'var(--fg-faint)',
   icon: '',
   roleId: null,
 }

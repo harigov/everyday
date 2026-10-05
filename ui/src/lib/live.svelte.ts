@@ -188,6 +188,9 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   // list. Its memory is the same argument: the list is read when it is shown.
   conversation: null,
   memory: null,
+  // Skills too: Settings → Skills reads its list each time it is shown, and
+  // the assistant reads them fresh on every turn.
+  skill: null,
   settings: 'status',
   // A mailbox provider signed in to. Settings → Accounts registered an
   // `apply` for this target (see `accounts.svelte.ts`), so most changes are

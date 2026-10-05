@@ -248,18 +248,54 @@ export function earliestSnoozeDate(now = new Date()): string {
  * paint of anything unusual -- a table, an image not yet loaded -- which is
  * why the frame's container keeps `overflow-y: auto`: a short guess scrolls
  * a few pixels further than it needed to rather than clipping the message.
+ *
+ * `bodyHtml` is the whole document `bodyDocument`/`body_document` builds --
+ * `<head>`, the base style, a sender's own `<style>` block and all -- not
+ * just what `<body>` renders. Bug: measuring before dropping the head counts
+ * a style block's own CSS as if it were prose, which (by coincidence, not
+ * design) padded the guess out for a short note but does nothing reliable
+ * for a longer one or a newsletter with a real stylesheet. Dropped here, so
+ * only what actually draws is ever counted.
  */
 export function estimateBodyHeight(bodyHtml: string, widthPx: number): number {
-  const text = bodyHtml
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+  const body = bodyHtml.replace(/^[\s\S]*<body[^>]*>/i, '').replace(/<\/body>[\s\S]*$/i, '')
   const charsPerLine = Math.max(20, Math.floor(widthPx / 8.2))
-  const lines = Math.max(3, Math.ceil(text.length / charsPerLine))
-  const blocks = (bodyHtml.match(/<(p|blockquote|div|li)[ >]/gi) ?? []).length
-  const lineHeightPx = 21
-  const blockGapPx = 12
-  return Math.min(2400, lines * lineHeightPx + blocks * blockGapPx + 24)
+  // A `<br>` or the end of a block element starts a fresh line. Without
+  // this, every block's text pooled into one shared character budget, as if
+  // a greeting ("Hi,"), the paragraph after it, and a two-line sign-off
+  // might all share lines with each other -- undercounting exactly the
+  // short-line, many-paragraph shape an ordinary note (a greeting, a
+  // paragraph, "Best," on its own line, a name under it) actually has. This
+  // was Bug: a four-line reply landing short enough to need its own inner
+  // scrollbar in a pane with room to spare below it.
+  const withBreaks = body.replace(/<(br|\/p|\/div|\/li|\/blockquote)[ >/]/gi, (m) => `\n${m}`)
+  const segmentLines = withBreaks
+    .split('\n')
+    .map((s) =>
+      s
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
+    .filter((s) => s.length > 0)
+    .map((s) => Math.max(1, Math.ceil(s.length / charsPerLine)))
+  const lines = Math.max(
+    3,
+    segmentLines.reduce((a, b) => a + b, 0),
+  )
+  const blocks = (body.match(/<(p|blockquote|div|li)[ >]/gi) ?? []).length
+  // 15px / 1.6 line-height and 16px body padding, both sides -- `BASE_STYLE`
+  // in `mailview.rs` and `mockDocument` in `mailview.ts` agree on the body
+  // style, so this agrees with both. `blockGapPx` stands in for the
+  // `<p>`/`<blockquote>` margins neither style sheet resets.
+  const lineHeightPx = 24
+  const blockGapPx = 18
+  // One spare line, because the guess errs short on the commonest reply of
+  // all: a quoted message, whose `<blockquote>` is indented 40px a side and
+  // so wraps sooner than the width above assumes. A line of blank under a
+  // short note costs nothing; an inner scrollbar on one is the glitch.
+  const headroomPx = lineHeightPx
+  return Math.min(2400, lines * lineHeightPx + blocks * blockGapPx + 32 + headroomPx)
 }
 
 // ── Compose: is there anything here worth keeping? ──────────────────────

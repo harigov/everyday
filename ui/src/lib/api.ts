@@ -84,6 +84,8 @@ import type {
   SearchResult,
   ShareStatus,
   ShellNotification,
+  Skill,
+  SkillId,
   Task,
   TaskId,
   TaskQuery,
@@ -189,6 +191,17 @@ export let onLockState: (handler: (locked: boolean) => void) => void = () => {}
  */
 export let onPalette: (handler: () => void) => void = () => {}
 
+/**
+ * Register the handler for "open the calendar", raised when the tray's
+ * optional meeting line (or its "Open" item) is chosen.
+ *
+ * The shell raises the window on its own before emitting this -- see
+ * `tray.rs`'s `OPEN_MEETING_ID` -- so the handler's whole job is switching
+ * to the calendar app section; `lib/tray.svelte.ts` is where that happens.
+ * Outside Tauri there is no tray to click, so this is a no-op.
+ */
+export let onOpenCalendar: (handler: () => void) => void = () => {}
+
 // ── Meeting capture, from the Tauri shell ───────────────────────────────
 //
 // Three events the native capture code raises, per `docs/plans/meeting-notes.md`
@@ -274,6 +287,9 @@ if (!MOCK) {
   }
   onPalette = (handler) => {
     void listen('everyday://palette', () => handler())
+  }
+  onOpenCalendar = (handler) => {
+    void listen('everyday://open-calendar', () => handler())
   }
   onMeetingStatus = (handler) => {
     void listen<CaptureStatus | null>('meeting-status', (e) => handler(e.payload))
@@ -778,6 +794,15 @@ export const api = {
   setTrayMenu: (items: TrayMenuItem[]) => invoke<boolean>('set_tray_menu', { items }),
   /** Take the tray icon down. */
   hideTray: () => invoke<void>('hide_tray'),
+  /**
+   * Turn the tray's optional "show the next meeting" line on or off.
+   *
+   * A machine preference rather than a vault one -- see
+   * `lib/tray.svelte.ts`'s `meetingPref` -- so this is called with the
+   * *effective* value (the preference, collapsed with the tray switch
+   * itself being on) rather than mirroring a vault write.
+   */
+  setTrayMeeting: (on: boolean) => invoke<void>('set_tray_meeting', { on }),
 
   /** All tags in use, most frequent first. */
   tags: () => call('listTags', {}),
@@ -954,6 +979,19 @@ export const api = {
    */
   fetchImage: (url: string) => call('fetchImage', { url }),
 
+  // ── Weather ────────────────────────────────────────────────────────
+  //
+  // The Overview's Weather widget reads this directly -- see
+  // `overview.svelte.ts` -- rather than through a wrapper the way
+  // `lib/websearch.ts` wraps the search calls above, because the service
+  // already caches a result per place for a few minutes; a second cache on
+  // this side would just be two clocks to keep straight. `place` left out,
+  // or blank, asks for the profile's own location; a vault with neither
+  // answers with a `VaultError` coded `no_location` rather than a forecast
+  // -- `overview.svelte.ts`'s `fetchWeather` is what tells that apart from
+  // every other failure.
+  weather: (place?: string) => call('weather', { place: place?.trim() || null }),
+
   // ── Roles and goals ────────────────────────────────────────────────
   //
   // Available only when `status.capabilities.purpose` is true. The two records
@@ -1114,6 +1152,14 @@ export const api = {
    */
   saveMemory: (memory: Memory) => call('saveMemory', { memory }),
   deleteMemory: (id: MemoryId) => call('deleteMemory', { id }),
+
+  skills: () => call('listSkills', {}),
+
+  /** A blank skill with an id, switched on. The core allocates it. */
+  newSkill: () => call('newSkill', {}),
+
+  saveSkill: (skill: Skill) => call('saveSkill', { skill }),
+  deleteSkill: (id: SkillId) => call('deleteSkill', { id }),
 
   /**
    * What one kind of agent has done with mail -- newest first, resolved

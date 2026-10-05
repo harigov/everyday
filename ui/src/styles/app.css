@@ -89,6 +89,35 @@ button {
 
 /* ── Scrollbars ────────────────────────────────────────────────────────── */
 
+/* Every scrolling box that is not a `.scroll`. Without this, the eighteen or
+   so that never took the class -- a strip of mail tabs, the palette's list, a
+   code block, a board column -- drew the platform's own bar, arrow buttons
+   and all on Linux, beside the hairline ones everywhere else. Thin and quiet,
+   but always shown rather than revealed on hover: these are mostly small
+   strips, where a bar that appears only under the pointer hides that there is
+   more. `.scroll` below is more specific, so it keeps its own behaviour. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background-color: var(--border-strong);
+  border: 3px solid transparent;
+  border-radius: 99px;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-button {
+  display: none;
+}
+
 .scroll {
   overflow-y: auto;
   scrollbar-width: thin;
@@ -168,6 +197,22 @@ button {
 .btn-danger:hover {
   background: color-mix(in oklab, var(--danger) 88%, #000);
   color: #fff;
+}
+
+/* A `.btn` that is the only action under a paragraph, with no primary button
+   or row of peers beside it to lend it the shape of a control. `.btn` alone
+   has no border or fill at rest -- deliberately, since most of them sit next
+   to a `.btn-primary` where the contrast already reads as "button" -- and a
+   lone one then reads as a stray indented line of text instead. This draws
+   the border that case is missing, without moving the box: the text still
+   starts where `.btn` always put it, which is what lines it up with the
+   paragraph above once it is visibly a button rather than a line of text
+   wearing a button's padding. */
+.btn-outline {
+  border: 1px solid var(--border);
+}
+.btn-outline:hover {
+  border-color: var(--border-strong);
 }
 
 .field {

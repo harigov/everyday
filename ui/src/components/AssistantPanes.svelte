@@ -291,7 +291,7 @@
       {#if pane === 'routines' && app.supportsRoutines && !editing}
         <button class="btn btn-primary" onclick={() => void assistant.draft()}>New routine</button>
       {:else if pane === 'memory'}
-        <button class="btn" onclick={() => (adding = true)}>Add a fact</button>
+        <button class="btn btn-primary" onclick={() => (adding = true)}>Add a fact</button>
       {/if}
     </header>
   {/if}
@@ -571,6 +571,12 @@
           </article>
         {/snippet}
 
+        <!-- Accounts and Memory both open with a sentence saying what the
+             list below is; a populated Routines list had none. -->
+        <p class="lead">
+          A routine is a time and an instruction in your own words, run on its own and logged below.
+        </p>
+
         {#if dreamRoutines.length > 0}
           <p class="lead heading">Dreams</p>
           {#each dreamRoutines as routine (routine.id)}
@@ -808,13 +814,13 @@
     display: grid;
     gap: var(--sp-2);
     padding: var(--sp-4);
-    border: 1px solid var(--line);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--bg);
   }
 
   .card.unseen {
-    border-color: color-mix(in oklab, var(--accent) 45%, var(--line));
+    border-color: color-mix(in oklab, var(--accent) 45%, var(--border));
   }
 
   .card.off {
@@ -884,7 +890,7 @@
     display: grid;
     gap: var(--sp-4);
     padding: var(--sp-4);
-    border: 1px solid var(--line);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--bg);
   }
@@ -968,7 +974,7 @@
     display: grid;
     gap: 2px;
     padding: var(--sp-3);
-    border: 1px solid var(--line);
+    border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     text-align: left;
   }
@@ -995,7 +1001,7 @@
     align-items: center;
     gap: var(--sp-2);
     padding: var(--sp-2) 0;
-    border-bottom: 1px solid var(--line);
+    border-bottom: 1px solid var(--border);
   }
 
   .memtext {
@@ -1054,7 +1060,7 @@
     display: grid;
     gap: var(--sp-1);
     padding-top: var(--sp-2);
-    border-top: 1px solid var(--line);
+    border-top: 1px solid var(--border);
   }
 
   .runrow {
@@ -1068,7 +1074,7 @@
     align-items: baseline;
     gap: var(--sp-3);
     padding: var(--sp-2) 0;
-    border-bottom: 1px solid var(--line);
+    border-bottom: 1px solid var(--border);
     font-size: var(--text-sm);
   }
 

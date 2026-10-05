@@ -22,9 +22,10 @@
 // labels, ids, enabled flags -- and what comes back is the id that was
 // chosen. See `crates/everyday-app/src/tray.rs`.
 
-import { api, isMock, onTrayAction } from './api'
+import { api, isMock, onOpenCalendar, onTrayAction } from './api'
 import { onOffPref } from './prefs'
 import { ACTIONS, GROUPS, type Group } from './shortcuts.svelte'
+import { app } from './state.svelte'
 import type { Binding } from './keys'
 import type { TrayMenuItem } from './types'
 
@@ -59,6 +60,8 @@ export type TrayEntry =
   TrayAction | { separator: true } | { label: string; enabled?: boolean; items: TrayEntry[] }
 
 const showPref = onOffPref('everyday.tray')
+/** Off by default -- see `SettingsView.svelte`'s second tray toggle. */
+const meetingPref = onOffPref('everyday.tray.meeting', false)
 
 /**
  * The tray rows an app offers right now, as tray entries.
@@ -111,6 +114,13 @@ class TrayRegistry {
    * arrive mid-session.
    */
   unavailable = $state(false)
+  /**
+   * Show the meeting in progress, or the next one starting soon today, as
+   * the tray's title, tooltip and first menu line. Off by default, and
+   * only meaningful while `enabled` is also true -- `start`'s second
+   * effect folds the two together before telling the shell.
+   */
+  meetingEnabled = $state(false)
 
   /** Handlers for the menu currently up, by item id. */
   #handlers = new Map<string, TrayAction>()
@@ -124,6 +134,7 @@ class TrayRegistry {
     // Read before `start`, because the switch in Settings is drawn from it
     // and the lock screen is drawn before the tray is ever pushed.
     this.enabled = showPref.get()
+    this.meetingEnabled = meetingPref.get()
   }
 
   /**
@@ -162,6 +173,10 @@ class TrayRegistry {
     // fails has already put the reason over the window through `handle`, and
     // what is left here is only the unhandled rejection.
     onTrayAction((id) => void this.#run(id).catch(() => {}))
+    // The shell raises the window on its own before emitting this -- see
+    // `tray.rs`'s `OPEN_MEETING_ID` -- so switching to the calendar app is
+    // all that is left to do here.
+    onOpenCalendar(() => void app.goTo('calendar'))
 
     // A reactive scope with no component to own it: the tray outlives every
     // view, and its contents depend on state spread across every app's store.
@@ -174,12 +189,26 @@ class TrayRegistry {
         const entries = this.enabled ? this.#compose() : []
         this.#push(this.enabled, entries)
       })
+      // Its own effect, separate from the one above: the quick-action menu
+      // and the meeting line are two different things the shell holds, with
+      // two different commands and two different reasons to change, and
+      // folding them into one call would resend a six-item menu every time
+      // a meeting fifteen minutes out ticks over to fourteen.
+      $effect(() => {
+        void api.setTrayMeeting(this.enabled && this.meetingEnabled).catch(() => {})
+      })
     })
   }
 
   setEnabled(on: boolean) {
     this.enabled = on
     showPref.set(on)
+  }
+
+  /** Only meaningful while `enabled` is also true -- see its own doc. */
+  setMeetingEnabled(on: boolean) {
+    this.meetingEnabled = on
+    meetingPref.set(on)
   }
 
   /**

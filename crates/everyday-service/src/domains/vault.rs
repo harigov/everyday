@@ -70,7 +70,20 @@ async fn status(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<V
 async fn unlock(svc: Arc<Service>, _ctx: Ctx, args: Unlock) -> CommandResult<VaultStatus> {
     let vault = svc.require()?;
     let v = vault.clone();
-    blocking(move || v.unlock(Some(&args.password)).map_err(CommandError::from)).await?;
+    blocking(move || {
+        v.unlock(Some(&args.password))?;
+        // Typing the password is itself evidence the switch's own shortcut
+        // -- the auto-unlock on startup -- did not already run, or ran and
+        // failed (a keychain that could not be reached, say). Either way,
+        // check now whether this machine still holds a working key for this
+        // vault, so an idle timer that should be suspended is, without
+        // waiting for a restart to notice. One blocking keychain read, on an
+        // explicit unlock rather than the five-second poll loop -- see
+        // `everyday_vault::autounlock` and `Vault::seconds_until_forget_key`.
+        v.set_key_in_keychain(everyday_vault::autounlock::enabled(v.path()));
+        Ok::<_, CommandError>(())
+    })
+    .await?;
     svc.unlocked();
     Ok(vault.status())
 }

@@ -142,6 +142,22 @@
   --accent-hover: #9c460b;
   --danger: #b42318;
 
+  /* The six AQI bands -- good, moderate/fair, unhealthy for sensitive
+     groups/poor, unhealthy, very unhealthy/very poor, hazardous/extremely
+     poor -- softened from the EPA's own saturated green/yellow/orange/red/
+     purple/maroon ramp to sit on this palette rather than fight it. The
+     third and fourth reuse `--accent` and `--danger`: both are already
+     "orange, something is worth noticing" and "red, something is wrong" in
+     this app, which is exactly what those two bands mean. See
+     `ui/src/lib/dashboard.ts`'s `aqiTier`, which is what picks a number 1-6.
+  */
+  --aqi-1: #3f8f3f;
+  --aqi-2: #a68b17;
+  --aqi-3: var(--accent);
+  --aqi-4: var(--danger);
+  --aqi-5: #7a4a9c;
+  --aqi-6: #6b1f2e;
+
   --shadow-sm: 0 1px 2px rgb(28 26 23 / 0.06), 0 1px 1px rgb(28 26 23 / 0.04);
   --shadow: 0 4px 12px -2px rgb(28 26 23 / 0.1), 0 2px 4px -2px rgb(28 26 23 / 0.06);
   --shadow-lg: 0 18px 40px -12px rgb(28 26 23 / 0.22), 0 4px 10px -4px rgb(28 26 23 / 0.1);
@@ -172,6 +188,15 @@
   --accent-hover: #f0975a;
   --danger: #f87171;
 
+  /* As the light theme's own, lighter so the bands still separate against a
+     dark card. */
+  --aqi-1: #6fcf6f;
+  --aqi-2: #d4b84a;
+  --aqi-3: var(--accent);
+  --aqi-4: var(--danger);
+  --aqi-5: #b48ad6;
+  --aqi-6: #c2566b;
+
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
   --shadow: 0 4px 14px -2px rgb(0 0 0 / 0.5);
   --shadow-lg: 0 20px 44px -12px rgb(0 0 0 / 0.65);
@@ -196,6 +221,12 @@
     --accent: #e8853f;
     --accent-hover: #f0975a;
     --danger: #f87171;
+    --aqi-1: #6fcf6f;
+    --aqi-2: #d4b84a;
+    --aqi-3: var(--accent);
+    --aqi-4: var(--danger);
+    --aqi-5: #b48ad6;
+    --aqi-6: #c2566b;
     --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
     --shadow: 0 4px 14px -2px rgb(0 0 0 / 0.5);
     --shadow-lg: 0 20px 44px -12px rgb(0 0 0 / 0.65);

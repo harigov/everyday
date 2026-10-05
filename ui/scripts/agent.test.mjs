@@ -598,11 +598,22 @@ assert.deepEqual(toolLabel('get_weather', { place: 'Porto' }, 'running'), {
   text: 'Checking the weather in',
   detail: 'Porto',
 })
+// Not a web tool, but it still earns a detail: the name alone -- "Reading
+// skill" -- would lose which skill was actually followed.
+assert.deepEqual(toolLabel('read_skill', { name: 'Plan a trip' }, 'running'), {
+  text: 'Following',
+  detail: 'Plan a trip',
+})
+assert.deepEqual(toolLabel('read_skill', { name: 'Plan a trip' }, 'done'), {
+  text: 'Followed',
+  detail: 'Plan a trip',
+})
 // Arguments are whatever the model wrote. Nothing in them may throw.
 for (const junk of [null, 'a string', 7, { query: 3 }, { url: 'not a url' }]) {
   toolLabel('web_search', junk, 'running')
   toolLabel('read_web_page', junk, 'done')
   toolLabel('get_weather', junk, 'waiting')
+  toolLabel('read_skill', junk, 'waiting')
 }
 
 // ── the plan ─────────────────────────────────────────────────────────

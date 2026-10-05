@@ -607,7 +607,8 @@
     list-style: none;
     margin-top: var(--sp-3);
     border-top: 1px solid var(--border);
-    padding-top: var(--sp-2);
+    /* All four sides: a `<ul>` otherwise keeps the browser's 40px indent. */
+    padding: var(--sp-2) 0 0;
     display: flex;
     flex-direction: column;
     gap: 2px;

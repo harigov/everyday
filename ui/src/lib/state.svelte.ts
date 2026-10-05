@@ -10,6 +10,7 @@ import { APP_ORDER, APPS, type Section } from './apps'
 import { AUTOSAVE_MS } from './autosave'
 import { errorMessage, handle, isConflict, isLocked, quietly, setPolicy } from './errors'
 import { notify } from './notify.svelte'
+import { panels } from './panels.svelte'
 import { pref } from './prefs'
 import { debounce } from './store/debounce'
 import { DocBinding } from './store/doc-binding'
@@ -127,6 +128,10 @@ class AppState {
   /**
    * Whether this machine holds the key, so the vault opens without a password
    * when the process starts. Off unless somebody turned it on.
+   *
+   * Also what `startLockTimers` reads to suspend both idle clocks: once
+   * signing in to the computer counts as unlocking, idling the screen or
+   * the key for a few quiet minutes has nothing left to protect.
    */
   opensItself = $state(false)
   /** Servers this copy has paired with, for the picker. */
@@ -513,6 +518,13 @@ class AppState {
     if (!this.canShow(section)) return
     this.section = section
     sectionPref.set(section)
+    // Choosing an app is how Settings is left, the same as the close button
+    // or Escape -- see `SettingsView.svelte`'s header comment. Every way of
+    // picking a section funnels through here (the app bar, every `g`-chord,
+    // the palette, "the next app", a widget's own "open this"), so this is
+    // the one place that has to say it rather than each of those repeating
+    // it. Harmless when Settings was already closed.
+    panels.closeSettings()
   }
 
   /**
@@ -710,13 +722,24 @@ class AppState {
    * The key timer belongs to the machine holding the vault, so a window in
    * that process asks it. A remote client does not: it is told by the
    * `lockState` event, which it has to act on anyway.
+   *
+   * Neither clock can lock anything while `opensItself` is on. The key is
+   * kept in this machine's keychain, so signing in to the computer already
+   * is unlocking it -- hiding the screen on a timer would only ask, a few
+   * minutes later, for a password the OS login already stood in for. The
+   * screen timer below is told directly; the key's own timer is the
+   * backend's to stop, on the same condition, so `#lockTimer`'s poll needs
+   * no change here -- it keeps polling, and keeps hearing that the key is
+   * not going anywhere. Always false for a remote session -- the keychain in
+   * play there is the other machine's, not this one's -- so this changes
+   * nothing about a remote window's own screen timer.
    */
   private startLockTimers() {
     this.stopTimers()
     this.#idleSince = Date.now()
     this.#screenTimer = setInterval(() => {
       const seconds = this.status?.autoLockSeconds ?? 0
-      if (seconds <= 0 || this.screen !== 'main') return
+      if (seconds <= 0 || this.opensItself || this.screen !== 'main') return
       if (Date.now() - this.#idleSince >= seconds * 1000) void this.lockScreen()
     }, IDLE_POLL_MS)
     if (this.remote) return

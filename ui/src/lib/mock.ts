@@ -15,6 +15,10 @@ import type {
   Account,
   AccountView,
   AgentMailAccess,
+  AirQualityCurrent,
+  AirQualityDay,
+  AirQualityReport,
+  AqiScale,
   BlockKind,
   BlockQuery,
   BlockSubject,
@@ -82,6 +86,9 @@ import type {
   TrackerDay,
   TrackerKind,
   VaultStatus,
+  WeatherCurrent,
+  WeatherDay,
+  WeatherReport,
 } from './types'
 import { TASK_STATUSES, VaultError, goalIsOpen, isAhead, isOpen, priorityRank } from './types'
 import type {
@@ -96,8 +103,10 @@ import type {
   Proposal,
   ProposalQuery,
   ProposedRecord,
+  Skill,
 } from './types'
 import { DEFAULT_COLORS } from './colors'
+import { addDays, isoDate } from './time'
 import { DIGEST_MARKER, ordinal } from './dream'
 import type { Draft, MailCategory } from './types'
 import {
@@ -874,6 +883,73 @@ function fakeResults(query: string, limit: number): SearchResult[] {
     facts: { author: shape.creator, pages: String(280 + i * 40) },
     source: 'openLibrary',
   }))
+}
+
+/**
+ * A plausible three-day forecast for `place`, with wind and air quality
+ * filled in -- not just a temperature, so the Overview's Weather widget has
+ * every field to lay out rather than only the one a bare mock would
+ * exercise. No network, like everything else in this file; the numbers are
+ * fixed rather than random so a screenshot of the widget does not change
+ * between runs.
+ */
+function fakeWeather(place: string): WeatherReport {
+  const today = isoDate(new Date())
+  const conditions = ['partly cloudy', 'light rain', 'clear sky']
+  const days: WeatherDay[] = conditions.map((condition, i) => ({
+    date: addDays(today, i),
+    condition,
+    high: [21, 18, 23][i]!,
+    low: [14, 13, 15][i]!,
+    precipitationChance: [10, 70, 5][i]!,
+    precipitation: [0, 4.2, 0][i]!,
+    windMax: [18, 32, 14][i]!,
+    windGustsMax: [28, 46, 20][i]!,
+    windDirectionDominant: [280, 240, 10][i]!,
+    windDirectionDominantCompass: ['W', 'WSW', 'N'][i]!,
+    sunrise: `${addDays(today, i)}T07:12`,
+    sunset: `${addDays(today, i)}T19:48`,
+  }))
+
+  const current: WeatherCurrent = {
+    time: new Date().toISOString().slice(0, 16),
+    temperature: 19.4,
+    feelsLike: 18.1,
+    humidity: 64,
+    precipitation: 0,
+    windSpeed: 16,
+    windDirection: 275,
+    windDirectionCompass: 'W',
+    windGusts: 27,
+    condition: 'partly cloudy',
+  }
+
+  const airQuality: AirQualityReport = {
+    current: {
+      time: current.time,
+      usAqi: 42,
+      europeanAqi: 28,
+      scale: 'european' satisfies AqiScale,
+      aqi: 28,
+      category: 'Fair',
+      pm25: 9.4,
+      pm10: 14.1,
+      ozone: 58,
+      nitrogenDioxide: 12,
+    } satisfies AirQualityCurrent,
+    daily: days.map((d) => ({ date: d.date, maxAqi: 30 }) satisfies AirQualityDay),
+  }
+
+  return {
+    place,
+    latitude: 38.7223,
+    longitude: -9.1393,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    units: { temperature: '°C', wind: 'km/h', precipitation: 'mm' },
+    current,
+    days,
+    airQuality,
+  }
 }
 
 // The vault's trackers, out of the journals that used to hold them.
@@ -2541,6 +2617,23 @@ const memories: Memory[] = [
   },
 ]
 
+// One example, so the panel demonstrates what a skill is rather than opening
+// on an empty list the first time anybody looks.
+const skills: Skill[] = [
+  {
+    id: 'skill-1',
+    name: 'Plan a trip',
+    description: 'Use when asked to plan a trip or a multi-day journey.',
+    instructions:
+      'Check the calendar for the travel dates and flag any conflicts. Check the weather for ' +
+      'the destination over those dates. Propose blocks of time for packing and for travel ' +
+      'itself. Draft a task with a packing list suited to the weather and the length of the trip.',
+    enabled: true,
+    createdAt: iso(14),
+    updatedAt: iso(14),
+  },
+]
+
 // ── Proposals ────────────────────────────────────────────────────────────
 //
 // Work a dream prepared: a task and a block for tomorrow, a memory, a
@@ -3239,9 +3332,14 @@ export const mockInvoke = async <T>(
         // never be exercised against anything.
         remotes: [],
         remote: null,
-        // No keychain in a browser, and nothing to keep a key in. The switch
-        // draws as off and says why when it is pressed.
-        opensItself: false,
+        // No keychain in a browser, and nothing to keep a key in, so the
+        // switch itself always refuses -- see `set_opens_itself` below. The
+        // state it leads to is still worth previewing, the same way
+        // `?readonly=1` previews the read-only banner: `?keychain=1` says
+        // the switch is on, which is what the Settings dialog suspends its
+        // two idle timers' controls for and what stops this window's own
+        // screen timer.
+        opensItself: new URLSearchParams(location.search).has('keychain'),
       } satisfies Bootstrap as T
 
     case 'unlock':
@@ -4678,6 +4776,17 @@ export const mockInvoke = async <T>(
       // does something without a network.
       return (Object.keys(COVERS)[0] ?? '1'.repeat(64)) as T
 
+    // ── Weather ──────────────────────────────────────────────────────
+
+    case 'weather': {
+      requireUnlocked()
+      const place = str(args.place).trim() || profile.location.trim()
+      if (!place) {
+        throw new VaultError('no_location', 'no place was given and the profile has no location')
+      }
+      return fakeWeather(place) as T
+    }
+
     // ── The quick model ────────────────────────────────────────────────
     //
     // Canned answers rather than a fake model: the point of these is that the
@@ -4990,6 +5099,38 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       const i = memories.findIndex((m) => m.id === args.id)
       if (i >= 0) memories.splice(i, 1)
+      return undefined as T
+    }
+
+    case 'list_skills':
+      requireUnlocked()
+      return skills as T
+
+    case 'new_skill':
+      requireUnlocked()
+      return {
+        id: `skill-${nextId++}`,
+        name: '',
+        description: '',
+        instructions: '',
+        enabled: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      } satisfies Skill as T
+
+    case 'save_skill': {
+      requireUnlocked()
+      const next = { ...(args.skill as Skill), updatedAt: new Date().toISOString() }
+      const i = skills.findIndex((s) => s.id === next.id)
+      if (i >= 0) skills[i] = next
+      else skills.push(next)
+      return next as T
+    }
+
+    case 'delete_skill': {
+      requireUnlocked()
+      const i = skills.findIndex((s) => s.id === args.id)
+      if (i >= 0) skills.splice(i, 1)
       return undefined as T
     }
 
@@ -5573,6 +5714,18 @@ export const mockInvoke = async <T>(
       )
       return undefined as T
 
+    // ── The shell's own tray, called by name -- see `api.ts`'s `setTrayMenu`,
+    //    `hideTray` and `setTrayMeeting` ─────────────────────────────────
+    //
+    // Unreachable in practice: every call site is gated by `tray.supported`
+    // (`!isMock`, see `lib/tray.svelte.ts`), the same reason `set_tray_menu`
+    // and `hide_tray` above them have never needed a case of their own
+    // either. Stubbed anyway, harmlessly, rather than left to fall through
+    // to the "no mock for command" default below.
+
+    case 'set_tray_meeting':
+      return undefined as T
+
     // ── The shell's half: capture, called by name -- see `api.ts`'s
     //    "Meeting capture, in the Tauri shell" ───────────────────────────
 
@@ -5853,7 +6006,12 @@ export async function mockSendMessage(
           ['Put the weekend together', 'pending'],
         ])) &&
         (agentSettings.web
-          ? (await tool('get_weather', { days: 3 }, 1600, '3 days')) &&
+          ? (await tool(
+              'get_weather',
+              { days: 3 },
+              1600,
+              '19°C, partly cloudy · wind 16 km/h W',
+            )) &&
             (await plan([
               ['See what is already on the calendar', 'done'],
               ['Check the forecast', 'done'],
@@ -5927,7 +6085,7 @@ export async function mockSendMessage(
         await pause(600)
         reply = webOff
       } else {
-        const ok = await tool('get_weather', { days: 3 }, 1500, '3 days')
+        const ok = await tool('get_weather', { days: 3 }, 1500, '22°C, clear sky · wind 12 km/h NW')
         reply = ok
           ? [
               'In **Lisbon** this weekend:',

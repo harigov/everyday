@@ -121,6 +121,26 @@ pub fn run() {
             service.set_supervisor(std::sync::Arc::new(
                 everyday_service::supervisor::Supervisor::new(service.events()),
             ));
+            // Keeps the tray's optional "current/next meeting" line current
+            // between whatever else would rebuild it -- a calendar sync
+            // (`events::WindowSink::changed`), a lock
+            // (`events::WindowSink::lock_state`) -- since nothing else
+            // notices a minute of plain clock time passing. `Tray::refresh`
+            // is the no-op this costs on every other tick: it does nothing
+            // at all unless an icon is on screen and the line is turned on.
+            let tray_handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+                // `Burst`, the default, would fire a minute's worth of
+                // rebuilds back to back after the process was asleep for a
+                // while -- a laptop closed overnight -- for no benefit over
+                // the one rebuild that actually matters once it wakes.
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    ticker.tick().await;
+                    tray_handle.state::<Tray>().schedule_refresh(&tray_handle);
+                }
+            });
             Ok(())
         })
         // Registered here rather than on the icon, and once rather than per
@@ -177,6 +197,7 @@ pub fn run() {
             commands::ready_to_close,
             commands::set_tray_menu,
             commands::hide_tray,
+            commands::set_tray_meeting,
             // Meeting notes: hearing a call. See `capture.rs` and
             // `meeting.rs`.
             meeting::meeting_start,
