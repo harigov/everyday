@@ -2673,6 +2673,35 @@ extension -- and the `libayatana-appindicator3-1` package the `.deb` depends
 on. Where there is no host, Settings says so rather than leaving a switch
 that appears to do nothing.
 
+## A number on the icon
+
+Settings → General → Icon badge puts a count on Every Day's icon in the Dock
+or taskbar. Choose what it adds up:
+
+- **Tasks**: none, those due today or overdue (the number beside Today), or
+  every open one (beside All tasks).
+- **Unread mail**: unread messages in every account's inbox, leaving out
+  snoozed threads, as the Inbox rows in Mail do.
+- **The assistant**: runs and proposals not yet looked at, the number on its
+  button in the app bar.
+
+Everything chosen is added into one number, because an icon has room for
+one. The setting is off by default and is remembered on this machine, like
+the tray's switches. Nothing is shown while the vault is locked.
+
+The shell does the counting, not the window
+(`crates/everyday-app/src/badge.rs`), so the number keeps up while the window
+is hidden. It recounts when a task, a thread or a proposal changes, when the
+vault locks or unlocks, and once a minute. The minute also catches midnight,
+and mail a background sync wrote without announcing it.
+
+Each platform shows it in its own way. **macOS** uses the Dock's own badge.
+**Linux** sends the `com.canonical.Unity.LauncherEntry` signal, which Ubuntu's
+dock, Dash to Dock, KDE Plasma and Plank show. It is addressed to both the
+`.deb`'s desktop file and the one `make desktop-entry` installs. **Windows**
+has no count for a desktop application, so the number is drawn into an
+overlay on the taskbar button, from 1 to 9 and then "9+", like the app bar.
+
 ## Right-click
 
 Every list in all five apps carries a context menu, and they are all the same

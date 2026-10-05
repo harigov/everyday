@@ -54,6 +54,7 @@
   import { app } from '../lib/state.svelte'
   import { meetings } from '../lib/meetings.svelte'
   import { tray } from '../lib/tray.svelte'
+  import { badge } from '../lib/badge.svelte'
   import AccountsPanel from './AccountsPanel.svelte'
   import AgentPanel from './AgentPanel.svelte'
   import AssistantPanes from './AssistantPanes.svelte'
@@ -65,7 +66,7 @@
   import SkillsPanel from './SkillsPanel.svelte'
   import Icon from './Icon.svelte'
   import type { IconName } from '../lib/icons'
-  import type { HotkeyStatus } from '../lib/types'
+  import type { BadgeSources, HotkeyStatus } from '../lib/types'
 
   let changing = $state(false)
   let current = $state('')
@@ -240,6 +241,20 @@
       ? 'notification area'
       : 'system tray'
 
+  // And the place the application's icon lives has three more. The badge is
+  // drawn on that icon, so the setting has to say which one.
+  const DOCK_WORD = navigator.userAgent.includes('Mac')
+    ? 'Dock'
+    : navigator.userAgent.includes('Windows')
+      ? 'taskbar'
+      : 'dock'
+
+  const BADGE_TASKS: { label: string; value: BadgeSources['tasks'] }[] = [
+    { label: 'No tasks', value: 'off' },
+    { label: 'Due today', value: 'due' },
+    { label: 'All open', value: 'open' },
+  ]
+
   // What the hints below point people at once the idle locks are off: the
   // same binding `shortcuts.svelte.ts` has `mod+l` doing already, spelled
   // out from the one place that knows the platform's own glyph for it,
@@ -369,6 +384,57 @@
                   The meeting you are in, or the next one starting soon today. Nothing is shown
                   while the vault is locked.
                 {/if}
+              </small>
+            </span>
+          </label>
+        </section>
+      {/if}
+
+      {#if badge.supported}
+        <section>
+          <span class="eyebrow">Icon badge</span>
+          <p class="hint">
+            A number on Every Day's icon in the {DOCK_WORD}, adding up whatever you choose here.
+            Nothing is shown while the vault is locked.
+          </p>
+          <div class="segmented">
+            {#each BADGE_TASKS as c (c.value)}
+              <button
+                class="seg"
+                class:on={badge.sources.tasks === c.value}
+                aria-pressed={badge.sources.tasks === c.value}
+                onclick={() => badge.set({ tasks: c.value })}
+              >
+                {c.label}
+              </button>
+            {/each}
+          </div>
+          {#if badge.sources.tasks === 'due'}
+            <p class="hint">Open tasks due today or overdue, the number beside Today in Todo.</p>
+          {:else if badge.sources.tasks === 'open'}
+            <p class="hint">Every task not yet done, the number beside All tasks in Todo.</p>
+          {/if}
+          <label class="toggle">
+            <input
+              type="checkbox"
+              checked={badge.sources.mail}
+              onchange={(e) => badge.set({ mail: e.currentTarget.checked })}
+            />
+            <span>
+              <b>Unread mail</b>
+              <small>Unread messages in every account's inbox, leaving out snoozed ones.</small>
+            </span>
+          </label>
+          <label class="toggle">
+            <input
+              type="checkbox"
+              checked={badge.sources.assistant}
+              onchange={(e) => badge.set({ assistant: e.currentTarget.checked })}
+            />
+            <span>
+              <b>Waiting in the assistant</b>
+              <small>
+                Runs and proposals you have not looked at yet, the number on the assistant's button.
               </small>
             </span>
           </label>

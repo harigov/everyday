@@ -8,6 +8,7 @@
 //! point is a library: Tauri builds iOS and Android targets from `run()` rather
 //! than from `main`.
 
+mod badge;
 pub mod capture;
 mod commands;
 mod events;
@@ -33,6 +34,7 @@ mod tray;
 // be able to name. See that function's own doc.
 pub use state::SessionHandle;
 
+use badge::Badge;
 use state::AppState;
 use tauri::{Emitter, Manager, WindowEvent};
 use tray::Tray;
@@ -85,6 +87,9 @@ pub fn run() {
         // appears at launch holding only "Quit" is worse than one that
         // appears a moment later holding the actions.
         .manage(Tray::default())
+        // Counts nothing until the interface says what to count -- off by
+        // default, see `badge.rs`.
+        .manage(Badge::default())
         .setup(|app| {
             let handle = app.handle().clone();
             // The service exists before Tauri does -- `AppState` builds it --
@@ -128,6 +133,12 @@ pub fn run() {
             // notices a minute of plain clock time passing. `Tray::refresh`
             // is the no-op this costs on every other tick: it does nothing
             // at all unless an icon is on screen and the line is turned on.
+            //
+            // The icon's badge rides the same tick, for the same reason and
+            // two of its own: "due today" rolls over at midnight, and a
+            // background mail sync writes without announcing a change. Also
+            // a no-op unless something is chosen to count -- see
+            // `Badge::tick`.
             let tray_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
@@ -139,6 +150,7 @@ pub fn run() {
                 loop {
                     ticker.tick().await;
                     tray_handle.state::<Tray>().schedule_refresh(&tray_handle);
+                    tray_handle.state::<Badge>().tick(&tray_handle);
                 }
             });
             Ok(())
@@ -198,6 +210,7 @@ pub fn run() {
             commands::set_tray_menu,
             commands::hide_tray,
             commands::set_tray_meeting,
+            commands::set_badge,
             // Meeting notes: hearing a call. See `capture.rs` and
             // `meeting.rs`.
             meeting::meeting_start,

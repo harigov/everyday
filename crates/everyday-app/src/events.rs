@@ -73,6 +73,23 @@ impl EventSink for WindowSink {
         {
             tray.schedule_refresh(&self.app);
         }
+        // Anything the icon's badge can count: a task done or added, a
+        // project (and its tasks) deleted, a thread read or archived, an
+        // account's mail switched off, a run or a proposal arriving or being
+        // looked at. See `badge.rs`.
+        if matches!(
+            kind,
+            Kind::Task
+                | Kind::Project
+                | Kind::Thread
+                | Kind::Mailbox
+                | Kind::Account
+                | Kind::RoutineRun
+                | Kind::Proposal
+        ) && let Some(badge) = self.app.try_state::<crate::badge::Badge>()
+        {
+            badge.schedule_refresh(&self.app);
+        }
     }
 
     fn lock_state(&self, locked: bool) {
@@ -86,6 +103,12 @@ impl EventSink for WindowSink {
         // wait a minute to say what it is, either.
         if let Some(tray) = self.app.try_state::<crate::tray::Tray>() {
             tray.schedule_refresh(&self.app);
+        }
+        // The badge, for the same pair of reasons: a locked vault has no
+        // count to show (`badge::count` answers 0), and an unlocked one
+        // should not wait a minute to show its own.
+        if let Some(badge) = self.app.try_state::<crate::badge::Badge>() {
+            badge.schedule_refresh(&self.app);
         }
     }
 

@@ -29,6 +29,7 @@
   import { panels } from './lib/panels.svelte'
   import { shortcuts } from './lib/shortcuts.svelte'
   import { tray } from './lib/tray.svelte'
+  import { badge } from './lib/badge.svelte'
   import AppBar from './components/AppBar.svelte'
   import Sidebar from './components/Sidebar.svelte'
   import EntryList from './components/EntryList.svelte'
@@ -82,6 +83,10 @@
   // vault from here on. What is in it is a filtered view over the one action
   // table, so there is nothing for an app to register first.
   tray.start()
+
+  // The number on the Dock or taskbar icon, if one has been chosen in
+  // Settings. The shell counts it; this only tells the shell what to count.
+  badge.start()
 
   // Whether the assistant's rail was showing is remembered across launches:
   // it is a panel somebody either works with or does not, and reopening it
