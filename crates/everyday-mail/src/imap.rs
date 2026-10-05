@@ -135,6 +135,14 @@ const FLAG_REFETCH_BATCH_SIZE: usize = 500;
 /// for the round trip the re-issue itself takes.
 const IDLE_REISSUE: Duration = Duration::from_secs(25 * 60);
 
+/// How long [`connect`] has to reach the server, encrypt, sign in and read
+/// `CAPABILITY` before it gives up with [`MailError::Network`] -- retryable,
+/// and visible as the account's sync error. A sign-in that stalls instead
+/// of failing (a server waiting on a reply this crate never sends) would
+/// otherwise hold the account task at "connecting" forever, with the
+/// account itself still reading as fine.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// One live, authenticated IMAP connection: the [`crate::session::MailSession`]
 /// implementation over `async-imap`.
 ///
@@ -665,16 +673,35 @@ async fn connect_with(
     credential: Credential,
     verifier: Verifier,
 ) -> Result<ImapSession> {
+    tokio::time::timeout(CONNECT_TIMEOUT, open(host, port, security, credential, verifier))
+        .await
+        .map_err(|_| {
+            MailError::Network(format!(
+                "{host} did not finish signing in within {} seconds",
+                CONNECT_TIMEOUT.as_secs()
+            ))
+        })?
+}
+
+async fn open(
+    host: &str,
+    port: u16,
+    security: Security,
+    credential: Credential,
+    verifier: Verifier,
+) -> Result<ImapSession> {
     let tcp = TcpStream::connect((host, port)).await.map_err(classify_io)?;
 
     let mut session = match security {
         Security::Tls => {
             let tls = tls_connect(host, tcp, verifier).await?;
-            let client = async_imap::Client::new(tls);
+            let mut client = async_imap::Client::new(tls);
+            read_greeting(&mut client).await?;
             authenticate(client, credential).await?
         }
         Security::StartTls => {
             let mut client = async_imap::Client::new(tcp);
+            read_greeting(&mut client).await?;
             client.run_command_and_check_ok("STARTTLS", None).await.map_err(classify)?;
             let tcp = client.into_inner();
             let tls = tls_connect(host, tcp, verifier).await?;
@@ -814,13 +841,35 @@ mod insecure_test_tls {
     }
 }
 
+/// Read the server's untagged greeting, which `async_imap::Client::new` leaves
+/// unread.
+///
+/// `LOGIN` never noticed: it reads past untagged lines to its own tagged
+/// reply. `AUTHENTICATE` does not. Its handshake takes the first line it
+/// reads as the server's answer, so with the greeting still waiting it takes
+/// the greeting, then waits for a tagged reply while the server waits for
+/// the `XOAUTH2` response to its `+` -- and neither side ever speaks again.
+/// That is how every Google and Microsoft account stalled at "connecting".
+async fn read_greeting<T>(client: &mut async_imap::Client<T>) -> Result<()>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + std::fmt::Debug + Send,
+{
+    match client.read_response().await.map_err(classify_io)? {
+        Some(_) => Ok(()),
+        None => Err(MailError::Network("the server closed the connection before greeting".into())),
+    }
+}
+
 /// Log in with `credential`, consuming `client` either way — on failure the
 /// `Client` `async-imap` hands back for a retry is dropped, because nothing
 /// in this crate retries a login with the same credential.
-async fn authenticate(
-    client: async_imap::Client<TlsStream>,
+async fn authenticate<T>(
+    client: async_imap::Client<T>,
     credential: Credential,
-) -> Result<ImapLibSession<TlsStream>> {
+) -> Result<ImapLibSession<T>>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + std::fmt::Debug + Send,
+{
     match credential {
         Credential::Password { user, pass } => {
             client.login(&user, pass.as_str()).await.map_err(|(e, _)| classify_auth(e))
@@ -1268,6 +1317,79 @@ mod tests {
         let err = session.take_session().unwrap_err();
         assert!(matches!(err, MailError::Network(_)), "{err:?}");
         assert!(crate::outbox::is_retryable(&err));
+    }
+
+    /// Gmail's side of an `XOAUTH2` sign-in over `stream`: the greeting, a `+`
+    /// asking for the response, then either `OK` or a rejection. A rejection
+    /// is a second `+` carrying a JSON error, which the client must answer
+    /// with an empty line before the tagged `NO` arrives. Answers with the
+    /// line the client sent as its response.
+    async fn fake_gmail_xoauth2(stream: tokio::io::DuplexStream, accept: bool) -> String {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        async fn send(stream: &mut BufReader<tokio::io::DuplexStream>, line: String) {
+            stream.get_mut().write_all(line.as_bytes()).await.unwrap();
+        }
+
+        let mut stream = BufReader::new(stream);
+        send(&mut stream, "* OK Gimap ready for requests from 192.0.2.1\r\n".into()).await;
+
+        let mut command = String::new();
+        stream.read_line(&mut command).await.unwrap();
+        assert!(command.ends_with(" AUTHENTICATE XOAUTH2\r\n"), "{command:?}");
+        let tag = command.split(' ').next().unwrap().to_string();
+        send(&mut stream, "+ \r\n".into()).await;
+
+        let mut response = String::new();
+        stream.read_line(&mut response).await.unwrap();
+        if accept {
+            send(&mut stream, format!("{tag} OK me@example.com authenticated (Success)\r\n")).await;
+        } else {
+            send(&mut stream, "+ eyJzdGF0dXMiOiI0MDAifQ==\r\n".into()).await;
+            let mut empty = String::new();
+            stream.read_line(&mut empty).await.unwrap();
+            assert_eq!(empty, "\r\n");
+            send(&mut stream, format!("{tag} NO [AUTHENTICATIONFAILED] Invalid credentials\r\n"))
+                .await;
+        }
+        response
+    }
+
+    async fn sign_in_against_fake_gmail(accept: bool) -> (Result<()>, String) {
+        let (client_end, server_end) = tokio::io::duplex(4096);
+        let server = tokio::spawn(fake_gmail_xoauth2(server_end, accept));
+        let credential = Credential::XOAuth2 {
+            user: "me@example.com".into(),
+            access_token: String::from("ya29.token").into(),
+        };
+        let signed_in = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut client = async_imap::Client::new(client_end);
+            read_greeting(&mut client).await?;
+            authenticate(client, credential).await.map(drop)
+        })
+        .await
+        .expect("the XOAUTH2 sign-in stalled instead of finishing");
+        (signed_in, server.await.unwrap())
+    }
+
+    /// The regression for every Google account stalling at "connecting": the
+    /// greeting left unread made `AUTHENTICATE` wait for a tagged reply while
+    /// the server waited for the `XOAUTH2` response.
+    #[tokio::test]
+    async fn xoauth2_signs_in_after_the_greeting() {
+        use base64::Engine;
+
+        let (signed_in, response) = sign_in_against_fake_gmail(true).await;
+        signed_in.expect("an accepted token signs in");
+        let decoded =
+            base64::engine::general_purpose::STANDARD.decode(response.trim_end()).unwrap();
+        assert_eq!(decoded, b"user=me@example.com\x01auth=Bearer ya29.token\x01\x01");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_xoauth2_token_is_an_auth_error() {
+        let (signed_in, _) = sign_in_against_fake_gmail(false).await;
+        assert!(matches!(signed_in, Err(MailError::Auth(_))), "{signed_in:?}");
     }
 
     #[test]
