@@ -749,6 +749,18 @@
       ]
     },
     {
+      "command": "save_skill",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "skill",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "save_routine",
       "events": [
         {

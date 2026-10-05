@@ -41,10 +41,10 @@
 //! Declaring a tool is a few lines; the run function and the JSON
 //! projections behind it are a few hundred, so each domain has its own file
 //! — `journals`, `notes`, `tasks`, `time`, `library`, `trackers`, `purpose`,
-//! `routines`, `memory` — ending in a `TOOLS` slice this module concatenates
-//! in catalogue order. Orientation (`overview`, `search`) travels with
-//! `journals`, since both use [`Domain::Journals`] and neither is big
-//! enough to want a file of its own.
+//! `routines`, `memory`, `skills` — ending in a `TOOLS` slice this module
+//! concatenates in catalogue order. Orientation (`overview`, `search`)
+//! travels with `journals`, since both use [`Domain::Journals`] and neither
+//! is big enough to want a file of its own.
 
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -110,6 +110,7 @@ mod memory;
 mod notes;
 mod purpose;
 mod routines;
+mod skills;
 mod tasks;
 mod time;
 mod trackers;
@@ -286,9 +287,10 @@ impl TryFrom<RecordKind> for Domain {
             RecordKind::Tracker | RecordKind::Reading => Ok(Domain::Trackers),
             RecordKind::Role | RecordKind::Goal => Ok(Domain::Purpose),
             RecordKind::Routine | RecordKind::RoutineRun => Ok(Domain::Routines),
-            RecordKind::Conversation | RecordKind::Message | RecordKind::Memory => {
-                Ok(Domain::Agent)
-            }
+            RecordKind::Conversation
+            | RecordKind::Message
+            | RecordKind::Memory
+            | RecordKind::Skill => Ok(Domain::Agent),
             // Accounts have no tool domain of their own -- `Domain::Mail`
             // requires both `supports_mail()` and `supports_accounts()` --
             // so an account's tools are the mail domain's.
@@ -1136,6 +1138,7 @@ fn all() -> &'static [Tool] {
             purpose::TOOLS,
             routines::TOOLS,
             memory::TOOLS,
+            skills::TOOLS,
             mail::TOOLS,
             meetings::TOOLS,
         ]

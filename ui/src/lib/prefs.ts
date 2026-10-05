@@ -26,6 +26,7 @@ export type PrefKey =
   | 'everyday.journal.calendar'
   | 'everyday.overview.layout'
   | 'everyday.tray'
+  | 'everyday.tray.meeting'
   | 'everyday:assistant-open'
   | 'everyday:assistant-width'
 

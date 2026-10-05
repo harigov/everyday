@@ -64,7 +64,8 @@
 //! metadata. It is built on the same principle as [`ics`] — this crate
 //! composes the request and parses the reply, and something above it owns
 //! the socket — so the whole of it is testable offline.
-//! [`weather`] is the assistant's forecast, split the same way.
+//! [`weather`] is the assistant's forecast, split the same way; [`air_quality`]
+//! is what's in the air beside it.
 //!
 //! The tracking domain splits itself between two places for a reason worth
 //! knowing: a [`Tracker`](tracker::Tracker) — the decision to record
@@ -78,6 +79,7 @@
 
 pub mod account;
 pub mod agent;
+pub mod air_quality;
 pub mod blobstore;
 pub mod calendar;
 pub mod completable;
@@ -122,7 +124,7 @@ pub use account::{
 };
 pub use agent::{
     AgentSettings, Conversation, LLMModelConfig, LLMProviderConfig, Memory, MemoryOrigin, Message,
-    Provider, Role as MessageRole, ToolCall,
+    Provider, Role as MessageRole, Skill, ToolCall,
 };
 pub use blobstore::FileBlobStore;
 pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatus, SyncReport};
@@ -131,8 +133,8 @@ pub use error::{Error, Result};
 pub use id::{
     AccountId, BlobId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId,
     ItemId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NoteId, OpId,
-    PackId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId, TaskId,
-    TemplateId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
+    PackId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId,
+    SkillId, TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
 };
 pub use library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,

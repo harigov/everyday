@@ -617,6 +617,13 @@ async fn every_offline_write_announces_what_was_written_down() {
     )
     .await;
 
+    let mut skill = call(&svc, &h, "new_skill", json!({})).await;
+    skill["name"] = json!("Plan a trip");
+    skill["description"] = json!("Use when asked to plan a trip or multi-day travel.");
+    skill["instructions"] =
+        json!("Check the calendar for conflicts, check the weather, propose blocks.");
+    run(&svc, &h, "save_skill", json!({ "skill": skill })).await;
+
     // ---- routines and runs ---------------------------------------------------
     let mut routine = call(&svc, &h, "new_routine", json!({})).await;
     routine["name"] = json!("Evening review");

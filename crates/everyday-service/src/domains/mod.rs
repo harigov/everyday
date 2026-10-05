@@ -31,6 +31,7 @@ pub mod trackers;
 pub mod transcripts;
 pub mod transfer;
 pub mod vault;
+pub mod weather;
 pub mod web;
 
 use crate::command::Command;
@@ -78,6 +79,7 @@ pub fn catalog() -> &'static [&'static Command] {
             transcripts::COMMANDS,
             transfer::COMMANDS,
             web::COMMANDS,
+            weather::COMMANDS,
             assistant::COMMANDS,
             quick::COMMANDS,
             meta::COMMANDS,

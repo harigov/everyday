@@ -57,11 +57,33 @@
 //! kept, not deleted, so a later dream cannot re-learn what was already
 //! struck out; they are capped at [`MAX_REJECTED`] for the same reason
 //! everything here is capped -- the prompt has to stay a fixed size.
+//!
+//! # Skills, and progressive disclosure
+//!
+//! [`Skill`] is the other thing a person can teach the assistant, and it is a
+//! different shape of teaching from a memory on purpose. A memory is a fact
+//! — "plans the week on Sunday" — true all the time and cheap enough to load
+//! into every prompt in full. A skill is a *process* — "when asked to plan a
+//! trip: check the calendar for conflicts, check the weather, propose
+//! blocks, draft a packing list" — and a vault with a dozen of those would
+//! be a dozen procedures sitting in every prompt whether or not the day's
+//! conversation has anything to do with any of them.
+//!
+//! So [`system_prompt`] loads only an *index*: each enabled skill's name and
+//! [`Skill::description`], which is written to answer one question — when
+//! does this apply — rather than to say what to do. The instructions
+//! themselves are read through the `read_skill` tool (`agent::tools::skills`)
+//! only once a request actually matches one. This is the same trade the rest
+//! of this module makes for memory, taken a step further: where a memory
+//! costs the prompt one line forever, a skill costs it one line until it is
+//! actually needed, and then costs it in full for exactly the turn that uses
+//! it. A vault can hold as many as somebody writes without any of them
+//! crowding out the others.
 
 pub mod tools;
 
 use crate::error::{Error, Result};
-use crate::id::{ConversationId, MemoryId, MessageId};
+use crate::id::{ConversationId, MemoryId, MessageId, SkillId};
 use crate::quick::QuickPolicy;
 use crate::timestamped::Timestamped;
 use jiff::Timestamp;
@@ -1029,6 +1051,140 @@ impl Timestamped for Memory {
     }
 }
 
+/// A process the assistant was given for a certain kind of request. See the
+/// module docs' "Skills, and progressive disclosure".
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Skill {
+    pub id: SkillId,
+    /// What to call it — "Plan a trip", "Weekly review". Shown in Settings
+    /// and in the prompt's index, and what `read_skill` is given to find it
+    /// by.
+    pub name: String,
+    /// One or two sentences on *when* to reach for this skill — "Use when
+    /// asked to plan a trip or a multi-day journey." Read by a model
+    /// choosing between however many skills exist, so it has to name the
+    /// trigger rather than describe what happens once it is loaded; the
+    /// latter is what [`instructions`](Self::instructions) is for.
+    pub description: String,
+    /// The process itself, in as much prose as it takes. Never sent with the
+    /// prompt — only the name and description are — so this is free to be
+    /// long. Markdown, like a note: numbered steps, a checklist, whatever
+    /// reads clearly to the person who wrote it, because the model reading
+    /// it back is the same one that will have read a note.
+    pub instructions: String,
+    /// Off skills are left out of the prompt's index and cannot be loaded —
+    /// for a process written for an occasion that has passed, kept rather
+    /// than deleted.
+    pub enabled: bool,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+/// Longest a skill's name may be. A label, not a sentence — matches
+/// [`crate::routine::MAX_NAME_BYTES`], which a routine's own name is held to
+/// for the same reason.
+pub const MAX_SKILL_NAME_BYTES: usize = 200;
+
+/// Longest a skill's description may be. Short on purpose: this is the one
+/// part of a skill that is sent with every single prompt, however many
+/// skills exist, so it has to stay a sentence or two rather than grow into a
+/// summary of the instructions it stands in for.
+pub const MAX_SKILL_DESCRIPTION_CHARS: usize = 400;
+
+/// Longest a skill's instructions may be. Generous, and finite for the usual
+/// reason: this is read in full the moment `read_skill` is called, and a
+/// person who pastes a book into it pays for that book on every turn that
+/// loads it.
+pub const MAX_SKILL_INSTRUCTIONS_BYTES: usize = 20_000;
+
+impl Skill {
+    pub fn new(name: impl Into<String>) -> Self {
+        let now = Timestamp::now();
+        Self {
+            id: SkillId::new(),
+            name: name.into(),
+            description: String::new(),
+            instructions: String::new(),
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty() {
+            return Err(Error::Invalid("a skill needs a name".into()));
+        }
+        if self.name.len() > MAX_SKILL_NAME_BYTES {
+            return Err(Error::Invalid(format!(
+                "a skill's name must be under {MAX_SKILL_NAME_BYTES} bytes"
+            )));
+        }
+        if self.description.trim().is_empty() {
+            return Err(Error::Invalid(
+                "a skill needs a description of when to use it, or the assistant has no way to \
+                 recognise that it applies"
+                    .into(),
+            ));
+        }
+        if self.description.chars().count() > MAX_SKILL_DESCRIPTION_CHARS {
+            return Err(Error::Invalid(format!(
+                "a skill's description must be under {MAX_SKILL_DESCRIPTION_CHARS} characters; \
+                 say when to use it, and put the rest in the instructions"
+            )));
+        }
+        if self.instructions.trim().is_empty() {
+            return Err(Error::Invalid(
+                "a skill needs instructions: what should the assistant actually do?".into(),
+            ));
+        }
+        if self.instructions.len() > MAX_SKILL_INSTRUCTIONS_BYTES {
+            return Err(Error::Invalid(format!(
+                "instructions are {} bytes; the limit is {MAX_SKILL_INSTRUCTIONS_BYTES}",
+                self.instructions.len()
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl Timestamped for Skill {
+    fn touch(&mut self) {
+        self.updated_at = Timestamp::now();
+    }
+}
+
+/// Render the index of enabled skills, or nothing at all when there are
+/// none — the same "say nothing for an empty group" rule
+/// [`push_memory_group`] follows, so a vault with no skills defined reads no
+/// differently from one that has never heard of the feature.
+///
+/// `skills` arrives in no particular order; a disabled skill is filtered out
+/// rather than shown and refused, on [`tools::dispatch`]'s own argument: a
+/// model never told a tool -- or, here, a skill -- exists cannot be talked
+/// into asking for it.
+fn push_skill_index(out: &mut String, skills: &[Skill]) {
+    let enabled: Vec<&Skill> = skills.iter().filter(|s| s.enabled).collect();
+    if enabled.is_empty() {
+        return;
+    }
+    out.push_str(
+        "\n\nSkills you have been given, for certain kinds of request. Before acting on a \
+         request that matches one, call read_skill with its name to load the full \
+         instructions \u{2014} the description below is only enough to recognise that one \
+         applies, not what to do:\n",
+    );
+    for s in &enabled {
+        out.push_str("- ");
+        out.push_str(s.name.trim());
+        out.push_str(": ");
+        out.push_str(s.description.trim());
+        out.push('\n');
+    }
+}
+
 /// Render one group of memories under its heading, capped, newest kept last.
 ///
 /// Shared by all three groups in [`system_prompt`] so the "keep the newest
@@ -1074,6 +1230,7 @@ pub fn system_prompt(
     settings: &AgentSettings,
     profile: &crate::profile::Profile,
     memories: &[Memory],
+    skills: &[Skill],
     now: &jiff::Zoned,
     context: Option<&str>,
 ) -> String {
@@ -1129,6 +1286,11 @@ pub fn system_prompt(
         now.strftime("%H:%M"),
         now.time_zone().iana_name().unwrap_or("an unknown time zone"),
     ));
+
+    // The skill index, before the memories: what it can do, then what it
+    // knows about the person asking. See the module docs' "Skills, and
+    // progressive disclosure".
+    push_skill_index(&mut out, skills);
 
     // Told and confirmed memories are standing instructions, in the order
     // they were written -- `memories` arrives oldest-first, so that a later
@@ -1415,6 +1577,7 @@ mod tests {
             &AgentSettings::default(),
             &crate::profile::Profile::default(),
             &[],
+            &[],
             &at(14, 5, "America/Los_Angeles"),
             None,
         );
@@ -1429,6 +1592,7 @@ mod tests {
             &AgentSettings::default(),
             &crate::profile::Profile::default(),
             &[],
+            &[],
             &at(9, 0, "UTC"),
             None,
         );
@@ -1440,7 +1604,8 @@ mod tests {
             location: "Seattle".into(),
             ..Default::default()
         };
-        let said = system_prompt(&AgentSettings::default(), &profile, &[], &at(9, 0, "UTC"), None);
+        let said =
+            system_prompt(&AgentSettings::default(), &profile, &[], &[], &at(9, 0, "UTC"), None);
         assert!(said.contains("Its owner is Hari, 41, in Seattle."), "got: {said}");
         assert!(
             said.find("Its owner is Hari").unwrap() < said.find("It is Tuesday").unwrap(),
@@ -1452,8 +1617,14 @@ mod tests {
     fn the_persons_instructions_come_before_the_house_rules() {
         let s =
             AgentSettings { instructions: "Be terse. I am a nurse.".into(), ..Default::default() };
-        let prompt =
-            system_prompt(&s, &crate::profile::Profile::default(), &[], &at(9, 0, "UTC"), None);
+        let prompt = system_prompt(
+            &s,
+            &crate::profile::Profile::default(),
+            &[],
+            &[],
+            &at(9, 0, "UTC"),
+            None,
+        );
         let mine = prompt.find("I am a nurse").unwrap();
         let house = prompt.find("You are the assistant").unwrap();
         assert!(mine < house, "the person's own instructions should be read first");
@@ -1465,6 +1636,7 @@ mod tests {
             &AgentSettings::default(),
             &crate::profile::Profile::default(),
             &[],
+            &[],
             &at(9, 0, "UTC"),
             None,
         );
@@ -1472,8 +1644,14 @@ mod tests {
         assert!(!anonymous.contains("Your name is"), "nothing names it on anybody's behalf");
 
         let s = AgentSettings { name: "  Robin  ".into(), ..Default::default() };
-        let named =
-            system_prompt(&s, &crate::profile::Profile::default(), &[], &at(9, 0, "UTC"), None);
+        let named = system_prompt(
+            &s,
+            &crate::profile::Profile::default(),
+            &[],
+            &[],
+            &at(9, 0, "UTC"),
+            None,
+        );
         assert!(named.starts_with("Your name is Robin."), "got: {named}");
         assert!(
             named.contains("the assistant built into Every Day, a private journal"),
@@ -1513,6 +1691,7 @@ mod tests {
             &AgentSettings::default(),
             &crate::profile::Profile::default(),
             &memories,
+            &[],
             &at(9, 0, "UTC"),
             None,
         );
@@ -1533,6 +1712,7 @@ mod tests {
             &AgentSettings::default(),
             &crate::profile::Profile::default(),
             &memories,
+            &[],
             &at(9, 0, "UTC"),
             None,
         );
@@ -1557,6 +1737,7 @@ mod tests {
             &AgentSettings::default(),
             &crate::profile::Profile::default(),
             &memories,
+            &[],
             &at(9, 0, "UTC"),
             None,
         );
@@ -1591,6 +1772,7 @@ mod tests {
             &AgentSettings::default(),
             &crate::profile::Profile::default(),
             &memories,
+            &[],
             &at(9, 0, "UTC"),
             None,
         );
@@ -1604,6 +1786,7 @@ mod tests {
         let none = system_prompt(
             &AgentSettings::default(),
             &crate::profile::Profile::default(),
+            &[],
             &[],
             &at(9, 0, "UTC"),
             None,
@@ -1628,6 +1811,7 @@ mod tests {
             &AgentSettings::default(),
             &crate::profile::Profile::default(),
             &memories,
+            &[],
             &at(9, 0, "UTC"),
             None,
         );
@@ -1646,6 +1830,7 @@ mod tests {
             &AgentSettings::default(),
             &crate::profile::Profile::default(),
             &many,
+            &[],
             &at(9, 0, "UTC"),
             None,
         );
@@ -1670,6 +1855,7 @@ mod tests {
             &AgentSettings::default(),
             &crate::profile::Profile::default(),
             &many,
+            &[],
             &at(9, 0, "UTC"),
             None,
         );
@@ -1689,12 +1875,108 @@ mod tests {
             &s,
             &crate::profile::Profile::default(),
             &[],
+            &[],
             &at(9, 0, "UTC"),
             Some("  "),
         );
         assert!(!prompt.contains("---"), "whitespace is not instructions");
         assert!(!prompt.contains("currently looking at"), "whitespace is not context");
         assert!(prompt.starts_with("You are the assistant"));
+    }
+
+    fn skill(name: &str, description: &str) -> Skill {
+        Skill { description: description.into(), instructions: "do it".into(), ..Skill::new(name) }
+    }
+
+    #[test]
+    fn no_skills_means_no_index_in_the_prompt() {
+        let prompt = system_prompt(
+            &AgentSettings::default(),
+            &crate::profile::Profile::default(),
+            &[],
+            &[],
+            &at(9, 0, "UTC"),
+            None,
+        );
+        assert!(!prompt.contains("Skills you have been given"), "an empty list adds nothing");
+
+        // A skill that exists but is switched off is the same as none at all.
+        let off = Skill { enabled: false, ..skill("Plan a trip", "Use when planning travel.") };
+        let prompt = system_prompt(
+            &AgentSettings::default(),
+            &crate::profile::Profile::default(),
+            &[],
+            &[off],
+            &at(9, 0, "UTC"),
+            None,
+        );
+        assert!(!prompt.contains("Skills you have been given"), "an off skill must not be offered");
+        assert!(!prompt.contains("Plan a trip"), "nor named at all");
+    }
+
+    #[test]
+    fn only_enabled_skills_reach_the_prompt_by_name_and_description() {
+        let trip = skill("Plan a trip", "Use when asked to plan a trip or multi-day travel.");
+        let off = Skill { enabled: false, ..skill("Retired process", "No longer used.") };
+        let review = skill("Weekly review", "Use at the start of a week.");
+
+        let prompt = system_prompt(
+            &AgentSettings::default(),
+            &crate::profile::Profile::default(),
+            &[],
+            &[trip, off, review],
+            &at(9, 0, "UTC"),
+            None,
+        );
+
+        assert!(prompt.contains("Plan a trip: Use when asked to plan a trip or multi-day travel."));
+        assert!(prompt.contains("Weekly review: Use at the start of a week."));
+        assert!(!prompt.contains("Retired process"), "a disabled skill is left out entirely");
+        // The instructions themselves are never sent -- that is the whole
+        // point of the index; `read_skill` is what loads them.
+        assert!(!prompt.contains("do it"));
+        assert!(prompt.contains("call read_skill"), "it has to be told how to load one");
+    }
+
+    #[test]
+    fn the_skill_index_lists_them_in_the_order_they_were_given() {
+        // `system_prompt` draws the index in whatever order `skills` arrives
+        // in -- the vault's own `created_at` order, same as memories -- so
+        // this is a test of the renderer rather than of any sort it performs
+        // itself.
+        let first = skill("First", "One.");
+        let second = skill("Second", "Two.");
+        let prompt = system_prompt(
+            &AgentSettings::default(),
+            &crate::profile::Profile::default(),
+            &[],
+            &[first, second],
+            &at(9, 0, "UTC"),
+            None,
+        );
+        assert!(prompt.find("First: One.").unwrap() < prompt.find("Second: Two.").unwrap());
+    }
+
+    #[test]
+    fn a_skill_needs_a_name_a_description_and_instructions() {
+        let mut s = Skill::new("  ");
+        s.description = "Use it sometimes.".into();
+        s.instructions = "Do the thing.".into();
+        assert!(s.validate().is_err(), "a blank name is not a name");
+
+        let mut s = Skill::new("Plan a trip");
+        s.instructions = "Do the thing.".into();
+        assert!(s.validate().is_err(), "no description means no way to recognise it applies");
+
+        let mut s = Skill::new("Plan a trip");
+        s.description = "Use when asked to plan a trip.".into();
+        assert!(s.validate().is_err(), "no instructions means nothing for read_skill to return");
+
+        s.instructions = "Check the calendar, check the weather, propose blocks.".into();
+        assert!(s.validate().is_ok());
+
+        s.description = "x".repeat(MAX_SKILL_DESCRIPTION_CHARS + 1);
+        assert!(s.validate().is_err(), "the description is sent every turn and must stay short");
     }
 
     #[test]

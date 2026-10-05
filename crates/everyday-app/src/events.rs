@@ -23,8 +23,8 @@
 //! shell decides to start capturing, before the interface ever hears about
 //! it -- see [`crate::meeting::on_meeting_offer`].
 
-use everyday_service::events::{Change, EventSink, MeetingOffer, Notification};
-use tauri::{AppHandle, Emitter};
+use everyday_service::events::{Change, EventSink, Kind, MeetingOffer, Notification};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// A notification the interface should route. Its other half is
 /// `onShellNotification` in `ui/src/lib/api.ts`.
@@ -62,11 +62,31 @@ impl EventSink for WindowSink {
     }
 
     fn changed(&self, change: Change) {
+        let kind = change.kind;
         self.emit(CHANGED_EVENT, change);
+        // A calendar sync can change what the tray's optional meeting line
+        // should say -- a new event landed, one moved, one was cancelled --
+        // and nothing else would notice before the next minute's tick. See
+        // `tray::Tray::refresh` and `tray::meeting_line`.
+        if matches!(kind, Kind::Calendar | Kind::Event)
+            && let Some(tray) = self.app.try_state::<crate::tray::Tray>()
+        {
+            tray.schedule_refresh(&self.app);
+        }
     }
 
     fn lock_state(&self, locked: bool) {
         self.emit(LOCK_EVENT, locked);
+        // Locking must take a decrypted meeting title off the tray at once,
+        // not on the next tick -- `tray::meeting_line` already answers
+        // `None` once `vault.is_unlocked()` is false, so this call is what
+        // actually acts on that rather than leaving the old one up to stale
+        // for up to a minute. Unlocking is refreshed here too, for the
+        // symmetric reason: a vault that just became readable should not
+        // wait a minute to say what it is, either.
+        if let Some(tray) = self.app.try_state::<crate::tray::Tray>() {
+            tray.schedule_refresh(&self.app);
+        }
     }
 
     fn meeting_offer(&self, offer: MeetingOffer) {

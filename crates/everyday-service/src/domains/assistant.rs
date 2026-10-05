@@ -13,9 +13,9 @@ use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Kind, Op};
 use crate::service::{Service, blocking};
-use everyday_core::agent::{AgentSettings, Conversation, Memory, Message};
+use everyday_core::agent::{AgentSettings, Conversation, Memory, Message, Skill};
 use everyday_core::store::agent::ConversationQuery;
-use everyday_core::{ConversationId, MemoryId};
+use everyday_core::{ConversationId, MemoryId, SkillId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -100,6 +100,18 @@ pub struct MemoryRef {
 pub struct MemoryOriginArgs {
     pub id: MemoryId,
     pub origin: everyday_core::MemoryOrigin,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveSkill {
+    pub skill: Skill,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRef {
+    pub id: SkillId,
 }
 
 /// What a turn needs. Not reachable through `call` -- see the module docs --
@@ -373,6 +385,37 @@ async fn delete_memory(svc: Arc<Service>, _ctx: Ctx, args: MemoryRef) -> Command
     svc.on_vault(move |vault| vault.delete_memory(args.id)).await
 }
 
+async fn list_skills(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<Skill>> {
+    svc.on_vault(move |vault| vault.skills()).await
+}
+
+/// A blank skill with an id, switched on. The core allocates it, the same
+/// reason `new_memory` and `new_routine` do: an id a client minted itself
+/// would be a second place one could be generated from, and the only one
+/// not guaranteed to be a UUIDv7.
+async fn new_skill(_svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Skill> {
+    Ok(Skill::new(String::new()))
+}
+
+/// Save a skill, stamping `updated_at` here rather than trusting whatever
+/// the editor last had in the field -- the same reason `save_routine`
+/// stamps its own clock rather than the client's.
+async fn save_skill(svc: Arc<Service>, _ctx: Ctx, args: SaveSkill) -> CommandResult<Skill> {
+    let vault = svc.require()?;
+    let now = svc.now();
+    blocking(move || {
+        let mut skill = args.skill;
+        skill.updated_at = now;
+        vault.save_skill(&skill)?;
+        Ok(skill)
+    })
+    .await
+}
+
+async fn delete_skill(svc: Arc<Service>, _ctx: Ctx, args: SkillRef) -> CommandResult<()> {
+    svc.on_vault(move |vault| vault.delete_skill(args.id)).await
+}
+
 /// Placeholder for the one command that does not answer with a value.
 ///
 /// In the catalogue so that a client generator, the introspection endpoint and
@@ -494,6 +537,32 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: MemoryRef, returns: "void",
         signature: &[("id", "MemoryId", true)],
         run: delete_memory,
+    },
+    command! {
+        name: "list_skills", scope: Agent, effect: Read,
+        args: Nothing, returns: "Skill[]", signature: &[],
+        run: list_skills,
+    },
+    command! {
+        name: "new_skill", scope: Agent, effect: Read,
+        args: Nothing, returns: "Skill", signature: &[],
+        run: new_skill,
+    },
+    command! {
+        name: "save_skill", scope: Agent, effect: Write,
+        change: Skill / Updated,
+        id: |a: &SaveSkill| Some(a.skill.id.to_string()),
+        args: SaveSkill, returns: "Skill",
+        signature: &[("skill", "Skill", true)],
+        run: save_skill,
+    },
+    command! {
+        name: "delete_skill", scope: Agent, effect: Destructive,
+        change: Skill / Deleted,
+        id: |a: &SkillRef| Some(a.id.to_string()),
+        args: SkillRef, returns: "void",
+        signature: &[("id", "SkillId", true)],
+        run: delete_skill,
     },
 ];
 

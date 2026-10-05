@@ -361,11 +361,40 @@ impl Vault {
         self.last_activity_ms.store(ms, Ordering::Relaxed);
     }
 
+    /// Record whether this vault's key is being kept in this computer's
+    /// keychain right now, so the idle timer below can skip it without ever
+    /// asking the keychain itself.
+    ///
+    /// Set by whoever already knows the answer because they just acted on
+    /// it: `everyday-app`'s `bootstrap` after an auto-unlock succeeds, the
+    /// `unlock` command after an explicit one finds the switch already on,
+    /// `set_opens_itself` the moment the switch is flipped either way, and
+    /// `everyday serve --keychain`'s startup. Never computed in here -- this
+    /// crate has no keychain of its own to ask, and the idle timer polls
+    /// every few seconds, which the keychain itself is too slow for. See
+    /// `everyday_vault::autounlock`'s module doc.
+    pub fn set_key_in_keychain(&self, on: bool) {
+        self.key_in_keychain.store(on, Ordering::Relaxed);
+    }
+
     /// Seconds until the key is dropped for idleness, or `None` if that is
-    /// disabled or the vault is already locked.
+    /// disabled, the vault is already locked, or its key is being kept in
+    /// this computer's keychain.
+    ///
+    /// That last case is what makes signing in to the computer count as
+    /// unlocking: a vault whose key the keychain already holds will have it
+    /// back the moment the machine starts, so a timer that forgot it while
+    /// idle would only make the assistant's routines wait for somebody to
+    /// notice and unlock it again -- the exact gap `autounlock` exists to
+    /// close. This is the key alone; the window's screen timer is suspended on
+    /// the same condition by the interface, which knows it as `opensItself`
+    /// (see `startLockTimers` in `ui/src/lib/state.svelte.ts`). Explicitly
+    /// locking the vault -- Ctrl/Cmd+L on through to the tray -- always works
+    /// regardless of this flag, because none of those call this method at
+    /// all; they call [`Vault::lock`] directly.
     pub fn seconds_until_forget_key(&self) -> Option<u64> {
         let timeout = self.header_read().forget_key_seconds;
-        if timeout == 0 || !self.is_unlocked() {
+        if timeout == 0 || !self.is_unlocked() || self.key_in_keychain.load(Ordering::Relaxed) {
             return None;
         }
         // Saturating, because the two loads are a moment apart and the

@@ -11,10 +11,10 @@ use super::Vault;
 use super::session::Domain;
 use crate::agent::{
     AgentSettings, Conversation, MAX_INFERRED, MAX_MEMORIES, MAX_REJECTED, Memory, MemoryOrigin,
-    Message, Provider,
+    Message, Provider, Skill,
 };
 use crate::error::{Error, Result};
-use crate::id::{ConversationId, MemoryId, MessageId};
+use crate::id::{ConversationId, MemoryId, MessageId, SkillId};
 use crate::record::RecordKind;
 use crate::store::agent::{AgentStore, ConversationQuery};
 use crate::timestamped::Timestamped;
@@ -357,6 +357,27 @@ impl Vault {
         self.writable()?;
         self.with_agent(|a| a.delete_memory(id))?;
         self.wrote(RecordKind::Memory, id);
+        Ok(())
+    }
+
+    // ---- skills -----------------------------------------------------------
+
+    pub fn skills(&self) -> Result<Vec<Skill>> {
+        self.with_agent(|a| a.list_skills())
+    }
+
+    pub fn save_skill(&self, skill: &Skill) -> Result<()> {
+        self.writable()?;
+        skill.validate()?;
+        self.with_agent(|a| a.put_skill(skill))?;
+        self.wrote(RecordKind::Skill, skill.id);
+        Ok(())
+    }
+
+    pub fn delete_skill(&self, id: SkillId) -> Result<()> {
+        self.writable()?;
+        self.with_agent(|a| a.delete_skill(id))?;
+        self.wrote(RecordKind::Skill, id);
         Ok(())
     }
 }

@@ -58,10 +58,11 @@
 
   function open(row: MailActionByOrigin) {
     if (!row.threadId) return
-    // Settings is a dialog over the app bar, not a screen of its own --
-    // closed first, the same way `AgentPanel`'s own "See them" link into
-    // Memory does, so the click lands on Mail rather than on Mail sitting
-    // behind a dialog still open.
+    // Belt and braces: `app.setSection` (which `openFromElsewhere` reaches
+    // through `goTo`) already leaves Settings on its own now that Settings is
+    // a page rather than a dialog raised over the app -- see
+    // `SettingsView.svelte`'s header comment -- but saying it here too
+    // costs nothing and keeps this working if that ever changes.
     panels.closeSettings()
     void mail.openFromElsewhere(row.threadId)
   }

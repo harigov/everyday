@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -88,7 +88,7 @@ pub fn migrate(
 
 /// Every migration step, in order. Index 0 is version 1.
 pub fn steps(d: Dialect) -> Vec<Vec<String>> {
-    vec![v1(d), v2(d), v3(d), v4(d), v5(d), v6(d), v7(d), v8(d), v9(d), v10(d), v11(d)]
+    vec![v1(d), v2(d), v3(d), v4(d), v5(d), v6(d), v7(d), v8(d), v9(d), v10(d), v11(d), v12(d)]
 }
 
 /// The `blobs` table, for a backend that keeps attachments in the database.
@@ -1235,6 +1235,33 @@ fn v11(d: Dialect) -> Vec<String> {
         "CREATE INDEX IF NOT EXISTS proposals_by_expiry ON proposals (outcome, expires_us)".into(),
         "CREATE INDEX IF NOT EXISTS proposals_by_made ON proposals (made_us)".into(),
     ]
+}
+
+/// Version 12: skills -- processes the assistant was given for a certain
+/// kind of request. See `everyday_core::agent::Skill`'s module docs,
+/// "Skills, and progressive disclosure".
+///
+/// One table, on the exact shape `routines` already is (`v8`, above): no
+/// clear/sealed split at all beyond the two timestamps every table in this
+/// file carries. A scheduler has to pick the due routine out of a whole
+/// table before it has decrypted anything, and still gets nothing to filter
+/// on there -- the trigger and `enabled` are both read out of `data`, the
+/// same place a skill's `enabled` is. Nothing here is ever asked "which
+/// skills are enabled" without the vault already open in front of it: the
+/// prompt builder reads the whole list and filters in Rust, the way
+/// `memories` already does for its three origins. So the database records
+/// only that some number of processes exist and when they were touched,
+/// never their names, their descriptions or whether they are switched on.
+fn v12(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![format!(
+        "CREATE TABLE IF NOT EXISTS skills (
+             id          TEXT    PRIMARY KEY NOT NULL,
+             created_us  {int} NOT NULL,
+             updated_us  {int} NOT NULL,
+             data        {blob} NOT NULL
+         )"
+    )]
 }
 
 #[cfg(test)]

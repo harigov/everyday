@@ -87,6 +87,12 @@ pub mod codes {
     pub const INTERNAL: &str = "internal";
     pub const NETWORK: &str = "network";
     pub const NOT_AN_IMAGE: &str = "not_an_image";
+    /// `weather` (the command) was asked with no place and the profile has
+    /// none either. Its own code, distinct from [`INVALID`], because the
+    /// interface turns this one into a button -- "Set your location in
+    /// Settings → About You" -- rather than a sentence; see
+    /// `domains::weather`'s own doc.
+    pub const NO_LOCATION: &str = "no_location";
     pub const PANIC: &str = "panic";
     pub const QUICK: &str = "quick";
     /// [`Service::check_mail_rate_limit`](crate::service::Service::check_mail_rate_limit)
@@ -143,6 +149,7 @@ pub mod codes {
         INTERNAL,
         NETWORK,
         NOT_AN_IMAGE,
+        NO_LOCATION,
         PANIC,
         QUICK,
         RATE_LIMITED,

@@ -4,6 +4,7 @@
 //!   assistant/
 //!     conversations/2026-09-10-what-did-i-do-in-august.md
 //!     routines/Morning-brief.md
+//!     skills/Plan-a-trip.md
 //!     memories.md
 //! ```
 //!
@@ -46,8 +47,8 @@ static SPEC: Spec = Spec {
     id: "assistant",
     label: "Assistant",
     summary: "Every conversation as a readable transcript, the standing work you set it, \
-              and what it has been asked to remember. A reading copy: this part is not \
-              read back in.",
+              the skills you wrote for it, and what it has been asked to remember. A \
+              reading copy: this part is not read back in.",
     format: "Markdown, one file per conversation",
     media: false,
     imports: false,
@@ -136,6 +137,28 @@ impl Portable for AssistantPart {
                     format!("routines/{}-{}.md", safe_name(&routine.name), routine.id.short());
                 out.records(&name, body, 1)?;
             }
+        }
+
+        // The processes it was given, one page each, the way a routine is.
+        // A skill is the person's own writing -- a method for planning a
+        // trip, set out in their words -- which is exactly what an export is
+        // for leaving with, whether or not it is switched on today.
+        for skill in agent.list_skills()? {
+            let mut front = FrontMatter::new();
+            front
+                .always("skill", &skill.name)
+                .always("id", skill.id.to_string())
+                .always("enabled", skill.enabled.to_string())
+                .set("created", super::doc::stamp(skill.created_at));
+            let body = format!(
+                "{}# {}\n\n*{}*\n\n## The process\n\n{}\n",
+                front.render(),
+                skill.name,
+                skill.description.trim(),
+                skill.instructions.trim()
+            );
+            let name = format!("skills/{}-{}.md", safe_name(&skill.name), skill.id.short());
+            out.records(&name, body, 1)?;
         }
 
         let memories = agent.list_memories()?;

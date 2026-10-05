@@ -29,6 +29,7 @@ import { load, makeCheck } from './harness.mjs'
 const { module: dashboard, close } = await load('/src/lib/dashboard.ts')
 const {
   addWidget,
+  aqiTier,
   byTimeOrLast,
   defaultLayout,
   moveWidget,
@@ -41,6 +42,7 @@ const {
   setSize,
   SPAN,
   trackerWindow,
+  weatherIcon,
   WIDGETS,
   WIDGET_SIZES,
   WIDGET_TYPES,
@@ -176,9 +178,11 @@ check(
   ['trackerDays'],
 )
 // The whole catalogue at once is still a handful of queries, not one per card.
+// Twelve since the weather card, whose one need is a forecast rather than
+// another read of the vault.
 ok(
   'the union of every need is bounded',
-  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 11,
+  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 12,
 )
 
 // The readings window is the longest any *tracker* card asks for, never
@@ -318,6 +322,52 @@ check('an empty list means nobody has arranged one', parseLayout('[]'), null)
     byTimeOrLast([], () => null),
     [],
   )
+}
+
+// ── The Weather widget ───────────────────────────────────────────────
+
+{
+  check('clear sky draws the sun', weatherIcon('clear sky'), 'sun')
+  check('mainly clear draws the sun too', weatherIcon('mainly clear'), 'sun')
+  check('overcast is just a cloud', weatherIcon('overcast'), 'cloud')
+  check('partly cloudy is a cloud, not a sun-and-cloud', weatherIcon('partly cloudy'), 'cloud')
+  check('fog is its own shape', weatherIcon('fog'), 'fog')
+  check('drizzle rains', weatherIcon('light drizzle'), 'rain')
+  check('every flavour of rain', weatherIcon('heavy rain showers'), 'rain')
+  check('freezing rain still rains', weatherIcon('freezing rain'), 'rain')
+  check('snow snows', weatherIcon('heavy snow showers'), 'snow')
+  check('a thunderstorm storms', weatherIcon('thunderstorm with hail'), 'storm')
+  check(
+    'an unrecognised reading falls back to a cloud',
+    weatherIcon('unknown (WMO code 4)'),
+    'cloud',
+  )
+  check('matching is not case-sensitive', weatherIcon('CLEAR SKY'), 'sun')
+}
+
+{
+  check('US good is the first tier', aqiTier('us', 'Good'), 1)
+  check('US moderate is the second', aqiTier('us', 'Moderate'), 2)
+  check(
+    'US unhealthy for sensitive groups is the third',
+    aqiTier('us', 'Unhealthy for sensitive groups'),
+    3,
+  )
+  check('US hazardous is the worst, sixth tier', aqiTier('us', 'Hazardous'), 6)
+  check('European good is also the first tier', aqiTier('european', 'Good'), 1)
+  check(
+    'the same word is a different tier on each scale',
+    [aqiTier('us', 'Moderate'), aqiTier('european', 'Moderate')],
+    [2, 3],
+  )
+  check(
+    'European extremely poor is the worst, sixth tier',
+    aqiTier('european', 'Extremely poor'),
+    6,
+  )
+  check('matching is not case-sensitive', aqiTier('us', 'good'), 1)
+  check('a null category has no tier', aqiTier('us', null), null)
+  check('a word neither scale uses has no tier', aqiTier('us', 'Fair'), null)
 }
 
 await close()

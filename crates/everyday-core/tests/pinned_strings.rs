@@ -105,6 +105,10 @@ fn agent_domain_aad_labels_are_pinned() {
         store::agent::memory_aad(id::<MemoryId>()),
         b"everyday.memory.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
     );
+    assert_eq!(
+        store::agent::skill_aad(id::<SkillId>()),
+        b"everyday.skill.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
     assert_eq!(store::agent::settings_aad(), b"everyday.agent-settings.v1".to_vec());
     assert_eq!(store::agent::secret_aad(), b"everyday.agent-secret.v1".to_vec());
 }
@@ -367,6 +371,7 @@ fn every_typed_id_kind_is_pinned() {
     assert_eq!(ConversationId::KIND, "conversation");
     assert_eq!(MessageId::KIND, "message");
     assert_eq!(MemoryId::KIND, "memory");
+    assert_eq!(SkillId::KIND, "skill");
     assert_eq!(PackId::KIND, "pack");
     assert_eq!(AccountId::KIND, "account");
     assert_eq!(MailboxId::KIND, "mailbox");

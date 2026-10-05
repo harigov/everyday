@@ -28,10 +28,11 @@
   import { notes as noteStore } from '../lib/notes.svelte'
   import { byRole, type RoleTotals } from '../lib/balance'
   import { describeStreak, streakTarget } from '../lib/habits'
-  import { addDays, localeWeekStart, startOfWeek, todayIso } from '../lib/time'
+  import { addDays, localeWeekStart, startOfDay, startOfWeek, todayIso } from '../lib/time'
   import { formatValue } from '../lib/tracker'
-  import { byTimeOrLast, type Widget } from '../lib/dashboard'
-  import type { Proposal } from '../lib/types'
+  import { aqiTier, byTimeOrLast, weatherIcon, type Widget } from '../lib/dashboard'
+  import { panels } from '../lib/panels.svelte'
+  import type { Proposal, WeatherCurrent, WeatherDay } from '../lib/types'
   import BalanceBars from './BalanceBars.svelte'
   import ColumnChart from './ColumnChart.svelte'
   import HabitHeatmap from './HabitHeatmap.svelte'
@@ -274,6 +275,22 @@
   $effect(() => {
     if (tomorrowProposals.length > 0) void proposals.markSeen(tomorrowProposals)
   })
+
+  /** "16 km/h W, gusts 27": one string, so the template cannot space it wrongly. */
+  function windLine(cur: WeatherCurrent, unit: string): string {
+    let line = `${Math.round(cur.windSpeed ?? 0)} ${unit}`
+    if (cur.windDirectionCompass) line += ` ${cur.windDirectionCompass}`
+    if (cur.windGusts != null) line += `, gusts ${Math.round(cur.windGusts)}`
+    return line
+  }
+
+  /** "Today: high 21°C, low 14°C, 10% chance of rain". */
+  function todayLine(day: WeatherDay, unit: string): string {
+    const temp = (t: number | null) => (t != null ? `${Math.round(t)}${unit}` : '—')
+    let line = `Today: high ${temp(day.high)}, low ${temp(day.low)}`
+    if (day.precipitationChance != null) line += `, ${day.precipitationChance}% chance of rain`
+    return line
+  }
 </script>
 
 {#if widget.type === 'onNow'}
@@ -366,6 +383,84 @@
         </li>
       {/each}
     </ul>
+  {/if}
+
+  <!-- ── Weather ──────────────────────────────────────────────────── -->
+{:else if widget.type === 'weather'}
+  {#if overview.weatherNoLocation}
+    <p class="dim">Add where you live in Settings to see the weather here.</p>
+    <button class="footnote-btn" onclick={() => panels.openSettings('profile')}>
+      Set your location
+    </button>
+  {:else if overview.weather}
+    {@const w = overview.weather}
+    {@const cur = w.current}
+    {@const today = w.days[0] ?? null}
+    {@const rest = w.days.slice(1, 3)}
+    {@const aq = w.airQuality?.current ?? null}
+    {@const tier = aq?.aqi != null ? aqiTier(aq.scale, aq.category) : null}
+    {@const aqiColor = tier ? `var(--aqi-${tier})` : 'var(--fg-faint)'}
+    <div class="w-head">
+      <span class="w-icon">
+        <Icon name={cur ? weatherIcon(cur.condition) : 'cloud'} size={26} />
+      </span>
+      <div class="w-now">
+        <span class="w-temp">
+          {cur?.temperature != null ? `${Math.round(cur.temperature)}${w.units.temperature}` : '—'}
+        </span>
+        <span class="dim">{cur?.condition ?? 'Unknown'}</span>
+      </div>
+      <span class="w-place dim">{w.place}</span>
+    </div>
+
+    {#if widget.size !== 'small'}
+      <p class="footnote">
+        {#if cur?.feelsLike != null}Feels like {Math.round(cur.feelsLike)}{w.units.temperature} ·
+        {/if}
+        {cur?.humidity ?? '—'}% humidity
+      </p>
+      {#if cur?.windSpeed != null}
+        <!-- Its own line, with the icon held to its text: inline in the line
+             above, the icon wrapped away from the speed it labels. -->
+        <p class="footnote w-wind">
+          <Icon name="wind" size={12} />
+          <span>{windLine(cur, w.units.wind)}</span>
+        </p>
+      {/if}
+
+      {#if aq?.aqi != null}
+        <p class="aqi-row" style={`--aqi: ${aqiColor}`}>
+          <span class="aqi-dot"></span>
+          AQI {aq.aqi} — {aq.category ?? 'Unknown'}
+        </p>
+      {/if}
+
+      {#if today}
+        <p class="footnote">{todayLine(today, w.units.temperature)}</p>
+      {/if}
+    {/if}
+
+    {#if widget.size === 'large' && rest.length > 0}
+      <div class="w-strip">
+        {#each rest as day (day.date)}
+          <div class="w-day">
+            <span class="dim">
+              {startOfDay(day.date).toLocaleDateString(undefined, { weekday: 'short' })}
+            </span>
+            <Icon name={weatherIcon(day.condition)} size={18} />
+            <span class="w-day-temps">
+              {day.high != null ? Math.round(day.high) : '—'}° / {day.low != null
+                ? Math.round(day.low)
+                : '—'}°
+            </span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  {:else if overview.weatherError}
+    <p class="dim">Could not load the weather. {overview.weatherError}</p>
+  {:else}
+    <p class="dim">Loading the weather…</p>
   {/if}
 
   <!-- ── Where the week went ───────────────────────────────────────── -->
@@ -618,6 +713,93 @@
     display: flex;
     flex-direction: column;
     gap: var(--sp-3);
+  }
+
+  /* ── Weather ───────────────────────────────────────────────────── */
+
+  .w-wind {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .w-head {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+  }
+
+  .w-icon {
+    display: grid;
+    flex: none;
+    place-items: center;
+    color: var(--fg-muted);
+  }
+
+  .w-now {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .w-temp {
+    font-size: var(--text-2xl);
+    font-weight: 600;
+    line-height: var(--leading-tight);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Pushed to the far side of the header rather than under the
+     temperature: the card's own heading already says "Weather", so the
+     place name is a detail to confirm rather than a second headline. */
+  .w-place {
+    margin-left: auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The AQI dot borrows the same colour-band idea `TrackerIcon` and the
+     habit chips already use for their own entity colour -- a small solid
+     disc rather than a coloured background, so a sensitive reading does not
+     tint the whole card the way a toast or a banner would. */
+  .aqi-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin: var(--sp-2) 0 0;
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+  }
+
+  .aqi-dot {
+    flex: none;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--aqi);
+  }
+
+  .w-strip {
+    display: flex;
+    gap: var(--sp-4);
+    margin-top: var(--sp-3);
+    padding-top: var(--sp-3);
+    border-top: 1px solid var(--border);
+  }
+
+  .w-day {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+  }
+
+  .w-day-temps {
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
   }
 
   /* ── Today's habits ─────────────────────────────────────────────── */

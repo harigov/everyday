@@ -26,7 +26,8 @@
 //! That leaves the database saying that a conversation happened, when, and
 //! how many turns it took — and nothing whatsoever about what was in it. The
 //! same is true of a memory, whose whole content is one sentence about the
-//! person.
+//! person, and of a skill, whose name, description and instructions are a
+//! process somebody wrote out in their own words.
 //!
 //! # The API key is a secret, not a setting
 //!
@@ -37,9 +38,9 @@
 //! the key is read in one place, on the way to building a request, and never
 //! travels the other way. See the [`agent`](crate::agent) module docs.
 
-use crate::agent::{AgentSettings, Conversation, Memory, Message};
+use crate::agent::{AgentSettings, Conversation, Memory, Message, Skill};
 use crate::error::Result;
-use crate::id::{ConversationId, MemoryId, MessageId};
+use crate::id::{ConversationId, MemoryId, MessageId, SkillId};
 use serde::{Deserialize, Serialize};
 
 /// Filter for [`AgentStore::list_conversations`].
@@ -209,6 +210,19 @@ pub trait AgentStore: Send + Sync {
     fn put_memory(&self, memory: &Memory) -> Result<()>;
 
     fn delete_memory(&self, id: MemoryId) -> Result<()>;
+
+    // ---- skills -----------------------------------------------------------
+
+    /// Every skill, in the order they were created -- the order
+    /// [`crate::agent::system_prompt`] lists them in, which is what makes the
+    /// index read the same way from one turn to the next rather than
+    /// reshuffling with whatever order a backend's own storage happens to
+    /// return them in.
+    fn list_skills(&self) -> Result<Vec<Skill>>;
+
+    fn put_skill(&self, skill: &Skill) -> Result<()>;
+
+    fn delete_skill(&self, id: SkillId) -> Result<()>;
 }
 
 /// Associated data binding a conversation's ciphertext to its row. See
@@ -223,6 +237,10 @@ pub fn message_aad(id: MessageId) -> Vec<u8> {
 
 pub fn memory_aad(id: MemoryId) -> Vec<u8> {
     format!("everyday.memory.v1:{id}").into_bytes()
+}
+
+pub fn skill_aad(id: SkillId) -> Vec<u8> {
+    format!("everyday.skill.v1:{id}").into_bytes()
 }
 
 /// Associated data for the settings record.

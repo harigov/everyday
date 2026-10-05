@@ -6,12 +6,17 @@
 // yet" screen. Passing a callback down three component trees to say so is
 // how a boolean ends up existing twice.
 //
-// Deliberately not part of `app`: nothing here survives anything, touches
-// the vault, or has to be cleared when it locks -- a dialog is closed by the
-// lock screen appearing over it.
+// Deliberately not part of `app`: nothing here survives anything or touches
+// the vault. Settings *does* have to be cleared when the vault locks, though
+// -- it used to be a dialog that simply unmounted along with everything else
+// behind the lock screen, but it is a page drawn in the panes now, the way
+// any other app is (see `App.svelte`), and relying on an incidental unmount
+// to also forget which tab was open is how somebody unlocks and lands back
+// in Settings instead of whatever they were doing before. `App.svelte`
+// clears it explicitly with `app.onLock`.
 
 /**
- * The settings dialog's tabs.
+ * The settings page's tabs.
  *
  * Just the type: nothing outside this file ever needed the list itself, only
  * the tab a caller is allowed to ask `openSettings` for, and keeping the
@@ -29,6 +34,10 @@ export type SettingsTab =
   | 'routines'
   | 'memory'
   | 'proposals'
+  // Not one of `assistant.svelte.ts`'s four panes -- skills are managed only
+  // from Settings, never drawn in the Assistant app's own nav -- so it gets
+  // its own branch in `SettingsView.svelte` rather than joining `Pane`.
+  | 'skills'
   | 'meetings'
   | 'data'
   | 'vault'
@@ -90,9 +99,19 @@ class Panels {
    */
   listing = false
 
-  /** Is anything modal on screen? What the shortcut handler asks. */
+  /**
+   * Is anything modal on screen?
+   *
+   * Settings does not count any more -- it is a page, not a dialog, so it
+   * must not stop the app-switching keys or the palette the way a real
+   * dialog does. Only the shortcut sheet is left here, and only while it is
+   * not the one asking this question itself (`panels.listing`); see
+   * `shortcuts.svelte.ts`'s own `dialogOpen`, which is what the shortcut
+   * handler actually asks, for the rest of what counts -- the confirmation
+   * sheets and the like that this store has never known about.
+   */
   get modal(): boolean {
-    return this.settings !== null || (this.shortcuts && !this.listing)
+    return this.shortcuts && !this.listing
   }
 }
 

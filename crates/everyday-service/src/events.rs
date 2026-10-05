@@ -183,6 +183,9 @@ pub enum Kind {
     /// `everyday_core::proposal`.
     Proposal,
     Memory,
+    /// A process the assistant was given for a certain kind of request. See
+    /// `everyday_core::agent::Skill`.
+    Skill,
     /// A call being recorded, or the history row of one that was. See
     /// `everyday_core::meeting`.
     Recording,
@@ -243,6 +246,7 @@ impl TryFrom<Kind> for RecordKind {
             Kind::RoutineRun => Ok(RecordKind::RoutineRun),
             Kind::Proposal => Ok(RecordKind::Proposal),
             Kind::Memory => Ok(RecordKind::Memory),
+            Kind::Skill => Ok(RecordKind::Skill),
             Kind::Recording => Ok(RecordKind::Recording),
             Kind::Transcript => Ok(RecordKind::Transcript),
             Kind::Voiceprint => Ok(RecordKind::Voiceprint),
@@ -288,6 +292,7 @@ impl TryFrom<RecordKind> for Kind {
             RecordKind::RoutineRun => Ok(Kind::RoutineRun),
             RecordKind::Proposal => Ok(Kind::Proposal),
             RecordKind::Memory => Ok(Kind::Memory),
+            RecordKind::Skill => Ok(Kind::Skill),
             RecordKind::Recording => Ok(Kind::Recording),
             RecordKind::Transcript => Ok(Kind::Transcript),
             RecordKind::Voiceprint => Ok(Kind::Voiceprint),

@@ -56,21 +56,39 @@ function focusSearch() {
   document.querySelector<HTMLInputElement>('[data-search]')?.focus()
 }
 
-/** Is this app the one on screen, and past the lock? */
+/**
+ * Is this app the one on screen, and past the lock?
+ *
+ * `panels.settings === null` as well as the section match: Settings is drawn
+ * in the same pane an app's own view would be, in its place rather than over
+ * it, so while it is open the app underneath is not actually on screen even
+ * though `app.section` still names it. Without this a bare `s` left focused
+ * on a Settings tab button -- not a field, so `isTyping` would not catch it
+ * -- could star a journal entry nobody can see.
+ */
 function inApp(section: Section): () => boolean {
-  return () => app.screen === 'main' && app.section === section
+  return () => app.screen === 'main' && app.section === section && panels.settings === null
 }
 
 /**
  * Is a dialog over the window?
  *
  * Asked of the document rather than of `panels`, and that is the point.
- * `panels` knows about the two dialogs it owns -- settings and this help
- * sheet -- and knows nothing about the half-dozen a component raises for
- * itself: the delete confirmation, a journal's settings, the "subscribe to a
+ * `panels` knows about the dialogs it owns -- the help sheet and the palette
+ * -- and knows nothing about the half-dozen a component raises for itself:
+ * the delete confirmation, a journal's settings, the "subscribe to a
  * calendar" sheet. So a bare letter stayed live behind all of them, and `j`
  * pressed over a confirmation asking whether to delete an entry quietly
  * opened a different one behind it.
+ *
+ * Settings used to be a third dialog `panels` owned and is not any longer:
+ * it is a page in the panes, the way any other app is, so it must not stop
+ * the app-switching keys or the palette the way a real dialog does -- that
+ * is the whole point of it no longer being modal. A letter typed into one of
+ * its own fields is still caught, the same way typing into Notes or Mail is:
+ * by `isTyping`, below, not by this function. What a stray letter typed
+ * *outside* a field must not do -- reach an app Settings is currently
+ * standing in front of -- is `inApp`'s job, above.
  *
  * The invariant this leans on is already written down and already relied on:
  * every modal in the application declares `aria-modal="true"`, which is what
@@ -81,7 +99,7 @@ function dialogOpen(): boolean {
   // Nothing counts while the help sheet is asking what applies: it is asking
   // about the window it will not be covering. See `panels.listing`.
   if (panels.listing) return false
-  if (panels.settings !== null || panels.shortcuts || panels.palette) return true
+  if (panels.shortcuts || panels.palette) return true
   return modalInDom()
 }
 
@@ -167,6 +185,19 @@ function focusIsControl(): boolean {
 
 function anywhere(): boolean {
   return app.screen === 'main' && !dialogOpen()
+}
+
+/**
+ * `anywhere`, but only while an app is the thing on screen.
+ *
+ * For the keys that act on *this app* -- start the next thing, search it.
+ * Settings is not a dialog any more, so `anywhere` is true over it, but the
+ * app it stands in front of is not on screen: `c` there would start a task in
+ * a list nobody can see, or do nothing at all because its field is not
+ * mounted. See `inApp` for the same rule applied to one app's own keys.
+ */
+function inAnyApp(): boolean {
+  return anywhere() && panels.settings === null
 }
 
 /**
@@ -332,21 +363,21 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     label: 'Start the next thing',
     group: 'Everywhere',
     whileTyping: true,
-    when: anywhere,
+    when: inAnyApp,
     run: () => create(),
   },
   {
     keys: 'c',
     label: 'Start the next thing',
     group: 'Everywhere',
-    when: anywhere,
+    when: inAnyApp,
     run: () => create(),
   },
   {
     keys: '/',
     label: 'Search this app',
     group: 'Everywhere',
-    when: anywhere,
+    when: inAnyApp,
     run: focusSearch,
   },
   {
@@ -354,7 +385,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     label: 'Search this app',
     group: 'Everywhere',
     whileTyping: true,
-    when: anywhere,
+    when: inAnyApp,
     run: focusSearch,
   },
   {
@@ -376,6 +407,21 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     whileTyping: true,
     when: anywhere,
     run: () => panels.openSettings(),
+  },
+  {
+    keys: 'Escape',
+    label: 'Close settings',
+    group: 'Everywhere',
+    // Deliberately not `whileTyping`: with the caret in the password field or
+    // the assistant's instructions box, Escape must do nothing, the same as
+    // it does in the journal's own editor -- `match` already skips a row
+    // without `whileTyping` the moment `isTyping` is true, so that is free.
+    // `!modalInDom()` keeps this from firing *as well as* a sheet raised over
+    // Settings -- "Add account" and the like close themselves on Escape (see
+    // their own `<svelte:window>` handlers) and must not take Settings with
+    // them.
+    when: () => app.screen === 'main' && panels.settings !== null && !modalInDom(),
+    run: () => panels.closeSettings(),
   },
   // These two are deliberately the only chords a dialog does not stop, and
   // for the same reason: neither moves the caret or navigates. Writing to

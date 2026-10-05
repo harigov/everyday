@@ -30,8 +30,8 @@ use std::str::FromStr;
 use crate::id::{
     AccountId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId, ItemId,
     JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NoteId, OpId,
-    ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId, TaskId,
-    ThreadId, TrackerId, TranscriptId, VoiceprintId,
+    ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId, SkillId,
+    TaskId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
 };
 
 /// The kind of one persisted record — every table `everyday-store-sql`
@@ -72,6 +72,9 @@ pub enum RecordKind {
     /// confused with [`RecordKind::MailMessage`], a piece of mail.
     Message,
     Memory,
+    /// A process the assistant was given for a certain kind of request. See
+    /// [`crate::agent::Skill`].
+    Skill,
     Account,
     Mailbox,
     /// A piece of mail. Its `aad_word` is `"mail_message"`; its
@@ -118,6 +121,7 @@ impl RecordKind {
             RecordKind::Conversation => "conversation",
             RecordKind::Message => "message",
             RecordKind::Memory => "memory",
+            RecordKind::Skill => "skill",
             RecordKind::Account => "account",
             RecordKind::Mailbox => "mailbox",
             // Legacy: sealed as `mail_message`, distinct from the
@@ -162,6 +166,7 @@ impl RecordKind {
             | RecordKind::Conversation
             | RecordKind::Message
             | RecordKind::Memory
+            | RecordKind::Skill
             | RecordKind::Account
             | RecordKind::Mailbox
             | RecordKind::MailMessage
@@ -204,6 +209,7 @@ impl RecordKind {
             | RecordKind::Conversation
             | RecordKind::Message
             | RecordKind::Memory
+            | RecordKind::Skill
             | RecordKind::Mailbox
             | RecordKind::MailMessage
             | RecordKind::Thread
@@ -249,6 +255,7 @@ impl RecordKind {
             RecordKind::Conversation => "conversation",
             RecordKind::Message => "message",
             RecordKind::Memory => "memory",
+            RecordKind::Skill => "skill",
             RecordKind::Account => "account",
             RecordKind::Mailbox => "mailbox",
             // The one exception -- see this method's docs.
@@ -508,6 +515,17 @@ impl RecordDescriptor for crate::agent::Memory {
     }
 }
 
+impl RecordDescriptor for crate::agent::Skill {
+    const KIND: RecordKind = RecordKind::Skill;
+    type Id = SkillId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::agent::skill_aad(id)
+    }
+}
+
 impl RecordDescriptor for crate::account::Account {
     const KIND: RecordKind = RecordKind::Account;
     type Id = AccountId;
@@ -657,6 +675,7 @@ mod tests {
         check::<crate::agent::Conversation>(id());
         check::<crate::agent::Message>(id());
         check::<crate::agent::Memory>(id());
+        check::<crate::agent::Skill>(id());
         check::<crate::account::Account>(id());
         check::<crate::mail::Mailbox>(id());
         check::<crate::mail::Message>(id());
@@ -683,7 +702,7 @@ mod tests {
     /// Every kind, for the test above. Not `pub` -- nothing outside this
     /// module needs "all of them" as a list; `RecordDescriptor` impls are
     /// looked up by type, not iterated.
-    const ALL: [RecordKind; 30] = [
+    const ALL: [RecordKind; 31] = [
         RecordKind::Journal,
         RecordKind::Entry,
         RecordKind::Note,
@@ -705,6 +724,7 @@ mod tests {
         RecordKind::Conversation,
         RecordKind::Message,
         RecordKind::Memory,
+        RecordKind::Skill,
         RecordKind::Account,
         RecordKind::Mailbox,
         RecordKind::MailMessage,

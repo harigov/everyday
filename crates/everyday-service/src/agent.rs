@@ -1024,7 +1024,18 @@ fn build(
         CommandError::new(codes::AGENT, format!("could not start the assistant: {e}"))
     })?;
 
+    // Which core tools this vault can serve, worked out before the preamble
+    // because the preamble's skill index depends on it: an index that says
+    // "call read_skill" to a model that was not handed `read_skill` is an
+    // instruction it can only fail.
+    let caller = ToolCaller::Assistant { conversation: meta.conversation };
+    let assistant_provider = settings.provider_config.acknowledgement_name();
+    let available = tools::available_for(&vault, Some(&caller), Some(&assistant_provider));
+    let can_remember = available.iter().any(|t| t.name == "remember");
+    let can_read_skills = available.iter().any(|t| t.name == "read_skill");
+
     let memories = vault.memories()?;
+    let skills = if can_read_skills { vault.skills()? } else { Vec::new() };
     // Who, and what time it is where they are. Both read from the vault
     // rather than from the host: a service in a container has the wrong zone,
     // and a model told the wrong hour gets "what is left today" wrong.
@@ -1033,6 +1044,7 @@ fn build(
         settings,
         &profile,
         &memories,
+        &skills,
         &settings.now(),
         context,
     );
@@ -1041,7 +1053,6 @@ fn build(
     // what some account actually permits the assistant to do; see
     // `tools::available_for` and `agent::tools::mail`.
     let zone = zone_name(settings);
-    let assistant_provider = settings.provider_config.acknowledgement_name();
     // Whether this is a dream. It changes exactly two things about the
     // catalogue: every writing tool's schema grows the `why` argument (see
     // `Tool::parameters_for`), and none of the tools this file declares for
@@ -1073,9 +1084,6 @@ fn build(
         )
     };
 
-    let caller = ToolCaller::Assistant { conversation: meta.conversation };
-    let available = tools::available_for(&vault, Some(&caller), Some(&assistant_provider));
-    let can_remember = available.iter().any(|t| t.name == "remember");
     let mut offered: Vec<PortableDynamicTool> = available.into_iter().map(wrap).collect();
 
     // The tools declared here rather than in the core -- see the module
@@ -1153,7 +1161,8 @@ impl std::fmt::Display for Guidance {
         match self.web {
             Some(true) => f.write_str(
                 "\n\nYou can reach the web. Use web_search to find things, read_web_page to \
-                 read a page, and get_weather for forecasts (it defaults to where they live). \
+                 read a page, and get_weather for forecasts, wind and air quality (it \
+                 defaults to where they live). \
                  A page at an address they gave you, or that a search or a page you read \
                  returned, opens straight away; any other address asks them first, so use \
                  addresses exactly as you found them. For anything current -- news, prices, \
@@ -1338,7 +1347,13 @@ fn get_weather_tool(home: String) -> PortableDynamicTool {
          city, with its region or country when the name is ambiguous (\u{201c}Portland, \
          Maine\u{201d}). Pick the units customary there: imperial in the United States, \
          metric almost everywhere else. Each day has its high and low, the chance and \
-         amount of rain or snow, and sunrise and sunset, all in the place's own local time.",
+         amount of rain or snow, and sunrise and sunset, all in the place's own local time. \
+         Current conditions and each day also carry wind -- speed, gusts and the compass \
+         direction it is blowing from. Air quality rides along when it could be read: the \
+         AQI customary for that place (US or European) with its category in words -- \
+         \u{201c}Moderate\u{201d}, \u{201c}Unhealthy for sensitive groups\u{201d} and so on \
+         -- plus PM2.5, PM10, ozone and NO2; it is simply absent when that second lookup \
+         failed, which is not worth mentioning unless they asked about the air specifically.",
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -2173,7 +2188,32 @@ fn summarise(tool: &str, output: &ToolOutput) -> String {
                 .and_then(|u| u.host_str().map(str::to_string))
                 .unwrap_or_default();
         }
-        GET_WEATHER => return str_of("place").to_string(),
+        GET_WEATHER => {
+            // The place alone, as before, when there is no `current` to add
+            // to it -- a result the core itself never sends, but a model's
+            // malformed tool output is not this function's business to
+            // refuse. Otherwise a glance at the card is enough to read the
+            // temperature and the sky without opening it: "Seattle,
+            // Washington, United States — 61°F, partly cloudy".
+            let place = str_of("place");
+            let Some(current) = result.get("current").filter(|c| !c.is_null()) else {
+                return place.to_string();
+            };
+            let condition = current.get("condition").and_then(Value::as_str).unwrap_or_default();
+            let unit = result
+                .get("units")
+                .and_then(|u| u.get("temperature"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            return match current.get("temperature").and_then(Value::as_f64) {
+                Some(t) if !condition.is_empty() => {
+                    format!("{place} — {}{unit}, {condition}", t.round() as i64)
+                }
+                Some(t) => format!("{place} — {}{unit}", t.round() as i64),
+                None if !condition.is_empty() => format!("{place} — {condition}"),
+                None => place.to_string(),
+            };
+        }
         _ => {}
     }
     let action = str_of("action");
@@ -2547,9 +2587,18 @@ mod tests {
             "url": "https://www.example.com/a", "title": "", "text": "", "truncated": false,
         }));
         assert_eq!(summarise(READ_WEB_PAGE, &untitled), "www.example.com");
-        let weather =
+        let placeless =
             ToolOutput::json(serde_json::json!({ "place": "Seattle, Washington, United States" }));
-        assert_eq!(summarise(GET_WEATHER, &weather), "Seattle, Washington, United States");
+        assert_eq!(summarise(GET_WEATHER, &placeless), "Seattle, Washington, United States");
+        let weather = ToolOutput::json(serde_json::json!({
+            "place": "Seattle, Washington, United States",
+            "units": { "temperature": "°F", "wind": "mph", "precipitation": "in" },
+            "current": { "temperature": 61.4, "condition": "partly cloudy" },
+        }));
+        assert_eq!(
+            summarise(GET_WEATHER, &weather),
+            "Seattle, Washington, United States — 61°F, partly cloudy"
+        );
         let search = ToolOutput::json(serde_json::json!({ "count": 2, "results": [] }));
         assert_eq!(summarise(WEB_SEARCH, &search), "2 results");
     }

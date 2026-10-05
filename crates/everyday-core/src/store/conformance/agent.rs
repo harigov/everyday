@@ -1,7 +1,8 @@
 //! The assistant half of the conformance suite.
 
 use super::*;
-use crate::agent::MemoryOrigin;
+use crate::agent::{MemoryOrigin, Skill};
+use crate::id::SkillId;
 
 /// The assistant half of the suite. Called by [`run_all`] when the backend
 /// has an [`AgentStore`]; public so a backend under construction can run it
@@ -24,6 +25,7 @@ pub fn run_agent_suite(store: &dyn AgentStore) {
     memory_round_trips_and_outlives_its_conversation(store);
     memory_round_trips_its_origin_and_last_supported_date(store);
     unicode_survives_an_agent_round_trip(store);
+    skill_round_trips_and_can_be_switched_off(store);
 
     agent_cleanup(store);
     eprintln!("--- agent suite passed ---");
@@ -35,6 +37,9 @@ fn agent_cleanup(store: &dyn AgentStore) {
     }
     for m in store.list_memories().unwrap() {
         store.delete_memory(m.id).unwrap();
+    }
+    for s in store.list_skills().unwrap() {
+        store.delete_skill(s.id).unwrap();
     }
     store.delete_secret().unwrap();
     store.put_settings(&AgentSettings::default()).unwrap();
@@ -48,6 +53,7 @@ fn agent_starts_unconfigured(store: &dyn AgentStore) {
     assert!(store.secret().unwrap().is_none());
     assert!(store.list_conversations(&ConversationQuery::default()).unwrap().is_empty());
     assert!(store.list_memories().unwrap().is_empty());
+    assert!(store.list_skills().unwrap().is_empty());
 }
 
 fn settings_round_trip(store: &dyn AgentStore) {
@@ -155,6 +161,7 @@ fn missing_agent_records_are_not_found(store: &dyn AgentStore) {
     // and must be here too: two panels racing to clear the same thread.
     store.delete_conversation(ConversationId::new()).unwrap();
     store.delete_memory(MemoryId::new()).unwrap();
+    store.delete_skill(SkillId::new()).unwrap();
     // A thread that does not exist has no messages rather than an error.
     assert!(store.list_messages(ConversationId::new()).unwrap().is_empty());
     assert_eq!(store.count_messages(ConversationId::new()).unwrap(), 0);
@@ -382,6 +389,43 @@ fn memory_round_trips_its_origin_and_last_supported_date(store: &dyn AgentStore)
     store.delete_memory(m.id).unwrap();
 }
 
+fn seeded_skill(store: &dyn AgentStore, name: &str) -> Skill {
+    let s = Skill {
+        description: "Use when asked to plan a trip.".into(),
+        instructions: "Check the calendar, check the weather, propose blocks.".into(),
+        ..Skill::new(name)
+    };
+    store.put_skill(&s).unwrap();
+    s
+}
+
+/// A skill's whole content -- name, description, instructions, the switch --
+/// round-trips, and a second write edits in place rather than appending a
+/// second row.
+fn skill_round_trips_and_can_be_switched_off(store: &dyn AgentStore) {
+    let mut s = seeded_skill(store, "Plan a trip");
+
+    let back = store.list_skills().unwrap();
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].name, "Plan a trip");
+    assert_eq!(back[0].description, "Use when asked to plan a trip.");
+    assert_eq!(back[0].instructions, "Check the calendar, check the weather, propose blocks.");
+    assert!(back[0].enabled, "a new skill starts switched on");
+
+    s.enabled = false;
+    s.description = "Use when asked to plan a trip or a multi-day journey.".into();
+    s.updated_at = Timestamp::now();
+    store.put_skill(&s).unwrap();
+
+    let back = store.list_skills().unwrap();
+    assert_eq!(back.len(), 1, "a second write edits in place rather than appending");
+    assert!(!back[0].enabled, "the switch must round-trip off");
+    assert_eq!(back[0].description, "Use when asked to plan a trip or a multi-day journey.");
+
+    store.delete_skill(s.id).unwrap();
+    assert!(store.list_skills().unwrap().is_empty());
+}
+
 fn unicode_survives_an_agent_round_trip(store: &dyn AgentStore) {
     let title = "\u{5468}\u{672b}\u{8ba1}\u{5212} \u{1f5d3}\u{fe0f} caf\u{e9}";
     let c = seeded_conversation(store, title);
@@ -395,6 +439,14 @@ fn unicode_survives_an_agent_round_trip(store: &dyn AgentStore) {
     store.put_memory(&m).unwrap();
     assert_eq!(store.list_memories().unwrap()[0].text, body);
 
+    let skill = Skill { description: body.into(), instructions: body.into(), ..Skill::new(title) };
+    store.put_skill(&skill).unwrap();
+    let back = store.list_skills().unwrap();
+    assert_eq!(back[0].name, title);
+    assert_eq!(back[0].description, body);
+    assert_eq!(back[0].instructions, body);
+
     store.delete_memory(m.id).unwrap();
+    store.delete_skill(skill.id).unwrap();
     store.delete_conversation(c.id).unwrap();
 }

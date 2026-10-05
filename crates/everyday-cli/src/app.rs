@@ -88,6 +88,18 @@ pub fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
+        // Started with `--keychain`: a reboot gets the key back on its own,
+        // so the idle timer that forgets it for lack of activity is pointless
+        // here -- it would only lock a server that unlocks itself again a
+        // moment later, or that would need somebody to type a password
+        // anyway if the keychain no longer has a working key. Checked once at
+        // startup against whatever got the vault open, whether that was this
+        // flag's own recall above or `--password`; not on every tick of the
+        // scheduler that polls `forget_key_if_idle`. See
+        // `Vault::seconds_until_forget_key`.
+        if *keychain && vault.is_unlocked() {
+            vault.set_key_in_keychain(everyday_vault::autounlock::enabled(&path));
+        }
         return serve::serve(
             vault,
             &path,

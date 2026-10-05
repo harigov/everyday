@@ -8,14 +8,15 @@
 
   import { calendar } from '../lib/calendar.svelte'
   import { accounts } from '../lib/accounts.svelte'
-  import { addMonths, daysFrom, monthGrid, startOfWeek, todayIso } from '../lib/time'
-  import { monthYear, relativeTime, weekdayNarrow } from '../lib/format'
+  import { addMonths, todayIso } from '../lib/time'
+  import { relativeTime } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { colourItems, dayMenu, purposeItems } from '../lib/menus'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import AddCalendar from './AddCalendar.svelte'
+  import MiniMonth from './MiniMonth.svelte'
   import type { AccountId, CalendarInfo } from '../lib/types'
 
   // Account calendars need the account list for the address each group is
@@ -40,14 +41,7 @@
     }
   })
 
-  const miniDays = $derived(monthGrid(miniAnchor, calendar.weekStart))
-  const initials = $derived(
-    daysFrom(startOfWeek(todayIso(), calendar.weekStart), 7).map((iso) =>
-      weekdayNarrow(new Date(iso + 'T00:00')),
-    ),
-  )
   const shown = $derived(new Set(calendar.days))
-  const currentDay = $derived(todayIso())
 
   /** Does anything happen on this day? Drives the dot under the number. */
   function busy(iso: string): boolean {
@@ -161,40 +155,18 @@
 
 <nav class="scroll nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
   <!-- ── The small month ─────────────────────────────────────────────── -->
-  <div class="minihead">
-    <button
-      class="ministep"
-      aria-label="Previous month"
-      onclick={() => (miniAnchor = addMonths(miniAnchor, -1))}
-      ><span class="back"><Icon name="chevron" size={13} /></span></button
-    >
-    <button class="minititle" onclick={() => calendar.goto(miniAnchor)}>
-      {monthYear(new Date(miniAnchor + 'T00:00'))}
-    </button>
-    <button
-      class="ministep"
-      aria-label="Next month"
-      onclick={() => (miniAnchor = addMonths(miniAnchor, 1))}
-      ><Icon name="chevron" size={13} /></button
-    >
-  </div>
-
-  <div class="mini">
-    {#each initials as letter, i (i)}<span class="initial">{letter}</span>{/each}
-    {#each miniDays as iso (iso)}
-      <button
-        class="minday"
-        class:out={iso.slice(0, 7) !== miniAnchor.slice(0, 7)}
-        class:on={shown.has(iso)}
-        class:today={iso === currentDay}
-        onclick={() => calendar.goto(iso)}
-        oncontextmenu={(e) => menu.show(e, dayMenu(iso))}
-      >
-        {Number(iso.slice(8, 10))}
-        {#if busy(iso)}<span class="bump" aria-hidden="true"></span>{/if}
-      </button>
-    {/each}
-  </div>
+  <MiniMonth
+    anchor={miniAnchor}
+    weekStart={calendar.weekStart}
+    prevLabel="Previous month"
+    nextLabel="Next month"
+    onstep={(months: number) => (miniAnchor = addMonths(miniAnchor, months))}
+    ontitle={() => calendar.goto(miniAnchor)}
+    isOn={(iso: string) => shown.has(iso)}
+    isMarked={busy}
+    onpick={(iso: string) => calendar.goto(iso)}
+    oncontext={(e: MouseEvent, iso: string) => menu.show(e, dayMenu(iso))}
+  />
 
   <!-- ── Subscribed calendars ────────────────────────────────────────── -->
   <div class="head">
@@ -313,103 +285,8 @@
     padding: var(--sp-2) var(--sp-2) var(--sp-4);
   }
 
-  /* ── The small month ────────────────────────────────────────────────── */
-
-  .minihead {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    padding: 0 2px var(--sp-1);
-  }
-  .minititle {
-    flex: 1;
-    height: 24px;
-    padding: 0 var(--sp-1);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
-    font-weight: 600;
-    letter-spacing: -0.004em;
-    text-align: left;
-    color: var(--fg-muted);
-  }
-  .minititle:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-  .ministep {
-    width: 22px;
-    height: 22px;
-    flex: none;
-    display: grid;
-    place-items: center;
-    border-radius: var(--radius-sm);
-    color: var(--fg-faint);
-  }
-  .ministep:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-  .back {
-    display: flex;
-    rotate: 180deg;
-  }
-
-  .mini {
-    display: grid;
-    grid-template-columns: repeat(7, 1fr);
-    gap: 1px;
-    padding: 0 1px;
-  }
-  .initial {
-    height: 18px;
-    display: grid;
-    place-items: center;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--fg-faint);
-  }
-  .minday {
-    position: relative;
-    height: 22px;
-    display: grid;
-    place-items: center;
-    border-radius: 4px;
-    font-size: var(--text-xs);
-    font-variant-numeric: tabular-nums;
-    color: var(--fg-muted);
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
-  }
-  .minday:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-  .minday.out {
-    color: var(--fg-faint);
-    opacity: 0.6;
-  }
-  /* The days the main view is currently showing, so the small month says
-     where you are as well as where you could go. */
-  .minday.on {
-    background: var(--bg-active);
-    color: var(--fg);
-    font-weight: 600;
-  }
-  .minday.today {
-    color: var(--accent);
-    font-weight: 700;
-  }
-
-  .bump {
-    position: absolute;
-    bottom: 2px;
-    width: 3px;
-    height: 3px;
-    border-radius: 50%;
-    background: currentColor;
-    opacity: 0.55;
-  }
+  /* The small month itself is `MiniMonth.svelte`'s own styling now; see
+     there for its layout. */
 
   /* ── The calendar list ──────────────────────────────────────────────── */
 

@@ -61,6 +61,7 @@ const KINDS = [
   'goal',
   'conversation',
   'memory',
+  'skill',
   'settings',
   'account',
   'thread',

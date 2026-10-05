@@ -378,6 +378,30 @@ fn the_key_goes_once_the_idle_timeout_elapses() {
 }
 
 #[test]
+fn the_idle_timeout_is_suspended_while_the_key_is_in_the_keychain() {
+    // Signing in to the computer is the unlock once this is set -- see
+    // `everyday_vault::autounlock`'s module doc -- so the stored timeout
+    // must not fire while it is, and must come straight back the moment it
+    // is cleared, with no need to touch `forget_key_seconds` itself.
+    let dir = tempfile::tempdir().unwrap();
+    let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+    v.set_forget_key(1).unwrap();
+    v.set_key_in_keychain(true);
+    v.touch();
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert_eq!(v.seconds_until_forget_key(), None, "nothing to count down while this is set");
+    assert!(!v.forget_key_if_idle(), "must not lock while the key is in the keychain");
+    assert!(v.is_unlocked());
+
+    // What `set_opens_itself(false)` does: the switch goes off, and the
+    // timeout that was there all along applies again without being reset.
+    v.set_key_in_keychain(false);
+    assert!(v.forget_key_if_idle(), "the stored timeout was never touched");
+    assert!(!v.is_unlocked());
+}
+
+#[test]
 fn a_person_defers_the_forgetting_and_a_read_does_not() {
     let dir = tempfile::tempdir().unwrap();
     let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
