@@ -808,6 +808,32 @@ Two changes this phase's tool file cannot make itself, because they live in
   `fastembed` are the option for people who want categories without that.
   Zero's prompts (MIT) are the starting point.
 
+#### Added in October 2026
+
+- **Priority** is a fifth category, `Category::Priority`, and the first
+  tab. It is a category rather than a flag beside one because the
+  `category` column is already clear, already filtered on and already
+  paged by, and a new clear column on `threads` cannot be added
+  idempotently in SQL both dialects accept (see `schema.rs` on version 7).
+  Three writers: a sender correction (`set_thread_category`, the VIP rule),
+  `set_thread_priority` (one thread, `CategorySource::Person`, no rule),
+  and a model pass over `Important` threads behind the `categorize`
+  switch, which never overrides a `Person` answer.
+- **Writing help** is a fourth switch, `mail_ai.writing`: `suggest_replies`
+  (three replies under an open thread, cached per message count),
+  `draft_with_ai` and `improve_writing`. They run in
+  `everyday-service/src/mailwrite.rs`, beside `mailai.rs`, behind the same
+  gate and the same provider sentence.
+- **The person's voice** (`everyday-core/src/mail/voice.rs`,
+  `everyday-service/src/mailvoice.rs`) replaces the auto-draft's three raw
+  few-shot examples: a profile measured locally from sent mail, examples
+  to the same correspondent first, a list of phrases that mark text as a
+  model's — forbidden in the prompt and stripped from the answer — and a
+  plain-text answer escaped into HTML here, never model-written HTML.
+- **Scheduled** lists every send queued for later (`scheduled_sends`);
+  **Snoozed** is the inbox filtered to snoozed threads, drawn by the
+  interface, since snooze never leaves the device.
+
 ### Phase 8 — Words
 
 - README: an Accounts section, a Mail section in the voice of the others,

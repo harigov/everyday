@@ -1104,6 +1104,38 @@
     {
       "args": [
         {
+          "name": "account",
+          "required": true,
+          "type": "AccountId"
+        },
+        {
+          "name": "inReplyTo",
+          "required": false,
+          "type": "MailMessageId | null"
+        },
+        {
+          "name": "instruction",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "currentText",
+          "required": false,
+          "type": "string | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "draft_with_ai",
+      "orScope": null,
+      "returns": "WrittenText",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "handle",
           "required": true,
           "type": "string"
@@ -1478,6 +1510,38 @@
       "orScope": null,
       "returns": "CalendarInfo",
       "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "account",
+          "required": true,
+          "type": "AccountId"
+        },
+        {
+          "name": "text",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "mode",
+          "required": true,
+          "type": "ImproveMode"
+        },
+        {
+          "name": "instruction",
+          "required": false,
+          "type": "string | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "improve_writing",
+      "orScope": null,
+      "returns": "WrittenText",
+      "scope": "mail",
       "sensitive": false,
       "streams": false
     },
@@ -3995,6 +4059,23 @@
     {
       "args": [
         {
+          "name": "account",
+          "required": false,
+          "type": "AccountId | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "scheduled_sends",
+      "orScope": null,
+      "returns": "ScheduledSend[]",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "query",
           "required": true,
           "type": "string"
@@ -4374,6 +4455,31 @@
     {
       "args": [
         {
+          "name": "threads",
+          "required": true,
+          "type": "ThreadId[]"
+        },
+        {
+          "name": "priority",
+          "required": true,
+          "type": "boolean"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_thread_priority",
+      "orScope": null,
+      "returns": "void",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "key",
           "required": false,
           "type": "string | null"
@@ -4575,6 +4681,23 @@
       "name": "suggest_addresses",
       "orScope": null,
       "returns": "MailAddress[]",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ThreadId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "suggest_replies",
+      "orScope": null,
+      "returns": "ReplySuggestions",
       "scope": "mail",
       "sensitive": false,
       "streams": false

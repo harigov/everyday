@@ -85,6 +85,12 @@
   --appbar-w: 82px;
   --sidebar-w: 248px;
   --list-w: 366px;
+  /* The Mail app's own thread-list column -- separate from `--list-w`,
+     which `EntryList.svelte` and `EventDetail.svelte` also read, so
+     dragging Mail's list wider does not widen the journal's or the
+     calendar's. Set at runtime by `PaneResizer.svelte`; this is only the
+     default before anything has been dragged. */
+  --mail-list-w: 366px;
 
   /* Every header across every app, and the empty cap above the app bar
      that lines up with them. It was written as a bare `46px` in eight

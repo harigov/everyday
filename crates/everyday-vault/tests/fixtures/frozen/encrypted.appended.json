@@ -28,7 +28,8 @@
       "mailAi": {
         "autoDraft": false,
         "categorize": false,
-        "summaries": false
+        "summaries": false,
+        "writing": false
       },
       "mcpAccess": {
         "archive": true,
@@ -84,7 +85,8 @@
       "mailAi": {
         "autoDraft": false,
         "categorize": false,
-        "summaries": false
+        "summaries": false,
+        "writing": false
       },
       "mcpAccess": {
         "archive": true,

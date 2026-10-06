@@ -46,6 +46,7 @@
   import { app, handle } from '../lib/state.svelte'
   import type { MailAttachment, MailMessageDetail, RemoteImageSettings } from '../lib/types'
   import Icon from './Icon.svelte'
+  import MailQuickReplies from './MailQuickReplies.svelte'
 
   interface Props {
     messages: MailMessageDetail[]
@@ -362,6 +363,12 @@
               </button>
               <button class="btn" onclick={() => mail.reply(message.id, true)}> Reply all </button>
               <button class="btn" onclick={() => mail.forward(message.id)}> Forward </button>
+              <!-- Quick replies and "Write with AI…", in the same row as the
+                   three above rather than a block of their own -- renders
+                   nothing when writing help is off for this account, the
+                   newest message is the account's own, or there is simply
+                   nothing to suggest. -->
+              <MailQuickReplies {message} />
             </div>
           {/if}
         </div>
@@ -598,6 +605,7 @@
 
   .actions {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--sp-2);
     padding-top: var(--sp-3);
   }

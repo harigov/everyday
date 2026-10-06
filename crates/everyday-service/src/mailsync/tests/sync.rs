@@ -1118,6 +1118,164 @@ async fn gmail_labels_put_one_message_in_both_the_inbox_and_a_user_label() {
     );
 }
 
+/// System labels other than `\Inbox` already have a folder of their own
+/// (`\Sent`/`\Draft` -- Sent/Drafts; Spam/Trash for `\Spam`/`\Trash`) or are
+/// better represented another way entirely (`\Starred` is the `\Flagged`
+/// flag; `\Important` is a categorisation signal) -- see
+/// `LabelMailboxes::resolve`'s own docs. None of them should mint a second,
+/// redundant mailbox row just because a message also carries them as a
+/// Gmail label.
+#[tokio::test]
+async fn gmail_system_labels_other_than_inbox_do_not_mint_their_own_mailbox_rows() {
+    let env = TestEnv::new();
+    let server = gmail_server();
+    {
+        let mut s = server.lock().unwrap();
+        s.append(
+            "All Mail",
+            raw_message(
+                "wears-every-system-label@example.com",
+                None,
+                "a@example.com",
+                "Busy message",
+                "01 Jan 2024 10:00:00 +0000",
+                "x",
+            ),
+            flags_seen(),
+            Some(GmailMeta {
+                thrid: 1,
+                msgid: 1,
+                labels: vec![
+                    "\\Inbox".into(),
+                    "\\Sent".into(),
+                    "\\Draft".into(),
+                    "\\Starred".into(),
+                    "\\Important".into(),
+                    "Travel".into(),
+                ],
+            }),
+        );
+    }
+    let mut session = FakeMailSession::new(server);
+    env.sync(&mut session).await;
+
+    let all = env.vault.mailboxes(env.account_id).unwrap();
+    // The five folder-backed mailboxes, the inbox label, and the one user
+    // label -- nothing minted for `\Sent`, `\Draft`, `\Starred` or
+    // `\Important`.
+    assert_eq!(all.len(), 7, "{all:?}");
+    for system_label in ["\\Sent", "\\Draft", "\\Starred", "\\Important"] {
+        assert!(
+            all.iter().all(|m| m.remote_name != system_label),
+            "{system_label} must not mint its own mailbox row: {all:?}"
+        );
+    }
+
+    // `Message::labels` still carries every one of them regardless --
+    // `everyday_core::mail::categorize`'s own Gmail rule reads `\Important`
+    // straight off this field, never off a mailbox list.
+    let message = env
+        .vault
+        .message_by_message_id_header(env.account_id, "wears-every-system-label@example.com")
+        .unwrap()
+        .expect("the message is still stored");
+    for label in ["\\Inbox", "\\Sent", "\\Draft", "\\Starred", "\\Important"] {
+        assert!(
+            message.labels.iter().any(|l| l == label),
+            "missing {label} from Message::labels: {:?}",
+            message.labels
+        );
+    }
+}
+
+/// The repair half of the fix: a mailbox row a pre-fix sync left in the
+/// doubly-escaped shape `everyday_mail::imap`'s module docs describe
+/// ("Gmail's doubly-escaped system labels") must be corrected in place --
+/// same id, so every `message_mailboxes` row naming it stays valid -- not
+/// deleted and re-minted under a fresh one.
+#[tokio::test]
+async fn an_escaped_inbox_row_is_repaired_in_place_keeping_its_id_and_memberships() {
+    let env = TestEnv::new();
+    let server = gmail_server();
+    {
+        let mut s = server.lock().unwrap();
+        s.append(
+            "All Mail",
+            raw_message(
+                "already-inboxed@example.com",
+                None,
+                "a@example.com",
+                "Already there",
+                "01 Jan 2024 09:00:00 +0000",
+                "x",
+            ),
+            flags_seen(),
+            Some(GmailMeta { thrid: 1, msgid: 1, labels: vec!["\\Inbox".into()] }),
+        );
+    }
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+
+    let before = env
+        .vault
+        .mailboxes(env.account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == MailboxRole::Inbox)
+        .expect("a correctly-named inbox label mailbox after the first sync");
+    let inbox_id = before.id;
+
+    // Simulate what a pre-fix sync actually left behind: the very same
+    // row, renamed back to the doubly-escaped shape `imap.rs`'s
+    // `unescape_imap_quoted` fix now prevents -- same id, same
+    // memberships, wrong text and role.
+    let mut corrupted = before;
+    corrupted.remote_name = "\\\\Inbox".to_string();
+    corrupted.role = MailboxRole::Other;
+    env.vault.save_mailbox(&corrupted).unwrap();
+
+    // The repair runs on every `LabelMailboxes::new` -- once per sync
+    // attempt, independent of a live connection.
+    let _ = LabelMailboxes::new(&env.vault, env.account_id);
+
+    let repaired = env.vault.mailbox(inbox_id).unwrap();
+    assert_eq!(repaired.remote_name, "\\Inbox", "the escaped name is unescaped in place");
+    assert_eq!(repaired.role, MailboxRole::Inbox, "and promoted back to the inbox role");
+
+    let all = env.vault.mailboxes(env.account_id).unwrap();
+    assert_eq!(
+        all.iter().filter(|m| m.remote_name == "\\Inbox").count(),
+        1,
+        "no duplicate inbox-label row: {all:?}"
+    );
+
+    // The membership the first sync created is still there, under the very
+    // same id -- repairing a row in place, rather than deleting and
+    // re-minting it, is what keeps it valid.
+    let inbox_page = env.vault.list_threads(inbox_id, &ThreadFilter::default(), None, 10).unwrap();
+    assert_eq!(inbox_page.threads.len(), 1, "the original membership survives the repair");
+}
+
+/// The repair is Gmail's alone. An account with no All Mail row is not a
+/// Gmail account, and its folders' `remote_name`s are what `SELECT` sends:
+/// a folder whose name merely looks like an escaped system label -- or
+/// starts with a backslash at all -- must come through untouched.
+#[tokio::test]
+async fn the_label_repair_leaves_a_non_gmail_accounts_folders_alone() {
+    let env = TestEnv::new();
+    let odd = everyday_core::mail::Mailbox::new(env.account_id, "\\\\Inbox", MailboxRole::Other);
+    let backslashed =
+        everyday_core::mail::Mailbox::new(env.account_id, "\\Projects", MailboxRole::Other);
+    env.vault.save_mailbox(&odd).unwrap();
+    env.vault.save_mailbox(&backslashed).unwrap();
+
+    let _ = LabelMailboxes::new(&env.vault, env.account_id);
+
+    assert_eq!(env.vault.mailbox(odd.id).unwrap().remote_name, "\\\\Inbox");
+    assert_eq!(env.vault.mailbox(odd.id).unwrap().role, MailboxRole::Other);
+    assert_eq!(env.vault.mailbox(backslashed.id).unwrap().remote_name, "\\Projects");
+}
+
 /// Steady state: a message archived in another client loses `\Inbox`.
 /// `changes_since` reports the modseq bump in `flag_changes`, which is
 /// what `refresh_gmail_labels`'s targeted path reads `X-GM-LABELS` for.

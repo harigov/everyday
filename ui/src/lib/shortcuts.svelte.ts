@@ -34,8 +34,9 @@ import { APPS } from './apps'
 import { calendar } from './calendar.svelte'
 import { SEQUENCE_MS, chordOf, isTyping, match, type Binding } from './keys'
 import { library } from './library.svelte'
-import { mailboxHasTabs } from './mail'
+import { mailboxDisplayName, mailboxHasTabs } from './mail'
 import { mail } from './mail.svelte'
+import { mailwrite } from './mailwrite.svelte'
 import { menu } from './menu.svelte'
 import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
@@ -662,6 +663,17 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
     run: () => void mail.toggleStar(mail.selectedThread!),
   },
+  // `!` (Shift+1): free in this table, the same way `#` (Shift+3, Trash)
+  // already is -- `chordOf` in `keys.ts` records the character a layout
+  // actually produces for a printable key rather than the modifier, so `!`
+  // is matched as its own bare chord, not `shift+1`.
+  {
+    keys: '!',
+    label: 'Toggle priority',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
+    run: () => void togglePriority(mail.selectedThread!),
+  },
   {
     keys: 'u',
     label: 'Mark unread',
@@ -795,6 +807,30 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Mail',
     when: () => anywhere() && inApp('mail')() && !!mail.openThread,
     run: () => void mail.summarizeOpenThread(),
+  },
+  // The three suggested replies beside Reply -- `MailQuickReplies` offers
+  // them through `mailwrite` while they are showing. Digits are free here:
+  // nothing else in the table is a bare number.
+  {
+    keys: '1',
+    label: 'Use suggested reply 1',
+    group: 'Mail',
+    when: () => suggestedReplyKey(1),
+    run: () => mailwrite.chooseSuggestion(0),
+  },
+  {
+    keys: '2',
+    label: 'Use suggested reply 2',
+    group: 'Mail',
+    when: () => suggestedReplyKey(2),
+    run: () => mailwrite.chooseSuggestion(1),
+  },
+  {
+    keys: '3',
+    label: 'Use suggested reply 3',
+    group: 'Mail',
+    when: () => suggestedReplyKey(3),
+    run: () => mailwrite.chooseSuggestion(2),
   },
 
   // ── Quick actions ───────────────────────────────────────────────────
@@ -1197,10 +1233,37 @@ function moveMenu() {
     mail.threads.find((t) => t.id === id)?.accountId ?? mail.openThread?.thread.accountId
   const boxes = mail.mailboxes.filter((m) => m.accountId === accountId && m.role !== 'other')
   const items = boxes.map((box) => ({
-    label: box.remoteName,
+    label: mailboxDisplayName(box),
     run: () => void mail.moveTo(id, box.id),
   }))
   menu.showAt(window.innerWidth / 2, window.innerHeight / 2, items)
+}
+
+/** Is suggested reply `n` (1-3) offered right now, with nothing else the
+ *  digit could mean -- see `mailwrite.svelte.ts`'s `offerSuggestions`. */
+function suggestedReplyKey(n: number): boolean {
+  return (
+    anywhere() &&
+    inApp('mail')() &&
+    !!mail.openThread &&
+    !mail.composing &&
+    mailwrite.suggestionCount >= n &&
+    !focusIsControl()
+  )
+}
+
+/**
+ * `!`: flip the selected thread's priority on or off. Reads whichever of
+ * `mail.threads`/`mail.searchResults`/the open thread's own copy actually
+ * has the row -- the selected thread is not always in the first of those,
+ * the same reason `mail.toggleStar` falls back the same way.
+ */
+function togglePriority(id: string) {
+  const row =
+    mail.threads.find((t) => t.id === id) ??
+    mail.searchResults.find((t) => t.id === id) ??
+    (mail.openThread?.thread.id === id ? mail.openThread.thread : undefined)
+  void mail.setPriority(id, row?.category !== 'priority')
 }
 
 /**

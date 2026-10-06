@@ -2,11 +2,20 @@
 // or a component. Tested with `scripts/mail.test.mjs`, the way `entry-rows.ts`
 // and `habits.ts` are tested -- see those for the harness.
 
-import { friendlyDate, timeOfDay } from './format'
-import { isoDate } from './time'
+import {
+  dateFormat,
+  daysBetween,
+  friendlyDate,
+  relativeTime,
+  timeOfDay,
+  weekdayShort,
+} from './format'
+import { isoDate, startOfDay } from './time'
 import type {
+  AccountId,
   Draft,
   Mailbox,
+  MailboxId,
   MailAddress,
   MailCategory,
   MailInvite,
@@ -52,6 +61,123 @@ export function threadListDate(instant: string): string {
   // `localDate` -- a message's `date` is a full instant, so it is narrowed
   // to the local day here before being handed over.
   return sameDay ? timeOfDay(d) : friendlyDate(isoDate(d))
+}
+
+/**
+ * "Tue 8:00": a weekday and a time together, for the two places a bare date
+ * or a bare time says less than both at once -- the Snoozed view's own date
+ * column (`snoozedUntilLabel`) and the Scheduled list's own one line
+ * (`scheduledSendLabel`). Unlike `threadListDate`, which picks *either* a
+ * time (today) *or* a date (everything else), both of these are always
+ * naming a moment that is never today's own 24 hours alone -- a snooze or a
+ * send-later is never due back in the next few minutes -- so the weekday is
+ * always worth printing.
+ */
+export function weekdayAndTime(at: string): string {
+  const d = new Date(at)
+  return `${weekdayShort(isoDate(d))} ${timeOfDay(d)}`
+}
+
+/**
+ * The Snoozed view's own date column: "Until Tue 8:00" rather than
+ * `threadListDate`'s own "when it last arrived" -- what the row means here
+ * is when the thread comes back, not when it was last touched.
+ */
+export function snoozedUntilLabel(until: string): string {
+  return `Until ${weekdayAndTime(until)}`
+}
+
+/**
+ * The Scheduled list's own one line: "Sends Tue 8:00 (in 3 hours)" -- the
+ * same weekday-and-time half `snoozedUntilLabel` draws from, plus
+ * `relativeTime`'s own "in 3 hours", the way the undo toast already spells
+ * a send-later instant (`MailView.svelte`'s own `sendingUndo` toast).
+ */
+export function scheduledSendLabel(sendAt: string): string {
+  return `Sends ${weekdayAndTime(sendAt)} (${relativeTime(sendAt)})`
+}
+
+// ── Date sections over the thread list ──────────────────────────────────
+//
+// Today, Yesterday, Earlier this week, Last week, Earlier this month, Last
+// month, then every month still within this calendar year by name alone
+// ("August"), and month-and-year once the year itself is no longer implied
+// ("December 2025"). Weeks start Monday, irrespective of locale: a list of
+// section headings is read as English prose ("Last week"), not as a
+// calendar grid, where the week's own start day actually matters.
+//
+// Built for `instant` always at or before `now` -- a thread's own
+// `lastDate` -- and not meant for a future instant: the Snoozed view's own
+// `snoozedUntil` groups no other way than by not grouping at all
+// (`MailView.svelte`'s own choice, not this function's).
+
+export interface DateSection {
+  key: string
+  label: string
+}
+
+export function dateSection(instant: string, now = new Date()): DateSection {
+  const d = startOfDay(isoDate(new Date(instant)))
+  const ago = daysBetween(d, now)
+  if (ago <= 0) return { key: 'today', label: 'Today' }
+  if (ago === 1) return { key: 'yesterday', label: 'Yesterday' }
+
+  const today = startOfDay(isoDate(now))
+  const mondayOffset = (now.getDay() + 6) % 7 // days since this week's own Monday
+  const thisWeekStart = new Date(today)
+  thisWeekStart.setDate(thisWeekStart.getDate() - mondayOffset)
+  if (d >= thisWeekStart) return { key: 'thisWeek', label: 'Earlier this week' }
+
+  const lastWeekStart = new Date(thisWeekStart)
+  lastWeekStart.setDate(lastWeekStart.getDate() - 7)
+  if (d >= lastWeekStart) return { key: 'lastWeek', label: 'Last week' }
+
+  const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+  if (d >= thisMonthStart) return { key: 'thisMonth', label: 'Earlier this month' }
+
+  const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+  if (d >= lastMonthStart) return { key: 'lastMonth', label: 'Last month' }
+
+  const monthName = dateFormat({ month: 'long' }).format(d)
+  const key = `${d.getFullYear()}-${d.getMonth()}`
+  return d.getFullYear() === now.getFullYear()
+    ? { key, label: monthName }
+    : { key, label: `${monthName} ${d.getFullYear()}` }
+}
+
+/** One row `MailView.svelte`'s list column actually draws: a thread, or a
+ *  `dateSection` heading ahead of a run of them. Never selectable on its
+ *  own -- a header's `key` never collides with a `Thread.id`, so
+ *  `VirtualList`'s own `selectedId` naturally never matches one. */
+export type ListRow =
+  { type: 'header'; key: string; label: string } | { type: 'thread'; thread: Thread }
+
+/**
+ * Interleaves `dateSection` headings ahead of each run of threads that
+ * shares one -- a heading drawn once, immediately before the first row
+ * under it, the way any grouped list reads, never once per row under it.
+ *
+ * `dateOf` is which field a row groups by: a thread's own `lastDate`
+ * ordinarily. Threads are assumed already in the order the caller wants
+ * them drawn (newest first, from the backend's own sort) -- this never
+ * reorders them, only inserts headings between runs.
+ */
+export function withDateSections(
+  threads: readonly Thread[],
+  dateOf: (t: Thread) => string,
+  now = new Date(),
+): ListRow[] {
+  const out: ListRow[] = []
+  let currentKey: string | null = null
+  for (const thread of threads) {
+    const section = dateSection(dateOf(thread), now)
+    if (section.key !== currentKey) {
+      out.push({ type: 'header', key: section.key, label: section.label })
+      currentKey = section.key
+    }
+    out.push({ type: 'thread', thread })
+  }
+  return out
 }
 
 // ── Marks from origin ───────────────────────────────────────────────────
@@ -167,27 +293,47 @@ export function restoreRow<T extends HasId>(
 // ── The snooze picker's times ──────────────────────────────────────────
 
 export interface SnoozeChoice {
-  key: 'laterToday' | 'tomorrow' | 'nextWeek'
+  key: 'laterToday' | 'thisEvening' | 'tomorrow' | 'thisWeekend' | 'nextWeek'
   label: string
   at: Date
 }
 
 /**
- * The snooze picker's three fixed choices, plus "pick a date" which the
- * component draws itself since it has no fixed time to test.
+ * The snooze picker's fixed choices, plus "pick a date" which the component
+ * draws itself since it has no fixed time to test.
  *
  * Computed from `now` rather than memoised, so "later today" always means a
  * few hours from now: a fixed instant baked in at load time would drift
  * false the moment the picker had been open longer than it took to press.
- * "Later today" drops out once there would be no today left to be later in.
+ * Superhuman's own five, each dropping out once it would stop meaning what
+ * its label says:
+ *
+ *   - Later today (+3h): gone once it is past 6pm -- three hours from then
+ *     would spill into tomorrow, which is what "Tomorrow" already is.
+ *   - This evening (a fixed 6pm): gone once it is past 5pm -- an hour out is
+ *     close enough to "Later today" to be the same choice said twice.
+ *   - Tomorrow (8am): always on offer.
+ *   - This weekend (Saturday 9am): only Monday through Thursday -- pressed on
+ *     a Friday, Saturday or Sunday, the weekend is already close enough that
+ *     "Next week" is the more useful second choice.
+ *   - Next week (next Monday 8am, not "+7 days"): always the same calendar
+ *     Monday regardless of which day of the week this is pressed on.
  */
 export function snoozeChoices(now = new Date()): SnoozeChoice[] {
   const out: SnoozeChoice[] = []
+  const hour = now.getHours()
+  const day = now.getDay() // 0 Sunday .. 6 Saturday
 
-  const laterToday = new Date(now)
-  laterToday.setHours(laterToday.getHours() + 3, 0, 0, 0)
-  if (laterToday.getDate() === now.getDate() && laterToday.getHours() < 21) {
+  if (hour < 18) {
+    const laterToday = new Date(now)
+    laterToday.setHours(laterToday.getHours() + 3, 0, 0, 0)
     out.push({ key: 'laterToday', label: 'Later today', at: laterToday })
+  }
+
+  if (hour < 17) {
+    const evening = new Date(now)
+    evening.setHours(18, 0, 0, 0)
+    out.push({ key: 'thisEvening', label: 'This evening', at: evening })
   }
 
   const tomorrow = new Date(now)
@@ -195,8 +341,19 @@ export function snoozeChoices(now = new Date()): SnoozeChoice[] {
   tomorrow.setHours(8, 0, 0, 0)
   out.push({ key: 'tomorrow', label: 'Tomorrow', at: tomorrow })
 
+  if (day >= 1 && day <= 4) {
+    const weekend = new Date(now)
+    weekend.setDate(weekend.getDate() + (6 - day))
+    weekend.setHours(9, 0, 0, 0)
+    out.push({ key: 'thisWeekend', label: 'This weekend', at: weekend })
+  }
+
+  // The next Monday strictly after today: `(8 - day) % 7` lands on *this*
+  // Monday (0 days out) when `day` already is one, which "next week" never
+  // means -- the `|| 7` sends that one case a full week out instead.
   const nextWeek = new Date(now)
-  nextWeek.setDate(nextWeek.getDate() + 7)
+  const daysToNextMonday = (8 - day) % 7 || 7
+  nextWeek.setDate(nextWeek.getDate() + daysToNextMonday)
   nextWeek.setHours(8, 0, 0, 0)
   out.push({ key: 'nextWeek', label: 'Next week', at: nextWeek })
 
@@ -204,21 +361,27 @@ export function snoozeChoices(now = new Date()): SnoozeChoice[] {
 }
 
 /**
- * The instant the custom snooze picker's `<input type="date">` value means:
- * 8am *local*, on the day the field shows.
+ * The instant the custom snooze picker's date and time fields mean together,
+ * *local* to the reader: `timeStr`, on the day `dateStr` shows -- 8am when
+ * the time field is left at its own default.
  *
  * `new Date('2026-09-20')` parses a bare date as UTC midnight; calling
- * `.setHours(8, ...)` on that then reads back 8am in whichever zone the
- * reader is in, not the zone the date was meant to be read in -- west of
- * Greenwich that silently lands on the *previous* day. Building the date
- * from its parsed `year`/`month`/`day` parts instead means the local
- * constructor picks local midnight for that calendar day, so `setHours`
- * lands on the day the field actually shows.
+ * `.setHours(...)` on that then reads back in whichever zone the reader is
+ * in, not the zone the date was meant to be read in -- west of Greenwich
+ * that silently lands on the *previous* day. Building the date from its
+ * parsed `year`/`month`/`day` parts instead means the local constructor
+ * picks local midnight for that calendar day, so `setHours` lands on the day
+ * the field actually shows.
+ *
+ * Never in the past: guaranteed not by anything here but by the date field's
+ * own `min`, `earliestSnoozeDate` below -- always tomorrow at the earliest,
+ * which no time of day on it can land behind `now`.
  */
-export function customSnoozeInstant(dateStr: string): Date {
+export function customSnoozeInstant(dateStr: string, timeStr = '08:00'): Date {
   const [year, month, day] = dateStr.split('-').map(Number)
+  const [hours, minutes] = timeStr.split(':').map(Number)
   const at = new Date(year!, (month ?? 1) - 1, day ?? 1)
-  at.setHours(8, 0, 0, 0)
+  at.setHours(hours ?? 8, minutes ?? 0, 0, 0)
   return at
 }
 
@@ -316,11 +479,18 @@ export function isBlankDraft(draft: Pick<Draft, 'subject' | 'bodyHtml' | 'to'>):
 // ── (p) The split inbox: category tabs ─────────────────────────────────
 //
 // TODO(p): mirrors `Category::ALL`'s order in `everyday_core::mail` --
-// Important, Other, Newsletter, Notification -- which is also the order
-// `MailCategory` in `types.ts` declares its four members in. Written out
-// again here, as a value rather than derived from the type, because a type
-// has no order at runtime for a tab strip to read.
+// Priority, Important, Other, Newsletter, Notification -- which is also the
+// order `MailCategory` in `types.ts` declares its five members in. Written
+// out again here, as a value rather than derived from the type, because a
+// type has no order at runtime for a tab strip to read.
+//
+// Priority leads rather than following Important: a thread lands there
+// either by a standing per-sender rule (`setCategoryFor(id, 'priority')`,
+// the VIP rule `set_thread_category` already carries) or by being flagged
+// just this once (`setThreadPriority`/`mail.setPriority`), and either way it
+// is the one tab worth checking before anything else in the split.
 export const CATEGORY_TABS: { key: MailCategory; label: string }[] = [
+  { key: 'priority', label: 'Priority' },
   { key: 'important', label: 'Important' },
   { key: 'other', label: 'Other' },
   { key: 'newsletter', label: 'Newsletters' },
@@ -341,9 +511,112 @@ export function stepCategoryTab(current: MailCategory | null, step: 1 | -1): Mai
  *  does, per `MailView.svelte`'s own `showTabs` -- and so is a category
  *  filter ever meaningful to send for it. A mailbox with no tabs showing a
  *  category anyway is finding 1: the filter leaking into Sent, Archive, a
- *  label, wherever there is no tab strip to have set it from. */
+ *  label, wherever there is no tab strip to have set it from.
+ *
+ *  Reads `role` alone, never a mailbox's name: `refreshMailboxes`'s own
+ *  `promoteGmailInbox` is what makes sure the one Gmail account's `\Inbox`
+ *  label that is really the Inbox already carries `role: 'inbox'` by the
+ *  time anything here asks, so nothing downstream needs to know a label
+ *  was ever mistaken for a folder in the first place. */
 export function mailboxHasTabs(mailbox: Pick<Mailbox, 'role'> | null | undefined): boolean {
   return mailbox?.role === 'inbox'
+}
+
+// ── Gmail's own system labels, still IMAP-escaped on the wire ──────────
+//
+// A Gmail account's special-use mailboxes arrive named `\Inbox`,
+// `\Important`, `\Starred`, and so on -- RFC 6154's own backslash-prefixed
+// spelling, which a parsing bug let straight through to `remoteName`
+// instead of resolving to the right `role`. A sync agent is fixing the
+// parser and repairing rows already on disk; this is the interface's own
+// half: cope with both an old, still-escaped row and a new, correctly-typed
+// one, so nobody has to wait for a resync before "Inbox" reads as "Inbox".
+
+/** Gmail's system labels, case-insensitively, once IMAP's own backslash
+ *  escaping is stripped -- `null` for an ordinary folder (a person's own,
+ *  or any name escaping could not have produced). */
+export type GmailSystemLabel =
+  'inbox' | 'sent' | 'drafts' | 'starred' | 'important' | 'spam' | 'trash' | 'all'
+
+const GMAIL_SYSTEM_LABELS: Record<string, GmailSystemLabel> = {
+  inbox: 'inbox',
+  sent: 'sent',
+  draft: 'drafts',
+  drafts: 'drafts',
+  starred: 'starred',
+  important: 'important',
+  spam: 'spam',
+  trash: 'trash',
+  all: 'all',
+}
+
+/** Strips IMAP's own one- or two-backslash escaping from a mailbox name,
+ *  leaving everything else -- including a `[Gmail]/` folder prefix, which
+ *  is not escaping and is `mailboxDisplayName`'s own concern -- untouched. */
+function unescapeImapName(remoteName: string): string {
+  return remoteName.replace(/^\\{1,2}/, '').trim()
+}
+
+export function gmailSystemLabel(remoteName: string): GmailSystemLabel | null {
+  return GMAIL_SYSTEM_LABELS[unescapeImapName(remoteName).toLowerCase()] ?? null
+}
+
+/** The rename table `mailboxDisplayName` reads once a `[Gmail]/` prefix and
+ *  any IMAP escaping are gone -- wider than `GMAIL_SYSTEM_LABELS` above,
+ *  since a reader-facing name draws a line `role` has no use for ("Sent
+ *  Mail" and "Sent" are the same mailbox, but neither is a `MailCategory`
+ *  or anything else code branches on). */
+const GMAIL_DISPLAY_NAMES: Record<string, string> = {
+  inbox: 'Inbox',
+  sent: 'Sent',
+  'sent mail': 'Sent',
+  draft: 'Drafts',
+  drafts: 'Drafts',
+  important: 'Important',
+  starred: 'Starred',
+  spam: 'Spam',
+  junk: 'Spam',
+  trash: 'Trash',
+  bin: 'Trash',
+  'all mail': 'All Mail',
+}
+
+/**
+ * The one name to show for a mailbox, however Gmail happened to spell it on
+ * the wire: a `[Gmail]/`/`[Google Mail]/` folder prefix and IMAP's own
+ * backslash escaping both stripped, then matched case-insensitively against
+ * Gmail's own names. Anything that matches none of those -- a person's own
+ * folder, a label, or a provider that is not Gmail at all -- is shown
+ * exactly as sent, prefix and escaping aside.
+ */
+export function mailboxDisplayName(box: Pick<Mailbox, 'remoteName'>): string {
+  const stripped = unescapeImapName(box.remoteName.replace(/^\[(Gmail|Google Mail)\]\//i, ''))
+  return GMAIL_DISPLAY_NAMES[stripped.toLowerCase()] ?? stripped
+}
+
+/**
+ * `accountMailboxes`, with Gmail's own `\Inbox` label promoted to serve as
+ * the account's Inbox when nothing else already carries `role: 'inbox'` --
+ * an old row, synced before the fix that should have given it that role
+ * directly. Returns a fresh array; a mailbox that needed no change is
+ * returned unchanged (`===` the original), so a caller that only wants to
+ * know whether anything moved can ask cheaply.
+ *
+ * Every *other* Gmail system label (`\Sent`, `\Draft(s)`, `\Starred`,
+ * `\Important`, `\Spam`, `\Trash`, `\All`) is left exactly as it arrived --
+ * this only ever promotes the one role nothing else has already claimed.
+ * `MailNav`'s own folders list is where the rest are read as duplicates and
+ * left out, since leaving them as ordinary `role: 'other'` mailboxes is
+ * also what lets a reader still find one by its real name if they go
+ * looking, rather than this quietly renaming eight mailboxes behind them.
+ */
+export function promoteGmailInbox(accountMailboxes: readonly Mailbox[]): Mailbox[] {
+  if (accountMailboxes.some((m) => m.role === 'inbox')) return accountMailboxes.slice()
+  const at = accountMailboxes.findIndex((m) => gmailSystemLabel(m.remoteName) === 'inbox')
+  if (at < 0) return accountMailboxes.slice()
+  const next = accountMailboxes.slice()
+  next[at] = { ...next[at]!, role: 'inbox' }
+  return next
 }
 
 /**
@@ -361,6 +634,68 @@ export function mailboxHasTabs(mailbox: Pick<Mailbox, 'role'> | null | undefined
  */
 export function isSnoozedMailbox(mailbox: Pick<Mailbox, 'pseudo'> | null | undefined): boolean {
   return mailbox?.pseudo === 'snoozed'
+}
+
+/**
+ * Does this account need `mail.svelte.ts`'s own stand-in Snoozed mailbox?
+ *
+ * True once the account has an Inbox (nothing to filter otherwise) and no
+ * mailbox of its own already answering `pseudo: 'snoozed'` -- the mock seeds
+ * one for each of its two accounts; no real backend sends one at all today.
+ * `refreshMailboxes` asks this per account, once its mailboxes have loaded,
+ * before deciding whether to synthesise a row.
+ */
+export function needsSyntheticSnoozedMailbox(
+  accountMailboxes: readonly Pick<Mailbox, 'role' | 'pseudo'>[],
+): boolean {
+  return (
+    accountMailboxes.some((m) => m.role === 'inbox') &&
+    !accountMailboxes.some((m) => m.pseudo === 'snoozed')
+  )
+}
+
+/** The id prefix every mailbox `needsSyntheticSnoozedMailbox` calls for
+ *  carries. Never sent to the backend as a mailbox id in its own right --
+ *  `listTarget` below is what redirects it before any command sees it. */
+const SYNTHETIC_SNOOZED_PREFIX = 'synthetic-snoozed:'
+
+/** The id `refreshMailboxes` gives the stand-in Snoozed row it builds for
+ *  one account. A plain string, not a real id any backend minted -- see
+ *  `listTarget`. */
+export function syntheticSnoozedMailboxId(accountId: AccountId): MailboxId {
+  return `${SYNTHETIC_SNOOZED_PREFIX}${accountId}`
+}
+
+/**
+ * Where listing `mailbox` should actually go: its own id, with `snoozed`
+ * set by `isSnoozedMailbox` exactly as `refresh`/`loadMore`/
+ * `refreshUnreadCounts` already asked it by hand before this existed --
+ * `false` for an ordinary mailbox, `true` for a real Snoozed pseudo-mailbox
+ * a backend (today, only the mock) sent itself.
+ *
+ * The one exception is the *synthetic* row `refreshMailboxes` builds for an
+ * account whose backend sends no Snoozed mailbox at all: that id means
+ * nothing to `list_threads`, so it is swapped here for the account's own
+ * Inbox, `snoozed: true` -- "the account's Inbox, filtered," per the plan.
+ * A backend-sent pseudo-mailbox is left exactly as it was: it lists under
+ * its own id, because that id is real as far as whichever backend sent it
+ * is concerned, and redirecting it too would mean asking the Inbox alone
+ * rather than every mailbox the mock's own "Snoozed" row reads across
+ * (`mock-mail.ts`'s `isPseudo`) -- doubling what the mock already answers
+ * for itself rather than leaving it be.
+ *
+ * `null` only when there is no mailbox to ask about at all.
+ */
+export function listTarget(
+  mailbox: Pick<Mailbox, 'id' | 'accountId' | 'pseudo'> | null | undefined,
+  mailboxes: readonly Pick<Mailbox, 'id' | 'accountId' | 'role'>[],
+): { mailboxId: MailboxId; snoozed: boolean } | null {
+  if (!mailbox) return null
+  if (!mailbox.id.startsWith(SYNTHETIC_SNOOZED_PREFIX)) {
+    return { mailboxId: mailbox.id, snoozed: isSnoozedMailbox(mailbox) }
+  }
+  const inbox = mailboxes.find((m) => m.accountId === mailbox.accountId && m.role === 'inbox')
+  return { mailboxId: inbox?.id ?? mailbox.id, snoozed: true }
 }
 
 // ── (i) Invitations ─────────────────────────────────────────────────

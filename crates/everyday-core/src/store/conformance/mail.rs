@@ -38,6 +38,8 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     category_rules_and_recategorize_round_trip(store);
     correction_reaches_only_the_named_sender(store);
     a_model_set_category_survives_the_backfill(store);
+    a_persons_own_mark_outranks_the_model_and_the_backfill(store);
+    priority_asked_marker_round_trips(store);
     removing_forty_thousand_uids_does_not_hit_the_parameter_limit(store);
     deleting_a_mailbox_with_forty_thousand_messages_does_not_hit_the_parameter_limit(store);
     archiving_survives_a_later_flag_change(store);
@@ -864,6 +866,89 @@ fn a_model_set_category_survives_the_backfill(store: &dyn JournalStore) {
         Some(Category::Important),
         "the model's own answer must survive recategorize_mail's backfill"
     );
+
+    cleanup_account(store, account);
+}
+
+/// The priority inbox's own door into categorisation:
+/// [`MailStore::set_message_category_with_source`] is what
+/// `everyday_core::vault::Vault::set_thread_priority` calls to mark one
+/// thread [`Category::Priority`] by hand, stamping
+/// [`CategorySource::Person`] rather than [`CategorySource::Model`] -- and
+/// a person's own mark must outrank both the model-assisted pass's own
+/// writer ([`MailStore::set_message_category`], regression-tested here for
+/// its new guard too) and a `recategorize` backfill that flatly disagrees,
+/// on the same terms [`a_model_set_category_survives_the_backfill`] already
+/// proves for a model's answer. Flipping the mark off again --
+/// `priority: false` in `set_thread_priority`'s own terms -- is itself a
+/// person's action and must win just as cleanly.
+fn a_persons_own_mark_outranks_the_model_and_the_backfill(store: &dyn JournalStore) {
+    use crate::mail::{Category, CategoryRules};
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "Hello", "vip@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+
+    m.set_message_category_with_source(msg.id, Category::Priority, CategorySource::Person).unwrap();
+    assert_eq!(m.get_message(msg.id).unwrap().category, Some(Category::Priority));
+    assert_eq!(m.get_message(msg.id).unwrap().category_source, CategorySource::Person);
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.category, Some(Category::Priority), "the thread follows the message");
+
+    // The model-assisted pass's own one-off writer must leave it alone.
+    m.set_message_category(msg.id, Category::Important).unwrap();
+    assert_eq!(
+        m.get_message(msg.id).unwrap().category,
+        Some(Category::Priority),
+        "a person's own mark must outrank the model-assisted pass"
+    );
+
+    // Nor is it the rules backfill's to touch, even one that flatly
+    // disagrees -- the same contract a model's answer already gets.
+    let mut rules = CategoryRules::default();
+    rules.set_sender("vip@example.com", Category::Notification);
+    m.put_category_rules(account, &rules).unwrap();
+    let changed = m.recategorize(account, &rules).unwrap();
+    assert_eq!(changed, 0, "a person's own mark is never the backfill's to touch");
+    assert_eq!(m.get_message(msg.id).unwrap().category, Some(Category::Priority));
+
+    // Un-marking it is itself a person's action, through the very same
+    // door, and must win just as cleanly.
+    m.set_message_category_with_source(msg.id, Category::Important, CategorySource::Person)
+        .unwrap();
+    assert_eq!(m.get_message(msg.id).unwrap().category, Some(Category::Important));
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.category, Some(Category::Important));
+
+    cleanup_account(store, account);
+}
+
+/// [`MailStore::set_thread_ai_priority_asked`] round-trips through
+/// [`crate::mail::Thread::ai_priority_asked_at_count`],
+/// on the same terms its categorisation and auto-draft siblings already
+/// keep elsewhere: `None` until asked, the asked-at message count after.
+fn priority_asked_marker_round_trips(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let msg = message(account, thread_id, "Hello", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: msg, mailbox: mailbox.id, uid: 1 }]).unwrap();
+
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.ai_priority_asked_at_count, None, "never asked yet");
+
+    m.set_thread_ai_priority_asked(thread_id, 1).unwrap();
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.ai_priority_asked_at_count, Some(1));
 
     cleanup_account(store, account);
 }

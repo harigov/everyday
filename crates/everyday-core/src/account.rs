@@ -375,7 +375,7 @@ impl AgentMailAccess {
 /// Which of the service-side, model-assisted mail features
 /// `docs/plans/mail.md`'s phase 7 adds are switched on for this account.
 ///
-/// All three start `false` — the same "off is the state a new vault is in"
+/// All of them start `false` — the same "off is the state a new vault is in"
 /// rule [`crate::agent::AgentSettings::enabled`] follows, for the same
 /// reason: every one of these sends something about this account's mail to
 /// the configured model. Each is also gated on
@@ -403,6 +403,16 @@ pub struct MailAi {
     pub auto_draft: bool,
     /// `summarize_thread`, on request, through the configured model.
     pub summaries: bool,
+    /// Writing help, each on request: three short replies offered under an
+    /// open thread (`suggest_replies`), a draft written from a few words
+    /// (`draft_with_ai`), and a pass over what the person wrote
+    /// (`improve_writing`) -- all in this account's own voice, read from its
+    /// sent mail. See `everyday_service::mailwrite`.
+    ///
+    /// `#[serde(default)]` so an account sealed before this switch existed
+    /// still decodes, with it off.
+    #[serde(default)]
+    pub writing: bool,
 }
 
 /// One of the six things a caller can ask to do to an account's mail.

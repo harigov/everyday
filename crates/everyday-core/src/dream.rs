@@ -774,9 +774,12 @@ fn notes_section(vault: &Vault, from: Date, to: Date, now: &Zoned) -> Vec<String
 }
 
 /// Mail: counts by category, and headers only for threads waiting on a
-/// reply. "Awaiting a reply" is read here as an unread, important thread --
-/// there is no dedicated flag for it today -- which is a heuristic worth
-/// naming rather than hiding.
+/// reply. "Awaiting a reply" is read here as an unread, priority or
+/// important thread -- there is no dedicated flag for it today -- which is
+/// a heuristic worth naming rather than hiding. `crate::mail::Category::ALL`
+/// lists `Priority` first, so this walk's own "awaiting reply" lines for it
+/// are already pushed, and so shown, ahead of `Important`'s without this
+/// function having to sort them itself.
 fn mail_section(vault: &Vault) -> Vec<String> {
     let Ok(accounts) = vault.accounts() else { return Vec::new() };
     let mut out = Vec::new();
@@ -794,7 +797,13 @@ fn mail_section(vault: &Vault) -> Vec<String> {
                     category.as_str()
                 ));
             }
-            if category == crate::mail::Category::Important {
+            // Priority is treated exactly like Important here: both are
+            // "waiting on a reply" in the same sense, and Priority is
+            // Important's own escalation, not a different question.
+            if matches!(
+                category,
+                crate::mail::Category::Priority | crate::mail::Category::Important
+            ) {
                 for t in page.threads.iter().filter(|t| t.unread_count > 0).take(MAX_DIGEST_ITEMS) {
                     let from = t
                         .participants

@@ -205,7 +205,7 @@ fn seed_message(
 }
 
 fn mail_ai(categorize: bool, summaries: bool, auto_draft: bool) -> everyday_core::account::MailAi {
-    everyday_core::account::MailAi { categorize, summaries, auto_draft }
+    everyday_core::account::MailAi { categorize, summaries, auto_draft, writing: false }
 }
 
 // ---- model-assisted categorisation ----------------------------------------
@@ -465,6 +465,110 @@ async fn categorize_tick_walks_past_an_already_asked_page_to_reach_older_threads
     );
 }
 
+// ---- model-assisted prioritisation (rides along in `categorize_tick`) -----
+
+/// A direct ask, already `Important` (so `categorize_account` itself has
+/// nothing to do and makes no call of its own -- isolating this test to
+/// `prioritize_account`'s own one), gets moved into `Category::Priority`
+/// when the model says it needs the person's attention soon.
+#[tokio::test]
+async fn categorize_tick_marks_a_direct_ask_as_priority() {
+    let fake = fake_model(r#"{"priorities":[{"index":1,"priority":true}]}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let account = seed_account(&svc, mail_ai(true, false, false));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let msg = seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        1,
+        ThreadId::new(),
+        "boss@example.com",
+        &["me@example.com"],
+        "Need your sign-off",
+        "Can you approve this by end of day?",
+        Some(Category::Important),
+    );
+
+    everyday_service::mailai::categorize_tick(&svc).await;
+
+    let updated = svc.get().unwrap().mail_message(msg.id).unwrap();
+    assert_eq!(updated.category, Some(Category::Priority));
+}
+
+/// The other answer: an `Important` thread the model says does not need
+/// attention soon is left exactly where it was.
+#[tokio::test]
+async fn categorize_tick_leaves_an_important_thread_alone_when_priority_says_no() {
+    let fake = fake_model(r#"{"priorities":[{"index":1,"priority":false}]}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let account = seed_account(&svc, mail_ai(true, false, false));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let msg = seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        1,
+        ThreadId::new(),
+        "newsletter@example.com",
+        &["me@example.com"],
+        "This week's digest",
+        "Here is what happened this week.",
+        Some(Category::Important),
+    );
+
+    everyday_service::mailai::categorize_tick(&svc).await;
+
+    let updated = svc.get().unwrap().mail_message(msg.id).unwrap();
+    assert_eq!(updated.category, Some(Category::Important), "the model said no priority");
+}
+
+/// As the categorisation half's own "does not reask" test: a thread the
+/// priority pass has already asked about, with nothing new since, must
+/// not be asked again -- proved by repointing the model between ticks at
+/// one that would answer differently, the same way `repoint_model` is
+/// used throughout this file.
+#[tokio::test]
+async fn categorize_tick_does_not_reask_a_thread_it_already_answered_for_priority() {
+    let says_no = fake_model(r#"{"priorities":[{"index":1,"priority":false}]}"#.to_string()).await;
+    let (svc, _dir) = env(&says_no.endpoint);
+    let mut account = seed_account(&svc, mail_ai(true, false, false));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let thread_id = ThreadId::new();
+    let msg = seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        1,
+        thread_id,
+        "boss@example.com",
+        &["me@example.com"],
+        "Need your sign-off",
+        "Can you approve this by end of day?",
+        Some(Category::Important),
+    );
+
+    everyday_service::mailai::categorize_tick(&svc).await;
+    let (thread, _) = svc.get().unwrap().thread(thread_id).unwrap();
+    assert_eq!(thread.ai_priority_asked_at_count, Some(1), "asked once, and recorded as such");
+    assert_eq!(
+        svc.get().unwrap().mail_message(msg.id).unwrap().category,
+        Some(Category::Important)
+    );
+
+    let would_mark =
+        fake_model(r#"{"priorities":[{"index":1,"priority":true}]}"#.to_string()).await;
+    repoint_model(&svc, &mut account, &would_mark.endpoint);
+    wait_for_categorize_budget().await;
+
+    everyday_service::mailai::categorize_tick(&svc).await;
+    assert_eq!(
+        svc.get().unwrap().mail_message(msg.id).unwrap().category,
+        Some(Category::Important),
+        "unasked, since nothing about this thread changed"
+    );
+}
+
 // ---- summaries --------------------------------------------------------
 
 #[tokio::test]
@@ -619,8 +723,7 @@ async fn summarize_thread_refuses_when_summaries_are_not_switched_on() {
 
 #[tokio::test]
 async fn auto_draft_writes_at_most_one_draft_per_thread_and_never_a_send_op() {
-    let fake =
-        fake_model(r#"{"reply":true,"body_html":"<p>Sure, Friday works.</p>"}"#.to_string()).await;
+    let fake = fake_model(r#"{"reply":true,"body_text":"Sure, Friday works."}"#.to_string()).await;
     let (svc, _dir) = env(&fake.endpoint);
     let account = seed_account(&svc, mail_ai(false, false, true));
     let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
@@ -658,8 +761,7 @@ async fn auto_draft_writes_at_most_one_draft_per_thread_and_never_a_send_op() {
 
 #[tokio::test]
 async fn auto_draft_skips_a_thread_the_person_has_already_started_a_draft_on() {
-    let fake =
-        fake_model(r#"{"reply":true,"body_html":"<p>Sure, Friday works.</p>"}"#.to_string()).await;
+    let fake = fake_model(r#"{"reply":true,"body_text":"Sure, Friday works."}"#.to_string()).await;
     let (svc, _dir) = env(&fake.endpoint);
     let account = seed_account(&svc, mail_ai(false, false, true));
     let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
@@ -690,8 +792,7 @@ async fn auto_draft_skips_a_thread_the_person_has_already_started_a_draft_on() {
 
 #[tokio::test]
 async fn auto_draft_is_a_no_op_when_the_account_has_not_turned_it_on() {
-    let fake =
-        fake_model(r#"{"reply":true,"body_html":"<p>Sure, Friday works.</p>"}"#.to_string()).await;
+    let fake = fake_model(r#"{"reply":true,"body_text":"Sure, Friday works."}"#.to_string()).await;
     let (svc, _dir) = env(&fake.endpoint);
     let account = seed_account(&svc, mail_ai(true, true, false));
     let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
@@ -727,7 +828,7 @@ async fn wait_for_autodraft_budget() {
 /// should ever have asked it a second time.
 #[tokio::test]
 async fn auto_draft_does_not_reask_a_thread_it_already_answered_reply_false() {
-    let says_no = fake_model(r#"{"reply":false,"body_html":""}"#.to_string()).await;
+    let says_no = fake_model(r#"{"reply":false,"body_text":""}"#.to_string()).await;
     let (svc, _dir) = env(&says_no.endpoint);
     let mut account = seed_account(&svc, mail_ai(false, false, true));
     let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
@@ -752,7 +853,7 @@ async fn auto_draft_does_not_reask_a_thread_it_already_answered_reply_false() {
 
     // A model that would now say yes, if it were ever asked again.
     let would_draft =
-        fake_model(r#"{"reply":true,"body_html":"<p>Sure, Friday works.</p>"}"#.to_string()).await;
+        fake_model(r#"{"reply":true,"body_text":"Sure, Friday works."}"#.to_string()).await;
     repoint_model(&svc, &mut account, &would_draft.endpoint);
     wait_for_autodraft_budget().await;
 
@@ -767,7 +868,7 @@ async fn auto_draft_does_not_reask_a_thread_it_already_answered_reply_false() {
 /// the next tick does ask again.
 #[tokio::test]
 async fn auto_draft_reasks_a_thread_once_a_new_message_arrives() {
-    let says_no = fake_model(r#"{"reply":false,"body_html":""}"#.to_string()).await;
+    let says_no = fake_model(r#"{"reply":false,"body_text":""}"#.to_string()).await;
     let (svc, _dir) = env(&says_no.endpoint);
     let mut account = seed_account(&svc, mail_ai(false, false, true));
     let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
@@ -787,7 +888,7 @@ async fn auto_draft_reasks_a_thread_once_a_new_message_arrives() {
     everyday_service::mailai::auto_draft_tick(&svc).await;
 
     let would_draft =
-        fake_model(r#"{"reply":true,"body_html":"<p>Sure, Friday works.</p>"}"#.to_string()).await;
+        fake_model(r#"{"reply":true,"body_text":"Sure, Friday works."}"#.to_string()).await;
     repoint_model(&svc, &mut account, &would_draft.endpoint);
     wait_for_autodraft_budget().await;
     seed_message(
@@ -819,7 +920,7 @@ async fn auto_draft_reasks_a_thread_once_a_new_message_arrives() {
 /// never produces.
 #[tokio::test]
 async fn auto_draft_never_calls_the_model_more_than_the_per_minute_budget_allows() {
-    let says_no = fake_model(r#"{"reply":false,"body_html":""}"#.to_string()).await;
+    let says_no = fake_model(r#"{"reply":false,"body_text":""}"#.to_string()).await;
     let (svc, _dir) = env(&says_no.endpoint);
     let account = seed_account(&svc, mail_ai(false, false, true));
     let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
@@ -934,4 +1035,41 @@ async fn categorize_tick_does_not_let_one_accounts_small_backlog_starve_another_
             account.address
         );
     }
+}
+
+/// The auto-draft schema now asks the model for `body_text`, plain text
+/// only -- never `body_html` -- specifically so that nothing the model
+/// writes can reach a draft as raw markup. Proved directly: a model that
+/// puts HTML-looking tags inside its `body_text` answer must not see them
+/// survive into the saved draft unescaped.
+#[tokio::test]
+async fn auto_draft_never_lets_the_models_own_markup_through_as_html() {
+    let fake =
+        fake_model(r#"{"reply":true,"body_text":"Sure, <b>see you then</b>!"}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let account = seed_account(&svc, mail_ai(false, false, true));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        1,
+        ThreadId::new(),
+        "friend@example.com",
+        &[account.address.as_str()],
+        "Dinner?",
+        "Are you free Friday for dinner?",
+        Some(Category::Important),
+    );
+
+    everyday_service::mailai::auto_draft_tick(&svc).await;
+
+    let vault = svc.get().unwrap();
+    let drafts = vault.drafts(account.id).unwrap();
+    assert_eq!(drafts.len(), 1);
+    assert!(
+        !drafts[0].body_html.contains("<b>see you then</b>"),
+        "the model's own markup must never reach the draft unescaped: {}",
+        drafts[0].body_html
+    );
 }

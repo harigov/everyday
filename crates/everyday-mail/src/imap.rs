@@ -43,6 +43,30 @@
 //! "run a command, read responses until the tagged one" routine
 //! ([`run_fetch_command`]) rather than three.
 //!
+//! # Gmail's doubly-escaped system labels
+//!
+//! `X-GM-LABELS` names a system label two different ways depending on
+//! whether Gmail happens to quote it that round: `\Inbox` as a bare IMAP
+//! flag atom, or `"\\Inbox"` as a quoted string -- observed, in practice,
+//! for every system label this crate has seen (`\Inbox`, `\Important`,
+//! `\Starred`, ...). `imap-proto`'s `quoted` parser
+//! (`imap_proto::parser::core::quoted`) is built on `nom::bytes::escaped`,
+//! whose own docs say plainly that it *recognises* an escaped span rather
+//! than transforming it -- the backslash that escapes the literal one
+//! inside the quotes survives into the parsed value unremoved. So the flag
+//! form parses to `\Inbox` (one backslash, correct) and the quoted form
+//! parses to `\\Inbox` (two, wrong) for what is, on the wire, the exact
+//! same label.
+//!
+//! [`unescape_imap_quoted`] undoes exactly that -- `\\` to `\`, `\"` to
+//! `"` -- and [`header_from_attrs`] runs every `X-GM-LABELS` entry through
+//! it before anything downstream ever sees it. Safe to run unconditionally
+//! over a flag-form label too: a bare `\Inbox` carries one backslash,
+//! never a doubled one, so the function has nothing to collapse there and
+//! hands it back unchanged. `everyday_service::mailsync::discovery` repairs
+//! the mailbox rows this bug already minted under the wrong, doubled name
+//! -- see that module's own docs for how.
+//!
 //! # TLS
 //!
 //! `rustls` 0.23 with the `ring` provider, matching the version this
@@ -937,6 +961,34 @@ async fn run_fetch_command(
     }
 }
 
+/// Undo IMAP quoted-string escaping (RFC 3501 §9's `quoted` production):
+/// `\\` to `\`, `\"` to `"`. See the module docs' "Gmail's doubly-escaped
+/// system labels" for why this exists — `imap-proto`'s own `quoted` parser
+/// hands back the raw bytes between the quotes, escape sequences intact,
+/// rather than performing this itself.
+///
+/// Only a doubled backslash or an escaped quote is ever collapsed; a lone
+/// backslash with no `\` or `"` immediately after it is left exactly as it
+/// stands. That is what makes this safe to call on *every* Gmail label
+/// unconditionally, including one that arrived as a bare flag atom
+/// (`\Inbox`, never quoted, never escaped in the first place) rather than
+/// a quoted string: a flag-form label's one leading backslash is never
+/// followed by a second `\` or a `"`, so it falls straight through
+/// unchanged.
+pub fn unescape_imap_quoted(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && matches!(chars.peek(), Some('\\') | Some('"')) {
+            // Safe to `unwrap`: `peek` just proved the next char exists.
+            out.push(chars.next().unwrap());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn header_from_attrs(attrs: &[AttributeValue<'_>]) -> Option<RemoteHeader> {
     let mut uid = None;
     let mut flags = Flags::NONE;
@@ -961,7 +1013,7 @@ fn header_from_attrs(attrs: &[AttributeValue<'_>]) -> Option<RemoteHeader> {
             AttributeValue::GmailThrId(v) => thrid = Some(*v),
             AttributeValue::GmailMsgId(v) => msgid = Some(*v),
             AttributeValue::GmailLabels(v) => {
-                labels = Some(v.iter().map(|s| s.to_string()).collect())
+                labels = Some(v.iter().map(|s| unescape_imap_quoted(s)).collect())
             }
             _ => {}
         }
@@ -1489,6 +1541,53 @@ mod tests {
         assert_eq!(gmail.labels, vec!["\\Important".to_string(), "Work".to_string()]);
     }
 
+    /// The regression this fix is for: Gmail sending a system label
+    /// *quoted* on the wire (`X-GM-LABELS ("\\Inbox" "Muy Importante")`)
+    /// rather than as a bare flag atom. `imap-proto`'s `quoted` parser
+    /// hands the two attribute values below back exactly as shown --
+    /// `\\Inbox` (doubled) for the quoted system label, `Muy Importante`
+    /// unchanged for the quoted user label with no backslash in it -- and
+    /// `header_from_attrs` must unescape the first without touching the
+    /// second. See the module docs' "Gmail's doubly-escaped system labels".
+    #[test]
+    fn header_from_attrs_unescapes_a_quoted_gmail_system_label() {
+        let attrs = vec![
+            AttributeValue::Uid(1),
+            AttributeValue::InternalDate("14-Sep-2026 09:30:00 +0000".into()),
+            AttributeValue::GmailThrId(1),
+            AttributeValue::GmailMsgId(1),
+            AttributeValue::GmailLabels(vec!["\\\\Inbox".into(), "Muy Importante".into()]),
+        ];
+        let header = header_from_attrs(&attrs).expect("a complete header");
+        let gmail = header.gmail.expect("gmail metadata");
+        assert_eq!(gmail.labels, vec!["\\Inbox".to_string(), "Muy Importante".to_string()]);
+    }
+
+    #[test]
+    fn unescape_imap_quoted_leaves_a_flag_form_label_alone() {
+        // `\Inbox` sent as a bare IMAP flag atom carries a single, literal
+        // backslash that was never escaped in the first place -- it must
+        // come back exactly as it went in, not lose that backslash.
+        assert_eq!(unescape_imap_quoted("\\Inbox"), "\\Inbox");
+    }
+
+    #[test]
+    fn unescape_imap_quoted_collapses_a_quoted_system_labels_doubled_backslash() {
+        assert_eq!(unescape_imap_quoted("\\\\Inbox"), "\\Inbox");
+    }
+
+    #[test]
+    fn unescape_imap_quoted_leaves_a_label_with_no_escaping_alone() {
+        assert_eq!(unescape_imap_quoted("Muy Importante"), "Muy Importante");
+    }
+
+    #[test]
+    fn unescape_imap_quoted_unescapes_an_embedded_quote() {
+        // A label literally named `Say "Hi"`, as `quoted` would hand it
+        // back unescaped: `\"` surviving on both sides of `Hi`.
+        assert_eq!(unescape_imap_quoted("Say \\\"Hi\\\""), "Say \"Hi\"");
+    }
+
     #[test]
     fn header_from_attrs_without_gmail_capability_has_no_meta() {
         let attrs = vec![
@@ -1560,6 +1659,36 @@ mod tests {
     fn quote_imap_string_escapes_quotes_and_backslashes() {
         assert_eq!(quote_imap_string("Sent"), "\"Sent\"");
         assert_eq!(quote_imap_string("a\"b\\c"), "\"a\\\"b\\\\c\"");
+    }
+
+    /// The STORE half of the round trip: once a system label has been
+    /// unescaped to its canonical single-backslash form (`\Inbox`, not
+    /// `\\Inbox`), feeding it back through `gmail_label_list` for a
+    /// `+X-GM-LABELS`/`-X-GM-LABELS` STORE must double that backslash
+    /// exactly once, reproducing the wire form Gmail itself sent. Before
+    /// this fix, the stored label was already double-escaped, and quoting
+    /// it again produced a quadruple backslash the server does not
+    /// recognise as `\Inbox` at all -- the bug that made archiving
+    /// (removing `\Inbox`) send the wrong label entirely.
+    #[test]
+    fn gmail_label_list_quotes_a_system_label_for_the_wire_once_unescaped() {
+        assert_eq!(gmail_label_list(&["\\Inbox".to_string()]), "(\"\\\\Inbox\")");
+    }
+
+    #[test]
+    fn gmail_label_list_quotes_a_user_label_with_spaces_and_quotes() {
+        assert_eq!(gmail_label_list(&["Say \"Hi\"".to_string()]), "(\"Say \\\"Hi\\\"\")");
+    }
+
+    /// End to end: what `imap-proto` hands back for a quoted system label
+    /// (doubled backslash), run through `unescape_imap_quoted` and then
+    /// back through `gmail_label_list`, must reproduce the exact wire form
+    /// Gmail sent in the first place.
+    #[test]
+    fn a_doubled_backslash_label_unescapes_and_requotes_to_the_correct_wire_form() {
+        let parsed = unescape_imap_quoted("\\\\Inbox");
+        assert_eq!(parsed, "\\Inbox");
+        assert_eq!(gmail_label_list(&[parsed]), "(\"\\\\Inbox\")");
     }
 
     #[test]

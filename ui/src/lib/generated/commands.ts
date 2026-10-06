@@ -48,6 +48,7 @@ import type {
   ImportProgress,
   ImportResult,
   ImportUpload,
+  ImproveMode,
   Item,
   ItemId,
   ItemQuery,
@@ -113,6 +114,7 @@ import type {
   RecordingQuery,
   RemoteCalendarInfo,
   RemoteImageSettings,
+  ReplySuggestions,
   Role,
   RoleId,
   RoleInfo,
@@ -122,6 +124,7 @@ import type {
   RoutineRun,
   RoutineRunId,
   RunQuery,
+  ScheduledSend,
   SearchHit,
   SearchKind,
   SearchMailResult,
@@ -159,6 +162,7 @@ import type {
   VoiceprintId,
   VoiceprintInfo,
   WeatherReport,
+  WrittenText,
 } from '../types'
 
 /** The command surface this build of the interface was generated against. */
@@ -251,6 +255,15 @@ export interface Commands {
     result: void
   }
   downloadSpeechModel: { args: { id: string }; result: void }
+  draftWithAi: {
+    args: {
+      account: AccountId
+      inReplyTo?: MailMessageId | null
+      instruction: string
+      currentText?: string | null
+    }
+    result: WrittenText
+  }
   endExport: { args: { handle: string }; result: void }
   endImport: { args: { handle: string }; result: void }
   enrolVoice: { args: { pcm: string }; result: VoiceprintInfo }
@@ -274,6 +287,10 @@ export interface Commands {
   importCalendar: {
     args: { name: string; label: string; color: string; ics: string }
     result: CalendarInfo
+  }
+  improveWriting: {
+    args: { account: AccountId; text: string; mode: ImproveMode; instruction?: string | null }
+    result: WrittenText
   }
   label: { args: { threads: ThreadId[]; label: string }; result: Op[] }
   libraryStats: { args: Record<string, never>; result: LibraryStats }
@@ -474,6 +491,7 @@ export interface Commands {
   saveTask: { args: { task: Task }; result: void }
   saveTasks: { args: { tasks: Task[] }; result: void }
   saveTracker: { args: { tracker: Tracker }; result: void }
+  scheduledSends: { args: { account?: AccountId | null }; result: ScheduledSend[] }
   search: {
     args: { query: string; journalId?: JournalId | null; kind?: SearchKind | null; limit: number }
     result: SearchHit[]
@@ -512,6 +530,7 @@ export interface Commands {
   setMemoryOrigin: { args: { id: MemoryId; origin: MemoryOrigin }; result: Memory }
   setQuickJob: { args: { name: string; on: boolean }; result: QuickJobRow[] }
   setThreadCategory: { args: { threads: ThreadId[]; category: MailCategory }; result: void }
+  setThreadPriority: { args: { threads: ThreadId[]; priority: boolean }; result: void }
   setTranscriberKey: { args: { key?: string | null }; result: MeetingSettingsView }
   snooze: { args: { threads: ThreadId[]; until: string }; result: Op[] }
   speechModels: { args: Record<string, never>; result: SpeechModelInfo[] }
@@ -522,6 +541,7 @@ export interface Commands {
   subscribeAccountCalendar: { args: { account: AccountId; remoteId: string }; result: CalendarInfo }
   subscribeCalendar: { args: { name: string; url: string; color: string }; result: CalendarInfo }
   suggestAddresses: { args: { prefix: string; limit?: number | null }; result: MailAddress[] }
+  suggestReplies: { args: { id: ThreadId }; result: ReplySuggestions }
   summarizeThread: { args: { id: ThreadId }; result: ThreadSummary }
   syncAccount: { args: { id: AccountId }; result: void }
   syncCalendar: { args: { id: CalendarId }; result: SyncReport }
@@ -602,6 +622,7 @@ export const COMMAND_NAMES = {
   discardRecording: 'discard_recording',
   dismissMeetingOffer: 'dismiss_meeting_offer',
   downloadSpeechModel: 'download_speech_model',
+  draftWithAi: 'draft_with_ai',
   endExport: 'end_export',
   endImport: 'end_import',
   enrolVoice: 'enrol_voice',
@@ -623,6 +644,7 @@ export const COMMAND_NAMES = {
   getTranscript: 'get_transcript',
   goalActivity: 'goal_activity',
   importCalendar: 'import_calendar',
+  improveWriting: 'improve_writing',
   label: 'label',
   libraryStats: 'library_stats',
   lintMeetingTemplate: 'lint_meeting_template',
@@ -757,6 +779,7 @@ export const COMMAND_NAMES = {
   saveTask: 'save_task',
   saveTasks: 'save_tasks',
   saveTracker: 'save_tracker',
+  scheduledSends: 'scheduled_sends',
   search: 'search',
   searchMail: 'search_mail',
   searchSources: 'search_sources',
@@ -772,6 +795,7 @@ export const COMMAND_NAMES = {
   setMemoryOrigin: 'set_memory_origin',
   setQuickJob: 'set_quick_job',
   setThreadCategory: 'set_thread_category',
+  setThreadPriority: 'set_thread_priority',
   setTranscriberKey: 'set_transcriber_key',
   snooze: 'snooze',
   speechModels: 'speech_models',
@@ -782,6 +806,7 @@ export const COMMAND_NAMES = {
   subscribeAccountCalendar: 'subscribe_account_calendar',
   subscribeCalendar: 'subscribe_calendar',
   suggestAddresses: 'suggest_addresses',
+  suggestReplies: 'suggest_replies',
   summarizeThread: 'summarize_thread',
   syncAccount: 'sync_account',
   syncCalendar: 'sync_calendar',
@@ -872,6 +897,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'discard_recording',
   'dismiss_meeting_offer',
   'download_speech_model',
+  'draft_with_ai',
   'end_export',
   'end_import',
   'enrol_voice',
@@ -893,6 +919,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'get_transcript',
   'goal_activity',
   'import_calendar',
+  'improve_writing',
   'label',
   'library_stats',
   'lint_meeting_template',
@@ -1027,6 +1054,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_task',
   'save_tasks',
   'save_tracker',
+  'scheduled_sends',
   'search',
   'search_mail',
   'search_sources',
@@ -1041,6 +1069,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_memory_origin',
   'set_quick_job',
   'set_thread_category',
+  'set_thread_priority',
   'set_transcriber_key',
   'snooze',
   'speech_models',
@@ -1051,6 +1080,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'subscribe_account_calendar',
   'subscribe_calendar',
   'suggest_addresses',
+  'suggest_replies',
   'summarize_thread',
   'sync_account',
   'sync_calendar',
@@ -1196,6 +1226,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_memory_origin',
   'set_quick_job',
   'set_thread_category',
+  'set_thread_priority',
   'set_transcriber_key',
   'snooze',
   'star',
@@ -1310,6 +1341,7 @@ export const CHANGE_KINDS = {
   set_memory_origin: 'memory',
   set_quick_job: 'settings',
   set_thread_category: 'thread',
+  set_thread_priority: 'thread',
   set_transcriber_key: 'settings',
   snooze: 'thread',
   star: 'thread',

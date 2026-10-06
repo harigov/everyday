@@ -249,6 +249,15 @@ pub(super) fn set_message_invite(
 }
 
 /// See [`everyday_core::store::mail::MailStore::set_message_category`].
+///
+/// A no-op whenever the message already carries
+/// [`CategorySource::Person`] -- a person's own mark, through a VIP
+/// correction or [`set_message_category_with_source`], outranks whatever
+/// the model-assisted pass decides about the same message next; see that
+/// trait method's own docs for why. Checked here, ahead of the write,
+/// rather than left to `sweep_categories`'s own `eligible` closures: this
+/// is the single-message path neither `recategorize` nor `correct_category`
+/// goes through, so it needs the guard for itself.
 pub(super) fn set_message_category(
     store: &SqlStore,
     id: MailMessageId,
@@ -259,6 +268,9 @@ pub(super) fn set_message_category(
     let Some(mut message) = message_by_id(store, tx.as_mut(), id)? else {
         return Ok(());
     };
+    if message.category_source == CategorySource::Person {
+        return Ok(());
+    }
     let thread_id = message.thread_id;
     message.category = Some(category);
     // A model's own one-off answer -- the one write path, besides ingest
@@ -267,6 +279,29 @@ pub(super) fn set_message_category(
     // `recategorize`'s backfill this message is no longer its rules-only
     // answer to overwrite -- see that type's own docs.
     message.category_source = CategorySource::Model;
+    let sealed = store.seal(&message_aad(id), &message)?;
+    let (sql, args) = upsert_stmt(&message, sealed);
+    tx.execute(&sql, &args)?;
+    recompute_thread(store, tx.as_mut(), thread_id, &[])?;
+    tx.commit()
+}
+
+/// See
+/// [`everyday_core::store::mail::MailStore::set_message_category_with_source`].
+pub(super) fn set_message_category_with_source(
+    store: &SqlStore,
+    id: MailMessageId,
+    category: Category,
+    source: CategorySource,
+) -> Result<()> {
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    let Some(mut message) = message_by_id(store, tx.as_mut(), id)? else {
+        return Ok(());
+    };
+    let thread_id = message.thread_id;
+    message.category = Some(category);
+    message.category_source = source;
     let sealed = store.seal(&message_aad(id), &message)?;
     let (sql, args) = upsert_stmt(&message, sealed);
     tx.execute(&sql, &args)?;
@@ -401,6 +436,16 @@ pub(super) fn set_thread_ai_auto_draft_asked(
     message_count: u32,
 ) -> Result<()> {
     patch_thread(store, thread, |t| t.ai_auto_draft_asked_at_count = Some(message_count))
+}
+
+/// See
+/// [`everyday_core::store::mail::MailStore::set_thread_ai_priority_asked`].
+pub(super) fn set_thread_ai_priority_asked(
+    store: &SqlStore,
+    thread: ThreadId,
+    message_count: u32,
+) -> Result<()> {
+    patch_thread(store, thread, |t| t.ai_priority_asked_at_count = Some(message_count))
 }
 
 /// See [`everyday_core::store::mail::MailStore::merge_threads`].
@@ -691,6 +736,31 @@ pub(super) fn delete_mailbox(
 /// [`MailStore::recategorize`](everyday_core::store::mail::MailStore::recategorize))
 /// only ever sets a *message's* category, and this is the one place that
 /// answer becomes what a thread list actually shows.
+///
+/// Two consequences of that for [`crate::mail::Category::Priority`], worth
+/// spelling out because nothing had to be added here to get either one:
+///
+/// * A thread whose newest message is the one a VIP correction,
+///   [`everyday_core::vault::Vault::set_thread_priority`] or the
+///   model-assisted pass marked `Priority` shows as `Priority` the moment
+///   that write lands -- it already is the message with the latest
+///   `date_us`, so the very next `recompute_thread` (the one each of those
+///   writers triggers itself) picks it up for free.
+/// * Once the person's own reply becomes the newest message, the thread
+///   stops showing `Priority` on its own, with no extra code anywhere: the
+///   rules engine never answers `Priority` for a fresh message (see
+///   `crate::mail::categorize`'s own precedence list), so the reply's
+///   category -- computed at ingest like any other message's -- is
+///   whatever the rules say, almost never `Priority`, and this function
+///   simply mirrors that new newest message the way it always does. The
+///   one case this does *not* reach is a thread whose newest message was
+///   already the person's own at the moment `set_thread_priority` was
+///   called -- marking an *earlier* inbound message `Priority` then cannot
+///   make the thread show it, since the truly newest message (the already-
+///   sent reply) is what this function mirrors regardless; see
+///   [`everyday_core::vault::Vault::set_thread_priority`]'s own docs, which
+///   accept exactly that as the fallback case rather than reaching into
+///   this function to special-case it.
 pub(super) fn recompute_thread(
     store: &SqlStore,
     tx: &mut dyn Sql,
@@ -803,6 +873,7 @@ fn seed_thread(
             has_attachments: false,
             ai_categorize_asked_at_count: None,
             ai_auto_draft_asked_at_count: None,
+            ai_priority_asked_at_count: None,
         });
     }
 
@@ -848,6 +919,7 @@ fn seed_thread(
         has_attachments: false,
         ai_categorize_asked_at_count: None,
         ai_auto_draft_asked_at_count: None,
+        ai_priority_asked_at_count: None,
     })
 }
 

@@ -433,6 +433,18 @@
       ]
     },
     {
+      "command": "set_thread_priority",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "snooze",
       "events": [
         {
