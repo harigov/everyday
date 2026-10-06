@@ -47,6 +47,15 @@
   const DAY_HEIGHT = HOUR * 24
   /** How close to the bottom edge counts as "resize" rather than "move". */
   const RESIZE_GRIP = 7
+  /**
+   * How tall a slot must be to stack its start time over its title, and to
+   * hold one line with the usual padding round it. Below the first -- 30
+   * minutes is 23px -- the stack pushed the title out of the bottom of the
+   * box and left nothing in it but a time; below the second -- 15 minutes is
+   * 11.5px -- even the time was cut in half.
+   */
+  const TWO_LINES = 34
+  const ONE_LINE = 21
 
   let body = $state<HTMLDivElement | null>(null)
 
@@ -508,6 +517,7 @@
                 class:cancelled={p.slot.cancelled}
                 class:free={p.slot.free}
                 class:live={p.slot.live}
+                class:tight={p.height < ONE_LINE}
                 class:sel={p.slot.block
                   ? calendar.selection?.kind === 'block' &&
                     calendar.selection.id === p.slot.block.id
@@ -533,6 +543,13 @@
                     />
                     <span class="slottitle">{p.slot.title} · {p.slot.subtitle}</span>
                   </span>
+                {:else if p.height < TWO_LINES}
+                  <!-- Too short to stack, so one line, title first: where
+                       the box sits on the grid already says when, and the
+                       time is the half the ellipsis can afford to take. -->
+                  <span class="slottitle"
+                    >{p.slot.title} <span class="slottime">{clockOf(p.slot.start)}</span></span
+                  >
                 {:else}
                   <span class="slottime">{clockOf(p.slot.start)}</span>
                   <span class="slottitle">{p.slot.title}</span>
@@ -858,6 +875,23 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* The one-line form: the time trails the title, at reading weight. */
+  .slottitle .slottime {
+    margin-left: 2px;
+    font-weight: 400;
+  }
+  /* Fifteen minutes is less than a line of type and its padding. The padding
+     goes and the line is set solid, so the capitals land inside the box and
+     only the descenders are cropped. */
+  .slot.tight {
+    padding-block: 0;
+    justify-content: center;
+  }
+  .slot.tight .slottitle {
+    font-size: 11px;
+    line-height: 1;
+  }
+
   .slotline {
     display: flex;
     align-items: center;
